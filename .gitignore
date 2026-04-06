@@ -1,0 +1,5 @@
+.planning/
+node_modules/
+.orchestray/
+*.log
+.DS_Store

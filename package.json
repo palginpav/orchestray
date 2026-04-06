@@ -1,0 +1,20 @@
+{
+  "name": "orchestray",
+  "version": "0.1.0",
+  "description": "Multi-agent orchestration plugin for Claude Code",
+  "keywords": ["claude-code", "plugin", "multi-agent", "orchestration"],
+  "license": "MIT",
+  "author": "Orchestray",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/orchestray/orchestray"
+  },
+  "files": [
+    ".claude-plugin/",
+    "settings.json",
+    "agents/",
+    "skills/",
+    "bin/",
+    "CLAUDE.md"
+  ]
+}
