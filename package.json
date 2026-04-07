@@ -1,20 +1,32 @@
 {
   "name": "orchestray",
-  "version": "0.1.0",
+  "version": "2.0.0",
   "description": "Multi-agent orchestration plugin for Claude Code",
-  "keywords": ["claude-code", "plugin", "multi-agent", "orchestration"],
-  "license": "MIT",
-  "author": "Orchestray",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/orchestray/orchestray"
+  "bin": {
+    "orchestray": "bin/install.js"
   },
   "files": [
-    ".claude-plugin/",
-    "settings.json",
+    "bin/",
     "agents/",
     "skills/",
-    "bin/",
-    "CLAUDE.md"
-  ]
+    "hooks/",
+    "settings.json",
+    "CLAUDE.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "claude-code",
+    "orchestration",
+    "multi-agent",
+    "ai-agents",
+    "plugin"
+  ],
+  "author": "palginpav",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/palginpav/orchestray.git"
+  },
+  "homepage": "https://github.com/palginpav/orchestray"
 }

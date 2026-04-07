@@ -21,28 +21,22 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 
 ## Install
 
-### Quick start
-
 ```bash
-git clone https://github.com/palginpav/orchestray.git ~/.claude-plugins/orchestray
+npx orchestray --global
 ```
 
-Then start Claude Code with the plugin:
+This installs agents, skills, and hooks into `~/.claude/`. No `--plugin-dir` flag needed — Claude Code discovers them automatically.
+
+For project-local install:
 
 ```bash
-claude --plugin-dir ~/.claude-plugins/orchestray
+npx orchestray --local
 ```
 
-### One-liner
+### Uninstall
 
 ```bash
-git clone https://github.com/palginpav/orchestray.git ~/.claude-plugins/orchestray && claude --plugin-dir ~/.claude-plugins/orchestray
-```
-
-### Update
-
-```bash
-cd ~/.claude-plugins/orchestray && git pull
+npx orchestray --global --uninstall
 ```
 
 ## Usage
