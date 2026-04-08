@@ -8,12 +8,18 @@ This is a Claude Code plugin that provides multi-agent orchestration.
 - Use `/orchestray:status` to check orchestration state
 - Use `/orchestray:config` to view/modify settings
 - Use `/orchestray:report` to generate an audit report
+- Use `/orchestray:analytics` to view aggregate performance stats
+- Use `/orchestray:kb` to manage the knowledge base
+- Use `/orchestray:update` to update Orchestray to the latest version
 
 ## Agent Roles
 - **pm** — Orchestrator, decomposes tasks and delegates
 - **architect** — Design-only, produces design documents
 - **developer** — Implements code changes
 - **reviewer** — Read-only review across correctness, quality, security, performance, docs
+- **debugger** — Systematic bug investigation and root cause analysis (read-only)
+- **tester** — Dedicated test writing, coverage analysis, and test strategy
+- **documenter** — Documentation creation and maintenance
 
 ## Runtime State
 - `.orchestray/` directory stores orchestration state (gitignored)

@@ -52,6 +52,9 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | `/orchestray:specialists` | Manage persistent specialist agents |
 | `/orchestray:learn [id]` | Extract patterns from a past orchestration |
 | `/orchestray:resume` | Resume interrupted orchestration |
+| `/orchestray:analytics` | View aggregate performance stats across orchestrations |
+| `/orchestray:kb` | View and manage the knowledge base |
+| `/orchestray:update` | Update Orchestray to the latest version |
 
 ## Agent roles
 
@@ -61,6 +64,9 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | **Architect** | Design-only — produces design documents and technical decisions |
 | **Developer** | Implements code changes |
 | **Reviewer** | Read-only review across correctness, quality, security, performance |
+| **Debugger** | Systematic bug investigation and root cause analysis (read-only) |
+| **Tester** | Dedicated test writing, coverage analysis, and test strategy |
+| **Documenter** | Documentation creation and maintenance |
 | **Specialists** | Dynamic or persistent agents for domain-specific tasks |
 
 ## Configuration
