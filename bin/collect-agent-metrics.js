@@ -110,6 +110,8 @@ process.stdin.on('end', () => {
       ? (event.transcript_path || null)
       : (event.agent_transcript_path || null);
 
+    let turnsUsed = 0;
+
     try {
       if (transcriptPath && fs.existsSync(transcriptPath)) {
         const content = fs.readFileSync(transcriptPath, 'utf8');
@@ -117,6 +119,7 @@ process.stdin.on('end', () => {
         for (const line of lines) {
           try {
             const entry = JSON.parse(line);
+            if (entry.role === 'assistant') turnsUsed++;
             if (entry.usage) {
               totalUsage.input_tokens += entry.usage.input_tokens || 0;
               totalUsage.output_tokens += entry.usage.output_tokens || 0;
@@ -129,7 +132,7 @@ process.stdin.on('end', () => {
         }
       }
     } catch (_e) {
-      // Transcript unavailable -- all usage fields remain 0
+      // Transcript unavailable -- all usage fields remain 0, turnsUsed remains 0
     }
 
     // Ensure audit directory exists
@@ -181,6 +184,7 @@ process.stdin.on('end', () => {
         estimated_cost_usd: estimatedCostUsd,
         estimated_cost_opus_baseline_usd: estimatedCostOpusBaselineUsd,
         model_used: resolvedModel,
+        turns_used: turnsUsed,
       };
     } else {
       auditEvent = {
@@ -196,6 +200,7 @@ process.stdin.on('end', () => {
         estimated_cost_opus_baseline_usd: estimatedCostOpusBaselineUsd,
         transcript_path: transcriptPath,
         model_used: resolvedModel,
+        turns_used: turnsUsed,
       };
     }
 

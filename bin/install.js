@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const VERSION = '2.0.0';
+const VERSION = '2.0.1';
 const REPO = 'https://github.com/palginpav/orchestray';
 
 // Parse arguments
@@ -101,6 +101,17 @@ function install(targetDir) {
     const skillFile = path.join(skillsDir, dir, 'SKILL.md');
     if (fs.existsSync(skillFile)) {
       fs.copyFileSync(skillFile, path.join(targetSkillDir, 'SKILL.md'));
+    }
+    // Copy subdirectories within each skill (e.g., templates/)
+    const subDirs = fs.readdirSync(path.join(skillsDir, dir), { withFileTypes: true })
+      .filter(e => e.isDirectory());
+    for (const sub of subDirs) {
+      const srcSub = path.join(skillsDir, dir, sub.name);
+      const dstSub = path.join(targetSkillDir, sub.name);
+      fs.mkdirSync(dstSub, { recursive: true });
+      for (const file of fs.readdirSync(srcSub)) {
+        fs.copyFileSync(path.join(srcSub, file), path.join(dstSub, file));
+      }
     }
   }
   console.log(`  \x1b[32m✓\x1b[0m Installed ${skillDirs.length} skills`);
