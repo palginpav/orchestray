@@ -120,3 +120,50 @@ The user wants to see aggregate performance analytics across orchestration histo
    - If only 1 orchestration exists: skip cost trend, show "Insufficient data for trend analysis."
    - If no routing_outcome events found: show "No model routing data available (pre-routing orchestrations)."
    - If no agent cost data found: show "No per-agent cost data available."
+
+8. **Pattern Effectiveness Dashboard**: After displaying the main analytics, show pattern learning metrics.
+
+   **Read pattern files**: Glob `.orchestray/patterns/*.md` and parse each file's YAML frontmatter for:
+   - `type` (e.g., correction, strategy)
+   - `occurrences` count
+   - `confidence` level
+   - `last_seen` timestamp
+
+   **Read pattern_applied events**: Search all `.orchestray/history/*/events.jsonl` for events where the normalized event type equals `pattern_applied`. Compute:
+   - Total patterns applied across all orchestrations.
+   - Average patterns applied per orchestration (total applied / number of orchestrations that had at least one pattern_applied event).
+   - Most frequently applied patterns (top 5 by count, using the pattern `name` or `pattern` field from the event).
+   - Correction effectiveness: count correction-type patterns that were applied and where no `verify_fix_attempt` event occurred for the same issue/agent in the same orchestration. These are estimated re-occurrences prevented.
+
+   **Count new patterns**: From the pattern files, count how many have a `last_seen` timestamp within the last 5 orchestrations (by comparing against `orchestration_start` timestamps from the most recent 5 history directories).
+
+   **Display pattern dashboard**:
+
+   ```
+   ## Pattern Learning
+
+   Total patterns: {N} ({correction_count} corrections, {strategy_count} strategies)
+   Patterns applied: {N} times across {M} orchestrations
+
+   ### Top Patterns by Impact
+   | Pattern | Type | Applied | Confidence | Last Used |
+   |---------|------|---------|------------|-----------|
+   | {name}  | {type} | {N}x | {confidence} | {date} |
+   ...
+
+   ### Correction Effectiveness
+   Corrections applied: {N}
+   Re-occurrences prevented: {N} (estimated)
+
+   ### Learning Trend
+   Avg patterns applied per orchestration: {N}
+   Pattern library growth: {N} new in last 5 orchestrations
+   ```
+
+   **If no pattern files exist** (`.orchestray/patterns/*.md` glob returns no results): skip the dashboard tables and instead show:
+
+   ```
+   ## Pattern Learning
+
+   No patterns extracted yet. Patterns are automatically created from verify-fix loops and past orchestrations. Run `/orchestray:learn` to extract patterns from a specific orchestration.
+   ```

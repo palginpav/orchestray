@@ -2,7 +2,7 @@
 name: learn
 description: Extract learning patterns from a completed orchestration
 disable-model-invocation: true
-argument-hint: "[orchestration-id]"
+argument-hint: "[orchestration-id] | promote <pattern-name>"
 ---
 
 # Pattern Extraction
@@ -12,6 +12,7 @@ The user wants to extract reusable patterns from a completed orchestration.
 ## Protocol
 
 1. **Parse arguments**: `$ARGUMENTS`
+   - If the first argument is `promote`: go to the **promote** command below.
    - If an orchestration ID is provided (e.g., `orch-1712345678`): use it directly as `{orch-id}`.
    - If empty: find the most recent orchestration by listing directories in `.orchestray/history/`, sorting by name (which contains a timestamp), and picking the last one. Report: "Using most recent orchestration: {orch-id}"
 
@@ -73,3 +74,12 @@ The user wants to extract reusable patterns from a completed orchestration.
 7. **Run pruning** if pattern count > 50: glob all `.md` files in `.orchestray/patterns/`. If count exceeds 50, compute `score = confidence * times_applied` for each pattern (read frontmatter). Sort ascending. Remove patterns with the lowest scores until count = 50. Report pruned patterns: "Pruned {M} low-value pattern(s): {names}"
 
 8. **Report:** "{N} pattern(s) extracted from orchestration {orch-id}." If patterns were pruned, also report: "Pruned {M} low-value patterns to stay within the 50-pattern cap."
+
+### promote <pattern-name>
+- Promote a local pattern to team-shared:
+  1. Check `.orchestray/patterns/<pattern-name>.md` exists. If not, show available local patterns.
+  2. Create `.orchestray/team-patterns/` directory if it doesn't exist.
+  3. Copy the pattern file from `.orchestray/patterns/<pattern-name>.md` to `.orchestray/team-patterns/<pattern-name>.md`
+  4. Delete the local copy to avoid duplication
+  5. Report: "Pattern '<pattern-name>' promoted to team-patterns/. It will be available to all team members after they pull."
+- If the pattern already exists in `.orchestray/team-patterns/`: ask user whether to overwrite

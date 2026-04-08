@@ -121,6 +121,16 @@ function main() {
         try { fs.appendFileSync(debugLog, `  Keys: ${Object.keys(data).join(', ')}\n  Prompt (first 200): ${prompt.substring(0, 200)}\n`); } catch(e) {}
       }
 
+      // Skip internal Claude Code framework messages
+      if (prompt.trim().startsWith('<task-notification>') ||
+          prompt.trim().startsWith('<task-id>') ||
+          prompt.trim().startsWith('<tool-use-id>') ||
+          prompt.includes('<command-name>') ||
+          prompt.includes('<command-message>')) {
+        process.stdout.write(JSON.stringify({ continue: true }));
+        return;
+      }
+
       // Skip if prompt is a slash command (already routed)
       if (prompt.trim().startsWith('/')) {
         process.stdout.write(JSON.stringify({ continue: true }));
@@ -171,7 +181,8 @@ function main() {
             score: score,
             threshold: threshold,
             prompt: prompt,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            session_id: data.session_id || null
           }));
         } catch(e) {
           if (verbose) {

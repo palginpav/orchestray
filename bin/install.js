@@ -87,7 +87,20 @@ function install(targetDir) {
       path.join(targetDir, 'agents', file)
     );
   }
-  console.log(`  \x1b[32m✓\x1b[0m Installed ${agentFiles.length} agents`);
+  // Copy subdirectories within agents/ (e.g., pm-reference/)
+  const agentSubdirs = fs.readdirSync(agentsDir, { withFileTypes: true })
+    .filter(e => e.isDirectory())
+    .map(e => e.name);
+  for (const dir of agentSubdirs) {
+    const srcSub = path.join(agentsDir, dir);
+    const dstSub = path.join(targetDir, 'agents', dir);
+    fs.mkdirSync(dstSub, { recursive: true });
+    for (const file of fs.readdirSync(srcSub)) {
+      fs.copyFileSync(path.join(srcSub, file), path.join(dstSub, file));
+    }
+  }
+  const refCount = agentSubdirs.reduce((n, dir) => n + fs.readdirSync(path.join(agentsDir, dir)).length, 0);
+  console.log(`  \x1b[32m✓\x1b[0m Installed ${agentFiles.length} agents + ${refCount} reference files`);
 
   // 2. Copy skills (each is a directory with SKILL.md)
   const skillsDir = path.join(pkgRoot, 'skills');
@@ -153,6 +166,7 @@ function install(targetDir) {
     installedAt: new Date().toISOString(),
     scope: flags.local ? 'local' : 'global',
     agents: agentFiles,
+    agentSubdirs: agentSubdirs,
     skills: skillDirs,
     hooks: binFiles,
   };
@@ -250,6 +264,10 @@ function uninstall(targetDir) {
   for (const file of manifest.agents || []) {
     const p = path.join(targetDir, 'agents', file);
     if (fs.existsSync(p)) fs.unlinkSync(p);
+  }
+  for (const dir of manifest.agentSubdirs || []) {
+    const p = path.join(targetDir, 'agents', dir);
+    if (fs.existsSync(p)) fs.rmSync(p, { recursive: true });
   }
   console.log(`  \x1b[32m✓\x1b[0m Removed agents`);
 

@@ -12,13 +12,20 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 
 - **Auto-trigger** — complexity scoring detects when orchestration helps, self-calibrates over time
 - **Smart model routing** — assigns Haiku/Sonnet/Opus per subtask based on complexity, tracks cost savings
+- **GitHub Issue integration** — orchestrate directly from GitHub issues via `gh` CLI
+- **CI/CD feedback loop** — run CI after orchestration, auto-fix failures up to N retries
 - **Shift-left security** — dedicated Security Engineer agent auto-invoked on security-sensitive tasks
 - **Pipeline templates** — 7 workflow archetypes for consistent decomposition (bug fix, feature, refactor, migration, etc.)
 - **TDD mode** — test-first orchestration: architect → tester → developer → reviewer
+- **Mid-orchestration control** — checkpoints between groups to review, modify, or abort
+- **User playbooks** — project-specific instructions injected into agent delegation prompts
 - **Parallel execution** — independent subtasks run concurrently via subagents
 - **Verify-fix loops** — reviewer failures route back to developer with specific feedback
+- **Correction memory** — learns from verify-fix loops, prevents repeated mistakes
+- **Cost prediction** — estimates orchestration cost from historical data before execution
 - **Persistent specialists** — dynamic agents that prove useful get saved for reuse
 - **Pattern learning** — extracts reusable strategies from past orchestrations
+- **Team features** — shared config, shared patterns, daily/weekly cost budgets
 - **Agent Teams** — opt-in dual-mode execution for tasks needing inter-agent communication
 - **Full audit trail** — per-agent tokens, cost breakdown, routing decisions, model savings
 
@@ -49,13 +56,15 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | Command | What it does |
 |---------|-------------|
 | `/orchestray:run [task]` | Manually trigger orchestration |
+| `/orchestray:issue [#/url]` | Orchestrate from a GitHub issue |
 | `/orchestray:status` | Check orchestration state |
 | `/orchestray:config` | View/modify settings |
 | `/orchestray:report` | Generate audit report with cost breakdown |
+| `/orchestray:playbooks` | Manage project-specific playbooks |
 | `/orchestray:specialists` | Manage persistent specialist agents |
-| `/orchestray:learn [id]` | Extract patterns from a past orchestration |
+| `/orchestray:learn [id]` | Extract patterns / promote to team |
 | `/orchestray:resume` | Resume interrupted orchestration |
-| `/orchestray:analytics` | View aggregate performance stats across orchestrations |
+| `/orchestray:analytics` | Performance stats + pattern dashboard |
 | `/orchestray:kb` | View and manage the knowledge base |
 | `/orchestray:update` | Update Orchestray to the latest version |
 
@@ -81,11 +90,14 @@ Run `/orchestray:config` to view all settings. Key options:
 complexity_threshold    Score threshold for auto-orchestration (default: 4)
 auto_review             Auto-spawn reviewer after developer (default: true)
 model_floor             Minimum model tier: haiku/sonnet/opus (default: sonnet)
-force_model             Override all routing with a specific model (default: null)
 security_review         Security review mode: auto/manual/off (default: auto)
 tdd_mode                Prefer TDD orchestration flow (default: false)
 confirm_before_execute  Show preview before execution (default: false)
-enable_agent_teams      Enable Agent Teams mode (default: false)
+enable_checkpoints      Pause between groups for review (default: false)
+ci_command              CI check after orchestration (default: null)
+post_to_issue           Comment results on GitHub issue (default: false)
+daily_cost_limit_usd    Daily spending limit (default: null)
+weekly_cost_limit_usd   Weekly spending limit (default: null)
 ```
 
 ## How it works
@@ -127,8 +139,11 @@ All orchestration state lives in `.orchestray/` (gitignored):
   audit/          # Event logs and metrics
   history/        # Archived orchestrations
   specialists/    # Persistent specialist registry
-  patterns/       # Extracted learning patterns
-  config.json     # User configuration
+  patterns/       # Extracted learning patterns (gitignored)
+  playbooks/      # User-authored project playbooks
+  config.json     # User configuration (gitignored)
+  team-config.json # Team-shared configuration (version-controlled)
+  team-patterns/  # Team-shared patterns (version-controlled)
 ```
 
 ## Requirements

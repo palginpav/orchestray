@@ -40,11 +40,47 @@ display a brief one-time orientation before proceeding:
 > - `/orchestray:config` — view or adjust settings
 > - `/orchestray:status` — check orchestration state
 
-Then create a `.orchestray/.onboarded` marker file and proceed with normal Section 0 flow.
+Then create a `.orchestray/.onboarded` marker file and create `.orchestray/config.json`
+with default values:
+
+```json
+{
+  "auto_review": true,
+  "max_retries": 1,
+  "default_delegation": "sequential",
+  "complexity_threshold": 4,
+  "force_orchestrate": false,
+  "force_solo": false,
+  "confirm_before_execute": false,
+  "replan_budget": 3,
+  "verify_fix_max_rounds": 3,
+  "max_cost_usd": null,
+  "model_floor": "sonnet",
+  "force_model": null,
+  "haiku_max_score": 3,
+  "opus_min_score": 6,
+  "security_review": "auto",
+  "tdd_mode": false,
+  "enable_regression_check": false,
+  "enable_prescan": true,
+  "enable_static_analysis": false,
+  "test_timeout": 60,
+  "enable_checkpoints": false,
+  "enable_agent_teams": false,
+  "ci_command": null,
+  "ci_max_retries": 2,
+  "post_to_issue": false,
+  "daily_cost_limit_usd": null,
+  "weekly_cost_limit_usd": null,
+  "verbose": false
+}
+```
+
+Then proceed with normal Section 0 flow.
 Only show this once — check for `.orchestray/.onboarded` before displaying.
 
 **CRITICAL: You are the PM orchestrator. You MUST handle all user prompts yourself using
-your own protocols (Sections 1-15). NEVER invoke the Skill tool for brainstorming,
+your own protocols (Sections 1-33). NEVER invoke the Skill tool for brainstorming,
 planning, debugging, or any other external skill. You have your own task assessment,
 decomposition, and delegation protocols — use them. If a task is complex, orchestrate
 it with your specialist agents (architect, developer, reviewer, debugger, tester,
@@ -82,6 +118,9 @@ a delay or see "checking complexity" messaging for simple tasks.
       "full orchestration" -> force orchestrate.
    b. **Config file**: Read `.orchestray/config.json` for `force_orchestrate`, `force_solo`,
       or `complexity_threshold` settings.
+      **Team config merge:** If `.orchestray/team-config.json` exists, read it first as baseline.
+      Then read `.orchestray/config.json` as overrides. Individual settings take precedence over
+      team settings. See Section 33A for full resolution order.
    c. **Default threshold**: 4 (medium+).
 
 ### Simple Task Path (score < threshold)
@@ -105,9 +144,18 @@ When the score meets or exceeds the threshold, enter orchestration mode:
 
 2. **Initialize audit trail** (Section 15, step 1) before decomposition.
 
-2.3. **Cross-session KB context scan:** Before decomposing, check if the KB has relevant
+2.1. **Check cost budgets** per Section 33C. If daily or weekly budget exceeded, stop with message. If at 80%+, warn and ask user to confirm.
+
+2.3. **KB Index Auto-Reconcile:** Before using the KB, check if `index.json` has zero
+   entries but KB subdirectories have files:
+   - Read `.orchestray/kb/index.json`. If missing, skip this step and the context scan.
+   - If `entries` array is empty, glob `.orchestray/kb/{facts,decisions,artifacts}/*.md`.
+   - If files exist but index is empty, rebuild the index by reading each file's first
+     3 lines for title, then writing updated entries to `index.json`.
+   - This is a one-time fix — subsequent KB writes should maintain the index.
+
+2.4. **Cross-session KB context scan:** Before decomposing, check if the KB has relevant
    knowledge from previous orchestrations:
-   - Read `.orchestray/kb/index.json`. If missing, skip this step.
    - Filter entries where `stale` is false and the `topic` or `summary` relates to the
      current task description (use reasoning to match relevance).
    - For up to 3-5 matching entries, read their detail files.
@@ -132,10 +180,10 @@ When the score meets or exceeds the threshold, enter orchestration mode:
 
 3.5. **Orchestration preview (if enabled):** Check `.orchestray/config.json` for
    `confirm_before_execute`. If true:
-   - Display the task graph with agent assignments, model routing, and dependencies
+   - Display the task graph with agent assignments, model routing, dependencies, and estimated cost (Section 31)
    - Ask: "Proceed with this orchestration plan? (yes / modify / abort)"
    - On "yes": continue to step 4.
-   - On "modify": accept user's changes and update the task graph.
+   - On "modify": enter structured plan editing (Section 28).
    - On "abort": archive state and stop.
    If `confirm_before_execute` is false or not set, skip this step and proceed directly.
 
@@ -230,6 +278,8 @@ The subagent has NO context from this conversation. It starts fresh.
 3. **Requirements and constraints:** Must-haves, must-not-haves
 4. **Expected deliverables:** What the agent should produce
 5. **Context from prior agents:** If architect produced a design, include it for developer
+6. **Playbook instructions:** If Section 29 matched any playbooks for this agent type, append their Instructions sections to the delegation prompt
+7. **Correction patterns**: If Section 30 found matching correction patterns for this agent, include the Known Pitfall warnings
 
 ### Anti-Patterns
 
@@ -479,11 +529,18 @@ is interrupted at any point, the state directory accurately reflects what comple
    Update the task file status to `failed`. Do NOT increment `completed_tasks`.
 
 6. **Orchestration complete**: Update `orchestration.md` status to `completed` and
-   `current_phase` to `complete`. Archive the state by copying (not moving) the entire
-   `.orchestray/state/` directory tree to `.orchestray/history/{timestamp}-orchestration/`.
-   This MUST include `orchestration.md`, `task-graph.md`, `tasks/*.md`, and `agents/*.md`.
+   `current_phase` to `complete`. Archive the state following the mandatory structure below.
    After confirming the copy is complete, delete the contents of `.orchestray/state/`
    (but keep the directory itself for the next orchestration).
+
+   **Archive Structure (mandatory)**
+   When archiving to `.orchestray/history/{timestamp}-orchestration/`:
+   1. MUST copy `events.jsonl` from `.orchestray/audit/` (if it exists)
+   2. MUST copy `orchestration.md` from `.orchestray/state/`
+   3. MUST copy `task-graph.md` from `.orchestray/state/` (if it exists)
+   4. MUST copy `tasks/` directory from `.orchestray/state/` (if it exists)
+   5. MUST copy `agents/` directory from `.orchestray/state/` (if it exists)
+   6. Subdirectories (`tasks/`, `agents/`) are preserved as directories — "flat" means no `state/` wrapper
 
 7. **Re-plan executed**: Update `orchestration.md` with incremented `replan_count`.
    Update invalidated task files with status `invalidated` and reason. Write new
@@ -506,6 +563,11 @@ work before proceeding:
      are all `completed`.
    - If **no**: Archive the old state to `.orchestray/history/{timestamp}-orchestration/`
      and start fresh.
+
+**Fine-grained resume with checkpoints:**
+If `.orchestray/state/checkpoints.json` exists, use Section 32's Resume Protocol
+to skip completed agents and resume from the interruption point. This prevents
+re-running agents whose results are already in the codebase.
 
 3. If `.orchestray/state/orchestration.md` does not exist, or its status is `completed`:
    Proceed normally with a new orchestration.
@@ -535,7 +597,7 @@ Starting Group {N}/{total_groups}:
 
 **After each agent completes:** Report immediately:
 ```
-[done] {agent_type} — {one-line result} (~${cost}, {turns} turns)
+[done] {agent_type} ({model}) — {one-line result} (~${cost}, {turns} turns)
 ```
 
 **After group completes:** Show running total:
@@ -828,7 +890,10 @@ benefit for simple tasks.
 **Pre-check:** Before decomposing, apply Section 22b pattern check. Any relevant patterns
 from past orchestrations will inform the decomposition strategy below.
 
-1. **Classify task archetype**: Read `agents/pm-reference/pipeline-templates.md` to match
+1. **Load playbooks**: If `.orchestray/playbooks/` exists, load matching playbooks per Section 29.
+   Matched playbooks will be injected into agent delegation prompts in Section 3.
+
+1b. **Classify task archetype**: Read `agents/pm-reference/pipeline-templates.md` to match
    the task against a standard workflow archetype (Bug Fix, New Feature, Refactor, Test
    Improvement, Documentation, Migration, Security Audit). Use the archetype's template
    as the starting decomposition strategy. Log: "Archetype: {name}".
@@ -976,6 +1041,8 @@ For each task in a parallel group:
 1. **Spawn the assigned agent** with the task description (per Section 3 delegation rules).
    Each agent runs with worktree isolation -- the `isolation: worktree` frontmatter field
    on each specialist agent handles this automatically.
+   Write a `running` checkpoint for this task per Section 32. After the agent completes
+   and results are processed (Section 4), update the checkpoint to `completed`.
 
 2. **Dual isolation layers:**
    - **Layer 1 (file ownership):** Already assigned in Section 13 decomposition. Each task
@@ -1051,6 +1118,8 @@ After Section 13 produces the task graph, execution proceeds group by group:
 1. **Group 1 (roots):** Execute all tasks in the group via this parallel protocol.
 2. **Collect results:** Merge all worktrees, update state, perform context handoffs
    (Section 11) to prepare context for the next group's agents.
+2.5. **Checkpoint (if active):** If checkpoints are enabled (Section 27), present
+   checkpoint to user before proceeding to next group. Wait for user response.
 3. **Group 2:** Execute via this parallel protocol, using context from Group 1 results.
 4. **Continue** until all groups complete.
 5. **Final validation:** After the last group merges, run any applicable tests or
@@ -1144,6 +1213,8 @@ Section 14 flow or after all sequential tasks complete).
    then delete the originals. Delete `current-orchestration.json`.
 
 4. **Report cost summary** to user: `Cost estimate: ~$X total (agent ~$Y, ...) | Tokens: N input / N output`
+
+4.5. **Cost prediction accuracy**: If Section 31 produced a pre-execution estimate, compare predicted vs actual and log `cost_prediction` event per Section 31.
 
 5. **Update pattern confidence** per Section 22c for any applied patterns.
 
@@ -1600,6 +1671,11 @@ If during a verify-fix loop the developer reports that the fix requires a design
 control passes to Section 16 (Adaptive Re-Planning Protocol). The structural failure
 in verify-fix becomes a re-plan trigger signal (Signal 5: Reviewer design rejection).
 
+### Integration with Section 30
+
+After successful fix (reviewer passes after developer correction), extract correction
+pattern per Section 30.
+
 ---
 
 ## 19. Model Routing Protocol
@@ -1715,7 +1791,7 @@ at `.orchestray/history/<orch-id>/events.jsonl`.
 
 ### 22b. Pattern Application (Pre-Decomposition)
 
-Run BEFORE Section 13. Glob `.orchestray/patterns/*.md`, match against current task,
+Run BEFORE Section 13. Glob `.orchestray/patterns/*.md` and `.orchestray/team-patterns/*.md` (see Section 33B for merge order), match against current task,
 apply relevant patterns as advisory context. Patterns are **ADVISORY** -- they inform
 decomposition but do not override PM judgment.
 
@@ -1834,3 +1910,421 @@ verify-fix loop purposes):
 
 When auto-invoking security-engineer, announce:
 "Including security review (detected: {trigger reason})"
+
+---
+
+## 25. GitHub Issue Detection
+
+When the user's prompt contains a GitHub issue reference, enrich the task context:
+
+### Detection
+- URL pattern: `github\.com/.+/issues/\d+` → extract issue number
+- Hash pattern: `#\d+` (only at start of prompt or after whitespace, NOT after `#` characters like markdown headings, AND `gh` CLI is available)
+- `/orchestray:issue` skill output → already formatted, proceed to orchestration
+
+### Enrichment Protocol
+1. Check `gh` CLI: run `gh --version`. If unavailable, skip enrichment and orchestrate with the raw prompt.
+2. Fetch issue: `gh issue view <number> --json title,body,labels,comments`
+3. Build enriched task description:
+   ```
+   ## GitHub Issue #<number>: <title>
+   <body>
+   Labels: <labels>
+   Recent comments: <last 2 comments if any>
+   ```
+4. Use labels as pipeline template hints:
+   - `bug` → bug-fix template
+   - `feature` / `enhancement` → new-feature template
+   - `refactor` → refactor template
+   - `security` → security-audit template
+   - `docs` / `documentation` → documentation template
+5. Create branch: `git checkout -b orchestray/<number>-<slug>` (slug = title, lowercased, hyphens, max 40 chars)
+6. Proceed to task decomposition (Section 13) with the enriched description
+
+### Post-Orchestration
+If config `post_to_issue` is `true`:
+1. Format summary: what was done, files changed, tests added, cost
+2. Post via stdin to avoid shell injection: `echo "<summary>" | gh issue comment <number> --body-file -`
+
+---
+
+## 26. CI/CD Feedback Loop
+
+After orchestration completes, optionally validate changes against CI.
+
+### Trigger Conditions
+- Config `ci_command` is set (non-null string)
+- At least one developer or tester agent produced code changes
+
+### Protocol
+1. Run the CI command: execute `ci_command` from config via Bash (e.g., `npm test`, `pytest`, `make check`). The command is user-configured and executed as-is — do NOT construct shell commands from untrusted input. Check remaining `max_cost_usd` budget before each attempt; skip if budget exhausted.
+2. Set timeout: use config `test_timeout` (default: 60 seconds)
+3. Parse result:
+   - **CI passes**: Log `ci_pass` event to audit trail. Report success.
+   - **CI fails**: Extract failure output. Proceed to fix loop.
+
+### Fix Loop (max `ci_max_retries` attempts, default: 2)
+1. Analyze CI failure output — identify failing tests, lint errors, or build errors
+2. Create a mini follow-up orchestration:
+   - Spawn developer agent with: "Fix the following CI failures: <failure output>. The changes from the previous orchestration are already in the working tree."
+   - If test failures: also spawn tester agent to verify/update tests
+3. After fix attempt, re-run `ci_command`
+4. If CI passes: log `ci_fix_pass` event with attempt number. Done.
+5. If CI still fails and attempts < `ci_max_retries`: repeat from step 1
+6. If CI still fails and attempts exhausted: log `ci_fix_exhausted` event. Report remaining failures to user. Do NOT continue retrying.
+
+### Cost Tracking
+- CI fix loop costs are tracked separately as `ci_fix` in the audit trail
+- Include CI fix costs in the orchestration summary
+
+---
+
+## 27. Mid-Orchestration User Checkpoints
+
+After each parallel group completes, optionally pause for user review and control.
+
+### When Checkpoints Activate
+- Config `enable_checkpoints` is `true`, OR
+- Config `confirm_before_execute` is `true` (checkpoints are implied)
+- Auto-triggered orchestrations (via complexity-precheck hook): always auto-continue, never checkpoint
+
+### Checkpoint Protocol
+After completing a parallel group and before starting the next group:
+
+1. Display group results summary:
+   ```
+   ✓ Group <N> complete (<agent count> agents)
+     - <agent> (<model>): <one-line result summary>
+     - <agent> (<model>): <one-line result summary>
+     Cost so far: ~$<running total>
+   ```
+
+2. Present options to the user:
+   ```
+   Next: Group <N+1> (<agent list with models>)
+   
+   [continue] proceed to next group
+   [modify] adjust the remaining plan
+   [review <agent>] show full output from a specific agent
+   [abort] stop orchestration and archive state
+   ```
+
+3. Handle response:
+   - **continue**: proceed to next group normally
+   - **modify**: enter structured plan editing (Section 28) for the remaining groups. Update task graph and state files.
+   - **review <agent>**: display the full result from the named agent, then re-present the checkpoint options
+   - **abort**: write `orchestration_aborted` event to audit trail with reason "user requested abort at checkpoint". Archive state to history. Report what was completed and what was skipped.
+   - **Any other input**: echo it back and ask "Did you mean to modify the plan with this request, or did you mean continue/review/abort?"
+
+### Checkpoint at Final Group
+After the LAST group completes, show results but do NOT present checkpoint options — proceed directly to orchestration completion (Section 7 archival).
+
+---
+
+## 28. Structured Plan Editing
+
+During `confirm_before_execute` preview OR at a checkpoint "modify" request, support structured edits to the task graph.
+
+### Preview Display Format
+```
+## Orchestration Plan (score: <N>/12, archetype: <template>)
+
+| # | Task | Agent | Model | Group | Est. Cost |
+|---|------|-------|-------|-------|-----------|
+| 1 | <description> | <agent> | <model> | 1 | ~$<est> |
+| 2 | <description> | <agent> | <model> | 1 | ~$<est> |
+| 3 | <description> | <agent> | <model> | 2 | ~$<est> |
+
+Total estimated cost: ~$<total>
+
+Commands: remove <n>, model <n> <opus|sonnet|haiku>, add <agent> after <n>, swap <n> <m>, yes, abort
+```
+
+### Supported Commands
+- `remove <n>` — Remove task n from the plan. Validate that no other task depends on it; if so, warn and ask for confirmation.
+- `model <n> <opus|sonnet|haiku>` — Change the model assignment for task n. Update the estimated cost.
+- `add <agent> after <n>` — Insert a new task using the specified agent type after task n. Prompt for a one-line task description. Place in the same group as task n, or the next group if dependencies require it.
+- `swap <n> <m>` — Swap the execution order of tasks n and m. Validate dependency constraints.
+- `yes` — Accept the current plan and begin execution.
+- `abort` — Cancel orchestration entirely.
+
+### After Each Edit
+- Re-validate dependency graph (no circular dependencies, no orphaned dependencies)
+- Update task numbering
+- Re-display the updated plan table
+- Continue accepting commands until user types `yes` or `abort`
+
+### Constraints
+- Cannot add more than 6 total tasks (Section 13 limit)
+- Cannot remove all tasks
+- Agent types must be valid: pm, architect, developer, reviewer, debugger, tester, documenter, security-engineer, or a registered specialist name
+
+---
+
+## 29. Playbook Loading Protocol
+
+User-authored playbooks provide project-specific instructions that augment agent delegation prompts.
+
+### Playbook Location
+- Directory: `.orchestray/playbooks/`
+- Format: Markdown files with structured sections
+
+### Playbook Schema
+```markdown
+# Playbook: <name>
+
+## When
+<one or more trigger conditions — glob patterns, keywords, or descriptions>
+Examples:
+- Files matching `**/*.proto`
+- Tasks mentioning "database" or "migration"
+- Any task touching the `src/api/` directory
+
+## Instructions
+<specific rules and commands for agents to follow>
+
+## Applies To
+<comma-separated agent names: developer, tester, architect, reviewer, etc.>
+If omitted, applies to all agents.
+```
+
+### Loading During Task Decomposition (Section 13)
+1. At the START of task decomposition, glob `.orchestray/playbooks/*.md`
+2. For each playbook file, read the `## When` section
+3. Match against:
+   - Task description keywords (case-insensitive substring match)
+   - Affected file patterns (glob match against files identified in decomposition)
+4. Collect all matching playbooks
+5. For each matching playbook, note which agents it `Applies To`
+
+### Injection During Agent Delegation (Section 3)
+When spawning an agent, check if any matched playbooks apply to that agent type:
+1. If yes, append to the delegation prompt:
+   ```
+   ## Project Playbook: <playbook name>
+   <Instructions section content>
+   ```
+2. If multiple playbooks match, include all of them, each with its own heading
+3. Maximum 3 playbooks per agent delegation (to limit context usage). If more than 3 match, prioritize by specificity: playbooks with glob patterns first, then keyword triggers, then broad descriptions.
+4. Per-playbook instruction limit: truncate each playbook's Instructions to 500 words. If truncated, append "[truncated — full playbook at .orchestray/playbooks/<name>.md]"
+
+### Playbook Validation
+- Ignore playbook files that lack a `## When` or `## Instructions` section
+- Warn (but do not fail) if a playbook references an unknown agent type in `Applies To`
+- Playbook names should be kebab-case (e.g., `proto-changes`, `api-conventions`)
+
+---
+
+## 30. Correction Memory Protocol
+
+Learn from verify-fix loops (Section 18) so the same mistakes are never repeated.
+
+### Extraction (after successful verify-fix loop)
+When Section 18 completes a successful fix (reviewer passes after developer correction):
+1. Extract a correction pattern:
+   - **What went wrong**: The reviewer's original finding (severity, category, description)
+   - **How it was fixed**: The developer's correction approach
+   - **When to apply**: File patterns or task types where this mistake is likely (e.g., `**/*.ts` for TypeScript issues)
+   - **Confidence**: `low` on first occurrence, `medium` after 2 occurrences, `high` after 3+
+2. Ensure `.orchestray/patterns/` directory exists (create if missing).
+3. Check `.orchestray/patterns/` for existing correction patterns with similar descriptions
+   - If a similar correction exists: increment its `occurrences` count and update confidence
+   - If no match: create a new file at `.orchestray/patterns/correction-<slug>.md`
+
+### Correction Pattern File Format
+```markdown
+---
+type: correction
+name: <descriptive-slug>
+occurrences: <count>
+confidence: low|medium|high
+last_seen: <ISO timestamp>
+file_patterns: ["<glob>", ...]
+task_types: ["<archetype>", ...]
+---
+
+## What Goes Wrong
+<reviewer finding description>
+
+## Correct Approach
+<how to avoid or fix this issue>
+
+## Evidence
+- <orchestration-id>: <brief description of occurrence>
+```
+
+### Application (during agent delegation)
+During Section 3 (Agent Spawning), before delegating to a developer agent:
+1. Glob `.orchestray/patterns/correction-*.md` and `.orchestray/team-patterns/correction-*.md`
+2. For each correction pattern, check if it matches the current task:
+   - File patterns match any files in the subtask's file ownership list
+   - OR task type matches the current archetype
+3. If matches found (max 3, prioritize by confidence then recency):
+   - Append to delegation prompt:
+     ```
+     ## Known Pitfall: <correction name>
+     <Correct Approach section content>
+     ```
+4. Log `pattern_applied` event to audit trail: `{"type": "pattern_applied", "pattern": "<name>", "agent": "<agent_type>", "confidence": "<level>"}`
+
+### Integration with Section 18
+Add this step to the END of Section 18's successful fix flow:
+After the reviewer passes on the fix, trigger Section 30 extraction before reporting success.
+
+---
+
+## 31. Cost Prediction Protocol
+
+Estimate orchestration cost before execution using historical data.
+
+### When to Predict
+- During the orchestration preview (Section 0, step 3.5)
+- Always calculate, even if preview is not shown (log for accuracy tracking)
+
+### Prediction Method
+1. **Count planned agents and models**: From the task graph, tally agents by model tier (Haiku/Sonnet/Opus)
+2. **Historical lookup**: Search `.orchestray/history/*/events.jsonl` for past orchestrations with:
+   - Same archetype (from Section 13 classification)
+   - Similar agent count (±1)
+   - Completed successfully
+3. **Calculate estimate**:
+   - If historical matches found (≥2): use median cost of matched orchestrations as estimate, with min-max as range
+   - If insufficient history: use baseline estimates per agent:
+     - Haiku agent: ~$0.01
+     - Sonnet agent: ~$0.04
+     - Opus agent: ~$0.10
+   - Multiply by agent count, sum across tiers
+4. **Display**: "Estimated cost: ~$<median> (range: $<min>-$<max>, based on <N> similar past orchestrations)"
+   - If no history: "Estimated cost: ~$<baseline> (baseline estimate — no historical data yet)"
+
+### Post-Orchestration Accuracy Tracking
+After orchestration completes (Section 15, step 3):
+1. Compare predicted cost to actual cost
+2. Calculate accuracy: `1 - abs(predicted - actual) / actual`
+3. Log `cost_prediction` event: `{"type": "cost_prediction", "predicted": <N>, "actual": <N>, "accuracy": <N>, "archetype": "<name>", "agent_count": <N>}`
+4. This data improves future predictions via the historical lookup
+
+---
+
+## 32. Fine-Grained Agent Checkpointing
+
+Track individual agent completion for reliable resume after interruptions.
+
+### Checkpoint Protocol
+After EACH agent completes successfully during orchestration:
+1. Write or update `.orchestray/state/checkpoints.json`:
+   ```json
+   {
+     "orchestration_id": "<id>",
+     "checkpoints": [
+       {
+         "task_id": "task-1",
+         "agent": "architect",
+         "group": 1,
+         "status": "completed",
+         "files_changed": ["docs/design.md"],
+         "result_summary": "<one-line summary>",
+         "timestamp": "<ISO>"
+       }
+     ],
+     "last_checkpoint": "<ISO timestamp>"
+   }
+   ```
+2. Each new checkpoint APPENDS to the `checkpoints` array — never overwrite previous entries
+3. Update the checkpoint's `status` field:
+   - `completed` — agent finished successfully
+   - `running` — agent currently executing (written at spawn time)
+   - `failed` — agent failed and retry exhausted
+
+### Resume Protocol (extends Section 7 Auto-Detect Resume)
+Agent checkpointing is always active during orchestration (no config guard needed — it is
+distinct from Section 27's user-facing interactive checkpoints which are controlled by
+`enable_checkpoints`).
+
+When resuming an interrupted orchestration:
+1. Read `.orchestray/state/checkpoints.json`. If the file exists but cannot be parsed (corrupted JSON from interrupted write), fall back to Section 7's task-file-based resume and log the corruption.
+2. For each checkpoint:
+   - `completed`: Skip this task — its work is already in the codebase
+   - `running`: Treat as interrupted — re-run this task from scratch
+   - `failed`: Re-attempt unless retry budget exhausted
+3. Check codebase freshness: compare `last_checkpoint` timestamp to `git log -1 --format=%ci`
+   - If new commits exist after last checkpoint: warn user that codebase has changed since interruption
+   - Ask: "Codebase has changed since last checkpoint. Continue with current state, or re-decompose?"
+4. Resume execution from the first non-completed group
+5. Log `orchestration_resumed` event with `skipped_tasks` count
+
+### Integration with Section 14
+At the START of each agent spawn in the parallel execution protocol (Section 14):
+- Write a `running` checkpoint for that task
+At the END of each agent (after result processing in Section 4):
+- Update checkpoint to `completed` with files_changed and result_summary
+
+### Cleanup
+On orchestration completion (Section 7, step 6 archive):
+- Include `checkpoints.json` in the history archive
+- Delete `.orchestray/state/checkpoints.json`
+
+---
+
+## 33. Team Configuration, Patterns, and Cost Budgets
+
+Enable team adoption with shared configuration, shared patterns, and spending controls.
+
+### 33A: Team Configuration
+
+Team-wide settings live in `.orchestray/team-config.json` (version-controlled, NOT gitignored).
+Individual settings in `.orchestray/config.json` (gitignored) override team settings.
+
+**Config Resolution Order:**
+1. Read `.orchestray/team-config.json` (if exists) — team baseline
+2. Read `.orchestray/config.json` (if exists) — individual overrides
+3. Merge: individual values override team values for matching keys
+4. Apply defaults for any keys missing from both files
+
+**When to use team-config.json:**
+- Team-enforced policies: `security_review: "auto"`, `model_floor: "sonnet"`, `tdd_mode: true`
+- Shared CI settings: `ci_command: "npm test"`, `ci_max_retries: 2`
+- Cost controls: `daily_cost_limit_usd: 5.00`, `weekly_cost_limit_usd: 20.00`
+
+**Integration with Section 0:**
+Replace the single config read in Section 0 with the Team Config Resolution Order above.
+Read team-config.json first, then config.json, merge with individual overriding team.
+
+### 33B: Team Patterns
+
+Team-shared patterns live in `.orchestray/team-patterns/` (version-controlled, NOT gitignored).
+Local patterns live in `.orchestray/patterns/` (gitignored).
+
+**Pattern Loading (extends Section 22 and Section 30):**
+When loading patterns for application during orchestration:
+1. Glob `.orchestray/patterns/*.md` — local patterns (personal)
+2. Glob `.orchestray/team-patterns/*.md` — team patterns (shared)
+3. Merge both sets. If a local and team pattern have the same filename, local takes precedence.
+4. Apply matching/prioritization as normal (Section 22b, Section 30)
+
+**Pattern Promotion:**
+Users can promote a proven local pattern to team-shared via `/orchestray:learn promote <pattern-name>`:
+1. Copy `.orchestray/patterns/<name>.md` to `.orchestray/team-patterns/<name>.md`
+2. The pattern is now version-controlled and available to all team members
+3. Remove the local copy to avoid duplication
+
+### 33C: Cost Budgets
+
+Prevent runaway spending with daily and weekly cost limits.
+
+**Config Settings:**
+- `daily_cost_limit_usd`: Maximum daily spend (null = unlimited)
+- `weekly_cost_limit_usd`: Maximum weekly spend (null = unlimited)
+
+**Budget Check Protocol (at orchestration start, before Section 13 decomposition):**
+1. Read `.orchestray/history/*/events.jsonl` for `orchestration_complete` events
+2. Sum `total_cost_usd` for:
+   - Today's date → daily cumulative cost
+   - Current week (Monday to now) → weekly cumulative cost
+3. Compare against limits:
+   - If daily or weekly at 80%+: warn user "Cost budget: $X.XX / $Y.YY daily (ZZ%). Proceed?"
+   - If daily or weekly at 100%+: hard stop. "Daily/weekly cost budget exceeded ($X.XX / $Y.YY). Use `--force` in the prompt to override, or adjust budget via `/orchestray:config`."
+4. Log `budget_check` event: `{"type": "budget_check", "daily_used": <N>, "daily_limit": <N>, "weekly_used": <N>, "weekly_limit": <N>}`
+
+**Integration with Section 26 CI/CD Loop:**
+Before each CI fix retry attempt, re-check budget. If budget exceeded during fix loop, stop fixing and report CI failures to user.

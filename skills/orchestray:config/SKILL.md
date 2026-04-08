@@ -41,7 +41,13 @@ The user wants to view or modify orchestration settings.
   "enable_prescan": true,
   "enable_static_analysis": false,
   "test_timeout": 60,
-  "confirm_before_execute": false
+  "confirm_before_execute": false,
+  "enable_checkpoints": false,
+  "ci_command": null,
+  "ci_max_retries": 2,
+  "post_to_issue": false,
+  "daily_cost_limit_usd": null,
+  "weekly_cost_limit_usd": null
 }
 ```
 
@@ -71,6 +77,12 @@ The user wants to view or modify orchestration settings.
 | `enable_static_analysis` | boolean | `false` | Run detected linters/type checkers before reviewer step. Catches deterministic errors cheaply. |
 | `test_timeout` | number | `60` | Maximum seconds for test suite execution during regression check (1-300) |
 | `confirm_before_execute` | boolean | `false` | Show orchestration preview with task graph and cost estimates before execution |
+| `enable_checkpoints` | boolean | `false` | Pause between parallel groups during orchestration to show results and let the user continue, modify, review, or abort. When `confirm_before_execute` is also true, checkpoints are always enabled regardless of this setting. |
+| `ci_command` | string/null | `null` | Shell command to run as CI check after orchestration (e.g., "npm test", "pytest", "make check"). When set, CI runs automatically after orchestration completes. |
+| `ci_max_retries` | number | `2` | Maximum number of CI fix-retry iterations. When CI fails, PM creates a mini follow-up orchestration to fix failures, up to this many attempts. |
+| `post_to_issue` | boolean | `false` | When orchestrating from a GitHub issue, post an orchestration summary as a comment on the issue after completion. Requires `gh` CLI. |
+| `daily_cost_limit_usd` | number/null | `null` | Maximum daily orchestration spend in USD. At 80% shows warning, at 100% blocks new orchestrations. Set to null for unlimited. |
+| `weekly_cost_limit_usd` | number/null | `null` | Maximum weekly orchestration spend in USD (Monday-Sunday). At 80% shows warning, at 100% blocks new orchestrations. Set to null for unlimited. |
 
 **Config + PM integration:** The PM agent reads these settings at orchestration start to determine scoring behavior. Changes take effect on the next orchestration.
 
@@ -97,6 +109,12 @@ The user wants to view or modify orchestration settings.
    - `enable_static_analysis` must be boolean (true/false)
    - `test_timeout` must be a number between 1 and 300
    - `confirm_before_execute` must be boolean (true/false)
+   - `enable_checkpoints` must be boolean (true/false)
+   - `ci_command` must be null or a non-empty string. If empty string, reject with error: "ci_command must be null (disabled) or a non-empty shell command string."
+   - `ci_max_retries` must be a number between 0 and 5
+   - `post_to_issue` must be boolean (true/false)
+   - `daily_cost_limit_usd` must be null or a positive number. If 0 or negative, reject with error: "daily_cost_limit_usd must be null (no limit) or a positive number."
+   - `weekly_cost_limit_usd` must be null or a positive number. If 0 or negative, reject with error: "weekly_cost_limit_usd must be null (no limit) or a positive number."
    - When setting `enable_agent_teams` to `true`, output guidance: "To complete Agent Teams setup, also add to your Claude Code settings.json: `\"env\": {\"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS\": \"1\"}`". The config setting controls PM decision logic; the env var enables Claude Code's teams API (two-layer enablement).
    - Reject invalid values with a helpful error message
 
@@ -130,6 +148,12 @@ When showing settings:
 | enable_static_analysis | false | Run linters before reviewer step |
 | test_timeout | 60 | Max seconds for test execution (1-300) |
 | confirm_before_execute | false | Show orchestration preview before execution |
+| enable_checkpoints | false | Pause between parallel groups to show results |
+| ci_command | null | CI command to run after orchestration (null = disabled) |
+| ci_max_retries | 2 | Max CI fix-retry iterations (0-5) |
+| post_to_issue | false | Post summary to GitHub issue after orchestration |
+| daily_cost_limit_usd | null | Max daily orchestration spend in USD (null = no limit) |
+| weekly_cost_limit_usd | null | Max weekly orchestration spend in USD (null = no limit) |
 
 Use `/orchestray:config [setting] [value]` to change a setting.
 ```

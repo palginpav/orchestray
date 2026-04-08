@@ -3,6 +3,45 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.4] - 2026-04-08
+
+### Added
+- **GitHub Issue integration** — `/orchestray:issue` skill orchestrates directly from GitHub issues via `gh` CLI. PM auto-detects issue URLs in prompts, creates branches, maps labels to templates, optionally comments results back.
+- **CI/CD feedback loop** — PM runs `ci_command` after orchestration, auto-fixes failures up to `ci_max_retries` attempts. Delivers verified, merge-ready code.
+- **Mid-orchestration checkpoints** — pause between groups to review, modify, or abort. User sees results and controls flow with continue/modify/review/abort commands.
+- **Structured plan editing** — modify tasks during preview: `remove`, `model`, `add`, `swap` commands before execution starts.
+- **User-authored playbooks** — `.orchestray/playbooks/*.md` files inject project-specific instructions into agent delegation prompts. CRUD via `/orchestray:playbooks`.
+- **Correction memory** — PM learns from verify-fix loops. Correction patterns extracted, stored, and applied to prevent repeated mistakes.
+- **Cost prediction** — pre-execution cost estimates from historical data, with post-orchestration accuracy tracking.
+- **Agent checkpointing** — per-agent state persistence for reliable resume after interruptions.
+- **Pattern effectiveness dashboard** — `/orchestray:analytics` now shows pattern applications, correction effectiveness, and learning trends.
+- **Team configuration** — `.orchestray/team-config.json` (version-controlled) sets team-wide policies, overrideable by individual config.
+- **Team patterns** — `.orchestray/team-patterns/` for shared patterns across team members. `/orchestray:learn promote` copies local patterns to team.
+- **Daily/weekly cost budgets** — `daily_cost_limit_usd` and `weekly_cost_limit_usd` with 80% warning and 100% hard stop.
+- Model displayed in all agent status messages (before-group, after-agent, checkpoint results)
+- 7 new config settings: `ci_command`, `ci_max_retries`, `post_to_issue`, `enable_checkpoints`, `daily_cost_limit_usd`, `weekly_cost_limit_usd`
+- 2 new skills: `/orchestray:issue`, `/orchestray:playbooks`
+- PM Sections 25-33 (9 new sections)
+
+### Fixed
+- Installer now copies `agents/pm-reference/` directory (previously missing for all installed users)
+- Complexity hook no longer scores internal Claude Code messages (task-notification, command-name XML)
+- KB index auto-reconciles when empty but files exist in subdirectories
+- Token usage fallback chain: transcript → event payload → turn-based estimation (fixes $0.0000 analytics)
+- History archive structure standardized (mandatory flat layout with events.jsonl)
+- config.json created with all 27 defaults during first-run onboarding
+- plugin.json version and URLs synced with package.json
+- `security-engineer` added to reserved names (was already present)
+- PM section reference updated from "Sections 1-15" to "Sections 1-33"
+
+### Changed
+- PM prompt expanded from 24 to 34 sections (1,836 → 2,330 lines)
+- Config defaults now include all 27 keys (was 17, missing 10 routing/model keys)
+- `usage_source` field added to audit events (transcript/event_payload/estimated)
+- Session ID tracked in auto-trigger markers for staleness validation
+- Pattern loading now searches both local and team-patterns directories
+- Cost budget check runs before task decomposition
+
 ## [2.0.3] - 2026-04-08
 
 ### Added

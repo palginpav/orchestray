@@ -139,6 +139,26 @@ process.stdin.on('end', () => {
       // Transcript unavailable -- all usage fields remain 0, turnsUsed remains 0
     }
 
+    let usageSource = 'transcript';
+
+    // Fallback: if transcript yielded zero tokens, check hook event payload
+    if (totalUsage.input_tokens === 0 && totalUsage.output_tokens === 0) {
+      const eventUsage = event.usage || {};
+      if (eventUsage.input_tokens || eventUsage.output_tokens) {
+        totalUsage.input_tokens = eventUsage.input_tokens || 0;
+        totalUsage.output_tokens = eventUsage.output_tokens || 0;
+        totalUsage.cache_read_input_tokens = eventUsage.cache_read_input_tokens || 0;
+        totalUsage.cache_creation_input_tokens = eventUsage.cache_creation_input_tokens || 0;
+        usageSource = 'event_payload';
+      }
+      // Second fallback: estimate from turns if we have turn count but no tokens
+      if (totalUsage.input_tokens === 0 && totalUsage.output_tokens === 0 && turnsUsed > 0) {
+        totalUsage.input_tokens = turnsUsed * 2000;
+        totalUsage.output_tokens = turnsUsed * 1000;
+        usageSource = 'estimated';
+      }
+    }
+
     // Ensure audit directory exists
     fs.mkdirSync(auditDir, { recursive: true });
 
@@ -185,6 +205,7 @@ process.stdin.on('end', () => {
         task_subject: event.task_subject || null,
         team_name: event.team_name || null,
         usage: totalUsage,
+        usage_source: usageSource,
         estimated_cost_usd: estimatedCostUsd,
         estimated_cost_opus_baseline_usd: estimatedCostOpusBaselineUsd,
         model_used: resolvedModel,
@@ -200,6 +221,7 @@ process.stdin.on('end', () => {
         session_id: event.session_id || null,
         last_message_preview: (event.last_assistant_message || '').slice(0, 200),
         usage: totalUsage,
+        usage_source: usageSource,
         estimated_cost_usd: estimatedCostUsd,
         estimated_cost_opus_baseline_usd: estimatedCostOpusBaselineUsd,
         transcript_path: transcriptPath,

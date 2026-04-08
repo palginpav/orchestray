@@ -1,10 +1,10 @@
 {
   "name": "orchestray",
   "description": "Multi-agent orchestration for complex tasks — automatically decomposes work across specialized AI agents",
-  "version": "0.1.0",
+  "version": "2.0.4",
   "author": {
-    "name": "Orchestray"
+    "name": "palginpav"
   },
-  "homepage": "https://github.com/orchestray/orchestray",
-  "repository": "https://github.com/orchestray/orchestray"
+  "homepage": "https://github.com/palginpav/orchestray",
+  "repository": "https://github.com/palginpav/orchestray"
 }
