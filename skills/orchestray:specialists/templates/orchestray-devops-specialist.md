@@ -5,7 +5,7 @@ description: CI/CD pipeline configuration, Docker/container setup, infrastructur
 tools: Read, Glob, Grep, Bash, Write, Edit
 model: inherit
 maxTurns: 30
-color: cyan
+color: yellow
 ---
 
 # DevOps Specialist — Specialist Agent

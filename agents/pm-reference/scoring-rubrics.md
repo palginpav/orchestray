@@ -80,3 +80,52 @@ results (reviewer rejects in Section 18):
 4. Track escalation count per subtask. Maximum 2 escalations per subtask
    (haiku -> sonnet -> opus).
 5. Log each escalation in the routing outcome event.
+
+---
+
+## Adaptive Threshold Calibration
+
+The PM's effective complexity threshold adjusts based on historical signals from past
+orchestrations. This self-calibration makes Orchestray smarter over time without
+requiring user configuration changes.
+
+### Reading Threshold Signals
+
+During Section 0 scoring, before applying the threshold:
+
+1. Read `.orchestray/patterns/` for files matching the `threshold` category
+   (type: "threshold_signal" in the JSON content)
+2. Count recent signals (last 10 orchestrations):
+   - `threshold_too_low` signals: orchestrations that were over-orchestrated
+   - `threshold_too_high` signals: solo tasks that should have been orchestrated
+3. Apply adjustment rules below
+
+### Adjustment Rules
+
+- If 3+ `threshold_too_low` signals in last 10: effective threshold = config threshold + 1
+- If 3+ `threshold_too_high` signals in last 10: effective threshold = config threshold - 1
+- If signals are mixed or fewer than 3 of either: no adjustment (use config threshold)
+- Maximum adjustment: ±1 from the configured threshold
+- Never go below 2 or above 10 (hard bounds)
+
+### Damping
+
+- Require 3 consistent signals before adjusting (prevents oscillation from outliers)
+- Signals older than 30 days are ignored (project characteristics change)
+- Each signal is used only once for calibration (mark as consumed after reading)
+
+### Transparency
+
+When an adjustment is active, include it in the complexity announcement:
+"Complexity: Medium (5/12, effective threshold: 5, adjusted from 4 based on 3 over-orchestration signals)"
+
+When no adjustment, the standard announcement:
+"Complexity: Medium (5/12)"
+
+### Integration Points
+
+- **Section 0 (Auto-Trigger Protocol):** Read signals and compute effective threshold
+  before scoring comparison
+- **Section 15 Step 4 (Threshold Calibration Signal):** Write new signal after each
+  orchestration completes
+- **`/orchestray:analytics`:** Display current effective threshold and signal history

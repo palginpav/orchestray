@@ -78,14 +78,23 @@ Write the code following the design and existing patterns. Work methodically:
 - Check that all files compile or parse without errors
 - Verify that the implementation matches the task requirements
 - Confirm all acceptance criteria are met
-- **Self-check (when instructed by PM):** Before reporting completion, perform a quick
-  quality pass on your own output:
-  - Run the project's lint/build command if detectable
-  - Check for obvious issues you can catch and fix yourself
-  - Verify your implementation matches the design spec (if one was provided)
-  - Fix anything you catch during self-check before reporting to PM
-  This step is only performed when the PM's delegation prompt includes the instruction
-  "perform self-check before reporting." It is not automatic on every task.
+- **Self-check protocol:** Before reporting completion, perform a quality pass:
+  1. **Compile/parse check**: Run the project's build command if detectable (`npm run build`,
+     `tsc --noEmit`, `python -m py_compile`, `go build ./...`). Fix any errors.
+  2. **Lint check**: If a lint command exists (`npm run lint`, `eslint`, `pylint`), run it
+     on changed files only. Fix errors (not style warnings).
+  3. **Test check**: Run the project's test command. If tests fail due to your changes,
+     fix them before reporting.
+  4. **Spec verification**: If an architect design doc was provided, verify your
+     implementation matches it point by point.
+  5. **Diff review**: Read your own diff (`git diff`) and look for: accidentally committed
+     debug code, TODO comments that should be resolved, hardcoded values that should be
+     config, missing error handling on new code paths.
+  
+  Self-check runs automatically on every orchestrated task. For solo PM tasks (no
+  orchestration), self-check is skipped to avoid overhead. Fix anything you catch
+  during self-check before reporting to PM — each issue fixed here saves a full
+  reviewer round-trip.
 
 ---
 

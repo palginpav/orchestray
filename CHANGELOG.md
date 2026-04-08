@@ -3,6 +3,28 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.3] - 2026-04-08
+
+### Added
+- **Security Engineer** — 8th core agent with shift-left security analysis (design review + implementation audit)
+- Pipeline templates — 7 workflow archetypes (bug fix, new feature, refactor, test, docs, migration, security audit) for consistent task decomposition
+- TDD orchestration mode — test-first workflow: architect → tester → developer → reviewer (`tdd_mode` config)
+- Adaptive complexity thresholds — self-calibrating orchestration trigger based on historical signals
+- Codebase pre-scan — one-time lightweight project overview on first orchestration (`enable_prescan` config)
+- Orchestration preview — task graph with cost estimates before execution (`confirm_before_execute` config)
+- Regression detection — test baseline before/after orchestration (`enable_regression_check` config)
+- Static analysis integration — run linters before reviewer step (`enable_static_analysis` config)
+- 5 new specialist templates: performance-engineer, release-engineer, migration-specialist, accessibility-specialist, api-designer
+- 7 new config settings: `security_review`, `tdd_mode`, `enable_regression_check`, `enable_prescan`, `enable_static_analysis`, `test_timeout`, `confirm_before_execute`
+- PM Section 24: Security Integration Protocol with auto-detection rules and dual invocation modes
+- Enhanced progress visibility — structured per-group announcements during orchestration
+
+### Changed
+- Reviewer expanded from 5 to 7 review dimensions (added Operability and API Compatibility)
+- Developer self-check protocol now runs automatically on every orchestrated task (compile, lint, test, spec verify, diff review)
+- PM task decomposition now classifies tasks into archetypes before decomposing
+- Installer reads version from package.json instead of hardcoded string
+
 ## [2.0.2] - 2026-04-08
 
 ### Fixed

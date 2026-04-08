@@ -34,7 +34,14 @@ The user wants to view or modify orchestration settings.
   "haiku_max_score": 3,
   "opus_min_score": 6,
   "enable_agent_teams": false,
-  "max_cost_usd": null
+  "max_cost_usd": null,
+  "security_review": "auto",
+  "tdd_mode": false,
+  "enable_regression_check": false,
+  "enable_prescan": true,
+  "enable_static_analysis": false,
+  "test_timeout": 60,
+  "confirm_before_execute": false
 }
 ```
 
@@ -57,6 +64,13 @@ The user wants to view or modify orchestration settings.
 | `opus_min_score` | number | `6` | Minimum complexity score for Opus routing (0-12). Tasks scoring at or above this get Opus |
 | `enable_agent_teams` | boolean | `false` | Enable Agent Teams mode for parallel orchestration (experimental). When true, PM may use Agent Teams for 3+ parallel tasks with inter-agent communication. |
 | `max_cost_usd` | number/null | `null` | Maximum cost per orchestration in USD. null = no limit. PM enforces budget when set. |
+| `security_review` | string | `"auto"` | Security review mode: "auto" (PM auto-invokes on security-sensitive tasks), "manual" (user requests), "off" (disabled) |
+| `tdd_mode` | boolean | `false` | Prefer test-driven development orchestration flow for new features. When true, PM uses: architect → tester → developer → reviewer |
+| `enable_regression_check` | boolean | `false` | Run test suite before and after orchestration to detect regressions. Requires project to have tests. |
+| `enable_prescan` | boolean | `true` | Lightweight codebase pre-scan on first orchestration per project. Creates codebase overview in KB. |
+| `enable_static_analysis` | boolean | `false` | Run detected linters/type checkers before reviewer step. Catches deterministic errors cheaply. |
+| `test_timeout` | number | `60` | Maximum seconds for test suite execution during regression check (1-300) |
+| `confirm_before_execute` | boolean | `false` | Show orchestration preview with task graph and cost estimates before execution |
 
 **Config + PM integration:** The PM agent reads these settings at orchestration start to determine scoring behavior. Changes take effect on the next orchestration.
 
@@ -76,6 +90,13 @@ The user wants to view or modify orchestration settings.
    - `opus_min_score` must be greater than `haiku_max_score` -- reject with error: "opus_min_score must be greater than haiku_max_score to avoid routing ambiguity."
    - `enable_agent_teams` must be boolean (true/false)
    - `max_cost_usd` must be null or a positive number. If 0 or negative, reject with error: "max_cost_usd must be null (no limit) or a positive number."
+   - `security_review` must be one of: "auto", "manual", "off"
+   - `tdd_mode` must be boolean (true/false)
+   - `enable_regression_check` must be boolean (true/false)
+   - `enable_prescan` must be boolean (true/false)
+   - `enable_static_analysis` must be boolean (true/false)
+   - `test_timeout` must be a number between 1 and 300
+   - `confirm_before_execute` must be boolean (true/false)
    - When setting `enable_agent_teams` to `true`, output guidance: "To complete Agent Teams setup, also add to your Claude Code settings.json: `\"env\": {\"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS\": \"1\"}`". The config setting controls PM decision logic; the env var enables Claude Code's teams API (two-layer enablement).
    - Reject invalid values with a helpful error message
 
@@ -102,6 +123,13 @@ When showing settings:
 | opus_min_score | 6 | Min complexity score for Opus routing (0-12) |
 | enable_agent_teams | false | Enable Agent Teams mode (experimental) |
 | max_cost_usd | null | Max cost per orchestration in USD (null = no limit) |
+| security_review | auto | Security review mode (auto/manual/off) |
+| tdd_mode | false | Prefer TDD orchestration flow for new features |
+| enable_regression_check | false | Run test suite before/after orchestration |
+| enable_prescan | true | Codebase pre-scan on first orchestration |
+| enable_static_analysis | false | Run linters before reviewer step |
+| test_timeout | 60 | Max seconds for test execution (1-300) |
+| confirm_before_execute | false | Show orchestration preview before execution |
 
 Use `/orchestray:config [setting] [value]` to change a setting.
 ```

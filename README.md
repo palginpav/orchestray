@@ -10,8 +10,11 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 
 ### Key features
 
-- **Auto-trigger** — complexity scoring detects when orchestration helps
+- **Auto-trigger** — complexity scoring detects when orchestration helps, self-calibrates over time
 - **Smart model routing** — assigns Haiku/Sonnet/Opus per subtask based on complexity, tracks cost savings
+- **Shift-left security** — dedicated Security Engineer agent auto-invoked on security-sensitive tasks
+- **Pipeline templates** — 7 workflow archetypes for consistent decomposition (bug fix, feature, refactor, migration, etc.)
+- **TDD mode** — test-first orchestration: architect → tester → developer → reviewer
 - **Parallel execution** — independent subtasks run concurrently via subagents
 - **Verify-fix loops** — reviewer failures route back to developer with specific feedback
 - **Persistent specialists** — dynamic agents that prove useful get saved for reuse
@@ -63,21 +66,25 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | **PM** | Orchestrator — decomposes tasks, assigns work, monitors progress, routes models |
 | **Architect** | Design-only — produces design documents and technical decisions |
 | **Developer** | Implements code changes |
-| **Reviewer** | Read-only review across correctness, quality, security, performance |
+| **Reviewer** | Read-only review across 7 dimensions: correctness, quality, security, performance, docs, operability, API compatibility |
+| **Security Engineer** | Shift-left security — design threat review and implementation audit (read-only) |
 | **Debugger** | Systematic bug investigation and root cause analysis (read-only) |
 | **Tester** | Dedicated test writing, coverage analysis, and test strategy |
 | **Documenter** | Documentation creation and maintenance |
-| **Specialists** | Dynamic or persistent agents for domain-specific tasks |
+| **Specialists** | Dynamic or persistent agents for domain-specific tasks (9 templates included) |
 
 ## Configuration
 
 Run `/orchestray:config` to view all settings. Key options:
 
 ```
-complexity_threshold    Score threshold for auto-orchestration (default: 6)
+complexity_threshold    Score threshold for auto-orchestration (default: 4)
 auto_review             Auto-spawn reviewer after developer (default: true)
 model_floor             Minimum model tier: haiku/sonnet/opus (default: sonnet)
 force_model             Override all routing with a specific model (default: null)
+security_review         Security review mode: auto/manual/off (default: auto)
+tdd_mode                Prefer TDD orchestration flow (default: false)
+confirm_before_execute  Show preview before execution (default: false)
 enable_agent_teams      Enable Agent Teams mode (default: false)
 ```
 

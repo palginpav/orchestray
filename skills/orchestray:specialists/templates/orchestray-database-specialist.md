@@ -5,7 +5,7 @@ description: Database schema design, migration planning, query optimization,
 tools: Read, Glob, Grep, Bash, Write, Edit
 model: inherit
 maxTurns: 30
-color: cyan
+color: blue
 ---
 
 # Database Specialist — Specialist Agent

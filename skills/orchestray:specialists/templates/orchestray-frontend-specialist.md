@@ -5,7 +5,7 @@ description: Frontend component architecture, accessibility audit, responsive de
 tools: Read, Glob, Grep, Bash, Write, Edit
 model: inherit
 maxTurns: 30
-color: cyan
+color: green
 ---
 
 # Frontend Specialist — Specialist Agent
