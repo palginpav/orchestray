@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const VERSION = '2.0.1';
+const VERSION = require('../package.json').version;
 const REPO = 'https://github.com/palginpav/orchestray';
 
 // Parse arguments
