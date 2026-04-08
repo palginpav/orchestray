@@ -16,7 +16,7 @@ The user wants an audit report of a completed orchestration.
    - If `$ARGUMENTS` is provided: Find the matching orchestration in `.orchestray/history/`
    - If no history exists: Report "No completed orchestrations found. Run `/orchestray:run [task]` first."
 
-2. **Read the orchestration record**: Parse the JSON file from history. Also read `.orchestray/history/{orchestration}/events.jsonl` if it exists. Parse each line as JSON. Collect all events for this orchestration.
+2. **Read the orchestration record**: Parse the JSON file from history. Also read `.orchestray/history/{orchestration}/events.jsonl` if it exists. Parse each line as JSON. For each parsed event, normalize the type field: use `event.type || event.event` as the canonical event type. This ensures backward compatibility with pre-v2.0.2 events that used `"event"` instead of `"type"` as the key name. Collect all events for this orchestration.
 
 3. **Generate the report** in this format:
 

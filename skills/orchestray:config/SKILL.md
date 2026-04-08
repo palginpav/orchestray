@@ -33,7 +33,8 @@ The user wants to view or modify orchestration settings.
   "force_model": null,
   "haiku_max_score": 3,
   "opus_min_score": 6,
-  "enable_agent_teams": false
+  "enable_agent_teams": false,
+  "max_cost_usd": null
 }
 ```
 
@@ -55,6 +56,7 @@ The user wants to view or modify orchestration settings.
 | `haiku_max_score` | number | `3` | Maximum complexity score for Haiku routing (0-12). Tasks scoring above this get Sonnet or higher |
 | `opus_min_score` | number | `6` | Minimum complexity score for Opus routing (0-12). Tasks scoring at or above this get Opus |
 | `enable_agent_teams` | boolean | `false` | Enable Agent Teams mode for parallel orchestration (experimental). When true, PM may use Agent Teams for 3+ parallel tasks with inter-agent communication. |
+| `max_cost_usd` | number/null | `null` | Maximum cost per orchestration in USD. null = no limit. PM enforces budget when set. |
 
 **Config + PM integration:** The PM agent reads these settings at orchestration start to determine scoring behavior. Changes take effect on the next orchestration.
 
@@ -73,6 +75,7 @@ The user wants to view or modify orchestration settings.
    - `opus_min_score` must be a number between 0 and 12
    - `opus_min_score` must be greater than `haiku_max_score` -- reject with error: "opus_min_score must be greater than haiku_max_score to avoid routing ambiguity."
    - `enable_agent_teams` must be boolean (true/false)
+   - `max_cost_usd` must be null or a positive number. If 0 or negative, reject with error: "max_cost_usd must be null (no limit) or a positive number."
    - When setting `enable_agent_teams` to `true`, output guidance: "To complete Agent Teams setup, also add to your Claude Code settings.json: `\"env\": {\"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS\": \"1\"}`". The config setting controls PM decision logic; the env var enables Claude Code's teams API (two-layer enablement).
    - Reject invalid values with a helpful error message
 
@@ -98,6 +101,7 @@ When showing settings:
 | haiku_max_score | 3 | Max complexity score for Haiku routing (0-12) |
 | opus_min_score | 6 | Min complexity score for Opus routing (0-12) |
 | enable_agent_teams | false | Enable Agent Teams mode (experimental) |
+| max_cost_usd | null | Max cost per orchestration in USD (null = no limit) |
 
 Use `/orchestray:config [setting] [value]` to change a setting.
 ```

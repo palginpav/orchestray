@@ -6,6 +6,7 @@ description: Implements code changes based on task descriptions or architect des
   Does NOT make architectural decisions -- follows designs from the architect agent.
 tools: Read, Glob, Grep, Bash, Write, Edit
 model: inherit
+effort: medium
 memory: project
 maxTurns: 50
 color: green

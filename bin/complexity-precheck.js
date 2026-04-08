@@ -103,8 +103,23 @@ function main() {
       const data = JSON.parse(input);
       const prompt = data.message || data.prompt || '';
 
+      // Read config once — used for force_solo, threshold, and verbose
+      let config = {};
+      try {
+        const configPath = path.join(data.cwd || process.cwd(), '.orchestray', 'config.json');
+        if (fs.existsSync(configPath)) {
+          config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        }
+      } catch (_e) { /* ignore config errors */ }
+
+      const forceSolo = config.force_solo || false;
+      const threshold = config.complexity_threshold || 4;
+      const verbose = config.verbose || false;
+
       // Debug: log what we received and scoring result
-      try { fs.appendFileSync(debugLog, `  Keys: ${Object.keys(data).join(', ')}\n  Prompt (first 200): ${prompt.substring(0, 200)}\n`); } catch(e) {}
+      if (verbose) {
+        try { fs.appendFileSync(debugLog, `  Keys: ${Object.keys(data).join(', ')}\n  Prompt (first 200): ${prompt.substring(0, 200)}\n`); } catch(e) {}
+      }
 
       // Skip if prompt is a slash command (already routed)
       if (prompt.trim().startsWith('/')) {
@@ -118,38 +133,38 @@ function main() {
         return;
       }
 
-      // Check if .orchestray/ config has force_solo
-      try {
-        const configPath = path.join(process.cwd(), '.orchestray', 'config.json');
-        if (fs.existsSync(configPath)) {
-          const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-          if (config.force_solo) {
-            process.stdout.write(JSON.stringify({ continue: true }));
-            return;
-          }
-        }
-      } catch (e) { /* ignore config errors */ }
+      // Check if config has force_solo
+      if (forceSolo) {
+        process.stdout.write(JSON.stringify({ continue: true }));
+        return;
+      }
 
       const score = scoreComplexity(prompt);
-      try { fs.appendFileSync(debugLog, `  Score: ${score}\n`); } catch(e) {}
-
-      // Read threshold from config or use default (4)
-      let threshold = 4;
-      try {
-        const configPath = path.join(process.cwd(), '.orchestray', 'config.json');
-        if (fs.existsSync(configPath)) {
-          const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-          if (config.complexity_threshold) threshold = config.complexity_threshold;
-        }
-      } catch (e) { /* use default */ }
+      if (verbose) {
+        try { fs.appendFileSync(debugLog, `  Score: ${score}\n`); } catch(e) {}
+      }
 
       if (score >= threshold) {
         // Write marker file — PM's Section 0 checks for this and triggers orchestration
-        try { fs.appendFileSync(debugLog, `  Action: writing orchestrate marker\n`); } catch(e) {}
+        if (verbose) {
+          try { fs.appendFileSync(debugLog, `  Action: writing orchestrate marker\n`); } catch(e) {}
+        }
 
         const cwd = data.cwd || process.cwd();
         const markerDir = path.join(cwd, '.orchestray');
         const markerPath = path.join(markerDir, 'auto-trigger.json');
+
+        // Before writing new marker, check for stale ones
+        try {
+          if (fs.existsSync(markerPath)) {
+            const stat = fs.statSync(markerPath);
+            const ageMs = Date.now() - stat.mtimeMs;
+            if (ageMs > 5 * 60 * 1000) { // 5 minutes
+              fs.unlinkSync(markerPath); // Delete stale marker
+            }
+          }
+        } catch (_e) { /* ignore */ }
+
         try {
           fs.mkdirSync(markerDir, { recursive: true });
           fs.writeFileSync(markerPath, JSON.stringify({
@@ -159,7 +174,9 @@ function main() {
             timestamp: new Date().toISOString()
           }));
         } catch(e) {
-          try { fs.appendFileSync(debugLog, `  Marker write error: ${e.message}\n`); } catch(e2) {}
+          if (verbose) {
+            try { fs.appendFileSync(debugLog, `  Marker write error: ${e.message}\n`); } catch(e2) {}
+          }
         }
 
         // Let the prompt through — PM will detect the marker and orchestrate
@@ -168,7 +185,9 @@ function main() {
           additionalContext: `ORCHESTRAY: Complex task detected (score ${score}/12). Check .orchestray/auto-trigger.json and follow Section 0 Medium+ Task Path. Orchestrate this task — do NOT handle it directly.`
         }));
       } else {
-        try { fs.appendFileSync(debugLog, `  Action: pass-through (below threshold)\n`); } catch(e) {}
+        if (verbose) {
+          try { fs.appendFileSync(debugLog, `  Action: pass-through (below threshold)\n`); } catch(e) {}
+        }
         // Simple task — pass through unchanged
         process.stdout.write(JSON.stringify({ continue: true }));
       }

@@ -2,7 +2,7 @@
 name: kb
 description: View and manage the knowledge base
 disable-model-invocation: true
-argument-hint: "[list|view ID|add CATEGORY TOPIC|clean|stats]"
+argument-hint: "[list|view ID|add CATEGORY TOPIC|clean|stats|reconcile]"
 ---
 
 # Knowledge Base Management
@@ -17,6 +17,7 @@ The user wants to view or manage the Orchestray knowledge base.
    - If starts with `add`: Create a new KB entry with the given category and topic.
    - If `clean`: Remove all stale entries past their TTL.
    - If `stats`: Show KB statistics.
+   - If `reconcile`: Scan KB directories and rebuild index from existing files.
 
 2. **Read index**: Read `.orchestray/kb/index.json`. If the file or directory does not exist, report: "No knowledge base found. The KB is populated automatically during orchestrations when agents write findings." and stop.
 
@@ -124,3 +125,26 @@ Read `index.json` and compute:
 ```
 
 If no entries: "Knowledge base is empty."
+
+### Reconcile Operation
+
+Scans all KB directories and ensures `index.json` accurately reflects existing files.
+
+1. Read current `index.json` entries (may be empty).
+2. Scan `.orchestray/kb/facts/`, `.orchestray/kb/decisions/`, `.orchestray/kb/artifacts/` using Glob for `*.md` files.
+3. For each `.md` file found:
+   a. Check if an index entry exists with a matching `file` field.
+   b. If no matching entry: Create a new index entry by reading the file:
+      - `id`: `{category}-{filename-without-extension}`
+      - `category`: derived from parent directory name (facts/decisions/artifacts)
+      - `topic`: derived from filename (replace hyphens with spaces, title case)
+      - `source_agent`: `"reconciled"`
+      - `created_at`: file modification date (or current date if unavailable)
+      - `updated_at`: current date
+      - `ttl_days`: category default (facts=14, decisions=30, artifacts=7)
+      - `stale`: false
+      - `file`: `{category}/{filename}`
+      - `summary`: first line of file content (up to 100 characters)
+4. For each existing index entry: Check if the referenced file still exists. If not, remove the entry from the index.
+5. Write the updated `index.json`.
+6. Report: "Reconciled KB index: {added} entries added, {removed} entries removed, {unchanged} entries unchanged."

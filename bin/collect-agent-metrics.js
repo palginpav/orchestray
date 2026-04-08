@@ -69,7 +69,9 @@ function estimateCost(usage, rates) {
   const outputCost = (usage.output_tokens / 1_000_000) * rates.output;
   // Cache reads are ~90% cheaper than regular input tokens
   const cacheReadCost = (usage.cache_read_input_tokens / 1_000_000) * rates.input * 0.1;
-  const total = inputCost + outputCost + cacheReadCost;
+  // Cache creation costs 25% more than regular input tokens
+  const cacheCreateCost = (usage.cache_creation_input_tokens / 1_000_000) * rates.input * 1.25;
+  const total = inputCost + outputCost + cacheReadCost + cacheCreateCost;
   return Math.round(total * 1_000_000) / 1_000_000; // 6 decimal places
 }
 
@@ -119,12 +121,14 @@ process.stdin.on('end', () => {
         for (const line of lines) {
           try {
             const entry = JSON.parse(line);
-            if (entry.role === 'assistant') turnsUsed++;
-            if (entry.usage) {
-              totalUsage.input_tokens += entry.usage.input_tokens || 0;
-              totalUsage.output_tokens += entry.usage.output_tokens || 0;
-              totalUsage.cache_read_input_tokens += entry.usage.cache_read_input_tokens || 0;
-              totalUsage.cache_creation_input_tokens += entry.usage.cache_creation_input_tokens || 0;
+            const role = entry.role || entry.type || (entry.message && entry.message.role);
+            if (role === 'assistant') turnsUsed++;
+            const usage = entry.usage || (entry.message && entry.message.usage);
+            if (usage) {
+              totalUsage.input_tokens += usage.input_tokens || 0;
+              totalUsage.output_tokens += usage.output_tokens || 0;
+              totalUsage.cache_read_input_tokens += usage.cache_read_input_tokens || 0;
+              totalUsage.cache_creation_input_tokens += usage.cache_creation_input_tokens || 0;
             }
           } catch (_e) {
             // Skip malformed lines silently

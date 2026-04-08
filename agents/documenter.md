@@ -5,6 +5,7 @@ description: Creates and maintains project documentation. Writes READMEs, API
   Reads code and design docs to produce clear documentation for different audiences.
 tools: Read, Glob, Grep, Bash, Write, Edit
 model: inherit
+effort: low
 memory: project
 maxTurns: 30
 color: white

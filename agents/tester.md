@@ -5,6 +5,7 @@ description: Writes comprehensive tests and develops test strategies. Creates un
   and improves test infrastructure.
 tools: Read, Glob, Grep, Bash, Write, Edit
 model: inherit
+effort: medium
 memory: project
 maxTurns: 40
 color: yellow

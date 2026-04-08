@@ -21,6 +21,8 @@ The user wants to see aggregate performance analytics across orchestration histo
 
 4. **Collect data**: For each orchestration directory, read `.orchestray/history/{orch-id}/events.jsonl`. Parse each line as JSON and collect events by type:
 
+   **Event type normalization:** When parsing each event line, normalize the event type field: `const eventType = event.type || event.event;`. Use `eventType` (not `event.type`) for all subsequent type checks. This handles both legacy (`"event": "orchestration_start"`) and current (`"type": "orchestration_start"`) formats.
+
    - `orchestration_start`: extract `task` (original prompt), `complexity_score`, `complexity_level`.
    - `orchestration_complete`: extract `status` (success/partial/failure), `total_cost_usd`, `duration_seconds`.
    - `agent_stop` / `task_completed_metrics`: extract `agent_type`, `estimated_cost_usd`, `model_used`.
@@ -49,6 +51,12 @@ The user wants to see aggregate performance analytics across orchestration histo
    - Group all `agent_stop` / `task_completed_metrics` events by `agent_type`.
    - For each type: total cost, average cost per invocation, invocation count.
    - Sort by total cost descending.
+
+   **Turns by agent type:**
+   - Group all `agent_stop` / `task_completed_metrics` events by `agent_type`.
+   - For each type: average `turns_used`, min `turns_used`, max `turns_used`, invocation count.
+   - Sort by average turns descending.
+   - If all `turns_used` values are 0 or missing, show "No turns data available (pre-v2.0.1 orchestrations)."
 
    **Most expensive agent type:** The agent type with the highest total cost.
 
@@ -89,6 +97,12 @@ The user wants to see aggregate performance analytics across orchestration histo
    | Agent | Total Cost | Avg Cost | Invocations |
    |-------|------------|----------|-------------|
    | {type} | ~${total} | ~${avg} | {count} |
+   ...
+
+   ## Turns by Agent Type
+   | Agent | Avg Turns | Min | Max | Invocations |
+   |-------|-----------|-----|-----|-------------|
+   | {type} | {avg_turns} | {min_turns} | {max_turns} | {count} |
    ...
 
    ## Model Routing

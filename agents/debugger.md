@@ -5,6 +5,7 @@ description: Systematically investigates bugs and failures. Reproduces issues,
   code -- produces diagnosis reports that the developer implements.
 tools: Read, Glob, Grep, Bash
 model: inherit
+effort: high
 memory: project
 maxTurns: 40
 color: red

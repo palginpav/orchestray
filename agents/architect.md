@@ -7,6 +7,7 @@ description: Analyzes requirements and designs implementation approach.
   developer agent implements.
 tools: Read, Glob, Grep, Bash, Write
 model: inherit
+effort: high
 memory: project
 maxTurns: 30
 color: blue

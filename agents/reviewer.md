@@ -6,6 +6,7 @@ description: Validates implementation quality across correctness, code quality,
   code -- reports issues for the developer to fix.
 tools: Read, Glob, Grep, Bash
 model: inherit
+effort: medium
 memory: project
 maxTurns: 30
 color: orange
