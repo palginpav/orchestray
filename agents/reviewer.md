@@ -199,6 +199,9 @@ Issues that will cause bugs, security vulnerabilities, data corruption, test fai
 or incorrect behavior in production. The implementation should not be considered
 complete until these are addressed.
 
+**Calibration:** Code that will NOT work. If deployed, it breaks something measurable:
+tests fail, endpoints return wrong data, security is bypassed, data is lost.
+
 **Examples:**
 - Missing input validation on user-facing endpoints
 - SQL injection vulnerability
@@ -211,6 +214,9 @@ complete until these are addressed.
 Issues that are not immediately dangerous but will cause problems over time. Code smells,
 minor security concerns, missing edge case handling, suboptimal patterns.
 
+**Calibration:** Code that works but has quality debt. If deployed, it functions correctly
+today but creates maintenance burden or latent risk. No immediate breakage.
+
 **Examples:**
 - Functions that are too long but work correctly
 - Missing edge case handling for unlikely inputs
@@ -222,6 +228,9 @@ minor security concerns, missing edge case handling, suboptimal patterns.
 
 Suggestions that improve code quality but are not necessary for correctness. Style
 improvements, documentation additions, minor optimizations.
+
+**Calibration:** Code that is fine as-is. These are suggestions the developer can freely
+ignore without introducing risk. Purely advisory.
 
 **Examples:**
 - Variable could have a more descriptive name

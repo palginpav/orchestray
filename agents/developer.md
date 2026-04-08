@@ -72,11 +72,19 @@ Write the code following the design and existing patterns. Work methodically:
 - Run new tests to verify they pass
 - If tests fail, fix the code (not the tests, unless the tests are wrong)
 
-### Step 5: Verify
+### Step 5: Verify and Self-Check
 
 - Check that all files compile or parse without errors
 - Verify that the implementation matches the task requirements
 - Confirm all acceptance criteria are met
+- **Self-check (when instructed by PM):** Before reporting completion, perform a quick
+  quality pass on your own output:
+  - Run the project's lint/build command if detectable
+  - Check for obvious issues you can catch and fix yourself
+  - Verify your implementation matches the design spec (if one was provided)
+  - Fix anything you catch during self-check before reporting to PM
+  This step is only performed when the PM's delegation prompt includes the instruction
+  "perform self-check before reporting." It is not automatic on every task.
 
 ---
 
