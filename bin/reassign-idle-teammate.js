@@ -54,9 +54,10 @@ process.stdin.on('end', () => {
         /status:\s*(pending|not started)/i.test(taskGraph);
 
       if (hasPendingTasks) {
+        process.stdout.write(JSON.stringify({ continue: false }));
         process.stderr.write(
           'Unassigned tasks remain in the orchestration. ' +
-          'Check task graph for available work before stopping.'
+          'Check ' + taskGraphPath + ' for available work before stopping.'
         );
         process.exit(2);
       }
