@@ -129,25 +129,25 @@ function main() {
           prompt.includes('<command-name>') ||
           prompt.includes('<command-message>')) {
         process.stdout.write(JSON.stringify({ continue: true }));
-        return;
+        process.exit(0);
       }
 
       // Skip if prompt is a slash command (already routed)
       if (prompt.trim().startsWith('/')) {
         process.stdout.write(JSON.stringify({ continue: true }));
-        return;
+        process.exit(0);
       }
 
       // Skip very short prompts (questions, chat)
       if (prompt.trim().split(/\s+/).length < 5) {
         process.stdout.write(JSON.stringify({ continue: true }));
-        return;
+        process.exit(0);
       }
 
       // Check if config has force_solo
       if (forceSolo) {
         process.stdout.write(JSON.stringify({ continue: true }));
-        return;
+        process.exit(0);
       }
 
       const score = scoreComplexity(prompt);

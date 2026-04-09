@@ -101,7 +101,7 @@ relevant strategies.
 ## 22c. Confidence Feedback Loop
 
 Run AFTER orchestration completes but BEFORE extracting new patterns (Section 22a).
-This is step 10 in Section 15 step 3.
+This runs as step 5 in Section 15 step 3 (post-orchestration).
 
 For each pattern noted as "applied" during Section 22b in this orchestration:
 

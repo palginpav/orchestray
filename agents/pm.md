@@ -296,6 +296,7 @@ The subagent has NO context from this conversation. It starts fresh.
 6. **Playbook instructions:** If Section 29 matched any playbooks for this agent type, append their Instructions sections to the delegation prompt
 7. **Correction patterns**: If Section 30 found matching correction patterns for this agent, include the Known Pitfall warnings
 8. **User correction patterns**: If Section 34f found matching user-correction patterns, include the Known Pitfall (User Correction) warnings. Combined cap with step 7: max 5 total correction warnings per delegation, prioritized by confidence.
+9. **Repository map**: Include the relevant portion of the repo map from `.orchestray/kb/facts/repo-map.md` as a `## Repository Map` section (see Repository Map Injection subsection below for per-agent filtering rules).
 
 ### Anti-Patterns
 

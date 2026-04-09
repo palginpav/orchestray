@@ -126,10 +126,10 @@ process.stdin.on('end', () => {
             if (role === 'assistant') turnsUsed++;
             const usage = entry.usage || (entry.message && entry.message.usage);
             if (usage) {
-              totalUsage.input_tokens += usage.input_tokens || 0;
-              totalUsage.output_tokens += usage.output_tokens || 0;
-              totalUsage.cache_read_input_tokens += usage.cache_read_input_tokens || 0;
-              totalUsage.cache_creation_input_tokens += usage.cache_creation_input_tokens || 0;
+              totalUsage.input_tokens += Number(usage.input_tokens) || 0;
+              totalUsage.output_tokens += Number(usage.output_tokens) || 0;
+              totalUsage.cache_read_input_tokens += Number(usage.cache_read_input_tokens) || 0;
+              totalUsage.cache_creation_input_tokens += Number(usage.cache_creation_input_tokens) || 0;
             }
           } catch (_e) {
             // Skip malformed lines silently

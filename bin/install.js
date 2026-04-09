@@ -235,13 +235,10 @@ function mergeHooks(targetDir) {
 
       for (const entry of newEntries) {
         const cmds = (entry.hooks || []).map(h => h.command || '');
-        const alreadyInstalled = cmds.some(c =>
-          existingCmds.some(ec => ec.includes('orchestray'))
-            && existingCmds.some(ec => {
-              const scriptName = path.basename(c.split('"').pop().split(' ')[0]);
-              return ec.includes(scriptName);
-            })
-        );
+        const alreadyInstalled = cmds.some(c => {
+          const scriptName = path.basename(c.replace(/"/g, '').split(' ')[0]);
+          return existingCmds.some(ec => ec.includes('orchestray') && ec.includes(scriptName));
+        });
         if (!alreadyInstalled) {
           settings.hooks[event].push(entry);
         }

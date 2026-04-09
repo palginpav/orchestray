@@ -59,6 +59,7 @@ Evaluate every task using these four signals, each scoring 0-3 points:
    - **Debugger**: Sonnet default. Opus for complex multi-file bugs or concurrency issues (score >= 6).
    - **Tester**: Sonnet default. Haiku acceptable for simple boilerplate test generation (score <= 3).
    - **Documenter**: Sonnet default. Haiku acceptable for simple changelog updates (score <= 3).
+   - **Security-engineer**: Sonnet default. Opus for full threat modeling or complex security audits (score >= 6). NEVER use Haiku for security reviews.
 
 3. **Apply `model_floor` enforcement**: if the routed model is weaker than `model_floor`,
    upgrade to `model_floor`. Model strength order: haiku < sonnet < opus.
