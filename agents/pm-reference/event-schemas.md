@@ -17,12 +17,22 @@ Appended after each agent completes (in Section 4 result processing):
   "task_id": "<subtask id>",
   "agent_type": "<architect|developer|reviewer|{dynamic}>",
   "model_assigned": "<haiku|sonnet|opus>",
+  "effort_assigned": "<low|medium|high|max>",
+  "effort_override": false,
+  "effort_override_reason": null,
   "complexity_score": "<N>",
   "result": "<success|failure|escalated>",
   "escalation_count": 0,
   "escalated_from": null
 }
 ```
+
+New effort fields:
+- `effort_assigned`: The effort level used for this agent invocation (low, medium, high, max)
+- `effort_override`: Whether the effort was overridden from the model's default mapping
+  (haiku->low, sonnet->medium, opus->high)
+- `effort_override_reason`: Why the override was applied (e.g., "security-sensitive logic",
+  "novel design", "boilerplate task"), or null if no override
 
 On escalation, the `escalated_from` field records the previous model and `escalation_count`
 increments. For example, a Haiku task that escalated to Sonnet would have:

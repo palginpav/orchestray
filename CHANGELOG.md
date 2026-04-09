@@ -3,6 +3,35 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.6] - 2026-04-09
+
+### Added
+- **Inventor agent** — 10th core agent. First-principles creation specialist that designs and prototypes novel tools, DSLs, and custom solutions. Includes Phase 5 self-assessment gate (RECOMMEND / DO NOT RECOMMEND) to prevent unnecessary reinvention.
+- **Effort/reasoning level routing** — PM assigns `low`/`medium`/`high`/`max` effort alongside model selection. Default mapping: haiku→low, sonnet→medium, opus→high. Configurable via `default_effort`, `force_effort`, `effort_routing`.
+- Effort shown in agent descriptions when overridden (e.g., `"Design auth (opus/max)"`)
+- Inventor delegation example in delegation-templates.md
+- Inventor routing default in scoring-rubrics.md (Opus default, never Haiku)
+- Effort assignment section in scoring-rubrics.md with anti-patterns and escalation rules
+- `effort_assigned`, `effort_override`, `effort_override_reason` fields in routing_outcome event schema
+- 3 new config settings: `default_effort`, `force_effort`, `effort_routing`
+
+### Fixed
+- `complexity-precheck.js`: added `process.exit(0)` on early-return paths (hook hung until timeout)
+- `install.js`: fixed mergeHooks broken duplicate-detection predicate (both conditions now on same entry)
+- `reassign-idle-teammate.js`: added stdout JSON response before exit-code-2 (was missing)
+- `collect-agent-metrics.js`: NaN-safe token accumulation with `Number()` coercion
+- `collect-agent-metrics.js`: wired to `TaskCompleted` hook for Agent Teams cost tracking (was dead code)
+- Report skill now reads both `agent_stop` and `task_completed_metrics` events for cost aggregation
+- PM Section 3/13/17/20 incomplete agent enumeration lists (missing refactorer, security-engineer, inventor)
+- `pattern-extraction.md`: fixed stale "step 10" reference (actual: step 5)
+- `scoring-rubrics.md`: added missing security-engineer routing default (never Haiku)
+
+### Changed
+- PM prompt expanded from 34 to 34 sections (2,500 → 2,574 lines); no new section numbers, content added to existing sections
+- Config defaults now include 33 keys (was 30, added 3 effort settings)
+- 10 core agents (was 9, added Inventor)
+- Agent descriptions show effort level when overridden from model default
+
 ## [2.0.5] - 2026-04-09
 
 ### Added

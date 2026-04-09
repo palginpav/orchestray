@@ -80,6 +80,7 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | **Refactorer** | Systematic code transformation without behavior change |
 | **Reviewer** | Read-only review across 7 dimensions: correctness, quality, security, performance, docs, operability, API compatibility |
 | **Security Engineer** | Shift-left security — design threat review and implementation audit (read-only) |
+| **Inventor** | First-principles creation of novel tools, DSLs, and custom solutions with working prototypes |
 | **Debugger** | Systematic bug investigation and root cause analysis (read-only) |
 | **Tester** | Dedicated test writing, coverage analysis, and test strategy |
 | **Documenter** | Documentation creation and maintenance |

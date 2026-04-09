@@ -28,6 +28,7 @@ This is a Claude Code plugin that provides multi-agent orchestration.
 - **debugger** — Systematic bug investigation and root cause analysis (read-only)
 - **tester** — Dedicated test writing, coverage analysis, and test strategy
 - **documenter** — Documentation creation and maintenance
+- **inventor** — First-principles creation of novel tools, DSLs, and custom solutions
 - **security-engineer** — Shift-left security analysis, threat modeling, vulnerability assessment
 
 ## Runtime State

@@ -33,6 +33,9 @@ The user wants to view or modify orchestration settings.
   "force_model": null,
   "haiku_max_score": 3,
   "opus_min_score": 6,
+  "default_effort": null,
+  "force_effort": null,
+  "effort_routing": true,
   "enable_agent_teams": false,
   "max_cost_usd": null,
   "security_review": "auto",
@@ -70,6 +73,9 @@ The user wants to view or modify orchestration settings.
 | `force_model` | string/null | `null` | Force all agents to use this model, overriding routing. One of: "haiku", "sonnet", "opus", or null |
 | `haiku_max_score` | number | `3` | Maximum complexity score for Haiku routing (0-12). Tasks scoring above this get Sonnet or higher |
 | `opus_min_score` | number | `6` | Minimum complexity score for Opus routing (0-12). Tasks scoring at or above this get Opus |
+| `default_effort` | string/null | `null` | Default effort level for all agents: "low", "medium", "high", "max", or null (auto from model). When set, overrides the model-derived default but override criteria still apply. |
+| `force_effort` | string/null | `null` | Force all agents to this effort level, overriding all routing. One of: "low", "medium", "high", "max", or null. |
+| `effort_routing` | boolean | `true` | Enable effort routing based on model-effort mapping. When false, agents use their static frontmatter effort defaults. |
 | `enable_agent_teams` | boolean | `false` | Enable Agent Teams mode for parallel orchestration (experimental). When true, PM may use Agent Teams for 3+ parallel tasks with inter-agent communication. |
 | `max_cost_usd` | number/null | `null` | Maximum cost per orchestration in USD. null = no limit. PM enforces budget when set. |
 | `security_review` | string | `"auto"` | Security review mode: "auto" (PM auto-invokes on security-sensitive tasks), "manual" (user requests), "off" (disabled) |
@@ -88,6 +94,9 @@ The user wants to view or modify orchestration settings.
 | `daily_cost_limit_usd` | number/null | `null` | Maximum daily orchestration spend in USD. At 80% shows warning, at 100% blocks new orchestrations. Set to null for unlimited. |
 | `weekly_cost_limit_usd` | number/null | `null` | Maximum weekly orchestration spend in USD (Monday-Sunday). At 80% shows warning, at 100% blocks new orchestrations. Set to null for unlimited. |
 
+**Note:** Effort routing requires Claude Code v2.1.33+. On older versions, effort settings
+are recorded in the audit trail but have no effect on agent behavior.
+
 **Config + PM integration:** The PM agent reads these settings at orchestration start to determine scoring behavior. Changes take effect on the next orchestration.
 
 3. **Validation**: 
@@ -104,6 +113,10 @@ The user wants to view or modify orchestration settings.
    - `haiku_max_score` must be a number between 0 and 12
    - `opus_min_score` must be a number between 0 and 12
    - `opus_min_score` must be greater than `haiku_max_score` -- reject with error: "opus_min_score must be greater than haiku_max_score to avoid routing ambiguity."
+   - `default_effort` must be null or one of: "low", "medium", "high", "max"
+   - `force_effort` must be null or one of: "low", "medium", "high", "max"
+   - If `force_effort` is "max", warn: "max effort is Opus 4.6 exclusive. Ensure model_floor or force_model is set to opus."
+   - `effort_routing` must be boolean (true/false)
    - `enable_agent_teams` must be boolean (true/false)
    - `max_cost_usd` must be null or a positive number. If 0 or negative, reject with error: "max_cost_usd must be null (no limit) or a positive number."
    - `security_review` must be one of: "auto", "manual", "off"
@@ -145,6 +158,9 @@ When showing settings:
 | force_model | null | Force all agents to use this model (overrides routing) |
 | haiku_max_score | 3 | Max complexity score for Haiku routing (0-12) |
 | opus_min_score | 6 | Min complexity score for Opus routing (0-12) |
+| default_effort | null | Default effort level for all agents (null = auto from model) |
+| force_effort | null | Force all agents to this effort level (overrides routing) |
+| effort_routing | true | Enable effort routing based on model-effort mapping |
 | enable_agent_teams | false | Enable Agent Teams mode (experimental) |
 | max_cost_usd | null | Max cost per orchestration in USD (null = no limit) |
 | security_review | auto | Security review mode (auto/manual/off) |

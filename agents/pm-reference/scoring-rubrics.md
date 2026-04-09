@@ -60,6 +60,7 @@ Evaluate every task using these four signals, each scoring 0-3 points:
    - **Tester**: Sonnet default. Haiku acceptable for simple boilerplate test generation (score <= 3).
    - **Documenter**: Sonnet default. Haiku acceptable for simple changelog updates (score <= 3).
    - **Security-engineer**: Sonnet default. Opus for full threat modeling or complex security audits (score >= 6). NEVER use Haiku for security reviews.
+   - **Inventor**: Opus default. Sonnet only for simple tool creation (score <= 3). NEVER use Haiku for invention tasks.
 
 3. **Apply `model_floor` enforcement**: if the routed model is weaker than `model_floor`,
    upgrade to `model_floor`. Model strength order: haiku < sonnet < opus.
@@ -67,6 +68,56 @@ Evaluate every task using these four signals, each scoring 0-3 points:
 4. **Check for natural language override** in the user's original prompt: "use opus",
    "use haiku", "use sonnet" -- if detected, override the routing decision for ALL
    subtasks.
+
+---
+
+## Section 19: Effort Level Assignment
+
+After model routing determines the model for each subtask, assign the effort level.
+
+### Default Model-Effort Mapping
+
+| Model | Default Effort |
+|-------|---------------|
+| haiku | low |
+| sonnet | medium |
+| opus | high |
+
+### Override Criteria
+
+Evaluate each subtask for reasoning depth. Override the default effort when:
+
+- **Upgrade sonnet to high**: Security-sensitive logic, complex algorithm implementation,
+  multi-file refactoring with subtle dependencies
+- **Upgrade opus to max**: Novel system design with no precedent in the codebase,
+  cross-cutting refactors touching 10+ files, tasks where failure has high blast radius
+  (data migration, auth changes, schema changes)
+- **Downgrade sonnet to low**: Pure boilerplate/scaffold generation, simple file
+  rename/move operations, straightforward config file updates
+
+**Agent-specific effort overrides (for dynamic agents only):**
+- Inventor dynamic tasks: always high or max
+- Security audit dynamic tasks: always high
+- Simple scaffold/template tasks: low regardless of model
+
+### Anti-Patterns
+
+| Combination | Why It Is Wasteful | Do Instead |
+|-------------|-------------------|------------|
+| Haiku + high | Haiku's ceiling is low regardless of effort | Use Sonnet instead |
+| Haiku + max | max is Opus 4.6 exclusive | Use Sonnet/medium or Opus/high |
+| Opus + low | Pays Opus price for minimal reasoning | Use Sonnet/low or Haiku/low |
+
+### Effort Escalation
+
+When a subtask fails and model escalation occurs (Auto-Escalation Protocol below),
+effort escalates with the model:
+
+- haiku/low fails -> sonnet/medium retry
+- sonnet/medium fails -> opus/high retry
+- If the failed subtask already had an effort override (e.g., sonnet/high), preserve
+  the override on escalation: sonnet/high -> opus/high (not opus/max unless depth
+  warrants it)
 
 ---
 

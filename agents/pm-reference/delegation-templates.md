@@ -38,6 +38,12 @@ proper HTTP status codes. The endpoint accepts POST with {name, priority} body."
 cache invalidation strategy, TTL values, storage backend (Redis vs in-memory), cache
 key design. Output a design document with file structure and implementation approach."
 
+**Good (Inventor):** "We need a lightweight task queue for this project. Existing solutions
+(Bull, Bee-Queue) are Redis-dependent and overkill for our 10-job/minute volume. Design
+and prototype a file-based task queue using only Node.js stdlib. Evaluate whether it
+justifies the maintenance cost vs. just using Bull. Produce prototype code + trade-off
+analysis."
+
 ---
 
 ## Section 11: Context Handoff Template
