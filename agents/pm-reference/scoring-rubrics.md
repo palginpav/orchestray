@@ -182,3 +182,65 @@ When no adjustment, the standard announcement:
 - **Section 15 Step 4 (Threshold Calibration Signal):** Write new signal after each
   orchestration completes
 - **`/orchestray:analytics`:** Display current effective threshold and signal history
+
+---
+
+## Turn Budget Reference
+
+Per-agent base turn counts and the adaptive formula for calculating `maxTurns` at spawn
+time. Used by Section 3.Y (Turn Budget Calculation) in the main PM prompt.
+
+### Base Turns by Agent Type
+
+| Agent Type | Base Turns | Frontmatter Max | Rationale |
+|------------|-----------|-----------------|-----------|
+| architect | 15 | 30 | Design tasks need exploration + writing |
+| developer | 12 | 25 | Implementation is focused but iterative |
+| reviewer | 10 | 20 | Review is read-heavy, fewer write turns |
+| debugger | 15 | 30 | Investigation requires broad exploration |
+| tester | 12 | 25 | Test writing is similar in scope to implementation |
+| documenter | 8 | 20 | Documentation is straightforward writing |
+| refactorer | 15 | 25 | Refactoring requires careful incremental changes |
+| inventor | 20 | 40 | Novel creation needs the most exploration room |
+| security-engineer | 15 | 30 | Security analysis is thorough and exploratory |
+
+### Formula
+
+```
+file_factor = count(files_read + files_write)
+complexity_factor = subtask_score / 4
+estimated_turns = round(base_turns[agent_type] * (0.5 + 0.5 * complexity_factor) + file_factor * 2)
+max_turns = min(estimated_turns, frontmatter_max)
+```
+
+### Worked Examples
+
+**Example 1: Simple developer task** (score 3, 2 files read, 1 file write)
+```
+file_factor = 3
+complexity_factor = 3 / 4 = 0.75
+estimated_turns = round(12 * (0.5 + 0.5 * 0.75) + 3 * 2) = round(12 * 0.875 + 6) = round(16.5) = 17
+max_turns = min(17, 25) = 17
+```
+
+**Example 2: Complex architect task** (score 9, 5 files read, 3 files write)
+```
+file_factor = 8
+complexity_factor = 9 / 4 = 2.25
+estimated_turns = round(15 * (0.5 + 0.5 * 2.25) + 8 * 2) = round(15 * 1.625 + 16) = round(40.375) = 40
+max_turns = min(40, 30) = 30  (capped by frontmatter max)
+```
+
+**Example 3: Simple documenter task** (score 2, 1 file read, 1 file write)
+```
+file_factor = 2
+complexity_factor = 2 / 4 = 0.5
+estimated_turns = round(8 * (0.5 + 0.5 * 0.5) + 2 * 2) = round(8 * 0.75 + 4) = round(10) = 10
+max_turns = min(10, 20) = 10
+```
+
+### Budget Exhaustion Retry
+
+When an agent returns `status: partial` due to turn budget exhaustion, the PM may retry
+with `1.5x` the original calculated budget (rounded up), capped at frontmatter max.
+This counts as one retry per Section 5. Do not retry more than once for budget exhaustion.

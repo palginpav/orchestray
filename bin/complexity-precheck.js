@@ -115,11 +115,10 @@ function main() {
   process.stdin.on('error', () => { process.stdout.write(JSON.stringify({ continue: true })); process.exit(0); });
   process.stdin.on('data', chunk => { input += chunk; });
   process.stdin.on('end', () => {
-    const debugLog = `/tmp/orchestray-hook-debug.log`;
-
     try {
       const data = JSON.parse(input);
       const prompt = data.message || data.prompt || '';
+      const debugLog = path.join(data.cwd || process.cwd(), '.orchestray', 'debug.log');
 
       // Read config once — used for force_solo, threshold, and verbose
       let config = {};
@@ -198,7 +197,7 @@ function main() {
           fs.writeFileSync(markerPath, JSON.stringify({
             score: score,
             threshold: threshold,
-            prompt: prompt,
+            prompt_length: prompt.length,
             timestamp: new Date().toISOString(),
             session_id: data.session_id || null
           }));

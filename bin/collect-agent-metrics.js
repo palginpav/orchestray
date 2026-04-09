@@ -109,9 +109,18 @@ process.stdin.on('end', () => {
     };
 
     // Team events use transcript_path; subagent events use agent_transcript_path
-    const transcriptPath = isTeamEvent
+    let transcriptPath = isTeamEvent
       ? (event.transcript_path || null)
       : (event.agent_transcript_path || null);
+
+    // Path containment: only allow reads from project dir or ~/.claude/
+    if (transcriptPath) {
+      const resolved = path.resolve(transcriptPath);
+      const cwdResolved = path.resolve(cwd);
+      if (!resolved.startsWith(cwdResolved + path.sep) && !resolved.startsWith(path.resolve(path.join(require('os').homedir(), '.claude')) + path.sep)) {
+        transcriptPath = null; // Block reads outside project dir and ~/.claude/
+      }
+    }
 
     let turnsUsed = 0;
 

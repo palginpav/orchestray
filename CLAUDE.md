@@ -196,7 +196,10 @@ Conventions not yet established. Will populate as patterns emerge during develop
 <!-- GSD:architecture-start source:ARCHITECTURE.md -->
 ## Architecture
 
-Architecture not yet mapped. Follow existing patterns found in the codebase.
+The PM agent prompt uses a 3-tier architecture introduced in v2.0.8:
+- **Tier 0** (`agents/pm.md`, ~1,030 lines) -- Always loaded. Core protocols: auto-trigger, complexity scoring, delegation, communication, anti-patterns, config defaults, Section Loading Protocol.
+- **Tier 1** (`agents/pm-reference/tier1-orchestration.md`, ~1,650 lines) -- Loaded only during orchestration (complexity score >= threshold). State persistence, task decomposition, parallel execution, cost tracking, re-planning, verify-fix loops.
+- **Tier 2** (`agents/pm-reference/*.md`, 12 feature-gated + 7 always-available files) -- Feature-gated files loaded only when their trigger condition is met (e.g., GitHub issue URL, CI failure, agent teams enabled). Dispatch table in Tier 0 maps conditions to files.
 <!-- GSD:architecture-end -->
 
 <!-- GSD:skills-start source:skills/ -->

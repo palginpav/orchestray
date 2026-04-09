@@ -44,6 +44,31 @@ and prototype a file-based task queue using only Node.js stdlib. Evaluate whethe
 justifies the maintenance cost vs. just using Bull. Produce prototype code + trade-off
 analysis."
 
+### Reviewer Delegation: Git Diff Inclusion
+
+When delegating to the **reviewer**, always include a `## Git Diff` section in the
+delegation prompt. This enables the reviewer's diff-scoped reading mode, which reduces
+token consumption by 25-35% while maintaining review quality.
+
+```
+[Task description -- what to review and what to check for]
+
+## Files to Review
+{files_changed from the developer's structured result}
+
+## Git Diff
+{output of `git diff -- <files_changed>` showing what the developer changed}
+
+If the diff exceeds 500 lines, include only the first 500 lines and append:
+"[diff truncated -- {total_lines} total lines, showing first 500]"
+
+## Context
+{architect design, task requirements, or other relevant context}
+```
+
+The diff gives the reviewer a precise map of what changed, so it can focus analysis on
+modified lines and only read full files when surrounding context is needed.
+
 ---
 
 ## Section 11: Context Handoff Template
@@ -106,3 +131,78 @@ Follow this 5-step pattern for every sequential agent handoff:
 
 5. **Agent B writes its own discoveries to KB**, continuing the chain for any subsequent
    agent (e.g., reviewer after developer).
+
+---
+
+## Per-Agent Pre-Flight Checklists
+
+Before spawning any agent, the PM must verify the delegation prompt addresses every item
+on that agent's checklist (Section 3.X in pm.md). This is a PM-internal reasoning step --
+zero tool calls, zero extra cost. Items that cannot be addressed should be noted as
+"N/A: {reason}" in the delegation prompt.
+
+### Developer Checklist
+
+- [ ] Input validation requirements specified? (what inputs does the code accept, what are the constraints)
+- [ ] Error handling pattern referenced? (how should errors be caught, logged, surfaced)
+- [ ] Test expectations included? (should the developer write tests, which types, for which cases)
+- [ ] Backward compatibility constraints noted? (existing APIs, consumers, data formats to preserve)
+- [ ] Import/dependency constraints stated? (allowed libraries, no new dependencies, use existing utils)
+- [ ] Self-check instruction included? (compile, lint, test commands to run before reporting)
+
+### Architect Checklist
+
+- [ ] Existing patterns to follow referenced? (current codebase conventions, established approaches)
+- [ ] Constraints listed? (performance budgets, security requirements, compatibility targets)
+- [ ] Scope boundaries explicit? (what is in scope vs. out of scope for this design)
+- [ ] Decision format requested? (tradeoff analysis with options, pros/cons, recommendation)
+
+### Reviewer Checklist
+
+- [ ] Specific file paths listed? (not "review the changes" -- exact files to examine)
+- [ ] Task requirements included? (what the code should do, not just "check for bugs")
+- [ ] Architect design reference linked if applicable? (design doc or KB entry for spec conformance)
+- [ ] Priority dimensions specified? (correctness, security, performance, maintainability -- which matter most)
+- [ ] Git diff included? (per the Reviewer Delegation: Git Diff Inclusion protocol above)
+
+### Tester Checklist
+
+- [ ] Test scope defined? (unit, integration, e2e -- which types to write)
+- [ ] Edge cases listed? (boundary conditions, error cases, empty inputs the tests should cover)
+- [ ] Existing test patterns referenced? (test framework, helper utilities, fixture conventions)
+- [ ] Source files to test identified? (exact paths, not "test the new code")
+
+### Debugger Checklist
+
+- [ ] Symptom description included? (what fails, how it manifests, error messages)
+- [ ] Reproduction steps provided? (commands, inputs, or test cases that trigger the issue)
+- [ ] Relevant file paths listed? (where the bug likely lives, recent changes)
+- [ ] Expected vs. actual behavior stated? (what should happen vs. what does happen)
+
+### Refactorer Checklist
+
+- [ ] Scope of refactoring defined? (which files/modules, what transformation)
+- [ ] Behavioral equivalence requirement stated? (output must not change, tests must still pass)
+- [ ] Existing test coverage noted? (are there tests that protect against regressions)
+- [ ] Target structure described? (desired end state -- module boundaries, naming, patterns)
+
+### Inventor Checklist
+
+- [ ] Problem description included? (what needs to be solved, why existing solutions fail)
+- [ ] Constraints stated? (no external dependencies, performance targets, API surface)
+- [ ] Success criteria defined? (what makes the invention "done" -- prototype, benchmark, proof)
+- [ ] Build-vs-buy context provided? (why custom over off-the-shelf, what was considered)
+
+### Documenter Checklist
+
+- [ ] Documentation type specified? (README, API reference, changelog, ADR, inline docs)
+- [ ] Target audience identified? (developers, end users, contributors, ops)
+- [ ] Source files referenced? (what code to document, what behavior to describe)
+- [ ] Existing doc conventions noted? (format, location, style of existing documentation)
+
+### Security Engineer Checklist
+
+- [ ] Threat scope defined? (which components, attack surfaces, data flows to analyze)
+- [ ] Security requirements listed? (compliance standards, auth model, data sensitivity)
+- [ ] Existing security measures noted? (current auth, encryption, input validation in place)
+- [ ] Output format specified? (threat model, vulnerability report, remediation plan)

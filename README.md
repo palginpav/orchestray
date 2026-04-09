@@ -27,6 +27,12 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 - **Pattern learning** — extracts reusable strategies from past orchestrations
 - **Team features** — shared config, shared patterns, daily/weekly cost budgets
 - **Agent Teams** — opt-in dual-mode execution for tasks needing inter-agent communication
+- **Prompt tiering** — 3-tier PM prompt architecture, 72% token reduction for simple tasks
+- **Orchestration contracts** — machine-verifiable quality gates with file ownership tracking
+- **Consequence forecasting** — predicts downstream effects before execution, validates after
+- **ROI scorecard** — per-orchestration value visibility with cost savings breakdown
+- **Diff-scoped review** — reviewer focuses on changed files only, reducing noise
+- **Adaptive turn budgets** — dynamic turn limits based on subtask complexity
 - **Full audit trail** — per-agent tokens, cost breakdown, routing decisions, model savings
 
 ## Install

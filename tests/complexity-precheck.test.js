@@ -448,7 +448,7 @@ describe('auto-trigger marker file', () => {
       const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
       assert.ok(marker.score >= 4, 'marker should contain score >= threshold');
       assert.ok(marker.timestamp, 'marker should contain timestamp');
-      assert.ok(marker.prompt, 'marker should contain prompt');
+      assert.ok(marker.prompt_length > 0, 'marker should contain prompt_length');
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
     }

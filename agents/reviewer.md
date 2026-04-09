@@ -44,6 +44,21 @@ The design document defines the specification; the implementation should match i
 
 ### Step 2: Read All Changed Files
 
+#### Diff-Scoped Reading
+
+When the delegation prompt includes a `## Git Diff` section:
+1. Read the diff first to understand what changed before opening any files
+2. Focus your 7-dimension analysis on the changed lines and their immediate context
+3. Read full files only when the diff context is insufficient to assess correctness,
+   security, or quality -- for example, when you need to see how a changed function
+   is called, what types flow into it, or whether surrounding invariants still hold
+4. For files listed in `files_read` that have no changes in the diff, skim for
+   interface compatibility rather than deep-reading every line
+
+This approach reduces token consumption by 25-35% while maintaining review quality.
+The diff tells you WHERE to look; the full files tell you WHY when needed. When no
+diff is provided, fall back to reading all changed files thoroughly as described below.
+
 Read every file that was created or modified as part of this implementation. Do not
 skim -- read thoroughly. Pay attention to:
 - Logic flow and control structures

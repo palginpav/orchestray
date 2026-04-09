@@ -1,8 +1,60 @@
+<!-- PM Reference: Loaded by Section Loading Protocol when enable_agent_teams is true -->
+
+## 23. Agent Teams Protocol
+
+**Prerequisite:** Check `.orchestray/config.json` for `enable_agent_teams`. If `false`
+or absent, skip this section entirely -- use subagents for all execution.
+
+### When to Use Agent Teams (D-01)
+
+Use Agent Teams ONLY when ALL three criteria are met:
+
+1. **Feature flag:** `enable_agent_teams` is `true` in `.orchestray/config.json`
+2. **Parallel threshold:** Task decomposition (Section 13, in tier1-orchestration.md) produced 3+ parallel subtasks
+   in at least one parallel group
+3. **Inter-agent communication need:** Subtasks require coordination beyond independent
+   execution. At least one of:
+   - Shared interfaces that multiple agents must agree on (e.g., API contract between
+     frontend and backend teammates)
+   - Competing hypotheses that benefit from cross-challenge (e.g., research tasks where
+     teammates evaluate different approaches and debate findings)
+   - Cross-layer changes where agents need to coordinate (e.g., frontend + backend +
+     tests each owned by a different teammate, requiring interface alignment)
+
+If ANY criterion is not met, use subagents (Sections 3, 14, in tier1-orchestration.md).
+
+### Silent Fallback (D-07)
+
+If teams are enabled in config but the Agent Teams API is unavailable (e.g., Claude Code
+version older than v2.1.32, or `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` env var not set),
+silently fall back to subagent mode. Do not emit an error or warning. The user should
+experience no degradation -- subagent execution produces equivalent results, just without
+inter-agent messaging.
+
+### Mode Announcement (D-02)
+
+Announce the execution mode choice in one line before starting execution:
+
+- **Teams:** "Using Agent Teams for this orchestration (X parallel tasks with [reason])"
+  - Example: "Using Agent Teams for this orchestration (4 parallel tasks with shared API interface)"
+- **Subagents:** "Using subagents ([reason])"
+  - Example: "Using subagents (sequential workflow)"
+  - Example: "Using subagents (fewer than 3 parallel tasks)"
+  - Example: "Using subagents (no inter-agent communication needed)"
+
+### Team Execution Details
+
+See the detailed procedures below for team creation steps, task assignment protocol,
+teammate failure handling, verify-fix loop interaction, token/cost tracking, known
+limitations, and audit trail integration.
+
+---
+
 # Agent Teams Protocol Reference
 
 Detailed procedures for team creation, task assignment, failure handling, and audit trail
 integration. For decision criteria (when to use teams, silent fallback, mode announcement),
-see the main PM prompt Section 23.
+see Section 23 above.
 
 ---
 
@@ -27,7 +79,8 @@ Steps:
 
 ## Task Assignment
 
-The lead (PM) assigns tasks explicitly based on the decomposition plan from Section 13.
+The lead (PM) assigns tasks explicitly based on the decomposition plan from Section 13
+(in tier1-orchestration.md).
 Teammates do not self-claim tasks. This gives the PM control over task-agent mapping and
 ensures model routing preferences from Section 19 are respected for the team lead.
 
@@ -53,7 +106,7 @@ If a teammate fails mid-team:
 
 ## Verify-Fix Loop Interaction
 
-Verify-fix loops (Section 18) operate at the task level, not the team level:
+Verify-fix loops (Section 18, in tier1-orchestration.md) operate at the task level, not the team level:
 - When a teammate completes a task, the `TaskCompleted` hook validates output format
   (D-03).
 - If the team includes a reviewer teammate, the lead can assign review tasks that create

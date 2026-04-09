@@ -3,6 +3,32 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.8] - 2026-04-09
+
+### Theme: "Self-Aware Orchestration"
+
+### Added
+- **Prompt tiering** -- PM prompt restructured into 3 tiers (Tier 0 always-loaded ~1,030 lines, Tier 1 orchestration-only, Tier 2 feature-gated). Reduces PM input tokens by 30-40% for simple tasks.
+- **Orchestration contracts** -- Machine-verifiable pre/post-conditions per subtask. PM validates file existence, file ownership, and content patterns before accepting agent results. Configurable via `contract_strictness` setting (none/standard/strict).
+- **Delegation pre-flight checklists** -- Per-agent-type validation ensures delegation prompts include all required context before spawning. Reduces verify-fix loops.
+- **Diff-scoped review** -- Reviewer receives git diff alongside file paths, focusing analysis on changed lines. Reduces reviewer token consumption.
+- **Consequence forecasting** -- Pre-execution dependency scan predicts downstream effects; post-execution validation tracks accuracy. Opt-out via `enable_consequence_forecast`.
+- **Adaptive agent turn budgets** -- Dynamic `maxTurns` per agent based on subtask complexity and file count instead of static defaults.
+- **Orchestration ROI scorecard** -- Post-orchestration summary shows issues caught, files delivered, manual effort estimate, cost vs all-Opus baseline, and routing savings.
+- PM Section 39 (Consequence Forecasting)
+- 2 new config settings: `contract_strictness`, `enable_consequence_forecast`
+- 3 new event schemas: `contract_check`, `consequence_forecast`, `orchestration_roi`
+- 42 new tests for `audit-event.js` and `audit-team-event.js` hooks (21 each). All 7 hook scripts now have test coverage.
+
+### Changed
+- `command_exits_zero` contract type hardened from freeform command string to indexed enum (1-6). PM selects from a fixed command table instead of composing arbitrary commands.
+- PM prompt restructured from monolith to tiered architecture (Tier 0 + Tier 1 + Tier 2). Total content preserved; loading is conditional.
+- pm-reference/ expanded from 8 to 20 files with restructured PM sections
+- Config defaults now include 37 keys (was 35)
+- Reviewer now receives git diff in delegation prompt for focused review
+- Agent `maxTurns` set dynamically per-invocation based on complexity
+- Section 0 reference updated from "Sections 1-38" to "Sections 1-39"
+
 ## [2.0.7] - 2026-04-09
 
 ### Added

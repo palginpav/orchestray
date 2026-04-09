@@ -117,6 +117,122 @@ Appended when low-value patterns are removed during pruning (step 7 of the learn
 
 ---
 
+## Contract Check Event
+
+Appended when pre-condition or post-condition contracts are validated (Section 4.X in
+pm.md and Section 14.X in tier1-orchestration.md):
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "contract_check",
+  "orchestration_id": "<current orch id>",
+  "task_id": "<subtask id>",
+  "phase": "pre | post",
+  "checks": [
+    {
+      "type": "file_exists | file_contains | diff_only_in | file_exports | command_exits_zero",
+      "target": "<path, pattern, file list, or command being checked>",
+      "result": "pass | fail",
+      "detail": "<human-readable detail -- file path found, grep match, or failure reason>"
+    }
+  ],
+  "overall": "pass | partial_fail | fail"
+}
+```
+
+Field notes:
+- `phase`: `"pre"` for pre-condition checks before agent spawn, `"post"` for post-condition
+  checks after agent completion.
+- `overall`: `"pass"` if all checks passed, `"fail"` if all failed, `"partial_fail"` if
+  some passed and some failed.
+- `checks` array contains one entry per contract. The `target` field holds the argument(s)
+  from the contract definition (e.g., the file path for `file_exists`, the file list for
+  `diff_only_in`).
+
+---
+
+## Section 39: Consequence Forecast Event
+
+Appended during Section 15 step 7.6 (post-execution consequence validation):
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "consequence_forecast",
+  "orchestration_id": "<current orch id>",
+  "predictions": [
+    {
+      "target_file": "path/to/file",
+      "category": "direct | convention | test",
+      "prediction": "One-line prediction of what might be affected",
+      "verified": true,
+      "outcome": "addressed | missed | wrong"
+    }
+  ],
+  "accuracy": {
+    "total": 5,
+    "addressed": 3,
+    "missed": 1,
+    "wrong": 1
+  }
+}
+```
+
+Field notes:
+- `category`: How the downstream file was identified — `direct` (imports the modified file),
+  `convention` (follows the same pattern), or `test` (test file for the modified file).
+- `verified`: Always `true` in Phase B (post-validation). Set to `false` only if validation
+  was skipped (e.g., orchestration aborted before Phase B ran).
+- `outcome`: `addressed` means the file was touched during orchestration. `missed` means
+  the prediction was plausible but the file was not touched — flagged to the user.
+  `wrong` means the prediction was incorrect (no real dependency).
+
+---
+
+## Orchestration ROI Event
+
+Appended during Section 15.Z (ROI Scorecard Generation) after all post-orchestration
+steps complete:
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "orchestration_roi",
+  "orchestration_id": "<current orch id>",
+  "agents_used": 3,
+  "issues_caught": { "error": 2, "warning": 5 },
+  "verify_fix_rounds": 1,
+  "contract_checks": { "passed": 4, "failed": 0 },
+  "consequence_predictions": { "total": 5, "addressed": 3, "missed": 1, "wrong": 1 },
+  "files_created": 2,
+  "files_modified": 4,
+  "tests_added": 3,
+  "estimated_manual_minutes": 45,
+  "actual_cost_usd": 0.234,
+  "opus_baseline_usd": 0.567,
+  "routing_savings_usd": 0.333
+}
+```
+
+Field notes:
+- `agents_used`: Count of distinct agents spawned (not counting PM itself).
+- `issues_caught`: Errors and warnings from reviewer `issues` arrays. Set to `0` if no
+  reviewer was used.
+- `verify_fix_rounds`: Total verify-fix rounds across all subtasks. `0` if none occurred.
+- `contract_checks`: From `contract_check` audit events. `passed` counts `overall: "pass"`,
+  `failed` counts `overall: "fail"` or `"partial_fail"`. Both `0` if `contract_strictness`
+  is `"none"`.
+- `consequence_predictions`: From `consequence_forecast` audit events. All zeros if
+  `enable_consequence_forecast` is `false`.
+- `estimated_manual_minutes`: Heuristic estimate (5 min/file created, 3 min/file modified,
+  3 min/test, 10 min/design doc, 5 min/file reviewed).
+- `opus_baseline_usd`: Sum of `estimated_cost_opus_baseline_usd` from `agent_stop` events.
+- `routing_savings_usd`: `opus_baseline_usd - actual_cost_usd`. Can be `0` if all agents
+  used Opus.
+
+---
+
 ## Agent Stop Event
 
 Appended when an agent finishes execution (used in audit trail and cost tracking):
