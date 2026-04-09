@@ -81,7 +81,12 @@ with default values:
   "auto_document": false,
   "adversarial_review": false,
   "contract_strictness": "standard",
-  "enable_consequence_forecast": true
+  "enable_consequence_forecast": true,
+  "enable_introspection": true,
+  "enable_backpressure": true,
+  "surface_disagreements": true,
+  "enable_visual_review": false,
+  "enable_drift_sentinel": true
 }
 ```
 
@@ -572,6 +577,27 @@ Each agent is instructed to return results in this format:
   - On "raise": update budget and continue.
   - On "abort": mark remaining tasks as skipped, report partial results.
 
+### 4.D: Drift Sentinel — Invariant Extraction
+
+When `enable_drift_sentinel` is true and the completed agent is an architect, scan
+the architect's output for constraint-like statements and extract them as candidate
+invariants. See Section 4.D in tier1-orchestration.md for the full extraction protocol
+and drift-sentinel.md for invariant source details.
+
+### 4.Y: Reasoning Trace Distillation
+
+When `enable_introspection` is true and the completed agent is NOT Haiku-tier,
+spawn a Haiku distiller to extract reasoning traces. See Section 4.Y in
+tier1-orchestration.md for the full distillation protocol and introspection.md
+for the distiller prompt template.
+
+### 4.Z: Confidence Signal Reading
+
+When `enable_backpressure` is true, read the agent's confidence signal file after
+post-condition validation. Low confidence can override agent self-reports and trigger
+PM reactions. See Section 4.Z in tier1-orchestration.md for the full protocol and
+cognitive-backpressure.md for the reaction table.
+
 ### Re-Plan Signal Evaluation
 
 After processing any agent result (success, partial, or failure), evaluate re-plan
@@ -997,13 +1023,21 @@ reference file for full protocols:
 
 > Read `agents/pm-reference/tier1-orchestration.md`
 
-This file contains: Section 7 (State Persistence), Section 10 (Knowledge Base),
-Section 11 (Context Handoff), Section 13 (Task Decomposition) + 13.X (Contract Generation),
-Section 14 (Parallel Execution) + 14.X (Pre-Condition Validation), Section 15 detailed
-audit protocols, Section 16 (Re-Planning), Section 17 (Dynamic Agent Spawning), Section 18
-(Verify-Fix Loop), Section 19 detailed routing logging, Section 22 (Pattern Extraction),
+This file contains: Section 3.Z (Confidence Protocol Injection -- controlled by `enable_backpressure`),
+Section 4.D (Drift Sentinel Extraction -- controlled by `enable_drift_sentinel`),
+Section 4.Y (Reasoning Trace Distillation), Section 4.Z (Confidence Signal Reading),
+Section 4.V (Visual Review Integration -- controlled by `enable_visual_review`),
+Section 7 (State Persistence),
+Section 10 (Knowledge Base), Section 11 (Context Handoff) + 11.Y (Trace Injection),
+Section 13 (Task Decomposition) + 13.X (Contract Generation),
+Section 14 (Parallel Execution) + 14.X (Pre-Condition Validation) + 14.Z (Inter-Group Confidence Check),
+Section 15 detailed audit protocols, Section 16 (Re-Planning), Section 17 (Dynamic Agent Spawning),
+Section 18.D (Disagreement Detection -- controlled by `surface_disagreements`),
+Section 18 (Verify-Fix Loop), Section 19 detailed routing logging + 19.Z (Confidence-Triggered Escalation),
+Section 22 (Pattern Extraction) + 22.Y (Trace-Aware Extraction) + 22.D (Design-Preference Learning),
 Section 29 (Playbooks), Section 30 (Correction Memory), Section 34 (User Correction),
-and Section 39 (Consequence Forecasting -- controlled by `enable_consequence_forecast` config).
+Section 39 (Consequence Forecasting -- controlled by `enable_consequence_forecast` config),
+and Section 39.D (Drift Check -- controlled by `enable_drift_sentinel` config).
 
 ### Tier 2: Feature-Gated Reference Files
 
@@ -1023,6 +1057,11 @@ Load these reference files conditionally based on the situation:
 | `auto_document` is true | `agents/pm-reference/auto-documenter.md` |
 | Monorepo detected (pnpm-workspace.yaml, lerna.json, etc.) | `agents/pm-reference/monorepo.md` |
 | `adversarial_review` is true AND complexity score >= 8 | `agents/pm-reference/adversarial-review.md` |
+| `enable_introspection` is true | `agents/pm-reference/introspection.md` |
+| `enable_backpressure` is true | `agents/pm-reference/cognitive-backpressure.md` |
+| `surface_disagreements` is true | `agents/pm-reference/disagreement-protocol.md` |
+| `enable_visual_review` is true AND UI files detected in developer result | `agents/pm-reference/visual-review.md` |
+| `enable_drift_sentinel` is true | `agents/pm-reference/drift-sentinel.md` |
 
 ### Always-Available Reference Files
 

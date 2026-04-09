@@ -386,6 +386,31 @@ res.status(400).json({error: 'name required'})` before line 23."
 
 ---
 
+## 5.V. Visual Review
+
+When the PM delegation prompt includes a `## Visual Review Context` section with
+screenshot paths, perform multi-modal review alongside the standard code review.
+
+### Protocol
+
+1. **Read each screenshot** using the Read tool. Claude natively understands images --
+   no special tooling is needed.
+2. **Apply the visual review checklist** provided in the delegation prompt (layout,
+   text rendering, color/contrast, typography, responsive, regression, accessibility).
+3. **Compare before/after screenshots** if both are provided. Look for regressions
+   introduced by the code change: broken layout, shifted elements, missing content.
+4. **Cross-reference visual findings with code**: If you spot a visual issue, trace it
+   back to the code diff. Cite the specific file and line that likely causes the problem.
+5. **Report visual findings** in the same `issues` array as code findings. Use severity:
+   - **error**: Visible rendering bug -- broken layout, overlapping elements, invisible text
+   - **warning**: Degraded but functional -- spacing inconsistency, alignment slightly off
+   - **info**: Cosmetic suggestion -- could be improved but not broken
+6. **If no screenshots are provided** (text-only fallback), skip visual review entirely
+   and proceed with the standard 7-dimension code review. Do not report the absence of
+   screenshots as an issue.
+
+---
+
 ## 6. Anti-Patterns
 
 These are firm rules. Violating them undermines the review's value and disrupts the

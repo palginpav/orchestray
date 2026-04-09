@@ -33,6 +33,11 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 - **ROI scorecard** — per-orchestration value visibility with cost savings breakdown
 - **Diff-scoped review** — reviewer focuses on changed files only, reducing noise
 - **Adaptive turn budgets** — dynamic turn limits based on subtask complexity
+- **Agent introspection** — Haiku distiller extracts reasoning traces after each agent, eliminating redundant exploration downstream
+- **Cognitive backpressure** — agents signal confidence at checkpoints; PM reacts to low-confidence before proceeding
+- **Disagreement surfacing** — design trade-offs from reviews presented as structured decisions, not verify-fix loops
+- **Drift Sentinel** — architectural drift detection via auto-extracted invariants and static rules
+- **Visual Orchestration** — multi-modal screenshot review for UI changes (opt-in)
 - **Full audit trail** — per-agent tokens, cost breakdown, routing decisions, model savings
 
 ## Install

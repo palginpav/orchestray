@@ -9,6 +9,199 @@ and correction memory.
 
 ---
 
+## 4.D: Drift Sentinel — Invariant Extraction from Architect Output
+
+After processing an architect agent result with status `"success"` or `"partial"`
+(in Section 4), check whether to extract architectural invariants.
+
+**Trigger conditions:** ALL must be true:
+- `enable_drift_sentinel` is true in `.orchestray/config.json`
+- The completed agent type is `architect`
+- The agent result status is `"success"` or `"partial"`
+
+If any condition is false, skip extraction and proceed to 4.Y.
+
+**Protocol:** See `agents/pm-reference/drift-sentinel.md` Source 1 (Architect Output)
+for the full extraction protocol. In summary:
+1. Scan the architect's full text output for constraint-like statements (must not, never,
+   always, should not, isolated, no direct imports).
+2. Extract candidate invariants with text, files_affected, and confidence.
+3. Present candidates to the user for confirmation.
+4. On confirmation, write each invariant to `.orchestray/kb/decisions/` with
+   `enforced: true` and `type: architectural-constraint`.
+5. Log `invariant_extracted` event to `.orchestray/audit/events.jsonl`.
+
+---
+
+## 4.Y: Reasoning Trace Distillation
+
+After processing any agent result with status `"success"` or `"partial"` (in Section 4),
+check whether to extract a reasoning trace. This step runs AFTER result parsing and
+post-condition validation (4.X) but BEFORE proceeding to the next task.
+
+### Trigger Conditions
+
+Run the distiller when ALL of these are true:
+- `enable_introspection` is true in `.orchestray/config.json`
+- The completed agent was NOT a Haiku-tier agent (distilling Haiku with Haiku is circular)
+- The agent result status is `"success"` or `"partial"` (not `"failure"`)
+
+If any condition is false, skip distillation and proceed normally.
+
+### Distillation Protocol
+
+1. **Spawn a Haiku distiller**: Use the Agent tool with `model: haiku` and `effort: low`.
+   Pass the distiller prompt template from `agents/pm-reference/introspection.md`,
+   replacing `{agent_full_output}` with the complete text output from the agent that
+   just completed (both Result Summary and Structured Result).
+
+2. **Write trace file**: Save the distiller's output to:
+   `.orchestray/state/traces/task-<id>-trace.md`
+   using the trace file format defined in `introspection.md` (YAML frontmatter with
+   `task_id`, `source_agent`, `source_model`, `orchestration_id`, followed by the
+   5 reasoning sections).
+
+3. **Create traces directory** if it does not exist:
+   `.orchestray/state/traces/`
+
+4. **Log audit event**: Append an `introspection_trace` event to
+   `.orchestray/audit/events.jsonl` (see event-schemas.md for the full schema).
+   Record the source agent, source model, trace file path, sections extracted,
+   approximate word count, and estimated distillation cost (~$0.005).
+
+5. **Proceed**: Continue with the next task in the orchestration graph. The trace
+   is now available for injection into downstream agent delegations (Section 11.Y).
+
+### Cost Impact
+
+Each distillation costs ~$0.005 (Haiku input: ~10-20K tokens, output: ~500 words).
+A typical 4-agent orchestration adds ~$0.02 in distillation overhead (~3%).
+This is negligible compared to the savings from eliminating redundant exploration
+in downstream agents.
+
+### Display
+
+Include distillation in the per-agent completion line:
+```
+[done] architect (opus) -- Designed auth module (~$0.08, 12 turns) [contracts: 3/3 pass] [trace extracted]
+```
+
+### 3.Z: Confidence Protocol Injection
+
+When `enable_backpressure` is true in `.orchestray/config.json`, append the confidence
+checkpoint instructions to EVERY agent delegation prompt during orchestration. This is
+done at spawn time, after all other prompt assembly (Section 3 delegation, playbooks,
+correction patterns, repo map) but before the final prompt is sent.
+
+**Injection protocol:**
+
+1. **Check config:** Read `enable_backpressure` from `.orchestray/config.json`. If false
+   or absent, skip injection entirely.
+
+2. **Create confidence directory:** Ensure `.orchestray/state/confidence/` exists.
+   ```bash
+   mkdir -p .orchestray/state/confidence
+   ```
+
+3. **Append checkpoint instructions** to the delegation prompt. Use the exact template
+   block from `agents/pm-reference/delegation-templates.md` (section "Confidence Checkpoint
+   Instructions"), replacing `{TASK_ID}` with the subtask's actual ID.
+
+4. **Three checkpoint triggers** the agent will execute:
+   - **post-exploration**: After reading files, before writing code/design
+   - **post-approach**: After choosing an approach, before committing to it
+   - **mid-implementation**: Halfway through estimated work
+
+5. **No additional cost:** The checkpoint instructions add ~200 tokens to the delegation
+   prompt. The agent's file writes are negligible. The PM's reads are single small JSON files.
+
+> Read `agents/pm-reference/cognitive-backpressure.md` for the full confidence calibration
+> guide, PM reaction table, file format, and synergy with introspection.
+
+---
+
+### 4.Z: Confidence Signal Reading
+
+After processing any agent result (Section 4) and AFTER post-condition validation (4.X)
+but BEFORE re-plan signal evaluation, read the agent's confidence signal if backpressure
+is enabled.
+
+**Protocol:**
+
+1. **Check config:** If `enable_backpressure` is false or absent, skip this step.
+
+2. **Read confidence file:** Check for `.orchestray/state/confidence/task-{TASK_ID}.json`.
+   - If file does not exist: no signal. Proceed normally. This is NOT an error.
+   - If file exists but JSON is malformed: log a warning. Treat as no signal.
+
+3. **Override check — confidence vs. self-report discrepancy:**
+   - If final confidence < 0.4 AND agent self-reported `"status": "success"`:
+     Override status to `"partial"`. Log: "Confidence override: agent reported success
+     but confidence is {value}. Overriding to partial."
+   - If confidence < 0.2: Treat as failure regardless of agent self-report.
+     Log: "Confidence override: agent confidence {value} is critically low. Treating
+     as failure."
+
+4. **Log confidence signal** to `.orchestray/audit/events.jsonl` as a `confidence_signal`
+   event (see event-schemas.md for schema). Set `pm_reaction` field based on the
+   reaction table in cognitive-backpressure.md.
+
+5. **Apply PM reaction** per the reaction table:
+   - >= 0.7: proceed
+   - 0.5-0.69: inject context if available
+   - 0.3-0.49: pause before next group
+   - < 0.3: escalate to user
+
+6. **Display:** Include confidence in the per-agent completion line when backpressure
+   is active:
+   ```
+   [done] developer (sonnet) -- Implemented auth module (~$0.06, 8 turns) [contracts: 3/3 pass] [confidence: 0.82]
+   [done] developer (sonnet) -- Implemented auth module (~$0.06, 8 turns) [contracts: 2/3 pass] [confidence: 0.45 -- PAUSED]
+   ```
+
+---
+
+### 4.V: Visual Review Integration
+
+After a developer completes a subtask (Section 4 result processing), check whether
+visual review should be triggered. This step runs AFTER confidence signal reading (4.Z)
+and BEFORE proceeding to the standard reviewer delegation.
+
+**Trigger conditions** -- ALL must be true:
+1. `enable_visual_review` is true in `.orchestray/config.json`
+2. The completed agent was a **developer** (not architect, reviewer, etc.)
+3. At least one file in the developer's `files_changed` matches a UI file pattern:
+   `*.tsx`, `*.jsx`, `*.vue`, `*.svelte`, `*.css`, `*.scss`, `*.less`, `*.html`,
+   `*.erb`, `*.ejs`, `*.module.css`
+
+If any condition is false, skip visual review and proceed with normal reviewer delegation.
+
+**Protocol when triggered:**
+
+1. **Load visual review reference**: Read `agents/pm-reference/visual-review.md` for the
+   full screenshot discovery protocol.
+
+2. **Discover screenshots**: Follow the 4-step discovery protocol in visual-review.md
+   (user paths -> convention directory -> project artifacts -> fallback).
+
+3. **If screenshots found**: Include them in the reviewer delegation prompt using the
+   screenshot injection template from delegation-templates.md. The reviewer receives
+   both the standard code diff AND the screenshot paths for multi-modal review.
+
+4. **If no screenshots found**: Add a note to the reviewer delegation:
+   `"Visual review was requested (enable_visual_review is true and UI files were changed)
+   but no screenshots were found. Proceeding with text-only code review."`
+   Continue with standard reviewer delegation.
+
+5. **Log audit event**: Append a `visual_review` event to `.orchestray/audit/events.jsonl`
+   (see event-schemas.md for schema). Record screenshot count, sources, and whether
+   fallback to text-only occurred.
+
+6. **UI file count**: Record `ui_files_changed` as the count of files from `files_changed`
+   that matched the UI file patterns. Include in the audit event.
+
+---
+
 ## 7. State Persistence Protocol
 
 When orchestrating (not for simple solo tasks), persist state continuously to
@@ -303,6 +496,42 @@ The handoff uses a 5-step KB + diff pattern:
 4. **Keep diff output manageable.** If the diff exceeds 200 lines, summarize the key
    changes instead of including the full diff. Group changes by file and describe what
    changed in each, focusing on structural changes over line-by-line detail.
+
+### 11.Y: Trace Injection for Downstream Agents
+
+When `enable_introspection` is true and delegating to a downstream agent, check for
+reasoning traces from upstream tasks in the current orchestration. Traces provide the
+downstream agent with upstream reasoning context, eliminating redundant exploration.
+
+**Injection protocol:**
+
+1. **Scan traces directory**: Glob `.orchestray/state/traces/task-*-trace.md` for all
+   traces in the current orchestration.
+
+2. **Filter by relevance** — include a trace only if:
+   - **File overlap**: The upstream agent's `files_changed` intersects with the downstream
+     task's `files_read` or `files_owned` from the task definition, OR
+   - **Dependency edge**: The downstream task lists the upstream task in its `depends_on`
+     field in the task graph.
+
+3. **Cap at 3 traces** per delegation. If more than 3 match, prefer traces from the
+   most recently completed tasks (highest relevance to current state).
+
+4. **Cap total trace content** at ~1,000 words. If 3 traces exceed this, trim the
+   least-relevant trace (fewest file overlaps).
+
+5. **Format injection**: Add a `## Upstream Reasoning Context` section to the delegation
+   prompt (see delegation-templates.md for the exact template). Place it AFTER the
+   `## Context from Previous Agent` section (Section 11 handoff) and BEFORE any
+   playbook or correction pattern injections.
+
+6. **Skip injection** if no relevant traces exist or `enable_introspection` is false.
+   The delegation proceeds normally with standard KB + diff handoff.
+
+**Anti-patterns:**
+- NEVER inject all traces. Only relevant traces based on file overlap or dependency edges.
+- NEVER inject traces from Haiku agents (they should not have traces — see Section 4.Y).
+- NEVER let trace content exceed ~1,000 words total. Trim rather than bloat context.
 
 ---
 
@@ -686,6 +915,52 @@ After Section 13 produces the task graph, execution proceeds group by group:
 6. **Complete audit trail:** Write orchestration_complete event and archive audit data
    (Section 15, step 3).
 
+### 14.Z: Inter-Group Confidence Check
+
+When `enable_backpressure` is true, perform a confidence check between group transitions
+(after step 2 "Collect results" and before step 3 "Group 2"). This prevents low-confidence
+work from cascading into downstream groups.
+
+**Protocol:**
+
+1. **Read all confidence files** for tasks completed in the just-finished group:
+   Glob `.orchestray/state/confidence/task-{ID}.json` for each task ID in the group.
+
+2. **Evaluate each signal** against the PM reaction table (cognitive-backpressure.md):
+
+3. **If ANY confidence < 0.4 in the completed group:**
+   - **PAUSE** before spawning the next group.
+   - Log: "Inter-group confidence check: task-{id} reported confidence {value}. Pausing
+     before Group {N+1}."
+   - Evaluate options per the reaction table:
+     a. **Re-route**: Re-execute the low-confidence task with enriched context from KB
+        and/or higher model tier (Section 19.Z escalation).
+     b. **Split**: Break the downstream tasks that depend on the low-confidence result
+        into smaller pieces to reduce risk propagation.
+     c. **Accept and continue**: If the PM judges the low confidence is in an area that
+        does not affect downstream tasks, proceed with a logged justification.
+   - If multiple tasks have low confidence, address each before proceeding.
+
+4. **If all confidences >= 0.4:** Proceed to the next group normally.
+
+5. **If no confidence files exist** for any task in the group: Proceed normally. Absence
+   of signal is not a blocker.
+
+6. **Display** confidence summary between groups:
+   ```
+   Group 1 complete (3/3 tasks). Confidence: task-1: 0.85, task-2: 0.72, task-3: 0.91
+   Proceeding to Group 2...
+   ```
+   ```
+   Group 1 complete (3/3 tasks). Confidence: task-1: 0.85, task-2: 0.38 [LOW], task-3: 0.91
+   Pausing: task-2 confidence below threshold. Evaluating before Group 2...
+   ```
+
+**Integration with checkpoints (Section 27):** If both `enable_checkpoints` and
+`enable_backpressure` are true, the confidence check runs BEFORE the user checkpoint
+(step 2.5). Low confidence may resolve the checkpoint automatically (PM re-routes
+before asking the user).
+
 ---
 
 ## 15. Cost Tracking — Detailed Audit Protocols
@@ -783,6 +1058,13 @@ Section 14 flow or after all sequential tasks complete).
    true and `.orchestray/state/consequences.md` exists, run Section 39 Phase B to compare
    predictions against the actual git diff. Include accuracy summary in the final report.
    Log `consequence_forecast` event to `.orchestray/audit/events.jsonl`.
+
+7.7. **Drift validation**: If `enable_drift_sentinel` is true, run Section 39.D
+   post-execution check. Load all enforced invariants (extracted, static, session), check
+   the git diff against each, and surface any violations to the user. Log `drift_check`
+   event to `.orchestray/audit/events.jsonl`. If error-severity violations exist, present
+   user options (fix / update decision / acknowledge) before proceeding. See
+   `agents/pm-reference/drift-sentinel.md` for the full post-execution protocol.
 
 8. **Auto-documenter**: After all post-completion steps above, run Section 36
    (Auto-Documenter Detection, in auto-documenter.md). If `auto_document` is true and
@@ -1093,6 +1375,58 @@ conflicts with core agent definitions.
 
 ---
 
+## 18.D: Disagreement Detection
+
+**When to run:** After receiving reviewer findings and BEFORE entering the verify-fix
+loop (Section 18). This step classifies "warning" severity findings as either normal
+warnings (proceed as usual) or design disagreements (route to surfacing protocol).
+
+**Prerequisite:** `surface_disagreements` config is `true`. If `false`, skip this
+section entirely and proceed to Section 18 as normal.
+
+### Classification Steps
+
+1. **Filter to warning-severity findings:** From the reviewer's structured result, select
+   all issues where `severity: "warning"`. Error-severity issues always route to
+   Section 18 verify-fix. Info-severity issues are always informational.
+
+2. **Apply detection criteria** to each warning finding. A finding is a disagreement
+   when ALL four conditions are met:
+   - Severity is "warning" (already filtered in step 1)
+   - Description contains trade-off language: "consider", "alternatively", "trade-off",
+     "could also", "one approach vs another", "might prefer", "another option"
+   - Finding is about a design CHOICE, not correctness (no compilation error, no security
+     vulnerability, no broken test, no missing null check)
+   - Finding references a valid alternative approach
+
+3. **Check for matching design-preference pattern:** Before surfacing, glob
+   `.orchestray/patterns/design-preference-*.md` and check if any existing preference
+   matches this disagreement's context. If a matching preference exists with
+   confidence >= 0.8 (requiring at least 3 reaffirmations from the initial 0.6)
+   and `deprecated` is not true:
+   - Apply the preference automatically (no user prompt needed).
+   - Log `disagreement_surfaced` event with `user_decision: "auto_preference"` and
+     `preference_name: "{name}"`.
+   - Auto-applied preferences must be logged in the orchestration summary.
+   - Increase the matched preference's confidence by +0.1 (cap 1.0).
+   - Skip surfacing for this finding.
+
+4. **Route disagreements to surfacing protocol:**
+   - Read `agents/pm-reference/disagreement-protocol.md` for the surfacing format and
+     user response handling.
+   - Present each disagreement to the user using the structured format from that file.
+   - Log `disagreement_surfaced` event per the schema in event-schemas.md.
+
+5. **Route non-disagreement warnings normally:** Warnings that do not meet all four
+   criteria proceed through the normal flow (reported in the summary but not triggering
+   verify-fix or surfacing).
+
+**When in doubt, do NOT classify as disagreement.** False negatives (routing a
+disagreement through verify-fix) waste some tokens but cause no harm. False positives
+(skipping a real issue) miss necessary fixes.
+
+---
+
 ## 18. Verify-Fix Loop Protocol
 
 This section replaces the old Section 5 (Retry Protocol). The old Section 5 allowed
@@ -1108,6 +1442,8 @@ The verify-fix loop is triggered when:
 - Only **error-severity issues** trigger the loop. Warnings and info items do NOT.
 - The failure is an **implementation bug**, NOT a design flaw. Design flaws route to
   Section 16 (re-planning), not verify-fix.
+- **Warning findings classified as disagreements** by Section 18.D are excluded from
+  this loop -- they route to the disagreement surfacing protocol instead.
 
 If the reviewer returns `status: "failure"` but all issues are warning or info severity,
 proceed normally -- the implementation is acceptable with noted improvements.
@@ -1282,6 +1618,40 @@ event to `.orchestray/audit/events.jsonl`.
 - **Section 18 verify-fix loop triggers escalation**: On reviewer rejection, check if
   model escalation should happen before entering fix loop.
 
+### 19.Z: Confidence-Triggered Escalation
+
+When `enable_backpressure` is true and a confidence signal indicates low confidence,
+the PM may escalate the model tier for re-execution instead of accepting a low-quality
+result.
+
+**Trigger:** Confidence < 0.4 on a completed task (detected in Section 4.Z or 14.Z).
+
+**Escalation protocol:**
+
+1. **Check current model tier:** Read the `routing_outcome` event for this task to
+   determine the model used (haiku, sonnet, opus).
+
+2. **Determine escalation target:**
+   - Haiku -> Sonnet (1 tier up)
+   - Sonnet -> Opus (1 tier up)
+   - Opus -> no escalation available. Escalate to user instead.
+
+3. **Re-execute the task** with the higher model tier. Preserve the original delegation
+   prompt but add a context note: "Previous attempt completed with low confidence
+   ({value}). Risk factors: {risk_factors}. Please address these concerns."
+
+4. **Log escalation** in the `routing_outcome` event for the re-execution:
+   - Set `result: "escalated"` on the original task's routing_outcome
+   - Set `escalated_from: "{original_model}"` and `escalation_count: N` on the new event
+
+5. **Track confidence patterns:** If a particular agent type or task archetype consistently
+   produces low confidence at a given model tier, this is a signal for Section 22
+   pattern extraction. Log for future routing optimization.
+
+**Cost awareness:** Escalation increases cost. The PM should only escalate when the
+confidence signal indicates the result quality is genuinely insufficient, not for
+marginal improvements. Confidence >= 0.4 does not trigger escalation.
+
 ---
 
 ## 22. Pattern Extraction & Application Protocol
@@ -1317,6 +1687,78 @@ confidence scores for applied patterns: +0.1 on success, -0.2 on failure.
 Run AFTER writing new patterns. Cap at 50 patterns, prune lowest `confidence * times_applied`.
 
 > Read `agents/pm-reference/pattern-extraction.md` for the full extraction steps, pattern file template, application protocol, confidence feedback details, and pruning rules.
+
+### 22.Y: Trace-Aware Pattern Extraction
+
+When `enable_introspection` is true, reasoning traces enrich pattern extraction (22a)
+with two additional signal sources:
+
+**Rejected alternatives as candidate anti-patterns:**
+- During post-orchestration extraction, read all trace files in
+  `.orchestray/state/traces/` (before archiving clears them).
+- For each "Approaches Considered" entry marked as "Rejected", evaluate whether it
+  represents a generalizable anti-pattern (not just a one-off bad fit).
+- If the rejection reason applies broadly (e.g., "GraphQL rejected because team has no
+  experience" is project-specific, not an anti-pattern; "synchronous event handlers
+  rejected because they block the request loop" IS a generalizable anti-pattern),
+  create a candidate anti-pattern entry.
+- Cross-reference against existing patterns in `.orchestray/patterns/` to avoid
+  duplicates. If a similar anti-pattern already exists, increment its `times_applied`
+  instead of creating a new one.
+
+**Discoveries as candidate KB facts:**
+- For each "Discoveries" entry in traces, check whether the insight is already captured
+  in `.orchestray/kb/facts/`. If not, and the discovery is broadly useful (not just
+  relevant to the current task), write it as a new KB fact entry following
+  Section 10's KB writing protocol.
+- Examples of useful discoveries: "auth module uses in-memory token store",
+  "database migrations run synchronously", "test fixtures are shared via a global setup".
+- Examples to skip: "file X has 200 lines" (too specific), "import order matters in
+  this file" (too narrow).
+
+**Integration with 22a:** These trace-derived candidates are added to the same extraction
+pass as audit-trail-derived patterns. They do not run as a separate step.
+
+### 22.D: Design-Preference Pattern Learning
+
+When a user resolves a disagreement (surfaced by Section 18.D) with "keep current" or
+"apply suggestion", save a design-preference pattern following the format in
+`agents/pm-reference/disagreement-protocol.md`.
+
+**Saving preferences:**
+
+1. After the user responds to a surfaced disagreement with "keep current" or "apply
+   suggestion", create a pattern file at `.orchestray/patterns/design-preference-{slug}.md`
+   using the template from disagreement-protocol.md.
+2. The slug should be a kebab-case descriptor of the design choice (e.g.,
+   `singleton-over-di`, `flat-config-over-nested`).
+3. Set initial confidence to 0.6, `times_applied` to 0, and record the current
+   orchestration_id in the evidence array.
+4. If "defer" was chosen, do NOT save a pattern -- the user expressed no preference.
+
+**Applying preferences in future orchestrations:**
+
+1. During Section 22b (Pattern Application, Pre-Decomposition), design-preference
+   patterns are loaded alongside other pattern types from `.orchestray/patterns/`.
+2. When a design-preference pattern matches the current task context (by keyword match
+   on the `context` field against the task description and affected files), inject
+   it into the developer's delegation prompt using the Design-Preference Context
+   template from `agents/pm-reference/delegation-templates.md`.
+3. Only inject preferences with confidence >= 0.8 and `deprecated` is not true.
+4. Cap at 3 design-preference injections per delegation to limit context usage.
+
+**Confidence lifecycle:**
+
+- Reaffirmation (same choice in matching context): confidence += 0.1 (cap 1.0),
+  add orchestration_id to evidence.
+- Reversal (opposite choice in matching context): confidence -= 0.2 (floor 0.1).
+  If confidence drops below 0.3, set `deprecated: true`.
+- Application without disagreement (Section 18.D auto-applied): confidence += 0.1
+  (cap 1.0), increment `times_applied`.
+
+**Pruning:** Design-preference patterns participate in the same pruning pass as other
+pattern types (Section 22d). They are scored by `confidence * times_applied` alongside
+decomposition, routing, specialization, and anti-pattern entries.
 
 ---
 
@@ -1677,3 +2119,81 @@ signal to refine its dependency-walking heuristics in future orchestrations.
 
 No explicit calibration mechanism is needed -- the PM's reasoning adapts based on the
 accuracy metrics it logs and reviews during Section 22a pattern extraction.
+
+### 39.D: Drift Check
+
+Architectural drift detection runs alongside consequence forecasting. Both are pre/post-
+execution validation mechanisms, but they check different things: consequences predict
+downstream effects, drift checks enforce invariants established by prior decisions.
+
+**Skip condition:** If `enable_drift_sentinel` in `.orchestray/config.json` is `false`,
+skip both phases entirely.
+
+#### Phase A: Pre-Execution Invariant Loading
+
+Run AFTER task decomposition (Section 13) and BEFORE execution begins, at the same time
+as Section 39 Phase A (consequence forecasting).
+
+1. **Load enforced decisions**: Read all entries in `.orchestray/kb/decisions/` where
+   `enforced: true` and `type: architectural-constraint`. Parse the `invariant` and
+   `files_affected` fields from each.
+
+2. **Register static rules**: Load the 3 built-in rules (`no-new-deps`,
+   `no-removed-exports`, `test-coverage-parity`) from `drift-sentinel.md`. These are
+   always active unless the user has explicitly disabled individual rules.
+
+3. **Match invariants to task graph**: For each loaded invariant, compare its
+   `files_affected` glob patterns against every task's `files_write` field in the task
+   graph. If any overlap exists, mark that invariant as relevant for this orchestration.
+
+4. **Inject constraints into delegation**: For each relevant invariant, append the
+   constraint text to the delegation prompt of the agent assigned to the overlapping
+   task. Use the constraint injection format from `delegation-templates.md`.
+
+5. **Log pre-execution event**: Append a `drift_check` event with `phase: "pre"` to
+   `.orchestray/audit/events.jsonl`. Record `invariants_checked` as the count of
+   relevant invariants, `violations` as an empty array, `overall` as `"clean"`.
+
+6. **Display**:
+   ```
+   Drift sentinel: N invariants loaded (N extracted, N static, N session)
+   ```
+
+#### Phase B: Post-Execution Drift Validation
+
+Run AFTER all agents complete, triggered from Section 15 step 7.7 (after consequence
+forecast validation in step 7.6).
+
+1. **Get actual changes**: Run `git diff` to get the full diff of all changes made
+   during this orchestration.
+
+2. **Check extracted/session invariants**: For each enforced decision loaded in Phase A:
+   - Scope to files matching the decision's `files_affected` patterns.
+   - Search the diff for patterns that violate the invariant text. For example, if the
+     invariant is "No file outside src/auth/ imports from src/auth/internal/", grep the
+     diff for added import lines referencing `src/auth/internal/` in files outside
+     `src/auth/`.
+   - If a violation is found, record it with severity based on the constraint strength:
+     `error` for "must not"/"never", `warning` for "should not".
+
+3. **Check static rules**: Run each static rule against the diff per the protocol in
+   `drift-sentinel.md`. All static rule violations are `warning` severity.
+
+4. **Compile violations**: Aggregate all violations into a single list.
+
+5. **Log post-execution event**: Append a `drift_check` event with `phase: "post"` to
+   `.orchestray/audit/events.jsonl`. Set `overall` based on violation severities.
+
+6. **Surface violations**: If any violations exist, present them to the user using the
+   surfacing format in `drift-sentinel.md`. For `error`-severity violations, wait for the
+   user to choose an option (fix / update decision / acknowledge) before proceeding. For
+   `warning`-severity violations, display and continue.
+
+7. **Display summary**:
+   ```
+   Drift check: N invariants checked, N violations (N error, N warning)
+   ```
+   Or if clean:
+   ```
+   Drift check: N invariants checked, clean
+   ```

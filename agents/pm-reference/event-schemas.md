@@ -48,6 +48,41 @@ increments. For example, a Haiku task that escalated to Sonnet would have:
 
 ---
 
+## Confidence Signal Event
+
+Appended during Section 4.Z (Confidence Signal Reading) after reading an agent's
+confidence file. Also appended during Section 14.Z (Inter-Group Confidence Check)
+when evaluating confidence between groups.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "confidence_signal",
+  "orchestration_id": "<current orch id>",
+  "task_id": "<subtask id>",
+  "agent_type": "<architect|developer|reviewer|...>",
+  "checkpoint": "post-exploration | post-approach | mid-implementation | final",
+  "confidence": 0.65,
+  "risk_factors": ["unfamiliar dependency pattern"],
+  "estimated_remaining_turns": 12,
+  "would_benefit_from": "architect guidance on module boundary | null",
+  "pm_reaction": "proceed | inject_context | escalate | abort"
+}
+```
+
+Field notes:
+- `checkpoint`: The checkpoint at which the agent last wrote its confidence signal.
+  Value is one of `post-exploration`, `post-approach`, `mid-implementation`. The PM
+  sets this to `final` when logging the signal after agent completion if the agent's
+  last checkpoint was `mid-implementation`.
+- `confidence`: Float 0.0-1.0 copied from the agent's confidence file.
+- `risk_factors`: Array of specific concern strings from the agent's confidence file.
+- `pm_reaction`: The action the PM took based on the confidence band:
+  `proceed` (>= 0.7), `inject_context` (0.5-0.69), `escalate` (0.3-0.49),
+  `abort` (< 0.3). Determined by the PM reaction table in cognitive-backpressure.md.
+
+---
+
 ## Section 20: Specialist Saved Event
 
 Appended when a dynamic agent is saved as a persistent specialist:
@@ -233,6 +268,83 @@ Field notes:
 
 ---
 
+## Introspection Trace Event
+
+Appended during Section 4.Y (Reasoning Trace Distillation) after each non-Haiku agent
+completes and the Haiku distiller extracts a reasoning trace:
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "introspection_trace",
+  "orchestration_id": "<current orch id>",
+  "task_id": "<subtask id>",
+  "source_agent": "<architect|developer|reviewer|...>",
+  "source_model": "<sonnet|opus>",
+  "distiller_model": "haiku",
+  "trace_file": ".orchestray/state/traces/task-<id>-trace.md",
+  "sections_extracted": ["approaches_considered", "assumptions", "trade_offs", "risky_decisions", "discoveries"],
+  "word_count": 450,
+  "distillation_cost_usd": 0.005
+}
+```
+
+Field notes:
+- `source_agent`: The agent type whose output was distilled (never "haiku" — Haiku agents
+  are skipped per Section 4.Y skip conditions).
+- `source_model`: The model used by the source agent (sonnet or opus, never haiku).
+- `distiller_model`: Always "haiku" — the distiller is a lightweight Haiku agent.
+- `sections_extracted`: The 5 reasoning sections present in the trace file. Always all 5
+  (sections with no content contain "None identified.").
+- `word_count`: Approximate total word count across all 5 sections.
+- `distillation_cost_usd`: Estimated cost of the Haiku distillation (~$0.005).
+
+---
+
+## Disagreement Surfaced Event
+
+Appended during Section 18.D (Disagreement Detection) when a reviewer warning is
+classified as a design trade-off and surfaced to the user:
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "disagreement_surfaced",
+  "orchestration_id": "<current orch id>",
+  "task_id": "<subtask id>",
+  "agent_a": {
+    "type": "reviewer",
+    "position": "<description of the reviewer's suggested approach>"
+  },
+  "agent_b": {
+    "type": "developer",
+    "position": "<description of the developer's implemented approach>"
+  },
+  "category": "design-preference | security-trade-off | performance-trade-off",
+  "user_decision": "keep_current | apply_suggestion | defer | auto_preference",
+  "preference_saved": true,
+  "preference_name": "<kebab-case name of the saved design-preference pattern, or null>"
+}
+```
+
+Field notes:
+- `agent_a`: The reviewer who raised the finding. `position` summarizes their suggestion.
+- `agent_b`: The developer whose implementation is being questioned. `position` summarizes
+  what they built.
+- `category`: Classification of the trade-off type. `design-preference` for general design
+  choices, `security-trade-off` for security vs. convenience trade-offs,
+  `performance-trade-off` for performance vs. readability trade-offs.
+- `user_decision`: The user's choice. `keep_current` means the developer's approach stands.
+  `apply_suggestion` means the reviewer's approach will be implemented. `defer` means the
+  user chose not to decide now. `auto_preference` means a matching design-preference pattern
+  was applied automatically without prompting the user.
+- `preference_saved`: Whether a design-preference pattern was created or updated. Always
+  `false` when `user_decision` is `"defer"`.
+- `preference_name`: The name of the saved or updated pattern, or `null` if no pattern
+  was saved.
+
+---
+
 ## Agent Stop Event
 
 Appended when an agent finishes execution (used in audit trail and cost tracking):
@@ -255,3 +367,106 @@ Appended when an agent finishes execution (used in audit trail and cost tracking
   "turns_used": 12
 }
 ```
+
+---
+
+## Invariant Extracted Event
+
+Appended during Section 4 result processing when an architect agent completes and
+`enable_drift_sentinel` is true. Records each invariant extracted from the architect's
+output after user confirmation.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "invariant_extracted",
+  "orchestration_id": "<current orch id>",
+  "task_id": "<subtask id>",
+  "source": "architect-extraction | static-rule",
+  "invariant_id": "decision-{slug}",
+  "invariant_text": "<human-readable invariant>",
+  "confidence": 0.8,
+  "user_confirmed": true
+}
+```
+
+Field notes:
+- `source`: How the invariant was identified. `architect-extraction` for invariants
+  parsed from architect output. `static-rule` for built-in rules registered at
+  orchestration start.
+- `confidence`: 0.8 for explicit "must"/"never" statements, 0.6 for "should" statements.
+- `user_confirmed`: Whether the user confirmed the invariant before enforcement. Always
+  `true` for architect-extracted invariants (confirmation is required). Always `true` for
+  static rules (they are enabled by default).
+
+---
+
+## Drift Check Event
+
+Appended during Section 15 step 7.7 (post-execution drift validation) when
+`enable_drift_sentinel` is true.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "drift_check",
+  "orchestration_id": "<current orch id>",
+  "phase": "pre | post",
+  "invariants_checked": 3,
+  "violations": [
+    {
+      "rule": "no-removed-exports | decision-auth-isolation | ...",
+      "source": "static | extracted | session",
+      "severity": "error | warning",
+      "detail": "Human-readable description of the violation",
+      "file": "path/to/violating/file"
+    }
+  ],
+  "overall": "clean | warnings | violations"
+}
+```
+
+Field notes:
+- `phase`: `"pre"` for pre-execution invariant loading, `"post"` for post-execution
+  drift validation. Pre-execution events have zero violations (they record what was loaded).
+- `violations`: Array of individual violations found. Empty array if `overall` is `"clean"`.
+- `source`: How the violated invariant was established — `static` for built-in rules,
+  `extracted` for architect-output invariants, `session` for same-orchestration decisions.
+- `severity`: `"error"` for explicit "must not"/"never" invariants, `"warning"` for
+  "should" invariants and static rule violations.
+- `overall`: `"clean"` if no violations, `"warnings"` if only warning-severity violations,
+  `"violations"` if any error-severity violations exist.
+
+---
+
+## Visual Review Event
+
+Appended during Section 4.V (Visual Review Integration) after screenshot discovery
+completes and the reviewer delegation is prepared:
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "visual_review",
+  "orchestration_id": "<current orch id>",
+  "task_id": "<subtask id>",
+  "screenshots_found": 3,
+  "screenshot_sources": ["convention", "storybook", "cypress", "playwright", "manual", "other"],
+  "visual_findings": { "error": 0, "warning": 1, "info": 1 },
+  "ui_files_changed": 2,
+  "fallback_to_text_only": false
+}
+```
+
+Field notes:
+- `screenshots_found`: Total number of screenshots discovered across all sources. `0` if
+  fallback to text-only.
+- `screenshot_sources`: Array of source classifications (see visual-review.md for the
+  classification table). Empty array if no screenshots found.
+- `visual_findings`: Counts of visual-specific issues reported by the reviewer, by severity.
+  Populated after the reviewer completes. Set to `{ "error": 0, "warning": 0, "info": 0 }`
+  if fallback to text-only or if the reviewer reported no visual findings.
+- `ui_files_changed`: Count of files from the developer's `files_changed` that matched
+  UI file patterns (*.tsx, *.jsx, *.vue, *.svelte, *.css, *.scss, *.less, *.html, etc.).
+- `fallback_to_text_only`: `true` if `enable_visual_review` was true and UI files were
+  changed but no screenshots were found. `false` if screenshots were found and used.

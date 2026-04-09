@@ -134,6 +134,59 @@ Follow this 5-step pattern for every sequential agent handoff:
 
 ---
 
+## Trace Injection Format
+
+When `enable_introspection` is true and relevant reasoning traces exist (per Section 11.Y
+filtering rules in tier1-orchestration.md), include this section in the delegation prompt.
+Place it AFTER `## Context from Previous Agent` and BEFORE any playbook or correction
+pattern injections.
+
+### Template
+
+```
+## Upstream Reasoning Context
+
+The following reasoning traces were extracted from upstream agents in this orchestration.
+Use them to avoid re-exploring rejected approaches and to build on discovered insights.
+
+### Trace: {source_agent} on task-{task_id} ({source_model})
+
+**Approaches Considered:**
+{approaches_considered section content}
+
+**Assumptions Made:**
+{assumptions section content}
+
+**Key Trade-Offs:**
+{trade_offs section content}
+
+**Risky Decisions:**
+{risky_decisions section content}
+
+**Discoveries:**
+{discoveries section content}
+
+[Repeat for up to 3 relevant traces]
+```
+
+### Template Field Reference
+
+- `{source_agent}`: The agent type that produced the trace (architect, developer, etc.)
+- `{task_id}`: The subtask ID from the trace's YAML frontmatter
+- `{source_model}`: The model used by the source agent (sonnet, opus)
+- Section content fields: Copy directly from the trace file's markdown sections
+
+### Rules
+
+- Only include traces that pass the relevance filter (file overlap or dependency edge).
+- Cap at 3 traces and ~1,000 words total. If exceeded, drop the least relevant trace.
+- If no relevant traces exist, omit the entire `## Upstream Reasoning Context` section.
+  Do NOT include an empty section.
+- Traces from Haiku agents should never exist (Section 4.Y skips Haiku), but if
+  encountered, exclude them.
+
+---
+
 ## Per-Agent Pre-Flight Checklists
 
 Before spawning any agent, the PM must verify the delegation prompt addresses every item
@@ -206,3 +259,191 @@ zero tool calls, zero extra cost. Items that cannot be addressed should be noted
 - [ ] Security requirements listed? (compliance standards, auth model, data sensitivity)
 - [ ] Existing security measures noted? (current auth, encryption, input validation in place)
 - [ ] Output format specified? (threat model, vulnerability report, remediation plan)
+
+---
+
+## Confidence Checkpoint Instructions
+
+When `enable_backpressure` is true, append this block to every agent delegation prompt
+(architect, developer, reviewer, refactorer, inventor, debugger, tester, documenter,
+security-engineer, and dynamic agents). This is the exact template used by Section 3.Z
+in tier1-orchestration.md. Replace `{TASK_ID}` with the subtask's actual ID before
+injection.
+
+### Template Block
+
+```
+## Confidence Checkpoints
+
+At three points during your work, pause and write a confidence signal to:
+  .orchestray/state/confidence/task-{TASK_ID}.json
+
+Use this exact JSON format:
+{
+  "task_id": "{TASK_ID}",
+  "checkpoint": "<post-exploration|post-approach|mid-implementation>",
+  "confidence": <0.0-1.0>,
+  "risk_factors": ["<list of specific concerns>"],
+  "estimated_remaining_turns": <number>,
+  "would_benefit_from": "<what additional context would help, or null>"
+}
+
+Checkpoint triggers:
+1. AFTER reading relevant files but BEFORE writing any code/design — write with
+   checkpoint "post-exploration"
+2. AFTER deciding on an implementation approach but BEFORE committing to it — write
+   with checkpoint "post-approach"
+3. HALFWAY through your estimated work — write with checkpoint "mid-implementation"
+
+Each write overwrites the previous one. Only your latest signal matters.
+
+Confidence calibration:
+- 0.9+: Very confident, familiar pattern, clear path
+- 0.7-0.89: Confident but some unknowns, manageable risk
+- 0.5-0.69: Uncertain, multiple concerns, may need help
+- 0.3-0.49: Low confidence, significant blockers, approach may be wrong
+- <0.3: Very low, should probably stop and get guidance
+
+Be honest. Overconfidence wastes more tokens than admitting uncertainty.
+In risk_factors, be specific: "unfamiliar async pattern in auth module" not "might be hard".
+In would_benefit_from, name the exact context: "architect guidance on module boundary"
+or null if nothing specific would help.
+```
+
+### Injection Rules
+
+- Place the `## Confidence Checkpoints` section at the END of the delegation prompt,
+  after all other sections (task description, context, playbooks, corrections, repo map,
+  upstream traces).
+- The section is self-contained — agents do not need to read any external file to
+  understand the protocol.
+- For dynamic agents (Section 17), include the same template block in the dynamically
+  generated agent definition's system prompt.
+- If `enable_backpressure` is false or absent, omit this section entirely. Do not include
+  an empty placeholder.
+
+---
+
+## Design-Preference Context
+
+When `surface_disagreements` is true and matching design-preference patterns exist for
+the current task context (per Section 22.D in tier1-orchestration.md), inject this
+section into the delegation prompt. Place it AFTER playbook and correction pattern
+injections and BEFORE confidence checkpoints.
+
+### Template
+
+```
+## Design Preferences
+
+The following design preferences have been learned from prior user decisions. Follow
+these preferences proactively when the context applies. If you encounter a situation
+where a preference conflicts with correctness or security, note the conflict in your
+result but still follow the preference unless doing so would introduce a bug.
+
+- **{preference_name}**: {description}
+  Context: {context field from the pattern}
+  Confidence: {confidence}
+
+[Repeat for each matching preference, up to 3]
+```
+
+### Injection Rules
+
+- Only include preferences with confidence >= 0.5 and `deprecated` is not true.
+- Match preferences against the current subtask by comparing the pattern's `context`
+  field against the task description and affected file paths (keyword match).
+- Cap at 3 preferences per delegation. If more than 3 match, prioritize by confidence
+  (highest first).
+- If no matching preferences exist, omit the entire `## Design Preferences` section.
+  Do NOT include an empty section.
+
+---
+
+## Architectural Invariant Constraints
+
+When `enable_drift_sentinel` is true and enforced invariants overlap with a subtask's
+`files_write` (per Section 39.D Phase A in tier1-orchestration.md), inject this section
+into the delegation prompt. Place it AFTER design preferences and BEFORE confidence
+checkpoints.
+
+### Template
+
+```
+## Architectural Constraints
+
+The following architectural invariants are enforced for this task. You MUST NOT violate
+these constraints. If a constraint prevents you from completing the task as described,
+report this in your result rather than silently violating the invariant.
+
+- **{invariant_id}**: {invariant text}
+  Source: {source — architect-extraction | static-rule | user-defined}
+  Files: {files_affected patterns}
+
+[Repeat for each matched invariant]
+```
+
+### Injection Rules
+
+- Only include invariants with `enforced: true` whose `files_affected` patterns overlap
+  with the subtask's `files_write` fields.
+- For architect delegations: include ALL enforced invariants (architects need the full
+  picture to produce designs that respect existing constraints). Additionally, instruct
+  the architect to output architectural decisions in extractable format — use explicit
+  constraint language ("must", "must not", "always", "never") when stating invariants
+  so the PM can auto-extract them post-completion.
+- For developer delegations: include only invariants whose `files_affected` overlap with
+  the specific files the developer will modify.
+- Cap at 5 invariants per delegation. If more than 5 match, prioritize by severity
+  (error-level first) then recency.
+- If no matching invariants exist, omit the entire `## Architectural Constraints` section.
+  Do NOT include an empty section.
+
+---
+
+## Visual Review Screenshot Injection
+
+When `enable_visual_review` is true and Section 4.V discovers screenshots, inject this
+section into the reviewer delegation prompt. Place it AFTER the `## Git Diff` section
+and BEFORE any playbook, correction pattern, or confidence checkpoint injections.
+
+### Template
+
+```
+## Visual Review Context
+
+You have been provided with screenshot images of the UI changes alongside the code diff.
+Perform a multi-modal review that examines BOTH the code AND the visual output.
+
+### Visual Review Checklist
+
+1. **Layout integrity**: Are elements properly aligned, spaced, and contained within their parents?
+2. **Text rendering**: Is all text visible, properly sized, and not clipped or overflowing?
+3. **Color and contrast**: Do colors match the expected design? Is text readable against its background?
+4. **Typography**: Are font sizes, weights, and families consistent with the design system?
+5. **Responsive indicators**: If multiple viewport screenshots are provided, check consistency across sizes.
+6. **Regression signals**: Does anything look broken, misaligned, or visually different from what the code change intends?
+7. **Accessibility signals**: Are interactive elements visually distinguishable? Is there sufficient color contrast?
+
+### Severity for Visual Issues
+
+- error: Visible rendering bug -- broken layout, overlapping elements, invisible text, missing components
+- warning: Degraded but functional -- spacing inconsistency, contrast borderline, alignment slightly off
+- info: Cosmetic suggestion -- could be improved but not broken
+
+### Screenshots Provided
+
+{for each screenshot: "- {path} (source: {source_classification})"}
+{if before/after pairs exist: "Before/after pairs: {list of paired filenames}"}
+
+Use the Read tool to view each screenshot image. Compare what you see against the code
+diff to identify any discrepancies between intent and rendered result.
+```
+
+### Injection Rules
+
+- Only inject when Section 4.V found at least one screenshot.
+- If no screenshots were found, omit the entire `## Visual Review Context` section.
+  The reviewer proceeds with standard text-only review.
+- Cap at 10 screenshot paths in the list (per visual-review.md cap rules).
+- Before/after pairs should be listed together so the reviewer examines them side by side.
