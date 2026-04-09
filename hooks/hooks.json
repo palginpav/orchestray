@@ -53,6 +53,15 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/collect-agent-metrics.js",
+            "timeout": 15
+          }
+        ]
       }
     ],
     "TeammateIdle": [

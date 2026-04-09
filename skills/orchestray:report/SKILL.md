@@ -48,7 +48,7 @@ The user wants an audit report of a completed orchestration.
 
 *Costs are estimates based on model pricing at time of execution.*
 
-Populate from `agent_stop` events in `events.jsonl`: use the `usage` fields (`input_tokens`, `output_tokens`, `cache_read_input_tokens`) and `estimated_cost_usd` for each agent. Populate the Model column from the `model_used` field in `agent_stop` events. If `model_used` is null (pre-routing event), show "sonnet" as default. Sum all rows for the Total line.
+Populate from `agent_stop` and `task_completed_metrics` events in `events.jsonl`: use the `usage` fields (`input_tokens`, `output_tokens`, `cache_read_input_tokens`) and `estimated_cost_usd` for each agent. In Agent Teams mode, cost events have type `task_completed_metrics` instead of `agent_stop` — include both. Populate the Model column from the `model_used` field. If `model_used` is null (pre-routing event), show "sonnet" as default. Sum all rows for the Total line.
 
 ### Model Routing
 
@@ -73,7 +73,7 @@ Populate from `routing_outcome` events in `events.jsonl`. One row per `routing_o
 
 *Savings vs. all-Opus baseline: ~$0.07 (32%)*
 
-Populate from `agent_stop` events: use `model_used` for the Model Used column, `estimated_cost_usd` for Actual Cost, and `estimated_cost_opus_baseline_usd` for the Opus Baseline. Calculate savings as `opus_baseline - actual`. Calculate percentage as `((opus_baseline - actual) / opus_baseline * 100)`. Sum all rows for totals.
+Populate from `agent_stop` and `task_completed_metrics` events: use `model_used` for the Model Used column, `estimated_cost_usd` for Actual Cost, and `estimated_cost_opus_baseline_usd` for the Opus Baseline. Calculate savings as `opus_baseline - actual`. Calculate percentage as `((opus_baseline - actual) / opus_baseline * 100)`. Sum all rows for totals.
 
 **Historical savings comparison:** After the savings table, if `.orchestray/history/` contains past orchestrations, find the most recent orchestration whose task description shares 3+ keywords with the current task. If a similar previous orchestration is found, add:
 
