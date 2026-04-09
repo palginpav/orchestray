@@ -365,7 +365,7 @@ as a baseline; per-invocation override is a best-effort signal via the prompt.
 For dynamic agents (Section 17, in tier1-orchestration.md): Write both `model: {routed_model}` and
 `effort: {routed_effort}` in the frontmatter of the generated agent definition file.
 
-Example: `Agent(subagent_type="developer", model="sonnet", description="Fix auth (sonnet)", ...)`
+Example: `Agent(subagent_type="developer", model="sonnet", description="Fix auth (sonnet/medium)", ...)`
 
 The `model:` frontmatter in `agents/*.md` files has NO effect on built-in agent types
 spawned via `subagent_type`. Only the Agent() tool's `model` parameter controls the model.
@@ -710,13 +710,13 @@ Always tell the user what you are doing. Orchestration should feel transparent, 
 **Before group execution:** Announce the group with agent assignments and task summaries:
 ```
 Starting Group {N}/{total_groups}: 
-  - {agent_type} → {one-line task summary} ({model})
-  - {agent_type} → {one-line task summary} ({model})
+  - {agent_type} → {one-line task summary} ({model}/{effort})
+  - {agent_type} → {one-line task summary} ({model}/{effort})
 ```
 
 **After each agent completes:** Report immediately:
 ```
-[done] {agent_type} ({model}) — {one-line result} (~${cost}, {turns} turns)
+[done] {agent_type} ({model}/{effort}) — {one-line result} (~${cost}, {turns} turns)
 ```
 
 **After group completes:** Show running total:
@@ -951,16 +951,15 @@ the delegation prompt text instead (see "Model and Effort Assignment at Spawn" a
 
 ### Transparency
 
-When announcing orchestration (Section 0 Medium+ Task Path), include the model assignment
-for each subtask. Include effort only when it differs from the model's default:
+When announcing orchestration (Section 0 Medium+ Task Path), always include the model
+and effort assignment for each subtask:
 
 ```
-Assigning to {role} ({model} -- score {N}/12)
 Assigning to {role} ({model}/{effort} -- score {N}/12)
 ```
 
-Default:  "Assigning to developer (Sonnet -- score 4/12)"
-Override: "Assigning to architect (Opus/max -- score 9/12)"
+Example: "Assigning to developer (sonnet/medium -- score 4/12)"
+Example: "Assigning to architect (opus/max -- score 9/12)"
 
 > For detailed routing outcome logging and integration points, see Section 19 in
 > `agents/pm-reference/tier1-orchestration.md`.
