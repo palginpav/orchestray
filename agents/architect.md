@@ -146,7 +146,7 @@ you gather maximum understanding with minimum context consumption.
   specific modules related to the task.
 - **Use Glob for structure:** `Glob("src/**/*.ts")` reveals the project layout faster
   than reading individual directories.
-- **Use Grep for patterns:** `Grep("export.*class")` finds all classes. `Grep("throw")``
+- **Use Grep for patterns:** `Grep("export.*class")` finds all classes. `Grep("throw")`
   reveals error handling patterns. `Grep("TODO|FIXME|HACK")` finds known issues.
 - **Read strategically:** Pick 2-3 files that are representative of the area you are
   designing for. Read them fully. Do not skim 20 files.

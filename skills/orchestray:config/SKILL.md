@@ -39,6 +39,7 @@ The user wants to view or modify orchestration settings.
   "tdd_mode": false,
   "enable_regression_check": false,
   "enable_prescan": true,
+  "enable_repo_map": true,
   "enable_static_analysis": false,
   "test_timeout": 60,
   "confirm_before_execute": false,
@@ -46,6 +47,7 @@ The user wants to view or modify orchestration settings.
   "ci_command": null,
   "ci_max_retries": 2,
   "post_to_issue": false,
+  "post_pr_comments": false,
   "daily_cost_limit_usd": null,
   "weekly_cost_limit_usd": null
 }
@@ -74,6 +76,7 @@ The user wants to view or modify orchestration settings.
 | `tdd_mode` | boolean | `false` | Prefer test-driven development orchestration flow for new features. When true, PM uses: architect → tester → developer → reviewer |
 | `enable_regression_check` | boolean | `false` | Run test suite before and after orchestration to detect regressions. Requires project to have tests. |
 | `enable_prescan` | boolean | `true` | Lightweight codebase pre-scan on first orchestration per project. Creates codebase overview in KB. |
+| `enable_repo_map` | boolean | `true` | Generate a structured repository map during orchestration init. Provides agents with project structure, exports, and conventions. When false, agents fall back to standard exploration. Also skipped when `enable_prescan` is false. |
 | `enable_static_analysis` | boolean | `false` | Run detected linters/type checkers before reviewer step. Catches deterministic errors cheaply. |
 | `test_timeout` | number | `60` | Maximum seconds for test suite execution during regression check (1-300) |
 | `confirm_before_execute` | boolean | `false` | Show orchestration preview with task graph and cost estimates before execution |
@@ -81,6 +84,7 @@ The user wants to view or modify orchestration settings.
 | `ci_command` | string/null | `null` | Shell command to run as CI check after orchestration (e.g., "npm test", "pytest", "make check"). When set, CI runs automatically after orchestration completes. |
 | `ci_max_retries` | number | `2` | Maximum number of CI fix-retry iterations. When CI fails, PM creates a mini follow-up orchestration to fix failures, up to this many attempts. |
 | `post_to_issue` | boolean | `false` | When orchestrating from a GitHub issue, post an orchestration summary as a comment on the issue after completion. Requires `gh` CLI. |
+| `post_pr_comments` | boolean | `false` | Automatically post review findings to GitHub PRs when using `/orchestray:review-pr` (overrides the `--post-comments` flag requirement). |
 | `daily_cost_limit_usd` | number/null | `null` | Maximum daily orchestration spend in USD. At 80% shows warning, at 100% blocks new orchestrations. Set to null for unlimited. |
 | `weekly_cost_limit_usd` | number/null | `null` | Maximum weekly orchestration spend in USD (Monday-Sunday). At 80% shows warning, at 100% blocks new orchestrations. Set to null for unlimited. |
 
@@ -106,6 +110,7 @@ The user wants to view or modify orchestration settings.
    - `tdd_mode` must be boolean (true/false)
    - `enable_regression_check` must be boolean (true/false)
    - `enable_prescan` must be boolean (true/false)
+   - `enable_repo_map` must be boolean (true/false)
    - `enable_static_analysis` must be boolean (true/false)
    - `test_timeout` must be a number between 1 and 300
    - `confirm_before_execute` must be boolean (true/false)
@@ -113,6 +118,7 @@ The user wants to view or modify orchestration settings.
    - `ci_command` must be null or a non-empty string. If empty string, reject with error: "ci_command must be null (disabled) or a non-empty shell command string."
    - `ci_max_retries` must be a number between 0 and 5
    - `post_to_issue` must be boolean (true/false)
+   - `post_pr_comments` must be boolean (true/false)
    - `daily_cost_limit_usd` must be null or a positive number. If 0 or negative, reject with error: "daily_cost_limit_usd must be null (no limit) or a positive number."
    - `weekly_cost_limit_usd` must be null or a positive number. If 0 or negative, reject with error: "weekly_cost_limit_usd must be null (no limit) or a positive number."
    - When setting `enable_agent_teams` to `true`, output guidance: "To complete Agent Teams setup, also add to your Claude Code settings.json: `\"env\": {\"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS\": \"1\"}`". The config setting controls PM decision logic; the env var enables Claude Code's teams API (two-layer enablement).
@@ -145,6 +151,7 @@ When showing settings:
 | tdd_mode | false | Prefer TDD orchestration flow for new features |
 | enable_regression_check | false | Run test suite before/after orchestration |
 | enable_prescan | true | Codebase pre-scan on first orchestration |
+| enable_repo_map | true | Generate repository map during orchestration init |
 | enable_static_analysis | false | Run linters before reviewer step |
 | test_timeout | 60 | Max seconds for test execution (1-300) |
 | confirm_before_execute | false | Show orchestration preview before execution |
@@ -152,6 +159,7 @@ When showing settings:
 | ci_command | null | CI command to run after orchestration (null = disabled) |
 | ci_max_retries | 2 | Max CI fix-retry iterations (0-5) |
 | post_to_issue | false | Post summary to GitHub issue after orchestration |
+| post_pr_comments | false | Auto-post review findings to GitHub PRs |
 | daily_cost_limit_usd | null | Max daily orchestration spend in USD (null = no limit) |
 | weekly_cost_limit_usd | null | Max weekly orchestration spend in USD (null = no limit) |
 

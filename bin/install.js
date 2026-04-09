@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+'use strict';
 
 const fs = require('fs');
 const path = require('path');
@@ -57,17 +58,17 @@ if (!flags.global && !flags.local) {
 // Source directory (where this script lives relative to the package)
 const pkgRoot = path.resolve(__dirname, '..');
 
+if (flags.uninstall) {
+  uninstall(configDir);
+  process.exit(0);
+}
+
 console.log('');
 console.log('  Orchestray v' + VERSION);
 console.log('  Multi-agent orchestration for Claude Code');
 console.log('');
 console.log(`  Installing ${flags.local ? 'locally' : 'globally'} to ${configDir}`);
 console.log('');
-
-if (flags.uninstall) {
-  uninstall(configDir);
-  process.exit(0);
-}
 
 install(configDir);
 

@@ -17,6 +17,12 @@ The subagent has NO context from this conversation. It starts fresh.
 3. **Requirements and constraints:** Must-haves, must-not-haves
 4. **Expected deliverables:** What the agent should produce
 5. **Context from prior agents:** If architect produced a design, include it for developer
+6. **Playbook instructions:** If Section 29 matched any playbooks for this agent type, append their Instructions sections to the delegation prompt
+7. **Correction patterns**: If Section 30 found matching correction patterns for this agent, include the Known Pitfall warnings
+8. **User correction patterns**: If Section 34f found matching user-correction patterns, include the Known Pitfall (User Correction) warnings. Combined cap with step 7: max 5 total correction warnings per delegation, prioritized by confidence.
+9. **Repository map:** Include the relevant portion of the repo map from
+   `.orchestray/kb/facts/repo-map.md` as a `## Repository Map` section (see Section 3
+   Repository Map Injection rules for per-agent filtering)
 
 ### Example Delegation Prompts
 

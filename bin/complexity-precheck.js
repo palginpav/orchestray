@@ -95,6 +95,7 @@ function scoreComplexity(prompt) {
 function main() {
   let input = '';
   process.stdin.setEncoding('utf8');
+  process.stdin.on('error', () => { process.stdout.write(JSON.stringify({ continue: true })); process.exit(0); });
   process.stdin.on('data', chunk => { input += chunk; });
   process.stdin.on('end', () => {
     const debugLog = `/tmp/orchestray-hook-debug.log`;

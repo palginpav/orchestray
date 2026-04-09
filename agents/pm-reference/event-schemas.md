@@ -84,3 +84,48 @@ Appended when a specialist from the registry is reused for a subtask:
   "times_used": "{new count}"
 }
 ```
+
+---
+
+## Pattern Pruned Event
+
+Appended when low-value patterns are removed during pruning (step 7 of the learn skill):
+
+```json
+{
+  "type": "pattern_pruned",
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx",
+  "name": "pattern-name",
+  "category": "decomposition|routing|specialization|anti-pattern|user-correction",
+  "confidence": 0.5,
+  "times_applied": 0,
+  "score": 0.0,
+  "reason": "Below pruning threshold (cap: 50 patterns)"
+}
+```
+
+---
+
+## Agent Stop Event
+
+Appended when an agent finishes execution (used in audit trail and cost tracking):
+
+```json
+{
+  "type": "agent_stop",
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx",
+  "agent_id": "agent-xxx",
+  "agent_type": "developer",
+  "session_id": "uuid",
+  "last_message_preview": "First 200 chars...",
+  "usage": { "input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0 },
+  "usage_source": "transcript|event_payload|estimated",
+  "estimated_cost_usd": 0.123,
+  "estimated_cost_opus_baseline_usd": 0.456,
+  "transcript_path": "/path/to/transcript.jsonl",
+  "model_used": "sonnet|opus|haiku|null",
+  "turns_used": 12
+}
+```

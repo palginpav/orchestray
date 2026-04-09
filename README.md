@@ -62,9 +62,11 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | `/orchestray:report` | Generate audit report with cost breakdown |
 | `/orchestray:playbooks` | Manage project-specific playbooks |
 | `/orchestray:specialists` | Manage persistent specialist agents |
-| `/orchestray:learn [id]` | Extract patterns / promote to team |
+| `/orchestray:learn [id]` | Extract patterns / promote to team / capture corrections |
 | `/orchestray:resume` | Resume interrupted orchestration |
 | `/orchestray:analytics` | Performance stats + pattern dashboard |
+| `/orchestray:patterns` | Pattern effectiveness dashboard |
+| `/orchestray:review-pr [#/url]` | Review a GitHub pull request |
 | `/orchestray:kb` | View and manage the knowledge base |
 | `/orchestray:update` | Update Orchestray to the latest version |
 
@@ -75,6 +77,7 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | **PM** | Orchestrator — decomposes tasks, assigns work, monitors progress, routes models |
 | **Architect** | Design-only — produces design documents and technical decisions |
 | **Developer** | Implements code changes |
+| **Refactorer** | Systematic code transformation without behavior change |
 | **Reviewer** | Read-only review across 7 dimensions: correctness, quality, security, performance, docs, operability, API compatibility |
 | **Security Engineer** | Shift-left security — design threat review and implementation audit (read-only) |
 | **Debugger** | Systematic bug investigation and root cause analysis (read-only) |

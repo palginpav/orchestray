@@ -55,6 +55,7 @@ Evaluate every task using these four signals, each scoring 0-3 points:
      generation, test writing, reviews of non-complex changes.
 
    **New agent routing defaults:**
+   - **Refactorer**: Sonnet default. Opus for cross-cutting refactors touching 10+ files or changing fundamental patterns (score >= 6).
    - **Debugger**: Sonnet default. Opus for complex multi-file bugs or concurrency issues (score >= 6).
    - **Tester**: Sonnet default. Haiku acceptable for simple boilerplate test generation (score <= 3).
    - **Documenter**: Sonnet default. Haiku acceptable for simple changelog updates (score <= 3).

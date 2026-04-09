@@ -23,6 +23,10 @@ reported, confidence feedback applied via Section 22c).
      specialist reuses that succeeded.
    - **anti-pattern:** Re-plan triggers (`replan` events), verify-fix failures
      (`verify_fix_fail`), escalations (`escalation` events). Record what went wrong and why.
+   - **user-correction:** Direct user corrections captured during or after orchestration
+     (Section 34), or via manual `/orchestray:learn correct` command. These carry high
+     initial confidence (0.8) because the user explicitly stated the correct approach.
+     Stored as `user-correction-{slug}.md` files, matched during delegation (Section 34f).
 
 3. **Skip extraction when:**
    - Orchestration was simple (2-3 tasks, standard architect->developer->reviewer flow

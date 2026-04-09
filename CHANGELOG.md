@@ -3,6 +3,43 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.5] - 2026-04-09
+
+### Added
+- **Refactorer agent** — 9th core agent for systematic code transformation without behavior change. Bridges the architect/developer gap with behavioral equivalence verification.
+- **Repository map** — compact codebase representation injected into agent prompts, reducing exploration overhead by 60-75%. Per-agent filtering, staleness detection, incremental regeneration.
+- **User correction ingestion** — captures direct user corrections as high-confidence patterns. Auto-detection during orchestration, post-orchestration, and manual via `/orchestray:learn correct`.
+- **Pattern effectiveness dashboard** — `/orchestray:patterns` shows pattern inventory, application history, confidence trajectories, estimated savings, and actionable recommendations.
+- **PR review mode** — `/orchestray:review-pr` reviews GitHub PRs using the reviewer agent. Fetches diff via `gh`, optionally posts findings as review comments.
+- **Trajectory analysis** — execution timeline in `/orchestray:report` showing agent sequencing, parallelism, per-agent metrics, and SWE-agent-style insights.
+- **Agent description format** — model name shown in background agent UI instead of redundant agent type.
+- **Model routing enforcement** — PM must pass explicit `model` parameter on Agent() calls; agents no longer silently inherit parent model.
+- 3 new skills: `/orchestray:patterns`, `/orchestray:review-pr`, `/orchestray:learn correct`
+- 2 new config settings: `enable_repo_map`, `post_pr_comments`
+- PM Section 34 (User Correction Protocol), repo map protocol reference, event schemas for `agent_stop` and `pattern_pruned`
+
+### Fixed
+- Agent description bug: background agent UI showed agent type instead of routed model name
+- Model routing: agents inherited parent Opus instead of using routed model (now enforced via explicit `model` parameter)
+- Double backtick in architect.md line 149 breaking prompt rendering
+- `.claude-plugin/` directory missing from package.json `files` array (plugin undiscoverable on npm)
+- stdin error handlers added to all 6 hook scripts (was missing on 4)
+- install.js banner printed before uninstall check
+- install.js missing `'use strict'` directive
+- Pricing comment year updated from 2025 to 2026
+- Analytics skill step 8 referenced wrong frontmatter field names
+- CLAUDE.md missing security-engineer agent and 5 skill commands
+- PM Section 17 and Section 13 missing refactorer/security-engineer from agent lists
+- Delegation templates missing user-correction and repo map steps
+- Learn skill template missing user-correction category
+- Report skill missing cross-references to analytics/patterns
+
+### Changed
+- PM prompt expanded from 34 to 35 sections (2,330 → ~2,500 lines)
+- Config defaults now include 32 keys (was 30)
+- Refactorer added to all PM agent lists, routing defaults, and delegation patterns
+- Pre-scan (step 2.7) replaced by richer repository map generation
+
 ## [2.0.4] - 2026-04-08
 
 ### Added

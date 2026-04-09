@@ -2,7 +2,7 @@
 name: learn
 description: Extract learning patterns from a completed orchestration
 disable-model-invocation: true
-argument-hint: "[orchestration-id] | promote <pattern-name>"
+argument-hint: "[orchestration-id] | promote <pattern-name> | correct [description]"
 ---
 
 # Pattern Extraction
@@ -13,6 +13,7 @@ The user wants to extract reusable patterns from a completed orchestration.
 
 1. **Parse arguments**: `$ARGUMENTS`
    - If the first argument is `promote`: go to the **promote** command below.
+   - If the first argument is `correct`: go to the **correct** command below.
    - If an orchestration ID is provided (e.g., `orch-1712345678`): use it directly as `{orch-id}`.
    - If empty: find the most recent orchestration by listing directories in `.orchestray/history/`, sorting by name (which contains a timestamp), and picking the last one. Report: "Using most recent orchestration: {orch-id}"
 
@@ -21,12 +22,13 @@ The user wants to extract reusable patterns from a completed orchestration.
 
 3. **Read the audit trail:** Read `.orchestray/history/{orch-id}/events.jsonl` line by line. Also read `.orchestray/history/{orch-id}/state/task-graph.md` if it exists (for decomposition context).
 
-4. **Extract patterns** across four categories using the same logic as PM Section 22a:
+4. **Extract patterns** across four categories (plus one correction category) using the same logic as PM Section 22a:
 
    - **decomposition:** Task breakdown strategies from task-graph.md combined with orchestration outcome. Success with zero re-plans = positive pattern. Re-plans present = examine what changed for potential anti-pattern.
    - **routing:** Look for `routing_outcome` events where the chosen model completed without escalation = routing pattern. Escalation needed = anti-pattern.
    - **specialization:** Look for `dynamic_agent_spawn` + `specialist_saved` events where the agent succeeded = specialization pattern.
    - **anti-pattern:** Look for `replan` events, `verify_fix_fail` events, `escalation` events = what went wrong and why.
+   - **user-correction:** Direct user corrections captured during or after orchestration, or via manual `/orchestray:learn correct` command.
 
    **Skip extraction when:**
    - Orchestration was simple (2-3 tasks, standard architect->developer->reviewer flow with no novel insight), OR
@@ -51,7 +53,7 @@ The user wants to extract reusable patterns from a completed orchestration.
    ```markdown
    ---
    name: {kebab-case-name}
-   category: {decomposition|routing|specialization|anti-pattern}
+   category: {decomposition|routing|specialization|anti-pattern|user-correction}
    confidence: {0.5 for positive patterns, 0.6 for anti-patterns}
    times_applied: 0
    last_applied: null
@@ -83,3 +85,26 @@ The user wants to extract reusable patterns from a completed orchestration.
   4. Delete the local copy to avoid duplication
   5. Report: "Pattern '<pattern-name>' promoted to team-patterns/. It will be available to all team members after they pull."
 - If the pattern already exists in `.orchestray/team-patterns/`: ask user whether to overwrite
+
+### correct [description]
+
+Manually capture a user correction as a pattern.
+
+1. **Parse arguments**: `$ARGUMENTS` after the `correct` keyword.
+   - If a description is provided: use it directly as the correction description.
+   - If empty: prompt the user: "Describe what the orchestration got wrong and what the correct approach should be."
+
+2. **Find context**: Check for the most recent orchestration:
+   - List `.orchestray/history/` directories, pick the most recent as `{orch-id}`
+   - If no history exists: use `"manual"` as the `created_from` value
+
+3. **Extract structured fields** from the user's description:
+   - `what_was_wrong`: What the system did incorrectly
+   - `correct_approach`: What should happen instead
+   - `applies_to`: Infer file patterns and task types from the description. If not inferable, ask: "What kinds of tasks should this correction apply to? (e.g., file patterns like `**/*.ts`, task types like `API development`)"
+
+4. **Deduplication**: Check existing patterns per Section 34e rules.
+
+5. **Write pattern file**: Create `.orchestray/patterns/user-correction-{slug}.md` using the Section 34d template. Set `source: manual`.
+
+6. **Confirm**: "Correction pattern saved: `user-correction-{slug}.md` (confidence: 0.8). This will be applied as a warning in future orchestrations that match."

@@ -4,7 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 
-// Model-based pricing per 1M tokens (current Anthropic rates as of 2025)
+// Model-based pricing per 1M tokens (current Anthropic rates as of 2026)
 const PRICING = {
   opus:   { input: 5.00,  output: 25.00 },
   sonnet: { input: 3.00,  output: 15.00 },
@@ -77,6 +77,7 @@ function estimateCost(usage, rates) {
 
 let input = '';
 process.stdin.setEncoding('utf8');
+process.stdin.on('error', () => { process.stdout.write(JSON.stringify({ continue: true })); process.exit(0); });
 process.stdin.on('data', (chunk) => { input += chunk; });
 process.stdin.on('end', () => {
   try {
