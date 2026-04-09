@@ -3,6 +3,33 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.7] - 2026-04-09
+
+### Added
+- **Custom YAML workflows** — Define reusable orchestration sequences in `.orchestray/workflows/*.yaml`. PM auto-matches workflows via `trigger` field or `--workflow` flag. New `/orchestray:workflows` skill for CRUD management.
+- **Auto-documenter** — PM automatically spawns documenter agent after feature additions (new files, exports, endpoints). Opt-in via `auto_document` config setting.
+- **Monorepo awareness** — Auto-detects monorepo structures (pnpm, lerna, nx, turbo) and scopes agent file ownership to affected packages.
+- **Adversarial architecture review** — Two competing architect designs evaluated in parallel for high-complexity tasks (score 8+). Opt-in via `adversarial_review` config setting.
+- **Exportable audit reports** — `/orchestray:report --export json|csv` writes machine-readable report files to `.orchestray/exports/`.
+- **Cross-project pattern transfer** — `/orchestray:learn export` and `/orchestray:learn import` for sharing patterns between projects.
+- **Magic keyword triggers** — Words like "orchestrate", "multi-agent", "use orchestray" automatically trigger orchestration in `complexity-precheck.js`.
+- `.gitignore` negation patterns for `team-config.json`, `team-patterns/`, and `workflows/` (version-controlled team files).
+- 2 new config settings: `auto_document`, `adversarial_review`
+- 1 new skill: `/orchestray:workflows`
+
+### Fixed
+- Agent description format now always shows effort level (e.g., `"Fix auth (sonnet/medium)"`) — previously hidden when effort matched model default.
+- PM Section 0 reference updated from "Sections 1-34" to "Sections 1-38".
+- Magic keyword triggers use word-boundary regex to prevent false positives on conversational text.
+- Workflows skill uses `.yaml` extension consistently (matching PM Section 35).
+- Report `--export` flag parsing moved to step 1 (before orchestration lookup).
+- Learn export confidence threshold corrected from 0.3 to 0.5 (matches minimum creation confidence).
+
+### Changed
+- PM prompt expanded from 34 to 38 sections (2,574 → 2,847 lines)
+- Config defaults now include 35 keys (was 33, added `auto_document` and `adversarial_review`)
+- 15 skills (was 14, added `/orchestray:workflows`)
+
 ## [2.0.6] - 2026-04-09
 
 ### Added

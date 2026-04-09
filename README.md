@@ -62,6 +62,7 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | `/orchestray:report` | Generate audit report with cost breakdown |
 | `/orchestray:playbooks` | Manage project-specific playbooks |
 | `/orchestray:specialists` | Manage persistent specialist agents |
+| `/orchestray:workflows` | Manage custom YAML workflow definitions |
 | `/orchestray:learn [id]` | Extract patterns / promote to team / capture corrections |
 | `/orchestray:resume` | Resume interrupted orchestration |
 | `/orchestray:analytics` | Performance stats + pattern dashboard |
@@ -148,6 +149,7 @@ All orchestration state lives in `.orchestray/` (gitignored):
   config.json     # User configuration (gitignored)
   team-config.json # Team-shared configuration (version-controlled)
   team-patterns/  # Team-shared patterns (version-controlled)
+  workflows/      # Custom YAML workflow definitions (version-controlled)
 ```
 
 ## Requirements

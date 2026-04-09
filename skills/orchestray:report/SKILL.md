@@ -2,7 +2,7 @@
 name: report
 description: Generate audit report for last orchestration
 disable-model-invocation: true
-argument-hint: [orchestration-id] or empty for latest
+argument-hint: "[orchestration-id] [--export json|csv] or empty for latest"
 ---
 
 # Orchestration Report
@@ -12,8 +12,9 @@ The user wants an audit report of a completed orchestration.
 ## Report Generation Protocol
 
 1. **Find the orchestration**: 
-   - If `$ARGUMENTS` is empty: Use the most recent file in `.orchestray/history/`
-   - If `$ARGUMENTS` is provided: Find the matching orchestration in `.orchestray/history/`
+   - First, check if `$ARGUMENTS` contains `--export json` or `--export csv`. If so, extract the export format and remove the `--export <format>` flag from `$ARGUMENTS` before proceeding. Store the export format for step 3.5.
+   - If the remaining `$ARGUMENTS` is empty: Use the most recent file in `.orchestray/history/`
+   - If the remaining `$ARGUMENTS` is provided: Find the matching orchestration in `.orchestray/history/`
    - If no history exists: Report "No completed orchestrations found. Run `/orchestray:run [task]` first."
 
 2. **Read the orchestration record**: Parse the JSON file from history. Also read `.orchestray/history/{orchestration}/events.jsonl` if it exists. Parse each line as JSON. For each parsed event, normalize the type field: use `event.type || event.event` as the canonical event type. This ensures backward compatibility with pre-v2.0.2 events that used `"event"` instead of `"type"` as the key name. Collect all events for this orchestration.
@@ -228,6 +229,30 @@ Render format:
 #### Reviewer
 [reviewer's result summary]
 ```
+
+3.5. **Export** (only when `$ARGUMENTS` contains `--export json` or `--export csv`):
+
+   Parse the export format from `$ARGUMENTS`. Strip `--export json` or `--export csv` from arguments before finding the orchestration ID.
+
+   Create `.orchestray/exports/` directory if it does not exist.
+
+   **JSON export** (`--export json`):
+   - Collect all data that would appear in the report: task, started/completed timestamps, duration, status, agent_activity (array of objects with agent, task, status, files_changed), cost_breakdown (array of objects with agent, model, input_tokens, output_tokens, cache_read, est_cost), routing_decisions (array from routing_outcome events if present), files_changed (deduplicated list), issues (array), total_cost.
+   - Write the data as formatted JSON to `.orchestray/exports/report-{orch-id}.json`.
+   - Display: "Report exported to `.orchestray/exports/report-{orch-id}.json`"
+   - Do NOT render the full markdown report — only show the export path message.
+
+   **CSV export** (`--export csv`):
+   - Collect the Cost Breakdown table data from `agent_stop` and `task_completed_metrics` events.
+   - Write a CSV file to `.orchestray/exports/report-{orch-id}.csv` with this header row and one data row per agent:
+     ```
+     Agent,Model,InputTokens,OutputTokens,CacheRead,EstCost
+     architect,opus,1234,567,890,0.08
+     developer,sonnet,2345,678,901,0.04
+     ```
+   - Include a final row for totals: `TOTAL,,{sum},{sum},{sum},{sum}`
+   - Display: "Cost breakdown exported to `.orchestray/exports/report-{orch-id}.csv`"
+   - Do NOT render the full markdown report — only show the export path message.
 
 4. **Edge cases**:
    - If an orchestration was handled solo (no agents spawned), report that: "This task was handled directly without orchestration."

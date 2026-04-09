@@ -1,5 +1,10 @@
 .planning/
 node_modules/
 .orchestray/
+!.orchestray/team-config.json
+!.orchestray/team-patterns/
+!.orchestray/team-patterns/**
+!.orchestray/workflows/
+!.orchestray/workflows/**
 *.log
 .DS_Store

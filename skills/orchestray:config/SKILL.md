@@ -52,7 +52,9 @@ The user wants to view or modify orchestration settings.
   "post_to_issue": false,
   "post_pr_comments": false,
   "daily_cost_limit_usd": null,
-  "weekly_cost_limit_usd": null
+  "weekly_cost_limit_usd": null,
+  "auto_document": false,
+  "adversarial_review": false
 }
 ```
 
@@ -93,6 +95,8 @@ The user wants to view or modify orchestration settings.
 | `post_pr_comments` | boolean | `false` | Automatically post review findings to GitHub PRs when using `/orchestray:review-pr` (overrides the `--post-comments` flag requirement). |
 | `daily_cost_limit_usd` | number/null | `null` | Maximum daily orchestration spend in USD. At 80% shows warning, at 100% blocks new orchestrations. Set to null for unlimited. |
 | `weekly_cost_limit_usd` | number/null | `null` | Maximum weekly orchestration spend in USD (Monday-Sunday). At 80% shows warning, at 100% blocks new orchestrations. Set to null for unlimited. |
+| `auto_document` | boolean | `false` | Automatically spawn documenter agent after feature additions are detected. Triggers on "New Feature" or "API Addition" archetypes, new file creation, or new exports/endpoints. |
+| `adversarial_review` | boolean | `false` | Enable adversarial architecture review for high-complexity tasks (score 8+). When enabled, two competing architect designs are evaluated in parallel and the PM selects the better approach. Doubles architect cost. |
 
 **Note:** Effort routing requires Claude Code v2.1.33+. On older versions, effort settings
 are recorded in the audit trail but have no effect on agent behavior.
@@ -134,6 +138,8 @@ are recorded in the audit trail but have no effect on agent behavior.
    - `post_pr_comments` must be boolean (true/false)
    - `daily_cost_limit_usd` must be null or a positive number. If 0 or negative, reject with error: "daily_cost_limit_usd must be null (no limit) or a positive number."
    - `weekly_cost_limit_usd` must be null or a positive number. If 0 or negative, reject with error: "weekly_cost_limit_usd must be null (no limit) or a positive number."
+   - `auto_document` must be boolean (true/false)
+   - `adversarial_review` must be boolean (true/false)
    - When setting `enable_agent_teams` to `true`, output guidance: "To complete Agent Teams setup, also add to your Claude Code settings.json: `\"env\": {\"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS\": \"1\"}`". The config setting controls PM decision logic; the env var enables Claude Code's teams API (two-layer enablement).
    - Reject invalid values with a helpful error message
 
@@ -178,6 +184,8 @@ When showing settings:
 | post_pr_comments | false | Auto-post review findings to GitHub PRs |
 | daily_cost_limit_usd | null | Max daily orchestration spend in USD (null = no limit) |
 | weekly_cost_limit_usd | null | Max weekly orchestration spend in USD (null = no limit) |
+| auto_document | false | Auto-spawn documenter after feature additions |
+| adversarial_review | false | Dual-architect review for score 8+ tasks |
 
 Use `/orchestray:config [setting] [value]` to change a setting.
 ```

@@ -2,7 +2,7 @@
 name: learn
 description: Extract learning patterns from a completed orchestration
 disable-model-invocation: true
-argument-hint: "[orchestration-id] | promote <pattern-name> | correct [description]"
+argument-hint: "[orchestration-id] | promote <pattern-name> | correct [description] | export [pattern-name|all] | import <path>"
 ---
 
 # Pattern Extraction
@@ -14,6 +14,8 @@ The user wants to extract reusable patterns from a completed orchestration.
 1. **Parse arguments**: `$ARGUMENTS`
    - If the first argument is `promote`: go to the **promote** command below.
    - If the first argument is `correct`: go to the **correct** command below.
+   - If the first argument is `export`: go to the **export** command below.
+   - If the first argument is `import`: go to the **import** command below.
    - If an orchestration ID is provided (e.g., `orch-1712345678`): use it directly as `{orch-id}`.
    - If empty: find the most recent orchestration by listing directories in `.orchestray/history/`, sorting by name (which contains a timestamp), and picking the last one. Report: "Using most recent orchestration: {orch-id}"
 
@@ -108,3 +110,63 @@ Manually capture a user correction as a pattern.
 5. **Write pattern file**: Create `.orchestray/patterns/user-correction-{slug}.md` using the Section 34d template. Set `source: manual`.
 
 6. **Confirm**: "Correction pattern saved: `user-correction-{slug}.md` (confidence: 0.8). This will be applied as a warning in future orchestrations that match."
+
+### export [pattern-name|all]
+
+Export one or all patterns for use in another project.
+
+1. **Parse arguments**: The word after `export`.
+   - If a specific pattern name is provided (e.g., `export routing-prefer-haiku`): export that single pattern.
+   - If `all` or empty: export all patterns.
+
+2. **Single pattern export** (`export <pattern-name>`):
+   - Find `.orchestray/patterns/<pattern-name>.md`. If not found, glob `.orchestray/patterns/*.md` and show available patterns: "Pattern '{pattern-name}' not found. Available: {list}"
+   - Strip orchestration-specific data: remove `created_from` frontmatter field and replace any orchestration IDs (matching `orch-\d+`) in the Evidence section with `<redacted>`.
+   - Print the cleaned file contents to stdout as a fenced markdown block.
+   - Display: "Pattern '{pattern-name}' exported above. Copy the content to share it."
+
+3. **Bulk export** (`export all`):
+   - Glob `.orchestray/patterns/*.md`. If no patterns found: "No patterns found in `.orchestray/patterns/`. Run an orchestration and use `/orchestray:learn` first."
+   - Filter out patterns with `confidence < 0.5` (read frontmatter to check). These are too low-quality to export.
+   - Create `.orchestray/exports/` directory if it does not exist.
+   - Create a dated export directory: `.orchestray/exports/patterns-export-{YYYY-MM-DD}/`
+   - For each included pattern:
+     - Read the file.
+     - Strip orchestration-specific data: remove `created_from` frontmatter field, replace all `orch-\d+` references in the Evidence section with `<redacted>`.
+     - Write the cleaned copy to `.orchestray/exports/patterns-export-{YYYY-MM-DD}/{filename}`.
+   - Display: "Exported {N} patterns to `.orchestray/exports/patterns-export-{YYYY-MM-DD}/` ({M} skipped with confidence < 0.5)"
+
+### import <path>
+
+Import patterns from a file or directory exported by another project.
+
+1. **Parse arguments**: The word after `import` is the path to import from.
+   - If no path provided: "Usage: `/orchestray:learn import <path>` — path to a pattern .md file or an exported patterns directory."
+
+2. **Resolve source**:
+   - If path points to a single `.md` file: treat as a list of one file.
+   - If path points to a directory: glob `{path}/*.md` to get all pattern files.
+   - If neither exists: "Path '{path}' not found. Provide a path to a pattern .md file or a patterns-export directory."
+
+3. **For each pattern file**:
+   a. **Validate frontmatter**: Read the file. Parse YAML frontmatter. Required fields: `name` (string), `category` (one of: decomposition, routing, specialization, anti-pattern, user-correction), `confidence` (number 0.0–1.0). If any required field is missing or invalid: skip and add to skipped list with reason.
+   b. **Check for name conflict**: Check if `.orchestray/patterns/{category}-{name}.md` already exists.
+      - If no conflict: proceed to copy.
+      - If conflict: read both files and display a summary comparison:
+        ```
+        Conflict: pattern '{name}' already exists.
+        Existing: confidence={X}, times_applied={N}, created_from={id}
+        Incoming: confidence={X}, times_applied={M}
+        Keep which? (existing / incoming / skip)
+        ```
+        Wait for user response. If "existing": skip. If "incoming": overwrite. If "skip": skip.
+   c. **Write the imported pattern**: Copy to `.orchestray/patterns/{category}-{name}.md` with these modifications:
+      - Add `imported: true` to frontmatter.
+      - Reset `times_applied: 0` (the pattern hasn't been tested in this project).
+      - Reset `last_applied: null`.
+      - Preserve all other fields including `confidence`.
+
+4. **Create `.orchestray/patterns/` directory** if it does not exist before writing.
+
+5. **Report**: "Imported {N} patterns ({M} skipped — {breakdown of skip reasons})."
+   - Example: "Imported 4 patterns (2 skipped — 1 invalid schema, 1 conflict kept existing)."

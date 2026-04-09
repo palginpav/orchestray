@@ -35,6 +35,17 @@ const CROSS_CUTTING_TERMS = [
   'deployment', 'docker', 'config', 'security', 'logging'
 ];
 
+// Magic keyword patterns — user explicitly requests multi-agent orchestration
+// Use word-boundary regex to avoid false positives on conversational text
+const MAGIC_KEYWORD_PATTERNS = [
+  /\borchestrate\b/i,
+  /\bmulti-agent\b/i,
+  /\bmulti\s+agent\b/i,
+  /\buse orchestray\b/i,
+  /\buse agents\b(?=\s+(to|for|on)\b)/i,   // "use agents to/for/on ..." not "what frameworks use agents"
+  /\bdelegate this\s+task\b/i,               // "delegate this task" only — avoids "delegate this to John"
+];
+
 // Patterns that strongly signal "build a project from a spec/description"
 // These get an automatic high score regardless of other signals
 const PROJECT_CREATION_PATTERNS = [
@@ -61,6 +72,12 @@ function scoreComplexity(prompt) {
   const isProjectCreation = PROJECT_CREATION_PATTERNS.some(p => p.test(lower));
   if (isProjectCreation) {
     return 8; // Force orchestration — file content determines actual complexity
+  }
+
+  // Signal 0b: Magic keyword triggers — user explicitly wants orchestration
+  const hasMagicKeyword = MAGIC_KEYWORD_PATTERNS.some(p => p.test(lower));
+  if (hasMagicKeyword) {
+    return 8; // Force orchestration
   }
 
   // Signal 1: Description length (0-3)

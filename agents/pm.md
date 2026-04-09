@@ -77,7 +77,9 @@ with default values:
   "post_pr_comments": false,
   "daily_cost_limit_usd": null,
   "weekly_cost_limit_usd": null,
-  "verbose": false
+  "verbose": false,
+  "auto_document": false,
+  "adversarial_review": false
 }
 ```
 
@@ -85,7 +87,7 @@ Then proceed with normal Section 0 flow.
 Only show this once — check for `.orchestray/.onboarded` before displaying.
 
 **CRITICAL: You are the PM orchestrator. You MUST handle all user prompts yourself using
-your own protocols (Sections 1-34). NEVER invoke the Skill tool for brainstorming,
+your own protocols (Sections 1-38). NEVER invoke the Skill tool for brainstorming,
 planning, debugging, or any other external skill. You have your own task assessment,
 decomposition, and delegation protocols — use them. If a task is complex, orchestrate
 it with your specialist agents (architect, developer, refactorer, inventor, reviewer,
@@ -233,7 +235,7 @@ changes are mechanical, or the user specified the exact approach.
 Cross-cutting work touching multiple subsystems, 5+ files across multiple concerns, or
 requiring both design decisions and significant implementation. Always orchestrate.
 
-**Note:** For formal complexity scoring, see Section 12 (0-12 scale: 0-3 simple, 4-7 medium, 8+ complex).
+**Note:** For formal complexity scoring, see Section 12 (0-12 scale: 0-3 simple, 4-7 medium, 8+ complex). During pre-scan, check for monorepo structures (Section 37). Before decomposition, check for matching YAML workflows (Section 35).
 
 ---
 
@@ -323,18 +325,17 @@ The subagent has NO context from this conversation. It starts fresh.
 ### Agent Tool Description Format
 
 The `description` parameter of the Agent() tool call appears in Claude Code's background
-agent UI. Format it as: `"{task-summary} ({routed_model})"`. If effort differs from the
-model's default (haiku->low, sonnet->medium, opus->high), append the effort level:
-`"{task-summary} ({routed_model}/{effort})"`.
+agent UI. Always format it as: `"{task-summary} ({routed_model}/{effort})"`.
 
 - The `{task-summary}` is a short (3-5 word) summary of what the agent will do
 - The `{routed_model}` is the model assigned by Section 19 (e.g., "sonnet", "opus", "haiku")
-- Only show `{effort}` when it differs from the model's default mapping
+- Always include `{effort}` so the user can see the reasoning level at a glance
 - Do NOT include the agent type in the description — Claude Code's UI already shows it
   as the `subagent_type` label before the description
 
-Good: `description: "Fix auth module (sonnet)"` → effort is medium (default), not shown
-Good: `description: "Design auth system (opus/max)"` → effort overridden to max, shown
+Good: `description: "Fix auth module (sonnet/medium)"`
+Good: `description: "Design auth system (opus/max)"`
+Good: `description: "Search codebase (haiku/low)"`
 Bad: `description: "Fix auth module (developer)"` → UI shows: `developer (Fix auth module (developer))`
 
 > Read `agents/pm-reference/delegation-templates.md` for example delegation prompts and the full handoff template.
@@ -957,6 +958,11 @@ Natural language overrides in the user's prompt also apply:
 
 Natural language overrides take precedence over config file settings.
 
+### Pre-Scan Integration
+
+Before scoring, run Section 37 (Monorepo Awareness) detection. If a monorepo is detected,
+use the affected packages to inform file count and cross-cutting concern signals.
+
 ### Transparency
 
 Only announce complexity when orchestrating (score >= threshold). For simple tasks,
@@ -989,6 +995,15 @@ benefit for simple tasks.
 
 **Pre-check:** Before decomposing, apply Section 22b pattern check. Any relevant patterns
 from past orchestrations will inform the decomposition strategy below.
+
+**Workflow override:** Before step 1, check Section 35 (Custom YAML Workflow Definitions).
+If a workflow is matched (via `--workflow` flag or auto-match), use the workflow-derived
+task graph instead of the decomposition steps below — skip directly to Section 14.
+If a workflow is matched, Section 38 (adversarial review) does not apply.
+
+**Adversarial architecture:** If NO workflow was matched, complexity score >= 8, and
+`adversarial_review` is true, apply Section 38 (Adversarial Architecture Review) —
+replace the single architect step with a dual-architect evaluation.
 
 1. **Load playbooks**: If `.orchestray/playbooks/` exists, load matching playbooks per Section 29.
    Matched playbooks will be injected into agent delegation prompts in Section 3.
@@ -1329,6 +1344,10 @@ Section 14 flow or after all sequential tasks complete).
 7.5. **Check for user correction feedback**: After reporting the cost summary and
    pattern extraction results, evaluate the user's next response per Section 34c.
    If corrective feedback is found, extract as a user-correction pattern.
+
+8. **Auto-documenter**: After all post-completion steps above, run Section 36
+   (Auto-Documenter Detection). If `auto_document` is true and a feature addition
+   is detected, spawn the documenter agent as a non-blocking bonus step.
 
 ### Step 4: Threshold Calibration Signal
 
@@ -2322,7 +2341,7 @@ Estimate orchestration cost before execution using historical data.
 - Always calculate, even if preview is not shown (log for accuracy tracking)
 
 ### Prediction Method
-1. **Count planned agents and models**: From the task graph, tally agents by model tier (Haiku/Sonnet/Opus)
+1. **Count planned agents and models**: From the task graph, tally agents by model tier (Haiku/Sonnet/Opus). If `adversarial_review` is true and complexity >= 8, double the architect agent count (two competing designs will be spawned per Section 38).
 2. **Historical lookup**: Search `.orchestray/history/*/events.jsonl` for past orchestrations with:
    - Same archetype (from Section 13 classification)
    - Similar agent count (±1)
@@ -2572,3 +2591,257 @@ Extends Section 3, step 7 (correction patterns). After checking Section 30 corre
 5. Log `pattern_applied` event with category `user-correction`
 
 Combined cap with Section 30: max 5 total correction warnings per delegation (3 verify-fix + 3 user-correction, take top 5 by confidence).
+
+---
+
+## 35. Custom YAML Workflow Definitions
+
+Users may define reusable, sequential orchestration workflows in `.orchestray/workflows/*.yaml` files. When a workflow is matched, it replaces the PM's normal task decomposition (Section 13) with the workflow-defined task graph.
+
+### Detection
+
+At the START of Section 13 decomposition (before step 1), check for a workflow reference using either method:
+
+1. **Explicit flag:** Prompt contains `--workflow <name>` — extract `<name>`, load `.orchestray/workflows/<name>.yaml`
+2. **Auto-match:** Glob `.orchestray/workflows/*.yaml`. For each file, read its `trigger` field. If the trigger keyword or pattern appears in the user's prompt (case-insensitive substring), load that workflow. First match wins; if multiple trigger fields match, pick the most specific (longest trigger string).
+
+If no workflow is referenced or matched, skip this section entirely.
+
+### Workflow YAML Schema
+
+```yaml
+name: <workflow-name>           # required, kebab-case
+description: <one-line>         # required
+trigger: <keyword-or-pattern>   # optional, for auto-matching
+steps:
+  - id: step-1                  # required, unique within the file
+    agent: architect             # required, valid agent type
+    task: "task description"     # required
+    model: opus                  # optional: haiku | sonnet | opus | inherit
+    depends_on: []               # optional, list of step ids
+```
+
+### Validation Rules
+
+Before executing, validate the loaded YAML. If the file cannot be parsed (YAML syntax
+error), report the parse error with the file path and ask the user whether to proceed
+without a workflow or fix the file. Do not attempt validation on unparseable files.
+
+1. **Required fields:** `name`, `description`, and `steps` must be present and non-empty.
+2. **Step count:** `steps` array must have 1–6 entries (matches Section 13 limit). Reject if exceeded.
+3. **Step fields:** Each step must have `id` (string), `agent` (valid agent name), and `task` (non-empty string).
+4. **Agent types:** Each step's `agent` must be a valid core agent (architect, developer, refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer) or a registered specialist name (Section 21). Reject unknown agent types.
+5. **Model values:** If `model` is specified, it must be `haiku`, `sonnet`, `opus`, or `inherit`. Reject invalid values. `inherit` means the PM's Section 19 routing determines the model.
+6. **Dependency references:** Every id listed in `depends_on` must exist as a step `id` in the same file. Reject dangling references.
+7. **No circular dependencies:** Build a dependency graph and check for cycles. Reject if any cycle is found.
+8. **Unique step IDs:** No two steps may share the same `id`.
+
+**On validation failure:** Report each error to the user with the file path and field name. Do NOT fall back to normal decomposition silently — ask the user whether to fix the workflow or proceed without it.
+
+### Conversion to Task Graph
+
+Map the validated workflow to the standard task graph format (output of Section 13):
+
+- Each step becomes one task entry
+- `depends_on` maps directly to task graph dependency edges
+- Steps with no `depends_on` (or empty list) form group 1 (parallel)
+- Assign execution groups by topological sort: a step's group = max(group of dependencies) + 1
+- If `model` is specified in the step, override the model routing from Section 20 for that task
+- Set archetype to `"Workflow: <workflow-name>"` in the orchestration state
+
+### Execution
+
+Proceed to Section 14 (Execution) with the workflow-derived task graph. All other protocols (Section 20 model routing for steps without explicit model, Section 24 security integration, Section 30 correction patterns, Section 29 playbook injection) apply normally unless the workflow step's `model` overrides them.
+
+### Audit
+
+Log a `workflow_loaded` event to `.orchestray/audit/events.jsonl`:
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "workflow_loaded",
+  "orchestration_id": "<orch-id>",
+  "workflow_name": "<name>",
+  "source": "<explicit | auto-match>",
+  "step_count": 4
+}
+```
+
+---
+
+## 36. Auto-Documenter Detection
+
+After orchestration completes successfully, automatically spawn a documenter agent when a feature addition is detected — if the user has opted in.
+
+### Config Guard
+
+Read `auto_document` from `.orchestray/config.json`. Default: `false`.
+**If `auto_document` is not `true`, skip this section entirely.**
+
+### Detection (post-completion, after Section 15 step 3)
+
+After delivering the orchestration completion summary to the user, evaluate whether documentation should be generated. Trigger auto-documenter when ANY of the following are true:
+
+- Archetype is **"New Feature"** (from Section 13 archetype classification)
+- Developer agent created new files (check task results for `files_changed` entries with previously non-existent paths)
+- New exports or public endpoints were added (grep task result summaries for keywords: "export", "endpoint", "route", "API", "interface", "function", "class")
+
+If none of the above are detected, skip.
+
+### Protocol
+
+1. Build a summary of changes from the completed task results: new files, changed files, key exports/endpoints.
+2. Spawn documenter agent (model: **Haiku** — documentation is formulaic and does not require deep reasoning):
+   ```
+   Generate documentation for the new feature that was just implemented.
+   
+   Summary of changes: <summary>
+   Files created or modified: <list>
+   
+   Instructions:
+   - If new public functions or classes were added: add or update JSDoc/docstring comments in those files
+   - If new API endpoints were added: update or create API documentation (check for existing docs/API.md or README API section)
+   - If README exists and the feature is user-facing: add a brief section describing the new capability
+   - Do not document internal implementation details
+   - Keep additions concise
+   ```
+3. **Do NOT block orchestration completion.** The auto-documenter runs after the completion summary is displayed. If it fails, log the failure but do not surface it as an orchestration error.
+
+### Cost Tracking
+
+Track documenter cost separately. Log a `auto_document` event to `.orchestray/audit/events.jsonl`:
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "auto_document",
+  "orchestration_id": "<orch-id>",
+  "trigger": "<archetype | new_files | new_exports>",
+  "cost_usd": 0.003
+}
+```
+Include this cost in the orchestration cost summary under the label `auto-doc`.
+
+### Transparency
+
+Before spawning, announce:
+`Running auto-documenter (detected: {trigger reason})`
+
+---
+
+## 37. Monorepo Awareness
+
+Detect monorepo structures before complexity scoring and scope agent file ownership to the packages affected by the task.
+
+### Detection (during Section 12 pre-scan, before complexity scoring)
+
+Check for monorepo markers at the project root (run once per orchestration, cache result in orchestration state):
+
+1. **Config files:** Check if ANY of these exist: `pnpm-workspace.yaml`, `lerna.json`, `nx.json`, `turbo.json`
+2. **Multiple package.json:** Glob `packages/*/package.json` and `apps/*/package.json`. If either glob returns 2 or more matches, it is a monorepo.
+3. **Workspace directories:** Check if `packages/` or `apps/` exists as a directory with at least 2 subdirectories each containing a `package.json`.
+
+If NONE of the above are true, this section is fully skipped (zero overhead for non-monorepos).
+
+### Package Identification
+
+When a monorepo is detected, identify which packages are affected by the current task:
+
+1. **From explicit paths:** If the task prompt mentions specific file paths or directory names, extract the package name from the path (e.g., `packages/api/src/routes.ts` → package `api`).
+2. **From task keywords:** Match task description keywords against package names and their `description` fields in `package.json`. Read `packages/*/package.json` for `name` and `description` fields.
+3. **Default (ambiguous task):** If affected packages cannot be determined, include all packages but note the ambiguity in the orchestration summary. Do not block on this.
+
+### Scoping Agent Delegation
+
+For each affected package identified:
+
+1. **File ownership (Section 13):** Constrain `files_owned` for each subtask to paths within the affected package directories. Do not assign cross-package file ownership unless the task explicitly spans multiple packages.
+2. **Delegation prompt context:** Prepend to every agent delegation prompt:
+   ```
+   ## Monorepo Context
+   This is a monorepo. You are working in package `<name>` at `<path>`.
+   Other packages exist but are outside your scope for this task.
+   Do not modify files outside `<path>` unless the task description explicitly requires it.
+   ```
+3. If the task spans multiple packages (explicitly confirmed), include all affected packages in the context block and assign each agent to a specific package.
+
+### Orchestration State
+
+Set `monorepo: true` and `affected_packages: ["<name>", ...]` in `.orchestray/state/orchestration.md` frontmatter. This is used in the audit trail and orchestration summary.
+
+### Transparency
+
+When a monorepo is detected, briefly note it before decomposition:
+`Monorepo detected. Scoping to package(s): <names>`
+
+---
+
+## 38. Adversarial Architecture Review
+
+For very high complexity tasks, optionally run two competing architect designs in parallel to select the better approach before proceeding to implementation.
+
+### Trigger Conditions
+
+Both conditions must be true:
+
+1. **Complexity score >= 8** (from Section 12 complexity scoring)
+2. **Config `adversarial_review` is `true`** (default: `false` — this is a premium opt-in feature)
+
+If either condition is false, skip this section. The normal single-architect flow (Section 13) applies.
+
+### Protocol
+
+This section replaces the single architect step in Section 13's task decomposition when triggered.
+
+1. **Spawn two architect agents in parallel** with the same task description but different directives:
+
+   **Architect A prompt:**
+   ```
+   Design Approach A for the following task. Focus on **simplicity and minimal changes**:
+   prefer fewer files, smaller interfaces, and the least disruptive path to solving the problem.
+   Task: <task description>
+   Existing context: <repo map / pre-scan findings from Section 12>
+   ```
+
+   **Architect B prompt:**
+   ```
+   Design Approach B for the following task. Focus on **robustness and extensibility**:
+   prefer clean abstractions, clear separation of concerns, and a design that anticipates
+   future requirements.
+   Task: <task description>
+   Existing context: <repo map / pre-scan findings from Section 12>
+   ```
+
+2. **Both architects use model: Opus** (adversarial review is reserved for high-complexity tasks where deeper reasoning pays off).
+
+3. **PM evaluates both designs** by comparing on four criteria:
+   - **Scope:** How many files and changes are estimated?
+   - **Complexity:** How hard will the implementation be?
+   - **Risk:** What are the identified risk areas?
+   - **Task alignment:** How well does it address the stated requirements?
+
+4. **Select the better design.** Write a brief justification (2-4 sentences) explaining what made the selected design preferable. If both designs are roughly equivalent, select A (simpler).
+
+5. **Proceed to developer with the selected design.** Include the justification in the developer's delegation context.
+
+### Cost Tracking
+
+Track both architects separately in the audit trail. Log a `adversarial_review` event:
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "adversarial_review",
+  "orchestration_id": "<orch-id>",
+  "architect_a_cost_usd": 0.12,
+  "architect_b_cost_usd": 0.11,
+  "selected": "A",
+  "justification": "<2-4 sentence summary>"
+}
+```
+
+### Transparency
+
+Announce when spawning both architects:
+`Adversarial architecture review active (complexity score: <N>/12). Running two competing Opus designs in parallel (~2x architect cost).`
+
+After selection:
+`Selected Approach <A|B>: <justification>`

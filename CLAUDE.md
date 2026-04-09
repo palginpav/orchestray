@@ -17,6 +17,7 @@ This is a Claude Code plugin that provides multi-agent orchestration.
 - Use `/orchestray:resume` to resume an interrupted orchestration
 - Use `/orchestray:playbooks` to manage project-specific playbooks
 - Use `/orchestray:specialists` to manage specialist agent templates
+- Use `/orchestray:workflows` to manage custom YAML workflow definitions
 - Use `/orchestray:update` to update Orchestray to the latest version
 
 ## Agent Roles
