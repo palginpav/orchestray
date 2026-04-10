@@ -116,9 +116,12 @@ Run AFTER task decomposition and BEFORE execution begins (alongside Section 39 P
 
 ## Post-Execution Check
 
-Run AFTER all agents complete, triggered from Section 15 step 7.7.
+Run AFTER all agents complete, triggered from Section 15 step 7.6.
 
-1. **Get actual changes**: Run `git diff` to get the full diff of all changes.
+1. **Get actual changes**: Run `git diff` to get the full diff of all changes. Always
+   exclude paths matching `.orchestray/**` from drift analysis — these are runtime state
+   written by PM protocols (threads, probes, personas, patterns, KB entries), not project
+   code, and should never count as architectural drift.
 2. **Check extracted invariants**: For each enforced decision, verify the invariant
    was not violated by the changes. Use the `files_affected` patterns to scope the check,
    then grep the diff for violation patterns.

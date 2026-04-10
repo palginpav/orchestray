@@ -403,7 +403,7 @@ Field notes:
 
 ## Drift Check Event
 
-Appended during Section 15 step 7.7 (post-execution drift validation) when
+Appended during Section 15 step 7.6 (post-execution drift validation) when
 `enable_drift_sentinel` is true.
 
 ```json
@@ -470,3 +470,227 @@ Field notes:
   UI file patterns (*.tsx, *.jsx, *.vue, *.svelte, *.css, *.scss, *.less, *.html, etc.).
 - `fallback_to_text_only`: `true` if `enable_visual_review` was true and UI files were
   changed but no screenshots were found. `false` if screenshots were found and used.
+
+---
+
+## Thread Created Event
+
+Appended during Section 40a (post-orchestration thread creation):
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "thread_created",
+  "orchestration_id": "<current orch id>",
+  "thread_id": "thread-{orch-id}",
+  "thread_file": ".orchestray/threads/thread-{orch-id}.md",
+  "domain_tags": ["tag1", "tag2", "tag3"],
+  "files_touched_count": 5,
+  "summary_word_count": 180
+}
+```
+
+---
+
+## Thread Matched Event
+
+Appended during Section 40b (pre-decomposition thread scanning):
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "thread_matched",
+  "orchestration_id": "<current orch id>",
+  "thread_id": "thread-{matched-orch-id}",
+  "match_score": 0.72,
+  "matching_tags": ["auth", "jwt"],
+  "tokens_injected": 285
+}
+```
+
+---
+
+## Thread Updated Event
+
+Appended during Section 40c (thread update when a new orchestration matches an existing thread):
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "thread_updated",
+  "orchestration_id": "<current orch id>",
+  "thread_id": "thread-{matched-orch-id}",
+  "thread_file": ".orchestray/threads/thread-{matched-orch-id}.md",
+  "sessions_count": 3,
+  "new_domain_tags": ["tag4"],
+  "new_files_count": 2
+}
+```
+
+Field notes:
+- `sessions_count`: The value of the `sessions` counter after incrementing (reflects how
+  many orchestrations have contributed to this thread total).
+- `new_domain_tags`: Tags added to the thread by this orchestration that were not already
+  present (the delta, not the full merged list).
+- `new_files_count`: Number of files from the current orchestration's `files_changed` that
+  were not already in the thread's `files_touched` list.
+
+---
+
+## Persona Generated Event
+
+Appended during Section 42b (persona synthesis):
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "persona_generated",
+  "orchestration_id": "<current orch id>",
+  "agent_type": "developer | architect | reviewer | ...",
+  "persona_file": ".orchestray/personas/{agent-type}.md",
+  "word_count": 85,
+  "generated_from_count": 3,
+  "is_refresh": false
+}
+```
+
+Field notes:
+- `generated_from_count`: Number of orchestration IDs listed in the persona's
+  `generated_from` frontmatter field.
+- `is_refresh`: `true` if this overwrites an existing persona file (refresh cycle),
+  `false` if this is the initial generation for this agent type.
+
+---
+
+## Persona Injected Event
+
+Appended during Section 42c (persona injection into delegation prompt):
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "persona_injected",
+  "orchestration_id": "<current orch id>",
+  "task_id": "<subtask id>",
+  "agent_type": "developer | architect | reviewer | ...",
+  "persona_file": ".orchestray/personas/{agent-type}.md",
+  "word_count": 85,
+  "staleness_days": 0
+}
+```
+
+Field notes:
+- `task_id`: The subtask ID of the delegation this persona was injected into.
+- `word_count`: Actual word count injected (may be less than persona's `word_count` if
+  trimmed to 150-word cap).
+- `staleness_days`: Number of days since `updated_at`. `0` if fresh. If >= 30, the
+  injected content includes the `[STALE]` prefix warning.
+
+---
+
+## Probe Created Event
+
+Appended during Section 41a (post-orchestration probe creation):
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "probe_created",
+  "orchestration_id": "<current orch id>",
+  "probe_id": "probe-{orch-id}",
+  "probe_file": ".orchestray/probes/probe-{orch-id}.md",
+  "files_delivered_count": 4,
+  "tests_added_count": 2,
+  "success_conditions_count": 5,
+  "patterns_tracked": ["pattern-name-1", "pattern-name-2"]
+}
+```
+
+Field notes:
+- `files_delivered_count`: Total number of files in `files_delivered` (all agent results
+  combined, excluding test files).
+- `tests_added_count`: Number of test files added (matched `*.test.*`, `*.spec.*`,
+  `test_*`, `*_test.*` patterns).
+- `success_conditions_count`: Total number of success conditions generated across all
+  three condition types (files_unchanged, tests_pass, git_log_clean).
+- `patterns_tracked`: Names of patterns from `patterns_applied` that will receive
+  confidence adjustments when the probe is validated.
+
+---
+
+## Probe Validated Event
+
+Appended during Section 41b (lazy probe validation at session start):
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "probe_validated",
+  "orchestration_id": "<session context, not the probe's orch id>",
+  "probe_id": "probe-{original-orch-id}",
+  "probe_orchestration_id": "<the orchestration that created this probe>",
+  "outcome": "positive | negative | neutral",
+  "checks": [
+    {
+      "type": "files_unchanged | tests_pass | git_log_clean",
+      "result": "positive | negative | neutral | inconclusive",
+      "detail": "Human-readable detail"
+    }
+  ],
+  "patterns_affected": ["pattern-name-1"],
+  "confidence_adjustments": [
+    {
+      "pattern": "pattern-name-1",
+      "old_confidence": 0.7,
+      "new_confidence": 0.85,
+      "delta": 0.15
+    }
+  ]
+}
+```
+
+Field notes:
+- `orchestration_id`: Session identifier — either an active orchestration ID (when
+  validation runs during orchestration mode) or `session-{ISO8601}` for session-start
+  validation where no orchestration ID exists yet. Never the probe's own orchestration ID.
+- `probe_orchestration_id`: The orchestration ID from the probe's frontmatter — the
+  orchestration whose quality is being assessed.
+- `outcome`: Aggregated outcome across all checks. `positive` if all checks positive,
+  `negative` if any check negative, `neutral` if mixed or all inconclusive.
+- `checks`: One entry per success condition evaluated. `inconclusive` result means test
+  infrastructure failed (command not found, timeout) — not counted toward outcome.
+- `patterns_affected`: Pattern names that received confidence adjustments via Section 41c.
+- `confidence_adjustments`: Per-pattern delta log. `delta` is `+0.15` for positive
+  outcomes and `-0.3` for negative outcomes.
+
+---
+
+## Replay Analysis Event
+
+Appended during Section 43c (replay pattern writing):
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "replay_analysis",
+  "orchestration_id": "<current orch id>",
+  "friction_signals": ["replan", "verify_fix_fail"],
+  "counterfactuals_generated": 2,
+  "replay_pattern_file": ".orchestray/patterns/replay-{orch-id}.md",
+  "expected_savings": {
+    "turns": 15,
+    "cost_usd": 0.08
+  }
+}
+```
+
+Field notes:
+- `friction_signals`: Array of signal types detected (any of: `replan`, `verify_fix_fail`,
+  `cost_overrun`, `low_confidence`, `turns_exceeded`).
+- `counterfactuals_generated`: Number of counterfactual alternatives written into the
+  replay pattern's `counterfactuals` array.
+- `replay_pattern_file`: Path to the written replay pattern file.
+- `expected_savings.turns`: Estimated turns that could be saved by applying the
+  counterfactual alternative (rough estimate from friction event turn counts).
+- `expected_savings.cost_usd`: Estimated cost saving in USD based on the turn/model
+  difference between actual and counterfactual paths.

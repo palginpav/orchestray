@@ -9,7 +9,7 @@ tools: Read, Glob, Grep, Bash, Write
 model: inherit
 effort: high
 memory: project
-maxTurns: 30
+maxTurns: 45
 color: blue
 ---
 

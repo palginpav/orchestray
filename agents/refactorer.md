@@ -8,7 +8,7 @@ tools: Read, Glob, Grep, Bash, Write, Edit
 model: inherit
 effort: medium
 memory: project
-maxTurns: 50
+maxTurns: 65
 color: cyan
 ---
 

@@ -38,9 +38,17 @@ if (flags.help) {
 }
 
 // Determine install target
+const homeDir = process.env.HOME || process.env.USERPROFILE;
+if (!flags.local && flags.global && !homeDir) {
+  console.error(
+    '  \x1b[31m✗\x1b[0m Cannot install globally: neither HOME nor USERPROFILE is set.\n' +
+    '    Use --local to install into the current directory instead.'
+  );
+  process.exit(1);
+}
 const configDir = flags.local
   ? path.resolve('.claude')
-  : path.join(process.env.HOME || process.env.USERPROFILE, '.claude');
+  : path.join(homeDir || '', '.claude');
 
 if (!flags.global && !flags.local) {
   console.log(`
@@ -170,6 +178,18 @@ function install(targetDir) {
       path.join(targetDir, 'orchestray', 'bin', file)
     );
     track(path.join('orchestray', 'bin', file));
+  }
+  // Installed hook scripts `require('./_lib/...')` relative to their own directory,
+  // so the _lib/ subtree must be copied alongside them or every hook will throw
+  // MODULE_NOT_FOUND on first fire.
+  const libDir = path.join(binDir, '_lib');
+  if (fs.existsSync(libDir) && fs.statSync(libDir).isDirectory()) {
+    const dstLibDir = path.join(targetDir, 'orchestray', 'bin', '_lib');
+    fs.mkdirSync(dstLibDir, { recursive: true });
+    for (const file of fs.readdirSync(libDir).filter(f => f.endsWith('.js'))) {
+      fs.copyFileSync(path.join(libDir, file), path.join(dstLibDir, file));
+      track(path.join('orchestray', 'bin', '_lib', file));
+    }
   }
   console.log(`  \x1b[32m✓\x1b[0m Installed ${binFiles.length} hook scripts`);
 
@@ -308,11 +328,19 @@ function mergeHooks(targetDir) {
         .flatMap(e => (e.hooks || []).map(h => h.command || ''));
 
       for (const entry of newEntries) {
-        const cmds = (entry.hooks || []).map(h => h.command || '');
-        const alreadyInstalled = cmds.some(c => {
-          const scriptName = path.basename(c.replace(/"/g, '').split(' ')[0]);
-          return existingCmds.some(ec => ec.includes('orchestray') && ec.includes(scriptName));
-        });
+        // Extract the script basename via the `/bin/<script>` substring rather
+        // than parsing whitespace: install paths may contain spaces (macOS
+        // iCloud, Windows "Program Files"), and split(' ') would mis-identify
+        // those commands as new and silently duplicate them on reinstall.
+        const scriptBasenames = (entry.hooks || [])
+          .map(h => {
+            const m = (h.command || '').match(/\/bin\/([^\s"']+)/);
+            return m ? path.basename(m[1]) : null;
+          })
+          .filter(Boolean);
+        const alreadyInstalled = scriptBasenames.some(name =>
+          existingCmds.some(ec => ec.includes('orchestray') && ec.includes(name))
+        );
         if (!alreadyInstalled) {
           settings.hooks[event].push(entry);
         }
@@ -349,6 +377,12 @@ function uninstall(targetDir) {
       }
       removedDirs.add(path.dirname(p));
     }
+    // manifest.json itself is not tracked (it only exists to drive uninstall).
+    // Remove it explicitly so the empty-dir walk below can collapse orchestray/.
+    try {
+      fs.unlinkSync(manifestFile);
+    } catch (_e) { /* already gone */ }
+    removedDirs.add(path.dirname(manifestFile));
 
     // 2. Walk parent dirs bottom-up (longest first) and rmdir any that
     //    are empty. This preserves unmanaged files (e.g., a user-added
@@ -394,10 +428,20 @@ function uninstall(targetDir) {
     console.log(`  \x1b[32m✓\x1b[0m Removed skills`);
   }
 
-  // Remove orchestray directory
+  // Try to rmdir orchestray/ only if it is now empty. Unconditional rmSync
+  // here would defeat DEF-5 by destroying any user files placed inside
+  // orchestray/ (e.g., overrides in orchestray/bin/, extra settings).
   const orchDir = path.join(targetDir, 'orchestray');
-  if (fs.existsSync(orchDir)) fs.rmSync(orchDir, { recursive: true });
-  console.log(`  \x1b[32m✓\x1b[0m Removed orchestray/`);
+  let orchDirRemoved = false;
+  try {
+    if (fs.existsSync(orchDir) && fs.readdirSync(orchDir).length === 0) {
+      fs.rmdirSync(orchDir);
+      orchDirRemoved = true;
+    }
+  } catch (_e) { /* non-empty or already gone; skip */ }
+  console.log(orchDirRemoved
+    ? `  \x1b[32m✓\x1b[0m Removed orchestray/`
+    : `  \x1b[33m⚠\x1b[0m Kept orchestray/ (contains user files)`);
 
   // Clean hooks from settings.json (remove orchestray entries)
   const settingsFile = path.join(targetDir, 'settings.json');

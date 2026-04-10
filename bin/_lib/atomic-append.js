@@ -1,6 +1,8 @@
 'use strict';
 
-// NOTE: crashes while holding the lock leave an orphaned .lock file; next caller falls back to non-atomic append after retry exhaustion
+// NOTE: crashes while holding the lock leave an orphaned .lock file. The next
+// caller self-heals: lockfiles older than 10 seconds are treated as stale,
+// unlinked, and the lock is retried immediately.
 
 /**
  * Atomic JSONL append helper.
@@ -49,12 +51,27 @@ function atomicAppendJsonl(filePath, eventObject) {
   }
 
   let fd = null;
+  let lockErr = null;
   for (let attempt = 0; attempt < MAX_LOCK_ATTEMPTS; attempt++) {
     try {
       fd = fs.openSync(lockPath, 'wx');
+      lockErr = null;
       break;
     } catch (err) {
+      lockErr = err;
       if (err && err.code === 'EEXIST') {
+        // Stale-lock recovery: if the lockfile is older than 10 seconds
+        // (two orders of magnitude above any legitimate append duration),
+        // assume the previous holder crashed and reclaim it immediately.
+        try {
+          const st = fs.statSync(lockPath);
+          if (Date.now() - st.mtimeMs > 10_000) {
+            try { fs.unlinkSync(lockPath); } catch (_e) {}
+            continue;
+          }
+        } catch (_e) {
+          continue;
+        }
         if (attempt < MAX_LOCK_ATTEMPTS - 1) {
           sleepMs(LOCK_BACKOFF_MS);
           continue;
@@ -68,9 +85,12 @@ function atomicAppendJsonl(filePath, eventObject) {
 
   if (fd === null) {
     // All retries exhausted (or non-EEXIST error). Fall back to non-atomic
-    // append so the event is not lost. Do NOT recurse.
+    // append so the event is not lost. Do NOT recurse. Surface the underlying
+    // error code so operators can distinguish contention from permission bugs.
     console.error(
-      '[orchestray] lock acquire failed, falling back to non-atomic append for ' + filePath
+      '[orchestray] lock acquire failed (' +
+      ((lockErr && lockErr.code) || 'unknown') +
+      '); falling back to non-atomic append for ' + filePath
     );
     fs.appendFileSync(filePath, line);
     return;
@@ -87,9 +107,8 @@ function atomicAppendJsonl(filePath, eventObject) {
     try {
       fs.unlinkSync(lockPath);
     } catch (err) {
-      if (!err || err.code !== 'ENOENT') {
-        // Ignore all unlink errors — the lock is advisory and the next
-        // caller's fallback path will self-heal.
+      if (err && err.code !== 'ENOENT') {
+        console.error('[orchestray] failed to unlink lockfile: ' + err.message);
       }
     }
   }

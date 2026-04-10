@@ -209,29 +209,46 @@ process.stdin.on('end', () => {
     // Ensure audit directory exists
     fs.mkdirSync(auditDir, { recursive: true });
 
-    // Read all existing events from events.jsonl for routing_outcome lookup
-    const allEvents = [];
+    // Read routing_outcome events from events.jsonl for this orchestration only.
+    // 2 MB cap + cheap substring pre-filter keep this O(n) on line count and bound
+    // memory so the hook cannot blow its 15s budget on a long-lived session.
+    const MAX_EVENTS_BYTES = 2 * 1024 * 1024;
+    const routingOutcomes = [];
+    let routingCapHit = false;
     try {
       const eventsPath = path.join(auditDir, 'events.jsonl');
       if (fs.existsSync(eventsPath)) {
-        const eventsContent = fs.readFileSync(eventsPath, 'utf8');
-        for (const line of eventsContent.split('\n').filter((l) => l.trim())) {
-          try {
-            allEvents.push(JSON.parse(line));
-          } catch (_e) {
-            // Skip malformed lines
+        const size = fs.statSync(eventsPath).size;
+        if (size <= MAX_EVENTS_BYTES) {
+          const eventsContent = fs.readFileSync(eventsPath, 'utf8');
+          for (const line of eventsContent.split('\n')) {
+            if (!line || !line.includes('"routing_outcome"')) continue;
+            try {
+              const ev = JSON.parse(line);
+              if (ev.type === 'routing_outcome' && ev.orchestration_id === orchestrationId) {
+                routingOutcomes.push(ev);
+              }
+            } catch (_e) {
+              // Skip malformed lines
+            }
           }
+        } else {
+          routingCapHit = true;
+          process.stderr.write(
+            '[orchestray] events.jsonl exceeds ' + MAX_EVENTS_BYTES +
+            ' bytes; skipping routing-outcome scan (cost falls back to agent_type heuristic)\n'
+          );
         }
       }
     } catch (_e) {
-      // events.jsonl unavailable -- allEvents stays empty
+      // events.jsonl unavailable -- routingOutcomes stays empty
     }
 
     // Resolve model_used from routing_outcome events (NOT from hook payload)
     const agentType = isTeamEvent
       ? (event.teammate_name || 'teammate')
       : (event.agent_type || null);
-    const resolvedModel = resolveModelUsed(allEvents, orchestrationId, agentType);
+    const resolvedModel = resolveModelUsed(routingOutcomes, orchestrationId, agentType);
 
     // DEF-2: detect escalation by counting routing_outcome events for this
     // (orch_id, agent_type). 2+ means the agent was re-routed mid-run, so the
@@ -241,12 +258,8 @@ process.stdin.on('end', () => {
     let modelResolutionNote = null;
     if (orchestrationId && agentType) {
       let routingOutcomeCount = 0;
-      for (const ev of allEvents) {
-        if (
-          ev.type === 'routing_outcome' &&
-          ev.orchestration_id === orchestrationId &&
-          ev.agent_type === agentType
-        ) {
+      for (const ev of routingOutcomes) {
+        if (ev.agent_type === agentType) {
           routingOutcomeCount++;
           if (routingOutcomeCount >= 2) break;
         }
@@ -254,6 +267,9 @@ process.stdin.on('end', () => {
       if (routingOutcomeCount >= 2) {
         modelResolutionNote = 'cost is upper bound: agent was escalated; pre-escalation tokens billed at post-escalation rate';
       }
+    }
+    if (routingCapHit && !modelResolutionNote) {
+      modelResolutionNote = 'routing scan skipped: events.jsonl > 2MB; cost falls back to agent_type heuristic';
     }
 
     // Estimate cost based on resolved model (or agent_type fallback) and token usage

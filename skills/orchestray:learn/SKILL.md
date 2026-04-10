@@ -2,7 +2,7 @@
 name: learn
 description: Extract learning patterns from a completed orchestration
 disable-model-invocation: true
-argument-hint: "[orchestration-id] | promote <pattern-name> | correct [description] | export [pattern-name|all] | import <path>"
+argument-hint: "[orchestration-id] | promote <pattern-name> | correct [description] | export [pattern-name|all] | import <path> | validate"
 ---
 
 # Pattern Extraction
@@ -16,6 +16,7 @@ The user wants to extract reusable patterns from a completed orchestration.
    - If the first argument is `correct`: go to the **correct** command below.
    - If the first argument is `export`: go to the **export** command below.
    - If the first argument is `import`: go to the **import** command below.
+   - If the first argument is `validate`: go to the **validate** command below.
    - If an orchestration ID is provided (e.g., `orch-1712345678`): use it directly as `{orch-id}`.
    - If empty: find the most recent orchestration by listing directories in `.orchestray/history/`, sorting by name (which contains a timestamp), and picking the last one. Report: "Using most recent orchestration: {orch-id}"
 
@@ -170,3 +171,37 @@ Import patterns from a file or directory exported by another project.
 
 5. **Report**: "Imported {N} patterns ({M} skipped — {breakdown of skip reasons})."
    - Example: "Imported 4 patterns (2 skipped — 1 invalid schema, 1 conflict kept existing)."
+
+### validate
+
+Manually trigger validation of all pending outcome probes.
+
+1. **Check config**: Read `.orchestray/config.json`. If `enable_outcome_tracking` is false
+   or missing, report: "Outcome tracking is disabled. Enable it with
+   `/orchestray:config set enable_outcome_tracking true`." Stop here.
+
+2. **Find pending probes**: Glob `.orchestray/probes/probe-*.md`. Read frontmatter of each.
+   Filter for `status: pending`.
+   - If no pending probes found: "No pending outcome probes found. Probes are created
+     automatically after orchestrations when `enable_outcome_tracking` is enabled."
+     Stop here.
+
+3. **Validate each pending probe**: For each probe, run the validation protocol from
+   Section 41b (in outcome-tracking.md), but WITHOUT the file-overlap filter — validate
+   ALL pending probes regardless of whether the current prompt references their files.
+
+4. **Display results** in a table:
+
+   ```
+   | Probe | Created | Files | Outcome | Details |
+   |-------|---------|-------|---------|---------|
+   | probe-orch-XXX | 2026-04-07 | 3 files | positive | All checks pass |
+   | probe-orch-YYY | 2026-04-05 | 2 files | negative | Auth tests failing |
+   ```
+
+5. **Apply outcome-to-pattern feedback**: Per Section 41c (in outcome-tracking.md), update
+   pattern confidence based on validation outcomes. Positive: +0.15 (cap 1.0). Negative:
+   -0.3 (floor 0.0) + extract anti-pattern. Neutral: no change.
+
+6. **Report summary**: "Validated {N} probes: {P} positive, {Q} negative, {R} neutral.
+   Pattern confidence updated for {M} patterns."

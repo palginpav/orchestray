@@ -54,7 +54,17 @@ The user wants to view or modify orchestration settings.
   "daily_cost_limit_usd": null,
   "weekly_cost_limit_usd": null,
   "auto_document": false,
-  "adversarial_review": false
+  "adversarial_review": false,
+  "enable_introspection": true,
+  "enable_backpressure": true,
+  "surface_disagreements": true,
+  "enable_drift_sentinel": true,
+  "enable_visual_review": false,
+  "enable_threads": true,
+  "enable_outcome_tracking": false,
+  "enable_personas": true,
+  "enable_replay_analysis": true,
+  "max_turns_overrides": null
 }
 ```
 
@@ -97,6 +107,16 @@ The user wants to view or modify orchestration settings.
 | `weekly_cost_limit_usd` | number/null | `null` | Maximum weekly orchestration spend in USD (Monday-Sunday). At 80% shows warning, at 100% blocks new orchestrations. Set to null for unlimited. |
 | `auto_document` | boolean | `false` | Automatically spawn documenter agent after feature additions are detected. Triggers on "New Feature" or "API Addition" archetypes, new file creation, or new exports/endpoints. |
 | `adversarial_review` | boolean | `false` | Enable adversarial architecture review for high-complexity tasks (score 8+). When enabled, two competing architect designs are evaluated in parallel and the PM selects the better approach. Doubles architect cost. |
+| `enable_introspection` | boolean | `true` | After each non-Haiku agent completes, a Haiku distiller extracts the reasoning trace into a compressed file for downstream agents. Opt-out to skip trace extraction. |
+| `enable_backpressure` | boolean | `true` | Agents write structured confidence signals at checkpoints; PM reacts by proceeding, injecting context, re-evaluating, or escalating. Opt-out to disable confidence-based backpressure. |
+| `surface_disagreements` | boolean | `true` | Reviewer findings that represent genuine design trade-offs are surfaced to the user as structured decisions instead of routing through verify-fix. Opt-out to treat all findings as verify-fix. |
+| `enable_drift_sentinel` | boolean | `true` | Detects architectural drift via invariants extracted from architect output and static rules. Pre/post-execution checks surface violations. Opt-out to disable drift detection. |
+| `enable_visual_review` | boolean | `false` | Multi-modal review for UI changes. PM auto-detects screenshots and includes them in reviewer delegation with a 6-dimension visual checklist. Opt-in since it requires screenshot artifacts. |
+| `enable_threads` | boolean | `true` | Enable cross-session thread creation and matching. Threads capture domain context across orchestrations and inject relevant history as "Previously" context. Opt-out to disable. |
+| `enable_outcome_tracking` | boolean | `false` | Enable deferred quality validation via outcome probes. After orchestration, PM records delivered files; on next relevant session, lazily validates via git history and test runs. Opt-in since it executes test commands. |
+| `enable_personas` | boolean | `true` | Enable auto-generated project-tuned agent personas. After 3+ orchestrations, PM synthesizes per-agent behavioral directives injected into delegation prompts. Opt-out to disable. |
+| `enable_replay_analysis` | boolean | `true` | Enable counterfactual analysis on friction orchestrations (re-plans, verify-fix failures, cost overruns). Stores alternative strategies as advisory replay patterns. Opt-out to disable. |
+| `max_turns_overrides` | object/null | `null` | Per-agent override for the `maxTurns` ceiling. When `null`, each agent's frontmatter `maxTurns` is the ceiling. When set to an object (e.g., `{"reviewer": 50, "debugger": 60}`), the override replaces the frontmatter ceiling for those agents. Values 5-200. Set this when agents consistently hit their turn limit on legitimate large tasks. |
 
 **Note:** Effort routing requires Claude Code v2.1.33+. On older versions, effort settings
 are recorded in the audit trail but have no effect on agent behavior.
@@ -140,7 +160,17 @@ are recorded in the audit trail but have no effect on agent behavior.
    - `weekly_cost_limit_usd` must be null or a positive number. If 0 or negative, reject with error: "weekly_cost_limit_usd must be null (no limit) or a positive number."
    - `auto_document` must be boolean (true/false)
    - `adversarial_review` must be boolean (true/false)
-   - When setting `enable_agent_teams` to `true`, output guidance: "To complete Agent Teams setup, also add to your Claude Code settings.json: `\"env\": {\"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS\": \"1\"}`". The config setting controls PM decision logic; the env var enables Claude Code's teams API (two-layer enablement).
+   - `enable_introspection` must be boolean (true/false)
+   - `enable_backpressure` must be boolean (true/false)
+   - `surface_disagreements` must be boolean (true/false)
+   - `enable_drift_sentinel` must be boolean (true/false)
+   - `enable_visual_review` must be boolean (true/false)
+   - `enable_threads` must be boolean (true/false)
+   - `enable_outcome_tracking` must be boolean (true/false)
+   - `enable_personas` must be boolean (true/false)
+   - `enable_replay_analysis` must be boolean (true/false)
+   - `max_turns_overrides` must be `null` OR an object mapping agent type strings (architect, developer, reviewer, debugger, tester, documenter, refactorer, inventor, security-engineer, pm) to positive integers between 5 and 200. Unknown agent types are ignored with a warning. Values outside 5-200 fall back to the frontmatter default with a warning.
+   - When setting `enable_agent_teams`, perform a two-layer enablement: update `.orchestray/config.json` AND synchronize the live `settings.json` at the repository root (the plugin's merged settings file, NOT `orchestray/settings.json` which is only a reference copy). The config flag controls PM decision logic; the env var `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` enables Claude Code's teams API. Follow the "Agent Teams settings.json sync" procedure below after updating `.orchestray/config.json`.
    - Reject invalid values with a helpful error message
 
 4. **Output format**:
@@ -186,6 +216,16 @@ When showing settings:
 | weekly_cost_limit_usd | null | Max weekly orchestration spend in USD (null = no limit) |
 | auto_document | false | Auto-spawn documenter after feature additions |
 | adversarial_review | false | Dual-architect review for score 8+ tasks |
+| enable_introspection | true | Extract reasoning traces from agents for downstream context |
+| enable_backpressure | true | Confidence-based backpressure between execution groups |
+| surface_disagreements | true | Surface design trade-offs to user instead of verify-fix |
+| enable_drift_sentinel | true | Detect architectural drift via invariant checks |
+| enable_visual_review | false | Multi-modal review for UI changes (opt-in) |
+| enable_threads | true | Cross-session thread creation and matching |
+| enable_outcome_tracking | false | Deferred quality validation via outcome probes (opt-in) |
+| enable_personas | true | Auto-generated project-tuned agent personas |
+| enable_replay_analysis | true | Counterfactual analysis on friction orchestrations |
+| max_turns_overrides | null | Per-agent maxTurns ceiling override map (null = use frontmatter) |
 
 Use `/orchestray:config [setting] [value]` to change a setting.
 ```
@@ -194,3 +234,72 @@ When setting a value:
 ```
 Updated `{setting}` from `{old_value}` to `{new_value}`.
 ```
+
+5. **Agent Teams settings.json sync** (only when the setting being changed is `enable_agent_teams`):
+
+   After `.orchestray/config.json` has been updated, also synchronize the live `settings.json` file at the **repository root** (path: `settings.json` — this is the plugin's merged settings file that Claude Code actually reads). Do NOT touch `orchestray/settings.json`, which is only a reference copy.
+
+   **Procedure:**
+
+   1. Attempt to Read `settings.json` at the repo root.
+      - If the file does NOT exist: print a warning and fall back to the legacy guidance path — output exactly: `Warning: settings.json not found at repo root. To complete Agent Teams setup, manually add to your Claude Code settings.json: "env": {"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"}`. Do not create the file. Stop here.
+      - If the file exists but is NOT valid JSON: bail with an error and do NOT overwrite it. Output: `Error: settings.json at repo root is not valid JSON. Refusing to modify. Fix the file manually and retry.` Stop here.
+      - If the file exists and parses as JSON: proceed.
+
+   2. **When setting `enable_agent_teams` to `true`:**
+      - Ensure the parsed object has an `env` key that is an object. If `env` is missing, add `env: {}`. If `env` exists but is not an object, bail with the JSON error above.
+      - Set `env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1"` (string, not boolean).
+      - Preserve every other key in `env` and every other top-level key in `settings.json` exactly as-is (for example, a pre-existing `"agent": "pm"` must remain untouched).
+      - Write the updated JSON back to `settings.json` with 2-space indentation and a trailing newline.
+      - Print: `Enabled Agent Teams. settings.json updated with CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1.`
+      - This operation is idempotent: if the key was already `"1"`, still write (or skip the write) and print the same success message.
+
+   3. **When setting `enable_agent_teams` to `false`:**
+      - If `env` is absent or does not contain `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`, skip the write and print: `Disabled Agent Teams. settings.json env var already absent.`
+      - Otherwise, delete the `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` key from the `env` object. Leave all other keys inside `env` untouched.
+      - If `env` is now an empty object (no remaining keys), remove the `env` key from the top-level object entirely.
+      - Preserve every other top-level key in `settings.json` exactly as-is.
+      - Write the updated JSON back to `settings.json` with 2-space indentation and a trailing newline.
+      - Print: `Disabled Agent Teams. settings.json env var removed.`
+
+   **Example — enabling with an existing `{"agent": "pm"}` settings.json:**
+
+   Before:
+   ```json
+   {
+     "agent": "pm"
+   }
+   ```
+
+   After:
+   ```json
+   {
+     "agent": "pm",
+     "env": {
+       "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+     }
+   }
+   ```
+
+   **Example — disabling when other env vars exist:**
+
+   Before:
+   ```json
+   {
+     "agent": "pm",
+     "env": {
+       "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+       "SOME_OTHER_VAR": "keep-me"
+     }
+   }
+   ```
+
+   After:
+   ```json
+   {
+     "agent": "pm",
+     "env": {
+       "SOME_OTHER_VAR": "keep-me"
+     }
+   }
+   ```

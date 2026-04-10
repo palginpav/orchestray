@@ -36,7 +36,8 @@ reported, confidence feedback applied via Section 22c).
 
 4. **Check for duplicates:** Before writing a new pattern, glob `.orchestray/patterns/*.md`
    and check if a substantially similar pattern already exists. Update existing rather
-   than duplicate.
+   than duplicate. Note: exclude files with `category: replay` from this duplicate check —
+   replay patterns are owned by §43c and must not be modified by §22a.
 
 5. **Write pattern files** to `.orchestray/patterns/{category}-{name}.md` using this template:
 
@@ -96,12 +97,28 @@ relevant strategies.
    judgment. If context differs from the pattern's documented context, ignore the
    pattern.
 
+**Replay pattern integration (Section 43d):** When matching patterns, also include
+patterns with `category: replay` from `.orchestray/patterns/replay-*.md`. Replay patterns
+serve as advisory counter-evidence: if the PM is about to make a decomposition decision
+that matches a replay pattern's `decision` field, surface the `alternative` as a
+consideration with a caution note: "Note: A previous orchestration using this approach
+experienced friction ({friction_signals}). Consider alternative: {alternative}."
+Cap: maximum 1 replay pattern injected per decomposition (most relevant by keyword match
+and recency). Replay patterns do NOT override PM judgment.
+
 ---
 
 ## 22c. Confidence Feedback Loop
 
 Run AFTER orchestration completes but BEFORE extracting new patterns (Section 22a).
 This runs as step 5 in Section 15 step 3 (post-orchestration).
+
+**Dual-writer note**: `§41c` (in outcome-tracking.md) is a parallel feedback loop that
+also adjusts pattern confidence, using different deltas (+0.15/-0.3 from probe
+validation outcomes, vs §22c's +0.1/-0.2 from orchestration outcomes). §41c runs
+lazily at session start before orchestration begins; §22c runs at orchestration
+completion. When both fire in the same session, §41c runs first. Both loops write to
+the same pattern files via last-write-wins.
 
 For each pattern noted as "applied" during Section 22b in this orchestration:
 
@@ -122,6 +139,9 @@ Run AFTER writing new patterns in Section 22a step 7.
 
 1. Count all `.md` files in `.orchestray/patterns/`.
 2. If count > 50: compute `score = confidence * times_applied` for each pattern.
+   **Exclude replay patterns**: Before computing scores, filter the pattern list to
+   exclude files with `category: replay` in their frontmatter. Replay patterns are
+   owned by §43c and have their own pruning lifecycle.
 3. Sort ascending. Remove patterns with the lowest scores until count = 50.
 4. Log: "Pruned {N} low-value patterns: {names}"
 5. Append `pattern_pruned` event(s) to the current audit trail (if still active)

@@ -477,6 +477,74 @@ describe('subdirectory copying', () => {
     }
   });
 
+  test('copies bin/_lib/ and every installed bin script resolves its requires', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      spawnSync(process.execPath, [SCRIPT, '--local'], {
+        encoding: 'utf8', timeout: 15000, cwd: tmpDir, env: { ...process.env },
+      });
+
+      const installedBinDir = path.join(tmpDir, '.claude', 'orchestray', 'bin');
+      const installedLibDir = path.join(installedBinDir, '_lib');
+
+      assert.ok(
+        fs.existsSync(path.join(installedLibDir, 'atomic-append.js')),
+        '_lib/atomic-append.js must be copied to the install target'
+      );
+      assert.ok(
+        fs.existsSync(path.join(installedLibDir, 'audit-event-writer.js')),
+        '_lib/audit-event-writer.js must be copied to the install target'
+      );
+
+      function collectJs(dir) {
+        const out = [];
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            out.push(...collectJs(full));
+          } else if (entry.isFile() && entry.name.endsWith('.js')) {
+            out.push(full);
+          }
+        }
+        return out;
+      }
+
+      const installedJs = collectJs(installedBinDir);
+      assert.ok(installedJs.length > 0, 'expected at least one installed bin script');
+
+      // For each installed .js, scan for `require('./_lib/...')` statements and
+      // assert the referenced module resolves against the installed layout.
+      // Full `require()` execution is avoided because these scripts start a
+      // stdin listener on load and would hang the child process.
+      const libRequireRe = /require\(\s*['"](\.\/_lib\/[^'"]+)['"]\s*\)/g;
+      for (const jsFile of installedJs) {
+        const src = fs.readFileSync(jsFile, 'utf8');
+        let m;
+        while ((m = libRequireRe.exec(src)) !== null) {
+          let target = m[1];
+          if (!/\.js$/.test(target)) target += '.js';
+          const resolved = path.resolve(path.dirname(jsFile), target);
+          assert.ok(
+            fs.existsSync(resolved),
+            `require(${m[1]}) in ${path.relative(tmpDir, jsFile)} must resolve to an installed file`
+          );
+        }
+
+        const parseResult = spawnSync(
+          process.execPath,
+          ['--check', jsFile],
+          { encoding: 'utf8', timeout: 10000 }
+        );
+        assert.equal(
+          parseResult.status, 0,
+          `node --check ${jsFile} failed: ${parseResult.stderr}`
+        );
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
   test('copies skill subdirectories (e.g. templates/) within each skill', () => {
     const tmpDir = makeTmpDir();
     try {

@@ -64,10 +64,13 @@ process.stdin.on('end', () => {
         process.exit(0);
       }
       const taskGraph = fs.readFileSync(taskGraphPath, 'utf8');
-      // Look for unchecked tasks (- [ ]) or status: pending/not started
-      const hasPendingTasks =
-        /- \[ \]/.test(taskGraph) ||
-        /status:\s*(pending|not started)/i.test(taskGraph);
+      // Require line-leading matches so stray checkbox-shaped markdown inside
+      // descriptions or code blocks cannot wedge the team forever.
+      const hasPendingTasks = taskGraph.split('\n').some(line => {
+        const trimmed = line.trimStart();
+        return trimmed.startsWith('- [ ]') ||
+          /^status:\s*(pending|not started)/i.test(trimmed);
+      });
 
       if (hasPendingTasks) {
         process.stdout.write(JSON.stringify({ continue: false }));

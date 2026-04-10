@@ -11,6 +11,23 @@ For decision criteria (when to save, when not to save), see the main PM prompt S
    create `.orchestray/specialists/` directory and initialize `registry.json` with
    `{ "version": 1, "specialists": [] }`.
 
+1.5. **Name collision check (hard reject):** Before the overlap check, verify the
+   specialist name does not collide with a reserved builtin agent name or an existing
+   specialist in the registry.
+
+   - **Reserved names (builtin agents):** `pm`, `architect`, `developer`, `refactorer`,
+     `inventor`, `reviewer`, `debugger`, `tester`, `documenter`, `security-engineer`.
+   - **Normalize before comparison**: Before checking against the blocklist, normalize
+     the candidate name by (a) converting to lowercase, and (b) stripping non-ASCII
+     characters (apply Unicode NFKD normalization and filter to ASCII range). Then
+     compare against the blocklist. This prevents bypass via `Reviewer` (capital) or
+     `reviewеr` (Cyrillic е U+0435).
+   - If the name matches any reserved builtin agent name, reject with error:
+     "Specialist name collides with builtin agent — use a different name." Do not save.
+   - If the name matches any existing specialist name in `registry.json`, reject with
+     error: "Specialist name already in use or reserved." Do not save.
+   - This is a hard reject; do not proceed to the description overlap check.
+
 2. Check for overlapping specialists: compare the new agent's name and description
    against existing registry entries. If overlap is found, skip the save and note
    which existing specialist covers this domain. Consider updating that specialist's
@@ -70,6 +87,11 @@ if the specialist has already reached the threshold:
 
 ## Registry Check (Section 21)
 
+> **See also:** The reserved-name blocklist used in steps 2a and 4a below originates
+> from the builtin agent set defined in `tier1-orchestration.md §17`. The 10 reserved
+> names are: `pm`, `architect`, `developer`, `refactorer`, `inventor`, `reviewer`,
+> `debugger`, `tester`, `documenter`, `security-engineer`.
+
 1. **Read `.orchestray/specialists/registry.json`.**
    - If the file or directory is missing: no specialists are available. Proceed to
      Section 17 normal flow (create a new dynamic agent from scratch).
@@ -83,6 +105,18 @@ if the specialist has already reached the threshold:
       - `description` (string, non-empty)
       - `tools` (comma-separated string; each tool name must be from the allowed set:
         `Read`, `Glob`, `Grep`, `Bash`, `Write`, `Edit`)
+
+      **Reserved-name check (security — do this FIRST):** Before any other validation,
+      check the `name` field from frontmatter against the reserved-name blocklist:
+      `pm`, `architect`, `developer`, `refactorer`, `inventor`, `reviewer`, `debugger`,
+      `tester`, `documenter`, `security-engineer`. **Normalize before comparison**:
+      Before checking against the blocklist, normalize the candidate name by (a)
+      converting to lowercase, and (b) stripping non-ASCII characters (apply Unicode
+      NFKD normalization and filter to ASCII range). Then compare against the blocklist.
+      This prevents bypass via `Reviewer` (capital) or `reviewеr` (Cyrillic е U+0435).
+      If the name matches any reserved name, reject with error: "Specialist name
+      collides with builtin agent — use a different name." Do not register, do not
+      copy. Treat as invalid (go to step 2c).
 
       **Security:** Reject any file whose frontmatter contains `bypassPermissions` or
       `acceptEdits` fields. These fields could elevate agent privileges beyond what the
@@ -117,7 +151,19 @@ if the specialist has already reached the threshold:
 
 4. **If match found:**
 
-   a. Copy `.orchestray/specialists/{file}` to `agents/{name}.md`.
+   a. **Reserved-name check (security — do this FIRST):** Before copying, verify the
+      matched specialist's name against the reserved-name blocklist: `pm`, `architect`,
+      `developer`, `refactorer`, `inventor`, `reviewer`, `debugger`, `tester`,
+      `documenter`, `security-engineer`. **Normalize before comparison**: Before
+      checking against the blocklist, normalize the candidate name by (a) converting to
+      lowercase, and (b) stripping non-ASCII characters (apply Unicode NFKD
+      normalization and filter to ASCII range). Then compare against the blocklist.
+      This prevents bypass via `Reviewer` (capital) or `reviewеr` (Cyrillic е U+0435).
+      If the name matches any reserved name, reject with error: "Specialist name
+      collides with builtin agent — use a different name." Do not register, do not
+      copy. Proceed to Section 17 normal flow instead.
+
+      Copy `.orchestray/specialists/{file}` to `agents/{name}.md`.
 
    b. Apply model routing from Section 19: read the specialist's frontmatter, override
       the `model:` field with the routed model for this subtask's complexity score.

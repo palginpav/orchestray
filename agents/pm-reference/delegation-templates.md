@@ -24,6 +24,10 @@ The subagent has NO context from this conversation. It starts fresh.
    `.orchestray/kb/facts/repo-map.md` as a `## Repository Map` section (see Section 3
    Repository Map Injection rules for per-agent filtering)
 
+9.5. **Project persona:** If `enable_personas` is true and a persona file exists for this
+   agent type in `.orchestray/personas/`, inject it as a `## Project Persona` section in
+   the delegation prompt. Cap at 150 words. See Section 42c in adaptive-personas.md.
+
 ### Example Delegation Prompts
 
 **Good:** "Create a REST API endpoint POST /api/tasks in src/api/tasks.ts that accepts

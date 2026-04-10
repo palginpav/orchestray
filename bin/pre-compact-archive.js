@@ -105,11 +105,11 @@ process.stdin.on('end', () => {
         fs.mkdirSync(destTasksDir, { recursive: true });
         const entries = fs.readdirSync(tasksDir, { recursive: true, withFileTypes: true });
         for (const entry of entries) {
-          // Node populates `entry.path` with the containing directory when
-          // recursive:true is used. Skip non-files (directories are created
-          // on-demand by the mkdir below).
+          // Node populates `entry.parentPath` (20.12+) or `entry.path` (<20.12,
+          // deprecated) with the containing directory when recursive:true is used.
+          // Skip non-files (directories are created on-demand by the mkdir below).
           if (!entry.isFile()) continue;
-          const src = path.join(entry.path, entry.name);
+          const src = path.join(entry.parentPath || entry.path, entry.name);
           const relFromTasks = path.relative(tasksDir, src);
           const dest = path.join(destTasksDir, relFromTasks);
           fs.mkdirSync(path.dirname(dest), { recursive: true });

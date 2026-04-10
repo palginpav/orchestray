@@ -30,6 +30,7 @@ May be compacted more aggressively:
 
 ## Usage
 - PM agent is the default session agent (set via settings.json)
+- The `skills/orchestray:*` directories are slash commands (all use `disable-model-invocation: true`), not model-invoked skills — they are only invoked via the `/orchestray:*` syntax below.
 - Use `/orchestray:run [task]` to manually trigger orchestration
 - Use `/orchestray:status` to check orchestration state
 - Use `/orchestray:config` to view/modify settings

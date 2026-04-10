@@ -1050,16 +1050,29 @@ Section 14 flow or after all sequential tasks complete).
 
 7. **Extract new patterns** per Section 22a from the archived history.
 
-7.5. **Check for user correction feedback**: After reporting the cost summary and
-   pattern extraction results, evaluate the user's next response per Section 34c.
-   If corrective feedback is found, extract as a user-correction pattern.
+7.1. **Thread creation/update**: If `enable_threads` is true, create or update a thread
+   entry for this orchestration per Section 40a/40c (in orchestration-threads.md). This
+   runs first because its output is self-contained and fast.
 
-7.6. **Consequence forecast validation (Phase B)**: If `enable_consequence_forecast` is
+7.2. **Outcome probe creation**: If `enable_outcome_tracking` is true, create an outcome
+   probe for this orchestration per Section 41a (in outcome-tracking.md). The probe records
+   delivered files, tests added, and patterns applied for deferred quality validation.
+
+7.3. **Persona refresh check**: If `enable_personas` is true, check whether persona
+   generation or refresh is triggered per Section 42a (in adaptive-personas.md). Generate
+   or refresh personas for agent types used 2+ times across recent orchestrations.
+
+7.4. **Replay analysis**: If `enable_replay_analysis` is true AND friction signals are
+   detected (re-plans, verify-fix failures, cost overruns >50%, confidence <0.4, or turns
+   >2x budget), run counterfactual analysis per Section 43a-43c (in replay-analysis.md).
+   Write replay pattern to `.orchestray/patterns/replay-{orch-id}.md`.
+
+7.5. **Consequence forecast validation (Phase B)**: If `enable_consequence_forecast` is
    true and `.orchestray/state/consequences.md` exists, run Section 39 Phase B to compare
    predictions against the actual git diff. Include accuracy summary in the final report.
    Log `consequence_forecast` event to `.orchestray/audit/events.jsonl`.
 
-7.7. **Drift validation**: If `enable_drift_sentinel` is true, run Section 39.D
+7.6. **Drift validation**: If `enable_drift_sentinel` is true, run Section 39.D
    post-execution check. Load all enforced invariants (extracted, static, session), check
    the git diff against each, and surface any violations to the user. Log `drift_check`
    event to `.orchestray/audit/events.jsonl`. If error-severity violations exist, present
@@ -1070,9 +1083,14 @@ Section 14 flow or after all sequential tasks complete).
    (Auto-Documenter Detection, in auto-documenter.md). If `auto_document` is true and
    a feature addition is detected, spawn the documenter agent as a non-blocking bonus step.
 
+9. **Check for user correction feedback**: After the auto-documenter step, evaluate the
+   user's next response per Section 34c. If corrective feedback is found, extract as a
+   user-correction pattern. (Moved here from step 7.5 to avoid blocking post-processing
+   steps 7.5, 7.6, and 8 on an out-of-band user wait.)
+
 ### 15.Z: ROI Scorecard Generation
 
-After steps 1-8 above complete, generate an **Orchestration ROI Scorecard** that quantifies
+After steps 1-9 above complete, generate an **Orchestration ROI Scorecard** that quantifies
 the value delivered alongside the cost. This scorecard MUST be included in the final
 summary reported to the user (per Section 8 Communication Protocol).
 
@@ -1369,9 +1387,12 @@ may be saved for future reuse instead of being discarded.
    }
    ```
 
-**Name validation:** Specialist names must NOT be `pm`, `architect`, `developer`,
-`refactorer`, `inventor`, `reviewer`, `debugger`, `tester`, `documenter`, or `security-engineer` to avoid
-conflicts with core agent definitions.
+**Name validation:** Dynamic agent names MUST match `^[a-zA-Z0-9_-]+$`. Reject any name
+containing path separators (`/`), traversal sequences (`..`), dots, or other non-alphanumeric
+characters. If the derived name fails this check, sanitize by replacing invalid characters
+with `-` and re-validating. Additionally, specialist names must NOT be `pm`, `architect`,
+`developer`, `refactorer`, `inventor`, `reviewer`, `debugger`, `tester`, `documenter`, or
+`security-engineer` to avoid conflicts with core agent definitions.
 
 ---
 
@@ -2053,7 +2074,7 @@ downstream files might be affected by the planned changes.
 ### Phase B: Post-Execution Validation
 
 Run AFTER all agents complete and BEFORE the final summary (triggered from Section 15
-step 7.6 above).
+step 7.5 above).
 
 **Protocol:**
 
@@ -2161,8 +2182,8 @@ as Section 39 Phase A (consequence forecasting).
 
 #### Phase B: Post-Execution Drift Validation
 
-Run AFTER all agents complete, triggered from Section 15 step 7.7 (after consequence
-forecast validation in step 7.6).
+Run AFTER all agents complete, triggered from Section 15 step 7.6 (after consequence
+forecast validation in step 7.5).
 
 1. **Get actual changes**: Run `git diff` to get the full diff of all changes made
    during this orchestration.

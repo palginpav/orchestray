@@ -74,6 +74,17 @@
           }
         ]
       }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/pre-compact-archive.js",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }

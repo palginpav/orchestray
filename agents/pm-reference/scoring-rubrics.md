@@ -136,6 +136,23 @@ results (reviewer rejects in Section 18):
 
 ---
 
+## v2.0.10 Feature Interactions
+
+The following v2.0.10 features run automatically based on their config flags and do NOT
+directly affect complexity scoring or model routing decisions:
+
+- **Orchestration Threads (§40)**: Cross-session context loaded pre-decomposition.
+- **Outcome Tracking (§41)**: Lazy probe validation at session start (opt-in).
+- **Adaptive Personas (§42)**: Per-agent behavioral directives injected at delegation time.
+- **Replay Analysis (§43)**: Advisory counterfactuals for friction orchestrations.
+
+These features feed context into the PM's decomposition and delegation steps but do not
+alter complexity score, effort routing, or model selection. If a thread or replay pattern
+surfaces a caution, the PM should weigh it during decomposition but must still score the
+task via the standard 4-signal rubric above.
+
+---
+
 ## Adaptive Threshold Calibration
 
 The PM's effective complexity threshold adjusts based on historical signals from past
@@ -192,17 +209,23 @@ time. Used by Section 3.Y (Turn Budget Calculation) in the main PM prompt.
 
 ### Base Turns by Agent Type
 
-| Agent Type | Base Turns | Frontmatter Max | Rationale |
-|------------|-----------|-----------------|-----------|
-| architect | 15 | 30 | Design tasks need exploration + writing |
-| developer | 12 | 25 | Implementation is focused but iterative |
-| reviewer | 10 | 20 | Review is read-heavy, fewer write turns |
-| debugger | 15 | 30 | Investigation requires broad exploration |
-| tester | 12 | 25 | Test writing is similar in scope to implementation |
-| documenter | 8 | 20 | Documentation is straightforward writing |
-| refactorer | 15 | 25 | Refactoring requires careful incremental changes |
-| inventor | 20 | 40 | Novel creation needs the most exploration room |
-| security-engineer | 15 | 30 | Security analysis is thorough and exploratory |
+| Agent Type | Base Turns | Frontmatter Ceiling | Rationale |
+|------------|-----------|---------------------|-----------|
+| architect | 15 | 45 | Design tasks need exploration + writing |
+| developer | 12 | 65 | Implementation is focused but iterative |
+| reviewer | 10 | 45 | Review is read-heavy, fewer write turns |
+| debugger | 15 | 55 | Investigation requires broad exploration |
+| tester | 12 | 55 | Test writing is similar in scope to implementation |
+| documenter | 8 | 45 | Documentation is straightforward writing |
+| refactorer | 15 | 65 | Refactoring requires careful incremental changes |
+| inventor | 20 | 65 | Novel creation needs the most exploration room |
+| security-engineer | 15 | 45 | Security analysis is thorough and exploratory |
+
+The "Frontmatter Ceiling" column reflects the default values in each agent's
+frontmatter `maxTurns` field. These can be **overridden per-agent** via the
+`max_turns_overrides` config key — see PM Section 3.Y and the config skill for
+the full override protocol. When an override is set, the PM uses the override
+value as the ceiling instead of the frontmatter default.
 
 ### Formula
 
@@ -210,7 +233,10 @@ time. Used by Section 3.Y (Turn Budget Calculation) in the main PM prompt.
 file_factor = count(files_read + files_write)
 complexity_factor = subtask_score / 4
 estimated_turns = round(base_turns[agent_type] * (0.5 + 0.5 * complexity_factor) + file_factor * 2)
-max_turns = min(estimated_turns, frontmatter_max)
+
+# Ceiling resolves from config override first, then frontmatter default
+ceiling = config.max_turns_overrides[agent_type] or frontmatter_max
+max_turns = min(estimated_turns, ceiling)
 ```
 
 ### Worked Examples
@@ -220,15 +246,15 @@ max_turns = min(estimated_turns, frontmatter_max)
 file_factor = 3
 complexity_factor = 3 / 4 = 0.75
 estimated_turns = round(12 * (0.5 + 0.5 * 0.75) + 3 * 2) = round(12 * 0.875 + 6) = round(16.5) = 17
-max_turns = min(17, 25) = 17
+max_turns = min(17, 65) = 17
 ```
 
-**Example 2: Complex architect task** (score 9, 5 files read, 3 files write)
+**Example 2: Complex architect task** (score 12, 10 files read, 5 files write)
 ```
-file_factor = 8
-complexity_factor = 9 / 4 = 2.25
-estimated_turns = round(15 * (0.5 + 0.5 * 2.25) + 8 * 2) = round(15 * 1.625 + 16) = round(40.375) = 40
-max_turns = min(40, 30) = 30  (capped by frontmatter max)
+file_factor = 15
+complexity_factor = 12 / 4 = 3.0
+estimated_turns = round(15 * (0.5 + 0.5 * 3.0) + 15 * 2) = round(15 * 2.0 + 30) = round(60) = 60
+max_turns = min(60, 45) = 45  (capped by frontmatter max)
 ```
 
 **Example 3: Simple documenter task** (score 2, 1 file read, 1 file write)
@@ -236,11 +262,13 @@ max_turns = min(40, 30) = 30  (capped by frontmatter max)
 file_factor = 2
 complexity_factor = 2 / 4 = 0.5
 estimated_turns = round(8 * (0.5 + 0.5 * 0.5) + 2 * 2) = round(8 * 0.75 + 4) = round(10) = 10
-max_turns = min(10, 20) = 10
+max_turns = min(10, 45) = 10
 ```
 
 ### Budget Exhaustion Retry
 
 When an agent returns `status: partial` due to turn budget exhaustion, the PM may retry
-with `1.5x` the original calculated budget (rounded up), capped at frontmatter max.
-This counts as one retry per Section 5. Do not retry more than once for budget exhaustion.
+with `1.5x` the original calculated budget (rounded up), capped at the resolved ceiling
+(config override or frontmatter). This counts as one retry per Section 5. Do not retry
+more than once for budget exhaustion. If the same agent type exhausts its budget on
+multiple orchestrations, recommend raising `max_turns_overrides[agent_type]` in config.
