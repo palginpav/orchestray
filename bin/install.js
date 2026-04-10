@@ -73,11 +73,38 @@ console.log('');
 install(configDir);
 
 function install(targetDir) {
+  // -------------------------------------------------------------------------
+  // DEF-6: install footprint — verification comment
+  //
+  // COPIED into <targetDir>/:
+  //   - agents/*.md and agents/<subdir>/*               (agent definitions)
+  //   - skills/<skill>/SKILL.md and skill subdirs       (skill library)
+  //   - orchestray/bin/*.js (excluding install.js)      (hook scripts)
+  //   - orchestray/settings.json                        (default agent config)
+  //   - orchestray/CLAUDE.md                            (reference doc)
+  //   - orchestray/VERSION, orchestray/manifest.json    (install tracking)
+  //   - settings.json (merged)                          (hook wiring)
+  //
+  // NOT COPIED (intentional):
+  //   - .claude-plugin/plugin.json: Claude Code's plugin manager reads this
+  //     from the npm package root, not from the install target. Copying it
+  //     into <targetDir>/ would be a no-op and could confuse users who
+  //     expect edits there to take effect. If this assumption is ever
+  //     invalidated, this is the place to add the copy.
+  // -------------------------------------------------------------------------
+
   // Ensure target directories exist
   const dirs = ['agents', 'skills', 'hooks', 'orchestray', 'orchestray/bin'];
   for (const d of dirs) {
     fs.mkdirSync(path.join(targetDir, d), { recursive: true });
   }
+
+  // DEF-5: track every file we copy as a target-relative path so uninstall
+  // can remove ONLY what we installed. Old manifests used agentSubdirs +
+  // skills + hooks and called rmSync(dir, {recursive:true}) which would
+  // delete user files accidentally mixed into those dirs.
+  const trackedFiles = [];
+  const track = (targetRelPath) => trackedFiles.push(targetRelPath);
 
   // 1. Copy agents
   const agentsDir = path.join(pkgRoot, 'agents');
@@ -87,6 +114,7 @@ function install(targetDir) {
       path.join(agentsDir, file),
       path.join(targetDir, 'agents', file)
     );
+    track(path.join('agents', file));
   }
   // Copy subdirectories within agents/ (e.g., pm-reference/)
   const agentSubdirs = fs.readdirSync(agentsDir, { withFileTypes: true })
@@ -98,6 +126,7 @@ function install(targetDir) {
     fs.mkdirSync(dstSub, { recursive: true });
     for (const file of fs.readdirSync(srcSub)) {
       fs.copyFileSync(path.join(srcSub, file), path.join(dstSub, file));
+      track(path.join('agents', dir, file));
     }
   }
   const refCount = agentSubdirs.reduce((n, dir) => n + fs.readdirSync(path.join(agentsDir, dir)).length, 0);
@@ -115,6 +144,7 @@ function install(targetDir) {
     const skillFile = path.join(skillsDir, dir, 'SKILL.md');
     if (fs.existsSync(skillFile)) {
       fs.copyFileSync(skillFile, path.join(targetSkillDir, 'SKILL.md'));
+      track(path.join('skills', dir, 'SKILL.md'));
     }
     // Copy subdirectories within each skill (e.g., templates/)
     const subDirs = fs.readdirSync(path.join(skillsDir, dir), { withFileTypes: true })
@@ -125,6 +155,7 @@ function install(targetDir) {
       fs.mkdirSync(dstSub, { recursive: true });
       for (const file of fs.readdirSync(srcSub)) {
         fs.copyFileSync(path.join(srcSub, file), path.join(dstSub, file));
+        track(path.join('skills', dir, sub.name, file));
       }
     }
   }
@@ -138,6 +169,7 @@ function install(targetDir) {
       path.join(binDir, file),
       path.join(targetDir, 'orchestray', 'bin', file)
     );
+    track(path.join('orchestray', 'bin', file));
   }
   console.log(`  \x1b[32m✓\x1b[0m Installed ${binFiles.length} hook scripts`);
 
@@ -150,16 +182,19 @@ function install(targetDir) {
   const settingsDst = path.join(targetDir, 'orchestray', 'settings.json');
   if (fs.existsSync(settingsSrc)) {
     fs.copyFileSync(settingsSrc, settingsDst);
+    track(path.join('orchestray', 'settings.json'));
   }
 
   // 6. Copy CLAUDE.md to orchestray/ for reference
   const claudeMdSrc = path.join(pkgRoot, 'CLAUDE.md');
   if (fs.existsSync(claudeMdSrc)) {
     fs.copyFileSync(claudeMdSrc, path.join(targetDir, 'orchestray', 'CLAUDE.md'));
+    track(path.join('orchestray', 'CLAUDE.md'));
   }
 
   // 7. Write version file
   fs.writeFileSync(path.join(targetDir, 'orchestray', 'VERSION'), VERSION + '\n');
+  track(path.join('orchestray', 'VERSION'));
 
   // 8. Write manifest for clean uninstall
   const manifest = {
@@ -170,6 +205,7 @@ function install(targetDir) {
     agentSubdirs: agentSubdirs,
     skills: skillDirs,
     hooks: binFiles,
+    files: trackedFiles, // DEF-5: per-file manifest for precise uninstall
   };
   fs.writeFileSync(
     path.join(targetDir, 'orchestray', 'manifest.json'),
@@ -224,17 +260,40 @@ function mergeHooks(targetDir) {
   for (const [event, entries] of Object.entries(orchestrayHooks)) {
     if (!Array.isArray(entries)) continue;
 
-    // Rewrite command paths and build new hook entries
+    // Rewrite command paths and build new hook entries.
+    // DEF-4: use a regex to split the template command into
+    //   (prefix)(script-path)(rest-of-command)
+    // where prefix is `${CLAUDE_PLUGIN_ROOT}/bin/` and script-path is the
+    // first whitespace-delimited token after it. This avoids the old
+    // `.split(' ')` which broke on installed paths that contained spaces
+    // (e.g. Windows "Program Files", macOS "iCloud Drive"). The full path
+    // is then inserted via JSON.stringify to get a reliably shell-safe
+    // double-quoted form. If the resolved path contains characters that
+    // double quotes cannot safely escape (`"`, `$`, backtick), fail fast.
     const newEntries = entries.map(entry => {
       const rewritten = JSON.parse(JSON.stringify(entry));
       if (rewritten.hooks) {
         for (const hook of rewritten.hooks) {
           if (hook.command) {
-            // Extract script name and args from the template command
-            const parts = hook.command.replace('${CLAUDE_PLUGIN_ROOT}/', '').split(' ');
-            const scriptPath = parts[0].replace('bin/', '');
-            const extraArgs = parts.slice(1).join(' ');
-            hook.command = `node "${path.join(binPrefix, scriptPath)}"${extraArgs ? ' ' + extraArgs : ''}`;
+            const cmdTemplate = hook.command;
+            const match = cmdTemplate.match(
+              /^\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/(\S+)(.*)$/
+            );
+            if (!match) {
+              // Template did not match the expected shape; leave command as-is.
+              continue;
+            }
+            const scriptName = match[1];
+            const rest = match[2]; // leading space preserved if any
+            const fullPath = path.join(binPrefix, scriptName);
+            if (/["$`]/.test(fullPath)) {
+              throw new Error(
+                'Orchestray install: refusing to write a hook command for a path ' +
+                'containing a shell-unsafe character (" $ or `). Path: ' + fullPath
+              );
+            }
+            const quotedPath = JSON.stringify(fullPath);
+            hook.command = `node ${quotedPath}${rest}`;
           }
         }
       }
@@ -273,23 +332,67 @@ function uninstall(targetDir) {
 
   const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
 
-  // Remove agents
-  for (const file of manifest.agents || []) {
-    const p = path.join(targetDir, 'agents', file);
-    if (fs.existsSync(p)) fs.unlinkSync(p);
-  }
-  for (const dir of manifest.agentSubdirs || []) {
-    const p = path.join(targetDir, 'agents', dir);
-    if (fs.existsSync(p)) fs.rmSync(p, { recursive: true });
-  }
-  console.log(`  \x1b[32m✓\x1b[0m Removed agents`);
+  // DEF-5: prefer per-file manifest (new format). Fall back to the old
+  // subdir-based removal if an older manifest is on disk so users upgrading
+  // from a prior version are not stranded.
+  if (Array.isArray(manifest.files)) {
+    // 1. Remove every tracked file individually.
+    const removedDirs = new Set();
+    for (const rel of manifest.files) {
+      const p = path.join(targetDir, rel);
+      if (fs.existsSync(p)) {
+        try {
+          fs.unlinkSync(p);
+        } catch (_e) {
+          // best effort
+        }
+      }
+      removedDirs.add(path.dirname(p));
+    }
 
-  // Remove skill directories
-  for (const dir of manifest.skills || []) {
-    const p = path.join(targetDir, 'skills', dir);
-    if (fs.existsSync(p)) fs.rmSync(p, { recursive: true });
+    // 2. Walk parent dirs bottom-up (longest first) and rmdir any that
+    //    are empty. This preserves unmanaged files (e.g., a user-added
+    //    extra.md in agents/pm-reference/).
+    const sorted = Array.from(removedDirs).sort((a, b) => b.length - a.length);
+    // Also consider grandparents (agents/, skills/, skills/<skill>/).
+    const allDirs = new Set(sorted);
+    for (const d of sorted) {
+      let parent = path.dirname(d);
+      while (parent.startsWith(targetDir) && parent !== targetDir) {
+        allDirs.add(parent);
+        parent = path.dirname(parent);
+      }
+    }
+    const sortedAll = Array.from(allDirs).sort((a, b) => b.length - a.length);
+    for (const d of sortedAll) {
+      try {
+        if (fs.existsSync(d) && fs.readdirSync(d).length === 0) {
+          fs.rmdirSync(d);
+        }
+      } catch (_e) {
+        // non-empty or already gone; skip
+      }
+    }
+    console.log(`  \x1b[32m✓\x1b[0m Removed installed files (${manifest.files.length})`);
+  } else {
+    // Legacy fallback for manifests written by older versions.
+    for (const file of manifest.agents || []) {
+      const p = path.join(targetDir, 'agents', file);
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    }
+    for (const dir of manifest.agentSubdirs || []) {
+      const p = path.join(targetDir, 'agents', dir);
+      if (fs.existsSync(p)) fs.rmSync(p, { recursive: true });
+    }
+    console.log(`  \x1b[32m✓\x1b[0m Removed agents`);
+
+    // Remove skill directories
+    for (const dir of manifest.skills || []) {
+      const p = path.join(targetDir, 'skills', dir);
+      if (fs.existsSync(p)) fs.rmSync(p, { recursive: true });
+    }
+    console.log(`  \x1b[32m✓\x1b[0m Removed skills`);
   }
-  console.log(`  \x1b[32m✓\x1b[0m Removed skills`);
 
   // Remove orchestray directory
   const orchDir = path.join(targetDir, 'orchestray');

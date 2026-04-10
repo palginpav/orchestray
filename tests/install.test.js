@@ -504,3 +504,155 @@ describe('subdirectory copying', () => {
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// DEF-4: install into a directory whose path contains a space
+// ---------------------------------------------------------------------------
+
+describe('install path containing a space (DEF-4)', () => {
+
+  test('mergeHooks writes a quoted, un-truncated command when the install path has a space', () => {
+    // Use a tmp dir with a space in the name. Install --local inside it and
+    // verify the generated settings.json contains the FULL quoted path, not
+    // a truncated `/tmp/path` with the tail dropped by split(' ').
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestray-space-parent-'));
+    const spaceDir = path.join(parent, 'path with space');
+    fs.mkdirSync(spaceDir, { recursive: true });
+
+    try {
+      const result = spawnSync(process.execPath, [SCRIPT, '--local'], {
+        encoding: 'utf8',
+        timeout: 15000,
+        cwd: spaceDir,
+        env: { ...process.env },
+      });
+      assert.equal(result.status, 0, `install failed: ${result.stderr}`);
+
+      const settingsPath = path.join(spaceDir, '.claude', 'settings.json');
+      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+      const allCommands = Object.values(settings.hooks)
+        .flat()
+        .flatMap(e => (e.hooks || []).map(h => h.command || ''));
+
+      assert.ok(allCommands.length > 0, 'at least one hook command should be generated');
+
+      for (const cmd of allCommands) {
+        // Must contain the full "path with space" fragment, not a truncated
+        // "path" that lost the trailing " with space".
+        assert.ok(
+          cmd.includes('path with space'),
+          `command should contain the full spaced path, got: ${cmd}`
+        );
+        // The path must be wrapped in double quotes so the shell sees it
+        // as a single argument.
+        assert.ok(
+          /"[^"]*path with space[^"]*"/.test(cmd),
+          `spaced path should appear inside double quotes: ${cmd}`
+        );
+      }
+    } finally {
+      fs.rmSync(parent, { recursive: true });
+    }
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// DEF-5: per-file manifest uninstall behavior
+// ---------------------------------------------------------------------------
+
+describe('per-file manifest uninstall (DEF-5)', () => {
+
+  test('uninstall preserves user files inside managed subdirs and leaves the dir', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      // Install
+      spawnSync(process.execPath, [SCRIPT, '--local'], {
+        encoding: 'utf8', timeout: 15000, cwd: tmpDir, env: { ...process.env },
+      });
+
+      // Find an agent subdirectory (e.g., pm-reference) to plant an unmanaged
+      // file in. Skip the test if no agent subdirs exist.
+      const agentsDir = path.join(tmpDir, '.claude', 'agents');
+      const subdirs = fs.readdirSync(agentsDir, { withFileTypes: true })
+        .filter(e => e.isDirectory())
+        .map(e => e.name);
+      if (subdirs.length === 0) return;
+
+      const hostSubdir = path.join(agentsDir, subdirs[0]);
+      const extraFile = path.join(hostSubdir, 'extra-user-file.md');
+      fs.writeFileSync(extraFile, '# user content that must survive uninstall\n');
+
+      // Uninstall
+      const { status } = spawnSync(process.execPath, [SCRIPT, '--local', '--uninstall'], {
+        encoding: 'utf8', timeout: 15000, cwd: tmpDir, env: { ...process.env },
+      });
+      assert.equal(status, 0, 'uninstall should exit 0');
+
+      // The unmanaged file must still exist.
+      assert.ok(fs.existsSync(extraFile),
+        'user-added file inside a managed subdir must NOT be removed by uninstall');
+      // Because the subdir is non-empty, it must also remain.
+      assert.ok(fs.existsSync(hostSubdir),
+        'non-empty managed subdir must remain after uninstall');
+      // Its content should be exactly the untouched user file.
+      const remaining = fs.readdirSync(hostSubdir);
+      assert.deepEqual(remaining, ['extra-user-file.md'],
+        `only the user file should remain, got: ${JSON.stringify(remaining)}`);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('uninstall removes empty managed subdirs after file cleanup', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      // Install
+      spawnSync(process.execPath, [SCRIPT, '--local'], {
+        encoding: 'utf8', timeout: 15000, cwd: tmpDir, env: { ...process.env },
+      });
+
+      // Collect the agent subdirs BEFORE uninstall — these should be empty
+      // and therefore removed afterwards.
+      const agentsDir = path.join(tmpDir, '.claude', 'agents');
+      const subdirsBefore = fs.readdirSync(agentsDir, { withFileTypes: true })
+        .filter(e => e.isDirectory())
+        .map(e => e.name);
+
+      // Uninstall with no user mods
+      spawnSync(process.execPath, [SCRIPT, '--local', '--uninstall'], {
+        encoding: 'utf8', timeout: 15000, cwd: tmpDir, env: { ...process.env },
+      });
+
+      for (const subdir of subdirsBefore) {
+        const p = path.join(agentsDir, subdir);
+        assert.ok(!fs.existsSync(p),
+          `empty managed subdir ${subdir} should be removed after uninstall`);
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('manifest.json contains the per-file files array', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      spawnSync(process.execPath, [SCRIPT, '--local'], {
+        encoding: 'utf8', timeout: 15000, cwd: tmpDir, env: { ...process.env },
+      });
+
+      const manifestPath = path.join(tmpDir, '.claude', 'orchestray', 'manifest.json');
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      assert.ok(Array.isArray(manifest.files), 'manifest.files should be an array (DEF-5)');
+      assert.ok(manifest.files.length > 0, 'manifest.files should list the installed files');
+      // Spot-check: pm.md should be tracked via agents/pm.md
+      assert.ok(
+        manifest.files.some(f => f === path.join('agents', 'pm.md')),
+        'manifest.files should contain agents/pm.md'
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+});
