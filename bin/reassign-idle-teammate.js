@@ -4,6 +4,9 @@
 const fs = require('fs');
 const path = require('path');
 
+// cap to avoid OOM on corrupted task-graph files (DEF-3)
+const MAX_SIZE = 1_048_576;
+
 let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('error', () => { process.stdout.write(JSON.stringify({ continue: true })); process.exit(0); });
@@ -47,6 +50,21 @@ process.stdin.on('end', () => {
     // Reassignment logic: check for pending tasks in task-graph.md
     const taskGraphPath = path.join(cwd, '.orchestray', 'state', 'task-graph.md');
     if (fs.existsSync(taskGraphPath)) {
+      // DEF-3: cap the read so a corrupted/runaway task-graph cannot OOM the
+      // hook. If the file exceeds MAX_SIZE bytes, skip the pending-task scan
+      // and let the teammate stop. Log once to stderr so operators see it in
+      // the hook log.
+      let statSize = 0;
+      try {
+        statSize = fs.statSync(taskGraphPath).size;
+      } catch (_e) {
+        statSize = 0;
+      }
+      if (statSize > MAX_SIZE) {
+        process.stderr.write('task-graph.md exceeds 1 MB -- skipping reassignment check\n');
+        process.stdout.write(JSON.stringify({ continue: true }));
+        process.exit(0);
+      }
       const taskGraph = fs.readFileSync(taskGraphPath, 'utf8');
       // Look for unchecked tasks (- [ ]) or status: pending/not started
       const hasPendingTasks =

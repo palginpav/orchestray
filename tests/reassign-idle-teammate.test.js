@@ -263,6 +263,61 @@ describe('audit logging', () => {
 // stdin parsing safety
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// DEF-3: task-graph.md size cap
+// ---------------------------------------------------------------------------
+
+describe('task-graph.md size cap (DEF-3)', () => {
+
+  test('skips reassignment check and exits 0 when task-graph.md exceeds 1 MB', () => {
+    const tmpDir = makeTmpDir();
+    // Build a task-graph.md > 1 MB that ALSO contains pending-task markers.
+    // Without the size cap, the hook would detect pending tasks and exit 2.
+    // With the cap, the hook should skip the scan and exit 0.
+    const pendingMarker = '- [ ] pending task line\n';
+    // 1.1 MB worth of pending markers
+    const body = pendingMarker.repeat(Math.ceil(1_200_000 / pendingMarker.length));
+    writeTaskGraph(tmpDir, body);
+
+    try {
+      const taskGraphPath = path.join(tmpDir, '.orchestray', 'state', 'task-graph.md');
+      assert.ok(fs.statSync(taskGraphPath).size > 1_048_576,
+        'test setup: task-graph.md should exceed 1 MB');
+
+      const input = JSON.stringify({ cwd: tmpDir });
+      const { stdout, stderr, status } = run(input);
+
+      assert.equal(status, 0,
+        'should exit 0 (not 2) when task-graph.md exceeds the cap, even with pending markers');
+      assert.equal(parseOutput(stdout).continue, true,
+        'should emit { continue: true } when cap is hit');
+      assert.ok(
+        stderr.includes('task-graph.md exceeds 1 MB') ||
+        stderr.toLowerCase().includes('exceeds 1 mb') ||
+        stderr.toLowerCase().includes('skipping reassignment'),
+        `stderr should warn about the cap: ${stderr}`
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('does NOT skip the check when task-graph.md is under 1 MB', () => {
+    const tmpDir = makeTmpDir();
+    writeTaskGraph(tmpDir, '- [ ] small pending task\n');
+
+    try {
+      const input = JSON.stringify({ cwd: tmpDir });
+      const { status } = run(input);
+      assert.equal(status, 2,
+        'small task-graph should still be scanned and blocked when pending');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+});
+
 describe('stdin parsing safety', () => {
 
   test('exits 0 on empty stdin (safe fallback)', () => {
