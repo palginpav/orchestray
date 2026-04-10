@@ -6,7 +6,10 @@
     "name": "palginpav"
   },
   "homepage": "https://github.com/palginpav/orchestray",
-  "repository": "https://github.com/palginpav/orchestray",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/palginpav/orchestray"
+  },
   "license": "MIT",
   "keywords": ["claude-code", "orchestration", "multi-agent", "ai-agents", "plugin"]
 }

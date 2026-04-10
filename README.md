@@ -172,6 +172,8 @@ All orchestration state lives in `.orchestray/` (gitignored):
 - [Claude Code](https://claude.ai/code) v2.0.0+
 - Agent Teams features require v2.1.32+ (opt-in)
 
+Agent Teams features (TaskCreated / TaskCompleted / TeammateIdle hooks) require Claude Code v2.1.32+ with the experimental flag `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` set in the environment or `settings.json`. Without the flag, these hooks are installed but dormant — nothing breaks, they simply never fire.
+
 ## License
 
 MIT
