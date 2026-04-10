@@ -964,10 +964,8 @@ describe('K. resources/read', () => {
             params: { uri: 'orchestray:pattern://does-not-exist' },
           });
           assert.ok(resp.error, 'missing resource must return JSON-RPC error');
-          // Server currently maps RESOURCE_NOT_FOUND -> -32601 (Method not
-          // found). v2011c-stage2-plan.md §13 specifies -32002; the
-          // deviation is reported as a finding. Test pins actual behavior.
-          assert.equal(resp.error.code, -32601);
+          // MCP "resource not found" per plan §9 / arch §3.3.
+          assert.equal(resp.error.code, -32002);
           assert.ok(resp.error.message.toLowerCase().includes('not found'));
           assert.ok(resp.error.data && resp.error.data.uri === 'orchestray:pattern://does-not-exist');
         }
@@ -985,10 +983,8 @@ describe('K. resources/read', () => {
           params: { uri: 'orchestray:pattern://../etc/passwd' },
         });
         assert.ok(resp.error, 'path traversal must return JSON-RPC error');
-        // Server currently maps PATH_TRAVERSAL -> -32600 (Invalid request).
-        // v2011c-stage2-plan.md §13 specifies -32602; the deviation is
-        // reported as a finding. Test pins actual behavior.
-        assert.equal(resp.error.code, -32600);
+        // JSON-RPC 2.0 "invalid params" per plan §9 / arch §3.3.
+        assert.equal(resp.error.code, -32602);
         assert.ok(resp.error.message.length > 0);
       });
     }

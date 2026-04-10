@@ -270,7 +270,10 @@ function rejectAllPendingElicitations(reason) {
 const JSONRPC_PARSE_ERROR = -32700;
 const JSONRPC_INVALID_REQUEST = -32600;
 const JSONRPC_METHOD_NOT_FOUND = -32601;
+const JSONRPC_INVALID_PARAMS = -32602;
 const JSONRPC_INTERNAL_ERROR = -32603;
+// MCP resource not found: https://modelcontextprotocol.io/specification (code -32002).
+const MCP_RESOURCE_NOT_FOUND = -32002;
 
 function sendError(id, code, message, data) {
   const error = { code, message };
@@ -419,7 +422,11 @@ async function dispatchRequest(config, msg) {
 
   if (method === 'resources/read') {
     if (!isServerEnabled(config)) {
-      sendError(id, JSONRPC_INTERNAL_ERROR, 'server disabled');
+      // Consistent with resources/list + templates/list empty-array behavior
+      // when disabled: advertise the endpoint as absent rather than exposing
+      // an internal-error surface. Clients see the same "feature not present"
+      // signal across all three resources/* methods.
+      sendError(id, JSONRPC_METHOD_NOT_FOUND, 'resources/read unavailable (server disabled)');
       return;
     }
     const uri = params && params.uri;
@@ -437,14 +444,14 @@ async function dispatchRequest(config, msg) {
     } catch (err) {
       const startedAt = Date.now();
       emitResourceAudit(uri, 'error', Date.now() - startedAt);
-      sendError(id, JSONRPC_INVALID_REQUEST, 'resources/read: ' + (err && err.message));
+      sendError(id, JSONRPC_INVALID_PARAMS, 'resources/read: ' + (err && err.message));
       return;
     }
 
     const handler = RESOURCE_HANDLERS[scheme];
     if (!handler) {
       emitResourceAudit(uri, 'error', 0);
-      sendError(id, JSONRPC_METHOD_NOT_FOUND, 'unknown resource scheme: ' + scheme);
+      sendError(id, JSONRPC_INVALID_PARAMS, 'unknown resource scheme: ' + scheme);
       return;
     }
 
@@ -458,12 +465,12 @@ async function dispatchRequest(config, msg) {
       emitResourceAudit(uri, 'error', Date.now() - startedAt);
       const code = (err && err.code) || 'READ_ERROR';
       if (code === 'RESOURCE_NOT_FOUND') {
-        sendError(id, JSONRPC_METHOD_NOT_FOUND, 'resource not found', {
+        sendError(id, MCP_RESOURCE_NOT_FOUND, 'resource not found', {
           uri,
           message: err && err.message,
         });
       } else if (code === 'PATH_TRAVERSAL') {
-        sendError(id, JSONRPC_INVALID_REQUEST, 'invalid resource uri', {
+        sendError(id, JSONRPC_INVALID_PARAMS, 'invalid resource uri', {
           uri,
           message: err && err.message,
         });
