@@ -3,6 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { atomicAppendJsonl } = require('./_lib/atomic-append');
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -45,10 +46,7 @@ process.stdin.on('end', () => {
             : (!event.task_id ? 'missing task_id' : 'missing task_subject'),
           payload_keys: Object.keys(event),
         };
-        fs.appendFileSync(
-          path.join(auditDir, 'events.jsonl'),
-          JSON.stringify(rejectionEvent) + '\n'
-        );
+        atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), rejectionEvent);
       } catch (auditErr) {
         // DEF-10: log the audit-write failure to stderr so operators see
         // it in the Claude Code hook log. The original rejection still
@@ -95,10 +93,7 @@ process.stdin.on('end', () => {
     };
 
     // Append to events.jsonl
-    fs.appendFileSync(
-      path.join(auditDir, 'events.jsonl'),
-      JSON.stringify(auditEvent) + '\n'
-    );
+    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), auditEvent);
 
     // Allow completion
     process.stdout.write(JSON.stringify({ continue: true }));

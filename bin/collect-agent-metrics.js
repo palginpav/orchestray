@@ -3,6 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { atomicAppendJsonl } = require('./_lib/atomic-append');
 
 // Model-based pricing per 1M tokens (current Anthropic rates as of 2026)
 const PRICING = {
@@ -307,10 +308,7 @@ process.stdin.on('end', () => {
     }
 
     // Append to events.jsonl
-    fs.appendFileSync(
-      path.join(auditDir, 'events.jsonl'),
-      JSON.stringify(auditEvent) + '\n'
-    );
+    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), auditEvent);
   } catch (_e) {
     // Never block agent stop due to audit failure
   }

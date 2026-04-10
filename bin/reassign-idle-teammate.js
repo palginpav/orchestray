@@ -3,6 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { atomicAppendJsonl } = require('./_lib/atomic-append');
 
 // cap to avoid OOM on corrupted task-graph files (DEF-3)
 const MAX_SIZE = 1_048_576;
@@ -42,10 +43,7 @@ process.stdin.on('end', () => {
     };
 
     // Append to events.jsonl
-    fs.appendFileSync(
-      path.join(auditDir, 'events.jsonl'),
-      JSON.stringify(auditEvent) + '\n'
-    );
+    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), auditEvent);
 
     // Reassignment logic: check for pending tasks in task-graph.md
     const taskGraphPath = path.join(cwd, '.orchestray', 'state', 'task-graph.md');

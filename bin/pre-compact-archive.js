@@ -18,6 +18,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { atomicAppendJsonl } = require('./_lib/atomic-append');
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -140,7 +141,7 @@ process.stdin.on('end', () => {
           snapshot_dir: path.relative(cwd, snapshotDir),
           archived_count: manifest.archived_files.length,
         };
-        fs.appendFileSync(eventsPath, JSON.stringify(evt) + '\n');
+        atomicAppendJsonl(eventsPath, evt);
       }
     } catch (_e) {
       // ignore — never fail the hook over audit logging

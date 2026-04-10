@@ -21,6 +21,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { atomicAppendJsonl } = require('./atomic-append');
 
 function writeAuditEvent({ type, mode, extraFieldsPicker }) {
   let input = '';
@@ -66,10 +67,7 @@ function writeAuditEvent({ type, mode, extraFieldsPicker }) {
       Object.assign(auditEvent, extras);
 
       // Append to events.jsonl
-      fs.appendFileSync(
-        path.join(auditDir, 'events.jsonl'),
-        JSON.stringify(auditEvent) + '\n'
-      );
+      atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), auditEvent);
     } catch (_e) {
       // Never block the hook due to audit failure
     }
