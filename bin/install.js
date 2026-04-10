@@ -88,17 +88,20 @@ function install(targetDir) {
   //   - agents/*.md and agents/<subdir>/*               (agent definitions)
   //   - skills/<skill>/SKILL.md and skill subdirs       (skill library)
   //   - orchestray/bin/*.js (excluding install.js)      (hook scripts)
+  //   - orchestray/bin/mcp-server/** (recursive)        (MCP server sources)
+  //   - orchestray/.claude-plugin/plugin.json           (required by mcp-server
+  //                                                      lib/paths.js walk-up;
+  //                                                      do not remove)
   //   - orchestray/settings.json                        (default agent config)
   //   - orchestray/CLAUDE.md                            (reference doc)
   //   - orchestray/VERSION, orchestray/manifest.json    (install tracking)
   //   - settings.json (merged)                          (hook wiring)
   //
-  // NOT COPIED (intentional):
-  //   - .claude-plugin/plugin.json: Claude Code's plugin manager reads this
-  //     from the npm package root, not from the install target. Copying it
-  //     into <targetDir>/ would be a no-op and could confuse users who
-  //     expect edits there to take effect. If this assumption is ever
-  //     invalidated, this is the place to add the copy.
+  // REGISTERED outside <targetDir>/:
+  //   - mcpServers entries from .claude-plugin/plugin.json are written to
+  //     either ~/.claude.json (global) or ./.mcp.json (local) so Claude Code
+  //     loads the MCP server at session start. manifest.mcpServers lists the
+  //     registered names for clean uninstall.
   // -------------------------------------------------------------------------
 
   // Ensure target directories exist
@@ -193,9 +196,47 @@ function install(targetDir) {
   }
   console.log(`  \x1b[32m✓\x1b[0m Installed ${binFiles.length} hook scripts`);
 
+  // 3b. Copy MCP server tree (recursive, .js only) to orchestray/bin/mcp-server/
+  const mcpSrcDir = path.join(binDir, 'mcp-server');
+  let mcpFileCount = 0;
+  if (fs.existsSync(mcpSrcDir) && fs.statSync(mcpSrcDir).isDirectory()) {
+    const mcpDstDir = path.join(targetDir, 'orchestray', 'bin', 'mcp-server');
+    const copied = copyJsTree(mcpSrcDir, mcpDstDir);
+    for (const rel of copied) {
+      track(path.join('orchestray', 'bin', 'mcp-server', rel));
+    }
+    mcpFileCount = copied.length;
+  }
+
+  // 3c. Copy .claude-plugin/plugin.json into the install so mcp-server's
+  // lib/paths.js getPluginRoot() walk-up succeeds at runtime. Without this
+  // the MCP server throws 'plugin root not found' on startup.
+  const pluginJsonSrc = path.join(pkgRoot, '.claude-plugin', 'plugin.json');
+  let pluginJson = null;
+  if (fs.existsSync(pluginJsonSrc)) {
+    const dstPluginDir = path.join(targetDir, 'orchestray', '.claude-plugin');
+    fs.mkdirSync(dstPluginDir, { recursive: true });
+    fs.copyFileSync(pluginJsonSrc, path.join(dstPluginDir, 'plugin.json'));
+    track(path.join('orchestray', '.claude-plugin', 'plugin.json'));
+    try {
+      pluginJson = JSON.parse(fs.readFileSync(pluginJsonSrc, 'utf8'));
+    } catch (_e) { /* ignore — MCP registration will be skipped */ }
+  }
+  if (mcpFileCount > 0) {
+    console.log(`  \x1b[32m✓\x1b[0m Installed MCP server (${mcpFileCount} files)`);
+  }
+
   // 4. Merge hooks into existing hooks.json (don't overwrite user's hooks)
   mergeHooks(targetDir);
   console.log(`  \x1b[32m✓\x1b[0m Configured hooks`);
+
+  // 4b. Register MCP servers with Claude Code (global: ~/.claude.json,
+  // local: ./.mcp.json). Tracks names in manifest for clean uninstall.
+  const mcpServerNames = mergeMcpServers(pluginJson, targetDir, flags.local);
+  if (mcpServerNames.length > 0) {
+    console.log(`  \x1b[32m✓\x1b[0m Registered MCP server${mcpServerNames.length > 1 ? 's' : ''}: ${mcpServerNames.join(', ')}`);
+    console.log(`    \x1b[33mNote:\x1b[0m restart Claude Code for the MCP server to load.`);
+  }
 
   // 5. Copy settings.json for default agent config
   const settingsSrc = path.join(pkgRoot, 'settings.json');
@@ -225,6 +266,7 @@ function install(targetDir) {
     agentSubdirs: agentSubdirs,
     skills: skillDirs,
     hooks: binFiles,
+    mcpServers: mcpServerNames,
     files: trackedFiles, // DEF-5: per-file manifest for precise uninstall
   };
   fs.writeFileSync(
@@ -351,6 +393,159 @@ function mergeHooks(targetDir) {
   fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n');
 }
 
+// Recursively copy every .js file under `src` into `dst`, preserving the
+// subdir layout. Returns the list of destination-relative paths that were
+// written, so the caller can track them on the manifest. `.js` filter is
+// intentional — we don't want stray editor backup files or READMEs.
+function copyJsTree(src, dst) {
+  const copied = [];
+  const walk = (srcSub, dstSub, relPrefix) => {
+    fs.mkdirSync(dstSub, { recursive: true });
+    for (const entry of fs.readdirSync(srcSub, { withFileTypes: true })) {
+      const srcPath = path.join(srcSub, entry.name);
+      const dstPath = path.join(dstSub, entry.name);
+      const rel = relPrefix ? path.join(relPrefix, entry.name) : entry.name;
+      if (entry.isDirectory()) {
+        walk(srcPath, dstPath, rel);
+      } else if (entry.isFile() && entry.name.endsWith('.js')) {
+        fs.copyFileSync(srcPath, dstPath);
+        copied.push(rel);
+      }
+    }
+  };
+  walk(src, dst, '');
+  return copied;
+}
+
+// Replace ${CLAUDE_PLUGIN_ROOT} and ${CLAUDE_PLUGIN_DATA} placeholders in a
+// string with absolute paths under the install target. These are the same
+// vars Claude Code's plugin loader expands; we expand them ourselves because
+// Orchestray installs via a custom script, not as a marketplace plugin.
+function expandPluginVars(s, pluginRoot, pluginData) {
+  if (typeof s !== 'string') return s;
+  return s
+    .replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, pluginRoot)
+    .replace(/\$\{CLAUDE_PLUGIN_DATA\}/g, pluginData);
+}
+
+// Register each mcpServers entry from .claude-plugin/plugin.json with the
+// appropriate config file so Claude Code picks it up at session start.
+//   - global install → ~/.claude.json top-level `mcpServers`
+//   - local install  → ./.mcp.json
+// Writes are atomic (tmp + rename) to avoid corrupting ~/.claude.json if the
+// process is killed mid-write. Returns the list of registered server names.
+function mergeMcpServers(pluginJson, targetDir, isLocal) {
+  if (!pluginJson || !pluginJson.mcpServers || typeof pluginJson.mcpServers !== 'object') {
+    return [];
+  }
+  const pluginRoot = path.join(targetDir, 'orchestray');
+  // Do not pre-create orchestray/data/: nothing reads ${CLAUDE_PLUGIN_DATA}
+  // today, and leaving an empty dir behind would break uninstall's
+  // "rmdir orchestray/ if empty" sweep. If a future consumer needs it, it
+  // can mkdir lazily the first time it writes.
+  const pluginData = path.join(targetDir, 'orchestray', 'data');
+
+  const expanded = {};
+  for (const [name, cfg] of Object.entries(pluginJson.mcpServers)) {
+    if (!cfg || typeof cfg !== 'object') continue;
+    const out = { command: expandPluginVars(cfg.command, pluginRoot, pluginData) };
+    if (Array.isArray(cfg.args)) {
+      out.args = cfg.args.map(a => expandPluginVars(a, pluginRoot, pluginData));
+    }
+    if (cfg.env && typeof cfg.env === 'object') {
+      out.env = {};
+      for (const [k, v] of Object.entries(cfg.env)) {
+        out.env[k] = expandPluginVars(v, pluginRoot, pluginData);
+      }
+    }
+    expanded[name] = out;
+  }
+  const names = Object.keys(expanded);
+  if (names.length === 0) return [];
+
+  if (isLocal) {
+    // Local install: write/merge project-scope .mcp.json in cwd.
+    const mcpFile = path.resolve('.mcp.json');
+    let data = { mcpServers: {} };
+    if (fs.existsSync(mcpFile)) {
+      try {
+        data = JSON.parse(fs.readFileSync(mcpFile, 'utf8'));
+        if (!data.mcpServers || typeof data.mcpServers !== 'object') data.mcpServers = {};
+      } catch (e) {
+        console.error(
+          `\n  \x1b[31m✗\x1b[0m Cannot register MCP servers: ${mcpFile} is not valid JSON.\n` +
+          `    Parser said: ${e.message}\n`
+        );
+        return [];
+      }
+    }
+    Object.assign(data.mcpServers, expanded);
+    writeJsonAtomic(mcpFile, data);
+  } else {
+    // Global install: write/merge top-level mcpServers in ~/.claude.json.
+    // This file can be large and holds critical state — never overwrite on
+    // parse failure, never touch unrelated keys.
+    const claudeJsonFile = path.join(homeDir, '.claude.json');
+    let data = {};
+    if (fs.existsSync(claudeJsonFile)) {
+      try {
+        data = JSON.parse(fs.readFileSync(claudeJsonFile, 'utf8'));
+      } catch (e) {
+        console.error(
+          `\n  \x1b[31m✗\x1b[0m Cannot register MCP servers: ${claudeJsonFile} is not valid JSON.\n` +
+          `    Parser said: ${e.message}\n    Fix the file and re-run the installer.\n`
+        );
+        return [];
+      }
+    }
+    if (!data.mcpServers || typeof data.mcpServers !== 'object') data.mcpServers = {};
+    Object.assign(data.mcpServers, expanded);
+    writeJsonAtomic(claudeJsonFile, data);
+  }
+  return names;
+}
+
+// Remove orchestray MCP server entries from whichever config file the
+// matching install recorded them in. Silent on missing files.
+function unregisterMcpServers(mcpServerNames, isLocal) {
+  if (!Array.isArray(mcpServerNames) || mcpServerNames.length === 0) return;
+  const removeFrom = (file) => {
+    if (!fs.existsSync(file)) return;
+    let data;
+    try { data = JSON.parse(fs.readFileSync(file, 'utf8')); }
+    catch { return; }
+    if (!data.mcpServers || typeof data.mcpServers !== 'object') return;
+    let changed = false;
+    for (const name of mcpServerNames) {
+      if (Object.prototype.hasOwnProperty.call(data.mcpServers, name)) {
+        delete data.mcpServers[name];
+        changed = true;
+      }
+    }
+    if (changed) writeJsonAtomic(file, data);
+  };
+  if (isLocal) {
+    removeFrom(path.resolve('.mcp.json'));
+  } else if (homeDir) {
+    removeFrom(path.join(homeDir, '.claude.json'));
+  }
+}
+
+// Atomic JSON write: serialize to a sibling tmp file on the same filesystem,
+// fsync it, then rename over the target. Avoids leaving a half-written
+// ~/.claude.json if the process is killed mid-write.
+function writeJsonAtomic(file, data) {
+  const tmp = file + '.orchestray.tmp';
+  const fd = fs.openSync(tmp, 'w');
+  try {
+    fs.writeSync(fd, JSON.stringify(data, null, 2) + '\n');
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, file);
+}
+
 function uninstall(targetDir) {
   const manifestFile = path.join(targetDir, 'orchestray', 'manifest.json');
   if (!fs.existsSync(manifestFile)) {
@@ -359,6 +554,8 @@ function uninstall(targetDir) {
   }
 
   const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+  const wasLocal = manifest.scope === 'local';
+  unregisterMcpServers(manifest.mcpServers, wasLocal);
 
   // DEF-5: prefer per-file manifest (new format). Fall back to the old
   // subdir-based removal if an older manifest is on disk so users upgrading
