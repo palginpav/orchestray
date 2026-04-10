@@ -39,6 +39,10 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 - **Drift Sentinel** — architectural drift detection via auto-extracted invariants and static rules
 - **Visual Orchestration** — multi-modal screenshot review for UI changes (opt-in)
 - **Full audit trail** — per-agent tokens, cost breakdown, routing decisions, model savings
+- **Orchestration Threads** — cross-session continuity via compressed thread summaries that carry forward decisions and open items
+- **Outcome Tracking** — deferred quality validation via lazy probe execution when you return to delivered files
+- **Adaptive Personas** — auto-generated project-tuned behavioral directives injected into agent delegations
+- **Replay Analysis** — counterfactual reasoning on friction orchestrations to extract improvement patterns
 
 ## Install
 
@@ -96,7 +100,7 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | **Debugger** | Systematic bug investigation and root cause analysis (read-only) |
 | **Tester** | Dedicated test writing, coverage analysis, and test strategy |
 | **Documenter** | Documentation creation and maintenance |
-| **Specialists** | Dynamic or persistent agents for domain-specific tasks (9 templates included) |
+| **Specialists** | Dynamic agents generated during orchestration; successful ones are saved to `.orchestray/specialists/` for reuse |
 
 ## Configuration
 

@@ -1,10 +1,12 @@
 {
   "name": "orchestray",
   "description": "Multi-agent orchestration for complex tasks — automatically decomposes work across specialized AI agents",
-  "version": "2.0.9",
+  "version": "2.0.10",
   "author": {
     "name": "palginpav"
   },
   "homepage": "https://github.com/palginpav/orchestray",
-  "repository": "https://github.com/palginpav/orchestray"
+  "repository": "https://github.com/palginpav/orchestray",
+  "license": "MIT",
+  "keywords": ["claude-code", "orchestration", "multi-agent", "ai-agents", "plugin"]
 }

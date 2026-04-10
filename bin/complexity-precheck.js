@@ -14,7 +14,7 @@
  * Input: JSON on stdin with { prompt: string }
  * Output: JSON on stdout:
  *   - { "continue": true } — pass through unchanged (simple task)
- *   - { "continue": true, "modifications": { "message": "..." } } — prepend orchestration hint
+ *   - { "continue": true, "additionalContext": "..." } — append orchestration hint
  */
 
 const fs = require('fs');

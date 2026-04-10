@@ -2,6 +2,32 @@
 
 This is a Claude Code plugin that provides multi-agent orchestration.
 
+## Compact Instructions
+
+When summarizing this conversation during auto-compaction or `/compact`, ALWAYS preserve:
+
+- **Current orchestration state**: orchestration_id, phase, which group is executing, pending task IDs from `.orchestray/state/orchestration.md`
+- **Active audit round**: if a multi-round audit is in progress, preserve the round number, prior findings files in `.orchestray/kb/artifacts/v2010-audit-*.md`, and the fix list that still needs to be applied
+- **Applied fixes log**: any fixes the developer or main agent has already applied (to prevent re-applying or reverting them)
+- **Cost tracking**: running cumulative cost estimate and per-agent cost breakdowns from the current session
+- **File paths that were read or modified**: especially `agents/*.md`, `agents/pm-reference/*.md`, and config files
+- **Decisions made**: architectural choices, accepted tradeoffs, deferred items with reasons
+- **Known issues and blockers**: anything that interrupted or redirected work
+
+May be compacted more aggressively:
+- Intermediate tool output (file reads that have been acted on)
+- Audit findings that have already been addressed and verified
+- Verbose agent reasoning once a concrete fix has been extracted
+
+## Troubleshooting
+
+### Agent definition changes don't take effect
+**Symptom**: Editing `agents/*.md` frontmatter (maxTurns, tools, model, memory, etc.) mid-session and the change is ignored on the next Agent() spawn.
+
+**Cause**: Claude Code loads agent definitions at session start and caches them for the lifetime of the session. Mid-session edits to `.md` files in `agents/` are NOT automatically re-read.
+
+**Fix**: Either (a) restart the Claude Code session, or (b) run the `/agents` slash command to force a reload of all agent definitions. As a workaround, the PM can pass `maxTurns` as an explicit parameter on the `Agent()` tool call — this overrides the cached frontmatter value without needing a reload.
+
 ## Usage
 - PM agent is the default session agent (set via settings.json)
 - Use `/orchestray:run [task]` to manually trigger orchestration
@@ -25,7 +51,7 @@ This is a Claude Code plugin that provides multi-agent orchestration.
 - **architect** — Design-only, produces design documents
 - **developer** — Implements code changes
 - **refactorer** — Systematic code transformation without behavior change
-- **reviewer** — Read-only review across correctness, quality, security, performance, docs
+- **reviewer** — Read-only review across correctness, quality, security, performance, docs, operability, API compatibility
 - **debugger** — Systematic bug investigation and root cause analysis (read-only)
 - **tester** — Dedicated test writing, coverage analysis, and test strategy
 - **documenter** — Documentation creation and maintenance
@@ -197,9 +223,9 @@ Conventions not yet established. Will populate as patterns emerge during develop
 ## Architecture
 
 The PM agent prompt uses a 3-tier architecture introduced in v2.0.8:
-- **Tier 0** (`agents/pm.md`, ~1,081 lines) -- Always loaded. Core protocols: auto-trigger, complexity scoring, delegation, communication, anti-patterns, config defaults, Section Loading Protocol.
-- **Tier 1** (`agents/pm-reference/tier1-orchestration.md`, ~2,197 lines) -- Loaded only during orchestration (complexity score >= threshold). State persistence, task decomposition, parallel execution, cost tracking, re-planning, verify-fix loops.
-- **Tier 2** (`agents/pm-reference/*.md`, 14 feature-gated + 7 always-available files) -- Feature-gated files loaded only when their trigger condition is met (e.g., GitHub issue URL, CI failure, agent teams enabled). Dispatch table in Tier 0 maps conditions to files.
+- **Tier 0** (`agents/pm.md`) -- Always loaded. Core protocols: auto-trigger, complexity scoring, delegation, communication, anti-patterns, config defaults, Section Loading Protocol.
+- **Tier 1** (`agents/pm-reference/tier1-orchestration.md`) -- Loaded only during orchestration (complexity score >= threshold). State persistence, task decomposition, parallel execution, cost tracking, re-planning, verify-fix loops.
+- **Tier 2** (`agents/pm-reference/*.md`, 29 files total — feature-gated and always-available) -- Feature-gated files loaded only when their trigger condition is met (e.g., GitHub issue URL, CI failure, agent teams enabled). Dispatch table in Tier 0 maps conditions to files.
 <!-- GSD:architecture-end -->
 
 <!-- GSD:skills-start source:skills/ -->
