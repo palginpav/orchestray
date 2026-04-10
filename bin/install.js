@@ -193,7 +193,22 @@ function mergeHooks(targetDir) {
 
   let settings = {};
   if (fs.existsSync(settingsFile)) {
-    try { settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8')); } catch {}
+    // Abort rather than silently overwriting: a malformed existing settings.json
+    // almost certainly contains unrelated Claude Code config the user cares about
+    // (agent selection, permissions, etc.). Falling back to {} here would destroy
+    // that data on the final writeFileSync below.
+    const raw = fs.readFileSync(settingsFile, 'utf8');
+    try {
+      settings = JSON.parse(raw);
+    } catch (e) {
+      console.error(
+        `\n  \x1b[31m✗\x1b[0m Cannot install: ${settingsFile} is not valid JSON.\n` +
+        `    Parser said: ${e.message}\n` +
+        `    Fix or back up this file before re-running the installer.\n` +
+        `    Orchestray refused to overwrite it to avoid destroying unrelated settings.\n`
+      );
+      process.exit(1);
+    }
   }
   if (!settings.hooks) settings.hooks = {};
 

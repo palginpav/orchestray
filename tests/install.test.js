@@ -300,6 +300,48 @@ describe('local installation (--local)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Malformed settings.json regression (FIX-1)
+// ---------------------------------------------------------------------------
+
+describe('malformed settings.json handling', () => {
+
+  test('aborts install and preserves file when settings.json is malformed', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      // Seed a malformed settings.json with an unrelated user key that must
+      // survive. Trailing comma is the canonical JSON.parse failure.
+      const claudeDir = path.join(tmpDir, '.claude');
+      fs.mkdirSync(claudeDir, { recursive: true });
+      const settingsPath = path.join(claudeDir, 'settings.json');
+      const malformed = '{\n  "agent": "pm",\n  "mySpecialKey": "mustNotBeLost",\n}';
+      fs.writeFileSync(settingsPath, malformed);
+
+      const result = spawnSync(process.execPath, [SCRIPT, '--local'], {
+        encoding: 'utf8',
+        timeout: 15000,
+        cwd: tmpDir,
+        env: { ...process.env },
+      });
+
+      // Must exit non-zero and NOT overwrite the file.
+      assert.notEqual(result.status, 0, 'installer should exit non-zero on malformed settings.json');
+      assert.ok(
+        (result.stderr || '').toLowerCase().includes('settings.json') ||
+        (result.stderr || '').toLowerCase().includes('json'),
+        'stderr should point the user at the settings file'
+      );
+
+      const afterContent = fs.readFileSync(settingsPath, 'utf8');
+      assert.equal(afterContent, malformed,
+        'malformed settings.json must be left untouched — installer MUST NOT overwrite it');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+});
+
+// ---------------------------------------------------------------------------
 // Uninstall
 // ---------------------------------------------------------------------------
 
