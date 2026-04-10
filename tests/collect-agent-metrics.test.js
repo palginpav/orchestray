@@ -767,6 +767,190 @@ describe('cost_confidence field', () => {
 });
 
 // ---------------------------------------------------------------------------
+// DEF-1: symlink-safe path containment
+// ---------------------------------------------------------------------------
+
+describe('path containment with symlinks (DEF-1)', () => {
+
+  test('transcript inside cwd accessed via symlink is accepted', () => {
+    // Set up real project dir + symlink that points to it, place transcript
+    // in the REAL dir, run the hook with cwd = symlink dir, and confirm the
+    // transcript is read (usage_source === 'transcript').
+    const realDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestray-real-'));
+    const linkParent = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestray-link-parent-'));
+    const linkDir = path.join(linkParent, 'link');
+    try {
+      fs.symlinkSync(realDir, linkDir, 'dir');
+    } catch (e) {
+      // On systems where symlink creation is not permitted (rare on Linux
+      // for tmp), skip the test rather than fail it.
+      fs.rmSync(realDir, { recursive: true });
+      fs.rmSync(linkParent, { recursive: true });
+      return;
+    }
+
+    const auditDir = path.join(realDir, '.orchestray', 'audit');
+    writeOrchestrationId(auditDir, 'orch-symlink-001');
+
+    const transcriptPath = path.join(realDir, 'transcript.jsonl');
+    fs.writeFileSync(transcriptPath, JSON.stringify({
+      role: 'assistant',
+      usage: { input_tokens: 1234, output_tokens: 567 },
+    }) + '\n');
+
+    try {
+      const input = JSON.stringify({
+        cwd: linkDir, // cwd is the symlink, transcript is in the real dir
+        hook_event_name: 'SubagentStop',
+        agent_type: 'developer',
+        agent_transcript_path: transcriptPath,
+      });
+      run(input);
+
+      const events = readEventsJsonl(auditDir);
+      assert.equal(events.length, 1, 'event should be written');
+      const ev = events[0];
+      assert.equal(ev.usage_source, 'transcript',
+        'transcript should be accepted despite cwd being a symlink to the real dir');
+      assert.equal(ev.usage.input_tokens, 1234);
+      assert.equal(ev.usage.output_tokens, 567);
+    } finally {
+      fs.rmSync(linkParent, { recursive: true });
+      fs.rmSync(realDir, { recursive: true });
+    }
+  });
+
+  test('transcript outside cwd and outside ~/.claude is still rejected', () => {
+    const projectDir = makeTmpDir();
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestray-outside-'));
+    const auditDir = path.join(projectDir, '.orchestray', 'audit');
+    writeOrchestrationId(auditDir, 'orch-outside-001');
+
+    const transcriptPath = path.join(outsideDir, 'transcript.jsonl');
+    fs.writeFileSync(transcriptPath, JSON.stringify({
+      role: 'assistant',
+      usage: { input_tokens: 9999, output_tokens: 9999 },
+    }) + '\n');
+
+    try {
+      const input = JSON.stringify({
+        cwd: projectDir,
+        hook_event_name: 'SubagentStop',
+        agent_type: 'developer',
+        agent_transcript_path: transcriptPath,
+      });
+      run(input);
+
+      const events = readEventsJsonl(auditDir);
+      assert.equal(events.length, 1, 'event should still be written');
+      const ev = events[0];
+      // Outside transcripts are blocked: transcript_path is nulled out and
+      // the 9999/9999 tokens from the outside file are NOT read into usage.
+      assert.equal(ev.transcript_path, null,
+        'blocked transcript path should be nulled out in the event');
+      assert.equal(ev.usage.input_tokens, 0,
+        'blocked transcript must not contribute input tokens');
+      assert.equal(ev.usage.output_tokens, 0,
+        'blocked transcript must not contribute output tokens');
+    } finally {
+      fs.rmSync(projectDir, { recursive: true });
+      fs.rmSync(outsideDir, { recursive: true });
+    }
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// DEF-2: escalation upper-bound disclaimer
+// ---------------------------------------------------------------------------
+
+describe('model_resolution_note on escalation (DEF-2)', () => {
+
+  test('emits model_resolution_note when 2+ routing_outcome events exist for the agent', () => {
+    const tmpDir = makeTmpDir();
+    const auditDir = path.join(tmpDir, '.orchestray', 'audit');
+    writeOrchestrationId(auditDir, 'orch-note-001');
+
+    // Seed events.jsonl with two routing_outcome events (escalation)
+    const eventsPath = path.join(auditDir, 'events.jsonl');
+    fs.writeFileSync(eventsPath, [
+      JSON.stringify({
+        type: 'routing_outcome',
+        orchestration_id: 'orch-note-001',
+        agent_type: 'developer',
+        model_assigned: 'claude-sonnet-4-6',
+      }),
+      JSON.stringify({
+        type: 'routing_outcome',
+        orchestration_id: 'orch-note-001',
+        agent_type: 'developer',
+        model_assigned: 'claude-opus-4-6',
+      }),
+    ].join('\n') + '\n');
+
+    try {
+      const input = JSON.stringify({
+        cwd: tmpDir,
+        hook_event_name: 'SubagentStop',
+        agent_type: 'developer',
+        usage: { input_tokens: 1000, output_tokens: 500 },
+      });
+      run(input);
+
+      const events = readEventsJsonl(auditDir);
+      const ev = events[events.length - 1];
+      assert.equal(ev.type, 'agent_stop');
+      assert.ok(ev.model_resolution_note,
+        'escalated agent event should carry model_resolution_note');
+      assert.ok(
+        ev.model_resolution_note.includes('upper bound'),
+        'note should mention upper bound'
+      );
+      assert.ok(
+        ev.model_resolution_note.includes('escalated'),
+        'note should mention escalation'
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('does NOT emit model_resolution_note for a single routing_outcome', () => {
+    const tmpDir = makeTmpDir();
+    const auditDir = path.join(tmpDir, '.orchestray', 'audit');
+    writeOrchestrationId(auditDir, 'orch-note-002');
+
+    // Single routing_outcome, no escalation
+    const eventsPath = path.join(auditDir, 'events.jsonl');
+    fs.writeFileSync(eventsPath, JSON.stringify({
+      type: 'routing_outcome',
+      orchestration_id: 'orch-note-002',
+      agent_type: 'developer',
+      model_assigned: 'claude-opus-4-6',
+    }) + '\n');
+
+    try {
+      const input = JSON.stringify({
+        cwd: tmpDir,
+        hook_event_name: 'SubagentStop',
+        agent_type: 'developer',
+        usage: { input_tokens: 1000, output_tokens: 500 },
+      });
+      run(input);
+
+      const events = readEventsJsonl(auditDir);
+      const ev = events[events.length - 1];
+      assert.equal(ev.type, 'agent_stop');
+      assert.equal(ev.model_resolution_note, undefined,
+        'non-escalated agent event must not carry model_resolution_note');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+});
+
+// ---------------------------------------------------------------------------
 // events.jsonl append behavior
 // ---------------------------------------------------------------------------
 

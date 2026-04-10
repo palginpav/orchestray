@@ -36,6 +36,14 @@ function getPricing(agentType, modelUsed) {
  * Resolve model_used for an agent_stop event by looking up the matching
  * routing_outcome event in the same events.jsonl file.
  *
+ * UPPER-BOUND NOTE (DEF-2): when an agent was escalated mid-run (e.g., sonnet
+ * then opus), this resolver returns the FINAL model. The emitted cost is
+ * therefore an upper bound: pre-escalation tokens are billed at post-
+ * escalation rates because we do not split tokens by timestamp. When an
+ * escalation is detected (2+ routing_outcome events for the same orch_id +
+ * agent_type), the caller sets a `model_resolution_note` field on the event
+ * so downstream reporting can flag the row.
+ *
  * @param {Array} allEvents - All parsed events from events.jsonl
  * @param {string} orchestrationId - The orchestration_id of the agent_stop event
  * @param {string} agentType - The agent_type of the agent_stop event
@@ -113,11 +121,31 @@ process.stdin.on('end', () => {
       ? (event.transcript_path || null)
       : (event.agent_transcript_path || null);
 
-    // Path containment: only allow reads from project dir or ~/.claude/
+    // Path containment: only allow reads from project dir or ~/.claude/.
+    // DEF-1: resolve symlinks on both sides via fs.realpathSync so a cwd that
+    // is a symlink to the real project dir does not trip the containment check
+    // and unnecessarily kick in the estimated-cost fallback. realpathSync
+    // throws on non-existent paths, so wrap each call and fall back to
+    // path.resolve when the target does not yet exist (e.g., install-time
+    // wiring). Allow resolved === cwdResolved (transcript exactly at cwd root).
     if (transcriptPath) {
-      const resolved = path.resolve(transcriptPath);
-      const cwdResolved = path.resolve(cwd);
-      if (!resolved.startsWith(cwdResolved + path.sep) && !resolved.startsWith(path.resolve(path.join(require('os').homedir(), '.claude')) + path.sep)) {
+      const safeRealpath = (p) => {
+        try {
+          return fs.realpathSync(p);
+        } catch (_e) {
+          return path.resolve(p);
+        }
+      };
+      const resolved = safeRealpath(transcriptPath);
+      const cwdResolved = safeRealpath(cwd);
+      const claudeHome = safeRealpath(path.join(require('os').homedir(), '.claude'));
+      const insideCwd =
+        resolved === cwdResolved ||
+        resolved.startsWith(cwdResolved + path.sep);
+      const insideClaudeHome =
+        resolved === claudeHome ||
+        resolved.startsWith(claudeHome + path.sep);
+      if (!insideCwd && !insideClaudeHome) {
         transcriptPath = null; // Block reads outside project dir and ~/.claude/
       }
     }
@@ -204,6 +232,29 @@ process.stdin.on('end', () => {
       : (event.agent_type || null);
     const resolvedModel = resolveModelUsed(allEvents, orchestrationId, agentType);
 
+    // DEF-2: detect escalation by counting routing_outcome events for this
+    // (orch_id, agent_type). 2+ means the agent was re-routed mid-run, so the
+    // resolved model reflects the LAST assignment and pre-escalation tokens
+    // are billed at post-escalation rates. Flag the event so downstream
+    // reporting can display a disclaimer.
+    let modelResolutionNote = null;
+    if (orchestrationId && agentType) {
+      let routingOutcomeCount = 0;
+      for (const ev of allEvents) {
+        if (
+          ev.type === 'routing_outcome' &&
+          ev.orchestration_id === orchestrationId &&
+          ev.agent_type === agentType
+        ) {
+          routingOutcomeCount++;
+          if (routingOutcomeCount >= 2) break;
+        }
+      }
+      if (routingOutcomeCount >= 2) {
+        modelResolutionNote = 'cost is upper bound: agent was escalated; pre-escalation tokens billed at post-escalation rate';
+      }
+    }
+
     // Estimate cost based on resolved model (or agent_type fallback) and token usage
     const rates = getPricing(agentType, resolvedModel);
     const estimatedCostUsd = estimateCost(totalUsage, rates);
@@ -248,6 +299,11 @@ process.stdin.on('end', () => {
         model_used: resolvedModel,
         turns_used: turnsUsed,
       };
+    }
+
+    // DEF-2: only attach the note when escalation was actually detected.
+    if (modelResolutionNote) {
+      auditEvent.model_resolution_note = modelResolutionNote;
     }
 
     // Append to events.jsonl
