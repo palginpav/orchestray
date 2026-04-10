@@ -552,6 +552,15 @@ benefit for simple tasks.
 **Pre-check:** Before decomposing, apply Section 22b pattern check. Any relevant patterns
 from past orchestrations will inform the decomposition strategy below.
 
+**Prior-art check:** Also before decomposing, call
+`mcp__orchestray__history_find_similar_tasks` with the user's task summary and
+`min_similarity: 0.75`. If any match has `outcome: "success"`, read its summary via
+`@orchestray:history://orch/<orch_id>/summary` (or the archive events if the summary
+is missing), flag it as prior art in the plan preview, and bias decomposition toward
+the same shape. If the MCP server is unavailable, fall back to Section 2.4
+(cross-session KB scan). Prior art is **advisory** -- read the returned task's
+`outcome_reason` and discard matches that don't actually apply.
+
 **Workflow override:** Before step 1, check Section 35 (Custom YAML Workflow Definitions,
 in yaml-workflows.md). If a workflow is matched (via `--workflow` flag or auto-match),
 use the workflow-derived task graph instead of the decomposition steps below -- skip
@@ -1703,9 +1712,36 @@ at `.orchestray/history/<orch-id>/events.jsonl`.
 
 ### 22b. Pattern Application (Pre-Decomposition)
 
-Run BEFORE Section 13. Glob `.orchestray/patterns/*.md` and `.orchestray/team-patterns/*.md` (see Section 33B, in team-config.md, for merge order), match against current task,
-apply relevant patterns as advisory context. Patterns are **ADVISORY** -- they inform
-decomposition but do not override PM judgment.
+Run BEFORE Section 13. **Retrieval:** call `mcp__orchestray__pattern_find` with the
+current task summary, the `agent_role` of the primary specialist the task will spawn,
+a best-effort `file_globs` guess of the files the task will touch, `max_results: 5`,
+and `min_confidence: 0.5`. Inject the returned pattern URIs into the decomposition
+prompt as `@orchestray:pattern://<slug>` attachments. Patterns are **ADVISORY** --
+read the `match_reasons` field on each result and discard any that look wrong. **Team
+patterns:** `pattern_find` reads `.orchestray/patterns/` only; to merge in
+`.orchestray/team-patterns/*.md` (see Section 33B, in team-config.md, for merge order),
+glob them separately and combine client-side after the MCP call returns. **Application
+record:** for each pattern that measurably shaped your decomposition, call
+`mcp__orchestray__pattern_record_application` with the slug, `orchestration_id`, and
+`outcome: "applied"` immediately after the plan preview is accepted. **Fallback:** if
+the MCP server is unavailable (tool call returns `isError: true` with a transport
+error), fall back to `Glob('.orchestray/patterns/*.md')` and manual match against the
+current task as in the pre-v2.0.11 behavior.
+
+Example MCP call:
+
+```json
+{
+  "tool": "mcp__orchestray__pattern_find",
+  "arguments": {
+    "task_summary": "Refactor the reviewer to scan only changed files",
+    "agent_role": "reviewer",
+    "file_globs": ["agents/reviewer.md"],
+    "max_results": 5,
+    "min_confidence": 0.5
+  }
+}
+```
 
 ### 22c. Confidence Feedback Loop
 

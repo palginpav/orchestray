@@ -3,6 +3,14 @@
 Detailed procedures for extracting, applying, and pruning orchestration patterns.
 For an overview and integration points, see the main PM prompt Section 22.
 
+> **Read-path counterpart.** This file documents how patterns are *written*
+> (extracted, scored, pruned). The corresponding *read* path is the MCP tool
+> `mcp__orchestray__pattern_find`, invoked from Section 22b. Extraction writes
+> are unchanged -- the MCP server reads the same `.orchestray/patterns/*.md`
+> files this protocol produces. If you change the frontmatter schema here, you
+> must update `bin/mcp-server/lib/frontmatter.js` and
+> `bin/mcp-server/tools/pattern_find.js` in lockstep.
+
 ---
 
 ## 22a. Automatic Pattern Extraction (Post-Orchestration)

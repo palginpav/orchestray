@@ -26,9 +26,14 @@ The user wants to see the current state of orchestration. Check the following an
    - Read all files in `.orchestray/state/agents/` and parse their YAML frontmatter
      to show per-agent run status.
 
-3. **Check for recent history**: List files in `.orchestray/history/` if the directory exists.
-   - If history exists: Show the most recent 5 orchestrations with their task descriptions, timestamps, and final status (success/partial/failure).
-   - If no history: Report "No orchestration history found."
+3. **Check for recent history via MCP:** Call `mcp__orchestray__history_query_events`
+   with `event_types: ["orchestration_start", "orchestration_complete"]` and
+   `limit: 20`. Group results by `orchestration_id` (which is embedded in the
+   event), take the 5 most recent unique IDs, and display their task descriptions,
+   timestamps, and final status (success/partial/failure).
+   - If the call returns an empty `events` array: Report "No orchestration history found."
+   - **Fallback:** if the MCP call itself errors with a transport error, fall back
+     to `Glob('.orchestray/history/*')` as in the pre-v2.0.11 behavior.
 
 4. **Format the output** as a clear status report:
 

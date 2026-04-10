@@ -4,7 +4,7 @@ description: Validates implementation quality across correctness, code quality,
   security, performance, documentation, operability, and API compatibility. Use after developer completes
   implementation to catch issues before they reach the user. Does NOT modify
   code -- reports issues for the developer to fix.
-tools: Read, Glob, Grep, Bash, Write, mcp__orchestray__ask_user
+tools: Read, Glob, Grep, Bash, Write, mcp__orchestray__ask_user, mcp__orchestray__pattern_find, mcp__orchestray__kb_search, mcp__orchestray__history_query_events
 model: inherit
 effort: medium
 memory: project

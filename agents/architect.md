@@ -5,7 +5,7 @@ description: Analyzes requirements and designs implementation approach.
   decisions, or technical design documents before implementation begins.
   Does NOT write implementation code -- produces design specs that the
   developer agent implements.
-tools: Read, Glob, Grep, Bash, Write, mcp__orchestray__ask_user
+tools: Read, Glob, Grep, Bash, Write, mcp__orchestray__ask_user, mcp__orchestray__pattern_find, mcp__orchestray__kb_search
 model: inherit
 effort: high
 memory: project

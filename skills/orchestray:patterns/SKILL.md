@@ -16,18 +16,27 @@ The user wants to see the pattern learning dashboard showing what the system has
    - If a pattern name is provided: show single pattern detail view.
    - If empty: show the full dashboard (all sections).
 
-2. **Load pattern files**: Glob `.orchestray/patterns/*.md` and `.orchestray/team-patterns/*.md`. Parse each file's YAML frontmatter. Normalize fields to handle both Section 22 and Section 30 schemas:
+2. **Load patterns via MCP:** Call `mcp__orchestray__pattern_find` with:
+   - `task_summary: "all patterns"` (a neutral query that is broad enough not to
+     bias the scoring hard; the skill wants everything)
+   - `max_results: 50` (the server-side maximum)
+   - `min_confidence: 0.0` (no filter)
 
-   ```
-   category = frontmatter.category || frontmatter.type || "unknown"
-   confidence_numeric = typeof frontmatter.confidence === "number"
-     ? frontmatter.confidence
-     : { low: 0.3, medium: 0.6, high: 0.9 }[frontmatter.confidence] || 0.5
-   times_applied = frontmatter.times_applied || frontmatter.occurrences || 0
-   last_applied = frontmatter.last_applied || frontmatter.last_seen || null
-   source = frontmatter.created_from || "unknown"
-   scope = "local" if from .orchestray/patterns/, "team" if from .orchestray/team-patterns/
-   ```
+   The returned `matches` array contains objects with `slug`, `uri`, `category`,
+   `confidence` (numeric 0-1), `times_applied`, `one_line`, and `match_reasons`.
+   The server already normalizes confidence to numeric and merges Section 22 /
+   Section 30 field aliases — no client-side normalization needed.
+
+   Note: `pattern_find` reads `.orchestray/patterns/` only. To include
+   `.orchestray/team-patterns/*.md`, glob them separately (same code as before)
+   and merge client-side. Set `scope = "local"` for MCP results,
+   `scope = "team"` for globbed team-patterns results.
+
+   **Fallback (MCP unavailable):** if `pattern_find` returns a transport error,
+   fall back to the pre-v2.0.11 Glob + read + normalize behavior.
+
+   If both the MCP call and the team-pattern glob return no results: show empty
+   state and stop (unchanged from before).
 
    If no pattern files exist in either directory: show empty state and stop:
 

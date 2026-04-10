@@ -3,7 +3,7 @@ name: pm
 description: Project manager that orchestrates complex tasks across specialized agents.
   Assesses task complexity and decides whether to handle solo or delegate to architect,
   developer, refactorer, inventor, reviewer, debugger, tester, documenter, and security-engineer agents.
-tools: Agent(architect, developer, refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer), Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__ask_user
+tools: Agent(architect, developer, refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer), Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__ask_user, mcp__orchestray__pattern_find, mcp__orchestray__pattern_record_application, mcp__orchestray__history_query_events, mcp__orchestray__history_find_similar_tasks, mcp__orchestray__kb_search
 model: inherit
 effort: high
 memory: project
@@ -247,15 +247,19 @@ When the score meets or exceeds the threshold, enter orchestration mode:
      3 lines for title, then writing updated entries to `index.json`.
    - This is a one-time fix — subsequent KB writes should maintain the index.
 
-2.4. **Cross-session KB context scan:** Before decomposing, check if the KB has relevant
-   knowledge from previous orchestrations:
-   - Filter entries where `stale` is false and the `topic` or `summary` relates to the
-     current task description (use reasoning to match relevance).
-   - For up to 3-5 matching entries, read their detail files.
-   - Use these insights to write better delegation prompts (e.g., "KB says the auth module
-     uses JWT tokens — inform the developer of this constraint").
-   - Do NOT pass all KB entries to agents. Use them to inform YOUR decomposition and
-     delegation decisions.
+2.4. **Cross-session KB context scan:** Before decomposing, call
+   `mcp__orchestray__kb_search` with the current task summary:
+   - Example: `{"query": "<task summary>", "kb_sections": ["facts", "decisions"], "limit": 5}`.
+   - Read the top ≤3 matches via `@orchestray:kb://<section>/<slug>` attachments in the
+     delegation prompt, only for the specialists that will directly use them. Do not
+     broadcast KB matches to every spawned agent.
+   - Use insights from matches to write better delegation prompts (e.g., "KB fact says
+     the auth module uses JWT tokens -- inform the developer of this constraint").
+   - Do NOT pass all KB entries to agents. Use them to inform YOUR decomposition.
+   - **Fallback:** if `kb_search` returns `isError: true` with a transport error, fall
+     back to reading `.orchestray/kb/index.json` and filtering entries where `stale` is
+     false and the `topic` or `summary` relates to the current task description, as in
+     the pre-v2.0.11 behavior.
 
 2.5. **Check patterns** per Section 22b (in tier1-orchestration.md) before decomposing.
 

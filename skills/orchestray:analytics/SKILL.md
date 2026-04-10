@@ -15,13 +15,26 @@ The user wants to see aggregate performance analytics across orchestration histo
    - If a number N is provided (e.g., `last 10`, `10`): limit analysis to the N most recent orchestrations.
    - If empty: analyze all orchestrations.
 
-2. **Scan history**: List all directories in `.orchestray/history/` using Glob. Sort by name (names contain timestamps, so alphabetical = chronological). If the directory is missing or empty: report "No orchestration history found. Run some orchestrations first." and stop.
+2. **Scan history via MCP:** Call `mcp__orchestray__history_query_events` with:
+   - `event_types: ["orchestration_start", "orchestration_complete", "agent_stop", "task_completed_metrics", "routing_outcome", "replan", "verify_fix_attempt", "verify_fix_fail"]`
+   - `limit: 500` (the server-side maximum)
+   - If N was specified, filter the returned `events` array client-side to the
+     last N unique `orchestration_id` values (the server does not expose a
+     per-orchestration limit — filter after the call returns).
 
-3. **Apply limit**: If N was specified, take only the last N directories from the sorted list.
+   If the call returns `isError: true` or the `events` array is empty, report
+   "No orchestration history found. Run some orchestrations first." and stop.
 
-4. **Collect data**: For each orchestration directory, read `.orchestray/history/{orch-id}/events.jsonl`. Parse each line as JSON and collect events by type:
+   **Fallback (MCP unavailable):** if the MCP call itself fails with a transport
+   error (not an empty result), fall back to the pre-v2.0.11 behavior: Glob
+   `.orchestray/history/` directories, read each events.jsonl, normalize the
+   `event`/`type` field.
 
-   **Event type normalization:** When parsing each event line, normalize the event type field: `const eventType = event.type || event.event;`. Use `eventType` (not `event.type`) for all subsequent type checks. This handles both legacy (`"event": "orchestration_start"`) and current (`"type": "orchestration_start"`) formats.
+3. **Apply limit**: (unchanged — operates on the client-filtered list from step 2.)
+
+4. **Collect data**: The MCP call already returns the normalized event objects.
+   No JSONL parsing, no `event`/`type` normalization needed — the server does
+   both. Group the returned events by `orchestration_id` and proceed:
 
    - `orchestration_start`: extract `task` (original prompt), `complexity_score`, `complexity_level`.
    - `orchestration_complete`: extract `status` (success/partial/failure), `total_cost_usd`, `duration_seconds`.
@@ -30,7 +43,7 @@ The user wants to see aggregate performance analytics across orchestration histo
    - `replan`: count occurrences per orchestration.
    - `verify_fix_attempt` / `verify_fix_fail`: count verify-fix rounds per orchestration.
 
-   Skip orchestration directories that have no `events.jsonl` or contain no parseable events.
+   Skip orchestrations that have no `orchestration_start` event in the returned set.
 
 5. **Compute aggregates**:
 

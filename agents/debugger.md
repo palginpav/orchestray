@@ -3,7 +3,7 @@ name: debugger
 description: Systematically investigates bugs and failures. Reproduces issues,
   forms hypotheses, gathers evidence, and identifies root causes. Does NOT fix
   code -- produces diagnosis reports that the developer implements.
-tools: Read, Glob, Grep, Bash, Write
+tools: Read, Glob, Grep, Bash, Write, mcp__orchestray__pattern_find, mcp__orchestray__history_query_events, mcp__orchestray__history_find_similar_tasks
 model: inherit
 effort: high
 memory: project
