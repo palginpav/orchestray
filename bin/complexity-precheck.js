@@ -98,7 +98,9 @@ function scoreComplexity(prompt) {
   else if (domainHits >= 1) score += 1;
 
   // Signal 4: Multi-file indicators (0-3)
-  const filePatterns = (lower.match(/\.\w{1,4}\b/g) || []).length; // file extensions
+  // Only count known real file extensions — the previous `\.\w{1,4}\b` over-matched
+  // on version numbers ("node 20", "v2.0.10", "sonnet 4.6") and inflated scores.
+  const filePatterns = (lower.match(/\.(js|ts|tsx|jsx|mjs|cjs|md|json|yaml|yml|py|rs|go|java|kt|rb|php|html|css|scss|sh|sql|toml|lock)\b/g) || []).length;
   const multiFileWords = ['files', 'modules', 'components', 'pages', 'routes', 'endpoints'];
   const multiHits = multiFileWords.filter(w => lower.includes(w)).length;
   const fileScore = filePatterns + multiHits;
@@ -135,6 +137,7 @@ function main() {
 
       // Debug: log what we received and scoring result
       if (verbose) {
+        try { fs.mkdirSync(path.dirname(debugLog), { recursive: true }); } catch {}
         try { fs.appendFileSync(debugLog, `  Keys: ${Object.keys(data).join(', ')}\n  Prompt (first 200): ${prompt.substring(0, 200)}\n`); } catch(e) {}
       }
 
