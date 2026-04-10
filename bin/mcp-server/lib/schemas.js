@@ -298,9 +298,231 @@ const ASK_USER_TOOL_DEFINITION = deepFreeze({
   },
 });
 
+// ---------------------------------------------------------------------------
+// validateAgainstSchema — generic JSON-Schema-subset validator (Stage 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Supported constructs:
+ *   type: object      + properties, required (additionalProperties ignored)
+ *   type: string      + minLength, maxLength, enum
+ *   type: integer     + minimum, maximum  (Number.isInteger required)
+ *   type: number      + minimum, maximum  (finite)
+ *   type: boolean
+ *   type: array       + items (type, enum, nested), minItems, maxItems
+ *
+ * Rejects unsupported keywords (oneOf/anyOf/allOf/$ref/not/if/then/else/
+ * const/format/patternProperties/propertyNames/additionalItems) with an
+ * "unsupported schema keyword" error.
+ *
+ * Returns { ok: true } | { ok: false, errors: string[] }. Pure; never throws.
+ *
+ * Per v2011c-stage2-plan.md §5.
+ */
+
+const UNSUPPORTED_KEYWORDS = [
+  'oneOf',
+  'anyOf',
+  'allOf',
+  'not',
+  'if',
+  'then',
+  'else',
+  '$ref',
+  'const',
+  'format',
+  'patternProperties',
+  'propertyNames',
+  'additionalItems',
+];
+
+function validateAgainstSchema(value, schema, pathStr) {
+  const errors = [];
+  if (pathStr === undefined) pathStr = '';
+  _validate(value, schema, pathStr, errors);
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true };
+}
+
+function _pathLabel(pathStr) {
+  return pathStr.length > 0 ? pathStr : '(root)';
+}
+
+function _validate(value, schema, pathStr, errors) {
+  if (!isPlainObject(schema)) {
+    errors.push(_pathLabel(pathStr) + ': schema must be an object');
+    return;
+  }
+
+  // Reject unsupported keywords (including type-array form).
+  for (const kw of UNSUPPORTED_KEYWORDS) {
+    if (kw in schema) {
+      errors.push(
+        _pathLabel(pathStr) + ': unsupported schema keyword "' + kw + '"'
+      );
+    }
+  }
+  if (Array.isArray(schema.type)) {
+    errors.push(
+      _pathLabel(pathStr) + ': unsupported schema keyword "type as array"'
+    );
+  }
+
+  // Bail early on unsupported-keyword rejection — the caller gets a clean
+  // single message. Any further checks would just add noise.
+  if (errors.length > 0) return;
+
+  const type = schema.type;
+
+  if (type === 'object') {
+    if (!isPlainObject(value)) {
+      errors.push(_pathLabel(pathStr) + ': must be an object');
+      return;
+    }
+    if ('required' in schema) {
+      if (!Array.isArray(schema.required)) {
+        errors.push(_pathLabel(pathStr) + ': required must be an array');
+      } else {
+        for (const name of schema.required) {
+          if (!(name in value)) {
+            errors.push(
+              (pathStr.length > 0 ? pathStr + '.' : '') + name + ': is required'
+            );
+          }
+        }
+      }
+    }
+    if ('properties' in schema) {
+      if (!isPlainObject(schema.properties)) {
+        errors.push(_pathLabel(pathStr) + ': properties must be an object');
+      } else {
+        for (const [propName, propSchema] of Object.entries(schema.properties)) {
+          if (propName in value) {
+            const childPath = (pathStr.length > 0 ? pathStr + '.' : '') + propName;
+            _validate(value[propName], propSchema, childPath, errors);
+          }
+        }
+      }
+    }
+    return;
+  }
+
+  if (type === 'string') {
+    if (typeof value !== 'string') {
+      errors.push(_pathLabel(pathStr) + ': must be a string');
+      return;
+    }
+    if (typeof schema.minLength === 'number' && value.length < schema.minLength) {
+      errors.push(
+        _pathLabel(pathStr) + ': string length must be >= ' + schema.minLength +
+        ' (got ' + value.length + ')'
+      );
+    }
+    if (typeof schema.maxLength === 'number' && value.length > schema.maxLength) {
+      errors.push(
+        _pathLabel(pathStr) + ': string length must be <= ' + schema.maxLength +
+        ' (got ' + value.length + ')'
+      );
+    }
+    if ('enum' in schema) {
+      if (!Array.isArray(schema.enum)) {
+        errors.push(_pathLabel(pathStr) + ': enum must be an array');
+      } else if (!schema.enum.includes(value)) {
+        errors.push(
+          _pathLabel(pathStr) + ': must be one of ' + JSON.stringify(schema.enum) +
+          ' (got "' + value + '")'
+        );
+      }
+    }
+    return;
+  }
+
+  if (type === 'integer') {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      errors.push(_pathLabel(pathStr) + ': must be integer');
+      return;
+    }
+    if (!Number.isInteger(value)) {
+      errors.push(_pathLabel(pathStr) + ': must be integer (got ' + value + ')');
+      return;
+    }
+    if (typeof schema.minimum === 'number' && value < schema.minimum) {
+      errors.push(_pathLabel(pathStr) + ': must be >= ' + schema.minimum);
+    }
+    if (typeof schema.maximum === 'number' && value > schema.maximum) {
+      errors.push(_pathLabel(pathStr) + ': must be <= ' + schema.maximum);
+    }
+    return;
+  }
+
+  if (type === 'number') {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      errors.push(_pathLabel(pathStr) + ': must be a finite number');
+      return;
+    }
+    if (typeof schema.minimum === 'number' && value < schema.minimum) {
+      errors.push(_pathLabel(pathStr) + ': must be >= ' + schema.minimum);
+    }
+    if (typeof schema.maximum === 'number' && value > schema.maximum) {
+      errors.push(_pathLabel(pathStr) + ': must be <= ' + schema.maximum);
+    }
+    return;
+  }
+
+  if (type === 'boolean') {
+    if (typeof value !== 'boolean') {
+      errors.push(_pathLabel(pathStr) + ': must be a boolean');
+    }
+    return;
+  }
+
+  if (type === 'array') {
+    if (!Array.isArray(value)) {
+      errors.push(_pathLabel(pathStr) + ': must be an array');
+      return;
+    }
+    if (typeof schema.minItems === 'number' && value.length < schema.minItems) {
+      errors.push(
+        _pathLabel(pathStr) + ': array length must be >= ' + schema.minItems +
+        ' (got ' + value.length + ')'
+      );
+    }
+    if (typeof schema.maxItems === 'number' && value.length > schema.maxItems) {
+      errors.push(
+        _pathLabel(pathStr) + ': array must contain at most ' + schema.maxItems +
+        ' items (got ' + value.length + ')'
+      );
+    }
+    if ('items' in schema) {
+      const itemsSchema = schema.items;
+      if (Array.isArray(itemsSchema)) {
+        errors.push(
+          _pathLabel(pathStr) + ': unsupported schema keyword "items as array"'
+        );
+      } else if (isPlainObject(itemsSchema)) {
+        value.forEach((elem, idx) => {
+          const childPath = (pathStr.length > 0 ? pathStr : '') + '[' + idx + ']';
+          _validate(elem, itemsSchema, childPath, errors);
+        });
+      }
+    }
+    return;
+  }
+
+  if (type === undefined) {
+    // Schemas without `type` are permissive (shape-less). Tests don't rely
+    // on this being an error; mirror ajv's default-permissive behavior.
+    return;
+  }
+
+  errors.push(_pathLabel(pathStr) + ': unsupported type "' + String(type) + '"');
+}
+
 module.exports = {
   validateAskUserInput,
   validateAskUserOutput,
   validateElicitationRequestedSchema,
+  validateAgainstSchema,
+  deepFreeze,
   ASK_USER_TOOL_DEFINITION,
 };

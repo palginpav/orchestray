@@ -28,7 +28,19 @@ const readline = require('node:readline');
 const paths = require('./lib/paths');
 const { ASK_USER_TOOL_DEFINITION } = require('./lib/schemas');
 const { writeAuditEvent } = require('./lib/audit');
-const { handleAskUser } = require('./handlers/ask_user');
+const { handleAskUser } = require('./elicit/ask_user');
+
+// Stage 2 tool handlers
+const patternFind = require('./tools/pattern_find');
+const patternRecordApplication = require('./tools/pattern_record_application');
+const historyQueryEvents = require('./tools/history_query_events');
+const historyFindSimilarTasks = require('./tools/history_find_similar_tasks');
+const kbSearch = require('./tools/kb_search');
+
+// Stage 2 resource handlers
+const patternResource = require('./resources/pattern_resource');
+const historyResource = require('./resources/history_resource');
+const kbResource = require('./resources/kb_resource');
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'orchestray';
@@ -71,17 +83,125 @@ function loadConfig() {
   return {};
 }
 
-function isAskUserEnabled(config) {
-  if (!config || !config.mcp_server) return true;
-  if (config.mcp_server.enabled === false) return false;
-  const t = config.mcp_server.tools && config.mcp_server.tools.ask_user;
-  if (t && t.enabled === false) return false;
-  return true;
-}
-
 function isServerEnabled(config) {
   if (!config || !config.mcp_server) return true;
   return config.mcp_server.enabled !== false;
+}
+
+/**
+ * Generic per-tool enabled check. Supports both the arch §7 shorthand
+ * (`"pattern_find": true`) and the Stage 2 nested form
+ * (`"pattern_find": { "enabled": true }`). Default-enabled when the key
+ * is missing entirely.
+ */
+function isToolEnabled(config, toolName) {
+  if (!config || !config.mcp_server) return true;
+  if (config.mcp_server.enabled === false) return false;
+  const tools = config.mcp_server.tools || {};
+  const entry = tools[toolName];
+  if (entry === undefined || entry === null) return true;
+  if (typeof entry === 'boolean') return entry;
+  if (typeof entry === 'object' && entry.enabled === false) return false;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Stage 2 tool + resource dispatch tables
+// ---------------------------------------------------------------------------
+
+// Master tool table. Order here determines tools/list order. The `ask_user`
+// handler is wrapped so its context carries sendElicitation + auditSink +
+// config; the other handlers are plain async (args, context) functions.
+const TOOL_TABLE = Object.freeze({
+  ask_user: {
+    definition: ASK_USER_TOOL_DEFINITION,
+    handler: (args, _context) => handleAskUser(args, {
+      sendElicitation,
+      auditSink: writeAuditEvent,
+      config: _context && _context.config,
+    }),
+  },
+  pattern_find: {
+    definition: patternFind.definition,
+    handler: patternFind.handle,
+  },
+  pattern_record_application: {
+    definition: patternRecordApplication.definition,
+    handler: patternRecordApplication.handle,
+  },
+  history_query_events: {
+    definition: historyQueryEvents.definition,
+    handler: historyQueryEvents.handle,
+  },
+  history_find_similar_tasks: {
+    definition: historyFindSimilarTasks.definition,
+    handler: historyFindSimilarTasks.handle,
+  },
+  kb_search: {
+    definition: kbSearch.definition,
+    handler: kbSearch.handle,
+  },
+});
+
+const RESOURCE_HANDLERS = Object.freeze({
+  pattern: patternResource,
+  history: historyResource,
+  kb: kbResource,
+});
+
+function buildToolContext(config) {
+  let projectRoot;
+  let pluginRoot;
+  try { projectRoot = paths.getProjectRoot(); } catch (_e) { projectRoot = null; }
+  try { pluginRoot = paths.getPluginRoot(); } catch (_e) { pluginRoot = null; }
+  return {
+    sendElicitation,
+    auditSink: writeAuditEvent,
+    config,
+    projectRoot,
+    pluginRoot,
+    logger: logStderr,
+  };
+}
+
+function buildResourceContext(config) {
+  let projectRoot;
+  let pluginRoot;
+  try { projectRoot = paths.getProjectRoot(); } catch (_e) { projectRoot = null; }
+  try { pluginRoot = paths.getPluginRoot(); } catch (_e) { pluginRoot = null; }
+  return {
+    projectRoot,
+    pluginRoot,
+    config,
+    logger: logStderr,
+  };
+}
+
+function toolResultError(text) {
+  return {
+    isError: true,
+    content: [{ type: 'text', text }],
+  };
+}
+
+/**
+ * Emit an `mcp_resource_read` audit event. Reuses the same JSONL writer
+ * as `mcp_tool_call` so downstream consumers see both event types in the
+ * same stream. Fail-open: audit failures never block the response.
+ */
+function emitResourceAudit(uri, outcome, durationMs) {
+  try {
+    const { readOrchestrationId } = require('./lib/audit');
+    writeAuditEvent({
+      timestamp: new Date().toISOString(),
+      type: 'mcp_resource_read',
+      tool: uri,
+      orchestration_id: readOrchestrationId(),
+      duration_ms: durationMs,
+      outcome,
+      form_fields_count: 0,
+    });
+  } catch (_e) { /* swallow */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +287,13 @@ async function dispatchRequest(config, msg) {
 
   if (method === 'initialize') {
     const capabilities = { tools: { listChanged: false } };
-    if (isServerEnabled(config)) capabilities.elicitation = {};
+    if (isServerEnabled(config)) {
+      capabilities.elicitation = {};
+      // Stage 2: advertise resources capability when the server is enabled.
+      // listChanged/subscribe are both false — resources are stateless reads
+      // of filesystem artifacts; the server does not push change notices.
+      capabilities.resources = { listChanged: false, subscribe: false };
+    }
     sendResult(id, {
       protocolVersion: PROTOCOL_VERSION,
       capabilities,
@@ -178,8 +304,10 @@ async function dispatchRequest(config, msg) {
 
   if (method === 'tools/list') {
     const tools = [];
-    if (isServerEnabled(config) && isAskUserEnabled(config)) {
-      tools.push(ASK_USER_TOOL_DEFINITION);
+    if (isServerEnabled(config)) {
+      for (const [name, entry] of Object.entries(TOOL_TABLE)) {
+        if (isToolEnabled(config, name)) tools.push(entry.definition);
+      }
     }
     sendResult(id, { tools });
     return;
@@ -189,34 +317,163 @@ async function dispatchRequest(config, msg) {
     const name = params && params.name;
     const args = (params && params.arguments) || {};
 
-    if (name !== 'ask_user') {
-      // Per §3.5: unknown tool name returns a tool-result error, not JSON-RPC.
-      sendResult(id, {
-        isError: true,
-        content: [{ type: 'text', text: 'unknown tool: ' + String(name) }],
-      });
+    if (!isServerEnabled(config)) {
+      sendResult(id, toolResultError('server disabled'));
       return;
     }
 
+    const entry = TOOL_TABLE[name];
+    if (!entry) {
+      // Per §3.5: unknown tool name returns a tool-result error, not JSON-RPC.
+      sendResult(id, toolResultError('unknown tool: ' + String(name)));
+      return;
+    }
+
+    if (!isToolEnabled(config, name)) {
+      sendResult(id, toolResultError('tool disabled: ' + name));
+      return;
+    }
+
+    const toolContext = buildToolContext(config);
+    const startedAt = Date.now();
+    let result;
+    let outcome = 'error';
     try {
-      const result = await handleAskUser(args, {
-        sendElicitation,
-        auditSink: writeAuditEvent,
-        config,
-      });
+      result = await entry.handler(args, toolContext);
+      if (result && result.isError === false) outcome = 'answered';
+      else if (result && result.isError === true) outcome = 'error';
+      else outcome = 'answered';
+    } catch (err) {
+      // Handlers promise totality; this is a safety net for programmer errors.
+      logStderr(name + ' handler threw: ' + (err && err.message));
+      result = toolResultError(
+        name + ': ' + (err && err.message ? err.message : String(err))
+      );
+      outcome = 'error';
+    }
+
+    // Central audit for non-ask_user tools. The ask_user handler emits its
+    // own richer audit events (with form_fields_count, timeout/cancelled
+    // outcomes) via context.auditSink, so skip the generic emission for it
+    // to avoid double-logging.
+    if (name !== 'ask_user') {
+      try {
+        writeAuditEvent({
+          timestamp: new Date().toISOString(),
+          type: 'mcp_tool_call',
+          tool: name,
+          orchestration_id: require('./lib/audit').readOrchestrationId(),
+          duration_ms: Date.now() - startedAt,
+          outcome,
+          form_fields_count: 0,
+        });
+      } catch (_e) { /* fail-open */ }
+    }
+
+    sendResult(id, result);
+    return;
+  }
+
+  if (method === 'resources/list') {
+    if (!isServerEnabled(config)) {
+      sendResult(id, { resources: [] });
+      return;
+    }
+    const ctx = buildResourceContext(config);
+    const aggregated = [];
+    for (const [scheme, handler] of Object.entries(RESOURCE_HANDLERS)) {
+      try {
+        const res = await handler.list(ctx);
+        if (res && Array.isArray(res.resources)) {
+          for (const r of res.resources) aggregated.push(r);
+        }
+      } catch (err) {
+        logStderr('resources/list ' + scheme + ' failed: ' + (err && err.message));
+      }
+    }
+    sendResult(id, { resources: aggregated });
+    return;
+  }
+
+  if (method === 'resources/templates/list') {
+    if (!isServerEnabled(config)) {
+      sendResult(id, { resourceTemplates: [] });
+      return;
+    }
+    const ctx = buildResourceContext(config);
+    const aggregated = [];
+    for (const [scheme, handler] of Object.entries(RESOURCE_HANDLERS)) {
+      if (typeof handler.templates !== 'function') continue;
+      try {
+        const res = await handler.templates(ctx);
+        if (res && Array.isArray(res.resourceTemplates)) {
+          for (const t of res.resourceTemplates) aggregated.push(t);
+        }
+      } catch (err) {
+        logStderr('resources/templates/list ' + scheme + ' failed: ' + (err && err.message));
+      }
+    }
+    sendResult(id, { resourceTemplates: aggregated });
+    return;
+  }
+
+  if (method === 'resources/read') {
+    if (!isServerEnabled(config)) {
+      sendError(id, JSONRPC_INTERNAL_ERROR, 'server disabled');
+      return;
+    }
+    const uri = params && params.uri;
+    if (typeof uri !== 'string' || uri.length === 0) {
+      sendError(id, JSONRPC_INVALID_REQUEST, 'resources/read: missing uri');
+      return;
+    }
+
+    // Parse the URI scheme to route to the right handler. paths.parseResourceUri
+    // throws on malformed input or unsafe segments — treat those as JSON-RPC
+    // errors (they indicate a malformed client request, not a tool-call failure).
+    let scheme;
+    try {
+      ({ scheme } = paths.parseResourceUri(uri));
+    } catch (err) {
+      const startedAt = Date.now();
+      emitResourceAudit(uri, 'error', Date.now() - startedAt);
+      sendError(id, JSONRPC_INVALID_REQUEST, 'resources/read: ' + (err && err.message));
+      return;
+    }
+
+    const handler = RESOURCE_HANDLERS[scheme];
+    if (!handler) {
+      emitResourceAudit(uri, 'error', 0);
+      sendError(id, JSONRPC_METHOD_NOT_FOUND, 'unknown resource scheme: ' + scheme);
+      return;
+    }
+
+    const ctx = buildResourceContext(config);
+    const startedAt = Date.now();
+    try {
+      const result = await handler.read(uri, ctx);
+      emitResourceAudit(uri, 'answered', Date.now() - startedAt);
       sendResult(id, result);
     } catch (err) {
-      // Handler promised totality; this is a safety net for programmer errors.
-      logStderr('ask_user handler threw: ' + (err && err.message));
-      sendResult(id, {
-        isError: true,
-        content: [
-          {
-            type: 'text',
-            text: 'ask_user: ' + (err && err.message ? err.message : String(err)),
-          },
-        ],
-      });
+      emitResourceAudit(uri, 'error', Date.now() - startedAt);
+      const code = (err && err.code) || 'READ_ERROR';
+      if (code === 'RESOURCE_NOT_FOUND') {
+        sendError(id, JSONRPC_METHOD_NOT_FOUND, 'resource not found', {
+          uri,
+          message: err && err.message,
+        });
+      } else if (code === 'PATH_TRAVERSAL') {
+        sendError(id, JSONRPC_INVALID_REQUEST, 'invalid resource uri', {
+          uri,
+          message: err && err.message,
+        });
+      } else {
+        logStderr('resources/read ' + scheme + ' threw: ' + (err && err.message));
+        sendError(id, JSONRPC_INTERNAL_ERROR, 'resources/read failed', {
+          uri,
+          message: err && err.message,
+        });
+      }
     }
     return;
   }

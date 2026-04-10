@@ -2,9 +2,10 @@
 'use strict';
 
 /**
- * Tests for bin/mcp-server/handlers/ask_user.js
+ * Tests for bin/mcp-server/elicit/ask_user.js
  *
- * Per v2011c-stage1-plan.md §3.4, §5, §11.
+ * Per v2011c-stage1-plan.md §3.4, §5, §11. Module relocated in Stage 2
+ * per v2011c-stage2-plan.md §2.
  *
  * Contract under test:
  *   async handleAskUser(
@@ -45,7 +46,7 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { handleAskUser } = require('../../bin/mcp-server/handlers/ask_user.js');
+const { handleAskUser } = require('../../bin/mcp-server/elicit/ask_user.js');
 
 // ---------------------------------------------------------------------------
 // Helpers: minimal fakes
