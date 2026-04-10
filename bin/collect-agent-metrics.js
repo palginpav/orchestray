@@ -150,6 +150,10 @@ process.stdin.on('end', () => {
     }
 
     let usageSource = 'transcript';
+    // cost_confidence: "measured" when token counts came from the transcript
+    // or the hook event payload; "estimated" when they were fabricated from
+    // turn count. Downstream dashboards use this to flag fabricated rows.
+    let costConfidence = 'measured';
 
     // Fallback: if transcript yielded zero tokens, check hook event payload
     if (totalUsage.input_tokens === 0 && totalUsage.output_tokens === 0) {
@@ -161,11 +165,15 @@ process.stdin.on('end', () => {
         totalUsage.cache_creation_input_tokens = eventUsage.cache_creation_input_tokens || 0;
         usageSource = 'event_payload';
       }
-      // Second fallback: estimate from turns if we have turn count but no tokens
+      // Second fallback: estimate from turns if we have turn count but no tokens.
+      // The 2000/1000 multipliers are conservative rule-of-thumb averages for a
+      // mid-length agent turn; they are NOT measured. cost_confidence flips to
+      // "estimated" so /orchestray:analytics can flag these rows.
       if (totalUsage.input_tokens === 0 && totalUsage.output_tokens === 0 && turnsUsed > 0) {
         totalUsage.input_tokens = turnsUsed * 2000;
         totalUsage.output_tokens = turnsUsed * 1000;
         usageSource = 'estimated';
+        costConfidence = 'estimated';
       }
     }
 
@@ -216,6 +224,7 @@ process.stdin.on('end', () => {
         team_name: event.team_name || null,
         usage: totalUsage,
         usage_source: usageSource,
+        cost_confidence: costConfidence,
         estimated_cost_usd: estimatedCostUsd,
         estimated_cost_opus_baseline_usd: estimatedCostOpusBaselineUsd,
         model_used: resolvedModel,
@@ -232,6 +241,7 @@ process.stdin.on('end', () => {
         last_message_preview: (event.last_assistant_message || '').slice(0, 200),
         usage: totalUsage,
         usage_source: usageSource,
+        cost_confidence: costConfidence,
         estimated_cost_usd: estimatedCostUsd,
         estimated_cost_opus_baseline_usd: estimatedCostOpusBaselineUsd,
         transcript_path: transcriptPath,

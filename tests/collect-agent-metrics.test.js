@@ -649,6 +649,124 @@ describe('pricing and cost estimation', () => {
 });
 
 // ---------------------------------------------------------------------------
+// cost_confidence field (FIX-3)
+// ---------------------------------------------------------------------------
+
+describe('cost_confidence field', () => {
+
+  test('cost_confidence is "measured" when tokens come from transcript', () => {
+    const tmpDir = makeTmpDir();
+    const auditDir = path.join(tmpDir, '.orchestray', 'audit');
+    writeOrchestrationId(auditDir, 'orch-conf-001');
+
+    const transcriptPath = path.join(tmpDir, 'transcript.jsonl');
+    fs.writeFileSync(transcriptPath, JSON.stringify({
+      role: 'assistant',
+      usage: { input_tokens: 1500, output_tokens: 800 },
+    }) + '\n');
+
+    try {
+      const input = JSON.stringify({
+        cwd: tmpDir,
+        hook_event_name: 'SubagentStop',
+        agent_type: 'developer',
+        agent_transcript_path: transcriptPath,
+      });
+      run(input);
+      const events = readEventsJsonl(auditDir);
+      const ev = events[events.length - 1];
+      assert.equal(ev.cost_confidence, 'measured');
+      assert.equal(ev.usage_source, 'transcript');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('cost_confidence is "measured" when tokens come from event payload', () => {
+    const tmpDir = makeTmpDir();
+    const auditDir = path.join(tmpDir, '.orchestray', 'audit');
+    writeOrchestrationId(auditDir, 'orch-conf-002');
+
+    try {
+      const input = JSON.stringify({
+        cwd: tmpDir,
+        hook_event_name: 'SubagentStop',
+        agent_type: 'developer',
+        usage: { input_tokens: 2500, output_tokens: 1200 },
+      });
+      run(input);
+      const events = readEventsJsonl(auditDir);
+      const ev = events[events.length - 1];
+      assert.equal(ev.cost_confidence, 'measured');
+      assert.equal(ev.usage_source, 'event_payload');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('cost_confidence is "estimated" when tokens are fabricated from turn count', () => {
+    const tmpDir = makeTmpDir();
+    const auditDir = path.join(tmpDir, '.orchestray', 'audit');
+    writeOrchestrationId(auditDir, 'orch-conf-003');
+
+    // Transcript with assistant turns but NO usage fields → triggers turn-based estimation.
+    const transcriptPath = path.join(tmpDir, 'transcript.jsonl');
+    const lines = [
+      JSON.stringify({ role: 'assistant', content: 'first' }),
+      JSON.stringify({ role: 'assistant', content: 'second' }),
+    ].join('\n');
+    fs.writeFileSync(transcriptPath, lines);
+
+    try {
+      const input = JSON.stringify({
+        cwd: tmpDir,
+        hook_event_name: 'SubagentStop',
+        agent_type: 'developer',
+        agent_transcript_path: transcriptPath,
+      });
+      run(input);
+      const events = readEventsJsonl(auditDir);
+      const ev = events[events.length - 1];
+      assert.equal(ev.cost_confidence, 'estimated',
+        'turn-based fallback must mark cost_confidence as estimated');
+      assert.equal(ev.usage_source, 'estimated');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('cost_confidence is present on team events (TaskCompleted)', () => {
+    const tmpDir = makeTmpDir();
+    const auditDir = path.join(tmpDir, '.orchestray', 'audit');
+    writeOrchestrationId(auditDir, 'orch-conf-team');
+
+    const transcriptPath = path.join(tmpDir, 'team-transcript.jsonl');
+    fs.writeFileSync(transcriptPath, JSON.stringify({
+      role: 'assistant',
+      usage: { input_tokens: 900, output_tokens: 400 },
+    }) + '\n');
+
+    try {
+      const input = JSON.stringify({
+        cwd: tmpDir,
+        hook_event_name: 'TaskCompleted',
+        task_id: 'task-team-001',
+        task_subject: 'Some task',
+        transcript_path: transcriptPath,
+      });
+      run(input);
+      const events = readEventsJsonl(auditDir);
+      const ev = events[events.length - 1];
+      assert.equal(ev.type, 'task_completed_metrics');
+      assert.equal(ev.cost_confidence, 'measured');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+});
+
+// ---------------------------------------------------------------------------
 // events.jsonl append behavior
 // ---------------------------------------------------------------------------
 
