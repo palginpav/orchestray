@@ -1,54 +1,25 @@
 #!/usr/bin/env node
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
+/**
+ * SubagentStart hook. Writes an agent_start audit event to events.jsonl.
+ *
+ * Thin wrapper around bin/_lib/audit-event-writer.js — the shared helper
+ * handles stdin parsing, orchestration_id resolution, and appending to
+ * events.jsonl. This script only supplies the event `type` and the
+ * script-specific extra fields.
+ *
+ * Invoked by hooks/hooks.json as `audit-event.js start` — the positional
+ * arg is accepted for future extensibility but not currently used.
+ */
 
-let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => { process.stdout.write(JSON.stringify({ continue: true })); process.exit(0); });
-process.stdin.on('data', (chunk) => { input += chunk; });
-process.stdin.on('end', () => {
-  try {
-    const event = JSON.parse(input);
-    const cwd = event.cwd || process.cwd();
-    const auditDir = path.join(cwd, '.orchestray', 'audit');
+const writeAuditEvent = require('./_lib/audit-event-writer');
 
-    // Read orchestration_id from current-orchestration.json if available
-    let orchestrationId = 'unknown';
-    try {
-      const orchFile = path.join(auditDir, 'current-orchestration.json');
-      const orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
-      if (orchData.orchestration_id) {
-        orchestrationId = orchData.orchestration_id;
-      }
-    } catch (_e) {
-      // File missing or unreadable -- use default
-    }
-
-    // Ensure audit directory exists
-    fs.mkdirSync(auditDir, { recursive: true });
-
-    // Construct audit event
-    const auditEvent = {
-      timestamp: new Date().toISOString(),
-      type: 'agent_start',
-      orchestration_id: orchestrationId,
-      agent_id: event.agent_id || null,
-      agent_type: event.agent_type || null,
-      session_id: event.session_id || null,
-    };
-
-    // Append to events.jsonl
-    fs.appendFileSync(
-      path.join(auditDir, 'events.jsonl'),
-      JSON.stringify(auditEvent) + '\n'
-    );
-  } catch (_e) {
-    // Never block agent start due to audit failure
-  }
-
-  // Always allow the agent to continue
-  process.stdout.write(JSON.stringify({ continue: true }));
-  process.exit(0);
+writeAuditEvent({
+  type: 'agent_start',
+  extraFieldsPicker: (payload) => ({
+    agent_id: payload.agent_id || null,
+    agent_type: payload.agent_type || null,
+    session_id: payload.session_id || null,
+  }),
 });

@@ -1,0 +1,83 @@
+'use strict';
+
+/**
+ * Shared audit event writer used by bin/audit-event.js and bin/audit-team-event.js.
+ *
+ * Reads a JSON payload from stdin, resolves the active orchestration_id from
+ * `.orchestray/audit/current-orchestration.json`, constructs an event object,
+ * and appends a line to `.orchestray/audit/events.jsonl`.
+ *
+ * Never throws: any error is swallowed and the script exits 0 with
+ * `{ continue: true }`. Hook scripts MUST NOT block Claude Code on audit
+ * failures.
+ *
+ * @param {Object} options
+ * @param {string} options.type - The event `type` field (e.g. 'agent_start').
+ * @param {string} [options.mode] - Optional `mode` field to set on the event
+ *   (e.g. 'teams'). Omitted if not provided.
+ * @param {(payload: Object) => Object} options.extraFieldsPicker - Function
+ *   that returns script-specific fields to merge into the event. Receives the
+ *   parsed stdin payload.
+ */
+const fs = require('fs');
+const path = require('path');
+
+function writeAuditEvent({ type, mode, extraFieldsPicker }) {
+  let input = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('error', () => {
+    process.stdout.write(JSON.stringify({ continue: true }));
+    process.exit(0);
+  });
+  process.stdin.on('data', (chunk) => { input += chunk; });
+  process.stdin.on('end', () => {
+    try {
+      const event = JSON.parse(input);
+      const cwd = event.cwd || process.cwd();
+      const auditDir = path.join(cwd, '.orchestray', 'audit');
+
+      // Read orchestration_id from current-orchestration.json if available
+      let orchestrationId = 'unknown';
+      try {
+        const orchFile = path.join(auditDir, 'current-orchestration.json');
+        const orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
+        if (orchData.orchestration_id) {
+          orchestrationId = orchData.orchestration_id;
+        }
+      } catch (_e) {
+        // File missing or unreadable -- use default
+      }
+
+      // Ensure audit directory exists
+      fs.mkdirSync(auditDir, { recursive: true });
+
+      // Construct audit event — base fields first, then script-specific extras.
+      const auditEvent = {
+        timestamp: new Date().toISOString(),
+        type,
+        orchestration_id: orchestrationId,
+      };
+      if (mode !== undefined) {
+        auditEvent.mode = mode;
+      }
+      const extras = (typeof extraFieldsPicker === 'function')
+        ? extraFieldsPicker(event) || {}
+        : {};
+      Object.assign(auditEvent, extras);
+
+      // Append to events.jsonl
+      fs.appendFileSync(
+        path.join(auditDir, 'events.jsonl'),
+        JSON.stringify(auditEvent) + '\n'
+      );
+    } catch (_e) {
+      // Never block the hook due to audit failure
+    }
+
+    // Always allow the hook to continue
+    process.stdout.write(JSON.stringify({ continue: true }));
+    process.exit(0);
+  });
+}
+
+module.exports = writeAuditEvent;
