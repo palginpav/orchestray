@@ -108,18 +108,76 @@ describe('validation gate — blocking on missing fields', () => {
     assert.equal(status, 2, 'null task_id should be treated as missing (falsy)');
   });
 
-  test('does NOT write audit event when validation fails', () => {
+  test('writes a task_validation_failed audit event (but no task_completed) when validation fails', () => {
+    // FIX-2: rejection must leave a debug trail in events.jsonl before exit(2).
     const tmpDir = makeTmpDir();
     const auditDir = path.join(tmpDir, '.orchestray', 'audit');
 
     try {
       const input = JSON.stringify({ cwd: tmpDir }); // missing both fields
       run(input);
-      // Audit dir should not have been created or events.jsonl should not exist
-      // (script exits before reaching mkdirSync on validation failure)
-      const eventsPath = path.join(auditDir, 'events.jsonl');
-      assert.ok(!fs.existsSync(eventsPath),
-        'events.jsonl should NOT be written when validation gate blocks');
+      const events = readEventsJsonl(auditDir);
+      assert.equal(events.length, 1, 'exactly one rejection event should be logged');
+      const ev = events[0];
+      assert.equal(ev.type, 'task_validation_failed');
+      assert.ok(ev.reason.includes('task_id') || ev.reason.includes('task_subject'),
+        'reason should identify which field is missing');
+      assert.ok(Array.isArray(ev.payload_keys), 'payload_keys must be an array');
+      // No task_completed event — only the rejection.
+      assert.ok(!events.some(e => e.type === 'task_completed'),
+        'no task_completed event should exist on rejection path');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('rejection event logs only top-level key NAMES, not values', () => {
+    // Team task payloads may contain sensitive task content; values must never
+    // be persisted in the audit trail.
+    const tmpDir = makeTmpDir();
+    const auditDir = path.join(tmpDir, '.orchestray', 'audit');
+
+    try {
+      const sensitive = 'SECRET_API_KEY=sk-abc123-do-not-leak';
+      const input = JSON.stringify({
+        cwd: tmpDir,
+        // Missing task_id → rejection path
+        task_subject: '', // empty → falsy → rejection
+        confidential_field: sensitive,
+        another_secret: sensitive,
+      });
+      run(input);
+
+      const events = readEventsJsonl(auditDir);
+      assert.equal(events.length, 1);
+      const raw = fs.readFileSync(path.join(auditDir, 'events.jsonl'), 'utf8');
+      assert.ok(!raw.includes(sensitive),
+        'rejection audit event must NOT contain payload values');
+      assert.ok(raw.includes('confidential_field'),
+        'rejection audit event should contain the top-level key name');
+      assert.ok(raw.includes('another_secret'),
+        'rejection audit event should contain the top-level key name');
+      // payload_keys content is a list of strings
+      assert.ok(events[0].payload_keys.includes('confidential_field'));
+      assert.ok(events[0].payload_keys.includes('another_secret'));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('rejection event uses orchestration_id from current-orchestration.json', () => {
+    const tmpDir = makeTmpDir();
+    const auditDir = path.join(tmpDir, '.orchestray', 'audit');
+    fs.mkdirSync(auditDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(auditDir, 'current-orchestration.json'),
+      JSON.stringify({ orchestration_id: 'orch-reject-001' })
+    );
+
+    try {
+      run(JSON.stringify({ cwd: tmpDir }));
+      const events = readEventsJsonl(auditDir);
+      assert.equal(events[0].orchestration_id, 'orch-reject-001');
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
     }
@@ -130,6 +188,50 @@ describe('validation gate — blocking on missing fields', () => {
     const { stderr } = run(input);
     assert.ok(stderr.toLowerCase().includes('rejected') || stderr.toLowerCase().includes('missing'),
       'stderr should describe why task completion was rejected');
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// hook_event_name sanity check (FIX-2)
+// ---------------------------------------------------------------------------
+
+describe('non-TaskCompleted events pass through without validation', () => {
+
+  test('event with hook_event_name != "TaskCompleted" skips validation and exits 0', () => {
+    const tmpDir = makeTmpDir();
+    const auditDir = path.join(tmpDir, '.orchestray', 'audit');
+    try {
+      const input = JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        cwd: tmpDir,
+        // Intentionally missing task_id/task_subject — but the hook_event_name
+        // guard must fire first.
+      });
+      const { stdout, status } = run(input);
+      assert.equal(status, 0, 'non-TaskCompleted event must exit 0');
+      assert.equal(parseOutput(stdout).continue, true);
+      // No rejection event should be appended — validation was skipped.
+      assert.ok(!fs.existsSync(path.join(auditDir, 'events.jsonl')),
+        'no rejection event should be logged for non-TaskCompleted events');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('event with hook_event_name === "TaskCompleted" still validates', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const input = JSON.stringify({
+        hook_event_name: 'TaskCompleted',
+        cwd: tmpDir,
+        // Missing task_id/task_subject → should still exit 2
+      });
+      const { status } = run(input);
+      assert.equal(status, 2, 'TaskCompleted with missing fields must still block');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
   });
 
 });

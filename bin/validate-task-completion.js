@@ -12,17 +12,53 @@ process.stdin.on('end', () => {
   try {
     const event = JSON.parse(input);
 
+    // If this isn't actually a TaskCompleted event, don't validate — Claude Code
+    // may route other events through this hook if wiring changes, and silent
+    // exit(2) on everything would lock up the team.
+    if (event.hook_event_name && event.hook_event_name !== 'TaskCompleted') {
+      process.stdout.write(JSON.stringify({ continue: true }));
+      process.exit(0);
+    }
+
+    const cwd = event.cwd || process.cwd();
+    const auditDir = path.join(cwd, '.orchestray', 'audit');
+
     // Validation gate: block if task_id or task_subject is missing
     if (!event.task_id || !event.task_subject) {
+      // Audit-log the rejection BEFORE exit(2) so operators have a debug trail.
+      // We log only the TOP-LEVEL KEY NAMES from the payload — values may
+      // contain sensitive task content we must not persist here.
+      try {
+        fs.mkdirSync(auditDir, { recursive: true });
+        let orchestrationId = 'unknown';
+        try {
+          const orchFile = path.join(auditDir, 'current-orchestration.json');
+          const orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
+          if (orchData.orchestration_id) orchestrationId = orchData.orchestration_id;
+        } catch (_e) { /* default id */ }
+        const rejectionEvent = {
+          timestamp: new Date().toISOString(),
+          type: 'task_validation_failed',
+          orchestration_id: orchestrationId,
+          reason: !event.task_id && !event.task_subject
+            ? 'missing task_id and task_subject'
+            : (!event.task_id ? 'missing task_id' : 'missing task_subject'),
+          payload_keys: Object.keys(event),
+        };
+        fs.appendFileSync(
+          path.join(auditDir, 'events.jsonl'),
+          JSON.stringify(rejectionEvent) + '\n'
+        );
+      } catch (_auditErr) {
+        // Audit-write failure must not mask the original rejection.
+      }
+
       process.stderr.write(
         'Task completion rejected: missing task_id or task_subject. ' +
         'Ensure task has proper identification before marking complete.'
       );
       process.exit(2);
     }
-
-    const cwd = event.cwd || process.cwd();
-    const auditDir = path.join(cwd, '.orchestray', 'audit');
 
     // Read orchestration_id from current-orchestration.json if available
     let orchestrationId = 'unknown';
