@@ -3,6 +3,32 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.11] - 2026-04-10
+
+### Added
+- **New: `mcp__orchestray__ask_user` MCP tool.** Agents can pause mid-task to
+  ask the user a structured ≤5-field form and resume with the answers, without
+  unwinding the orchestration. Enabled for pm, architect, developer, and
+  reviewer. Configuration under `mcp_server.tools.ask_user` in
+  `.orchestray/config.json`.
+- Plugin-bundled stdio MCP server at `bin/mcp-server/server.js` (Node 20
+  stdlib only — no new npm deps). JSON-RPC 2.0 line-delimited framing;
+  server-initiated `elicitation/create` with in-memory id correlation.
+- Audit trail: every `ask_user` invocation appends one `mcp_tool_call` event
+  to `.orchestray/audit/events.jsonl` with `outcome ∈ {answered, cancelled,
+  declined, timeout, error}` and `form_fields_count`. No question or answer
+  text is persisted.
+- 28 new unit tests under `tests/mcp-server/` covering schema validation,
+  audit-event shape, and the handler's decision rules (including timeout and
+  cancel/decline branches) with an injected elicitation fake.
+
+### Upgrade caveat
+- **Restart your Claude Code session** (or run `/agents`) after upgrading to
+  v2.0.11 before `mcp__orchestray__ask_user` becomes visible to agents.
+  Claude Code caches agent definitions at session start, so the new `tools:`
+  frontmatter entries on pm/architect/developer/reviewer won't take effect
+  until a reload.
+
 ## [2.0.10] - 2026-04-10
 
 ### Theme: "The Self-Improving Orchestrator"
