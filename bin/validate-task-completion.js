@@ -49,8 +49,13 @@ process.stdin.on('end', () => {
           path.join(auditDir, 'events.jsonl'),
           JSON.stringify(rejectionEvent) + '\n'
         );
-      } catch (_auditErr) {
-        // Audit-write failure must not mask the original rejection.
+      } catch (auditErr) {
+        // DEF-10: log the audit-write failure to stderr so operators see
+        // it in the Claude Code hook log. The original rejection still
+        // wins — we exit(2) below regardless of whether the audit log
+        // was written, but operators can now distinguish "rejected cleanly"
+        // from "rejected but audit trail is broken".
+        console.error('[orchestray] audit write failed: ' + auditErr.message);
       }
 
       process.stderr.write(

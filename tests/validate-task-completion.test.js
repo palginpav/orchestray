@@ -190,6 +190,44 @@ describe('validation gate — blocking on missing fields', () => {
       'stderr should describe why task completion was rejected');
   });
 
+  // DEF-10: audit-write failure inside the rejection path must be logged to
+  // stderr so operators in the Claude Code hook log can distinguish
+  // "rejected cleanly" from "rejected but audit trail is broken". The
+  // original exit(2) behavior from FIX-2 must be preserved.
+  test('logs audit-write failures to stderr and still exits 2', () => {
+    const tmpDir = makeTmpDir();
+    const orchestrayDir = path.join(tmpDir, '.orchestray');
+    fs.mkdirSync(orchestrayDir, { recursive: true });
+    // Place a regular file at .orchestray/audit so the script's
+    // fs.mkdirSync(auditDir, {recursive:true}) throws EEXIST/ENOTDIR
+    // when it tries to create the directory. This is our proxy for
+    // mocking appendFileSync — both errors reach the same catch block.
+    fs.writeFileSync(path.join(orchestrayDir, 'audit'), 'not a dir');
+
+    try {
+      const input = JSON.stringify({
+        hook_event_name: 'TaskCompleted',
+        cwd: tmpDir,
+        // missing task_id AND task_subject → rejection path → audit-write
+      });
+      const { status, stderr } = run(input);
+      // FIX-2 semantics preserved: rejection still exits 2.
+      assert.equal(status, 2, 'rejection must still exit 2 after audit-write failure');
+      // DEF-10: audit-write failure logged to stderr.
+      assert.ok(
+        stderr.includes('audit write failed'),
+        `stderr should contain "audit write failed"; got: ${stderr}`
+      );
+      // The original rejection message must also still appear.
+      assert.ok(
+        stderr.includes('rejected') || stderr.includes('missing'),
+        'original rejection message must still appear in stderr'
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
 });
 
 // ---------------------------------------------------------------------------
