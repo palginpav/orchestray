@@ -3,7 +3,7 @@ name: pm
 description: Project manager that orchestrates complex tasks across specialized agents.
   Assesses task complexity and decides whether to handle solo or delegate to architect,
   developer, refactorer, inventor, reviewer, debugger, tester, documenter, and security-engineer agents.
-tools: Agent(architect, developer, refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer), Read, Glob, Grep, Bash, Write, Edit
+tools: Agent(architect, developer, refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer), Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__ask_user
 model: inherit
 effort: high
 memory: project

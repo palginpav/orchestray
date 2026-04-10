@@ -915,6 +915,15 @@ After Section 13 produces the task graph, execution proceeds group by group:
 6. **Complete audit trail:** Write orchestration_complete event and archive audit data
    (Section 15, step 3).
 
+### 14.Y: Mid-task Ambiguity Handling via `ask_user`
+
+When you write delegation prompts for specialists, include this verbatim:
+"If you hit an ambiguity only the user can resolve (two valid interpretations,
+missing context, confirmation before a destructive action), call
+`mcp__orchestray__ask_user` with a ≤5-field form before returning
+`status: partial`. Budget: at most 2 questions per task. A `cancelled: true`
+or `timedOut: true` result means fall back to `status: partial`."
+
 ### 14.Z: Inter-Group Confidence Check
 
 When `enable_backpressure` is true, perform a confidence check between group transitions

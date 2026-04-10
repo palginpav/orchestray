@@ -4,7 +4,7 @@ description: Implements code changes based on task descriptions or architect des
   Use when a task requires writing, modifying, or deleting code files.
   Handles implementation, testing, and ensuring code compiles and passes tests.
   Does NOT make architectural decisions -- follows designs from the architect agent.
-tools: Read, Glob, Grep, Bash, Write, Edit
+tools: Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__ask_user
 model: inherit
 effort: medium
 memory: project
