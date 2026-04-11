@@ -74,8 +74,6 @@ async function handle(input, context) {
     return toolError('pattern_find: ' + validation.errors.join('; '));
   }
 
-  const logger = (context && context.logger) || (() => {});
-
   // Resolve patterns directory. Tool context may inject projectRoot for
   // tests — prefer it when present (matches fixture strategy in §13).
   let patternsDir;
