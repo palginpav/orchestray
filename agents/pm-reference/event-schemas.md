@@ -26,6 +26,7 @@ to sentinel values.
   "type": "routing_outcome",
   "orchestration_id": "<current orch id>",
   "agent_type": "<subagent_type from Agent() call>",
+  "tool_name": "Agent | Explore | Task",
   "model_assigned": "<haiku|sonnet|opus, normalized from tool_input.model>",
   "effort_assigned": "<low|medium|high|max or null>",
   "description": "<tool_input.description truncated to 200 chars>",
@@ -37,6 +38,22 @@ to sentinel values.
 The hook is the primary enforcement mechanism for Section 19 routing compliance: it
 fires even if the PM forgets to emit the full form, guaranteeing every spawn leaves
 an audit trail with the actual model assigned.
+
+**2.0.12 extension — `tool_name` field:** Added in 2.0.12. Distinguishes which Claude
+Code agent-dispatch name was used for the spawn (`"Agent"`, `"Explore"`, or `"Task"`).
+The 2.0.12 matcher expansion in `hooks/hooks.json` extended coverage from `Agent`-only
+to `Agent|Explore|Task`, making `tool_name` necessary to distinguish Explore (always
+Haiku/low-cost per CLAUDE.md guidance) from standard `Agent` invocations.
+
+Backward compatibility: `tool_name` is always present in 2.0.12+ rows. Rows written
+by 2.0.11 or earlier do not have this field. Consumers that don't check for `tool_name`
+should treat a row without this field as implicit `tool_name: "Agent"` (the 2.0.11
+matcher was `Agent`-only). The consumer impact on `bin/collect-agent-metrics.js` cost
+attribution for Explore dispatches is documented in the 2.0.12 release notes (T9).
+
+Cross-ref: `tool_name` here is the Claude Code dispatch name — it is NOT related to the
+`agent_id` namespace warning in Variant C. Variant A's `tool_name` is never cross-joined
+with Agent Teams subtask labels.
 
 ### Variant B — PM-supplemented (post-completion, full)
 
@@ -805,3 +822,127 @@ Field notes:
   counterfactual alternative (rough estimate from friction event turn counts).
 - `expected_savings.cost_usd`: Estimated cost saving in USD based on the turn/model
   difference between actual and counterfactual paths.
+
+---
+
+## MCP Checkpoint Recorded Event
+
+Appended after every enforced MCP tool call (`pattern_find`, `kb_search`,
+`history_find_similar_tasks`, `pattern_record_application`) that fires inside an
+orchestration. Written by `bin/record-mcp-checkpoint.js` via the
+`PostToolUse:mcp__orchestray__*` hook.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "mcp_checkpoint_recorded",
+  "orchestration_id": "<current orch id>",
+  "tool": "pattern_find | kb_search | history_find_similar_tasks | pattern_record_application",
+  "outcome": "answered | error | skipped",
+  "phase": "pre-decomposition | post-decomposition",
+  "result_count": "<integer or null>",
+  "source": "hook"
+}
+```
+
+Field notes:
+- `tool`: The short tool name — the `mcp__orchestray__` prefix is stripped before writing.
+  Only the four enforced tools above are written; any other `mcp__orchestray__*` call is
+  silently ignored by the hook.
+- `outcome`: Derived from `tool_result.isError` — `"answered"` if the call succeeded,
+  `"error"` if `isError === true`, `"skipped"` if `tool_result` is absent or null.
+- `phase`: Derived from the presence of `.orchestray/state/routing.jsonl` at hook time —
+  `"post-decomposition"` if the file exists, `"pre-decomposition"` otherwise.
+- `result_count`: For `pattern_find` only — the number of patterns returned by the call
+  (best-effort: read from `tool_result.structuredContent.count` or heuristic regex on
+  `content[0].text`). `null` for all other tools and on parse failure.
+- `source`: Always `"hook"` — written by `bin/record-mcp-checkpoint.js`, never by the PM.
+
+**Purpose:** audit-trail record of an MCP retrieval call — the sealed twin of the
+operational `mcp-checkpoint.jsonl` ledger. `gate-agent-spawn.js` reads
+`.orchestray/state/mcp-checkpoint.jsonl` for enforcement; `events.jsonl` is the sealed
+audit copy consumed by `orchestray:analytics` and `orchestray:report`.
+
+**PII discipline:** `tool_input` and `tool_result` content are never written to either
+file. Only the classified `outcome`, the `phase`, and (for `pattern_find`) the
+`result_count` are derived from `tool_result` — per T4 Review Finding S1.
+
+**Schema stability:** additive only. Consumers that do not recognise this event type
+should ignore it. New fields will only be added as optional.
+
+---
+
+## MCP Checkpoint Missing Event
+
+RESERVED. As of 2.0.12, `bin/gate-agent-spawn.js` blocks a spawn that is missing
+required pre-decomposition MCP checkpoints by exiting with code 2 and writing a
+diagnostic to stderr — but it does **not** write an `mcp_checkpoint_missing` audit
+event to `events.jsonl`.
+
+Consumers tracking blocked spawns should use the absence of a subsequent
+`routing_outcome` row for a given `(orchestration_id, agent_type)` pair as the
+blocking signal, rather than expecting this event type.
+
+**INFO for T10 reviewer:** DESIGN §D4 item 2 specified this event as emitted by
+`gate-agent-spawn.js`. Grep of `bin/gate-agent-spawn.js` confirms the string
+`mcp_checkpoint_missing` does not appear in the file — no audit event is emitted.
+T10 should confirm whether this is a T3 scope gap and whether the event should be
+added to a future release. If added, the expected shape would be:
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "mcp_checkpoint_missing",
+  "orchestration_id": "<current orch id>",
+  "missing_tools": ["kb_search", "history_find_similar_tasks"],
+  "diagnostic": "<first line of stderr block message>"
+}
+```
+
+---
+
+## Pattern Record Skipped Event
+
+Appended at pre-compaction (PreCompact hook) as an advisory data-quality signal when
+`pattern_find` returned results during an orchestration but `pattern_record_application`
+was never called — meaning no pattern was recorded as having shaped decomposition.
+Written by `bin/record-pattern-skip.js`.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "pattern_record_skipped",
+  "orchestration_id": "<current orch id>",
+  "pattern_find_result_count_total": "<integer>",
+  "reason": "pattern_find returned results but pattern_record_application was never called"
+}
+```
+
+Field notes:
+- `type`: Matches the `"type"`/`"timestamp"` key convention used across every other
+  event in this file. Consumers scanning for `ev.type === 'pattern_record_skipped'`
+  will match these rows correctly.
+- `pattern_find_result_count_total`: Sum of `result_count` across all `pattern_find`
+  checkpoint rows for this orchestration (nulls counted as 0).
+- `reason`: Fixed string — always the value shown above.
+
+**Purpose:** data-quality health signal for §22c confidence feedback. Flags
+orchestrations where patterns were available but the PM did not record which pattern
+influenced decomposition. §22c should treat this as "no data this run" rather than
+"PM failed to comply" (DESIGN §Risks R7).
+
+**Advisory only:** does not block any spawn, does not affect exit codes. The hook exits
+0 unconditionally.
+
+**Idempotency:** emitted exactly once per `orchestration_id`. The script scans
+`events.jsonl` for a prior `pattern_record_skipped` row with the same `orchestration_id`
+before writing. This guard matters because PreCompact may fire more than once per session
+(repeated compactions).
+
+**Hook trigger:** PreCompact — NOT SubagentStop. DESIGN §D2 step 7 originally specified
+SubagentStop with a PM-only guard. That assumption is architecturally wrong: the
+Orchestray PM is the main session agent (configured via `settings.json`), not a spawned
+child. `SubagentStop` fires only for spawned subagents and never for the main session.
+PreCompact is the closest available session-boundary hook and is already used by this
+project (`bin/pre-compact-archive.js`). See commit `8761fb2` for the full investigation.
+**T10 action required:** update DESIGN §D2 step 7 to reflect the PreCompact trigger.
