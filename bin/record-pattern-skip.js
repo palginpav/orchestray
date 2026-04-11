@@ -132,7 +132,7 @@ process.stdin.on('end', () => {
           const ev = JSON.parse(trimmed);
           if (
             ev &&
-            ev.event === 'pattern_record_skipped' &&
+            ev.type === 'pattern_record_skipped' &&
             ev.orchestration_id === orchId
           ) {
             // Already emitted — do not emit a second time.
@@ -155,9 +155,9 @@ process.stdin.on('end', () => {
     );
 
     const advisory = {
-      event: 'pattern_record_skipped',
+      timestamp: new Date().toISOString(),
+      type: 'pattern_record_skipped',
       orchestration_id: orchId,
-      ts: new Date().toISOString(),
       pattern_find_result_count_total: patternFindResultCountTotal,
       reason: 'pattern_find returned results but pattern_record_application was never called',
     };

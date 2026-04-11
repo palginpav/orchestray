@@ -168,8 +168,9 @@ describe('D2 step 7 — happy path', () => {
     const events = readEvents(auditDir);
     assert.equal(events.length, 1, 'Exactly one event must be emitted');
     const ev = events[0];
-    // The event uses field name "event" (not "type") per source inspection
-    assert.equal(ev.event, 'pattern_record_skipped');
+    assert.equal(ev.type, 'pattern_record_skipped');
+    assert.ok(typeof ev.timestamp === 'string' && ev.timestamp.length > 0,
+      'Event must include an ISO-8601 timestamp field');
     assert.equal(ev.orchestration_id, 'orch-skip-happy-001');
     assert.ok(typeof ev.pattern_find_result_count_total === 'number',
       'Event must include pattern_find_result_count_total');
@@ -206,7 +207,7 @@ describe('D2 step 7 — idempotency', () => {
     run(dir);
 
     const events = readEvents(auditDir);
-    const skipEvents = events.filter(e => e.event === 'pattern_record_skipped');
+    const skipEvents = events.filter(e => e.type === 'pattern_record_skipped');
     assert.equal(skipEvents.length, 1,
       'Only one pattern_record_skipped event must exist after two runs (idempotency guard)');
   });
@@ -225,7 +226,7 @@ describe('D2 step 7 — idempotency', () => {
     run(dir);
 
     const events = readEvents(auditDir);
-    const skipEvents = events.filter(e => e.event === 'pattern_record_skipped');
+    const skipEvents = events.filter(e => e.type === 'pattern_record_skipped');
     assert.equal(skipEvents.length, 1,
       'Idempotency must still hold when events.jsonl has pre-existing entries');
     // The unrelated event must be preserved
