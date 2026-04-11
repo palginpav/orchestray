@@ -462,3 +462,53 @@ describe('concurrent append', () => {
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// D4 item 4 — routing_outcome Variant A tool_name extension (2.0.12)
+// ---------------------------------------------------------------------------
+
+describe('D4 item 4 — routing_outcome tool_name field for Explore dispatch', () => {
+
+  test('Explore dispatch produces routing_outcome row with tool_name: "Explore"', () => {
+    // 2.0.12: hooks.json matcher now covers Explore. The routing_outcome event
+    // emitted by emit-routing-outcome.js must record tool_name="Explore" so
+    // analytics can distinguish Explore from Agent spawns.
+    const { dir, auditDir } = makeDir({ withOrch: true });
+
+    run({
+      tool_name: 'Explore',
+      cwd: dir,
+      tool_input: { model: 'haiku', subagent_type: 'explorer', description: 'Explore codebase' },
+    });
+
+    const events = readEvents(auditDir);
+    assert.equal(events.length, 1,
+      'Explore dispatch must produce exactly one routing_outcome event');
+    assert.equal(events[0].tool_name, 'Explore',
+      'routing_outcome for Explore dispatch must have tool_name: "Explore"');
+  });
+
+  test('Agent dispatch routing_outcome has tool_name: "Agent" (or defaults to "Agent" when absent)', () => {
+    // Backward-compat: existing Agent dispatches must not break.
+    // tool_name defaults to "Agent" when absent (backward-compat per D4 item 4).
+    const { dir, auditDir } = makeDir({ withOrch: true });
+
+    run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { model: 'sonnet', subagent_type: 'developer', description: 'Implement feature' },
+    });
+
+    const events = readEvents(auditDir);
+    assert.equal(events.length, 1);
+    // The field must be either 'Agent' explicitly, or absent (defaulting to Agent).
+    // We accept either: the contract is that if present it is 'Agent', never 'Explore'.
+    const toolNameField = events[0].tool_name;
+    assert.ok(
+      toolNameField === 'Agent' || toolNameField === undefined || toolNameField === null,
+      'Agent dispatch routing_outcome tool_name must be "Agent" or absent (defaults to "Agent"). Got: ' +
+      JSON.stringify(toolNameField)
+    );
+  });
+
+});

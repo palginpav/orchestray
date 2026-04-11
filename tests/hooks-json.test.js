@@ -77,3 +77,97 @@ describe('hooks/hooks.json static validation', () => {
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// D3 Fix 1 — matcher regex assertions (2.0.12)
+// ---------------------------------------------------------------------------
+
+describe('D3 Fix 1 — hooks.json matcher regex for Agent|Explore|Task', () => {
+
+  const hooksJson = JSON.parse(fs.readFileSync(hooksJsonPath, 'utf8'));
+
+  /**
+   * Collect all matchers for a given event name.
+   * Returns an array of matcher strings (one per group that has a matcher field).
+   */
+  function getMatchers(eventName) {
+    const eventList = hooksJson.hooks[eventName] || [];
+    return eventList
+      .filter(group => typeof group.matcher === 'string')
+      .map(group => group.matcher);
+  }
+
+  test('PreToolUse has exactly one group with matcher "Agent|Explore|Task"', () => {
+    const matchers = getMatchers('PreToolUse');
+    assert.ok(
+      matchers.includes('Agent|Explore|Task'),
+      'PreToolUse must have a matcher exactly equal to "Agent|Explore|Task". ' +
+      'Got: ' + JSON.stringify(matchers)
+    );
+  });
+
+  test('PostToolUse has a group with matcher "Agent|Explore|Task"', () => {
+    const matchers = getMatchers('PostToolUse');
+    assert.ok(
+      matchers.includes('Agent|Explore|Task'),
+      'PostToolUse must have a matcher exactly equal to "Agent|Explore|Task". ' +
+      'Got: ' + JSON.stringify(matchers)
+    );
+  });
+
+  test('PreToolUse gate-agent-spawn.js is wired under the Agent|Explore|Task matcher', () => {
+    const preToolUse = hooksJson.hooks['PreToolUse'] || [];
+    const agentGroup = preToolUse.find(g => g.matcher === 'Agent|Explore|Task');
+    assert.ok(agentGroup, 'PreToolUse must have a group with matcher "Agent|Explore|Task"');
+    const commands = (agentGroup.hooks || []).map(h => h.command || '');
+    assert.ok(
+      commands.some(c => c.includes('gate-agent-spawn.js')),
+      'gate-agent-spawn.js must be wired under the Agent|Explore|Task PreToolUse matcher'
+    );
+  });
+
+  test('PostToolUse emit-routing-outcome.js is wired under the Agent|Explore|Task matcher', () => {
+    const postToolUse = hooksJson.hooks['PostToolUse'] || [];
+    const agentGroup = postToolUse.find(g => g.matcher === 'Agent|Explore|Task');
+    assert.ok(agentGroup, 'PostToolUse must have a group with matcher "Agent|Explore|Task"');
+    const commands = (agentGroup.hooks || []).map(h => h.command || '');
+    assert.ok(
+      commands.some(c => c.includes('emit-routing-outcome.js')),
+      'emit-routing-outcome.js must be wired under the Agent|Explore|Task PostToolUse matcher'
+    );
+  });
+
+  test('PostToolUse record-mcp-checkpoint.js is wired for all 4 enforced MCP tools', () => {
+    const postToolUse = hooksJson.hooks['PostToolUse'] || [];
+    // Find the group that wires record-mcp-checkpoint.js
+    const mcpGroup = postToolUse.find(g =>
+      (g.hooks || []).some(h => (h.command || '').includes('record-mcp-checkpoint.js'))
+    );
+    assert.ok(mcpGroup, 'PostToolUse must have a group wiring record-mcp-checkpoint.js');
+    const matcher = mcpGroup.matcher || '';
+    // The matcher must cover all 4 enforced tools
+    const requiredTools = [
+      'mcp__orchestray__pattern_find',
+      'mcp__orchestray__kb_search',
+      'mcp__orchestray__history_find_similar_tasks',
+      'mcp__orchestray__pattern_record_application',
+    ];
+    for (const tool of requiredTools) {
+      assert.ok(
+        matcher.includes(tool),
+        `PostToolUse MCP matcher must include "${tool}". Got: ${matcher}`
+      );
+    }
+  });
+
+  test('PreCompact record-pattern-skip.js is wired', () => {
+    const preCompact = hooksJson.hooks['PreCompact'] || [];
+    const allCommands = preCompact
+      .flatMap(g => (g.hooks || []).map(h => h.command || ''));
+    assert.ok(
+      allCommands.some(c => c.includes('record-pattern-skip.js')),
+      'PreCompact must wire record-pattern-skip.js'
+    );
+  });
+
+});

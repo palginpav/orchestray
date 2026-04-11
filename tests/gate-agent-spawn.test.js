@@ -92,25 +92,45 @@ describe('tool filtering', () => {
     assert.equal(stderr, '');
   });
 
-  test('Task tool_name exits 0', () => {
+  // Updated for 2.0.12: Task is now in AGENT_DISPATCH_ALLOWLIST — it is gated,
+  // not fast-exited. Inside an orchestration without a model → exit 2.
+  test('Task tool_name inside orchestration without model exits 2 (now gated)', () => {
     const dir = makeDir({ withOrch: true });
-    const { status, stderr } = run({ tool_name: 'Task', cwd: dir });
+    const { status, stderr } = run({ tool_name: 'Task', cwd: dir, tool_input: {} });
+    assert.equal(status, 2);
+    assert.match(stderr, /missing required 'model' parameter/i);
+  });
+
+  test('Task tool_name inside orchestration with model="haiku" exits 0', () => {
+    // Task is in AGENT_DISPATCH_ALLOWLIST — with a valid model it is allowed.
+    const dir = makeDir({ withOrch: true });
+    const { status, stderr } = run({
+      tool_name: 'Task',
+      cwd: dir,
+      tool_input: { model: 'haiku' },
+    });
     assert.equal(status, 0);
     assert.equal(stderr, '');
   });
 
-  test('missing tool_name field exits 0 (fail-open)', () => {
-    // event.tool_name is undefined — the script falls back to tool_input.tool,
-    // which is also absent, so toolName resolves to '' → not 'Agent' → exit 0
+  // Updated for 2.0.12: empty string is not in either allowlist.
+  // unknown_tool_policy default is "block" → exit 2 naming the unknown tool.
+  test('missing tool_name field exits 2 — unknown tool name blocked by default policy', () => {
+    // event.tool_name is undefined, tool_input.tool also absent → toolName=''
+    // '' is not in AGENT_DISPATCH_ALLOWLIST or SKIP_ALLOWLIST → unknown_tool_policy=block → exit 2
     const dir = makeDir({ withOrch: true });
-    const { status } = run({ cwd: dir, tool_input: { model: 'sonnet' } });
-    assert.equal(status, 0);
+    const { status, stderr } = run({ cwd: dir, tool_input: { model: 'sonnet' } });
+    assert.equal(status, 2);
+    assert.match(stderr, /unknown tool name ''/);
   });
 
-  test('empty string tool_name exits 0', () => {
+  // Updated for 2.0.12: empty string is not in either allowlist → exit 2.
+  test('empty string tool_name exits 2 — unknown empty tool name blocked', () => {
+    // In 2.0.11, '' fell through via !== 'Agent'. In 2.0.12, '' is unknown → block.
     const dir = makeDir({ withOrch: true });
-    const { status } = run({ tool_name: '', cwd: dir });
-    assert.equal(status, 0);
+    const { status, stderr } = run({ tool_name: '', cwd: dir });
+    assert.equal(status, 2);
+    assert.match(stderr, /unknown tool name ''/);
   });
 
   // Fallback branch — gate-agent-spawn.js:34 resolves toolName from
@@ -148,6 +168,294 @@ describe('tool filtering', () => {
     });
     assert.equal(status, 0);
     assert.equal(stderr, '');
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// D3 Fix 2 — Explore/Task in explicit dispatch allowlist
+// ---------------------------------------------------------------------------
+
+describe('D3 Fix 2 — Explore dispatch allowlist', () => {
+
+  test('Explore inside orchestration with no model exits 2', () => {
+    const dir = makeDir({ withOrch: true });
+    const { status, stderr } = run({ tool_name: 'Explore', cwd: dir, tool_input: {} });
+    assert.equal(status, 2);
+    assert.match(stderr, /missing required 'model' parameter/i);
+  });
+
+  test('Explore inside orchestration with model="haiku" and routing entry exits 0', () => {
+    const dir = makeDir({ withOrch: true });
+    // No routing.jsonl — falls through to model-validity only; haiku is valid
+    const { status, stderr } = run({
+      tool_name: 'Explore',
+      cwd: dir,
+      tool_input: { model: 'haiku' },
+    });
+    assert.equal(status, 0);
+    assert.equal(stderr, '');
+  });
+
+  test('Explore outside orchestration with no model exits 0 — pre-orch window, no gating', () => {
+    // current-orchestration.json absent → gate no-ops → exit 0
+    const dir = makeDir({ withOrch: false });
+    const { status, stderr } = run({ tool_name: 'Explore', cwd: dir, tool_input: {} });
+    assert.equal(status, 0);
+    assert.equal(stderr, '');
+  });
+
+  test('unknown "Spawn" tool_name exits 2 fail-closed with diagnostic naming Spawn', () => {
+    const dir = makeDir({ withOrch: true });
+    const { status, stderr } = run({ tool_name: 'Spawn', cwd: dir });
+    assert.equal(status, 2);
+    assert.match(stderr, /unknown tool name 'Spawn'/);
+  });
+
+  test('D3 Fix 2 skip-allowlist — Bash, Read, Edit, Glob, Grep, Write all exit 0', () => {
+    // Table test: all skip-allowlist tools must exit 0 immediately (no gating)
+    const skipTools = ['Bash', 'Read', 'Edit', 'Glob', 'Grep', 'Write'];
+    for (const toolName of skipTools) {
+      const dir = makeDir({ withOrch: true });
+      const { status, stderr } = run({ tool_name: toolName, cwd: dir });
+      assert.equal(status, 0, `${toolName} must exit 0 (skip-allowlist)`);
+      assert.equal(stderr, '', `${toolName} must not emit stderr`);
+    }
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// D5 — config flags: per-tool prompt override, global_kill_switch, unknown_tool_policy
+// ---------------------------------------------------------------------------
+
+describe('D5 — config flags', () => {
+
+  /** Write .orchestray/config.json with the given mcp_enforcement block. */
+  function writeMcpConfig(dir, mcpEnforcement) {
+    const configDir = path.join(dir, '.orchestray');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, 'config.json'),
+      JSON.stringify({ mcp_enforcement: mcpEnforcement })
+    );
+  }
+
+  /** Write mcp-checkpoint.jsonl with the given tool rows for an orchestration. */
+  function writeCheckpointRows(dir, orchId, tools) {
+    const stateDir = path.join(dir, '.orchestray', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const now = new Date().toISOString();
+    const lines = tools.map(tool => JSON.stringify({
+      timestamp: now,
+      orchestration_id: orchId,
+      tool,
+      outcome: 'answered',
+      phase: 'pre-decomposition',
+      result_count: null,
+    })).join('\n') + '\n';
+    fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), lines);
+  }
+
+  test('per-tool prompt override: mcp_enforcement.kb_search="prompt" skips kb_search requirement', () => {
+    // pattern_find present, kb_search missing BUT set to "prompt" → gate must allow
+    const dir = makeDir({ withOrch: true });
+    writeMcpConfig(dir, {
+      pattern_find: 'hook',
+      kb_search: 'prompt',          // prompt-only — gate skips this requirement
+      history_find_similar_tasks: 'hook',
+      unknown_tool_policy: 'block',
+      global_kill_switch: false,
+    });
+    // Write checkpoint rows for only pattern_find and history_find_similar_tasks
+    writeCheckpointRows(dir, 'orch-test-001', ['pattern_find', 'history_find_similar_tasks']);
+
+    const { status, stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { model: 'sonnet' },
+    });
+    assert.equal(status, 0,
+      'kb_search set to "prompt" must not be required by the gate');
+    assert.ok(!stderr.includes('kb_search'),
+      'kb_search must not appear in diagnostic when set to "prompt"');
+  });
+
+  test('global_kill_switch=true short-circuits 2.0.12 MCP check; routing.jsonl validation still runs', () => {
+    // Kill switch bypasses the new MCP checkpoint gate but existing routing
+    // checks still apply. With no routing.jsonl, model-validity check runs.
+    const dir = makeDir({ withOrch: true });
+    writeMcpConfig(dir, {
+      global_kill_switch: true,
+    });
+    // No checkpoint rows at all — but kill switch is on, so no MCP gate
+    // Agent call with valid model but no routing.jsonl → falls through to allow
+    const { status, stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { model: 'sonnet' },
+    });
+    assert.equal(status, 0,
+      'global_kill_switch=true must skip MCP checkpoint verification');
+    assert.equal(stderr, '');
+  });
+
+  test('unknown_tool_policy="warn": unknown "Spawn" exits 0 with stderr warning', () => {
+    const dir = makeDir({ withOrch: true });
+    writeMcpConfig(dir, {
+      unknown_tool_policy: 'warn',
+      global_kill_switch: false,
+    });
+    const { status, stderr } = run({ tool_name: 'Spawn', cwd: dir });
+    assert.equal(status, 0, 'warn policy must allow unknown tools (exit 0)');
+    assert.match(stderr, /unknown tool name 'Spawn'/,
+      'warn policy must still emit a stderr diagnostic');
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// D2 step 6 — MCP checkpoint gate: missing required tools
+// ---------------------------------------------------------------------------
+
+describe('D2 step 6 — MCP checkpoint gate', () => {
+
+  /** Write routing.jsonl so routing validation passes. */
+  function writeRoutingFile(dir, entries) {
+    const stateDir = path.join(dir, '.orchestray', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const lines = entries.map(e => JSON.stringify(e)).join('\n') + '\n';
+    fs.writeFileSync(path.join(stateDir, 'routing.jsonl'), lines);
+  }
+
+  function routingEntry(overrides = {}) {
+    return {
+      timestamp: '2026-04-11T10:00:00.000Z',
+      orchestration_id: 'orch-test-001',
+      task_id: 'task-1',
+      agent_type: 'developer',
+      description: 'Fix auth',
+      model: 'sonnet',
+      effort: 'medium',
+      complexity_score: 4,
+      score_breakdown: {},
+      decided_by: 'pm',
+      decided_at: 'decomposition',
+      ...overrides,
+    };
+  }
+
+  function writeCheckpointRows(dir, orchId, tools) {
+    const stateDir = path.join(dir, '.orchestray', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const now = new Date().toISOString();
+    const lines = tools.map(tool => JSON.stringify({
+      timestamp: now,
+      orchestration_id: orchId,
+      tool,
+      outcome: 'answered',
+      phase: 'pre-decomposition',
+      result_count: null,
+    })).join('\n') + '\n';
+    fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), lines);
+  }
+
+  test('D2 step 6: all 3 required tools present → gate exits 0', () => {
+    const dir = makeDir({ withOrch: true });
+    writeRoutingFile(dir, [routingEntry()]);
+    writeCheckpointRows(dir, 'orch-test-001', [
+      'pattern_find', 'kb_search', 'history_find_similar_tasks',
+    ]);
+    const { status, stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Fix auth' },
+    });
+    assert.equal(status, 0, 'All 3 required tools present — gate must allow');
+    assert.equal(stderr, '');
+  });
+
+  test('D2 step 6: pattern_find present, kb_search missing → gate exits 2 naming kb_search', () => {
+    const dir = makeDir({ withOrch: true });
+    writeRoutingFile(dir, [routingEntry()]);
+    writeCheckpointRows(dir, 'orch-test-001', [
+      'pattern_find', 'history_find_similar_tasks',
+      // kb_search intentionally omitted
+    ]);
+    const { status, stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Fix auth' },
+    });
+    assert.equal(status, 2, 'Missing kb_search must block spawn');
+    assert.match(stderr, /kb_search/, 'Diagnostic must name the missing tool kb_search');
+  });
+
+  test('D6 step 3 case A: mcp-checkpoint.jsonl absent → fail-open (exit 0)', () => {
+    // File does not exist — upgrade window. Gate must not block.
+    const dir = makeDir({ withOrch: true });
+    writeRoutingFile(dir, [routingEntry()]);
+    // No mcp-checkpoint.jsonl written — file absent
+    const { status, stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Fix auth' },
+    });
+    assert.equal(status, 0, 'File absent → fail-open');
+    assert.equal(stderr, '');
+  });
+
+  test('C3 file exists zero rows for orchestration fails open', () => {
+    // FINDING C3: file present but contains rows for a DIFFERENT orchestration.
+    // The gate must fail-open when zero rows match current orchestration_id.
+    const dir = makeDir({ withOrch: true, withOrch_id: 'orch-test-001' });
+    writeRoutingFile(dir, [routingEntry()]);
+
+    // Write checkpoint rows for a DIFFERENT orchestration_id
+    const stateDir = path.join(dir, '.orchestray', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const now = new Date().toISOString();
+    const foreignRows = ['pattern_find', 'kb_search', 'history_find_similar_tasks'].map(
+      tool => JSON.stringify({
+        timestamp: now,
+        orchestration_id: 'orch-OTHER-999',  // different orch — not this one
+        tool,
+        outcome: 'answered',
+        phase: 'pre-decomposition',
+        result_count: null,
+      })
+    ).join('\n') + '\n';
+    fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), foreignRows);
+
+    const { status, stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Fix auth' },
+    });
+    assert.equal(status, 0,
+      'C3: file present but zero rows for current orch → fail-open');
+    assert.equal(stderr, '');
+  });
+
+  test('D6 step 3 corrupted mcp-checkpoint.jsonl → warn + allow (exit 0)', () => {
+    // Malformed JSON in ledger — gate must fail-open, matching routing.jsonl pattern
+    const dir = makeDir({ withOrch: true });
+    writeRoutingFile(dir, [routingEntry()]);
+
+    const stateDir = path.join(dir, '.orchestray', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'mcp-checkpoint.jsonl'),
+      '{{{CORRUPTED JSON}}}\nnot valid at all\n'
+    );
+
+    const { status } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Fix auth' },
+    });
+    assert.equal(status, 0,
+      'Corrupted checkpoint file must fail-open (exit 0)');
   });
 
 });
