@@ -18,7 +18,7 @@
     ".claude-plugin/"
   ],
   "scripts": {
-    "test": "node --test tests/*.test.js tests/mcp-server/*.test.js"
+    "test": "node --test tests/*.test.js tests/mcp-server/*.test.js tests/mcp-server/lib/*.test.js tests/mcp-server/tools/*.test.js tests/mcp-server/elicit/*.test.js"
   },
   "keywords": [
     "claude-code",
