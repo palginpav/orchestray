@@ -149,8 +149,9 @@ fail-open behavior without editing any code.
 
 **Tested against Claude Code 2.1.59.**
 
-Tests: 569 → 623 (+54 across gate, checkpoint writer, allowlist,
-pattern-record-skip, and full-suite integration tests).
+Tests: 569 → 631 (+62 across gate, checkpoint writer, allowlist,
+pattern-record-skip, atomic-append IfAbsent helper, allowlist-sync,
+and full-suite integration tests).
 
 ---
 
