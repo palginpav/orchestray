@@ -62,7 +62,15 @@ The user wants to view or modify orchestration settings.
   "enable_outcome_tracking": false,
   "enable_personas": true,
   "enable_replay_analysis": true,
-  "max_turns_overrides": null
+  "max_turns_overrides": null,
+  "mcp_enforcement": {
+    "pattern_find": "hook",
+    "kb_search": "hook",
+    "history_find_similar_tasks": "hook",
+    "pattern_record_application": "hook",
+    "unknown_tool_policy": "block",
+    "global_kill_switch": false
+  }
 }
 ```
 
@@ -113,6 +121,12 @@ The user wants to view or modify orchestration settings.
 | `enable_personas` | boolean | `true` | Enable auto-generated project-tuned agent personas. After 3+ orchestrations, PM synthesizes per-agent behavioral directives injected into delegation prompts. Opt-out to disable. |
 | `enable_replay_analysis` | boolean | `true` | Enable counterfactual analysis on friction orchestrations (re-plans, verify-fix failures, cost overruns). Stores alternative strategies as advisory replay patterns. Opt-out to disable. |
 | `max_turns_overrides` | object/null | `null` | Per-agent override for the `maxTurns` ceiling. When `null`, each agent's frontmatter `maxTurns` is the ceiling. When set to an object (e.g., `{"reviewer": 50, "debugger": 60}`), the override replaces the frontmatter ceiling for those agents. Values 5-200. Set this when agents consistently hit their turn limit on legitimate large tasks. |
+| `mcp_enforcement.pattern_find` | string | `"hook"` | Enforcement mode for the `pattern_find` MCP tool. One of: "hook" (gate requires MCP checkpoint), "prompt" (warn only, allow spawn), "allow" (fully skip enforcement). |
+| `mcp_enforcement.kb_search` | string | `"hook"` | Enforcement mode for the `kb_search` MCP tool. One of: "hook", "prompt", "allow". |
+| `mcp_enforcement.history_find_similar_tasks` | string | `"hook"` | Enforcement mode for the `history_find_similar_tasks` MCP tool. One of: "hook", "prompt", "allow". |
+| `mcp_enforcement.pattern_record_application` | string | `"hook"` | Enforcement mode for the `pattern_record_application` MCP tool. One of: "hook", "prompt", "allow". |
+| `mcp_enforcement.unknown_tool_policy` | string | `"block"` | Policy for tool_name values not in the agent/skip allowlists. "block" (fail-closed, 2.0.12 default), "warn" (log and allow, 2.0.11 behaviour), "allow" (fully fail-open). |
+| `mcp_enforcement.global_kill_switch` | boolean | `false` | When true, gate-agent-spawn.js short-circuits before ALL 2.0.12 checks (MCP checkpoint verification and unknown-tool allowlist). Routing-entry checks from 2.0.11 still apply. EMERGENCY USE ONLY. |
 
 **Note:** Effort routing requires Claude Code v2.1.33+. On older versions, effort settings
 are recorded in the audit trail but have no effect on agent behavior.
@@ -164,6 +178,18 @@ are recorded in the audit trail but have no effect on agent behavior.
    - `enable_personas` must be boolean (true/false)
    - `enable_replay_analysis` must be boolean (true/false)
    - `max_turns_overrides` must be `null` OR an object mapping agent type strings (architect, developer, reviewer, debugger, tester, documenter, refactorer, inventor, security-engineer, pm) to positive integers between 5 and 200. Unknown agent types are ignored with a warning. Values outside 5-200 fall back to the frontmatter default with a warning.
+   - `mcp_enforcement` must be an object when present. Individual keys are validated as follows:
+     - `mcp_enforcement.pattern_find` must be one of: "hook", "prompt", "allow"
+     - `mcp_enforcement.kb_search` must be one of: "hook", "prompt", "allow"
+     - `mcp_enforcement.history_find_similar_tasks` must be one of: "hook", "prompt", "allow"
+     - `mcp_enforcement.pattern_record_application` must be one of: "hook", "prompt", "allow"
+     - `mcp_enforcement.unknown_tool_policy` must be one of: "block", "warn", "allow"
+     - `mcp_enforcement.global_kill_switch` must be a boolean (true/false)
+   - When setting `mcp_enforcement.global_kill_switch` to `true`, print the following warning after the normal "Updated" confirmation line:
+
+     ```
+     WARNING: mcp_enforcement.global_kill_switch is enabled. 2.0.12 hook-enforcement is fully bypassed. Re-enable with '/orchestray:config set mcp_enforcement.global_kill_switch false' when the emergency has passed.
+     ```
    - When setting `enable_agent_teams`, perform a two-layer enablement: update `.orchestray/config.json` AND synchronize the live `settings.json` at the repository root (the plugin's merged settings file, NOT `orchestray/settings.json` which is only a reference copy). The config flag controls PM decision logic; the env var `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` enables Claude Code's teams API. Follow the "Agent Teams settings.json sync" procedure below after updating `.orchestray/config.json`.
    - Reject invalid values with a helpful error message
 
@@ -218,6 +244,12 @@ When showing settings:
 | enable_personas | true | Auto-generated project-tuned agent personas |
 | enable_replay_analysis | true | Counterfactual analysis on friction orchestrations |
 | max_turns_overrides | null | Per-agent maxTurns ceiling override map (null = use frontmatter) |
+| mcp_enforcement.pattern_find | hook | MCP checkpoint enforcement mode for pattern_find (hook/prompt/allow) |
+| mcp_enforcement.kb_search | hook | MCP checkpoint enforcement mode for kb_search (hook/prompt/allow) |
+| mcp_enforcement.history_find_similar_tasks | hook | MCP checkpoint enforcement mode for history_find_similar_tasks (hook/prompt/allow) |
+| mcp_enforcement.pattern_record_application | hook | MCP checkpoint enforcement mode for pattern_record_application (hook/prompt/allow) |
+| mcp_enforcement.unknown_tool_policy | block | Policy for unknown tool_name values (block/warn/allow) |
+| mcp_enforcement.global_kill_switch | false | When true, all 2.0.12 hook enforcement is bypassed (emergency use only) |
 
 Use `/orchestray:config [setting] [value]` to change a setting.
 ```
