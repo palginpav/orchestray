@@ -43,6 +43,15 @@
             "timeout": 3
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/post-upgrade-sweep.js",
+            "timeout": 3
+          }
+        ]
       }
     ],
     "SubagentStart": [

@@ -1,0 +1,578 @@
+#!/usr/bin/env node
+'use strict';
+
+/**
+ * Tests for bin/post-upgrade-sweep.js
+ *
+ * UserPromptSubmit hook — runs two idempotent post-upgrade operations once per
+ * session and once per upgrade:
+ *
+ *   W8 (2013-W8-config-migration): additive migration of .orchestray/config.json
+ *   W11 (2013-W11-ledger-sweep): flip BUG-B-poisoned phase values in mcp-checkpoint.jsonl
+ *
+ * Coverage:
+ *   W8-A  — config has no mcp_enforcement → full default block added
+ *   W8-B  — config has mcp_enforcement with partial sub-keys → missing keys filled, others preserved
+ *   W8-C  — config has full mcp_enforcement → no-op
+ *   W8-D  — config has unrelated keys → preserved untouched after migration
+ *   W8-E  — config sentinel already exists → no-op even when migration needed
+ *
+ *   W11-F — empty ledger → no-op
+ *   W11-G — rows with no matching routing entry → all post-decomposition rows flipped
+ *   W11-H — rows with matching routing but all routing-ts > row-ts → flipped
+ *   W11-I — rows with matching routing AND at least one routing-ts < row-ts → left alone
+ *   W11-J — checkpoint sentinel already exists → no-op
+ *   W11-K — corrupted ledger lines → skipped, rest still processed (fail-open)
+ *   W11-L — _migrated_from_phase field added to flipped rows
+ *
+ *   M     — session lock exists → full sweep is a no-op fast-path
+ *   N     — no session lock → sweep runs and lock is created
+ */
+
+const { test, describe, beforeEach, afterEach } = require('node:test');
+const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
+const path = require('node:path');
+const fs = require('node:fs');
+const os = require('node:os');
+
+const SCRIPT = path.resolve(__dirname, '../bin/post-upgrade-sweep.js');
+
+/** Default session ID used when tests don't supply their own. */
+const DEFAULT_SESSION_ID = 'sweep-test-default-session';
+
+/** Lock path for the default session ID. */
+const DEFAULT_LOCK_PATH = path.join(os.tmpdir(), `orchestray-sweep-${DEFAULT_SESSION_ID}.lock`);
+
+const cleanup = [];
+
+beforeEach(() => {
+  // Ensure no stale session lock from a previous test interferes.
+  try { fs.unlinkSync(DEFAULT_LOCK_PATH); } catch (_e) {}
+});
+
+afterEach(() => {
+  for (const d of cleanup.splice(0)) {
+    try { fs.rmSync(d, { recursive: true, force: true }); } catch (_e) {}
+  }
+  // Belt-and-suspenders: always clean the default lock after each test.
+  try { fs.unlinkSync(DEFAULT_LOCK_PATH); } catch (_e) {}
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Create a fresh isolated tmpdir with .orchestray/state/ and optional files.
+ *
+ * @param {object} opts
+ * @param {object|null}  [opts.config]         - Content for config.json; null = omit file
+ * @param {string|null}  [opts.checkpointRaw]  - Raw JSONL for mcp-checkpoint.jsonl; null = omit
+ * @param {string|null}  [opts.routingRaw]     - Raw JSONL for routing.jsonl; null = omit
+ * @param {boolean}      [opts.configSentinel] - Pre-create the W8 sentinel
+ * @param {boolean}      [opts.checkpointSentinel] - Pre-create the W11 sentinel
+ */
+function makeDir({
+  config = null,
+  checkpointRaw = null,
+  routingRaw = null,
+  configSentinel = false,
+  checkpointSentinel = false,
+} = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-sweep-test-'));
+  cleanup.push(dir);
+
+  const orchestrayDir = path.join(dir, '.orchestray');
+  const stateDir = path.join(orchestrayDir, 'state');
+  fs.mkdirSync(stateDir, { recursive: true });
+
+  if (config !== null) {
+    fs.writeFileSync(path.join(orchestrayDir, 'config.json'), JSON.stringify(config, null, 2) + '\n', 'utf8');
+  }
+  if (checkpointRaw !== null) {
+    fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), checkpointRaw, 'utf8');
+  }
+  if (routingRaw !== null) {
+    fs.writeFileSync(path.join(stateDir, 'routing.jsonl'), routingRaw, 'utf8');
+  }
+  if (configSentinel) {
+    fs.writeFileSync(path.join(stateDir, '.config-migrated-2013'), '', 'utf8');
+  }
+  if (checkpointSentinel) {
+    fs.writeFileSync(path.join(stateDir, '.mcp-checkpoint-migrated-2013'), '', 'utf8');
+  }
+
+  return dir;
+}
+
+/**
+ * Run the sweep script.
+ *
+ * The caller is responsible for pre-creating or cleaning up any session lock
+ * file via `ensureNoLock(sessionId)` / `cleanup.push(lockPath)`.
+ *
+ * @param {string} cwd     - Isolated project root
+ * @param {object} [extra] - Extra fields merged into the hook payload
+ */
+function run(cwd, extra = {}) {
+  const sessionId = extra.session_id || DEFAULT_SESSION_ID;
+  const payload = Object.assign({ cwd, session_id: sessionId }, extra);
+
+  const result = spawnSync(process.execPath, [SCRIPT], {
+    input: JSON.stringify(payload),
+    encoding: 'utf8',
+    timeout: 10000,
+  });
+
+  return {
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+    status: result.status,
+  };
+}
+
+/**
+ * Compute the session lock path for a given sessionId.
+ *
+ * @param {string} sessionId
+ * @returns {string}
+ */
+function lockPathFor(sessionId) {
+  return path.join(os.tmpdir(), `orchestray-sweep-${sessionId}.lock`);
+}
+
+/** Read config.json from the isolated tmpdir. */
+function readConfig(dir) {
+  return JSON.parse(fs.readFileSync(path.join(dir, '.orchestray', 'config.json'), 'utf8'));
+}
+
+/** Read checkpoint rows from the isolated tmpdir. */
+function readCheckpointRows(dir) {
+  const raw = fs.readFileSync(
+    path.join(dir, '.orchestray', 'state', 'mcp-checkpoint.jsonl'),
+    'utf8'
+  );
+  return raw.split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
+}
+
+/** Check if a sentinel exists in the isolated tmpdir. */
+function sentinelExists(dir, name) {
+  return fs.existsSync(path.join(dir, '.orchestray', 'state', name));
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// All tests always exit 0 (fail-open)
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('fail-open contract', () => {
+  test('always outputs { continue: true } and exits 0', () => {
+    const dir = makeDir();
+    const { stdout, status } = run(dir);
+    assert.equal(status, 0);
+    const out = JSON.parse(stdout);
+    assert.equal(out.continue, true);
+  });
+
+  test('exits 0 on garbage stdin', () => {
+    const result = spawnSync(process.execPath, [SCRIPT], {
+      input: 'not json at all',
+      encoding: 'utf8',
+      timeout: 10000,
+    });
+    assert.equal(result.status, 0);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// W8: Config migration
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('W8 config migration', () => {
+
+  test('W8-A: config has no mcp_enforcement → full default block added', () => {
+    const dir = makeDir({ config: { auto_review: true } });
+    run(dir);
+    const cfg = readConfig(dir);
+    assert.ok(cfg.mcp_enforcement, 'mcp_enforcement block should be present');
+    assert.equal(cfg.mcp_enforcement.global_kill_switch, false);
+    assert.ok(['hook', 'prompt', 'allow'].includes(cfg.mcp_enforcement.pattern_find),
+      'pattern_find should have a valid policy value');
+    assert.ok(['hook', 'prompt', 'allow'].includes(cfg.mcp_enforcement.kb_search),
+      'kb_search should have a valid policy value');
+    assert.ok(['block', 'warn', 'allow'].includes(cfg.mcp_enforcement.unknown_tool_policy),
+      'unknown_tool_policy should have a valid policy value');
+  });
+
+  test('W8-A: sentinel is created after migration', () => {
+    const dir = makeDir({ config: { auto_review: true } });
+    run(dir);
+    assert.ok(sentinelExists(dir, '.config-migrated-2013'), 'sentinel should exist');
+  });
+
+  test('W8-B: partial mcp_enforcement → missing keys filled, existing preserved', () => {
+    const dir = makeDir({
+      config: {
+        mcp_enforcement: {
+          pattern_find: 'allow', // user-specified value — must be preserved
+          global_kill_switch: false,
+          // kb_search, history_find_similar_tasks, pattern_record_application,
+          // unknown_tool_policy intentionally absent
+        }
+      }
+    });
+    run(dir);
+    const cfg = readConfig(dir);
+    // Existing value preserved
+    assert.equal(cfg.mcp_enforcement.pattern_find, 'allow',
+      'user-specified value must be preserved');
+    // Missing keys should be filled
+    assert.ok('kb_search' in cfg.mcp_enforcement, 'kb_search should be filled in');
+    assert.ok('unknown_tool_policy' in cfg.mcp_enforcement, 'unknown_tool_policy should be filled in');
+  });
+
+  test('W8-C: config has full mcp_enforcement → no-op (content unchanged)', () => {
+    const fullBlock = {
+      pattern_find: 'allow',
+      kb_search: 'allow',
+      history_find_similar_tasks: 'allow',
+      pattern_record_application: 'allow',
+      unknown_tool_policy: 'warn',
+      global_kill_switch: true,
+    };
+    const dir = makeDir({ config: { mcp_enforcement: fullBlock } });
+    run(dir);
+    const cfg = readConfig(dir);
+    // All values should be exactly as set — no overwriting of present keys
+    assert.equal(cfg.mcp_enforcement.pattern_find, 'allow');
+    assert.equal(cfg.mcp_enforcement.kb_search, 'allow');
+    assert.equal(cfg.mcp_enforcement.unknown_tool_policy, 'warn');
+    assert.equal(cfg.mcp_enforcement.global_kill_switch, true);
+  });
+
+  test('W8-D: unrelated config keys are preserved after migration', () => {
+    const dir = makeDir({
+      config: {
+        auto_review: true,
+        complexity_threshold: 5,
+        force_solo: false,
+        mcp_enforcement: { pattern_find: 'hook', kb_search: 'hook',
+          history_find_similar_tasks: 'hook', pattern_record_application: 'hook',
+          unknown_tool_policy: 'block', global_kill_switch: false }
+      }
+    });
+    run(dir);
+    const cfg = readConfig(dir);
+    assert.equal(cfg.auto_review, true, 'auto_review must be preserved');
+    assert.equal(cfg.complexity_threshold, 5, 'complexity_threshold must be preserved');
+    assert.equal(cfg.force_solo, false, 'force_solo must be preserved');
+  });
+
+  test('W8-D: non-schema keys inside mcp_enforcement (e.g. _note) are preserved', () => {
+    const dir = makeDir({
+      config: {
+        mcp_enforcement: {
+          pattern_find: 'hook', kb_search: 'hook',
+          history_find_similar_tasks: 'hook', pattern_record_application: 'hook',
+          unknown_tool_policy: 'block', global_kill_switch: false,
+          _note: 'important note that must survive',
+        }
+      }
+    });
+    run(dir);
+    const cfg = readConfig(dir);
+    assert.equal(cfg.mcp_enforcement._note, 'important note that must survive',
+      '_note field must be preserved');
+  });
+
+  test('W8-E: config sentinel already exists → no migration runs', () => {
+    // Config has no mcp_enforcement block, but sentinel is pre-created
+    const dir = makeDir({ config: { auto_review: true }, configSentinel: true });
+    run(dir);
+    const cfg = readConfig(dir);
+    assert.equal(cfg.mcp_enforcement, undefined,
+      'mcp_enforcement should not be added when sentinel already present');
+  });
+
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// W11: Ledger phase sweep
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('W11 ledger phase sweep', () => {
+
+  test('W11-F: empty ledger → no-op, sentinel created', () => {
+    const dir = makeDir({ checkpointRaw: '' });
+    run(dir);
+    assert.ok(sentinelExists(dir, '.mcp-checkpoint-migrated-2013'));
+    // Empty file stays empty
+    const raw = fs.readFileSync(
+      path.join(dir, '.orchestray', 'state', 'mcp-checkpoint.jsonl'), 'utf8'
+    );
+    assert.equal(raw, '');
+  });
+
+  test('W11-G: rows with no matching routing entry → all post-decomposition rows flipped', () => {
+    // Checkpoint rows for orch-111, no routing entries for orch-111 at all
+    const checkpointRaw = [
+      JSON.stringify({ timestamp: '2026-04-11T10:00:00.000Z', orchestration_id: 'orch-111', tool: 'pattern_find', outcome: 'answered', phase: 'post-decomposition', result_count: 3 }),
+      JSON.stringify({ timestamp: '2026-04-11T10:00:01.000Z', orchestration_id: 'orch-111', tool: 'kb_search', outcome: 'answered', phase: 'post-decomposition', result_count: 2 }),
+    ].join('\n') + '\n';
+    // routing.jsonl exists but has entries for a different orchestration
+    const routingRaw = JSON.stringify({ timestamp: '2026-04-11T09:50:00.000Z', orchestration_id: 'orch-999', task_id: 'T1', agent_type: 'developer' }) + '\n';
+
+    const dir = makeDir({ checkpointRaw, routingRaw });
+    run(dir);
+
+    const rows = readCheckpointRows(dir);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].phase, 'pre-decomposition', 'row 0 should be flipped');
+    assert.equal(rows[1].phase, 'pre-decomposition', 'row 1 should be flipped');
+  });
+
+  test('W11-H: rows with matching routing but all routing-ts > row-ts → flipped', () => {
+    // Checkpoint row timestamp is BEFORE all routing entries for same orch-id
+    const rowTs = '2026-04-11T10:00:00.000Z';
+    const routingTs = '2026-04-11T10:05:00.000Z'; // AFTER the checkpoint row
+
+    const checkpointRaw = JSON.stringify({
+      timestamp: rowTs,
+      orchestration_id: 'orch-222',
+      tool: 'pattern_find',
+      outcome: 'answered',
+      phase: 'post-decomposition',
+      result_count: 1,
+    }) + '\n';
+
+    const routingRaw = JSON.stringify({
+      timestamp: routingTs,
+      orchestration_id: 'orch-222',
+      task_id: 'T1',
+      agent_type: 'developer',
+    }) + '\n';
+
+    const dir = makeDir({ checkpointRaw, routingRaw });
+    run(dir);
+
+    const rows = readCheckpointRows(dir);
+    assert.equal(rows[0].phase, 'pre-decomposition', 'row should be flipped (routing after checkpoint)');
+  });
+
+  test('W11-I: rows with matching routing AND routing-ts < row-ts → left alone (correctly post-decomposition)', () => {
+    // Routing entry timestamp is BEFORE the checkpoint row — genuinely post-decomposition
+    const rowTs = '2026-04-11T10:05:00.000Z';
+    const routingTs = '2026-04-11T10:00:00.000Z'; // BEFORE the checkpoint row
+
+    const checkpointRaw = JSON.stringify({
+      timestamp: rowTs,
+      orchestration_id: 'orch-333',
+      tool: 'pattern_find',
+      outcome: 'answered',
+      phase: 'post-decomposition',
+      result_count: 1,
+    }) + '\n';
+
+    const routingRaw = JSON.stringify({
+      timestamp: routingTs,
+      orchestration_id: 'orch-333',
+      task_id: 'T1',
+      agent_type: 'developer',
+    }) + '\n';
+
+    const dir = makeDir({ checkpointRaw, routingRaw });
+    run(dir);
+
+    const rows = readCheckpointRows(dir);
+    assert.equal(rows[0].phase, 'post-decomposition', 'row should remain post-decomposition');
+    assert.equal(rows[0]._migrated_from_phase, undefined,
+      '_migrated_from_phase should not be added to unflipped rows');
+  });
+
+  test('W11-J: checkpoint sentinel already exists → no-op even when rows would be flipped', () => {
+    const checkpointRaw = JSON.stringify({
+      timestamp: '2026-04-11T10:00:00.000Z',
+      orchestration_id: 'orch-444',
+      tool: 'pattern_find',
+      outcome: 'answered',
+      phase: 'post-decomposition', // would normally be flipped
+      result_count: 1,
+    }) + '\n';
+    // No routing entries → would flip without sentinel
+    const dir = makeDir({ checkpointRaw, checkpointSentinel: true });
+    run(dir);
+
+    const rows = readCheckpointRows(dir);
+    assert.equal(rows[0].phase, 'post-decomposition',
+      'row must remain unchanged when sentinel exists');
+  });
+
+  test('W11-K: corrupted ledger lines are skipped, valid rows still processed (fail-open)', () => {
+    // Mix of good and corrupted lines
+    const goodRow = JSON.stringify({
+      timestamp: '2026-04-11T10:00:00.000Z',
+      orchestration_id: 'orch-555',
+      tool: 'pattern_find',
+      outcome: 'answered',
+      phase: 'post-decomposition',
+      result_count: 1,
+    });
+    const checkpointRaw = goodRow + '\n' + 'NOT VALID JSON{{{' + '\n';
+
+    const dir = makeDir({ checkpointRaw });
+    // Should not throw
+    const { status } = run(dir);
+    assert.equal(status, 0, 'must exit 0 even with malformed ledger lines');
+  });
+
+  test('W11-L: _migrated_from_phase field added to flipped rows', () => {
+    const checkpointRaw = JSON.stringify({
+      timestamp: '2026-04-11T10:00:00.000Z',
+      orchestration_id: 'orch-666',
+      tool: 'kb_search',
+      outcome: 'answered',
+      phase: 'post-decomposition',
+      result_count: 2,
+    }) + '\n';
+    // No routing entries → flip
+    const dir = makeDir({ checkpointRaw });
+    run(dir);
+
+    const rows = readCheckpointRows(dir);
+    assert.equal(rows[0].phase, 'pre-decomposition');
+    assert.equal(rows[0]._migrated_from_phase, 'post-decomposition',
+      '_migrated_from_phase must be set on flipped rows');
+  });
+
+  test('W11: pre-decomposition rows are never modified', () => {
+    const checkpointRaw = JSON.stringify({
+      timestamp: '2026-04-11T10:00:00.000Z',
+      orchestration_id: 'orch-777',
+      tool: 'pattern_find',
+      outcome: 'answered',
+      phase: 'pre-decomposition',
+      result_count: 3,
+    }) + '\n';
+    const dir = makeDir({ checkpointRaw });
+    run(dir);
+
+    const rows = readCheckpointRows(dir);
+    assert.equal(rows[0].phase, 'pre-decomposition');
+    assert.equal(rows[0]._migrated_from_phase, undefined);
+  });
+
+  test('W11: sentinel created after sweep', () => {
+    const checkpointRaw = JSON.stringify({
+      timestamp: '2026-04-11T10:00:00.000Z',
+      orchestration_id: 'orch-888',
+      tool: 'pattern_find',
+      outcome: 'answered',
+      phase: 'pre-decomposition',
+      result_count: 1,
+    }) + '\n';
+    const dir = makeDir({ checkpointRaw });
+    run(dir);
+    assert.ok(sentinelExists(dir, '.mcp-checkpoint-migrated-2013'));
+  });
+
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Session lock
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('session lock', () => {
+
+  test('M: session lock exists → full sweep is a no-op fast-path (config not modified)', () => {
+    const dir = makeDir({ config: { auto_review: true } }); // no mcp_enforcement
+    const sessionId = 'lock-test-session';
+    const lockPath = path.join(os.tmpdir(), `orchestray-sweep-${sessionId}.lock`);
+    cleanup.push(lockPath);
+
+    // Pre-create the lock
+    fs.writeFileSync(lockPath, '', 'utf8');
+    const { status } = run(dir, { session_id: sessionId });
+    assert.equal(status, 0, 'must exit 0 even with existing lock');
+
+    // Config should NOT have been modified (lock short-circuited the sweep)
+    const cfg = readConfig(dir);
+    assert.equal(cfg.mcp_enforcement, undefined,
+      'mcp_enforcement should not be added when session lock prevents sweep');
+  });
+
+  test('N: no session lock → sweep runs and sentinels are created', () => {
+    const dir = makeDir({
+      config: { auto_review: true },
+      checkpointRaw: '',
+    });
+    const sessionId = 'no-lock-test-session-n';
+    const lockPath = lockPathFor(sessionId);
+    // Register for cleanup
+    cleanup.push(lockPath);
+    // Ensure no pre-existing lock
+    try { fs.unlinkSync(lockPath); } catch (_e) {}
+
+    const { status } = run(dir, { session_id: sessionId });
+    assert.equal(status, 0);
+
+    // W8 sentinel must exist, proving sweep ran
+    assert.ok(sentinelExists(dir, '.config-migrated-2013'),
+      'W8 sentinel must exist, proving sweep ran when lock was absent');
+  });
+
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Grep anchors — verify the script contains required anchor strings
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('grep anchors', () => {
+  test('script contains 2013-W8-config-migration anchor', () => {
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    assert.ok(src.includes('2013-W8-config-migration'),
+      'script must contain 2013-W8-config-migration grep anchor');
+  });
+
+  test('script contains 2013-W11-ledger-sweep anchor', () => {
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    assert.ok(src.includes('2013-W11-ledger-sweep'),
+      'script must contain 2013-W11-ledger-sweep grep anchor');
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Mixed: both operations run in same sweep
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('combined W8+W11 sweep', () => {
+
+  test('both operations run and both sentinels created in a single sweep invocation', () => {
+    const checkpointRaw = JSON.stringify({
+      timestamp: '2026-04-11T10:00:00.000Z',
+      orchestration_id: 'orch-combined',
+      tool: 'pattern_find',
+      outcome: 'answered',
+      phase: 'post-decomposition',
+      result_count: 1,
+    }) + '\n';
+
+    const dir = makeDir({
+      config: { auto_review: true }, // no mcp_enforcement
+      checkpointRaw,
+      // no routing → W11 will flip
+    });
+
+    run(dir);
+
+    // W8 ran
+    const cfg = readConfig(dir);
+    assert.ok(cfg.mcp_enforcement, 'mcp_enforcement block should be added by W8');
+    assert.ok(sentinelExists(dir, '.config-migrated-2013'), 'W8 sentinel must exist');
+
+    // W11 ran
+    const rows = readCheckpointRows(dir);
+    assert.equal(rows[0].phase, 'pre-decomposition', 'W11 should have flipped the row');
+    assert.ok(sentinelExists(dir, '.mcp-checkpoint-migrated-2013'), 'W11 sentinel must exist');
+  });
+
+});
