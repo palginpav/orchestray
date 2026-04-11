@@ -477,7 +477,13 @@ async function dispatchRequest(config, msg) {
           uri,
           message: err && err.message,
         });
-      } else if (code === 'PATH_TRAVERSAL') {
+      } else if (
+        code === 'PATH_TRAVERSAL' ||
+        code === 'INVALID_SEGMENT' ||
+        code === 'INVALID_URI'
+      ) {
+        // m2 taxonomy split: all three codes surface at the wire as
+        // JSON-RPC invalid-params. Only the audit-log semantics differ.
         sendError(id, JSONRPC_INVALID_PARAMS, 'invalid resource uri', {
           uri,
           message: err && err.message,

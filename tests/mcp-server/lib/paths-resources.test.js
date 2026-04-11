@@ -15,7 +15,11 @@
  *   resolveKbFile(section, slug) -> absolute path
  *   getPatternsDir() / getHistoryDir() / getKbDir()
  *
- * Errors must carry `code` property: 'PATH_TRAVERSAL' or 'RESOURCE_NOT_FOUND'.
+ * Error codes (m2 taxonomy split from v2.0.11 solidification pass):
+ *   - 'PATH_TRAVERSAL' — hostile: dot-only, path separators, null bytes
+ *   - 'INVALID_SEGMENT' — non-hostile: empty / wrong-type / too-long segment
+ *   - 'INVALID_URI' — parseResourceUri URI-shape errors (non-string, regex miss)
+ *   - 'RESOURCE_NOT_FOUND' — file doesn't exist on disk
  *
  * Path resolvers walk up from process.cwd() to find the project root
  * (same convention as Stage 1 paths.js), so tests set process.cwd to a
@@ -104,32 +108,32 @@ describe('parseResourceUri', () => {
     );
   });
 
-  test('rejects malformed URI (no scheme prefix)', () => {
+  test('rejects malformed URI (no scheme prefix) with INVALID_URI', () => {
     assert.throws(
       () => parseResourceUri('pattern://my-slug'),
-      (err) => err.code === 'PATH_TRAVERSAL'
+      (err) => err.code === 'INVALID_URI'
     );
   });
 
-  test('rejects malformed URI (totally garbage)', () => {
+  test('rejects malformed URI (totally garbage) with INVALID_URI', () => {
     assert.throws(
       () => parseResourceUri('not-a-uri-at-all'),
-      (err) => err.code === 'PATH_TRAVERSAL'
+      (err) => err.code === 'INVALID_URI'
     );
   });
 
-  test('rejects null byte in segment', () => {
+  test('rejects null byte in segment with PATH_TRAVERSAL', () => {
     assert.throws(
       () => parseResourceUri('orchestray:pattern://bad\u0000slug'),
       (err) => err.code === 'PATH_TRAVERSAL'
     );
   });
 
-  test('rejects segment longer than 200 chars', () => {
+  test('rejects segment longer than 200 chars with INVALID_SEGMENT', () => {
     const longSeg = 'a'.repeat(201);
     assert.throws(
       () => parseResourceUri('orchestray:pattern://' + longSeg),
-      (err) => err.code === 'PATH_TRAVERSAL'
+      (err) => err.code === 'INVALID_SEGMENT'
     );
   });
 
@@ -149,10 +153,25 @@ describe('assertSafeSegment', () => {
     assert.doesNotThrow(() => assertSafeSegment('orch-1744197600'));
   });
 
-  test('rejects empty segment', () => {
+  test('rejects empty segment with INVALID_SEGMENT', () => {
     assert.throws(
       () => assertSafeSegment(''),
-      (err) => err.code === 'PATH_TRAVERSAL'
+      (err) => err.code === 'INVALID_SEGMENT'
+    );
+  });
+
+  test('rejects non-string segment with INVALID_SEGMENT', () => {
+    assert.throws(
+      () => assertSafeSegment(undefined),
+      (err) => err.code === 'INVALID_SEGMENT'
+    );
+    assert.throws(
+      () => assertSafeSegment(42),
+      (err) => err.code === 'INVALID_SEGMENT'
+    );
+    assert.throws(
+      () => assertSafeSegment(null),
+      (err) => err.code === 'INVALID_SEGMENT'
     );
   });
 
@@ -198,10 +217,10 @@ describe('assertSafeSegment', () => {
     );
   });
 
-  test('rejects segment longer than 200 chars', () => {
+  test('rejects segment longer than 200 chars with INVALID_SEGMENT', () => {
     assert.throws(
       () => assertSafeSegment('a'.repeat(201)),
-      (err) => err.code === 'PATH_TRAVERSAL'
+      (err) => err.code === 'INVALID_SEGMENT'
     );
   });
 

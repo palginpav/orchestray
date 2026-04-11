@@ -99,21 +99,35 @@ function getConfigPath() {
 // ---------------------------------------------------------------------------
 
 /**
- * Defense against path traversal. Rejects a segment if:
- *   - it is not a non-empty string
- *   - it is dots-only ("." "..", "...", etc.)
- *   - it contains a forward or back slash
- *   - it contains a null byte
- *   - it is longer than 200 chars
+ * Defense against bad path segments. Two error classes:
  *
- * Throws an Error with `code = 'PATH_TRAVERSAL'` on any violation.
+ * - `PATH_TRAVERSAL` — the segment *looks hostile*: dots-only (`.`, `..`,
+ *   `...`), contains a path separator, or contains a null byte. These are
+ *   what a real attacker writes; treat them as security signals.
+ *
+ * - `INVALID_SEGMENT` — the segment is *just malformed*: non-string, empty,
+ *   or longer than 200 chars. These are honest input-shape mistakes and
+ *   carry no traversal semantics.
+ *
+ * Both codes still map to JSON-RPC `-32602` (invalid params) at the
+ * resources/read dispatcher, so the client surface is unchanged; the
+ * split exists so future log reviewers and security tooling can
+ * distinguish "user typo" from "someone is probing path traversal".
+ * m2 from the v2.0.11 solidification pass.
  */
 function assertSafeSegment(segment) {
+  // Non-hostile shape errors: wrong type, empty, too long.
   if (typeof segment !== 'string' || segment.length === 0) {
     const e = new Error('empty path segment');
-    e.code = 'PATH_TRAVERSAL';
+    e.code = 'INVALID_SEGMENT';
     throw e;
   }
+  if (segment.length > 200) {
+    const e = new Error('segment too long (> 200 chars)');
+    e.code = 'INVALID_SEGMENT';
+    throw e;
+  }
+  // Hostile shape errors: dots-only, separators, null bytes.
   if (/^\.+$/.test(segment)) {
     const e = new Error('dot-only segment: ' + segment);
     e.code = 'PATH_TRAVERSAL';
@@ -126,11 +140,6 @@ function assertSafeSegment(segment) {
   }
   if (segment.indexOf('\u0000') !== -1) {
     const e = new Error('segment contains null byte');
-    e.code = 'PATH_TRAVERSAL';
-    throw e;
-  }
-  if (segment.length > 200) {
-    const e = new Error('segment too long (> 200 chars)');
     e.code = 'PATH_TRAVERSAL';
     throw e;
   }
@@ -150,15 +159,18 @@ function assertSafeSegment(segment) {
  *   orchestray:kb://<section>/<slug>
  */
 function parseResourceUri(uri) {
+  // Non-hostile URI-shape errors carry `INVALID_URI` per the m2 taxonomy
+  // split. Per-segment checks still throw PATH_TRAVERSAL / INVALID_SEGMENT
+  // out of assertSafeSegment as usual.
   if (typeof uri !== 'string') {
     const e = new Error('uri must be a string');
-    e.code = 'PATH_TRAVERSAL';
+    e.code = 'INVALID_URI';
     throw e;
   }
   const m = /^orchestray:([a-z]+):\/\/(.*)$/i.exec(uri);
   if (!m) {
     const e = new Error('malformed URI: ' + uri);
-    e.code = 'PATH_TRAVERSAL';
+    e.code = 'INVALID_URI';
     throw e;
   }
   const scheme = m[1];
