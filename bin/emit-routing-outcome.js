@@ -48,15 +48,14 @@ process.stdin.on('end', () => {
   try {
     const event = JSON.parse(input);
 
-    // Defensive: only process Agent tool calls.
-    // hooks.json matcher: "Agent" should already filter this, but the guard is
-    // load-bearing if the matcher is ignored or the hook fires on all PostToolUse
-    // events. Without this, every Bash/Read/Edit call during an orchestration
-    // would write a bogus routing_outcome event to the audit trail.
-    // Ref: https://code.claude.com/docs/en/hooks — matcher filters by tool_name
-    // for PreToolUse/PostToolUse; exact string match when only letters/digits/_.
+    // Defensive: only process known agent-dispatch tool calls. The 2.0.12
+    // matcher in hooks.json expanded from "Agent" to "Agent|Explore|Task"
+    // so built-in Claude Code dispatches flow through this hook too — this
+    // guard is the in-script twin of that matcher. Anything else (Bash,
+    // Read, Edit, etc.) exits without writing a bogus routing_outcome row.
+    const AGENT_DISPATCH_NAMES = new Set(['Agent', 'Explore', 'Task']);
     const toolName = event.tool_name || '';
-    if (toolName !== 'Agent') {
+    if (!AGENT_DISPATCH_NAMES.has(toolName)) {
       process.stdout.write(JSON.stringify({ continue: true }));
       process.exit(0);
     }
@@ -92,6 +91,7 @@ process.stdin.on('end', () => {
       type: 'routing_outcome',
       orchestration_id: orchestrationId,
       agent_type: agentType,
+      tool_name: toolName, // 2.0.12 Variant A extension — distinguishes Agent/Explore/Task dispatches
       model_assigned: normalizedModel,
       effort_assigned: effort,
       description: description,
