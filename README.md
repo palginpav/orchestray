@@ -13,7 +13,8 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 - **Auto-trigger** — complexity scoring detects when orchestration helps, self-calibrates over time
 - **Smart model routing** — assigns Haiku/Sonnet/Opus per subtask based on complexity, tracks cost savings; routing decisions are persisted to `.orchestray/state/routing.jsonl` and hook-enforced on every `Agent()`, `Explore()`, and `Task()` spawn, surviving context compaction and session reloads
 - **Mid-task elicitation** — agents can pause to ask the user a structured ≤5-field form via `mcp__orchestray__ask_user` and resume with the answers; no orchestration unwind required
-- **Hook-enforced MCP retrieval** — pre-decomposition `pattern_find`, `kb_search`, and `history_find_similar_tasks` calls are verified by `gate-agent-spawn.js` via a checkpoint ledger (`.orchestray/state/mcp-checkpoint.jsonl`) before the first orchestration spawn; falls back gracefully via `mcp_enforcement` config flags with no session restart required
+- **Hook-enforced MCP retrieval** — pre-decomposition `pattern_find`, `kb_search`, and `history_find_similar_tasks` calls are verified by `gate-agent-spawn.js` via a checkpoint ledger (`.orchestray/state/mcp-checkpoint.jsonl`) before the first orchestration spawn; falls back gracefully via `mcp_enforcement` config flags with no session restart required; the `mcp_enforcement` block is automatically migrated into `.orchestray/config.json` on first 2.0.13+ use
+- **PM-driven per-orchestration `events.jsonl` rotation** — at orchestration completion, the PM cleanup sequence atomically archives audit rows for the completed orchestration to `.orchestray/history/<orch-id>/events.jsonl`, keeping the live file bounded; the rotation is crash-safe via a three-state sentinel and idempotent on restart
 - **Explore dispatch coverage** — Claude Code's built-in `Explore` and `Task` dispatches are now gated alongside `Agent()` spawns so their model routing decisions are enforced and audited
 - **GitHub Issue integration** — orchestrate directly from GitHub issues via `gh` CLI
 - **CI/CD feedback loop** — run CI after orchestration, auto-fix failures up to N retries
@@ -128,7 +129,21 @@ mcp_enforcement.history_find_similar_tasks  Hook enforcement mode: hook/prompt/a
 mcp_enforcement.pattern_record_application  Advisory only — not gate-enforced; suppresses pattern_record_skipped advisory event when set to "prompt" or "allow" (default: hook)
 mcp_enforcement.unknown_tool_policy       block/warn/allow — policy for unrecognised dispatch names (default: block)
 mcp_enforcement.global_kill_switch        true restores 2.0.11 enforcement behaviour; no session restart needed (default: false)
+
+audit.max_events_bytes_for_scan   Maximum bytes of events.jsonl scanned per hook invocation;
+                                  override with ORCHESTRAY_MAX_EVENTS_BYTES env var (default: materially
+                                  larger than the 2.0.12 cap; set lower on constrained environments)
 ```
+
+The `mcp_enforcement` block is automatically added to `.orchestray/config.json` on the first `UserPromptSubmit` after upgrading to 2.0.13+ — no manual migration needed.
+
+### Health Signals
+
+`/orchestray:analytics` includes a **Health Signals** section that:
+- Warns when `mcp_enforcement.global_kill_switch` is `true` in `.orchestray/config.json` (the gate is bypassed; all MCP checkpoint enforcement is off)
+- Scans recent `events.jsonl` for unpaired `kill_switch_activated` events to surface an active kill-switch window that was never closed
+
+If the kill switch is active, the analytics output shows a bold warning with the config key and file path needed to clear it.
 
 ## How it works
 
@@ -180,9 +195,22 @@ All orchestration state lives in `.orchestray/` (gitignored):
 ## Requirements
 
 - [Claude Code](https://claude.ai/code) v2.0.0+
+- Claude Code 2.1.59+ recommended — the BUG-A fix in 2.0.13 depends on the `PostToolUse` payload shape captured against CC 2.1.59; earlier versions may produce `outcome: "skipped"` rows in the MCP checkpoint ledger
 - Agent Teams features require v2.1.32+ (opt-in)
 
 Agent Teams features (TaskCreated / TaskCompleted / TeammateIdle hooks) require Claude Code v2.1.32+ with the experimental flag `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` set in the environment or `settings.json`. Without the flag, these hooks are installed but dormant — nothing breaks, they simply never fire.
+
+## Troubleshooting
+
+### Gate blocks first spawn after upgrade
+
+If `gate-agent-spawn.js` blocks the PM's first `Agent()` call after upgrading to 2.0.13+, the most likely cause is that the automatic W11 migration did not yet run (it fires on the next `UserPromptSubmit`, not at install time). Try the following in order:
+
+1. **Wait for the sweep.** On the next user prompt the `bin/post-upgrade-sweep.js` hook will run and flip any BUG-B-poisoned rows in `.orchestray/state/mcp-checkpoint.jsonl`. If the gate then passes, you're done.
+2. **Nuclear option — kill switch.** Set `mcp_enforcement.global_kill_switch: true` in `.orchestray/config.json` to bypass the checkpoint gate entirely and complete the in-flight orchestration. Clear it once you're done. No session restart is required.
+3. **Manual sentinel reset.** If the sweep appears stuck, delete `.orchestray/state/.mcp-checkpoint-migrated-2013` to force it to re-run on the next prompt.
+
+Reference: `bin/post-upgrade-sweep.js` is the automatic recovery path. `mcp_enforcement.global_kill_switch` is the always-available manual escape hatch.
 
 ## License
 

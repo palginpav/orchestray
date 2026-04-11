@@ -5,6 +5,17 @@ to `.orchestray/audit/events.jsonl`.
 
 ---
 
+**2.0.13 additions:** `mcp_checkpoint_missing` (promoted from RESERVED, now IMPLEMENTED
+with `phase_mismatch` field), `kill_switch_activated`, `kill_switch_deactivated`. Phase-field
+consumer caveat (below) updated for the W1 fix — historical `mcp_checkpoint_recorded` rows
+may have `phase: "post-decomposition"` on pre-2.0.13 data due to the BUG-B classification
+bug; the W11 sweep flips these on upgrade if they can be identified from `routing.jsonl`
+timestamps. Audit-trail rows are never rewritten after emission.
+
+---
+
+---
+
 ## Section 19: Routing Outcome Event
 
 `routing_outcome` events come in **three variants**: a hook-emitted partial written
@@ -849,10 +860,23 @@ Field notes:
 - `tool`: The short tool name — the `mcp__orchestray__` prefix is stripped before writing.
   Only the four enforced tools above are written; any other `mcp__orchestray__*` call is
   silently ignored by the hook.
-- `outcome`: Derived from `tool_result.isError` — `"answered"` if the call succeeded,
-  `"error"` if `isError === true`, `"skipped"` if `tool_result` is absent or null.
-- `phase`: Derived from the presence of `.orchestray/state/routing.jsonl` at hook time —
-  `"post-decomposition"` if the file exists, `"pre-decomposition"` otherwise.
+- `outcome`: Derived from `event.tool_response` (a JSON string) — `"answered"` if parsed
+  successfully and `isError` is absent/false, `"error"` on parse failure or `isError === true`,
+  `"skipped"` if `tool_response` is absent or null. **2.0.13 note (BUG-A fix):** pre-2.0.13
+  rows used `event.tool_result` (undefined in CC 2.1.59), so those rows have
+  `outcome: "skipped"` regardless of actual result. The sealed audit trail is immutable —
+  no migration is applied to `events.jsonl` outcome fields.
+- `phase`: Derived at hook time by reading `.orchestray/state/routing.jsonl` and counting
+  entries matching the current `orchestration_id` — `"post-decomposition"` if at least one
+  entry matches, `"pre-decomposition"` otherwise. Fails open to `"pre-decomposition"` on
+  routing-file errors. **2.0.13 note (BUG-B fix):** pre-2.0.13 rows used a global
+  file-presence check (ignoring orchestration identity), so second-and-later orchestrations
+  recorded pre-decomposition calls as `"post-decomposition"`. The W11 post-upgrade sweep
+  flips identifiable poisoned rows in `mcp-checkpoint.jsonl` using a routing-timestamp
+  heuristic; flipped rows gain `_migrated_from_phase: "post-decomposition"`. Rows with
+  `_migrated_from_phase: "post-decomposition"` are W11-corrected; other `post-decomposition`
+  rows are authentic post-decomposition calls (PM wrote routing entries before calling the
+  trio). `events.jsonl` phase fields are never rewritten after emission.
 - `result_count`: For `pattern_find` only — the number of patterns returned by the call
   (best-effort: read from `tool_result.structuredContent.count` or heuristic regex on
   `content[0].text`). `null` for all other tools and on parse failure.

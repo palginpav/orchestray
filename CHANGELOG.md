@@ -3,6 +3,199 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.13] - 2026-04-11
+
+### Theme: "Close the Loop"
+
+Close 2.0.12's learning loop: the hook-enforced MCP surface now actually fires,
+the gate's own blocking condition is self-consistent, and operational state files
+stop growing unbounded.
+
+### Added
+
+- **W4 — Dispatch-name allowlist drift regression test.** `tests/gate-agent-spawn.test.js`
+  now imports the `AGENT_DISPATCH_ALLOWLIST` and `SKIP_ALLOWLIST` constants from
+  `bin/gate-agent-spawn.js` via regex and compares them to an embedded known-good
+  manifest. When a future Claude Code version adds or removes a dispatch name, the
+  test fails loudly with a message naming the three files to update in tandem (the
+  code constant, the test manifest, `CLAUDE.md` if applicable). Closes 2.0.12 R5
+  follow-up.
+
+- **W5 — Configurable `events.jsonl` scan cap.** `bin/collect-agent-metrics.js`
+  no longer hardcodes its scan threshold. New precedence chain:
+  `ORCHESTRAY_MAX_EVENTS_BYTES` env var → `.orchestray/config.json`
+  `audit.max_events_bytes_for_scan` → built-in default (materially larger than
+  the 2.0.12 hardcode). The cap is read at hook-script load time per invocation —
+  no session restart required to change it. New `audit` section added to
+  `bin/_lib/config-schema.js` with validation.
+
+- **W6 — Durable `events.jsonl` rotation with sentinel state machine.**
+  `bin/_lib/events-rotate.js` is the new helper. At orchestration completion the
+  PM cleanup sequence (tier1-orchestration.md Section 15, step 3) invokes
+  `rotateEventsForOrchestration` which (a) filters the live `events.jsonl` to rows
+  matching the current orchestration ID, (b) writes them to
+  `.orchestray/history/<orch-id>/events.jsonl`, (c) atomically replaces the live
+  file via a rename-dance preserving rows from other orchestrations. A three-state
+  sentinel at `.orchestray/state/.events-rotation-<orch-id>.sentinel` makes the
+  sequence crash-safe: `"started"` → restart from filter; `"archived"` → skip to
+  truncate; `"truncated"` → delete sentinel only. `fs.truncateSync` is forbidden;
+  a regression test asserts zero hits. Reader side (`history_scan.js`,
+  `history_query_events`) is unchanged — archived rows remain queryable
+  transparently.
+
+- **W3 — `mcp_checkpoint_missing` audit event (promoted from RESERVED to
+  IMPLEMENTED).** `bin/gate-agent-spawn.js` now emits a `mcp_checkpoint_missing`
+  event to `events.jsonl` on every gate block. New `phase_mismatch` boolean field
+  distinguishes genuine absence (`false`) from BUG-D phase-mismatch (`true`) — the
+  latter is reachable when poisoned-phase rows coexist with genuine absences in the
+  same orchestration. `agents/pm-reference/event-schemas.md` documents the
+  IMPLEMENTED shape. Fails open on emission failure — the event write cannot mask a
+  gate block.
+
+- **W7 — Kill-switch health signal + `kill_switch_activated`/`kill_switch_deactivated`
+  events.** `/orchestray:analytics` gains a Health Signals section that reads
+  `.orchestray/config.json` and emits a bold warning when
+  `mcp_enforcement.global_kill_switch === true`; it also scans recent `events.jsonl`
+  for unpaired activation events. `/orchestray:config` set paths emit
+  `kill_switch_activated`/`kill_switch_deactivated` events to `events.jsonl` (via
+  `bin/emit-kill-switch-event.js`, a new CLI wrapper) whenever the switch value
+  actually changes (no-op flips do not emit). Two new event shapes documented in
+  `event-schemas.md`.
+
+- **W8 + W11 — Post-upgrade sweep.** New `bin/post-upgrade-sweep.js` runs as a
+  sibling under the existing `UserPromptSubmit` hook. Session-scoped lock at
+  `/tmp/orchestray-sweep-<session>.lock` gives once-per-session fast-path;
+  per-operation sentinels at `.orchestray/state/.config-migrated-2013` and
+  `.orchestray/state/.mcp-checkpoint-migrated-2013` give once-per-upgrade
+  semantics. Two sub-operations: (a) **W8** — additive migration of
+  `.orchestray/config.json` to add the `mcp_enforcement` block if missing (preserves
+  all other keys including non-schema `_note` fields); (b) **W11** — scan of
+  `.orchestray/state/mcp-checkpoint.jsonl` to flip rows with
+  `phase: 'post-decomposition'` that were poisoned by 2.0.12's BUG-B, based on a
+  conservative timestamp heuristic (only flips rows where no matching `routing.jsonl`
+  entry precedes them). Flipped rows gain a `_migrated_from_phase` audit marker.
+  Fails open on every error; never blocks the user prompt. Replaces the 2.0.12 NG4
+  "manual recovery only" stance.
+
+- **W0 probe record.** `.orchestray/kb/artifacts/2013-posttooluse-probe-record.md`
+  captures the Claude Code 2.1.59 `PostToolUse` payload shape for
+  `mcp__orchestray__*` tools. Committed as a source of truth for the BUG-A fix
+  (see W2 below). The probe revealed the real field is `event.tool_response`
+  (a JSON string, not an object) — `event.tool_result`, which 2.0.12 read, is
+  undefined. The artifact is the W2 implementation spec and the R1 pinned
+  reference for the `tests/w2-smoke.test.js` contract.
+
+### Fixed
+
+- **BUG-A — `classifyOutcome` blindness (W2).** 2.0.12's
+  `record-mcp-checkpoint.js` read `event.tool_result` which is undefined in
+  CC 2.1.59. Every checkpoint row on disk showed `outcome: "skipped"`,
+  `result_count: null`. The pattern-record-skipped advisory (which gated on
+  `result_count >= 1`) was permanently dead code. W2 rewrites `classifyOutcome`
+  to read `event.tool_response` (a JSON string), parses defensively (parse
+  failure = `error`), and populates a new table-driven `extractResultCount`
+  covering `pattern_find`, `kb_search`, and `history_find_similar_tasks`
+  uniformly. The `pattern_record_skipped` advisory in `bin/record-pattern-skip.js`
+  is rewired to gate on the now-populated `outcome === 'answered'` /
+  `result_count >= 1` signals per the A-2 path in DESIGN §D2. A new smoke test
+  at `tests/w2-smoke.test.js` exercises the end-to-end hook invocation against a
+  real-shape PostToolUse payload — this is the test class that would have caught
+  BUG-A in 2.0.12 had it existed. Historical pre-2.0.13 rows on disk retain their
+  incorrect `outcome: "skipped"` classification — no migration is in scope; the
+  sealed audit trail is immutable.
+
+- **BUG-B — Phase derivation stale across orchestrations (W1).**
+  `bin/record-mcp-checkpoint.js` derived `phase` from
+  `fs.existsSync(routing.jsonl)` — a global file-presence check that ignored
+  orchestration identity. Since `routing.jsonl` persists across orchestrations by
+  design, every orchestration after the first in a project recorded its
+  pre-decomposition MCP calls with `phase: "post-decomposition"`. W1 replaces the
+  check with an orchestration-ID-scoped filter: read routing entries, count only
+  those matching the current orchestration ID, return `"post-decomposition"` only
+  if at least one matches. Fail-open to `"pre-decomposition"` on routing-file
+  errors.
+
+- **BUG-C — Gate phase-strict filter locks out repeat orchestrations (W1).**
+  `bin/_lib/mcp-checkpoint.js` `missingRequiredToolsFromRows` defaults
+  `phaseFilter = 'pre-decomposition'`. `bin/gate-agent-spawn.js` relied on the
+  default. Combined with BUG-B, this gate-locked every second-or-later
+  orchestration in any Orchestray project — the gate saw zero matching rows and
+  blocked the first `Agent()` spawn. W1 passes `phaseFilter = null` explicitly
+  at the gate call site with a `BUG-C-2.0.13` grep anchor comment blocking future
+  reverts. Phase is now treated as an audit/analytics field, not an enforcement
+  field. The default in `mcp-checkpoint.js` remains unchanged for potential future
+  callers that want phase-strict behavior.
+
+- **BUG-D — Gate diagnostic was actively misleading (W1).** When the gate blocked
+  due to BUG-B+C, its stderr said "missing MCP checkpoint for pattern_find,
+  kb_search, history_find_similar_tasks" — but the rows were in the ledger; they
+  just had the wrong phase. A user reading the diagnostic would rerun the trio,
+  write more wrong-phase rows, and loop forever. W1 adds a secondary phase-strict
+  check that distinguishes true absence from phase mismatch and emits a distinct
+  "phase mismatch" diagnostic in the latter case. Under the W1 BUG-C fix the
+  phase-mismatch path is reachable only when legacy-poisoned rows coexist with
+  genuinely-absent rows; the path is kept as defense-in-depth and feeds the W3
+  `phase_mismatch` event field.
+
+**BUG discovery context:** W1/W2/W3 were not identified by 2.0.12 review. They
+were discovered on 2026-04-11 during the planning orchestration for 2.0.13, when
+the PM ran the MCP trio for the first time in a project with an existing
+`routing.jsonl` and its first `Agent()` spawn blocked. That single incident
+revealed the full chain: BUG-B (phase poisoning) + BUG-C (gate strict-filter)
++ BUG-D (misleading message), plus surfaced BUG-A (classifyOutcome blindness)
+for separate investigation. Details in
+`.planning/phases/2013-mcp-learning-loop-live/DESIGN.md` §D1 + §D2 and the probe
+record at `.orchestray/kb/artifacts/2013-posttooluse-probe-record.md`.
+
+### Deferred to 2.0.14
+
+**Deferred to 2.0.14: `pattern_record_application` advisory→blocking transition.** Depends on BUG-A fix validated in production across at least several orchestrations with non-null `outcome` / `result_count` data. 2.0.14 will ship the transition only if §22c confidence-feedback analysis over the post-2.0.13 audit window shows a false-positive rate of the `pattern_record_skipped` advisory below a threshold to be set in 2.0.14's DESIGN.md. The threshold and the evaluation window are not specified here — they are a 2.0.14 design decision — but the dependency on BUG-A being fixed and validated is a hard prerequisite.
+
+Also deferred (per DESIGN §Non-goals):
+- `ask_user` budget counter-hook (NG2 — zero overruns observed in 2.0.12 audit data)
+- Empty-patterns-dir gate optimization (NG3 — directory is never empty in observable repos)
+- No server-side MCP changes (NG5)
+- No cron/daily rotation variants (NG6)
+
+### Upgrade caveat / Recovery notes
+
+**Automatic migration on first 2.0.13 use.** The first `UserPromptSubmit` after
+upgrade fires `bin/post-upgrade-sweep.js`, which runs W8 (config `mcp_enforcement`
+block) and W11 (ledger phase sweep). Both operations are idempotent, sentineled,
+and fail-open — they cannot block the user prompt. Manual rollback: delete the
+sentinels at `.orchestray/state/.config-migrated-2013` and
+`.orchestray/state/.mcp-checkpoint-migrated-2013`.
+
+**In-flight orchestration upgrade:** an orchestration that was decomposing when
+2.0.13 landed continues to work because the gate is idempotent and all new hooks
+fail open. The new `mcp_checkpoint_missing` event emission is additive — existing
+consumers of `events.jsonl` who do not know the event type will simply ignore it.
+
+**Kill-switch rollback still works** — `mcp_enforcement.global_kill_switch: true`
+in `.orchestray/config.json` bypasses the 2.0.13 MCP checkpoint gate entirely
+(now with BUG-B/C/D fixes applied). Per-tool `mcp_enforcement.<tool>: "prompt"`
+also still works.
+
+**Events.jsonl rotation** is PM-driven at orchestration-complete. A user whose
+`events.jsonl` is already oversized at upgrade time: the W5 configurable cap
+gives immediate cost-attribution relief (`ORCHESTRAY_MAX_EVENTS_BYTES` env var
+OR `audit.max_events_bytes_for_scan` config key); the next orchestration to
+complete triggers the durable W6 rotation which moves old rows to
+`.orchestray/history/<orch-id>/events.jsonl`.
+
+**Probe record reference.** The BUG-A fix depends on Claude Code 2.1.59's
+`PostToolUse` payload shape for `mcp__orchestray__*` tools. The exact shape
+captured during the 2.0.13 planning phase is at
+`.orchestray/kb/artifacts/2013-posttooluse-probe-record.md`. If a future Claude
+Code version renames `tool_response` or changes the MCP response envelope, the
+`tests/w2-smoke.test.js` smoke test is the first thing that will fail.
+
+**Tested against Claude Code 2.1.59.**
+
+Tests: 631 → 714 (+83 across W1/W4/W5/W2/W3/W6/W7/W8+W11).
+
+---
+
 ## [2.0.12] - 2026-04-11
 
 ### Theme: "Hook-Enforced MCP Surface"
