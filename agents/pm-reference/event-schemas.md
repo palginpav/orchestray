@@ -1016,9 +1016,14 @@ no event. Grep anchor: `2013-W7-kill-switch`.
   read from `.orchestray/audit/current-orchestration.json`. `null` if the file is absent
   or the stored value is `"unknown"` (the switch was flipped outside an active orchestration).
 
-- `reason` (string|null) — optional free-text reason supplied by the operator. Currently
-  the config skill does not accept a reason argument; this field is reserved for future
-  extension and is always `null` in practice.
+- `reason` (string|null) — optional free-text reason supplied by the operator via the
+  `/orchestray:config set mcp_enforcement.global_kill_switch true --reason "..."` flag.
+  When activating the switch, the config skill also interactively prompts for a reason
+  if the flag is absent — this is the recovery-from-emergency context that analytics
+  consumers use to distinguish planned tests from real incidents. When deactivating,
+  the skill does NOT prompt (deactivation is the normal recovery path and should not
+  add friction). `null` if the operator declined to supply a reason or the flag was
+  absent during a non-interactive deactivation. Populated as of 2.0.13.
 
 - `source` — always `"config-skill"` for events emitted via the config write path.
 

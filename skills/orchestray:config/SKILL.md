@@ -193,13 +193,16 @@ are recorded in the audit trail but have no effect on agent behavior.
    - When setting `mcp_enforcement.global_kill_switch` to any value (true or false), emit a kill-switch audit event **after** the config file has been successfully written. This records the state transition in the event log for analytics and health monitoring. Use the following procedure:
 
      1. Read the **previous** value of `mcp_enforcement.global_kill_switch` from `.orchestray/config.json` BEFORE applying the write (capture it as `previousKillSwitch`).
-     2. After the config write succeeds, run:
+     2. **Capture a reason** (optional but strongly recommended when activating the switch). The user may supply a reason via the `--reason "..."` flag on the `/orchestray:config set` invocation (e.g., `/orchestray:config set mcp_enforcement.global_kill_switch true --reason "emergency rollback during W1 execution"`). If no `--reason` flag is present, interactively ask the user for a short reason when **activating** (transitioning from `false` → `true`) — do NOT ask when deactivating (transitioning `true` → `false`), since the deactivation is self-explanatory and asking would add friction to the normal recovery path. Pass an empty string if the user declines or no reason is available.
+     3. After the config write succeeds, run:
         ```
-        node bin/emit-kill-switch-event.js <absolute-cwd> <previousKillSwitch> <newKillSwitch>
+        node bin/emit-kill-switch-event.js <absolute-cwd> <previousKillSwitch> <newKillSwitch> <reason>
         ```
-        where `<absolute-cwd>` is the absolute path of the project root (where `.orchestray/` lives).
-     3. If the previous and new values are identical (no-op flip), the helper will silently skip emission — no action needed.
-     4. If the `node` invocation fails for any reason, print a stderr warning but proceed — the config write has already succeeded. **Never fail the config write due to event emission errors.**
+        where `<absolute-cwd>` is the absolute path of the project root (where `.orchestray/` lives), and `<reason>` is the captured reason from step 2. The reason is passed as a multi-word argument — `bin/emit-kill-switch-event.js` joins all remaining argv elements, so quoting is optional but recommended for shell clarity. If the reason is empty or absent, omit the argument entirely (the 4th positional arg is optional).
+     4. If the previous and new values are identical (no-op flip), the helper will silently skip emission — no action needed.
+     5. If the `node` invocation fails for any reason, print a stderr warning but proceed — the config write has already succeeded. **Never fail the config write due to event emission errors.**
+
+     **Why the reason matters:** analytics consumers of the `kill_switch_activated` / `kill_switch_deactivated` events use the `reason` field to distinguish emergency rollbacks from planned tests, upgrade procedures, and debugging sessions. A missing reason is valid (backward-compatible) but less useful for post-hoc root-cause analysis. See `agents/pm-reference/event-schemas.md` "Kill Switch Activated Event" section for the consumer contract.
 
    - When setting `enable_agent_teams`, perform a two-layer enablement: update `.orchestray/config.json` AND synchronize the live `settings.json` at the repository root (the plugin's merged settings file, NOT `orchestray/settings.json` which is only a reference copy). The config flag controls PM decision logic; the env var `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` enables Claude Code's teams API. Follow the "Agent Teams settings.json sync" procedure below after updating `.orchestray/config.json`.
    - Reject invalid values with a helpful error message
