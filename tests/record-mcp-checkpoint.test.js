@@ -36,9 +36,17 @@ afterEach(() => {
 /**
  * Create a fresh isolated tmpdir with the standard .orchestray layout.
  * withOrch=true writes current-orchestration.json.
- * withRouting=true writes an empty routing.jsonl to mark post-decomposition.
+ * withRouting=true writes a routing.jsonl containing an entry for
+ *   routingOrchId (defaults to orchestrationId) to simulate post-decomposition.
+ *   Pass routingOrchId='orch-PREVIOUS' to test the cross-orch phase derivation
+ *   (BUG-B-2.0.13 regression scenario).
  */
-function makeDir({ withOrch = false, orchestrationId = 'orch-test-001', withRouting = false } = {}) {
+function makeDir({
+  withOrch = false,
+  orchestrationId = 'orch-test-001',
+  withRouting = false,
+  routingOrchId = null,
+} = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-mcp-chk-test-'));
   cleanup.push(dir);
   const auditDir = path.join(dir, '.orchestray', 'audit');
@@ -52,7 +60,24 @@ function makeDir({ withOrch = false, orchestrationId = 'orch-test-001', withRout
     );
   }
   if (withRouting) {
-    fs.writeFileSync(path.join(stateDir, 'routing.jsonl'), '');
+    // Write a routing entry so the BUG-B fix can see it.
+    // routingOrchId defaults to the current orchestrationId (post-decomposition
+    // scenario). To test cross-orch poisoning, pass a different routingOrchId.
+    const effectiveRoutingOrchId = routingOrchId !== null ? routingOrchId : orchestrationId;
+    const entry = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      orchestration_id: effectiveRoutingOrchId,
+      task_id: 'task-1',
+      agent_type: 'developer',
+      description: 'Test task',
+      model: 'sonnet',
+      effort: 'medium',
+      complexity_score: 4,
+      score_breakdown: {},
+      decided_by: 'pm',
+      decided_at: 'decomposition',
+    });
+    fs.writeFileSync(path.join(stateDir, 'routing.jsonl'), entry + '\n');
   }
   return { dir, auditDir, stateDir };
 }
@@ -134,9 +159,16 @@ describe('D2 step 3 — phase derivation', () => {
       'phase must be pre-decomposition when routing.jsonl does not exist');
   });
 
-  test('phase is "post-decomposition" when routing.jsonl is present', () => {
-    const { dir, stateDir } = makeDir({ withOrch: true, withRouting: true });
-    // routing.jsonl exists — post-decomposition window
+  test('phase is "post-decomposition" when routing.jsonl contains an entry for the current orchestration_id', () => {
+    // BUG-B-2.0.13 fix: post-decomposition is determined by finding routing entries
+    // for the CURRENT orchestration_id, not just by file presence. This test
+    // exercises the happy path: the routing entry belongs to the same orch.
+    const { dir, stateDir } = makeDir({
+      withOrch: true,
+      orchestrationId: 'orch-test-001',
+      withRouting: true,
+      // routingOrchId defaults to orchestrationId ('orch-test-001') — matches current orch
+    });
     run({
       tool_name: 'mcp__orchestray__kb_search',
       cwd: dir,
@@ -145,7 +177,85 @@ describe('D2 step 3 — phase derivation', () => {
     const rows = readJsonlFile(path.join(stateDir, 'mcp-checkpoint.jsonl'));
     assert.equal(rows.length, 1);
     assert.equal(rows[0].phase, 'post-decomposition',
-      'phase must be post-decomposition when routing.jsonl exists');
+      'phase must be post-decomposition when routing.jsonl contains an entry for the current orch_id');
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// G8 — BUG-B-2.0.13 regression: orch-scoped phase derivation
+// Ensures phase is derived from routing entries for the CURRENT orch_id,
+// not from global routing.jsonl file presence. Missing test class that would
+// have caught the BUG-B + BUG-C showstopper during the 2.0.12 review.
+// ---------------------------------------------------------------------------
+
+describe('G8 — BUG-B-2.0.13 regression: orch-scoped phase derivation', () => {
+
+  test('T2: phase is "pre-decomposition" when routing.jsonl contains only entries for a prior orchestration', () => {
+    // BUG-B scenario: routing.jsonl has rows for orch-PREVIOUS but not for
+    // orch-CURRENT. The old file-existence heuristic would have returned
+    // 'post-decomposition' because the file exists. The correct answer is
+    // 'pre-decomposition' since the current orchestration has not decomposed.
+    const { dir, stateDir } = makeDir({
+      withOrch: true,
+      orchestrationId: 'orch-CURRENT',
+      withRouting: true,
+      routingOrchId: 'orch-PREVIOUS',   // routing entry belongs to a prior orch
+    });
+    run({
+      tool_name: 'mcp__orchestray__pattern_find',
+      cwd: dir,
+      tool_result: { isError: false },
+    });
+    const rows = readJsonlFile(path.join(stateDir, 'mcp-checkpoint.jsonl'));
+    assert.equal(rows.length, 1, 'Should write exactly one checkpoint row');
+    assert.equal(rows[0].phase, 'pre-decomposition',
+      'T2: phase must be pre-decomposition when routing.jsonl has no entry for the current orch_id');
+  });
+
+  test('T3: phase is "post-decomposition" when routing.jsonl contains an entry for the current orchestration_id', () => {
+    // Positive case: routing.jsonl has an entry for orch-CURRENT, meaning
+    // the PM has already written its routing decision for this orchestration.
+    const { dir, stateDir } = makeDir({
+      withOrch: true,
+      orchestrationId: 'orch-CURRENT',
+      withRouting: true,
+      routingOrchId: 'orch-CURRENT',    // routing entry belongs to the current orch
+    });
+    run({
+      tool_name: 'mcp__orchestray__pattern_find',
+      cwd: dir,
+      tool_result: { isError: false },
+    });
+    const rows = readJsonlFile(path.join(stateDir, 'mcp-checkpoint.jsonl'));
+    assert.equal(rows.length, 1, 'Should write exactly one checkpoint row');
+    assert.equal(rows[0].phase, 'post-decomposition',
+      'T3: phase must be post-decomposition when routing.jsonl has a matching entry for the current orch_id');
+  });
+
+  test('T2b: routing.jsonl with multiple prior-orch entries, zero current-orch entries → pre-decomposition', () => {
+    // Edge case: routing.jsonl has several entries from multiple prior orchestrations
+    // but none for the current one. All rows should be ignored.
+    const { dir, stateDir, auditDir } = makeDir({
+      withOrch: true,
+      orchestrationId: 'orch-CURRENT',
+    });
+    // Manually write routing.jsonl with two prior-orch entries
+    const entries = [
+      { orchestration_id: 'orch-ONE', task_id: 'task-1', agent_type: 'developer', description: 'A', model: 'sonnet', timestamp: '2026-04-10T10:00:00.000Z' },
+      { orchestration_id: 'orch-TWO', task_id: 'task-1', agent_type: 'reviewer', description: 'B', model: 'sonnet', timestamp: '2026-04-11T10:00:00.000Z' },
+    ].map(e => JSON.stringify(e)).join('\n') + '\n';
+    fs.writeFileSync(path.join(stateDir, 'routing.jsonl'), entries);
+
+    run({
+      tool_name: 'mcp__orchestray__kb_search',
+      cwd: dir,
+      tool_result: { isError: false },
+    });
+    const rows = readJsonlFile(path.join(stateDir, 'mcp-checkpoint.jsonl'));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].phase, 'pre-decomposition',
+      'T2b: phase must be pre-decomposition when all routing entries belong to prior orchestrations');
   });
 
 });

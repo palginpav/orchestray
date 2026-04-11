@@ -33,7 +33,7 @@ const path = require('path');
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
-const { getRoutingFilePath } = require('./_lib/routing-lookup');
+const { readRoutingEntries } = require('./_lib/routing-lookup');
 
 const { appendCheckpointEntry } = require('./_lib/mcp-checkpoint');
 
@@ -153,9 +153,31 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
-    // Derive phase: routing.jsonl present → post-decomposition, absent → pre-decomposition.
-    const routingFile = getRoutingFilePath(cwd);
-    const phase = fs.existsSync(routingFile) ? 'post-decomposition' : 'pre-decomposition';
+    // BUG-B-2.0.13: Derive phase by checking whether routing.jsonl contains any
+    // entries for the CURRENT orchestration_id — not from global file presence.
+    // The old file-existence check (fs.existsSync on routing.jsonl) was wrong:
+    // routing.jsonl persists across orchestrations, so a file written by a prior
+    // orchestration caused every subsequent pre-decomposition call to be recorded
+    // as phase='post-decomposition', triggering BUG-C at the gate.
+    //
+    // Fix: filter routing entries by orchId. If at least one row exists for this
+    // orchestration → post-decomposition (PM has already written its routing
+    // decision for this orch). If none exist → pre-decomposition (we are still
+    // in the trio window before decomposition). If readRoutingEntries throws
+    // (corrupted file or ENOENT) → fail-open to 'pre-decomposition' to avoid
+    // blocking on audit-data corruption.
+    //
+    // Do NOT revert to file-existence heuristic.
+    // See .planning/phases/2013-mcp-learning-loop-live/DESIGN.md §D1.
+    let phase;
+    try {
+      const allRoutingEntries = readRoutingEntries(cwd);
+      const hasOrchEntries = allRoutingEntries.some(e => e && e.orchestration_id === orchId);
+      phase = hasOrchEntries ? 'post-decomposition' : 'pre-decomposition';
+    } catch (_phaseErr) {
+      // Fail-open: corrupted routing file must not block checkpoint recording.
+      phase = 'pre-decomposition';
+    }
 
     // Classify outcome and extract result_count (PII discipline: only these two
     // derived values leave tool_result; the raw object is never logged).

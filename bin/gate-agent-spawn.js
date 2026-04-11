@@ -246,21 +246,63 @@ process.stdin.on('end', () => {
               );
 
               if (enforcedTools.length > 0) {
-                const missing = missingRequiredToolsFromRows(rowsForThisOrch, enforcedTools);
+                // BUG-C-2.0.13: Explicitly pass phaseFilter=null. Phase is an audit/analytics
+                // field, not an enforcement field. Filtering by phase would gate-lock any
+                // orchestration where BUG-B (pre-fix) poisoned the phase derivation. Even
+                // after BUG-B is fixed, phase-strictness at the gate is defense-in-depth
+                // we cannot afford — the gate's job is "did the PM call the tool", not
+                // "did the PM call it at the right phase label". Do NOT revert without
+                // reading .planning/phases/2013-mcp-learning-loop-live/DESIGN.md §D1.
+                const missing = missingRequiredToolsFromRows(rowsForThisOrch, enforcedTools, null);
 
                 if (missing.length > 0) {
-                  // Fail-closed: the enforcement target case.
-                  process.stderr.write(
-                    "[orchestray] mcp checkpoint gate: missing MCP checkpoint for " +
-                    missing.join(', ') + " in orchestration " + orchId + ". " +
-                    "Per Section 22b, the PM must call " + missing.join(', ') +
-                    " before the first Agent() spawn. Re-run §22b for the missing " +
-                    "tool(s) — see tier1-orchestration.md §22b.R for the re-entry " +
-                    "protocol — then retry this spawn. To disable enforcement for a " +
-                    "specific tool, set mcp_enforcement.<tool> to 'prompt' in " +
-                    ".orchestray/config.json. Emergency rollback: set " +
-                    "mcp_enforcement.global_kill_switch=true.\n"
+                  // BUG-D-2.0.13: produce a phase-aware diagnostic if rows are present but
+                  // would have been filtered out under a strict phase check. This avoids
+                  // the "missing MCP checkpoint" misleading message when the real issue is
+                  // phase mismatch. Pre-fix BUG-B installations could hit this path on
+                  // upgrade; the automatic migration sweep (W11) should clear it, but the
+                  // diagnostic path remains as a belt-and-braces safety net.
+                  //
+                  // Check whether a strict pre-decomposition filter would have seen the
+                  // same tools as missing. If the null-filter finds absences but the
+                  // strict filter would not have found any rows at all, the rows are truly
+                  // absent (true absence). If the strict filter finds MORE missing tools
+                  // than the null filter, that indicates phase-mismatch rows exist that
+                  // the null filter already passes — which means the strict filter is
+                  // overly restrictive (BUG-D scenario — unreachable post-BUG-B-fix but
+                  // kept as safety net).
+                  const missingStrict = missingRequiredToolsFromRows(rowsForThisOrch, enforcedTools, 'pre-decomposition');
+                  const phaseMismatchTools = enforcedTools.filter(
+                    t => missingStrict.includes(t) && !missing.includes(t)
                   );
+
+                  if (phaseMismatchTools.length > 0) {
+                    // Phase-mismatch path: rows exist but recorded as wrong phase.
+                    // This is the BUG-D diagnostic — should be unreachable post-BUG-B
+                    // fix, but emitted as safety net if phase derivation breaks again.
+                    process.stderr.write(
+                      "[orchestray] mcp checkpoint gate: phase mismatch — tools called but " +
+                      "recorded as 'post-decomposition' instead of 'pre-decomposition' for: " +
+                      phaseMismatchTools.join(', ') + " in orchestration " + orchId + ". " +
+                      "Check mcp-checkpoint.jsonl phase field values. If BUG-B (2.0.13) is " +
+                      "suspected (upgraded from pre-2.0.13), see upgrade notes and run the " +
+                      "W11 migration sweep. Emergency rollback: set " +
+                      "mcp_enforcement.global_kill_switch=true.\n"
+                    );
+                  } else {
+                    // True absence path: tools were genuinely not called.
+                    process.stderr.write(
+                      "[orchestray] mcp checkpoint gate: missing MCP checkpoint for " +
+                      missing.join(', ') + " in orchestration " + orchId + ". " +
+                      "Per Section 22b, the PM must call " + missing.join(', ') +
+                      " before the first Agent() spawn. Re-run §22b for the missing " +
+                      "tool(s) — see tier1-orchestration.md §22b.R for the re-entry " +
+                      "protocol — then retry this spawn. To disable enforcement for a " +
+                      "specific tool, set mcp_enforcement.<tool> to 'prompt' in " +
+                      ".orchestray/config.json. Emergency rollback: set " +
+                      "mcp_enforcement.global_kill_switch=true.\n"
+                    );
+                  }
                   process.exit(2);
                 }
                 // All enforced tools present — allow.

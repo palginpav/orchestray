@@ -660,6 +660,250 @@ describe('failure modes — fail open', () => {
 });
 
 // ---------------------------------------------------------------------------
+// G8 — BUG-B+C regression: repeated-orchestration gate pass-through
+// Ensures the gate does not false-block when routing.jsonl contains entries
+// from a prior orchestration. Missing test class that would have caught the
+// BUG-B + BUG-C showstopper during the 2.0.12 review.
+// ---------------------------------------------------------------------------
+
+describe('G8 — BUG-B+C regression: repeated-orchestration gate pass-through', () => {
+
+  test('G8-T1: gate exits 0 when routing.jsonl has prior-orch entries AND current-orch has correct checkpoint rows', () => {
+    // Scenario that triggered the P0 showstopper in orch-1775913040:
+    //   1. routing.jsonl has entries for orch-PREVIOUS (a completed prior orch)
+    //      AND orch-CURRENT (current orch's routing decision from decomposition).
+    //   2. mcp-checkpoint.jsonl has three rows for orch-CURRENT with
+    //      phase='pre-decomposition' (correct per the BUG-B fix).
+    //   3. current-orchestration.json identifies the session as orch-CURRENT.
+    //   4. Spawn a developer agent — gate must exit 0.
+    //
+    // Pre-fix (BUG-B): the file-existence check on routing.jsonl found the
+    // prior-orch entries and wrote phase='post-decomposition' on the checkpoint
+    // rows. BUG-C then filtered out those rows → exit 2 (false block).
+    // Post-fix: phase is 'pre-decomposition' (correct) → gate passes.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-gate-g8-'));
+    cleanup.push(dir);
+
+    const auditDir = path.join(dir, '.orchestray', 'audit');
+    const stateDir = path.join(dir, '.orchestray', 'state');
+    fs.mkdirSync(auditDir, { recursive: true });
+    fs.mkdirSync(stateDir, { recursive: true });
+
+    // Step 1: current orchestration is orch-CURRENT
+    fs.writeFileSync(
+      path.join(auditDir, 'current-orchestration.json'),
+      JSON.stringify({ orchestration_id: 'orch-CURRENT' })
+    );
+
+    // Step 2: routing.jsonl has entries for orch-PREVIOUS and orch-CURRENT
+    const now = new Date().toISOString();
+    const routingEntries = [
+      {
+        timestamp: '2026-04-10T10:00:00.000Z',
+        orchestration_id: 'orch-PREVIOUS',
+        task_id: 'task-1',
+        agent_type: 'developer',
+        description: 'Previous task',
+        model: 'sonnet',
+        effort: 'medium',
+        complexity_score: 4,
+        score_breakdown: {},
+        decided_by: 'pm',
+        decided_at: 'decomposition',
+      },
+      {
+        timestamp: now,
+        orchestration_id: 'orch-CURRENT',
+        task_id: 'task-1',
+        agent_type: 'developer',
+        description: 'Build the feature',
+        model: 'sonnet',
+        effort: 'medium',
+        complexity_score: 4,
+        score_breakdown: {},
+        decided_by: 'pm',
+        decided_at: 'decomposition',
+      },
+    ];
+    fs.writeFileSync(
+      path.join(stateDir, 'routing.jsonl'),
+      routingEntries.map(e => JSON.stringify(e)).join('\n') + '\n'
+    );
+
+    // Step 3: mcp-checkpoint.jsonl has three rows for orch-CURRENT with
+    //         phase='pre-decomposition' (correct per the BUG-B fix)
+    const requiredTools = ['pattern_find', 'kb_search', 'history_find_similar_tasks'];
+    const checkpointRows = requiredTools.map(tool => JSON.stringify({
+      timestamp: now,
+      orchestration_id: 'orch-CURRENT',
+      tool,
+      outcome: 'answered',
+      phase: 'pre-decomposition',
+      result_count: tool === 'pattern_find' ? 2 : null,
+    })).join('\n') + '\n';
+    fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), checkpointRows);
+
+    // Step 4: spawn developer agent — gate must exit 0
+    const { status, stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: {
+        subagent_type: 'developer',
+        model: 'sonnet',
+        description: 'Build the feature',
+      },
+    });
+
+    assert.equal(status, 0,
+      'G8-T1: gate must exit 0 when prior-orch routing rows exist and current-orch has correct checkpoint rows');
+    assert.equal(stderr, '',
+      'G8-T1: no stderr expected when all requirements are satisfied');
+  });
+
+  test('G8-T2: gate exits 0 when checkpoint rows have phase="pre-decomposition" regardless of routing.jsonl prior entries', () => {
+    // Defense-in-depth for BUG-C fix (phaseFilter=null): even if checkpoint rows
+    // carried wrong phase (e.g., post-decomposition due to pre-fix BUG-B), the gate
+    // must still pass because phaseFilter=null ignores the phase field entirely.
+    // This test deliberately writes phase='post-decomposition' rows and verifies
+    // the gate exits 0 (phase is not an enforcement field).
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-gate-g8b-'));
+    cleanup.push(dir);
+
+    const auditDir = path.join(dir, '.orchestray', 'audit');
+    const stateDir = path.join(dir, '.orchestray', 'state');
+    fs.mkdirSync(auditDir, { recursive: true });
+    fs.mkdirSync(stateDir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(auditDir, 'current-orchestration.json'),
+      JSON.stringify({ orchestration_id: 'orch-CURRENT' })
+    );
+
+    const now = new Date().toISOString();
+    const routingEntry = JSON.stringify({
+      timestamp: now,
+      orchestration_id: 'orch-CURRENT',
+      task_id: 'task-1',
+      agent_type: 'developer',
+      description: 'Build the feature',
+      model: 'sonnet',
+      effort: 'medium',
+      complexity_score: 4,
+      score_breakdown: {},
+      decided_by: 'pm',
+      decided_at: 'decomposition',
+    });
+    fs.writeFileSync(path.join(stateDir, 'routing.jsonl'), routingEntry + '\n');
+
+    // Deliberately write checkpoint rows with phase='post-decomposition'
+    // (the BUG-B poisoned state). The gate must NOT block on this.
+    const requiredTools = ['pattern_find', 'kb_search', 'history_find_similar_tasks'];
+    const checkpointRows = requiredTools.map(tool => JSON.stringify({
+      timestamp: now,
+      orchestration_id: 'orch-CURRENT',
+      tool,
+      outcome: 'answered',
+      phase: 'post-decomposition',   // deliberately wrong phase — gate must ignore
+      result_count: null,
+    })).join('\n') + '\n';
+    fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), checkpointRows);
+
+    const { status, stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: {
+        subagent_type: 'developer',
+        model: 'sonnet',
+        description: 'Build the feature',
+      },
+    });
+
+    assert.equal(status, 0,
+      'G8-T2: gate must exit 0 when checkpoint rows exist for all required tools regardless of phase value (BUG-C-2.0.13 defense-in-depth)');
+  });
+
+  test('G8-T3: BUG-D diagnostic path — phase-mismatch message emitted when rows exist but with wrong phase AND a tool is genuinely absent', () => {
+    // This test exercises the BUG-D defensive diagnostic path (belt-and-braces
+    // safety net). Under normal operation post-BUG-B-fix, this path is unreachable
+    // because phase derivation is now orch-scoped. However, the diagnostic is
+    // preserved to cover any future phase-poisoning scenario.
+    //
+    // Scenario: kb_search and history_find_similar_tasks are present but with
+    // phase='post-decomposition' (poisoned rows). pattern_find is genuinely absent.
+    //
+    // The null-filter (phaseFilter=null) finds pattern_find as the only missing tool.
+    // The strict-filter (phaseFilter='pre-decomposition') finds all three missing
+    // (kb_search and history_find_similar_tasks are filtered out by phase).
+    // phaseMismatchTools = tools in strict-missing but NOT in null-missing
+    //                     = [kb_search, history_find_similar_tasks]
+    //
+    // Because phaseMismatchTools.length > 0, the BUG-D phase-mismatch diagnostic
+    // fires (mentioning the poisoned tools), and gate exits 2.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-gate-g8c-'));
+    cleanup.push(dir);
+
+    const auditDir = path.join(dir, '.orchestray', 'audit');
+    const stateDir = path.join(dir, '.orchestray', 'state');
+    fs.mkdirSync(auditDir, { recursive: true });
+    fs.mkdirSync(stateDir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(auditDir, 'current-orchestration.json'),
+      JSON.stringify({ orchestration_id: 'orch-CURRENT' })
+    );
+
+    const now = new Date().toISOString();
+    const routingEntry = JSON.stringify({
+      timestamp: now,
+      orchestration_id: 'orch-CURRENT',
+      task_id: 'task-1',
+      agent_type: 'developer',
+      description: 'Build the feature',
+      model: 'sonnet',
+      effort: 'medium',
+      complexity_score: 4,
+      score_breakdown: {},
+      decided_by: 'pm',
+      decided_at: 'decomposition',
+    });
+    fs.writeFileSync(path.join(stateDir, 'routing.jsonl'), routingEntry + '\n');
+
+    // Write kb_search + history_find_similar_tasks with phase='post-decomposition'
+    // (poisoned). pattern_find is genuinely absent.
+    const checkpointRows = ['kb_search', 'history_find_similar_tasks'].map(tool => JSON.stringify({
+      timestamp: now,
+      orchestration_id: 'orch-CURRENT',
+      tool,
+      outcome: 'answered',
+      phase: 'post-decomposition',   // poisoned phase — BUG-D diagnostic path
+      result_count: null,
+    })).join('\n') + '\n';
+    fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), checkpointRows);
+
+    const { status, stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: {
+        subagent_type: 'developer',
+        model: 'sonnet',
+        description: 'Build the feature',
+      },
+    });
+
+    // Gate must block (exit 2) because pattern_find is genuinely absent
+    assert.equal(status, 2,
+      'G8-T3: gate must block when a required tool is genuinely absent');
+    // The BUG-D phase-mismatch diagnostic fires for the poisoned tools
+    assert.match(stderr, /phase mismatch/i,
+      'G8-T3: BUG-D phase-mismatch diagnostic must fire when rows exist with wrong phase');
+    // The message names the tools that were phase-poisoned (not pattern_find which is absent)
+    assert.match(stderr, /kb_search|history_find_similar_tasks/,
+      'G8-T3: phase-mismatch diagnostic must name the poisoned tools');
+  });
+
+});
+
+// ---------------------------------------------------------------------------
 // routing.jsonl validation
 // ---------------------------------------------------------------------------
 
