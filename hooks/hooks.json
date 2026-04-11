@@ -2,7 +2,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Agent",
+        "matcher": "Agent|Explore|Task",
         "hooks": [
           {
             "type": "command",
@@ -14,12 +14,22 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Agent",
+        "matcher": "Agent|Explore|Task",
         "hooks": [
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/emit-routing-outcome.js",
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__orchestray__pattern_find|mcp__orchestray__kb_search|mcp__orchestray__history_find_similar_tasks|mcp__orchestray__pattern_record_application",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/record-mcp-checkpoint.js",
+            "timeout": 15
           }
         ]
       }
