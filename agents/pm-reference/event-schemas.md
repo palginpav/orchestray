@@ -960,3 +960,90 @@ child. `SubagentStop` fires only for spawned subagents and never for the main se
 PreCompact is the closest available session-boundary hook and is already used by this
 project (`bin/pre-compact-archive.js`). See commit `8761fb2` for the full investigation.
 **T10 action required:** update DESIGN §D2 step 7 to reflect the PreCompact trigger.
+
+---
+
+## Kill Switch Activated Event
+
+IMPLEMENTED (as of 2.0.13, task 2013-W7). Emitted by `bin/emit-kill-switch-event.js`
+(called from the `skills/orchestray:config` skill write path) immediately after a
+successful write that flips `mcp_enforcement.global_kill_switch` from `false` → `true`.
+
+Written via `atomicAppendJsonl` to `.orchestray/audit/events.jsonl`. Fail-open:
+if the write fails, a stderr warning is emitted and the config write proceeds normally.
+Only emitted on a real value change — no-op flips (writing the same value) produce
+no event. Grep anchor: `2013-W7-kill-switch`.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "kill_switch_activated",
+  "orchestration_id": "<current orch id, or null if no orchestration active>",
+  "reason": "<user-supplied reason string, or null>",
+  "source": "config-skill",
+  "previous_value": false,
+  "new_value": true
+}
+```
+
+**Fields:**
+
+- `orchestration_id` (string|null) — the active orchestration at the time of the flip,
+  read from `.orchestray/audit/current-orchestration.json`. `null` if the file is absent
+  or the stored value is `"unknown"` (the switch was flipped outside an active orchestration).
+
+- `reason` (string|null) — optional free-text reason supplied by the operator. Currently
+  the config skill does not accept a reason argument; this field is reserved for future
+  extension and is always `null` in practice.
+
+- `source` — always `"config-skill"` for events emitted via the config write path.
+
+- `previous_value` (boolean) — the value of `global_kill_switch` BEFORE the write.
+  Always `false` for `kill_switch_activated` events.
+
+- `new_value` (boolean) — the value of `global_kill_switch` AFTER the write.
+  Always `true` for `kill_switch_activated` events.
+
+**Consumer guidance:** analytics-only. This event is NOT consumed by hooks (the
+`gate-agent-spawn.js` kill-switch check reads `config.json` directly — not events.jsonl).
+Consumers are `orchestray:analytics` (health signals section) for current-state display
+and time-window history queries for "kill switch was active from T1 to T2" analysis.
+
+**Schema stability:** additive only. Consumers that do not recognise this event type
+should ignore it. New fields will only be added as optional.
+
+---
+
+## Kill Switch Deactivated Event
+
+IMPLEMENTED (as of 2.0.13, task 2013-W7). Emitted by `bin/emit-kill-switch-event.js`
+(called from the `skills/orchestray:config` skill write path) immediately after a
+successful write that flips `mcp_enforcement.global_kill_switch` from `true` → `false`.
+
+Written via `atomicAppendJsonl` to `.orchestray/audit/events.jsonl`. Fail-open:
+if the write fails, a stderr warning is emitted and the config write proceeds normally.
+Only emitted on a real value change — no-op flips produce no event.
+Grep anchor: `2013-W7-kill-switch`.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "kill_switch_deactivated",
+  "orchestration_id": "<current orch id, or null if no orchestration active>",
+  "reason": "<user-supplied reason string, or null>",
+  "source": "config-skill",
+  "previous_value": true,
+  "new_value": false
+}
+```
+
+**Fields:** Identical structure to `kill_switch_activated`. The only difference is
+`previous_value: true` and `new_value: false`.
+
+**Consumer guidance:** analytics-only. Pairs with `kill_switch_activated` events to
+close the activation window. The `orchestray:analytics` health signals section uses the
+most recent activation/deactivation pair from the last 100 events to determine whether
+the kill switch is currently "open" (activated without a subsequent deactivation).
+
+**Schema stability:** additive only. Consumers that do not recognise this event type
+should ignore it. New fields will only be added as optional.

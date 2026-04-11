@@ -183,4 +183,43 @@ The user wants to see aggregate performance analytics across orchestration histo
 
    After displaying the pattern learning section (whether populated or empty), add: "Run `/orchestray:patterns` for detailed pattern effectiveness data."
 
+## Health Signals
+
+After displaying all analytics sections, check for active emergency conditions that
+require immediate operator attention.
+
+**Kill-switch health check:**
+
+1. Read `.orchestray/config.json`. If it does not exist, skip this section.
+2. Check `mcp_enforcement.global_kill_switch`. If the value is `true`, display:
+
+   ```
+   ## Health Signals
+
+   **WARNING: MCP enforcement kill switch is ACTIVE.**
+   2.0.12's hook-enforced MCP surface is fully bypassed.
+   Re-enable via `/orchestray:config set mcp_enforcement.global_kill_switch false` when the emergency is resolved.
+   ```
+
+3. Additionally, scan `.orchestray/audit/events.jsonl` for `kill_switch_activated`
+   and `kill_switch_deactivated` events among the **last 100 events** in the file
+   (read the tail of the file; ignore earlier events beyond that window).
+
+   - Find the most recent `kill_switch_activated` event in that window.
+   - Check whether a `kill_switch_deactivated` event with a **later** timestamp
+     exists after it in the same window.
+   - If the most recent activation has no later deactivation, append to the
+     Health Signals block:
+
+     ```
+     Kill switch activated <relative time ago> and has not been deactivated since.
+     ```
+
+     Compute the relative time from the event's `timestamp` field to the current
+     wall-clock time (e.g., "3 minutes ago", "2 hours ago", "4 days ago").
+
+4. If `global_kill_switch` is `false` AND no unmatched `kill_switch_activated`
+   event is found in the last 100 events, **omit the Health Signals section
+   entirely** — do not show an empty section or a "No health issues" placeholder.
+
 *Per-orchestration execution timelines available via `/orchestray:report`.*
