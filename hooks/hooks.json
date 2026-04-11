@@ -118,6 +118,15 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/record-pattern-skip.js",
+            "timeout": 10
+          }
+        ]
       }
     ]
   }
