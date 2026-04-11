@@ -129,8 +129,11 @@ describe('SubagentStop event handling', () => {
       run(input);
 
       const events = readEventsJsonl(auditDir);
-      assert.equal(events.length, 1, 'should write exactly one event');
-      const ev = events[0];
+      // Variant C (routing_outcome source:subagent_stop) + agent_stop
+      assert.equal(events.length, 2, 'should write routing_outcome supplement then agent_stop');
+      const ev = events[1];
+      assert.equal(events[0].type, 'routing_outcome');
+      assert.equal(events[0].source, 'subagent_stop');
       assert.equal(ev.type, 'agent_stop');
       assert.equal(ev.orchestration_id, 'orch-test-001');
       assert.equal(ev.agent_type, 'developer');
@@ -158,7 +161,8 @@ describe('SubagentStop event handling', () => {
       run(input);
 
       const events = readEventsJsonl(auditDir);
-      assert.equal(events[0].last_message_preview.length, 200,
+      // events[0] is Variant C routing_outcome; events[1] is agent_stop
+      assert.equal(events[1].last_message_preview.length, 200,
         'last_message_preview should be truncated to 200 chars');
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
@@ -205,7 +209,8 @@ describe('SubagentStop event handling', () => {
       run(input);
 
       const events = readEventsJsonl(auditDir);
-      const ev = events[0];
+      // events[0] is Variant C routing_outcome; events[1] is agent_stop
+      const ev = events[1];
       assert.equal(ev.usage.input_tokens, 1000);
       assert.equal(ev.usage.output_tokens, 500);
       assert.equal(ev.usage_source, 'event_payload');
@@ -240,7 +245,8 @@ describe('SubagentStop event handling', () => {
       run(input);
 
       const events = readEventsJsonl(auditDir);
-      const ev = events[0];
+      // events[0] is Variant C routing_outcome; events[1] is agent_stop
+      const ev = events[1];
       // 3 assistant turns → 3 * 2000 = 6000 input, 3 * 1000 = 3000 output
       assert.equal(ev.usage.input_tokens, 6000, 'estimated input tokens should be turns * 2000');
       assert.equal(ev.usage.output_tokens, 3000, 'estimated output tokens should be turns * 1000');
@@ -273,7 +279,8 @@ describe('SubagentStop event handling', () => {
       run(input);
 
       const events = readEventsJsonl(auditDir);
-      const ev = events[0];
+      // events[0] is Variant C routing_outcome; events[1] is agent_stop
+      const ev = events[1];
       assert.equal(ev.usage.input_tokens, 8000, 'should sum input tokens across all turns');
       assert.equal(ev.usage.output_tokens, 3500, 'should sum output tokens');
       assert.equal(ev.usage.cache_read_input_tokens, 1000, 'should sum cache read tokens');
@@ -309,7 +316,8 @@ describe('SubagentStop event handling', () => {
       const { status } = run(input);
       assert.equal(status, 0, 'should not crash on malformed transcript lines');
       const events = readEventsJsonl(auditDir);
-      assert.equal(events[0].usage.input_tokens, 1000, 'should sum from valid lines only');
+      // events[0] is Variant C routing_outcome; events[1] is agent_stop
+      assert.equal(events[1].usage.input_tokens, 1000, 'should sum from valid lines only');
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
     }
@@ -330,7 +338,8 @@ describe('SubagentStop event handling', () => {
       const { status } = run(input);
       assert.equal(status, 0, 'should not crash on missing transcript');
       const events = readEventsJsonl(auditDir);
-      assert.equal(events.length, 1, 'should still write event');
+      // Variant C routing_outcome + agent_stop = 2 events
+      assert.equal(events.length, 2, 'should write routing_outcome supplement and agent_stop');
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
     }
@@ -362,8 +371,11 @@ describe('TaskCompleted event handling', () => {
       run(input);
 
       const events = readEventsJsonl(auditDir);
-      assert.equal(events.length, 1);
-      const ev = events[0];
+      // Variant C (routing_outcome source:subagent_stop) + task_completed_metrics
+      assert.equal(events.length, 2);
+      assert.equal(events[0].type, 'routing_outcome');
+      assert.equal(events[0].source, 'subagent_stop');
+      const ev = events[1];
       assert.equal(ev.type, 'task_completed_metrics');
       assert.equal(ev.mode, 'teams');
       assert.equal(ev.orchestration_id, 'orch-team-001');
@@ -395,7 +407,8 @@ describe('TaskCompleted event handling', () => {
       run(input);
 
       const events = readEventsJsonl(auditDir);
-      const ev = events[0];
+      // events[0] is Variant C routing_outcome; events[1] is task_completed_metrics
+      const ev = events[1];
       assert.equal(ev.usage.input_tokens, 800);
       assert.equal(ev.usage_source, 'transcript');
     } finally {
@@ -808,8 +821,9 @@ describe('path containment with symlinks (DEF-1)', () => {
       run(input);
 
       const events = readEventsJsonl(auditDir);
-      assert.equal(events.length, 1, 'event should be written');
-      const ev = events[0];
+      // Variant C routing_outcome + agent_stop
+      assert.equal(events.length, 2, 'both events should be written');
+      const ev = events[1];
       assert.equal(ev.usage_source, 'transcript',
         'transcript should be accepted despite cwd being a symlink to the real dir');
       assert.equal(ev.usage.input_tokens, 1234);
@@ -842,8 +856,9 @@ describe('path containment with symlinks (DEF-1)', () => {
       run(input);
 
       const events = readEventsJsonl(auditDir);
-      assert.equal(events.length, 1, 'event should still be written');
-      const ev = events[0];
+      // Variant C routing_outcome + agent_stop = 2 events
+      assert.equal(events.length, 2, 'both events should still be written');
+      const ev = events[1];
       // Outside transcripts are blocked: transcript_path is nulled out and
       // the 9999/9999 tokens from the outside file are NOT read into usage.
       assert.equal(ev.transcript_path, null,
@@ -975,9 +990,12 @@ describe('events.jsonl append behavior', () => {
       run(input);
 
       const events = readEventsJsonl(auditDir);
-      assert.equal(events.length, 2, 'should have 2 events: existing + new');
+      // existing_event + Variant C routing_outcome + agent_stop
+      assert.equal(events.length, 3, 'should have 3 events: existing + routing_outcome supplement + agent_stop');
       assert.equal(events[0].type, 'existing_event', 'existing event must be preserved');
-      assert.equal(events[1].type, 'agent_stop', 'new event appended at end');
+      assert.equal(events[1].type, 'routing_outcome', 'Variant C supplement appended second');
+      assert.equal(events[1].source, 'subagent_stop');
+      assert.equal(events[2].type, 'agent_stop', 'agent_stop appended last');
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
     }
@@ -1023,7 +1041,8 @@ describe('events.jsonl append behavior', () => {
 
       const eventsPath = path.join(auditDir, 'events.jsonl');
       const lines = fs.readFileSync(eventsPath, 'utf8').split('\n').filter(l => l.trim());
-      assert.equal(lines.length, 2, 'should have 2 lines');
+      // Each run emits Variant C routing_outcome + agent_stop = 2 events; 2 runs = 4 lines
+      assert.equal(lines.length, 4, 'should have 4 lines (2 events per run × 2 runs)');
       for (const line of lines) {
         assert.doesNotThrow(() => JSON.parse(line), `Line should be valid JSON: ${line.slice(0, 80)}`);
       }

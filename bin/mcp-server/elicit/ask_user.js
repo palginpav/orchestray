@@ -43,7 +43,7 @@ const {
 } = require('../lib/schemas');
 const { buildAuditEvent } = require('../lib/audit');
 
-const TOOL_FQN = 'mcp__orchestray__ask_user';
+const AUDIT_TOOL_NAME = 'ask_user';
 const DEFAULT_TIMEOUT_SECONDS = 120;
 
 // ---------------------------------------------------------------------------
@@ -279,7 +279,7 @@ function readFormCountSafe(input) {
 function emitAudit(sink, { outcome, duration_ms, form_fields_count }) {
   try {
     const event = buildAuditEvent({
-      tool: TOOL_FQN,
+      tool: AUDIT_TOOL_NAME,
       outcome,
       duration_ms,
       form_fields_count,

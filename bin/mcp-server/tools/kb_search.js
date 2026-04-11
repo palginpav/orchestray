@@ -177,6 +177,13 @@ function _score(queryTokens, hayTokens, title, rawQuery) {
   // repetition-heavy titles (matches the "high-hit" vs "low-hit" test).
   let titleMatches = 0;
   for (const tok of queryTokens) {
+    // The boundary classes `(^|[^a-z0-9])` and `([^a-z0-9]|$)` use alternation
+    // with anchors, which can backtrack on certain inputs. This is safe for the
+    // current use-case because (a) query tokens are bounded by the 500-char
+    // _validate query cap, and (b) titles are bounded by ~200 chars. If either
+    // bound is ever relaxed, rewrite this as a word-boundary split instead of
+    // a per-token regex to eliminate ReDoS backtracking risk. Advisory per
+    // T14 audit.
     const re = new RegExp('(^|[^a-z0-9])' + _escapeRegex(tok) + '([^a-z0-9]|$)', 'g');
     const ms = titleLower.match(re);
     if (ms) titleMatches += ms.length;

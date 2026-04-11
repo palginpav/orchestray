@@ -50,6 +50,7 @@ async function list(context) {
     return { resources };
   }
 
+  const totalCount = dirs.length;
   const top = dirs.slice(0, 20);
   for (const d of top) {
     resources.push({
@@ -60,7 +61,7 @@ async function list(context) {
     });
   }
 
-  return { resources };
+  return { resources, _truncated: totalCount > 20, _totalCount: totalCount };
 }
 
 async function templates(_context) {
@@ -95,12 +96,17 @@ async function read(uri, context, parsed) {
   // audit/live — read the live events.jsonl via the parametrized helper.
   if (segments.length === 2 && segments[0] === 'audit' && segments[1] === 'live') {
     const f = paths.getAuditEventsPathIn(root);
-    if (!fs.existsSync(f)) {
+    // Remove existsSync + readFileSync TOCTOU: wrap the read in try/catch so
+    // a file deleted between check and read maps to RESOURCE_NOT_FOUND, not
+    // JSONRPC_INTERNAL_ERROR (M2 fix).
+    let text;
+    try {
+      text = fs.readFileSync(f, 'utf8');
+    } catch (err) {
       const e = new Error('live audit events.jsonl not found');
-      e.code = 'RESOURCE_NOT_FOUND';
+      e.code = err.code === 'ENOENT' ? 'RESOURCE_NOT_FOUND' : 'READ_ERROR';
       throw e;
     }
-    const text = fs.readFileSync(f, 'utf8');
     return {
       contents: [
         { uri, mimeType: 'application/x-ndjson', text },
@@ -116,12 +122,14 @@ async function read(uri, context, parsed) {
 
     if (segments.length === 2) {
       const f = path.join(archiveDir, 'events.jsonl');
-      if (!fs.existsSync(f)) {
+      let text;
+      try {
+        text = fs.readFileSync(f, 'utf8');
+      } catch (err) {
         const e = new Error('archive events.jsonl not found');
-        e.code = 'RESOURCE_NOT_FOUND';
+        e.code = err.code === 'ENOENT' ? 'RESOURCE_NOT_FOUND' : 'READ_ERROR';
         throw e;
       }
-      const text = fs.readFileSync(f, 'utf8');
       return {
         contents: [
           { uri, mimeType: 'application/x-ndjson', text },
@@ -131,12 +139,14 @@ async function read(uri, context, parsed) {
 
     if (segments.length === 3 && segments[2] === 'summary') {
       const f = path.join(archiveDir, 'orchestration.md');
-      if (!fs.existsSync(f)) {
+      let text;
+      try {
+        text = fs.readFileSync(f, 'utf8');
+      } catch (err) {
         const e = new Error('orchestration summary not found: ' + orchId);
-        e.code = 'RESOURCE_NOT_FOUND';
+        e.code = err.code === 'ENOENT' ? 'RESOURCE_NOT_FOUND' : 'READ_ERROR';
         throw e;
       }
-      const text = fs.readFileSync(f, 'utf8');
       return {
         contents: [
           { uri, mimeType: 'text/markdown', text },
@@ -146,7 +156,14 @@ async function read(uri, context, parsed) {
 
     if (segments.length === 4 && segments[2] === 'tasks') {
       const f = paths.resolveHistoryTaskFile(orchId, segments[3], root);
-      const text = fs.readFileSync(f, 'utf8');
+      let text;
+      try {
+        text = fs.readFileSync(f, 'utf8');
+      } catch (err) {
+        const e = new Error('task file not found: ' + segments[3]);
+        e.code = err.code === 'ENOENT' ? 'RESOURCE_NOT_FOUND' : 'READ_ERROR';
+        throw e;
+      }
       return {
         contents: [
           { uri, mimeType: 'text/markdown', text },

@@ -10,9 +10,10 @@
  *   - tools/list        -> [ASK_USER_TOOL_DEFINITION] or [] if disabled
  *   - tools/call name=ask_user -> handleAskUser(...)
  *
- * Server-initiated `elicitation/create` requests are correlated by numeric id
- * via an in-memory `Map<id, {resolve, reject, timer}>`. Responses from the
- * client arrive on stdin with matching ids and resolve the pending promise.
+ * Server-initiated `elicitation/create` requests are correlated by a
+ * random hex-string id (8 bytes from `crypto.randomBytes`) via an in-memory
+ * `Map<id, {resolve, reject, timer}>`. Responses from the client arrive on
+ * stdin with matching ids and resolve the pending promise.
  *
  * Discipline:
  *   - Line-delimited JSON. `process.stdout.write(JSON.stringify(obj) + '\n')`.
@@ -24,6 +25,7 @@
 
 const fs = require('node:fs');
 const readline = require('node:readline');
+const crypto = require('node:crypto');
 
 const paths = require('./lib/paths');
 const { ASK_USER_TOOL_DEFINITION } = require('./lib/schemas');
@@ -33,6 +35,15 @@ const {
   buildResourceAuditEvent,
   readOrchestrationId,
 } = require('./lib/audit');
+const {
+  CODES,
+  logStderr,
+  writeFrame,
+  sendError,
+  sendResult,
+  isResponse,
+  parseLine,
+} = require('./lib/rpc');
 const { handleAskUser } = require('./elicit/ask_user');
 
 // Stage 2 tool handlers
@@ -54,22 +65,6 @@ const SERVER_VERSION = '2.0.11';
 // ---------------------------------------------------------------------------
 // Startup
 // ---------------------------------------------------------------------------
-
-function logStderr(msg) {
-  try {
-    process.stderr.write('[orchestray-mcp] ' + msg + '\n');
-  } catch (_e) {
-    // Stderr unavailable; nothing to do.
-  }
-}
-
-function writeFrame(obj) {
-  try {
-    process.stdout.write(JSON.stringify(obj) + '\n');
-  } catch (err) {
-    logStderr('stdout write failed: ' + (err && err.message));
-  }
-}
 
 /**
  * Load the server-side config from `.orchestray/config.json`. Returns a
@@ -203,11 +198,10 @@ function emitResourceAudit(uri, outcome, durationMs) {
 // ---------------------------------------------------------------------------
 
 const pendingElicitations = new Map(); // id -> { resolve, reject, timer }
-let nextElicitationId = 1;
 
 function sendElicitation(params, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const id = nextElicitationId++;
+    const id = crypto.randomBytes(8).toString('hex');
     const timer = setTimeout(() => {
       pendingElicitations.delete(id);
       const err = new Error('elicitation timed out after ' + timeoutMs + 'ms');
@@ -261,23 +255,14 @@ function rejectAllPendingElicitations(reason) {
 // JSON-RPC dispatch
 // ---------------------------------------------------------------------------
 
-const JSONRPC_PARSE_ERROR = -32700;
-const JSONRPC_INVALID_REQUEST = -32600;
-const JSONRPC_METHOD_NOT_FOUND = -32601;
-const JSONRPC_INVALID_PARAMS = -32602;
-const JSONRPC_INTERNAL_ERROR = -32603;
-// MCP resource not found: https://modelcontextprotocol.io/specification (code -32002).
-const MCP_RESOURCE_NOT_FOUND = -32002;
-
-function sendError(id, code, message, data) {
-  const error = { code, message };
-  if (data !== undefined) error.data = data;
-  writeFrame({ jsonrpc: '2.0', id: id == null ? null : id, error });
-}
-
-function sendResult(id, result) {
-  writeFrame({ jsonrpc: '2.0', id, result });
-}
+const {
+  JSONRPC_PARSE_ERROR,
+  JSONRPC_INVALID_REQUEST,
+  JSONRPC_METHOD_NOT_FOUND,
+  JSONRPC_INVALID_PARAMS,
+  JSONRPC_INTERNAL_ERROR,
+  MCP_RESOURCE_NOT_FOUND,
+} = CODES;
 
 async function dispatchRequest(config, msg) {
   const { id, method, params } = msg;
@@ -390,17 +375,42 @@ async function dispatchRequest(config, msg) {
     }
     const ctx = buildResourceContext(config);
     const aggregated = [];
+    // Aggregate per-scheme truncation meta so the client can tell when a
+    // handler capped its results. Any scheme reporting truncation flips the
+    // top-level `_truncated` flag, and `_totalCount` sums across handlers
+    // that reported one. Handlers that don't report meta contribute nothing
+    // to `_totalCount` (no false "0" rows). MCP permits extra fields on
+    // resources/list responses; clients that ignore them see the old shape.
+    //
+    // As of 2.0.11 only `history_resource` reports `_totalCount` (the 20-item
+    // archive cap), so `_totalCount` is currently history-specific. If other
+    // handlers grow similar caps and start reporting, this loop's summing
+    // behavior will combine them — clients should NOT interpret `_totalCount`
+    // as "total resources across schemes" until all three handlers adopt it.
+    // The field name is accurate for history alone; it's advisory, not a
+    // content-length guarantee.
+    let anyTruncated = false;
+    let haveTotalCount = false;
+    let totalCount = 0;
     for (const [scheme, handler] of Object.entries(RESOURCE_HANDLERS)) {
       try {
         const res = await handler.list(ctx);
         if (res && Array.isArray(res.resources)) {
           for (const r of res.resources) aggregated.push(r);
         }
+        if (res && res._truncated === true) anyTruncated = true;
+        if (res && typeof res._totalCount === 'number') {
+          haveTotalCount = true;
+          totalCount += res._totalCount;
+        }
       } catch (err) {
         logStderr('resources/list ' + scheme + ' failed: ' + (err && err.message));
       }
     }
-    sendResult(id, { resources: aggregated });
+    const result = { resources: aggregated };
+    if (anyTruncated) result._truncated = true;
+    if (haveTotalCount) result._totalCount = totalCount;
+    sendResult(id, result);
     return;
   }
 
@@ -509,28 +519,16 @@ async function dispatchRequest(config, msg) {
 // Stdin loop
 // ---------------------------------------------------------------------------
 
-function isResponse(msg) {
-  return msg && (msg.result !== undefined || msg.error !== undefined);
-}
-
 async function handleLine(config, line) {
   const trimmed = line.trim();
   if (trimmed.length === 0) return;
 
-  let msg;
-  try {
-    msg = JSON.parse(trimmed);
-  } catch (err) {
-    logStderr('parse error: ' + (err && err.message) + ' line=' + trimmed.slice(0, 200));
-    // Per JSON-RPC, a parse error has null id.
-    sendError(null, JSONRPC_PARSE_ERROR, 'Parse error');
+  const parsed = parseLine(line);
+  if (!parsed.ok) {
+    sendError(null, parsed.code, parsed.message);
     return;
   }
-
-  if (!msg || typeof msg !== 'object' || Array.isArray(msg)) {
-    sendError(null, JSONRPC_INVALID_REQUEST, 'Invalid Request');
-    return;
-  }
+  const msg = parsed.msg;
 
   // Responses to server-initiated `elicitation/create` requests.
   if (isResponse(msg) && typeof msg.id !== 'undefined' && msg.method === undefined) {

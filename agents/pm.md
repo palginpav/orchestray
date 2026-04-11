@@ -64,10 +64,8 @@ with default values:
   "effort_routing": true,
   "security_review": "auto",
   "tdd_mode": false,
-  "enable_regression_check": false,
   "enable_prescan": true,
   "enable_repo_map": true,
-  "enable_static_analysis": false,
   "test_timeout": 60,
   "enable_checkpoints": false,
   "enable_agent_teams": false,
@@ -462,6 +460,18 @@ The `model:` frontmatter in `agents/*.md` files has NO effect on built-in agent 
 spawned via `subagent_type`. Only the Agent() tool's `model` parameter controls the model.
 
 Outside of orchestrations (simple task path), model selection does not apply.
+
+### Durable Routing Decision (REQUIRED)
+
+As the final step of Section 13 decomposition, BEFORE spawning any agent in Group 1, write one routing entry per subtask to `.orchestray/state/routing.jsonl` (one JSON object per line, append-only). Each entry records the complexity score, assigned model, assigned effort, and score breakdown for that specific subtask. Schema in `bin/_lib/routing-lookup.js`.
+
+This file is the SINGLE SOURCE OF TRUTH for routing during the orchestration. The `PreToolUse:Agent` hook (`bin/gate-agent-spawn.js`) validates every `Agent()` call against this file. If no entry matches the spawn's (agent_type, description), the hook blocks the spawn. If the entry's `model` doesn't match the `model` parameter you pass to `Agent()`, the hook blocks.
+
+**Why:** PM routing decisions are fragile across long sessions. Writing them to a file means they survive context compaction, session resumption, and PM forgetfulness. Before every spawn, re-read the entry fresh — do NOT trust your working memory for routing decisions.
+
+**Dynamic spawns** (audit, debug, reviewer re-runs triggered mid-orchestration): you must append a new routing entry for any task not in the original decomposition BEFORE calling `Agent()`. The hook treats dynamic spawns identically — no entry, no spawn.
+
+**Re-planning and verify-fix re-spawns:** append a new entry with a fresh timestamp. The hook matches the MOST RECENT entry for `(agent_type, description)`, so re-spawns automatically pick up the latest routing.
 
 ### Repository Map Injection
 
@@ -1031,6 +1041,8 @@ This section integrates with the orchestration flow at specific points:
 
 ## 19. Model Routing Protocol
 
+> **Durable state:** as of 2.0.11, routing decisions computed by this protocol MUST be persisted to `.orchestray/state/routing.jsonl` via the helper in `bin/_lib/routing-lookup.js`. The `PreToolUse:Agent` hook enforces this. Do not rely on memory — write the decision and re-read it per spawn.
+
 After Section 12 produces a complexity score for each subtask, apply this routing protocol
 to determine which model (Haiku, Sonnet, or Opus) each agent should use. The goal is
 cost-quality optimization: simple subtasks use cheaper models while complex tasks get the
@@ -1081,8 +1093,7 @@ the delegation prompt text instead (see "Model and Effort Assignment at Spawn" a
 
 ### Transparency
 
-When announcing orchestration (Section 0 Medium+ Task Path), always include the model
-and effort assignment for each subtask:
+Before every `Agent()` tool call during an orchestration, the PM MUST announce `Assigning to {role} ({model}/{effort} -- score {N}/12)` as a user-visible line, AND pass `model={model}` as a parameter on the Agent() call. The PreToolUse:Agent hook at `bin/gate-agent-spawn.js` enforces this — failure to pass model will abort the spawn.
 
 ```
 Assigning to {role} ({model}/{effort} -- score {N}/12)

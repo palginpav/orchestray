@@ -92,13 +92,21 @@ async function handle(input, context) {
   const newCount = currentCount + 1;
   const nowIso = new Date().toISOString();
 
-  let r = frontmatter.rewriteField(resolved, 'times_applied', newCount);
-  if (!r.ok) {
-    return toolError('pattern_record_application: write failed (' + r.error + ')');
-  }
-  r = frontmatter.rewriteField(resolved, 'last_applied', nowIso);
-  if (!r.ok) {
-    return toolError('pattern_record_application: write failed (' + r.error + ')');
+  // Single read-modify-write: update both fields atomically in one pass so
+  // a concurrent call cannot interleave between two separate rewriteField
+  // calls and silently lose the times_applied increment (TOCTOU fix).
+  const nextFm = Object.assign({}, parsed.frontmatter, {
+    times_applied: newCount,
+    last_applied: nowIso,
+  });
+  const nextContent = frontmatter.stringify({ frontmatter: nextFm, body: parsed.body });
+  const tmp = resolved + '.tmp';
+  try {
+    fs.writeFileSync(tmp, nextContent, 'utf8');
+    fs.renameSync(tmp, resolved);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch (_e) { /* swallow */ }
+    return toolError('pattern_record_application: write failed (' + (err && err.code ? err.code : 'write_failed') + ')');
   }
 
   return toolSuccess({

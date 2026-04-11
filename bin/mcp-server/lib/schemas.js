@@ -320,6 +320,11 @@ const ASK_USER_TOOL_DEFINITION = deepFreeze({
  * Per v2011c-stage2-plan.md §5.
  */
 
+// Keywords we deliberately do NOT validate. `additionalProperties` is
+// excluded because Orchestray's own tool schemas don't use it, and the
+// validator is for tool INPUTS (not schemas). If a tool schema specifies
+// `additionalProperties: false`, we silently allow extras — callers should
+// avoid relying on this keyword for input validation. Per T12 audit I6.
 const UNSUPPORTED_KEYWORDS = [
   'oneOf',
   'anyOf',
@@ -349,6 +354,11 @@ function _pathLabel(pathStr) {
 }
 
 function _validate(value, schema, pathStr, errors) {
+  // W1 fix: capture the error count on entry so the unsupported-keyword bail
+  // below only fires on errors added during THIS call, not accumulated errors
+  // from prior sibling properties in the shared array.
+  const startLen = errors.length;
+
   if (!isPlainObject(schema)) {
     errors.push(_pathLabel(pathStr) + ': schema must be an object');
     return;
@@ -370,7 +380,7 @@ function _validate(value, schema, pathStr, errors) {
 
   // Bail early on unsupported-keyword rejection — the caller gets a clean
   // single message. Any further checks would just add noise.
-  if (errors.length > 0) return;
+  if (errors.length > startLen) return;
 
   const type = schema.type;
 

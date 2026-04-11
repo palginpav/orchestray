@@ -4,6 +4,8 @@
 const fs = require('fs');
 const path = require('path');
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
+const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 
 // Model-based pricing per 1M tokens (current Anthropic rates as of 2026)
 const PRICING = {
@@ -84,14 +86,23 @@ function estimateCost(usage, rates) {
   return Math.round(total * 1_000_000) / 1_000_000; // 6 decimal places
 }
 
+const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB cap — guards against runaway payloads OOMing the hook (T14 audit I14)
+
 let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('error', () => { process.stdout.write(JSON.stringify({ continue: true })); process.exit(0); });
-process.stdin.on('data', (chunk) => { input += chunk; });
+process.stdin.on('data', (chunk) => {
+  input += chunk;
+  if (input.length > MAX_INPUT_BYTES) {
+    process.stderr.write('[orchestray] hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
+    process.stdout.write(JSON.stringify({ continue: true }) + '\n');
+    process.exit(0);
+  }
+});
 process.stdin.on('end', () => {
   try {
     const event = JSON.parse(input);
-    const cwd = event.cwd || process.cwd();
+    const cwd = resolveSafeCwd(event.cwd);
     const auditDir = path.join(cwd, '.orchestray', 'audit');
 
     // Detect event source: team event (TaskCompleted) vs subagent event (SubagentStop)
@@ -100,7 +111,7 @@ process.stdin.on('end', () => {
     // Read orchestration_id from current-orchestration.json if available
     let orchestrationId = 'unknown';
     try {
-      const orchFile = path.join(auditDir, 'current-orchestration.json');
+      const orchFile = getCurrentOrchestrationFile(cwd);
       const orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
       if (orchData.orchestration_id) {
         orchestrationId = orchData.orchestration_id;
@@ -208,6 +219,7 @@ process.stdin.on('end', () => {
 
     // Ensure audit directory exists
     fs.mkdirSync(auditDir, { recursive: true });
+    try { fs.chmodSync(auditDir, 0o700); } catch (_e) { /* best-effort hardening; chmod may fail on exotic filesystems */ }
 
     // Read routing_outcome events from events.jsonl for this orchestration only.
     // 2 MB cap + cheap substring pre-filter keep this O(n) on line count and bound
@@ -321,6 +333,47 @@ process.stdin.on('end', () => {
     // DEF-2: only attach the note when escalation was actually detected.
     if (modelResolutionNote) {
       auditEvent.model_resolution_note = modelResolutionNote;
+    }
+
+    // Variant C: auto-emit a routing_outcome supplement on SubagentStop / TaskCompleted.
+    // This guarantees a completion-time routing record exists even when the PM drifts
+    // on Variant B (PM-supplemented). Only emit when inside an orchestration context —
+    // skip orphan events (orchestrationId === 'unknown') to avoid polluting the audit trail.
+    if (orchestrationId !== 'unknown') {
+      try {
+        // Derive result heuristically — the hook has no access to the reviewer verdict.
+        // "success" here means "the subagent completed and produced tokens"; true
+        // pass/fail quality is determined downstream by the reviewer (source: "subagent_stop").
+        let variantCResult;
+        if (totalUsage.output_tokens === 0 && turnsUsed === 0) {
+          // Agent stopped without producing output — likely a crash or immediate abort.
+          variantCResult = 'error';
+        } else if (usageSource === 'estimated') {
+          // Token counts were fabricated from turn count; cannot distinguish outcomes.
+          variantCResult = 'unknown';
+        } else {
+          // Subagent completed and produced tokens. Quality unknown.
+          variantCResult = 'success';
+        }
+
+        const variantCEvent = {
+          timestamp: new Date().toISOString(),
+          type: 'routing_outcome',
+          orchestration_id: orchestrationId,
+          agent_type: agentType,
+          agent_id: isTeamEvent ? (event.task_id || null) : (event.agent_id || null),
+          model_assigned: resolvedModel || null,
+          result: variantCResult,
+          turns_used: turnsUsed,
+          input_tokens: totalUsage.input_tokens,
+          output_tokens: totalUsage.output_tokens,
+          source: 'subagent_stop',
+        };
+
+        atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), variantCEvent);
+      } catch (_variantCErr) {
+        // Fail open — Variant C emission must never block the agent_stop write.
+      }
     }
 
     // Append to events.jsonl

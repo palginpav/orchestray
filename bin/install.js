@@ -334,6 +334,11 @@ function mergeHooks(targetDir) {
     // double quotes cannot safely escape (`"`, `$`, backtick), fail fast.
     const newEntries = entries.map(entry => {
       const rewritten = JSON.parse(JSON.stringify(entry));
+      if (rewritten.matcher !== undefined && typeof rewritten.matcher !== 'string') {
+        throw new Error(
+          `hooks.json: invalid matcher on ${event} entry — expected string, got ${typeof rewritten.matcher}`
+        );
+      }
       if (rewritten.hooks) {
         for (const hook of rewritten.hooks) {
           if (hook.command) {
@@ -365,10 +370,6 @@ function mergeHooks(targetDir) {
     if (!settings.hooks[event]) {
       settings.hooks[event] = newEntries;
     } else {
-      // Check for existing orchestray hooks by looking for 'orchestray' in commands
-      const existingCmds = settings.hooks[event]
-        .flatMap(e => (e.hooks || []).map(h => h.command || ''));
-
       for (const entry of newEntries) {
         // Extract the script basename via the `/bin/<script>` substring rather
         // than parsing whitespace: install paths may contain spaces (macOS
@@ -380,8 +381,18 @@ function mergeHooks(targetDir) {
             return m ? path.basename(m[1]) : null;
           })
           .filter(Boolean);
+        // M5 fix: include `entry.matcher` in the dedup key. Two hook blocks
+        // with the same script but different matchers (e.g. "Agent" vs "Bash")
+        // are distinct entries and must both be installed.
+        const entryMatcher = entry.matcher;
         const alreadyInstalled = scriptBasenames.some(name =>
-          existingCmds.some(ec => ec.includes('orchestray') && ec.includes(name))
+          settings.hooks[event].some(existing => {
+            // matcher must match (both undefined, or same string value)
+            if (existing.matcher !== entryMatcher) return false;
+            return (existing.hooks || []).some(h =>
+              h.command && h.command.includes('orchestray') && h.command.includes(name)
+            );
+          })
         );
         if (!alreadyInstalled) {
           settings.hooks[event].push(entry);
@@ -534,6 +545,10 @@ function unregisterMcpServers(mcpServerNames, isLocal) {
 // Atomic JSON write: serialize to a sibling tmp file on the same filesystem,
 // fsync it, then rename over the target. Avoids leaving a half-written
 // ~/.claude.json if the process is killed mid-write.
+// Predictable `.orchestray.tmp` suffix is acceptable for a single-user local
+// plugin: the settings file has the same trust boundary as the install process.
+// If the plugin is ever used on a shared filesystem or multi-user system,
+// replace with fs.mkdtempSync-based temp file creation. Per T14 audit.
 function writeJsonAtomic(file, data) {
   const tmp = file + '.orchestray.tmp';
   const fd = fs.openSync(tmp, 'w');

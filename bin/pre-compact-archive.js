@@ -19,6 +19,10 @@
 const fs = require('fs');
 const path = require('path');
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
+const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
+
+const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB cap — guards against runaway payloads OOMing the hook (T14 audit I14)
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -26,11 +30,18 @@ process.stdin.on('error', () => {
   process.stdout.write(JSON.stringify({ continue: true }));
   process.exit(0);
 });
-process.stdin.on('data', (chunk) => { input += chunk; });
+process.stdin.on('data', (chunk) => {
+  input += chunk;
+  if (input.length > MAX_INPUT_BYTES) {
+    process.stderr.write('[orchestray] hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
+    process.stdout.write(JSON.stringify({ continue: true }) + '\n');
+    process.exit(0);
+  }
+});
 process.stdin.on('end', () => {
   try {
     const event = JSON.parse(input || '{}');
-    const cwd = event.cwd || process.cwd();
+    const cwd = resolveSafeCwd(event.cwd);
     const trigger = event.trigger || event.compact_trigger || 'unknown'; // "manual" | "auto" | "unknown"
     const customInstructions = event.custom_instructions || event.instructions || null;
 
@@ -48,7 +59,7 @@ process.stdin.on('end', () => {
     // Resolve orchestration_id from the current marker (if an orchestration is active)
     let orchestrationId = null;
     try {
-      const markerPath = path.join(auditDir, 'current-orchestration.json');
+      const markerPath = getCurrentOrchestrationFile(cwd);
       if (fs.existsSync(markerPath)) {
         const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
         orchestrationId = marker.orchestration_id || null;
@@ -107,9 +118,32 @@ process.stdin.on('end', () => {
         for (const entry of entries) {
           // Node populates `entry.parentPath` (20.12+) or `entry.path` (<20.12,
           // deprecated) with the containing directory when recursive:true is used.
-          // Skip non-files (directories are created on-demand by the mkdir below).
+          // Skip symlinks before the isFile() check: isFile() follows symlinks,
+          // so a symlink in the tasks dir could copy sensitive file contents into
+          // the snapshot. Skip non-files (directories are created on-demand below).
+          if (entry.isSymbolicLink()) continue;
           if (!entry.isFile()) continue;
           const src = path.join(entry.parentPath || entry.path, entry.name);
+
+          // Directory-symlink escape guard (T23 final audit). Node's
+          // `readdirSync({ recursive: true })` follows symbolic directory
+          // links and includes their contents in `entries`. The file-level
+          // `isSymbolicLink()` check above does NOT catch those contents
+          // because by then Node has already descended through the dir
+          // symlink — the entries are classified by their target (a real
+          // file somewhere outside the tasks tree). Guard with realpath
+          // containment: if the resolved source path escapes `tasksDir`,
+          // skip the copy. Best-effort — realpathSync throws on dangling
+          // links, which is the correct outcome here (skip dangling).
+          try {
+            const realSrc = fs.realpathSync(src);
+            const realTasks = fs.realpathSync(tasksDir);
+            if (realSrc !== realTasks &&
+                !realSrc.startsWith(realTasks + path.sep)) {
+              continue; // escaped the tasks tree via a directory symlink
+            }
+          } catch (_e) { continue; /* dangling / unreadable — skip */ }
+
           const relFromTasks = path.relative(tasksDir, src);
           const dest = path.join(destTasksDir, relFromTasks);
           fs.mkdirSync(path.dirname(dest), { recursive: true });

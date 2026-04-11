@@ -41,6 +41,11 @@ function sleepMs(ms) {
 
 function atomicAppendJsonl(filePath, eventObject) {
   const line = JSON.stringify(eventObject) + '\n';
+  // Predictable `.lock` suffix is acceptable for a single-user local plugin:
+  // the audit directory has the same trust boundary as the hook process.
+  // Stale locks are recovered after 10 × 50ms timeout. If the plugin is ever
+  // used on a shared filesystem or multi-user system, replace with
+  // fs.mkdtempSync-based locking. Per T14 audit.
   const lockPath = filePath + '.lock';
 
   // Ensure the parent directory exists before attempting to open the lockfile.

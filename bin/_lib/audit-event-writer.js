@@ -22,6 +22,10 @@
 const fs = require('fs');
 const path = require('path');
 const { atomicAppendJsonl } = require('./atomic-append');
+const { resolveSafeCwd } = require('./resolve-project-cwd');
+const { getCurrentOrchestrationFile } = require('./orchestration-state');
+
+const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB cap — guards against runaway payloads OOMing the hook (T14 audit I14)
 
 function writeAuditEvent({ type, mode, extraFieldsPicker }) {
   let input = '';
@@ -30,17 +34,24 @@ function writeAuditEvent({ type, mode, extraFieldsPicker }) {
     process.stdout.write(JSON.stringify({ continue: true }));
     process.exit(0);
   });
-  process.stdin.on('data', (chunk) => { input += chunk; });
+  process.stdin.on('data', (chunk) => {
+    input += chunk;
+    if (input.length > MAX_INPUT_BYTES) {
+      process.stderr.write('[orchestray] hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
+      process.stdout.write(JSON.stringify({ continue: true }) + '\n');
+      process.exit(0);
+    }
+  });
   process.stdin.on('end', () => {
     try {
       const event = JSON.parse(input);
-      const cwd = event.cwd || process.cwd();
+      const cwd = resolveSafeCwd(event.cwd);
       const auditDir = path.join(cwd, '.orchestray', 'audit');
 
       // Read orchestration_id from current-orchestration.json if available
       let orchestrationId = 'unknown';
       try {
-        const orchFile = path.join(auditDir, 'current-orchestration.json');
+        const orchFile = getCurrentOrchestrationFile(cwd);
         const orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
         if (orchData.orchestration_id) {
           orchestrationId = orchData.orchestration_id;
@@ -51,6 +62,7 @@ function writeAuditEvent({ type, mode, extraFieldsPicker }) {
 
       // Ensure audit directory exists
       fs.mkdirSync(auditDir, { recursive: true });
+      try { fs.chmodSync(auditDir, 0o700); } catch (_e) { /* best-effort hardening; chmod may fail on exotic filesystems */ }
 
       // Construct audit event — base fields first, then script-specific extras.
       const auditEvent = {

@@ -1,27 +1,60 @@
 #!/usr/bin/env node
 'use strict';
 
+/**
+ * TeammateIdle hook — redirects idle teammates to pending work.
+ *
+ * Runs when a Claude Code Agent Teams teammate becomes idle (TeammateIdle
+ * event). Checks .orchestray/state/task-graph.md for uncompleted tasks. If
+ * pending tasks exist, writes `{ continue: false }` to stdout and exits 2 to
+ * block the teammate from stopping and prompt it to pick up remaining work.
+ *
+ * Exit code semantics (per Claude Code hook protocol):
+ *   exit 0  — allow the teammate to stop (no pending tasks, or error path)
+ *   exit 2  — block the teammate from stopping; stderr message is shown to
+ *              re-prompt the teammate with available work
+ *
+ * NOTE: exit 2 here is INTENTIONAL — this is NOT a fail-open script for this
+ * path. The blocking exit is the designed behavior when tasks remain. All
+ * unexpected error paths still exit 0 (fail-open) so a broken hook never
+ * permanently wedges the team.
+ */
+
 const fs = require('fs');
 const path = require('path');
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
+const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 
-// cap to avoid OOM on corrupted task-graph files (DEF-3)
+// 1 MB cap: corrupted or runaway task-graph.md files could be arbitrarily
+// large, and reading them fully would OOM the hook process (Node default
+// heap is ~1.5 GB, but hook timeout is 5 s). On overflow we skip the
+// reassignment check and let the teammate stop cleanly. Per T13 audit I7.
 const MAX_SIZE = 1_048_576;
+
+const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB cap — guards against runaway payloads OOMing the hook (T14 audit I14)
 
 let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('error', () => { process.stdout.write(JSON.stringify({ continue: true })); process.exit(0); });
-process.stdin.on('data', (chunk) => { input += chunk; });
+process.stdin.on('data', (chunk) => {
+  input += chunk;
+  if (input.length > MAX_INPUT_BYTES) {
+    process.stderr.write('[orchestray] hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
+    process.stdout.write(JSON.stringify({ continue: true }) + '\n');
+    process.exit(0);
+  }
+});
 process.stdin.on('end', () => {
   try {
     const event = JSON.parse(input);
-    const cwd = event.cwd || process.cwd();
+    const cwd = resolveSafeCwd(event.cwd);
     const auditDir = path.join(cwd, '.orchestray', 'audit');
 
     // Read orchestration_id from current-orchestration.json if available
     let orchestrationId = 'unknown';
     try {
-      const orchFile = path.join(auditDir, 'current-orchestration.json');
+      const orchFile = getCurrentOrchestrationFile(cwd);
       const orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
       if (orchData.orchestration_id) {
         orchestrationId = orchData.orchestration_id;
@@ -32,6 +65,7 @@ process.stdin.on('end', () => {
 
     // Ensure audit directory exists
     fs.mkdirSync(auditDir, { recursive: true });
+    try { fs.chmodSync(auditDir, 0o700); } catch (_e) { /* best-effort hardening; chmod may fail on exotic filesystems */ }
 
     // Construct audit event
     const auditEvent = {

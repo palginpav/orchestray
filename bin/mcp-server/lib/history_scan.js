@@ -26,6 +26,7 @@ const path = require('node:path');
 const readline = require('node:readline');
 
 const paths = require('./paths');
+const { logStderr } = require('./rpc');
 
 // ---------------------------------------------------------------------------
 // scanEvents
@@ -48,16 +49,12 @@ function _resolveRoots(options) {
   return { liveAudit, historyDir };
 }
 
-function _logStderr(msg) {
-  try { process.stderr.write('[orchestray-mcp] ' + msg + '\n'); } catch (_e) { /* swallow */ }
-}
-
 function _normalizeEvent(raw, sourcePath, lineNumber) {
   const hasType = typeof raw.type === 'string' && raw.type.length > 0;
   const hasEvent = typeof raw.event === 'string' && raw.event.length > 0;
 
   if (hasType && hasEvent && raw.type !== raw.event) {
-    _logStderr(
+    logStderr(
       'history_scan: schema drift at ' + sourcePath + ':' + lineNumber +
       ' (type=' + raw.type + ', event=' + raw.event + ') — preferring type'
     );
@@ -67,7 +64,7 @@ function _normalizeEvent(raw, sourcePath, lineNumber) {
   if (hasType) eventType = raw.type;
   else if (hasEvent) eventType = raw.event;
   else {
-    _logStderr(
+    logStderr(
       'history_scan: no type/event field at ' + sourcePath + ':' + lineNumber
     );
     return null;
@@ -89,12 +86,12 @@ async function* _scanFile(filepath, refUri, isLive, archiveMtimeCache) {
   try {
     stream = fs.createReadStream(filepath, { encoding: 'utf8', highWaterMark: 64 * 1024 });
   } catch (err) {
-    _logStderr('history_scan: cannot open ' + filepath + ': ' + (err && err.message));
+    logStderr('history_scan: cannot open ' + filepath + ': ' + (err && err.message));
     return;
   }
 
   stream.on('error', (err) => {
-    _logStderr('history_scan: stream error on ' + filepath + ': ' + (err && err.message));
+    logStderr('history_scan: stream error on ' + filepath + ': ' + (err && err.message));
   });
 
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -108,13 +105,13 @@ async function* _scanFile(filepath, refUri, isLive, archiveMtimeCache) {
       try {
         obj = JSON.parse(rawLine);
       } catch (err) {
-        _logStderr(
+        logStderr(
           'history_scan malformed line: ' + filepath + ':' + lineNumber
         );
         continue;
       }
       if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
-        _logStderr('history_scan: non-object at ' + filepath + ':' + lineNumber);
+        logStderr('history_scan: non-object at ' + filepath + ':' + lineNumber);
         continue;
       }
       const normalized = _normalizeEvent(obj, filepath, lineNumber);
@@ -123,7 +120,7 @@ async function* _scanFile(filepath, refUri, isLive, archiveMtimeCache) {
       // Timestamp fallback
       if (typeof normalized.timestamp !== 'string' || normalized.timestamp.length === 0) {
         if (isLive) {
-          _logStderr(
+          logStderr(
             'history_scan: live event missing timestamp at ' + filepath + ':' + lineNumber + ' — skipping'
           );
           continue;
@@ -147,7 +144,7 @@ async function* _scanFile(filepath, refUri, isLive, archiveMtimeCache) {
       yield normalized;
     }
   } catch (err) {
-    _logStderr('history_scan: iterator error on ' + filepath + ': ' + (err && err.message));
+    logStderr('history_scan: iterator error on ' + filepath + ': ' + (err && err.message));
   } finally {
     try { rl.close(); } catch (_e) { /* swallow */ }
   }
@@ -170,7 +167,7 @@ async function* scanEvents(options) {
     try {
       entries = fs.readdirSync(historyDir, { withFileTypes: true });
     } catch (err) {
-      _logStderr('history_scan: readdir failed on ' + historyDir + ': ' + (err && err.message));
+      logStderr('history_scan: readdir failed on ' + historyDir + ': ' + (err && err.message));
       entries = [];
     }
     const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name).sort();

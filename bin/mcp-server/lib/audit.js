@@ -16,6 +16,7 @@
 const fs = require('node:fs');
 
 const paths = require('./paths');
+const { logStderr } = require('./rpc');
 // Relative depth from bin/mcp-server/lib/audit.js to bin/_lib/atomic-append.js
 // is three hops: ../ out of lib/, ../ out of mcp-server/, _lib/. Verified.
 const { atomicAppendJsonl } = require('../../_lib/atomic-append');
@@ -102,15 +103,7 @@ function writeAuditEvent(event) {
     const target = paths.getAuditEventsPath();
     atomicAppendJsonl(target, event);
   } catch (err) {
-    try {
-      process.stderr.write(
-        '[orchestray-mcp] audit write failed: ' +
-          (err && err.message ? err.message : String(err)) +
-          '\n'
-      );
-    } catch (_e) {
-      // Stderr unavailable — nothing left to do.
-    }
+    logStderr('audit write failed: ' + (err && err.message ? err.message : String(err)));
   }
 }
 

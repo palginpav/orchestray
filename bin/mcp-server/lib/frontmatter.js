@@ -237,6 +237,10 @@ function rewriteField(filepath, fieldName, newValue) {
   const next = stringify({ frontmatter: nextFm, body: parsed.body });
 
   // Atomic tmp+rename. Same-directory tmp file so rename is a single fs op.
+  // Predictable `.tmp` suffix is acceptable for a single-user local plugin:
+  // the project directory has the same trust boundary as the process writing
+  // to it. If the plugin is ever used in a multi-user or network-mounted
+  // setting, replace with fs.mkdtempSync. Per T14 audit.
   const tmp = filepath + '.tmp';
   try {
     fs.writeFileSync(tmp, next, 'utf8');

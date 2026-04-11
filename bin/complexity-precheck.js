@@ -19,6 +19,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 
 // Complexity signals (mirrors PM Section 12 heuristics)
 const COMPLEXITY_KEYWORDS = [
@@ -111,21 +112,31 @@ function scoreComplexity(prompt) {
   return score;
 }
 
+const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB cap — guards against runaway payloads OOMing the hook (T14 audit I14)
+
 function main() {
   let input = '';
   process.stdin.setEncoding('utf8');
   process.stdin.on('error', () => { process.stdout.write(JSON.stringify({ continue: true })); process.exit(0); });
-  process.stdin.on('data', chunk => { input += chunk; });
+  process.stdin.on('data', chunk => {
+    input += chunk;
+    if (input.length > MAX_INPUT_BYTES) {
+      process.stderr.write('[orchestray] hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
+      process.stdout.write(JSON.stringify({ continue: true }) + '\n');
+      process.exit(0);
+    }
+  });
   process.stdin.on('end', () => {
     try {
       const data = JSON.parse(input);
       const prompt = data.message || data.prompt || '';
-      const debugLog = path.join(data.cwd || process.cwd(), '.orchestray', 'debug.log');
+      const cwd = resolveSafeCwd(data.cwd);
+      const debugLog = path.join(cwd, '.orchestray', 'debug.log');
 
       // Read config once — used for force_solo, threshold, and verbose
       let config = {};
       try {
-        const configPath = path.join(data.cwd || process.cwd(), '.orchestray', 'config.json');
+        const configPath = path.join(cwd, '.orchestray', 'config.json');
         if (fs.existsSync(configPath)) {
           config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
         }
@@ -137,7 +148,13 @@ function main() {
 
       // Debug: log what we received and scoring result
       if (verbose) {
-        try { fs.mkdirSync(path.dirname(debugLog), { recursive: true }); } catch {}
+        try {
+          const debugDir = path.dirname(debugLog);
+          fs.mkdirSync(debugDir, { recursive: true });
+          // T14 I13 parity: harden the .orchestray/ tree to owner-only.
+          // Best-effort — chmod may fail on exotic filesystems (Windows, FAT).
+          try { fs.chmodSync(debugDir, 0o700); } catch (_e) { /* swallow */ }
+        } catch {}
         try { fs.appendFileSync(debugLog, `  Keys: ${Object.keys(data).join(', ')}\n  Prompt (first 200): ${prompt.substring(0, 200)}\n`); } catch(e) {}
       }
 
@@ -180,7 +197,6 @@ function main() {
           try { fs.appendFileSync(debugLog, `  Action: writing orchestrate marker\n`); } catch(e) {}
         }
 
-        const cwd = data.cwd || process.cwd();
         const markerDir = path.join(cwd, '.orchestray');
         const markerPath = path.join(markerDir, 'auto-trigger.json');
 
@@ -197,6 +213,9 @@ function main() {
 
         try {
           fs.mkdirSync(markerDir, { recursive: true });
+          // T14 I13 parity: harden the .orchestray/ tree to owner-only.
+          // Best-effort — chmod may fail on exotic filesystems (Windows, FAT).
+          try { fs.chmodSync(markerDir, 0o700); } catch (_e) { /* swallow */ }
           fs.writeFileSync(markerPath, JSON.stringify({
             score: score,
             threshold: threshold,

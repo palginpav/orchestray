@@ -6,6 +6,52 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [2.0.11] - 2026-04-10
 
 ### Added
+- **Durable model routing.** PM routing decisions (model + effort + score
+  per subtask) are now persisted to `.orchestray/state/routing.jsonl` at
+  decomposition time and re-read per spawn. The `PreToolUse:Agent` hook
+  at `bin/gate-agent-spawn.js` validates every `Agent()` call against the
+  file — if the spawn's `model` parameter doesn't match the stored routing
+  decision, the hook blocks with a clear diagnostic. This closes the
+  long-session fragility where the PM would silently forget routing and
+  fall back to the parent session's model (typically Opus), bypassing
+  Section 19 entirely and blowing the cost budget. Routing is now
+  **immortal** — it survives context compaction, session resumption,
+  and PM forgetfulness because the PM reads its own decision fresh from
+  the file every spawn, not from working memory. New helper
+  `bin/_lib/routing-lookup.js` exposes `ROUTING_FILE`, `getRoutingFilePath`,
+  `appendRoutingEntry`, `readRoutingEntries`, and `findRoutingEntry`.
+  Matching is word-boundary aware (`"Fix auth"` does NOT match
+  `"Fix authority"`) and rejects empty-description wildcards.
+  `agents/pm.md` Section 13 and Section 19 updated with the hard rule:
+  "The routing file is the SINGLE SOURCE OF TRUTH; do not trust your
+  working memory." Dynamic spawns and re-planned tasks must append
+  fresh entries — the hook matches most-recent timestamp. 30 new tests
+  across `tests/gate-agent-spawn.test.js` (11 integration cases) and
+  `tests/hooks/routing-lookup.test.js` (19 unit cases). Tests: 539 → 569.
+
+### Durable routing — upgrade & recovery notes
+- **In-flight orchestrations upgrading to 2.0.11:** a PM that was
+  decomposing when the upgrade landed has no `routing.jsonl` file. The
+  first post-upgrade `Agent()` call with a missing file falls through to
+  the existing model-validity check (no new blocking). Once the PM starts
+  writing entries, subsequent spawns must have matching entries or they
+  are blocked. If an in-flight orchestration stalls on this check, delete
+  `.orchestray/state/routing.jsonl` to fall back to the pre-2.0.11
+  model-validity-only path and complete the current orchestration under
+  the old semantics.
+- **Corrupted `routing.jsonl` recovery:** if the file contains all
+  garbage (every line fails JSON.parse), `readRoutingEntries` silently
+  skips every line and returns an empty array. The hook then blocks with
+  "no routing entry" rather than crashing or silently permitting unrouted
+  spawns. Recovery: delete the file and re-run decomposition, or manually
+  repair the file to have at least one valid JSON line.
+- **`enable_regression_check` and `enable_static_analysis` removed**
+  from the `agents/pm.md` Section 0 config defaults block. These keys
+  were already unused at runtime (no consumer logic) and were flagged
+  as dead config by prior audits. No behavior change for operators;
+  the cleanup is purely documentation. Any tooling that scans
+  `agents/pm.md` defaults should update its expectations.
+
 - **New: `mcp__orchestray__ask_user` MCP tool.** Agents can pause mid-task to
   ask the user a structured ≤5-field form and resume with the answers, without
   unwinding the orchestration. Enabled for pm, architect, developer, and
@@ -21,6 +67,186 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - 28 new unit tests under `tests/mcp-server/` covering schema validation,
   audit-event shape, and the handler's decision rules (including timeout and
   cancel/decline branches) with an injected elicitation fake.
+
+### Fixed
+- **Model routing is now hook-enforced.** Previously, the PM was asked (by
+  prompt) to pass `model: haiku|sonnet|opus` on every `Agent()` spawn during
+  orchestrations and to emit a `routing_outcome` audit event. In practice
+  the PM silently skipped both steps, so every subagent inherited the parent
+  session's model (typically Opus), the UI showed no model badge next to
+  running agents, and `model_used` was null on every `agent_stop` event —
+  which made `bin/collect-agent-metrics.js` fall back to Sonnet rates and
+  under-report cost. New `PreToolUse:Agent` hook at `bin/gate-agent-spawn.js`
+  rejects (exit 2) any in-orchestration `Agent()` call missing `model` or
+  using `model: "inherit"`. Companion `PostToolUse:Agent` hook at
+  `bin/emit-routing-outcome.js` auto-appends a `routing_outcome` event with
+  the assigned model, removing the prompt-compliance burden entirely. Both
+  hooks no-op outside orchestrations and fail-open on unexpected errors.
+- `agents/pm.md` Section 19 Transparency rewritten as a hard rule (was
+  advisory). `agents/pm-reference/tier1-orchestration.md` Section 19 notes
+  the PM no longer writes hook-covered fields manually but must still emit
+  a PM-supplemented event for task_id, complexity_score, and final result.
+- `agents/pm-reference/event-schemas.md` Section 19 now documents three
+  `routing_outcome` variants — hook-emitted at spawn time (partial,
+  `source: "hook"`), PM-supplemented after result processing (full,
+  `source: "pm"`), and auto-emitted at completion (safety-net,
+  `source: "subagent_stop"`) — with precedence rules and consumer guidance
+  for downstream audit readers. Includes an explicit `agent_id` namespace
+  warning: Variant C populates `agent_id` from two incompatible sources
+  (subagent invocation ID vs team subtask label) and consumers MUST NOT
+  cross-join on it.
+- **Third-variant routing_outcome safety net.** `bin/collect-agent-metrics.js`
+  now auto-emits a `routing_outcome` event with `source: "subagent_stop"`
+  on every `SubagentStop` and `TaskCompleted` hook firing (when inside an
+  orchestration), carrying orchestration_id, agent_type, agent_id, the
+  resolved model assignment (looked up from the prior Variant A event),
+  turns_used, token counts, and a heuristic `result` field
+  (error/unknown/success). Guarantees pattern-extraction, replay analysis,
+  and cost attribution always see a completion observation even if the
+  hook-emitted Variant A lands and the PM-emitted Variant B drifts. Fails
+  open and cannot block the existing `agent_stop` / `task_completed_metrics`
+  write that follows.
+- **`bin/emit-routing-outcome.js` tool_name guard.** The hook was missing
+  an early-return when `tool_name !== "Agent"`, so during any active
+  orchestration every `PostToolUse` event (Bash, Read, Edit, Grep, etc.)
+  would have silently appended a bogus `routing_outcome` row to
+  `.orchestray/audit/events.jsonl`, poisoning pattern extraction and cost
+  attribution downstream. Added the guard, matching the pattern already in
+  `bin/gate-agent-spawn.js`. Caught during review, not by the hook matcher
+  itself — `matcher: "Agent"` in `hooks.json` IS honored per Claude Code
+  hook docs (verified at code.claude.com/docs/en/hooks), but the in-script
+  guard is load-bearing as a defense-in-depth measure.
+- **Final audit pass — 28 fixes across correctness, security, and dead-code
+  dimensions.** Four parallel audit agents (MCP server review, hook-script
+  review, cross-cutting security, dead-code/wiring) surfaced 5 majors,
+  14 warnings, and 12 info-level findings; every one was landed in two
+  parallel fix rounds. Highlights:
+  - **TOCTOU fix in `tools/pattern_record_application.js`** — two sequential
+    `rewriteField` calls merged into a single read-modify-write so concurrent
+    pattern applications no longer silently lose `times_applied` increments.
+  - **Correct error code on `resources/history_resource.js` TOCTOU** — all
+    four read paths now remap ENOENT from unguarded `readFileSync` to
+    `RESOURCE_NOT_FOUND` (−32002) instead of falling through to
+    `INTERNAL_ERROR` (−32603).
+  - **`history_find_similar_tasks._bodyAfterH1`** — now actually skips to
+    after the H1 line instead of returning frontmatter content, fixing
+    silent similarity-score pollution.
+  - **`install.js` hook dedup is matcher-aware** — two hook blocks for the
+    same event with different matchers (e.g., `PreToolUse:Agent` and
+    `PreToolUse:Bash`) are no longer conflated during reinstall.
+  - **Crypto-random elicitation correlation IDs** — `server.js` replaces the
+    sequential `nextElicitationId = 1` counter with
+    `crypto.randomBytes(8).toString('hex')`. A compromised client can no
+    longer spoof elicitation responses by guessing sequential ids.
+  - **`pre-compact-archive.js` symlink skip** — the recursive task-copy
+    walk now short-circuits on `entry.isSymbolicLink()` before copying,
+    so a malicious symlink in `.orchestray/state/tasks/` cannot leak
+    arbitrary file contents into the pre-compact snapshot.
+  - **Safe-cwd hook helper `bin/_lib/resolve-project-cwd.js`** — centralizes
+    `event.cwd` resolution with null-byte rejection and clean fallback to
+    `process.cwd()`. Documented why stricter containment (requiring a
+    pre-existing project marker) was rejected: it would break every
+    first-ever hook run in a fresh project.
+  - **Orchestration-state path helper `bin/_lib/orchestration-state.js`** —
+    `.orchestray/audit/current-orchestration.json` is no longer hardcoded
+    in seven separate scripts; one constant, one helper.
+  - **`schemas.js` `startLen` bail** — `_validate` now tracks the error
+    count at entry and bails only on errors accumulated in the current
+    call frame. Fixes the bug where a prior sibling property's validation
+    error silently skipped all subsequent siblings in the same object.
+  - **`kb_resource.list()` descriptions** — resource list responses now
+    populate `description` from the first H1 instead of hardcoding empty
+    string. Consistent with `pattern_resource`.
+  - **Dead config keys removed** — `enable_regression_check` and
+    `enable_static_analysis` stripped from `.orchestray/config.json`,
+    `agents/pm.md`, and `skills/orchestray:config/SKILL.md` (defaults
+    block, Available Settings table, validator list, Quick Reference
+    table — three subsections cleaned).
+  - **Hook-script hardening (bulk)** — every stdin-reading hook script
+    now has a `MAX_INPUT_BYTES = 1 MB` guard that drops and exits cleanly
+    on oversized payloads (fails open per each script's normal success
+    contract); every audit-dir-creating script now calls
+    `fs.chmodSync(auditDir, 0o700)` best-effort after `mkdirSync` to
+    restrict world-read on shared systems.
+  - **MCP `resources/list` meta propagation** — `server.js` aggregation
+    loop now forwards `_truncated` and `_totalCount` from any handler
+    that reports them (today: `history_resource` caps archives at 20).
+    Previously the handler exposed the meta but the dispatcher stripped
+    it silently, so clients could not tell they were seeing a partial
+    list.
+  - **Consistency sweep** — `lib/audit.js` and `lib/history_scan.js`
+    now import `logStderr` from `lib/rpc.js` instead of duplicating the
+    `[orchestray-mcp]` prefix locally; `elicit/ask_user.js` emits
+    audit events with `tool: "ask_user"` instead of
+    `mcp__orchestray__ask_user` for consistency with other tool names;
+    `pattern_resource` and `kb_resource` shape errors use
+    `INVALID_URI` instead of `PATH_TRAVERSAL`; `history_find_similar_tasks`
+    applies `assertSafeSegment` to `orchId`/`taskId` before path joins.
+  - **Documentation tightening** — `agents/pm-reference/event-schemas.md`
+    `routing_outcome` Variant C documents the `agent_id` cross-event
+    namespace caveat; inline comments added in `kb_search.js` (ReDoS
+    safety constraint), `schemas.js` (`additionalProperties` exclusion
+    rationale), `frontmatter.js` / `atomic-append.js` / `install.js`
+    (predictable lockfile/tmp-name single-user acceptability),
+    `reassign-idle-teammate.js` (DEF-3 defect ID expanded to human
+    rationale), `emit-routing-outcome.js` (`score: null` reserved for
+    PM supplement), and `audit-event.js` (SubagentStop is intentionally
+    handled by `collect-agent-metrics.js`, positional `start` arg is
+    decorative).
+- Test suite now at 539/539 across all additions. All audit fixes verified
+  by diff-scoped final review; no regressions introduced across the two
+  fix rounds.
+
+### Added
+- **Dedicated rpc.js unit tests.** `tests/mcp-server/lib/rpc.test.js` —
+  43 test cases covering `parseLine` edge cases (empty/malformed/non-object
+  JSON, array messages, long lines, unicode), `isResponse` variants,
+  `writeFrame` including circular-reference handling, `sendError`/`sendResult`
+  envelope shape, `logStderr` prefix + coercion, and numeric values of all
+  six error code constants. Locks in the extraction contract from the
+  refactor above.
+- **Hook script tests.** `tests/gate-agent-spawn.test.js` and
+  `tests/emit-routing-outcome.test.js` — 41 test cases across both files
+  using `child_process.spawnSync` and isolated tmpdir fixtures. Cover tool
+  name filtering (including the `Bash`/`Read`/`Edit` cases that would have
+  caught the emit-routing-outcome bug above), outside-orchestration no-op,
+  inside-orchestration block/allow paths, case-insensitive model matching,
+  full model id normalization (`claude-opus-4-6` → `"opus"`), description
+  truncation, atomic append of sequential events, and every fail-open path
+  (malformed stdin, empty stdin, read-only audit dir).
+- **Additional test hardening** — 6 more cases added as a final pass:
+  (1) `writeFrame(null)` and `writeFrame(42)` primitive-argument behavior
+  locked in as documentation tests — frame-shape validation is the caller's
+  job, not `writeFrame`'s; (2) `gate-agent-spawn.js` `tool_input.tool`
+  fallback branch tested (three cases covering Agent-via-fallback, Bash-via-fallback,
+  and tool_name precedence over tool_input.tool); (3) concurrent-append
+  correctness test for `emit-routing-outcome.js` — spawns 10 parallel hook
+  invocations with distinct descriptions and asserts `atomicAppendJsonl`
+  preserves all 10 as valid jsonl lines with no lost updates. Also hardened
+  the `rpc.test.js` stdout/stderr capture pattern with null guards in every
+  `afterEach` so a hypothetical `beforeEach` failure can't leave
+  `process.stdout.write` / `process.stderr.write` swapped for subsequent
+  tests.
+- Test suite now at 539/539 across all additions (up from the 449 baseline
+  at the start of v2.0.11 development).
+
+### Changed
+- **`bin/mcp-server/server.js` internal refactor.** JSON-RPC 2.0 wire
+  plumbing (`writeFrame`, `sendError`, `sendResult`, `isResponse`,
+  `logStderr`, `parseLine`, error-code constants) extracted into a new
+  sibling module `bin/mcp-server/lib/rpc.js` (106 lines). `server.js`
+  drops from 602 to 574 lines and now contains only domain-coupled
+  dispatch, elicitation correlation, tool/resource tables, and the
+  readline loop. Behavior-preserving; integration test suite stays green
+  end-to-end (449 → 533 with the new dedicated rpc.js unit tests and
+  hook-script tests layered on top). No protocol, wire, or API surface
+  changes — this is purely internal restructuring to keep the MCP server
+  module under a sane line budget as the Stage 2 tool and resource
+  surface grows.
+- **`package.json` test glob** now includes `tests/hooks/*.test.js` so
+  hook-script tests placed in that subdirectory are picked up automatically
+  without a glob update each time. Existing explicit subdirectory globs
+  retained for the other test locations.
 
 ### Upgrade caveat
 - **Restart your Claude Code session** (or run `/agents`) after upgrading to

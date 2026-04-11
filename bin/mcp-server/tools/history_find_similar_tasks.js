@@ -14,6 +14,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const paths = require('../lib/paths');
+const { assertSafeSegment } = paths;
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
 
 const INPUT_SCHEMA = {
@@ -73,6 +74,7 @@ async function handle(input, context) {
   }
 
   for (const orchId of archiveDirs) {
+    try { assertSafeSegment(orchId); } catch (_e) { continue; }
     const tasksDir = path.join(historyDir, orchId, 'tasks');
     if (!fs.existsSync(tasksDir)) continue;
     let taskFiles;
@@ -84,6 +86,7 @@ async function handle(input, context) {
     }
     for (const name of taskFiles) {
       const taskId = name.slice(0, -3);
+      try { assertSafeSegment(taskId); } catch (_e) { continue; }
       const filepath = path.join(tasksDir, name);
       let content;
       try {
@@ -140,10 +143,20 @@ function _extractH1(content) {
   return null;
 }
 
+/**
+ * Return all content after the first H1 heading line.
+ * Skips frontmatter and any lines before the first `# Title` so that
+ * frontmatter key-value noise does not pollute similarity token extraction.
+ * If no H1 is found, returns an empty string.
+ */
 function _bodyAfterH1(content) {
-  const idx = content.indexOf('\n');
-  if (idx === -1) return '';
-  return content.slice(idx + 1);
+  const lines = content.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    if (/^#\s+/.test(lines[i])) {
+      return lines.slice(i + 1).join('\n');
+    }
+  }
+  return '';
 }
 
 function _tokenize(text) {

@@ -13,6 +13,23 @@ const paths = require('../lib/paths');
 
 const SECTIONS = ['artifacts', 'facts', 'decisions'];
 const LIST_CAP = 100;
+const DESCRIPTION_MAX = 200;
+
+/**
+ * Extract the first H1 heading text from a markdown file's content.
+ * Matches the heuristic used by pattern_resource.js (_firstLine of body)
+ * so that kb_resource list descriptions are populated consistently.
+ * Returns empty string if no H1 is found.
+ */
+function _extractH1(content) {
+  if (typeof content !== 'string') return '';
+  const lines = content.split(/\r?\n/);
+  for (const line of lines) {
+    const m = /^#\s+(.+?)\s*$/.exec(line);
+    if (m) return m[1].slice(0, DESCRIPTION_MAX);
+  }
+  return '';
+}
 
 function _root(context) {
   return (context && context.projectRoot) || null;
@@ -41,13 +58,18 @@ async function list(context) {
       const slug = name.slice(0, -3);
       const filepath = path.join(sectionDir, name);
       let mtimeMs = 0;
+      let description = '';
       try {
         mtimeMs = fs.statSync(filepath).mtimeMs;
       } catch (_e) { /* swallow */ }
+      try {
+        const content = fs.readFileSync(filepath, 'utf8');
+        description = _extractH1(content) || slug;
+      } catch (_e) { /* swallow — description stays empty */ }
       rows.push({
         uri: 'orchestray:kb://' + section + '/' + slug,
         name: section + '/' + slug,
-        description: '',
+        description,
         mimeType: 'text/markdown',
         _mtime: mtimeMs,
       });
@@ -87,7 +109,7 @@ async function read(uri, context, parsed) {
   }
   if (segments.length !== 2) {
     const e = new Error('kb URI must have section/slug form');
-    e.code = 'PATH_TRAVERSAL';
+    e.code = 'INVALID_URI';
     throw e;
   }
   const [section, slug] = segments;

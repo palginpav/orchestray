@@ -4,11 +4,22 @@
 const fs = require('fs');
 const path = require('path');
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
+const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
+
+const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB cap — guards against runaway payloads OOMing the hook (T14 audit I14)
 
 let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('error', () => { process.stdout.write(JSON.stringify({ continue: true })); process.exit(0); });
-process.stdin.on('data', (chunk) => { input += chunk; });
+process.stdin.on('data', (chunk) => {
+  input += chunk;
+  if (input.length > MAX_INPUT_BYTES) {
+    process.stderr.write('[orchestray] hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
+    process.stdout.write(JSON.stringify({ continue: true }) + '\n');
+    process.exit(0);
+  }
+});
 process.stdin.on('end', () => {
   try {
     const event = JSON.parse(input);
@@ -21,7 +32,7 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
-    const cwd = event.cwd || process.cwd();
+    const cwd = resolveSafeCwd(event.cwd);
     const auditDir = path.join(cwd, '.orchestray', 'audit');
 
     // Validation gate: block if task_id or task_subject is missing
@@ -31,9 +42,10 @@ process.stdin.on('end', () => {
       // contain sensitive task content we must not persist here.
       try {
         fs.mkdirSync(auditDir, { recursive: true });
+        try { fs.chmodSync(auditDir, 0o700); } catch (_e) { /* best-effort hardening; chmod may fail on exotic filesystems */ }
         let orchestrationId = 'unknown';
         try {
-          const orchFile = path.join(auditDir, 'current-orchestration.json');
+          const orchFile = getCurrentOrchestrationFile(cwd);
           const orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
           if (orchData.orchestration_id) orchestrationId = orchData.orchestration_id;
         } catch (_e) { /* default id */ }
@@ -66,7 +78,7 @@ process.stdin.on('end', () => {
     // Read orchestration_id from current-orchestration.json if available
     let orchestrationId = 'unknown';
     try {
-      const orchFile = path.join(auditDir, 'current-orchestration.json');
+      const orchFile = getCurrentOrchestrationFile(cwd);
       const orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
       if (orchData.orchestration_id) {
         orchestrationId = orchData.orchestration_id;
@@ -77,6 +89,7 @@ process.stdin.on('end', () => {
 
     // Ensure audit directory exists
     fs.mkdirSync(auditDir, { recursive: true });
+    try { fs.chmodSync(auditDir, 0o700); } catch (_e) { /* best-effort hardening; chmod may fail on exotic filesystems */ }
 
     // Construct audit event
     const auditEvent = {

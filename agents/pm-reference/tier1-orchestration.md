@@ -1639,10 +1639,9 @@ Section 19 in the main pm.md.
 
 ### Routing Outcome Logging
 
-After each agent completes (in Section 4 result processing), append a `routing_outcome`
-event to `.orchestray/audit/events.jsonl`.
+`routing_outcome` events are now auto-emitted by the PostToolUse:Agent hook at `bin/emit-routing-outcome.js` immediately after each successful Agent() spawn — the PM no longer needs to write them manually. However, if the hook detects missing fields (e.g., agent_type is null because the tool_input lacked subagent_type), the PM should still emit a supplemental routing_outcome event with the missing data filled in.
 
-> Read `agents/pm-reference/event-schemas.md` for the exact JSON format before writing this event.
+> Read `agents/pm-reference/event-schemas.md` for the exact JSON format if a supplemental event is needed.
 
 ### Integration Points
 

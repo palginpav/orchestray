@@ -40,10 +40,8 @@ The user wants to view or modify orchestration settings.
   "max_cost_usd": null,
   "security_review": "auto",
   "tdd_mode": false,
-  "enable_regression_check": false,
   "enable_prescan": true,
   "enable_repo_map": true,
-  "enable_static_analysis": false,
   "test_timeout": 60,
   "confirm_before_execute": false,
   "enable_checkpoints": false,
@@ -92,11 +90,9 @@ The user wants to view or modify orchestration settings.
 | `max_cost_usd` | number/null | `null` | Maximum cost per orchestration in USD. null = no limit. PM enforces budget when set. |
 | `security_review` | string | `"auto"` | Security review mode: "auto" (PM auto-invokes on security-sensitive tasks), "manual" (user requests), "off" (disabled) |
 | `tdd_mode` | boolean | `false` | Prefer test-driven development orchestration flow for new features. When true, PM uses: architect → tester → developer → reviewer |
-| `enable_regression_check` | boolean | `false` | Run test suite before and after orchestration to detect regressions. Requires project to have tests. |
 | `enable_prescan` | boolean | `true` | Lightweight codebase pre-scan on first orchestration per project. Creates codebase overview in KB. |
 | `enable_repo_map` | boolean | `true` | Generate a structured repository map during orchestration init. Provides agents with project structure, exports, and conventions. When false, agents fall back to standard exploration. Also skipped when `enable_prescan` is false. |
-| `enable_static_analysis` | boolean | `false` | Run detected linters/type checkers before reviewer step. Catches deterministic errors cheaply. |
-| `test_timeout` | number | `60` | Maximum seconds for test suite execution during regression check (1-300) |
+| `test_timeout` | number | `60` | Maximum seconds for test suite execution in validation paths (1-300) |
 | `confirm_before_execute` | boolean | `false` | Show orchestration preview with task graph and cost estimates before execution |
 | `enable_checkpoints` | boolean | `false` | Pause between parallel groups during orchestration to show results and let the user continue, modify, review, or abort. When `confirm_before_execute` is also true, checkpoints are always enabled regardless of this setting. |
 | `ci_command` | string/null | `null` | Shell command to run as CI check after orchestration (e.g., "npm test", "pytest", "make check"). When set, CI runs automatically after orchestration completes. |
@@ -145,10 +141,8 @@ are recorded in the audit trail but have no effect on agent behavior.
    - `max_cost_usd` must be null or a positive number. If 0 or negative, reject with error: "max_cost_usd must be null (no limit) or a positive number."
    - `security_review` must be one of: "auto", "manual", "off"
    - `tdd_mode` must be boolean (true/false)
-   - `enable_regression_check` must be boolean (true/false)
    - `enable_prescan` must be boolean (true/false)
    - `enable_repo_map` must be boolean (true/false)
-   - `enable_static_analysis` must be boolean (true/false)
    - `test_timeout` must be a number between 1 and 300
    - `confirm_before_execute` must be boolean (true/false)
    - `enable_checkpoints` must be boolean (true/false)
@@ -201,10 +195,8 @@ When showing settings:
 | max_cost_usd | null | Max cost per orchestration in USD (null = no limit) |
 | security_review | auto | Security review mode (auto/manual/off) |
 | tdd_mode | false | Prefer TDD orchestration flow for new features |
-| enable_regression_check | false | Run test suite before/after orchestration |
 | enable_prescan | true | Codebase pre-scan on first orchestration |
 | enable_repo_map | true | Generate repository map during orchestration init |
-| enable_static_analysis | false | Run linters before reviewer step |
 | test_timeout | 60 | Max seconds for test execution (1-300) |
 | confirm_before_execute | false | Show orchestration preview before execution |
 | enable_checkpoints | false | Pause between parallel groups to show results |

@@ -111,7 +111,7 @@ async function read(uri, context, parsed) {
   }
   if (segments.length !== 1) {
     const e = new Error('pattern URI must have exactly one segment (slug)');
-    e.code = 'PATH_TRAVERSAL';
+    e.code = 'INVALID_URI';
     throw e;
   }
   // B3: single delegation to paths.resolvePatternFile, which now accepts an

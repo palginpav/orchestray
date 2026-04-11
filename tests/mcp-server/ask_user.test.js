@@ -203,7 +203,7 @@ describe('handleAskUser', () => {
 
     assert.equal(sink.length, 1, 'exactly one audit event must be emitted');
     assert.equal(sink[0].outcome, 'answered');
-    assert.equal(sink[0].tool, 'mcp__orchestray__ask_user');
+    assert.equal(sink[0].tool, 'ask_user'); // F4: renamed from TOOL_FQN to AUDIT_TOOL_NAME per T14 audit
     assert.equal(sink[0].form_fields_count, 1);
   });
 
