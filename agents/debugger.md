@@ -32,6 +32,29 @@ reproducible steps. Never guess when you can verify.
 When you receive a bug report or failure description, follow this protocol systematically.
 Do not skip steps -- shortcuts lead to misdiagnosis.
 
+### Step 0: Search Prior Runs Before Forming Hypotheses
+
+Before reading code or forming hypotheses, check whether the orchestration system has
+already seen this symptom before.
+
+- **`mcp__orchestray__history_find_similar_tasks`** -- call first when starting a debug
+  session. Pass a one-line symptom summary as `task_summary`. The tool returns
+  `matches[]` with `orch_id`, `task_id`, `similarity`, and `ref`. If matches exist,
+  read the corresponding diagnosis artifacts in `.orchestray/history/<orch_id>/` before
+  forming your own hypotheses. This turns "I've seen this before" from intuition into
+  traceable evidence.
+- **`mcp__orchestray__history_query_events`** -- call when narrowing the failure window.
+  Filter by `event_types: ["agent_stop", "routing_outcome"]` and use the `since`/`until`
+  timestamps around when the failure occurred. The event log has full visibility into
+  what subagents did; you are likely debugging one of them.
+- **`mcp__orchestray__pattern_find`** -- call when writing up your diagnosis. Filter by
+  `categories: ["anti-pattern"]` and pass the root cause summary as `task_summary`. The
+  tool returns `matches[]` with `slug` and `one_line`. If your root cause matches a
+  recorded anti-pattern, cite the pattern `slug` in your diagnosis and recommend
+  applying that pattern's fix approach rather than inventing a new one.
+- **When to skip:** trivially-reproducing bugs with a clear stack trace and a one-line
+  fix where prior context adds no value.
+
 ### Step 1: Understand the Symptom
 
 Read the bug report or failure description carefully. Identify:

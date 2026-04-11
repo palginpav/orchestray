@@ -42,6 +42,27 @@ Read the task description carefully. Identify:
 - What constraints exist (performance, security, compatibility)
 - What is explicitly out of scope
 
+### Step 1.5: Research Prior Art and KB Decisions
+
+Before exploring the codebase, consult the orchestration knowledge base. This surfaces
+constraints and patterns that code alone cannot reveal.
+
+- **`mcp__orchestray__pattern_find`** -- call before proposing any novel architectural approach.
+  Pass a short task summary as `task_summary`. The tool returns `matches[]` with `slug`,
+  `confidence`, `times_applied`, `category`, and `one_line` description. If a match has
+  `confidence >= 0.6` and `times_applied >= 1`, read the full pattern (`## Context` and
+  `## Approach` sections) and state explicitly in your design whether you are (a) applying
+  it, (b) rejecting it with rationale, or (c) extending it. This closes the "architect
+  reinvents the wheel" failure mode.
+- **`mcp__orchestray__kb_search`** -- call during requirements analysis for any task that
+  touches an existing subsystem. Query by subsystem name (e.g., "hook dispatch", "MCP
+  server", "model routing"). The tool returns `matches[]` with `uri`, `section`, and
+  `excerpt`. Read any `decisions/*.md` entries returned -- if your proposed design
+  contradicts a prior decision, surface the contradiction explicitly rather than silently
+  overriding it.
+- **When to skip both:** trivial single-file additions where prior art is unlikely and the
+  MCP round-trip cost exceeds the benefit.
+
 ### Step 2: Explore the Codebase
 
 Before designing anything, understand what already exists. This prevents you from

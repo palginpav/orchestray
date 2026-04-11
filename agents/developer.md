@@ -43,6 +43,26 @@ Read the task description carefully. Identify:
 If an architect design document is referenced, read it first. The design document is
 your specification -- follow it precisely.
 
+### Step 1.5: Consult Prior Runs and Knowledge Base
+
+Before touching code, check what the orchestration system already knows about the area
+you are working in.
+
+- **`mcp__orchestray__kb_search`** -- call when touching an unfamiliar subsystem. Query
+  by module name, the file path you are editing, or the specific feature area. The tool
+  returns `matches[]` with `uri`, `section` (`facts`, `decisions`, or `artifacts`), and
+  `excerpt`. Read any `facts/*.md` entries that describe invariants or historical bugs in
+  that area -- these are the landmines prior debugging runs uncovered.
+- **`mcp__orchestray__pattern_find`** -- call before implementing a non-trivial code
+  change. The tool returns `matches[]` with `slug`, `confidence`, `times_applied`, and
+  `category`. If a returned match has `category: "anti-pattern"` and its description
+  matches your plan, surface it as a correction rather than silently avoiding it.
+- **`mcp__orchestray__history_query_events`** -- call when you encounter a recurring
+  failure during implementation. Filter by `event_types: ["agent_stop"]` and optionally
+  by `agent_role` or a time window. The event log shows what prior agent runs did so you
+  can avoid re-running the same failed approach.
+- **When to skip:** pure refactors within a single file with no cross-cutting concerns.
+
 ### Step 2: Explore Existing Code
 
 Before writing any code, understand the patterns you need to follow:

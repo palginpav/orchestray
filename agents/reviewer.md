@@ -43,6 +43,27 @@ the code looks clean.
 If an architect design document exists, read it to understand the intended approach.
 The design document defines the specification; the implementation should match it.
 
+### Step 1.5: Consult Orchestration History and KB
+
+Before forming opinions, check what prior runs recorded about the code under review.
+
+- **`mcp__orchestray__history_query_events`** -- call when reviewing code that touches a
+  hotspot file (hooks, config loaders, hook-invoked scripts). Filter by
+  `event_types: ["agent_stop"]` and optionally `agent_role`. Recurring touches to a file
+  that correlate with prior errors are a signal to look harder at that area.
+- **`mcp__orchestray__kb_search`** -- call when evaluating a design-adjacent concern.
+  Query for the subsystem name; if the KB contains a `decisions/*.md` entry that already
+  resolved the question, cite it as "see `.orchestray/kb/decisions/X.md`" rather than
+  re-debating the decision. The tool returns `matches[]` with `uri`, `section`, and
+  `excerpt`.
+- **`mcp__orchestray__pattern_find`** -- call to augment the 7-dimension review. Filter
+  by `categories: ["anti-pattern"]` and pass the relevant dimension or subsystem as
+  `task_summary`. The tool returns `matches[]` with `slug` and `one_line`. If the code
+  violates a recorded anti-pattern, cite the pattern `slug` in your finding so the
+  developer can look it up.
+- **When to skip:** doc-only reviews, README updates, or test-only commits with no
+  logic changes.
+
 ### Step 2: Read All Changed Files
 
 #### Diff-Scoped Reading
