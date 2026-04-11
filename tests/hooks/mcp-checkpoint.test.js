@@ -174,3 +174,48 @@ describe('gate + writer round-trip', () => {
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// B3: size cap on readCheckpointEntries
+// ---------------------------------------------------------------------------
+
+describe('B3 — readCheckpointEntries size cap', () => {
+
+  const MCP_CHECKPOINT_LIB = path.resolve(__dirname, '../../bin/_lib/mcp-checkpoint.js');
+
+  test('oversize mcp-checkpoint.jsonl triggers stderr warning and returns []', () => {
+    // Use MAX_JSONL_READ_BYTES_OVERRIDE to set a tiny cap so the test stays fast.
+    const CAP = 100;
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-b3-test-'));
+    cleanup.push(tmpDir);
+    const stateDir = path.join(tmpDir, '.orchestray', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    // Write a file that exceeds the cap
+    fs.writeFileSync(
+      path.join(stateDir, 'mcp-checkpoint.jsonl'),
+      'x'.repeat(CAP + 1)
+    );
+
+    const HARNESS_SRC = `
+      'use strict';
+      const { findCheckpointsForOrchestration } = require(${JSON.stringify(MCP_CHECKPOINT_LIB)});
+      const result = findCheckpointsForOrchestration(${JSON.stringify(tmpDir)}, 'orch-any');
+      process.stdout.write(JSON.stringify({ count: result.length }) + '\\n');
+    `;
+
+    const result = spawnSync(process.execPath, ['-e', HARNESS_SRC], {
+      encoding: 'utf8',
+      timeout: 10000,
+      env: { ...process.env, MAX_JSONL_READ_BYTES_OVERRIDE: String(CAP) },
+    });
+
+    assert.equal(result.status, 0, `harness exited non-zero: ${result.stderr}`);
+    assert.ok(
+      result.stderr.includes('checkpoint file too large'),
+      `stderr must mention 'checkpoint file too large'; got: ${result.stderr}`
+    );
+    const out = JSON.parse(result.stdout.trim());
+    assert.equal(out.count, 0, 'must return [] (count 0) when file is too large');
+  });
+
+});

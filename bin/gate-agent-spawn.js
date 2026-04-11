@@ -35,7 +35,7 @@ const {
   REQUIRED_PRE_DECOMPOSITION_TOOLS,
   getCheckpointFilePath,
   findCheckpointsForOrchestration,
-  missingRequiredTools,
+  missingRequiredToolsFromRows,
 } = require('./_lib/mcp-checkpoint');
 
 const VALID_TIERS = ['haiku', 'sonnet', 'opus'];
@@ -246,7 +246,7 @@ process.stdin.on('end', () => {
               );
 
               if (enforcedTools.length > 0) {
-                const missing = missingRequiredTools(cwd, orchId, enforcedTools);
+                const missing = missingRequiredToolsFromRows(rowsForThisOrch, enforcedTools);
 
                 if (missing.length > 0) {
                   // Fail-closed: the enforcement target case.

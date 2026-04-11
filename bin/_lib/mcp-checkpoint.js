@@ -44,7 +44,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { atomicAppendJsonl } = require('./atomic-append');
+const { atomicAppendJsonl, MAX_JSONL_READ_BYTES } = require('./atomic-append');
 
 /**
  * Path to the MCP checkpoint ledger file, relative to cwd.
@@ -101,6 +101,23 @@ function appendCheckpointEntry(cwd, entry) {
  */
 function readCheckpointEntries(cwd) {
   const filePath = getCheckpointFilePath(cwd);
+  // Size guard (A2 LOW-1): refuse to load oversized files into memory.
+  try {
+    const stat = fs.statSync(filePath);
+    if (stat.size > MAX_JSONL_READ_BYTES) {
+      process.stderr.write(
+        '[orchestray] readCheckpointEntries: checkpoint file too large (' +
+        stat.size + ' bytes > ' + MAX_JSONL_READ_BYTES + '); skipping read\n'
+      );
+      return [];
+    }
+  } catch (statErr) {
+    if (statErr && statErr.code !== 'ENOENT') {
+      // Unexpected stat error — fall through to the readFileSync attempt.
+    } else {
+      return []; // File missing — no entries.
+    }
+  }
   let raw;
   try {
     raw = fs.readFileSync(filePath, 'utf8');
@@ -143,6 +160,33 @@ function findCheckpointsForOrchestration(cwd, orchestrationId) {
 }
 
 /**
+ * Given an already-fetched array of checkpoint rows and a required tool set,
+ * return the subset of tools NOT covered by rows matching phaseFilter.
+ *
+ * This is the single-read variant: the caller fetches rows once (via
+ * findCheckpointsForOrchestration) and passes them here, eliminating the
+ * double-read TOCTOU window in gate-agent-spawn.js (A1 W2).
+ *
+ * Phase filtering (A1 I2): only rows whose `phase` field equals phaseFilter
+ * are considered. Pass null/undefined to disable phase filtering.
+ *
+ * @param {CheckpointEntry[]} rows        - Already-fetched rows for one orchestration
+ * @param {string[]}          requiredSet - Tool names that must each have ≥1 row
+ * @param {string|null}       [phaseFilter='pre-decomposition'] - Phase to filter on
+ * @returns {string[]} Tool names from requiredSet that have no matching row
+ */
+function missingRequiredToolsFromRows(rows, requiredSet, phaseFilter = 'pre-decomposition') {
+  if (!rows.length) return [];
+
+  const filtered = phaseFilter != null
+    ? rows.filter(e => e && e.phase === phaseFilter)
+    : rows;
+
+  const seen = new Set(filtered.map(e => e && e.tool));
+  return requiredSet.filter(tool => !seen.has(tool));
+}
+
+/**
  * Given an orchestration ID and a required tool set, return the subset of
  * tools that have NO matching checkpoint row. An empty return array means
  * all required tools are satisfied.
@@ -156,6 +200,10 @@ function findCheckpointsForOrchestration(cwd, orchestrationId) {
  * - Rows exist for this orchestration_id AND a required tool is absent → returns
  *   the missing tool name(s); the gate treats this as fail-closed.
  *
+ * This is a thin wrapper around missingRequiredToolsFromRows for backward
+ * compatibility. New callers that already hold the rows array should call
+ * missingRequiredToolsFromRows directly to avoid the second file read.
+ *
  * @param {string}   cwd             - Project root (result of resolveSafeCwd)
  * @param {string}   orchestrationId - Orchestration ID to check
  * @param {string[]} requiredSet     - Tool names that must each have ≥1 row
@@ -163,10 +211,7 @@ function findCheckpointsForOrchestration(cwd, orchestrationId) {
  */
 function missingRequiredTools(cwd, orchestrationId, requiredSet) {
   const entries = findCheckpointsForOrchestration(cwd, orchestrationId);
-  if (!entries.length) return [];
-
-  const seen = new Set(entries.map(e => e.tool));
-  return requiredSet.filter(tool => !seen.has(tool));
+  return missingRequiredToolsFromRows(entries, requiredSet, 'pre-decomposition');
 }
 
 module.exports = {
@@ -174,8 +219,10 @@ module.exports = {
   REQUIRED_PRE_DECOMPOSITION_TOOLS,
   REQUIRED_POST_DECOMPOSITION_TOOLS,
   getCheckpointFilePath,
-  readCheckpointEntries,
+  // readCheckpointEntries is intentionally not exported — used only internally
+  // by findCheckpointsForOrchestration. No external caller exists (A3 F3.2).
   findCheckpointsForOrchestration,
+  missingRequiredToolsFromRows,
   missingRequiredTools,
   appendCheckpointEntry,
 };

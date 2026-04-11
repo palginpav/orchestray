@@ -45,10 +45,14 @@
 
 const fs = require('fs');
 const path = require('path');
-const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { atomicAppendJsonlIfAbsent } = require('./_lib/atomic-append');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
-const { findCheckpointsForOrchestration } = require('./_lib/mcp-checkpoint');
+const {
+  findCheckpointsForOrchestration,
+  REQUIRED_POST_DECOMPOSITION_TOOLS,
+} = require('./_lib/mcp-checkpoint');
+const { loadMcpEnforcement } = require('./_lib/config-schema');
 
 const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB cap — mirrors gate-agent-spawn.js:28
 
@@ -78,6 +82,19 @@ process.stdin.on('end', () => {
     }
 
     const cwd = resolveSafeCwd(event.cwd);
+
+    // --- Config check: pattern_record_application advisory gate ---
+    // If the user has set pattern_record_application to anything other than "hook",
+    // suppress advisory emission entirely (fail-open on config read errors).
+    try {
+      const mcpEnforcement = loadMcpEnforcement(cwd);
+      if (mcpEnforcement.pattern_record_application !== 'hook') {
+        process.stdout.write(JSON.stringify({ continue: true }));
+        process.exit(0);
+      }
+    } catch (_e) {
+      // Config read failed — default to enforced (current behaviour).
+    }
 
     // --- Condition 1: active orchestration ---
     const orchFile = getCurrentOrchestrationFile(cwd);
@@ -111,8 +128,9 @@ process.stdin.on('end', () => {
     }
 
     // Condition 3: zero pattern_record_application rows
+    // Use REQUIRED_POST_DECOMPOSITION_TOOLS to avoid duplicating the literal.
     const recordApplicationRows = checkpoints.filter(
-      r => r && r.tool === 'pattern_record_application'
+      r => r && r.tool === REQUIRED_POST_DECOMPOSITION_TOOLS[0]
     );
     if (recordApplicationRows.length > 0) {
       // PM did call pattern_record_application — no skip event needed.
@@ -120,34 +138,7 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
-    // --- Idempotency guard: check events.jsonl for existing skip event ---
-    const auditDir = path.join(cwd, '.orchestray', 'audit');
-    const eventsFile = path.join(auditDir, 'events.jsonl');
-    try {
-      const existing = fs.readFileSync(eventsFile, 'utf8');
-      for (const line of existing.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        try {
-          const ev = JSON.parse(trimmed);
-          if (
-            ev &&
-            ev.type === 'pattern_record_skipped' &&
-            ev.orchestration_id === orchId
-          ) {
-            // Already emitted — do not emit a second time.
-            process.stdout.write(JSON.stringify({ continue: true }));
-            process.exit(0);
-          }
-        } catch (_e) {
-          // Malformed line — skip silently.
-        }
-      }
-    } catch (_e) {
-      // events.jsonl missing or unreadable — safe to proceed with emission.
-    }
-
-    // --- All three conditions met — emit advisory event ---
+    // --- All three conditions met — build advisory event ---
     // Sum result_count across all pattern_find rows (null counts as 0).
     const patternFindResultCountTotal = patternFindRows.reduce(
       (sum, r) => sum + (typeof r.result_count === 'number' ? r.result_count : 0),
@@ -162,10 +153,21 @@ process.stdin.on('end', () => {
       reason: 'pattern_find returned results but pattern_record_application was never called',
     };
 
+    // --- Atomic idempotency + emit (B1) ---
+    // atomicAppendJsonlIfAbsent acquires the lock, reads the file inside it,
+    // checks for an existing pattern_record_skipped row for this orchId, and
+    // only appends if absent — eliminating the check-then-act race (A1 W1).
+    const auditDir = path.join(cwd, '.orchestray', 'audit');
+    const eventsFile = path.join(auditDir, 'events.jsonl');
     try {
       fs.mkdirSync(auditDir, { recursive: true });
       try { fs.chmodSync(auditDir, 0o700); } catch (_e) { /* best-effort hardening */ }
-      atomicAppendJsonl(eventsFile, advisory);
+      atomicAppendJsonlIfAbsent(
+        eventsFile,
+        advisory,
+        (ev) => ev && ev.type === 'pattern_record_skipped' && ev.orchestration_id === orchId
+      );
+      // Return value false means already present — no second event. Either way exit 0.
     } catch (_writeErr) {
       process.stderr.write(
         '[orchestray] record-pattern-skip: audit write failed (' +

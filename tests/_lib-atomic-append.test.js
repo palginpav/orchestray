@@ -158,3 +158,109 @@ describe('atomic-append', () => {
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// atomicAppendJsonlIfAbsent — idempotency and size-cap (B1 + B3)
+// ---------------------------------------------------------------------------
+
+describe('atomicAppendJsonlIfAbsent', () => {
+
+  test('appends row when file is absent, returns true', () => {
+    const tmpDir = makeTmpDir();
+    const filePath = path.join(tmpDir, 'events.jsonl');
+    try {
+      const { atomicAppendJsonlIfAbsent } = require(HELPER);
+      const row = { type: 'test_event', id: 'abc' };
+      const result = atomicAppendJsonlIfAbsent(filePath, row, () => false);
+      assert.equal(result, true, 'should return true when appending');
+      const lines = fs.readFileSync(filePath, 'utf8').split('\n').filter(l => l.trim());
+      assert.equal(lines.length, 1);
+      assert.deepEqual(JSON.parse(lines[0]), row);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('does not append when matchFn returns true for existing row', () => {
+    const tmpDir = makeTmpDir();
+    const filePath = path.join(tmpDir, 'events.jsonl');
+    try {
+      const { atomicAppendJsonlIfAbsent } = require(HELPER);
+      const existing = { type: 'pattern_record_skipped', orchestration_id: 'orch-1' };
+      fs.writeFileSync(filePath, JSON.stringify(existing) + '\n');
+
+      const row = { type: 'pattern_record_skipped', orchestration_id: 'orch-1' };
+      const result = atomicAppendJsonlIfAbsent(
+        filePath, row,
+        (ev) => ev && ev.type === 'pattern_record_skipped' && ev.orchestration_id === 'orch-1'
+      );
+      assert.equal(result, false, 'should return false when already present');
+      const lines = fs.readFileSync(filePath, 'utf8').split('\n').filter(l => l.trim());
+      assert.equal(lines.length, 1, 'file must still have exactly one line');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('running script twice emits exactly one event (idempotency via atomicAppendJsonlIfAbsent)', () => {
+    // Inline harness that calls atomicAppendJsonlIfAbsent twice — simulates two
+    // sequential PreCompact invocations. The second call acquires the lock
+    // after the first has written and released it, and sees the existing row.
+    const tmpDir = makeTmpDir();
+    const filePath = path.join(tmpDir, 'events.jsonl');
+    const HARNESS_SRC = `
+      'use strict';
+      const { atomicAppendJsonlIfAbsent } = require(${JSON.stringify(HELPER)});
+      const fp = ${JSON.stringify(filePath)};
+      const row = { type: 'pattern_record_skipped', orchestration_id: 'orch-idem' };
+      const match = (ev) => ev && ev.type === 'pattern_record_skipped' && ev.orchestration_id === 'orch-idem';
+      atomicAppendJsonlIfAbsent(fp, row, match);
+      atomicAppendJsonlIfAbsent(fp, row, match);
+    `;
+    try {
+      const result = spawnSync(process.execPath, ['-e', HARNESS_SRC], { encoding: 'utf8', timeout: 10000 });
+      assert.equal(result.status, 0, `harness exited ${result.status}: ${result.stderr}`);
+      const lines = fs.readFileSync(filePath, 'utf8').split('\n').filter(l => l.trim());
+      assert.equal(lines.length, 1, 'exactly one event must be written after two calls');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('B3: oversize file triggers stderr warning and returns false (no append)', () => {
+    // Use MAX_JSONL_READ_BYTES_OVERRIDE env var to set a tiny cap (100 bytes),
+    // then write a file just over that threshold. The helper must warn + return false.
+    const tmpDir = makeTmpDir();
+    const filePath = path.join(tmpDir, 'events.jsonl');
+    const CAP = 100;
+    // Write a file slightly larger than the cap
+    fs.writeFileSync(filePath, 'x'.repeat(CAP + 1));
+    const HARNESS_SRC = `
+      'use strict';
+      const { atomicAppendJsonlIfAbsent } = require(${JSON.stringify(HELPER)});
+      const fp = ${JSON.stringify(filePath)};
+      const result = atomicAppendJsonlIfAbsent(fp, { type: 'should_not_appear' }, () => false);
+      process.stdout.write(JSON.stringify({ result }) + '\\n');
+    `;
+    try {
+      const result = spawnSync(process.execPath, ['-e', HARNESS_SRC], {
+        encoding: 'utf8',
+        timeout: 10000,
+        env: { ...process.env, MAX_JSONL_READ_BYTES_OVERRIDE: String(CAP) },
+      });
+      assert.equal(result.status, 0);
+      assert.ok(
+        result.stderr.includes('file too large'),
+        `stderr must mention 'file too large'; got: ${result.stderr}`
+      );
+      const out = JSON.parse(result.stdout.trim());
+      assert.equal(out.result, false, 'must return false on oversize file');
+      // File must not have had the new row appended
+      const content = fs.readFileSync(filePath, 'utf8');
+      assert.ok(!content.includes('should_not_appear'), 'row must not be appended to oversized file');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+});
