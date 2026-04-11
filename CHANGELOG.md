@@ -66,19 +66,23 @@ next spawn.**
   `pattern_record_skipped` event once per orchestration if `pattern_find`
   returned ≥1 result but the PM never called `pattern_record_application`.
   Advisory only — does not block. Idempotent. Feeds the §22c confidence
-  feedback loop as "no data this run" signal. The SubagentStop check fires
-  only when the stopping subagent is the orchestration PM, not on individual
-  task-agent stops (architect/developer/reviewer/etc.), to prevent false
-  signals.
+  feedback loop as "no data this run" signal. Fires on the `PreCompact`
+  hook (the closest available session-boundary event in Claude Code's
+  current hook vocabulary) rather than `SubagentStop`, because the
+  Orchestray PM is the main session agent — not a spawned subagent — so
+  `SubagentStop` never fires for it.
 
 - **New audit events:** `mcp_checkpoint_recorded` (per enforced MCP call,
-  dual-written to ledger + `events.jsonl`), `mcp_checkpoint_missing` (written
-  to `events.jsonl` when the gate blocks a spawn, enabling analytics on
-  enforcement frequency), `pattern_record_skipped` (advisory, on PM
-  SubagentStop when pattern retrieval happened but recording did not). Full
-  schemas in `agents/pm-reference/event-schemas.md`. The `routing_outcome`
-  Variant A shape gains an optional `tool_name` field (backward-compatible;
-  defaults to `"Agent"` when absent).
+  dual-written to the checkpoint ledger and `events.jsonl`) and
+  `pattern_record_skipped` (advisory, emitted on `PreCompact` when
+  `pattern_find` returned results but `pattern_record_application` was
+  never called). A third event name, `mcp_checkpoint_missing`, is
+  **RESERVED** — `gate-agent-spawn.js` currently blocks with a stderr
+  diagnostic and `exit 2` only; the audit event is documented as a
+  forward contract in `agents/pm-reference/event-schemas.md` and will be
+  emitted in a follow-up release if analytics usage justifies it. The
+  `routing_outcome` Variant A shape gains an optional `tool_name` field
+  (backward-compatible; defaults to `"Agent"` when absent).
 
 - **New shared module `bin/_lib/mcp-checkpoint.js`.** Reader and path helpers
   for `mcp-checkpoint.jsonl` — a single module instead of duplicating the
@@ -141,8 +145,8 @@ fail-open behavior without editing any code.
 
 **Tested against Claude Code 2.1.59.**
 
-Tests: 569 → 624 (+55 across gate, checkpoint writer, allowlist, and smoke
-suites).
+Tests: 569 → 623 (+54 across gate, checkpoint writer, allowlist,
+pattern-record-skip, and full-suite integration tests).
 
 ---
 
