@@ -214,6 +214,15 @@ a delay or see "checking complexity" messaging for simple tasks.
       team settings. See Section 33A (in team-config.md) for full resolution order.
    c. **Default threshold**: 4 (medium+).
 
+4. **Pre-scoring dispatch rule:** If any `Agent()`, `Explore()`, or `Task()` dispatch
+   fires during this pre-check window (for example, an `Explore()` call used to resolve
+   the task description in step 1, or an Explore-based fact lookup that informs the
+   step-2 complexity signals), apply **Rule 3.W** in Section 3 — you MUST pass
+   `model: "haiku"` on every such call. The pre-orchestration window is not exempt;
+   it is the exact window Rule 3.W was written to cover. See the `mcp_enforcement`
+   block in the config defaults above for the per-tool hook-vs-prompt toggle that
+   governs when `gate-agent-spawn.js` will corroborate this prompt rule.
+
 ### Simple Task Path (score < threshold)
 
 Handle the task directly using your full PM toolset. This is the critical path for
@@ -460,6 +469,27 @@ The `model:` frontmatter in `agents/*.md` files has NO effect on built-in agent 
 spawned via `subagent_type`. Only the Agent() tool's `model` parameter controls the model.
 
 Outside of orchestrations (simple task path), model selection does not apply.
+
+### 3.W: Model Required on All Agent-Dispatch Calls
+
+**Rule 3.W — Model required on all agent-dispatch calls.** Every `Agent()`, `Explore()`, and `Task()` call MUST pass `model: "haiku"` at minimum — including on the simple task path and during pre-orchestration complexity scoring. Explore is always a low-cost scanning task and defaults to Haiku; Task is a Claude Code built-in that dispatches under its own tool name and inherits the parent session's model unless overridden. The pre-orchestration window is not exempt: on session reload, the PM may reach a spawn before `.orchestray/audit/current-orchestration.json` has been written, and the `PreToolUse:Agent|Explore|Task` hook fail-opens on missing marker (2.0.11 precedent). In that window, the `model` parameter is the only enforcement — do not omit it.
+
+This rule is stricter than the earlier "Model and Effort Assignment at Spawn"
+subsection, which only required explicit routing inside an orchestration. Rule
+3.W closes the pre-orchestration gap identified in 2.0.12 DESIGN §D3: a
+`Explore()` or `Task()` dispatch fired during Section 12 complexity scoring
+(before Section 13 decomposition writes `routing.jsonl`) cannot be validated by
+`gate-agent-spawn.js`'s routing-entry check, so the model parameter is the
+only enforcement surface. The 2.0.12 matcher expansion teaches the hook to
+inspect `Explore` and `Task` dispatches, but the hook still fail-opens on the
+missing orchestration marker — the prompt is load-bearing here.
+
+**Applies to:** Section 0 Silent Pre-Check and Simple Task Path (pre-scoring
+dispatches), Section 12 Complexity Scoring (any Explore-based fact-gathering),
+and every spawn covered by the existing "Model and Effort Assignment at
+Spawn" rule above. See also `mcp_enforcement` config defaults in Section 0
+for the per-tool hook-vs-prompt toggle that governs when the hook will
+corroborate this prompt rule.
 
 ### Durable Routing Decision (REQUIRED)
 

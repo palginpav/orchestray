@@ -552,6 +552,18 @@ benefit for simple tasks.
 **Pre-check:** Before decomposing, apply Section 22b pattern check. Any relevant patterns
 from past orchestrations will inform the decomposition strategy below.
 
+**Pre-decomposition retrieval checklist (MANDATORY before first `Agent()` spawn).**
+Before calling `Agent()` for the first time, confirm §22b retrieval has actually run
+for the current `orchestration_id`: `mcp__orchestray__pattern_find`,
+`mcp__orchestray__kb_search`, and `mcp__orchestray__history_find_similar_tasks` must
+each have been invoked once (each call emits a `mcp_checkpoint_recorded` row to
+`.orchestray/state/mcp-checkpoint.jsonl`). If any of the three was skipped — or if
+`gate-agent-spawn.js` blocks your first spawn with a diagnostic naming a missing MCP
+tool (e.g., `missing MCP checkpoint for pattern_find`) — **do not retry the spawn
+blindly**; follow the re-entry protocol at §22b.R. Retrying without re-running the
+missing retrieval call produces the R2 infinite-retry loop that §22b.R was written
+to prevent.
+
 **Prior-art check:** Also before decomposing, call
 `mcp__orchestray__history_find_similar_tasks` with the user's task summary and
 `min_similarity: 0.75`. If any match has `outcome: "success"`, read its summary via
@@ -559,7 +571,9 @@ from past orchestrations will inform the decomposition strategy below.
 is missing), flag it as prior art in the plan preview, and bias decomposition toward
 the same shape. If the MCP server is unavailable, fall back to Section 2.4
 (cross-session KB scan). Prior art is **advisory** -- read the returned task's
-`outcome_reason` and discard matches that don't actually apply.
+`outcome_reason` and discard matches that don't actually apply. This call is the
+same `history_find_similar_tasks` call tracked by the pre-decomposition retrieval
+checklist above — running it here satisfies that checklist item.
 
 **Workflow override:** Before step 1, check Section 35 (Custom YAML Workflow Definitions,
 in yaml-workflows.md). If a workflow is matched (via `--workflow` flag or auto-match),
@@ -1741,6 +1755,44 @@ Example MCP call:
   }
 }
 ```
+
+### §22b.R — Re-entry on MCP checkpoint block
+
+If a subsequent `Agent()` spawn is blocked by `gate-agent-spawn.js` with a
+diagnostic naming a missing MCP tool (e.g., `missing MCP checkpoint for
+pattern_find`, `missing MCP checkpoint for kb_search`, or `missing MCP
+checkpoint for history_find_similar_tasks`), **do not retry the spawn
+blindly**. The block is a signal that one of the three pre-decomposition
+retrieval calls (`pattern_find`, `kb_search`, `history_find_similar_tasks`)
+was skipped for the current `orchestration_id`. **Re-run §22b from the top**
+— specifically, call the missing MCP tool(s) named in the diagnostic — then
+re-attempt the spawn. The checkpoint ledger at
+`.orchestray/state/mcp-checkpoint.jsonl` is append-only, so re-running §22b
+adds fresh rows without wiping prior entries. The PM's prior
+`pattern_find`/`kb_search`/`history_find_similar_tasks` results for this
+`orchestration_id` (if any) remain valid — §22b.R is about filling in the
+missing call, not redoing the entire retrieval.
+
+**Cross-reference:** the `mcp_checkpoint_missing` event (documented in
+`agents/pm-reference/event-schemas.md`, added in 2.0.12) is the audit-trail
+record of a block. Its `missing_tools` field names the specific retrieval
+call(s) to re-run. If the diagnostic text is ambiguous, read the most recent
+`mcp_checkpoint_missing` event for the current `orchestration_id` in
+`.orchestray/audit/events.jsonl` and use its `missing_tools` array as the
+authoritative list.
+
+**Why this re-entry path exists:** DESIGN §Risks R2 (2.0.12) identifies the
+failure mode this mitigates — without an explicit re-entry instruction, a PM
+that does not understand the block will loop on retrying the spawn, burning
+turns and tokens without ever unblocking. The diagnostic from
+`gate-agent-spawn.js` names §22b as the re-run point; this subsection names
+the exact action.
+
+**Session-reload property:** the checkpoint ledger is a file, not in-memory
+state. After a session reload (CLAUDE.md "Troubleshooting"), the PM re-reads
+`.orchestray/state/mcp-checkpoint.jsonl` directly — no session restart or
+reload is required for `gate-agent-spawn.js` to pick up the fresh rows
+written by §22b.R (DESIGN §D6 rule 6).
 
 ### 22c. Confidence Feedback Loop
 
