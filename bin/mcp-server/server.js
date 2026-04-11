@@ -27,7 +27,12 @@ const readline = require('node:readline');
 
 const paths = require('./lib/paths');
 const { ASK_USER_TOOL_DEFINITION } = require('./lib/schemas');
-const { writeAuditEvent } = require('./lib/audit');
+const {
+  writeAuditEvent,
+  buildAuditEvent,
+  buildResourceAuditEvent,
+  readOrchestrationId,
+} = require('./lib/audit');
 const { handleAskUser } = require('./elicit/ask_user');
 
 // Stage 2 tool handlers
@@ -151,27 +156,21 @@ const RESOURCE_HANDLERS = Object.freeze({
 
 function buildToolContext(config) {
   let projectRoot;
-  let pluginRoot;
   try { projectRoot = paths.getProjectRoot(); } catch (_e) { projectRoot = null; }
-  try { pluginRoot = paths.getPluginRoot(); } catch (_e) { pluginRoot = null; }
   return {
     sendElicitation,
     auditSink: writeAuditEvent,
     config,
     projectRoot,
-    pluginRoot,
     logger: logStderr,
   };
 }
 
 function buildResourceContext(config) {
   let projectRoot;
-  let pluginRoot;
   try { projectRoot = paths.getProjectRoot(); } catch (_e) { projectRoot = null; }
-  try { pluginRoot = paths.getPluginRoot(); } catch (_e) { pluginRoot = null; }
   return {
     projectRoot,
-    pluginRoot,
     config,
     logger: logStderr,
   };
@@ -185,22 +184,17 @@ function toolResultError(text) {
 }
 
 /**
- * Emit an `mcp_resource_read` audit event. Reuses the same JSONL writer
- * as `mcp_tool_call` so downstream consumers see both event types in the
- * same stream. Fail-open: audit failures never block the response.
+ * Emit an `mcp_resource_read` audit event via the shared builder in
+ * `lib/audit.js`. Fail-open: audit failures never block the response.
+ * B4 cleanup: single source of truth for event shape.
  */
 function emitResourceAudit(uri, outcome, durationMs) {
   try {
-    const { readOrchestrationId } = require('./lib/audit');
-    writeAuditEvent({
-      timestamp: new Date().toISOString(),
-      type: 'mcp_resource_read',
-      tool: uri,
-      orchestration_id: readOrchestrationId(),
-      duration_ms: durationMs,
+    writeAuditEvent(buildResourceAuditEvent({
+      uri,
       outcome,
-      form_fields_count: 0,
-    });
+      duration_ms: durationMs,
+    }));
   } catch (_e) { /* swallow */ }
 }
 
@@ -288,6 +282,20 @@ function sendResult(id, result) {
 async function dispatchRequest(config, msg) {
   const { id, method, params } = msg;
 
+  // JSON-RPC 2.0 §4.1: a message without an id is a notification. The server
+  // must never send a response to a notification, even an error. Route the
+  // known `notifications/*` namespace silently, ignore everything else. This
+  // guard sits at the top so it fires for any method (tools/call,
+  // resources/read, typo-variants) rather than only the method-not-found
+  // fallthrough. B10 cleanup from the full-codebase audit.
+  if (id === undefined || id === null) {
+    // The only notification we care about today is `notifications/initialized`,
+    // which is already a no-op — so there is nothing to do here beyond the
+    // silent return. New notification handlers can branch on `method` above
+    // this return when needed.
+    return;
+  }
+
   if (method === 'initialize') {
     const capabilities = { tools: { listChanged: false } };
     if (isServerEnabled(config)) {
@@ -358,18 +366,16 @@ async function dispatchRequest(config, msg) {
     // Central audit for non-ask_user tools. The ask_user handler emits its
     // own richer audit events (with form_fields_count, timeout/cancelled
     // outcomes) via context.auditSink, so skip the generic emission for it
-    // to avoid double-logging.
+    // to avoid double-logging. B4 cleanup: route through buildAuditEvent so
+    // event shape + outcome validation stay in a single place.
     if (name !== 'ask_user') {
       try {
-        writeAuditEvent({
-          timestamp: new Date().toISOString(),
-          type: 'mcp_tool_call',
+        writeAuditEvent(buildAuditEvent({
           tool: name,
-          orchestration_id: require('./lib/audit').readOrchestrationId(),
-          duration_ms: Date.now() - startedAt,
           outcome,
+          duration_ms: Date.now() - startedAt,
           form_fields_count: 0,
-        });
+        }));
       } catch (_e) { /* fail-open */ }
     }
 
@@ -442,8 +448,10 @@ async function dispatchRequest(config, msg) {
     try {
       ({ scheme } = paths.parseResourceUri(uri));
     } catch (err) {
-      const startedAt = Date.now();
-      emitResourceAudit(uri, 'error', Date.now() - startedAt);
+      // B5: no `startedAt` here — the parse happens inside this branch, so
+      // subtracting Date.now() from itself was always 0. Match the unknown-
+      // handler branch below by emitting a literal 0.
+      emitResourceAudit(uri, 'error', 0);
       sendError(id, JSONRPC_INVALID_PARAMS, 'resources/read: ' + (err && err.message));
       return;
     }
@@ -485,18 +493,9 @@ async function dispatchRequest(config, msg) {
     return;
   }
 
-  // Notifications and unsupported methods.
-  if (method === 'notifications/initialized' || (typeof method === 'string' && method.startsWith('notifications/'))) {
-    // No response per JSON-RPC notification semantics.
-    return;
-  }
-
-  // JSON-RPC 2.0 §5: a request without an id is a notification; never reply.
-  // Guards against typo-variant notifications (e.g. `notification/initialized`)
-  // that miss the startsWith check above and would otherwise produce a
-  // spec-violating null-id error frame.
-  if (id === undefined || id === null) return;
-
+  // Unsupported request method — id is guaranteed non-null because the
+  // notification guard at the top of this function already returned for
+  // notification-shape messages.
   sendError(id, JSONRPC_METHOD_NOT_FOUND, 'Method not found', { method });
 }
 

@@ -49,6 +49,26 @@ function buildAuditEvent({ tool, outcome, duration_ms, form_fields_count }) {
 }
 
 /**
+ * Build an `mcp_resource_read` audit event. Parallel shape to
+ * `buildAuditEvent` but keyed by `uri` instead of `tool`, and without the
+ * `form_fields_count` field (which is meaningful only for elicitation).
+ * Added in v2.0.11 G6 cleanup to eliminate the inline/helper schema-drift
+ * risk flagged by the full-codebase audit (B4).
+ */
+function buildResourceAuditEvent({ uri, outcome, duration_ms }) {
+  const safeOutcome = LEGAL_OUTCOMES.has(outcome) ? outcome : 'error';
+
+  return {
+    timestamp: new Date().toISOString(),
+    type: 'mcp_resource_read',
+    uri: uri || 'unknown',
+    orchestration_id: readOrchestrationId(),
+    duration_ms: typeof duration_ms === 'number' ? duration_ms : 0,
+    outcome: safeOutcome,
+  };
+}
+
+/**
  * Read `.orchestray/audit/current-orchestration.json` at call time and
  * return its `orchestration_id` field. Returns `"unknown"` on any failure
  * (missing file, missing project root, invalid JSON, missing field).
@@ -96,6 +116,7 @@ function writeAuditEvent(event) {
 
 module.exports = {
   buildAuditEvent,
+  buildResourceAuditEvent,
   readOrchestrationId,
   writeAuditEvent,
 };
