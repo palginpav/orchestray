@@ -874,20 +874,13 @@ should ignore it. New fields will only be added as optional.
 
 ## MCP Checkpoint Missing Event
 
-RESERVED. As of 2.0.12, `bin/gate-agent-spawn.js` blocks a spawn that is missing
-required pre-decomposition MCP checkpoints by exiting with code 2 and writing a
-diagnostic to stderr — but it does **not** write an `mcp_checkpoint_missing` audit
-event to `events.jsonl`.
+IMPLEMENTED (as of 2.0.13, task 2013-W3). Emitted by `bin/gate-agent-spawn.js`
+immediately before `exit(2)` whenever the MCP pre-decomposition checkpoint gate
+blocks a spawn. The event provides a machine-readable signal for analytics (gate
+block rate, §22c confidence feedback) to learn which tools the PM tends to skip.
 
-Consumers tracking blocked spawns should use the absence of a subsequent
-`routing_outcome` row for a given `(orchestration_id, agent_type)` pair as the
-blocking signal, rather than expecting this event type.
-
-**INFO for T10 reviewer:** DESIGN §D4 item 2 specified this event as emitted by
-`gate-agent-spawn.js`. Grep of `bin/gate-agent-spawn.js` confirms the string
-`mcp_checkpoint_missing` does not appear in the file — no audit event is emitted.
-T10 should confirm whether this is a T3 scope gap and whether the event should be
-added to a future release. If added, the expected shape would be:
+Written via `atomicAppendJsonl` to `.orchestray/audit/events.jsonl`. Fail-open:
+if the write fails, a stderr warning is emitted but the block still proceeds.
 
 ```json
 {
@@ -895,9 +888,30 @@ added to a future release. If added, the expected shape would be:
   "type": "mcp_checkpoint_missing",
   "orchestration_id": "<current orch id>",
   "missing_tools": ["kb_search", "history_find_similar_tasks"],
-  "diagnostic": "<first line of stderr block message>"
+  "phase_mismatch": false,
+  "source": "hook"
 }
 ```
+
+**Fields:**
+
+- `missing_tools` (string[]) — the tool names that the null-filter check found
+  absent. Populated from `missingRequiredToolsFromRows(..., null)` — phase is
+  ignored for enforcement, so this reflects genuine absence regardless of how the
+  rows were phase-labelled.
+
+- `phase_mismatch` (boolean) — `true` when the gate's strict-phase check
+  (`phaseFilter='pre-decomposition'`) would have shown missing tools that the
+  null-filter check allowed through. This fires on the BUG-D defense-in-depth
+  path under the W1 fix: rows are present in the ledger but with
+  `phase: "post-decomposition"` because they were written by a pre-2.0.13 hook
+  on a project with an existing `routing.jsonl`. Consumers should treat
+  `phase_mismatch: true` as a signal to recommend the W11 migration sweep.
+
+- `source` — always `"hook"` for events emitted by gate scripts.
+
+**Schema stability:** additive only. Consumers that do not recognise this event
+type should ignore it. New fields will only be added as optional.
 
 ---
 

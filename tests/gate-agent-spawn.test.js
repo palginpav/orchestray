@@ -1098,6 +1098,183 @@ describe('routing.jsonl validation', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 2013-W3: mcp_checkpoint_missing audit event emission
+// ---------------------------------------------------------------------------
+// Verifies that gate-agent-spawn.js emits a machine-readable mcp_checkpoint_missing
+// event to events.jsonl on every block path, with correct shape and phase_mismatch
+// field. Test 3 (atomicAppendJsonl stub) is skipped per the XS-effort caveat in
+// the task brief (the gate runs as a child process; stubbing internals would require
+// NODE_PATH overrides or a test-harness shim — too invasive for an XS task).
+
+describe('2013-W3: mcp_checkpoint_missing event emission', () => {
+
+  /** Write mcp-checkpoint.jsonl with the given rows. */
+  function writeCheckpointRows(dir, rows) {
+    const stateDir = path.join(dir, '.orchestray', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const lines = rows.map(r => JSON.stringify(r)).join('\n') + '\n';
+    fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), lines);
+  }
+
+  /** Write the MCP enforcement config that enables all three tools as 'hook'. */
+  function writeMcpConfig(dir, mcpEnforcement) {
+    const configDir = path.join(dir, '.orchestray');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, 'config.json'),
+      JSON.stringify({ mcp_enforcement: mcpEnforcement })
+    );
+  }
+
+  /** Read and parse events.jsonl from the given tmpdir. Returns array of event objects. */
+  function readEvents(dir) {
+    const eventsPath = path.join(dir, '.orchestray', 'audit', 'events.jsonl');
+    if (!fs.existsSync(eventsPath)) return [];
+    return fs.readFileSync(eventsPath, 'utf8')
+      .split('\n')
+      .filter(l => l.trim())
+      .map(l => JSON.parse(l));
+  }
+
+  /** Build a minimal checkpoint row. */
+  function cpRow(orchId, tool, phase) {
+    return {
+      timestamp: new Date().toISOString(),
+      orchestration_id: orchId,
+      tool,
+      outcome: 'answered',
+      phase: phase || 'pre-decomposition',
+      result_count: null,
+    };
+  }
+
+  test('W3-T1: genuine-absence block emits mcp_checkpoint_missing with phase_mismatch=false', () => {
+    // All three required tools are simply absent — null-filter finds them all missing.
+    // phaseMismatchTools will be empty (no rows at all for these tools).
+    // Expected: event emitted with missing_tools listing the absent tools,
+    //           phase_mismatch: false, gate exits 2.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-gate-w3t1-'));
+    cleanup.push(dir);
+
+    const auditDir = path.join(dir, '.orchestray', 'audit');
+    const stateDir = path.join(dir, '.orchestray', 'state');
+    fs.mkdirSync(auditDir, { recursive: true });
+    fs.mkdirSync(stateDir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(auditDir, 'current-orchestration.json'),
+      JSON.stringify({ orchestration_id: 'orch-W3-T1' })
+    );
+
+    // Enforce all three tools via hook
+    writeMcpConfig(dir, {
+      pattern_find: 'hook',
+      kb_search: 'hook',
+      history_find_similar_tasks: 'hook',
+      global_kill_switch: false,
+    });
+
+    // Write only pattern_find — kb_search and history_find_similar_tasks are absent
+    writeCheckpointRows(dir, [
+      cpRow('orch-W3-T1', 'pattern_find', 'pre-decomposition'),
+    ]);
+
+    const { status } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { model: 'sonnet' },
+    });
+
+    // Gate must block
+    assert.equal(status, 2, 'W3-T1: gate must exit 2 on genuine absence');
+
+    // Event must be written
+    const events = readEvents(dir);
+    const missing_ev = events.find(e => e.type === 'mcp_checkpoint_missing');
+    assert.ok(missing_ev, 'W3-T1: mcp_checkpoint_missing event must be emitted to events.jsonl');
+    assert.equal(missing_ev.orchestration_id, 'orch-W3-T1',
+      'W3-T1: event orchestration_id must match current orch');
+    assert.ok(Array.isArray(missing_ev.missing_tools),
+      'W3-T1: missing_tools must be an array');
+    assert.ok(missing_ev.missing_tools.includes('kb_search'),
+      'W3-T1: missing_tools must include kb_search');
+    assert.ok(missing_ev.missing_tools.includes('history_find_similar_tasks'),
+      'W3-T1: missing_tools must include history_find_similar_tasks');
+    assert.equal(missing_ev.phase_mismatch, false,
+      'W3-T1: phase_mismatch must be false when tools are genuinely absent (no poisoned rows)');
+    assert.equal(missing_ev.source, 'hook',
+      'W3-T1: source must be "hook"');
+    assert.ok(typeof missing_ev.timestamp === 'string' && missing_ev.timestamp.length > 0,
+      'W3-T1: timestamp must be a non-empty string');
+  });
+
+  test('W3-T2: phase-mismatch block (BUG-D path) emits mcp_checkpoint_missing with phase_mismatch=true', () => {
+    // Scenario: kb_search + history_find_similar_tasks rows exist but with
+    // phase='post-decomposition' (poisoned). pattern_find is genuinely absent.
+    // null-filter finds pattern_find missing (the only true absence).
+    // strict-filter finds all three missing (poisoned rows filtered out).
+    // phaseMismatchTools = [kb_search, history_find_similar_tasks] (in strict but not null).
+    // Gate takes the BUG-D phase-mismatch diagnostic path and exits 2.
+    // Expected: event emitted with phase_mismatch: true.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-gate-w3t2-'));
+    cleanup.push(dir);
+
+    const auditDir = path.join(dir, '.orchestray', 'audit');
+    const stateDir = path.join(dir, '.orchestray', 'state');
+    fs.mkdirSync(auditDir, { recursive: true });
+    fs.mkdirSync(stateDir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(auditDir, 'current-orchestration.json'),
+      JSON.stringify({ orchestration_id: 'orch-W3-T2' })
+    );
+
+    writeMcpConfig(dir, {
+      pattern_find: 'hook',
+      kb_search: 'hook',
+      history_find_similar_tasks: 'hook',
+      global_kill_switch: false,
+    });
+
+    // kb_search + history_find_similar_tasks present but phase-poisoned.
+    // pattern_find genuinely absent.
+    writeCheckpointRows(dir, [
+      cpRow('orch-W3-T2', 'kb_search', 'post-decomposition'),
+      cpRow('orch-W3-T2', 'history_find_similar_tasks', 'post-decomposition'),
+    ]);
+
+    const { status, stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { model: 'sonnet' },
+    });
+
+    // Gate must block (pattern_find genuinely absent triggers exit 2)
+    assert.equal(status, 2, 'W3-T2: gate must exit 2 on phase-mismatch + genuine absence');
+    // BUG-D diagnostic message must fire
+    assert.match(stderr, /phase mismatch/i,
+      'W3-T2: BUG-D phase-mismatch diagnostic must appear in stderr');
+
+    // Event must be written
+    const events = readEvents(dir);
+    const missing_ev = events.find(e => e.type === 'mcp_checkpoint_missing');
+    assert.ok(missing_ev, 'W3-T2: mcp_checkpoint_missing event must be emitted to events.jsonl');
+    assert.equal(missing_ev.orchestration_id, 'orch-W3-T2',
+      'W3-T2: event orchestration_id must match current orch');
+    assert.equal(missing_ev.phase_mismatch, true,
+      'W3-T2: phase_mismatch must be true when poisoned rows trigger BUG-D path');
+    // missing_tools reflects null-filter result: only pattern_find is absent
+    assert.ok(Array.isArray(missing_ev.missing_tools),
+      'W3-T2: missing_tools must be an array');
+    assert.ok(missing_ev.missing_tools.includes('pattern_find'),
+      'W3-T2: missing_tools must include pattern_find (the genuinely absent tool)');
+    assert.equal(missing_ev.source, 'hook',
+      'W3-T2: source must be "hook"');
+  });
+
+});
+
+// ---------------------------------------------------------------------------
 // 2013-W4: AGENT_DISPATCH_ALLOWLIST + SKIP_ALLOWLIST drift guard
 // ---------------------------------------------------------------------------
 // Known-good manifest as of Claude Code 2.1.59 (the version 2.0.13 targets).

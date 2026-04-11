@@ -37,6 +37,7 @@ const {
   findCheckpointsForOrchestration,
   missingRequiredToolsFromRows,
 } = require('./_lib/mcp-checkpoint');
+const { atomicAppendJsonl } = require('./_lib/atomic-append');
 
 const VALID_TIERS = ['haiku', 'sonnet', 'opus'];
 
@@ -303,6 +304,28 @@ process.stdin.on('end', () => {
                       "mcp_enforcement.global_kill_switch=true.\n"
                     );
                   }
+
+                  // 2013-W3-mcp_checkpoint_missing: emit machine-readable audit event
+                  // before blocking. Reuses `missing` and `phaseMismatchTools` computed
+                  // by W1's BUG-D diagnostic block above — do NOT re-derive. Fail-open:
+                  // if the write fails, log a warning but always proceed to exit(2).
+                  try {
+                    const eventsPath = require('path').join(cwd, '.orchestray', 'audit', 'events.jsonl');
+                    atomicAppendJsonl(eventsPath, {
+                      timestamp: new Date().toISOString(),
+                      type: 'mcp_checkpoint_missing',
+                      orchestration_id: orchId,
+                      missing_tools: missing,
+                      phase_mismatch: phaseMismatchTools.length > 0,
+                      source: 'hook',
+                    });
+                  } catch (_emitErr) {
+                    process.stderr.write(
+                      '[orchestray] gate-agent-spawn: failed to emit mcp_checkpoint_missing event (' +
+                      (_emitErr && _emitErr.message) + '); continuing to block\n'
+                    );
+                  }
+
                   process.exit(2);
                 }
                 // All enforced tools present — allow.
