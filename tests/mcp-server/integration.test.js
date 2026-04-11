@@ -94,12 +94,6 @@ function writeArchiveTask(tmp, orchId, taskId, title, body) {
   fs.writeFileSync(path.join(dir, taskId + '.md'), content);
 }
 
-function writeArchiveSummary(tmp, orchId, text) {
-  const dir = path.join(tmp, '.orchestray', 'history', orchId);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'orchestration.md'), text);
-}
-
 function writeKbFile(tmp, section, slug, title, body) {
   const dir = path.join(tmp, '.orchestray', 'kb', section);
   fs.mkdirSync(dir, { recursive: true });

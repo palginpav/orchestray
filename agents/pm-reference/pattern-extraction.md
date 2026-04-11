@@ -82,6 +82,18 @@ reported, confidence feedback applied via Section 22c).
 
 ## 22b. Pattern Application (Pre-Decomposition)
 
+**Read path has moved to MCP.** The live procedure is in `tier1-orchestration.md`
+§22b; it calls `mcp__orchestray__pattern_find` and injects
+`@orchestray:pattern://<slug>` URIs into the decomposition prompt. See the
+top-of-file blockquote for the lockstep requirement when changing pattern
+frontmatter.
+
+The manual Glob-based procedure below is retained ONLY as a fallback for the
+case where the MCP server is unavailable (e.g. transport error, `mcp_server.
+tools.pattern_find.enabled = false`). Normal operation uses the MCP path.
+
+### 22b (fallback) — manual pattern application when MCP unavailable
+
 Before running Section 13 (Task Decomposition Protocol), check stored patterns for
 relevant strategies.
 
