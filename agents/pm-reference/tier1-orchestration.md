@@ -1067,8 +1067,42 @@ Section 14 flow or after all sequential tasks complete).
    }
    ```
 
-3. **Archive:** Copy `events.jsonl` to `.orchestray/history/<orch-id>/events.jsonl`,
-   then delete the originals. Delete `current-orchestration.json`.
+3. **Archive (durable rotation — 2013-W6-cleanup):** Run `bin/_lib/events-rotate.js`
+   to atomically rotate `events.jsonl` for the current orchestration_id into
+   `.orchestray/history/<orch-id>/events.jsonl`. This step uses a three-state sentinel
+   (`started` → `archived` → `truncated`) at `.orchestray/state/.events-rotation-<orch-id>.sentinel`
+   to make the rotation crash-safe and idempotent:
+
+   - **No sentinel → fresh run.** Filters the live `events.jsonl` to rows matching
+     the current orchestration_id, writes them to the archive with fsync for durability,
+     then atomically replaces the live file (rename-dance; no `fs.truncateSync`).
+   - **Sentinel `"started"` → crashed before archive complete.** Deletes the partial
+     archive, restarts from the filter step.
+   - **Sentinel `"archived"` → crashed after archive, before truncate.** Skips the
+     archive-write (idempotent), proceeds directly to the rename-dance truncate.
+   - **Sentinel `"truncated"` → crashed after truncate, before sentinel delete.** Just
+     deletes the sentinel.
+   - **Belt-and-braces:** If the archive already exists on disk and the live file is
+     non-empty (sentinel was lost), skips the archive-write and proceeds to truncate.
+     This is the minimum-floor idempotence invariant (resolved OQ-T2-2).
+
+   After `events-rotate` completes, the live `events.jsonl` contains only rows for
+   other orchestrations (empty for the common single-orchestration case). The 2.0.12
+   W5 stop-gap scan cap (`ORCHESTRAY_MAX_EVENTS_BYTES`, default L size) remains as
+   defense-in-depth — the durable rotation does not remove it.
+
+   To invoke:
+   ```bash
+   node -e "
+   const { rotateEventsForOrchestration } = require('./bin/_lib/events-rotate');
+   const result = rotateEventsForOrchestration(process.cwd(), '<orch-id>');
+   if (result.error) { process.stderr.write('rotation error: ' + result.error.message + '\n'); process.exit(1); }
+   process.stdout.write(JSON.stringify(result) + '\n');
+   "
+   ```
+   Or call `rotateEventsForOrchestration(cwd, orchestrationId)` directly from Node.
+
+   After rotation completes, delete `current-orchestration.json`.
 
 4. **Report cost summary** to user: `Cost estimate: ~$X total (agent ~$Y, ...) | Tokens: N input / N output`
 

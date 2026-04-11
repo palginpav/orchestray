@@ -1028,7 +1028,8 @@ Track costs across the orchestration lifecycle: initialize audit state before sp
 display running costs after each agent completes, and write a completion summary with
 totals. This implements real-time cost visibility (D-08) and audit trail completeness.
 
-> For the detailed audit initialization (Step 1) and completion event protocols (Step 3),
+> For the detailed audit initialization (Step 1), completion event protocols (Step 3),
+> and the durable `events.jsonl` rotation (Step 3 — 2013-W6-cleanup sentinel state machine),
 > see Section 15 in `agents/pm-reference/tier1-orchestration.md`.
 
 ### Step 2: Running Cost Display During Execution (D-08)
