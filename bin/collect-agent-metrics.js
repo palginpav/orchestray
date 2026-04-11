@@ -88,6 +88,55 @@ function estimateCost(usage, rates) {
 
 const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB cap — guards against runaway payloads OOMing the hook (T14 audit I14)
 
+// ---------------------------------------------------------------------------
+// BUG-PERF-2.0.13: configurable events.jsonl scan cap (DESIGN §D5 phase 1).
+//
+// The old hard-coded 2 MB cap caused every agent_stop event to emit
+// "routing scan skipped" once events.jsonl grew past 2 MB, degrading cost
+// attribution to the sonnet heuristic fallback. The fix raises the default
+// materially and makes it configurable via a three-source precedence chain:
+//   1. env ORCHESTRAY_MAX_EVENTS_BYTES (integer bytes, >0, reject NaN/neg/zero)
+//   2. config key audit.max_events_bytes_for_scan (positive integer or null)
+//   3. MAX_EVENTS_BYTES_DEFAULT (built-in: 32 MB — large enough for typical
+//      long-running sessions while remaining well inside Node's heap budget;
+//      32 MB chosen as a safe midpoint of the 20–50 MB guidance range from
+//      DESIGN §D5 phase 1; durable rotation in W6 will supersede this cap)
+// ---------------------------------------------------------------------------
+const { loadAuditConfig } = require('./_lib/config-schema');
+
+const MAX_EVENTS_BYTES_DEFAULT = 32 * 1024 * 1024; // 32 MB — see BUG-PERF-2.0.13 comment above
+
+/**
+ * Resolve the effective scan cap from the precedence chain.
+ * Called at module load so each fresh hook process picks up the latest config.
+ *
+ * @returns {number} Positive integer byte limit.
+ */
+function resolveMaxEventBytes() {
+  // Source 1: environment variable
+  const envVal = parseInt(process.env.ORCHESTRAY_MAX_EVENTS_BYTES, 10);
+  if (!isNaN(envVal) && envVal > 0) {
+    return envVal;
+  }
+
+  // Source 2: config key audit.max_events_bytes_for_scan
+  try {
+    // Use process.cwd() as a best-effort project root at load time.
+    // In production hooks the cwd is the project root; in tests the caller
+    // controls cwd or sets the env var directly.
+    const auditCfg = loadAuditConfig(process.cwd());
+    const cfgVal = auditCfg.max_events_bytes_for_scan;
+    if (typeof cfgVal === 'number' && Number.isInteger(cfgVal) && cfgVal > 0) {
+      return cfgVal;
+    }
+  } catch (_e) {
+    // Config load failure — fall through to default
+  }
+
+  // Source 3: built-in default
+  return MAX_EVENTS_BYTES_DEFAULT;
+}
+
 let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('error', () => { process.stdout.write(JSON.stringify({ continue: true })); process.exit(0); });
@@ -222,9 +271,10 @@ process.stdin.on('end', () => {
     try { fs.chmodSync(auditDir, 0o700); } catch (_e) { /* best-effort hardening; chmod may fail on exotic filesystems */ }
 
     // Read routing_outcome events from events.jsonl for this orchestration only.
-    // 2 MB cap + cheap substring pre-filter keep this O(n) on line count and bound
+    // Configurable cap + cheap substring pre-filter keep this O(n) on line count and bound
     // memory so the hook cannot blow its 15s budget on a long-lived session.
-    const MAX_EVENTS_BYTES = 2 * 1024 * 1024;
+    // Cap is resolved from env var → config key → built-in default (BUG-PERF-2.0.13).
+    const MAX_EVENTS_BYTES = resolveMaxEventBytes();
     const routingOutcomes = [];
     let routingCapHit = false;
     try {
@@ -281,7 +331,7 @@ process.stdin.on('end', () => {
       }
     }
     if (routingCapHit && !modelResolutionNote) {
-      modelResolutionNote = 'routing scan skipped: events.jsonl > 2MB; cost falls back to agent_type heuristic';
+      modelResolutionNote = 'routing scan skipped: events.jsonl exceeds scan cap (' + MAX_EVENTS_BYTES + ' bytes); cost falls back to agent_type heuristic';
     }
 
     // Estimate cost based on resolved model (or agent_type fallback) and token usage

@@ -145,8 +145,110 @@ function validateMcpEnforcement(obj) {
   return errors.length === 0 ? { valid: true } : { valid: false, errors };
 }
 
+// ---------------------------------------------------------------------------
+// audit section defaults and loader
+//
+// audit.max_events_bytes_for_scan — positive integer or null.
+//   null means "use env var ORCHESTRAY_MAX_EVENTS_BYTES or the built-in default".
+//   Precedence chain (resolved at module load in collect-agent-metrics.js):
+//     1. env ORCHESTRAY_MAX_EVENTS_BYTES (integer, must be > 0)
+//     2. this config key (positive integer, or null → fall through)
+//     3. built-in default (see MAX_EVENTS_BYTES_DEFAULT in collect-agent-metrics.js)
+//   BUG-PERF-2.0.13: see collect-agent-metrics.js for full context.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_AUDIT = Object.freeze({
+  /**
+   * Maximum bytes to read from events.jsonl when scanning for routing_outcome events.
+   * null = use env var or built-in default; positive integer = explicit override.
+   */
+  max_events_bytes_for_scan: null,
+});
+
+/**
+ * Load and validate the audit block from <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: any missing/malformed value returns DEFAULT_AUDIT so the
+ * hook still runs at a safe default rather than crashing.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ max_events_bytes_for_scan: number|null }}
+ */
+function loadAuditConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_AUDIT);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_AUDIT);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_AUDIT);
+  }
+
+  const fromFile = parsed.audit;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_AUDIT);
+  }
+
+  const merged = Object.assign({}, DEFAULT_AUDIT, fromFile);
+
+  // Validate: warn on stderr but always return merged (fail-open)
+  try {
+    const result = validateAuditConfig(merged);
+    if (!result.valid) {
+      process.stderr.write(
+        '[orchestray] audit config warnings: ' +
+        result.errors.join('; ') + '\n'
+      );
+    }
+  } catch (_e) {
+    // Validation must never throw
+  }
+
+  return merged;
+}
+
+/**
+ * Validate an audit config object.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateAuditConfig(obj) {
+  const errors = [];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['audit config must be an object'] };
+  }
+
+  if ('max_events_bytes_for_scan' in obj) {
+    const v = obj.max_events_bytes_for_scan;
+    if (v !== null) {
+      if (!Number.isInteger(v)) {
+        errors.push('audit.max_events_bytes_for_scan must be a positive integer or null — got ' + JSON.stringify(v));
+      } else if (v <= 0) {
+        errors.push('audit.max_events_bytes_for_scan must be > 0 — got ' + v);
+      }
+    }
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
 module.exports = {
   DEFAULT_MCP_ENFORCEMENT,
   loadMcpEnforcement,
   validateMcpEnforcement,
+  DEFAULT_AUDIT,
+  loadAuditConfig,
+  validateAuditConfig,
 };

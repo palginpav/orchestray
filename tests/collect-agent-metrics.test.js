@@ -1055,3 +1055,228 @@ describe('events.jsonl append behavior', () => {
   // reliably via spawnSync without significant async complexity).
 
 });
+
+// ---------------------------------------------------------------------------
+// 2013-W5: configurable MAX_EVENTS_BYTES (BUG-PERF-2.0.13)
+//
+// Each test spawns a fresh Node process (spawnSync) so env vars and module
+// load-time resolution are exercised independently without jest.resetModules()
+// concerns — spawnSync IS the isolation boundary.
+// ---------------------------------------------------------------------------
+
+/**
+ * Run the script with a custom environment and optional working directory.
+ * Used by W5 tests to control ORCHESTRAY_MAX_EVENTS_BYTES and config.json
+ * without contaminating other tests.
+ *
+ * @param {string} stdinData - JSON string to send on stdin
+ * @param {object} [extraEnv={}] - Additional env vars to set (merged with process.env)
+ * @param {string} [cwd] - Working directory for the spawned process (default: os.tmpdir())
+ */
+function runWithEnv(stdinData, extraEnv = {}, cwd = undefined) {
+  // Build a clean env: inherit current env, apply overrides, strip the target
+  // key when the caller passes undefined so we can "unset" it in test scenarios.
+  const env = Object.assign({}, process.env, extraEnv);
+  // Remove keys explicitly set to undefined (allows unsetting env vars)
+  for (const [k, v] of Object.entries(extraEnv)) {
+    if (v === undefined) {
+      delete env[k];
+    }
+  }
+  const result = spawnSync(process.execPath, [SCRIPT], {
+    input: stdinData,
+    encoding: 'utf8',
+    timeout: 10000,
+    env,
+    ...(cwd ? { cwd } : {}),
+  });
+  return {
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+    status: result.status,
+  };
+}
+
+describe('2013-W5: configurable MAX_EVENTS_BYTES', () => {
+
+  test('Test A: env var ORCHESTRAY_MAX_EVENTS_BYTES overrides config and default', () => {
+    // Plant an events.jsonl that is exactly 2000 bytes — above the old 2 MB cap
+    // would not apply, but this test uses env cap of 1000. With cap=1000 the file
+    // exceeds the cap and the script must emit model_resolution_note.
+    // Strategy: set cap to 1 byte so ANY non-empty events.jsonl triggers cap-hit.
+    const tmpDir = makeTmpDir();
+    const auditDir = path.join(tmpDir, '.orchestray', 'audit');
+    writeOrchestrationId(auditDir, 'orch-w5-a');
+
+    // Write a non-empty events.jsonl so it is > 1 byte
+    const eventsPath = path.join(auditDir, 'events.jsonl');
+    fs.writeFileSync(eventsPath, JSON.stringify({ type: 'routing_outcome', orchestration_id: 'orch-w5-a', agent_type: 'developer', model_assigned: 'claude-sonnet-4-6' }) + '\n');
+
+    try {
+      const input = JSON.stringify({
+        cwd: tmpDir,
+        hook_event_name: 'SubagentStop',
+        agent_type: 'developer',
+        usage: { input_tokens: 500, output_tokens: 200 },
+      });
+      // Cap = 1 byte: any non-trivial events.jsonl will exceed it → model_resolution_note appears
+      const { stdout } = runWithEnv(input, { ORCHESTRAY_MAX_EVENTS_BYTES: '1' }, tmpDir);
+      assert.equal(parseOutput(stdout).continue, true);
+
+      const events = readEventsJsonl(auditDir);
+      const ev = events[events.length - 1];
+      assert.ok(
+        ev.model_resolution_note && ev.model_resolution_note.includes('scan cap'),
+        'cap-hit note must appear when events.jsonl exceeds the env-var cap'
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('Test B: config key audit.max_events_bytes_for_scan is used when env var is absent', () => {
+    // Set config cap to 1 byte so events.jsonl always exceeds it.
+    // Unset ORCHESTRAY_MAX_EVENTS_BYTES to ensure env var is not in play.
+    const tmpDir = makeTmpDir();
+    const auditDir = path.join(tmpDir, '.orchestray', 'audit');
+    writeOrchestrationId(auditDir, 'orch-w5-b');
+
+    // Write config with tiny cap
+    const configPath = path.join(tmpDir, '.orchestray', 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({ audit: { max_events_bytes_for_scan: 1 } }));
+
+    // Write a non-empty events.jsonl to trigger cap-hit
+    const eventsPath = path.join(auditDir, 'events.jsonl');
+    fs.writeFileSync(eventsPath, JSON.stringify({ type: 'routing_outcome', orchestration_id: 'orch-w5-b', agent_type: 'developer', model_assigned: 'claude-sonnet-4-6' }) + '\n');
+
+    try {
+      const input = JSON.stringify({
+        cwd: tmpDir,
+        hook_event_name: 'SubagentStop',
+        agent_type: 'developer',
+        usage: { input_tokens: 500, output_tokens: 200 },
+      });
+      // Unset env var so the config key is the active source
+      const { stdout } = runWithEnv(input, { ORCHESTRAY_MAX_EVENTS_BYTES: undefined }, tmpDir);
+      assert.equal(parseOutput(stdout).continue, true);
+
+      const events = readEventsJsonl(auditDir);
+      const ev = events[events.length - 1];
+      assert.ok(
+        ev.model_resolution_note && ev.model_resolution_note.includes('scan cap'),
+        'cap-hit note must appear when events.jsonl exceeds the config-key cap'
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('Test C: built-in default is larger than 20 MB and routing scan succeeds for a small events.jsonl', () => {
+    // With neither env var nor config set, the built-in default applies.
+    // A small events.jsonl must NOT trigger the cap — routing scan should succeed.
+    const tmpDir = makeTmpDir();
+    const auditDir = path.join(tmpDir, '.orchestray', 'audit');
+    writeOrchestrationId(auditDir, 'orch-w5-c');
+
+    const eventsPath = path.join(auditDir, 'events.jsonl');
+    fs.writeFileSync(eventsPath, JSON.stringify({
+      type: 'routing_outcome',
+      orchestration_id: 'orch-w5-c',
+      agent_type: 'developer',
+      model_assigned: 'claude-sonnet-4-6',
+    }) + '\n');
+
+    try {
+      const input = JSON.stringify({
+        cwd: tmpDir,
+        hook_event_name: 'SubagentStop',
+        agent_type: 'developer',
+        usage: { input_tokens: 500, output_tokens: 200 },
+      });
+      // No env var, no audit config — built-in default (32 MB) applies
+      const { stdout } = runWithEnv(input, { ORCHESTRAY_MAX_EVENTS_BYTES: undefined }, tmpDir);
+      assert.equal(parseOutput(stdout).continue, true);
+
+      const events = readEventsJsonl(auditDir);
+      const ev = events[events.length - 1];
+      // Small events.jsonl must not trigger cap-hit — no model_resolution_note for cap
+      assert.ok(
+        !ev.model_resolution_note || !ev.model_resolution_note.includes('scan cap'),
+        'small events.jsonl must not trigger cap-hit under built-in default (32 MB)'
+      );
+      // Routing was NOT skipped, so model_used should be resolved
+      assert.equal(ev.model_used, 'claude-sonnet-4-6',
+        'routing scan must succeed with small events.jsonl under built-in default');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('Test D: garbage env var (non-numeric) falls through to built-in default — no crash', () => {
+    const tmpDir = makeTmpDir();
+    const auditDir = path.join(tmpDir, '.orchestray', 'audit');
+    writeOrchestrationId(auditDir, 'orch-w5-d');
+
+    try {
+      const input = JSON.stringify({
+        cwd: tmpDir,
+        hook_event_name: 'SubagentStop',
+        agent_type: 'developer',
+        usage: { input_tokens: 100, output_tokens: 50 },
+      });
+      // "not-a-number" must be rejected; no crash expected
+      const { stdout, status } = runWithEnv(
+        input,
+        { ORCHESTRAY_MAX_EVENTS_BYTES: 'not-a-number' },
+        tmpDir
+      );
+      assert.equal(status, 0, 'script must exit 0 even with garbage env var');
+      assert.equal(parseOutput(stdout).continue, true);
+
+      const events = readEventsJsonl(auditDir);
+      const ev = events[events.length - 1];
+      assert.equal(ev.type, 'agent_stop', 'agent_stop event must be written');
+      // No cap-hit note expected for an empty/tiny events.jsonl under default cap
+      assert.ok(
+        !ev.model_resolution_note || !ev.model_resolution_note.includes('scan cap'),
+        'garbage env var must fall through to default — small file must not trigger cap'
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('Test E: negative env var falls through to built-in default — no crash', () => {
+    const tmpDir = makeTmpDir();
+    const auditDir = path.join(tmpDir, '.orchestray', 'audit');
+    writeOrchestrationId(auditDir, 'orch-w5-e');
+
+    try {
+      const input = JSON.stringify({
+        cwd: tmpDir,
+        hook_event_name: 'SubagentStop',
+        agent_type: 'developer',
+        usage: { input_tokens: 100, output_tokens: 50 },
+      });
+      // -100 must be rejected; fall through to built-in default
+      const { stdout, status } = runWithEnv(
+        input,
+        { ORCHESTRAY_MAX_EVENTS_BYTES: '-100' },
+        tmpDir
+      );
+      assert.equal(status, 0, 'script must exit 0 even with negative env var');
+      assert.equal(parseOutput(stdout).continue, true);
+
+      const events = readEventsJsonl(auditDir);
+      const ev = events[events.length - 1];
+      assert.equal(ev.type, 'agent_stop', 'agent_stop event must be written');
+      assert.ok(
+        !ev.model_resolution_note || !ev.model_resolution_note.includes('scan cap'),
+        'negative env var must fall through to default — small file must not trigger cap'
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+});
