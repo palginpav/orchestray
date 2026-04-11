@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 'use strict';
 
-// T1→T2 merge note: when T2 lands, replace the fallback-write with the shared helper.
-
 /**
  * PostToolUse:mcp__orchestray__* hook — writes one checkpoint row per enforced
  * MCP tool call to both the operational ledger and the sealed audit trail.
@@ -37,17 +35,7 @@ const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { getRoutingFilePath } = require('./_lib/routing-lookup');
 
-// T2 helper — try to import; fall back to direct atomicAppendJsonl if not yet committed.
-let appendCheckpointEntry = null;
-let CHECKPOINT_FILE = null;
-try {
-  const cpLib = require('./_lib/mcp-checkpoint');
-  appendCheckpointEntry = cpLib.appendCheckpointEntry;
-  CHECKPOINT_FILE = cpLib.CHECKPOINT_FILE;
-} catch (_e) {
-  // T2 not yet committed — use fallback path constant.
-  CHECKPOINT_FILE = '.orchestray/state/mcp-checkpoint.jsonl';
-}
+const { appendCheckpointEntry } = require('./_lib/mcp-checkpoint');
 
 /** Tools this hook enforces. Any mcp__orchestray__ call not in this set is ignored. */
 const ENFORCED_TOOLS = new Set([
@@ -187,13 +175,7 @@ process.stdin.on('end', () => {
 
     // --- Write 1: operational ledger (.orchestray/state/mcp-checkpoint.jsonl) ---
     try {
-      if (typeof appendCheckpointEntry === 'function') {
-        // T2 helper is available — use it.
-        appendCheckpointEntry(cwd, row);
-      } else {
-        // Fallback: T2 not yet committed — write directly.
-        atomicAppendJsonl(path.join(cwd, CHECKPOINT_FILE), row);
-      }
+      appendCheckpointEntry(cwd, row);
     } catch (_writeErr) {
       process.stderr.write(
         '[orchestray] record-mcp-checkpoint: checkpoint write failed (' +

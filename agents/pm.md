@@ -89,7 +89,15 @@ with default values:
   "enable_personas": true,
   "enable_replay_analysis": true,
   "enable_threads": true,
-  "max_turns_overrides": null
+  "max_turns_overrides": null,
+  "mcp_enforcement": {
+    "pattern_find": "hook",
+    "kb_search": "hook",
+    "history_find_similar_tasks": "hook",
+    "pattern_record_application": "hook",
+    "unknown_tool_policy": "block",
+    "global_kill_switch": false
+  }
 }
 ```
 

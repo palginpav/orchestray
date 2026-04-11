@@ -34,7 +34,7 @@ const DEFAULT_MCP_ENFORCEMENT = Object.freeze({
   pattern_find: 'hook',
   kb_search: 'hook',
   history_find_similar_tasks: 'hook',
-  pattern_record_application: 'hook',
+  pattern_record_application: 'hook', // Advisory — read by bin/record-pattern-skip.js (PreCompact), NOT by the gate. Setting this to 'prompt' or 'allow' suppresses the pattern_record_skipped advisory event.
   unknown_tool_policy: 'block',
   global_kill_switch: false,
 });
@@ -81,7 +81,22 @@ function loadMcpEnforcement(cwd) {
   }
 
   // Shallow merge: defaults fill in any missing keys; file values win for present keys
-  return Object.assign({}, DEFAULT_MCP_ENFORCEMENT, fromFile);
+  const merged = Object.assign({}, DEFAULT_MCP_ENFORCEMENT, fromFile);
+
+  // Validate merged result and warn on stderr — fail-open (always return merged).
+  try {
+    const result = validateMcpEnforcement(merged);
+    if (!result.valid) {
+      process.stderr.write(
+        '[orchestray] mcp_enforcement config warnings: ' +
+        result.errors.join('; ') + '\n'
+      );
+    }
+  } catch (_e) {
+    // Validation itself should never throw, but fail-open just in case.
+  }
+
+  return merged;
 }
 
 /**

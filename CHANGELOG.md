@@ -54,13 +54,17 @@ next spawn.**
 
 - **`mcp_enforcement` config block.** New nested section in
   `.orchestray/config.json` with per-tool enforcement mode toggles
-  (`"hook" | "prompt" | "off"`), `unknown_tool_policy`
+  (`"hook" | "prompt" | "allow"`), `unknown_tool_policy`
   (`"block" | "warn" | "allow"`), and `global_kill_switch` (boolean).
   Defaults are frozen in `bin/_lib/config-schema.js` and merged at read
   time — no manual migration needed. The config is read stateless on every
   hook invocation, so **no session restart is required** to change any flag.
   `/orchestray:config` surfaces all keys and warns when `global_kill_switch`
-  is `true`.
+  is `true`. Note: `pattern_record_application` is advisory only — not
+  gate-enforced. Setting it to `"prompt"` or `"allow"` suppresses the
+  `pattern_record_skipped` advisory event on PreCompact but has no effect
+  on spawn gating (the gate only enforces `pattern_find`, `kb_search`,
+  `history_find_similar_tasks`).
 
 - **`record-pattern-skip.js` advisory on PreCompact.** Emits a
   `pattern_record_skipped` event once per orchestration if `pattern_find`

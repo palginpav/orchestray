@@ -124,7 +124,7 @@ The user wants to view or modify orchestration settings.
 | `mcp_enforcement.pattern_find` | string | `"hook"` | Enforcement mode for the `pattern_find` MCP tool. One of: "hook" (gate requires MCP checkpoint), "prompt" (warn only, allow spawn), "allow" (fully skip enforcement). |
 | `mcp_enforcement.kb_search` | string | `"hook"` | Enforcement mode for the `kb_search` MCP tool. One of: "hook", "prompt", "allow". |
 | `mcp_enforcement.history_find_similar_tasks` | string | `"hook"` | Enforcement mode for the `history_find_similar_tasks` MCP tool. One of: "hook", "prompt", "allow". |
-| `mcp_enforcement.pattern_record_application` | string | `"hook"` | Enforcement mode for the `pattern_record_application` MCP tool. One of: "hook", "prompt", "allow". |
+| `mcp_enforcement.pattern_record_application` | string | `"hook"` | Advisory only — not gate-enforced; controls whether `record-pattern-skip.js` emits the `pattern_record_skipped` event on PreCompact. When set to `"prompt"` or `"allow"`, suppresses the advisory event. Setting this to `"prompt"` has no effect on spawn gating (the gate only enforces `pattern_find`, `kb_search`, `history_find_similar_tasks`). |
 | `mcp_enforcement.unknown_tool_policy` | string | `"block"` | Policy for tool_name values not in the agent/skip allowlists. "block" (fail-closed, 2.0.12 default), "warn" (log and allow, 2.0.11 behaviour), "allow" (fully fail-open). |
 | `mcp_enforcement.global_kill_switch` | boolean | `false` | When true, gate-agent-spawn.js short-circuits before ALL 2.0.12 checks (MCP checkpoint verification and unknown-tool allowlist). Routing-entry checks from 2.0.11 still apply. EMERGENCY USE ONLY. |
 

@@ -408,7 +408,7 @@ describe('D2 step 6 — MCP checkpoint gate', () => {
   test('C3 file exists zero rows for orchestration fails open', () => {
     // FINDING C3: file present but contains rows for a DIFFERENT orchestration.
     // The gate must fail-open when zero rows match current orchestration_id.
-    const dir = makeDir({ withOrch: true, withOrch_id: 'orch-test-001' });
+    const dir = makeDir({ withOrch: true });
     writeRoutingFile(dir, [routingEntry()]);
 
     // Write checkpoint rows for a DIFFERENT orchestration_id
