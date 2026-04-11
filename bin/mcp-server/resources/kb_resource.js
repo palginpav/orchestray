@@ -14,17 +14,14 @@ const paths = require('../lib/paths');
 const SECTIONS = ['artifacts', 'facts', 'decisions'];
 const LIST_CAP = 100;
 
-function _kbDir(context) {
-  if (context && context.projectRoot) {
-    return path.join(context.projectRoot, '.orchestray', 'kb');
-  }
-  return paths.getKbDir();
+function _root(context) {
+  return (context && context.projectRoot) || null;
 }
 
 async function list(context) {
   let dir;
   try {
-    dir = _kbDir(context);
+    dir = paths.getKbDir(_root(context));
   } catch (_e) {
     return { resources: [] };
   }
@@ -79,8 +76,10 @@ async function templates(_context) {
   };
 }
 
-async function read(uri, context) {
-  const { scheme, segments } = paths.parseResourceUri(uri);
+async function read(uri, context, parsed) {
+  // B6: accept pre-parsed URI from server.js dispatch (see pattern_resource
+  // for the same pattern). Fallback parses when called directly from a test.
+  const { scheme, segments } = parsed || paths.parseResourceUri(uri);
   if (scheme !== 'kb') {
     const e = new Error('kb_resource.read: wrong scheme ' + scheme);
     e.code = 'RESOURCE_NOT_FOUND';
@@ -92,32 +91,10 @@ async function read(uri, context) {
     throw e;
   }
   const [section, slug] = segments;
-  if (!SECTIONS.includes(section)) {
-    const e = new Error('unknown kb section: ' + section);
-    e.code = 'RESOURCE_NOT_FOUND';
-    throw e;
-  }
-
-  let filepath;
-  if (context && context.projectRoot) {
-    paths.assertSafeSegment(slug);
-    const dir = path.join(context.projectRoot, '.orchestray', 'kb');
-    const rootAbs = path.resolve(dir);
-    const resolved = path.resolve(path.join(dir, section, slug + '.md'));
-    if (resolved !== rootAbs && !resolved.startsWith(rootAbs + path.sep)) {
-      const e = new Error('path escapes kb root');
-      e.code = 'PATH_TRAVERSAL';
-      throw e;
-    }
-    if (!fs.existsSync(resolved)) {
-      const e = new Error('kb entry not found: ' + section + '/' + slug);
-      e.code = 'RESOURCE_NOT_FOUND';
-      throw e;
-    }
-    filepath = resolved;
-  } else {
-    filepath = paths.resolveKbFile(section, slug);
-  }
+  // B3: single delegation to paths.resolveKbFile. Tests passing
+  // context.projectRoot get the fixture behavior; production walks up.
+  // resolveKbFile checks the section-name allow list internally.
+  const filepath = paths.resolveKbFile(section, slug, _root(context));
 
   const text = fs.readFileSync(filepath, 'utf8');
   return {

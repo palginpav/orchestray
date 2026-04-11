@@ -168,16 +168,25 @@ function parseResourceUri(uri) {
   return { scheme, segments };
 }
 
-function getPatternsDir() {
-  return path.join(getProjectRoot(), '.orchestray', 'patterns');
+// The resource-dir helpers accept an optional `root` override so resource
+// handlers and tests can inject a fixture project root without each call site
+// re-implementing the path join + traversal defense. When `root` is omitted,
+// the usual getProjectRoot() walk-up is used. B3 cleanup from the v2.0.11
+// solidification pass.
+function getPatternsDir(root) {
+  return path.join(root || getProjectRoot(), '.orchestray', 'patterns');
 }
 
-function getHistoryDir() {
-  return path.join(getProjectRoot(), '.orchestray', 'history');
+function getHistoryDir(root) {
+  return path.join(root || getProjectRoot(), '.orchestray', 'history');
 }
 
-function getKbDir() {
-  return path.join(getProjectRoot(), '.orchestray', 'kb');
+function getKbDir(root) {
+  return path.join(root || getProjectRoot(), '.orchestray', 'kb');
+}
+
+function getAuditEventsPathIn(root) {
+  return path.join(root || getProjectRoot(), '.orchestray', 'audit', 'events.jsonl');
 }
 
 function _assertContained(resolved, rootAbs, label) {
@@ -194,9 +203,9 @@ function _assertContained(resolved, rootAbs, label) {
   }
 }
 
-function resolvePatternFile(slug) {
+function resolvePatternFile(slug, root) {
   assertSafeSegment(slug);
-  const dir = getPatternsDir();
+  const dir = getPatternsDir(root);
   const rootAbs = path.resolve(dir);
   const resolved = path.resolve(path.join(dir, slug + '.md'));
   _assertContained(resolved, rootAbs, 'patterns');
@@ -208,9 +217,9 @@ function resolvePatternFile(slug) {
   return resolved;
 }
 
-function resolveHistoryArchive(orchId) {
+function resolveHistoryArchive(orchId, root) {
   assertSafeSegment(orchId);
-  const dir = getHistoryDir();
+  const dir = getHistoryDir(root);
   const rootAbs = path.resolve(dir);
   const resolved = path.resolve(path.join(dir, orchId));
   _assertContained(resolved, rootAbs, 'history');
@@ -222,8 +231,8 @@ function resolveHistoryArchive(orchId) {
   return resolved;
 }
 
-function resolveHistoryTaskFile(orchId, taskId) {
-  const archive = resolveHistoryArchive(orchId);
+function resolveHistoryTaskFile(orchId, taskId, root) {
+  const archive = resolveHistoryArchive(orchId, root);
   assertSafeSegment(taskId);
   const resolved = path.resolve(path.join(archive, 'tasks', taskId + '.md'));
   _assertContained(resolved, archive, 'history archive');
@@ -237,14 +246,14 @@ function resolveHistoryTaskFile(orchId, taskId) {
 
 const _KB_SECTIONS = new Set(['facts', 'decisions', 'artifacts']);
 
-function resolveKbFile(section, slug) {
+function resolveKbFile(section, slug, root) {
   if (!_KB_SECTIONS.has(section)) {
     const e = new Error('unknown kb section: ' + section);
     e.code = 'RESOURCE_NOT_FOUND';
     throw e;
   }
   assertSafeSegment(slug);
-  const dir = getKbDir();
+  const dir = getKbDir(root);
   const rootAbs = path.resolve(dir);
   const resolved = path.resolve(path.join(dir, section, slug + '.md'));
   _assertContained(resolved, rootAbs, 'kb');
@@ -268,6 +277,7 @@ module.exports = {
   getPatternsDir,
   getHistoryDir,
   getKbDir,
+  getAuditEventsPathIn,
   resolvePatternFile,
   resolveHistoryArchive,
   resolveHistoryTaskFile,

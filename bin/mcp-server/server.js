@@ -444,17 +444,17 @@ async function dispatchRequest(config, msg) {
     // Parse the URI scheme to route to the right handler. paths.parseResourceUri
     // throws on malformed input or unsafe segments — treat those as JSON-RPC
     // errors (they indicate a malformed client request, not a tool-call failure).
-    let scheme;
+    // B6: parse the URI once and forward the result to the resource handler
+    // so downstream doesn't re-run parseResourceUri() + assertSafeSegment.
+    let parsedUri;
     try {
-      ({ scheme } = paths.parseResourceUri(uri));
+      parsedUri = paths.parseResourceUri(uri);
     } catch (err) {
-      // B5: no `startedAt` here — the parse happens inside this branch, so
-      // subtracting Date.now() from itself was always 0. Match the unknown-
-      // handler branch below by emitting a literal 0.
       emitResourceAudit(uri, 'error', 0);
       sendError(id, JSONRPC_INVALID_PARAMS, 'resources/read: ' + (err && err.message));
       return;
     }
+    const { scheme } = parsedUri;
 
     const handler = RESOURCE_HANDLERS[scheme];
     if (!handler) {
@@ -466,7 +466,7 @@ async function dispatchRequest(config, msg) {
     const ctx = buildResourceContext(config);
     const startedAt = Date.now();
     try {
-      const result = await handler.read(uri, ctx);
+      const result = await handler.read(uri, ctx, parsedUri);
       emitResourceAudit(uri, 'answered', Date.now() - startedAt);
       sendResult(id, result);
     } catch (err) {

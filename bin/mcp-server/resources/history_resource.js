@@ -17,18 +17,8 @@ const path = require('node:path');
 
 const paths = require('../lib/paths');
 
-function _historyDir(context) {
-  if (context && context.projectRoot) {
-    return path.join(context.projectRoot, '.orchestray', 'history');
-  }
-  return paths.getHistoryDir();
-}
-
-function _auditFile(context) {
-  if (context && context.projectRoot) {
-    return path.join(context.projectRoot, '.orchestray', 'audit', 'events.jsonl');
-  }
-  return paths.getAuditEventsPath();
+function _root(context) {
+  return (context && context.projectRoot) || null;
 }
 
 async function list(context) {
@@ -43,7 +33,7 @@ async function list(context) {
 
   let dir;
   try {
-    dir = _historyDir(context);
+    dir = paths.getHistoryDir(_root(context));
   } catch (_e) {
     return { resources };
   }
@@ -92,17 +82,19 @@ async function templates(_context) {
   };
 }
 
-async function read(uri, context) {
-  const { scheme, segments } = paths.parseResourceUri(uri);
+async function read(uri, context, parsed) {
+  // B6: accept pre-parsed URI from server.js dispatch.
+  const { scheme, segments } = parsed || paths.parseResourceUri(uri);
   if (scheme !== 'history') {
     const e = new Error('history_resource.read: wrong scheme ' + scheme);
     e.code = 'RESOURCE_NOT_FOUND';
     throw e;
   }
+  const root = _root(context);
 
-  // audit/live
+  // audit/live — read the live events.jsonl via the parametrized helper.
   if (segments.length === 2 && segments[0] === 'audit' && segments[1] === 'live') {
-    const f = _auditFile(context);
+    const f = paths.getAuditEventsPathIn(root);
     if (!fs.existsSync(f)) {
       const e = new Error('live audit events.jsonl not found');
       e.code = 'RESOURCE_NOT_FOUND';
@@ -116,26 +108,13 @@ async function read(uri, context) {
     };
   }
 
-  // orch/<id>
+  // orch/<id>[/...] — delegate to paths.resolveHistoryArchive /
+  // resolveHistoryTaskFile for a single traversal-guard chokepoint (B3).
   if (segments.length >= 2 && segments[0] === 'orch') {
     const orchId = segments[1];
-    paths.assertSafeSegment(orchId);
-    const dir = _historyDir(context);
-    const archiveDir = path.resolve(path.join(dir, orchId));
-    const rootAbs = path.resolve(dir);
-    if (archiveDir !== rootAbs && !archiveDir.startsWith(rootAbs + path.sep)) {
-      const e = new Error('path escapes history root');
-      e.code = 'PATH_TRAVERSAL';
-      throw e;
-    }
-    if (!fs.existsSync(archiveDir)) {
-      const e = new Error('history archive not found: ' + orchId);
-      e.code = 'RESOURCE_NOT_FOUND';
-      throw e;
-    }
+    const archiveDir = paths.resolveHistoryArchive(orchId, root);
 
     if (segments.length === 2) {
-      // orch/<id> — return events.jsonl
       const f = path.join(archiveDir, 'events.jsonl');
       if (!fs.existsSync(f)) {
         const e = new Error('archive events.jsonl not found');
@@ -166,19 +145,7 @@ async function read(uri, context) {
     }
 
     if (segments.length === 4 && segments[2] === 'tasks') {
-      const taskId = segments[3];
-      paths.assertSafeSegment(taskId);
-      const f = path.resolve(path.join(archiveDir, 'tasks', taskId + '.md'));
-      if (!f.startsWith(archiveDir + path.sep)) {
-        const e = new Error('path escapes archive');
-        e.code = 'PATH_TRAVERSAL';
-        throw e;
-      }
-      if (!fs.existsSync(f)) {
-        const e = new Error('task file not found: ' + orchId + '/' + taskId);
-        e.code = 'RESOURCE_NOT_FOUND';
-        throw e;
-      }
+      const f = paths.resolveHistoryTaskFile(orchId, segments[3], root);
       const text = fs.readFileSync(f, 'utf8');
       return {
         contents: [

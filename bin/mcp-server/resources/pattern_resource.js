@@ -17,17 +17,14 @@ const path = require('node:path');
 const paths = require('../lib/paths');
 const frontmatter = require('../lib/frontmatter');
 
-function _patternsDir(context) {
-  if (context && context.projectRoot) {
-    return path.join(context.projectRoot, '.orchestray', 'patterns');
-  }
-  return paths.getPatternsDir();
+function _root(context) {
+  return (context && context.projectRoot) || null;
 }
 
 async function list(context) {
   let dir;
   try {
-    dir = _patternsDir(context);
+    dir = paths.getPatternsDir(_root(context));
   } catch (_e) {
     return { resources: [] };
   }
@@ -101,8 +98,12 @@ async function templates(_context) {
   };
 }
 
-async function read(uri, context) {
-  const { scheme, segments } = paths.parseResourceUri(uri);
+async function read(uri, context, parsed) {
+  // B6: accept pre-parsed URI from server.js dispatch to avoid re-running
+  // parseResourceUri() on every read (the server already parsed it once
+  // during scheme routing). Fallback to a fresh parse when called directly
+  // by a test with no parsed tuple supplied.
+  const { scheme, segments } = parsed || paths.parseResourceUri(uri);
   if (scheme !== 'pattern') {
     const e = new Error('pattern_resource.read: wrong scheme ' + scheme);
     e.code = 'RESOURCE_NOT_FOUND';
@@ -113,29 +114,10 @@ async function read(uri, context) {
     e.code = 'PATH_TRAVERSAL';
     throw e;
   }
-  const slug = segments[0];
-  // When a test context injects projectRoot, construct the path manually
-  // (respecting the traversal guards), otherwise delegate to paths.js.
-  let filepath;
-  if (context && context.projectRoot) {
-    paths.assertSafeSegment(slug);
-    const dir = path.join(context.projectRoot, '.orchestray', 'patterns');
-    const rootAbs = path.resolve(dir);
-    const resolved = path.resolve(path.join(dir, slug + '.md'));
-    if (resolved !== rootAbs && !resolved.startsWith(rootAbs + path.sep)) {
-      const e = new Error('path escapes patterns root');
-      e.code = 'PATH_TRAVERSAL';
-      throw e;
-    }
-    if (!fs.existsSync(resolved)) {
-      const e = new Error('pattern not found: ' + slug);
-      e.code = 'RESOURCE_NOT_FOUND';
-      throw e;
-    }
-    filepath = resolved;
-  } else {
-    filepath = paths.resolvePatternFile(slug);
-  }
+  // B3: single delegation to paths.resolvePatternFile, which now accepts an
+  // optional root override. Tests that inject context.projectRoot get the
+  // fixture behavior; production uses the walk-up.
+  const filepath = paths.resolvePatternFile(segments[0], _root(context));
 
   const text = fs.readFileSync(filepath, 'utf8');
   return {
