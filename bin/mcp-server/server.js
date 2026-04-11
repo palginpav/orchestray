@@ -60,7 +60,7 @@ const kbResource = require('./resources/kb_resource');
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'orchestray';
-const SERVER_VERSION = '2.0.11';
+const SERVER_VERSION = '2.0.12';
 
 // ---------------------------------------------------------------------------
 // Startup

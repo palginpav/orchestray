@@ -3,6 +3,149 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.12] - 2026-04-11
+
+### Theme: "Hook-Enforced MCP Surface"
+
+Pre-decomposition retrieval becomes auditable, and the hook layer stops
+trusting the dispatch name. The thesis: prompt compliance alone has failed
+for retrieval-class MCP calls (`pattern_find`, `kb_search`,
+`history_find_similar_tasks`, `pattern_record_application` had zero calls
+across the full 2.0.11 audit history), exactly as prompt compliance failed
+for model routing before 2.0.11. 2.0.12 closes both the retrieval gap and
+the separately discovered Explore dispatch bypass using one architectural
+principle: **every workflow-critical retrieval or spawn crosses a hook,
+the hook writes a checkpoint, and the checkpoint is verified before the
+next spawn.**
+
+### Added
+
+- **Hook-enforced MCP retrieval.** The four pre-decomposition MCP tools
+  (`pattern_find`, `kb_search`, `history_find_similar_tasks`,
+  `pattern_record_application`) that had zero calls across 2.0.11's full
+  audit history are now hook-enforced via a new
+  `.orchestray/state/mcp-checkpoint.jsonl` ledger. New hook script
+  `bin/record-mcp-checkpoint.js` fires on each `PostToolUse` for the three
+  required pre-decomposition tools and writes one row to the ledger plus one
+  `mcp_checkpoint_recorded` event to `events.jsonl`. `gate-agent-spawn.js`
+  reads the ledger before the first orchestration `Agent()` spawn and blocks
+  (exit 2) with a diagnostic naming any missing required tool for the current
+  `orchestration_id`. Closes the "PM forgets to call the tool" failure mode
+  that 2.0.11's durable routing pattern proved the fix for.
+
+- **Explicit dispatch allowlist in `gate-agent-spawn.js`.** The 2.0.11
+  implicit `toolName !== 'Agent'` fail-open guard is replaced by an explicit
+  `AGENT_DISPATCH_ALLOWLIST = {Agent, Explore, Task}` (tools that must be
+  gated) and `SKIP_ALLOWLIST = {Bash, Read, Edit, Glob, Grep, Write, ...}`
+  (tools that must be passed through). Any `tool_name` that appears in
+  neither list is now handled according to the `mcp_enforcement.unknown_tool_policy`
+  config flag, which defaults to `"block"` (fail-closed). A future Claude
+  Code built-in that dispatches agents under an unknown name will produce a
+  loud diagnostic naming the tool and the config key to flip — it will not
+  silently bypass routing.
+
+- **`hooks/hooks.json` matcher expansion.** `PreToolUse` and `PostToolUse`
+  matchers grew from `"Agent"` to `"Agent|Explore|Task"` so Claude Code's
+  built-in Explore and Task dispatches now flow through `gate-agent-spawn.js`
+  (routing-entry validation + MCP checkpoint gate) and
+  `emit-routing-outcome.js` (audit). Explore spawns now produce
+  `routing_outcome` Variant A events with an added optional `tool_name` field
+  so analytics can distinguish Explore from architect/developer spawns.
+
+- **`mcp_enforcement` config block.** New nested section in
+  `.orchestray/config.json` with per-tool enforcement mode toggles
+  (`"hook" | "prompt" | "off"`), `unknown_tool_policy`
+  (`"block" | "warn" | "allow"`), and `global_kill_switch` (boolean).
+  Defaults are frozen in `bin/_lib/config-schema.js` and merged at read
+  time — no manual migration needed. The config is read stateless on every
+  hook invocation, so **no session restart is required** to change any flag.
+  `/orchestray:config` surfaces all keys and warns when `global_kill_switch`
+  is `true`.
+
+- **`record-pattern-skip.js` advisory on PreCompact.** Emits a
+  `pattern_record_skipped` event once per orchestration if `pattern_find`
+  returned ≥1 result but the PM never called `pattern_record_application`.
+  Advisory only — does not block. Idempotent. Feeds the §22c confidence
+  feedback loop as "no data this run" signal. The SubagentStop check fires
+  only when the stopping subagent is the orchestration PM, not on individual
+  task-agent stops (architect/developer/reviewer/etc.), to prevent false
+  signals.
+
+- **New audit events:** `mcp_checkpoint_recorded` (per enforced MCP call,
+  dual-written to ledger + `events.jsonl`), `mcp_checkpoint_missing` (written
+  to `events.jsonl` when the gate blocks a spawn, enabling analytics on
+  enforcement frequency), `pattern_record_skipped` (advisory, on PM
+  SubagentStop when pattern retrieval happened but recording did not). Full
+  schemas in `agents/pm-reference/event-schemas.md`. The `routing_outcome`
+  Variant A shape gains an optional `tool_name` field (backward-compatible;
+  defaults to `"Agent"` when absent).
+
+- **New shared module `bin/_lib/mcp-checkpoint.js`.** Reader and path helpers
+  for `mcp-checkpoint.jsonl` — a single module instead of duplicating the
+  "filter by orchestration_id + required-tool-set" logic across the writer
+  and the gate.
+
+- **From 2.0.11, folded into this release for README coverage.** The
+  `mcp__orchestray__ask_user` MCP elicitation tool (mid-task structured
+  ≤5-field form, pause-and-resume without unwinding orchestration) and durable
+  hook-enforced model routing (`routing.jsonl` + `gate-agent-spawn.js`) were
+  both shipped in 2.0.11 but the README was not swept at that release.
+  README is now current for both releases in one pass.
+
+### Fixed
+
+- **Explore routing gap closed.** 2.0.11's `PreToolUse:Agent` hook matcher
+  missed Claude Code's built-in `Explore` tool, which dispatches under
+  `tool_name: "Explore"` rather than `"Agent"`. Explore spawns therefore
+  bypassed model routing entirely — the hook never fired, so the model
+  parameter was never validated and no `routing_outcome` event was emitted.
+  The T2 diagnosis identified two independent bypass paths: (1) the
+  `hooks.json` matcher covering only `"Agent"`, (2) the `gate-agent-spawn.js`
+  early-exit on `toolName !== 'Agent'`. Both are closed in 2.0.12 via the
+  matcher expansion and the explicit allowlist rewrite. Fix is folded into
+  this release — no 2.0.11.1 patch.
+
+- **`bin/emit-routing-outcome.js` coverage drift corrected.** The in-script
+  `toolName !== 'Agent'` guard was load-bearing in 2.0.11 but would have
+  silently blocked Explore/Task dispatches in the 2.0.12 matcher-expansion
+  window until the T7 review caught it. The guard now uses the same explicit
+  allowlist Set as `gate-agent-spawn.js`, with a `tool_name` field populated
+  on the emitted `routing_outcome` Variant A event.
+
+- **PM wire-check: pre-decomposition retrieval checklist and §22b.R re-entry
+  instruction.** New Section 13 checklist in `tier1-orchestration.md` and
+  a §22b.R sub-subsection give the PM an explicit re-entry path when
+  `gate-agent-spawn.js` blocks with a missing-checkpoint diagnostic. Without
+  this, the PM could loop retrying the spawn rather than re-running the
+  retrieval sequence (R2 infinite-retry loop mitigation).
+
+### Upgrade caveat / Recovery notes
+
+**In-flight orchestrations upgrading to 2.0.12:** the new
+`mcp-checkpoint.jsonl` gate fails open when the file is missing or has no
+rows for the current orchestration, so a PM that was decomposing when the
+upgrade landed will not be blocked on its next spawn. If the gate
+unexpectedly blocks a spawn (e.g., the PM called `pattern_find` for this
+orchestration but then skipped `kb_search`), set
+`mcp_enforcement.kb_search: "prompt"` in `.orchestray/config.json` to fall
+back to prompt-only for that tool, or set
+`mcp_enforcement.global_kill_switch: true` to restore 2.0.11 enforcement
+behavior entirely. **No session restart is required** — the hook re-reads
+config on every invocation. To fully revert, delete
+`.orchestray/state/mcp-checkpoint.jsonl` and set the kill switch.
+
+To add a tool name that a future Claude Code built-in dispatches under, add
+it to `AGENT_DISPATCH_ALLOWLIST` in `bin/gate-agent-spawn.js`, or set
+`mcp_enforcement.unknown_tool_policy: "warn"` to restore the 2.0.11
+fail-open behavior without editing any code.
+
+**Tested against Claude Code 2.1.59.**
+
+Tests: 569 → 624 (+55 across gate, checkpoint writer, allowlist, and smoke
+suites).
+
+---
+
 ## [2.0.11] - 2026-04-10
 
 ### Added
