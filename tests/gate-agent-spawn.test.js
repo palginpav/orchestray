@@ -1096,3 +1096,68 @@ describe('routing.jsonl validation', () => {
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// 2013-W4: AGENT_DISPATCH_ALLOWLIST + SKIP_ALLOWLIST drift guard
+// ---------------------------------------------------------------------------
+// Known-good manifest as of Claude Code 2.1.59 (the version 2.0.13 targets).
+// If this test fails, Claude Code has likely added or removed a built-in
+// tool name. DO NOT blindly update this manifest — instead:
+//   1. Verify the new Claude Code version's tool inventory (release notes or
+//      by inspecting a real PreToolUse payload).
+//   2. Decide whether each new name is an agent-dispatch tool (goes in
+//      AGENT_DISPATCH_ALLOWLIST, subject to routing + MCP checkpoint gate)
+//      or a non-dispatch tool (goes in SKIP_ALLOWLIST, bypasses the gate).
+//   3. Update the constant in bin/gate-agent-spawn.js.
+//   4. Update this manifest to match.
+//   5. Update CLAUDE.md's dispatch-name list if one exists.
+//   All three updates must land in the same PR for consistency.
+
+describe('2013-W4: AGENT_DISPATCH_ALLOWLIST + SKIP_ALLOWLIST drift guard', () => {
+  const KNOWN_GOOD_DISPATCH_ALLOWLIST = ['Agent', 'Explore', 'Task'];
+  const KNOWN_GOOD_SKIP_ALLOWLIST = [
+    'Bash', 'Read', 'Edit', 'Glob', 'Grep', 'Write',
+    'NotebookEdit', 'WebFetch', 'WebSearch', 'TodoWrite',
+  ];
+
+  // Read the constants from the gate script. Since the constants are declared
+  // inside process.stdin.on('end', ...), we cannot directly require() them.
+  // Instead, read the source file as text and parse out the Set definitions.
+  const gateSource = fs.readFileSync(
+    path.resolve(__dirname, '../bin/gate-agent-spawn.js'),
+    'utf8'
+  );
+
+  test('AGENT_DISPATCH_ALLOWLIST exactly matches the known-good manifest', () => {
+    const match = gateSource.match(
+      /const AGENT_DISPATCH_ALLOWLIST = new Set\(\[([^\]]+)\]\)/
+    );
+    assert.ok(match !== null, 'AGENT_DISPATCH_ALLOWLIST constant not found in source');
+    const actual = match[1]
+      .split(',')
+      .map(s => s.trim().replace(/['"]/g, ''))
+      .filter(Boolean);
+    assert.deepEqual(actual.sort(), [...KNOWN_GOOD_DISPATCH_ALLOWLIST].sort());
+  });
+
+  test('SKIP_ALLOWLIST exactly matches the known-good manifest', () => {
+    // Use [\s\S]+? to match across newlines (the Set literal spans multiple lines).
+    const match = gateSource.match(
+      /const SKIP_ALLOWLIST = new Set\(\[([\s\S]+?)\]\)/
+    );
+    assert.ok(match !== null, 'SKIP_ALLOWLIST constant not found in source');
+    const actual = match[1]
+      .split(/[,\n]/)
+      .map(s => s.trim().replace(/['"]/g, ''))
+      .filter(Boolean);
+    assert.deepEqual(actual.sort(), [...KNOWN_GOOD_SKIP_ALLOWLIST].sort());
+  });
+
+  test('no overlap between AGENT_DISPATCH_ALLOWLIST and SKIP_ALLOWLIST', () => {
+    const dispatch = new Set(KNOWN_GOOD_DISPATCH_ALLOWLIST);
+    const skip = new Set(KNOWN_GOOD_SKIP_ALLOWLIST);
+    for (const name of dispatch) {
+      assert.equal(skip.has(name), false, `'${name}' appears in both allowlists`);
+    }
+  });
+});
