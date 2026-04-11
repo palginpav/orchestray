@@ -75,6 +75,38 @@ describe('validateAgainstSchema - object/required/properties', () => {
     assert.ok(result.errors.length > 0);
   });
 
+  // B7 from the v2.0.11 audit: intentional permissiveness on unknown
+  // extra keys when a schema declares `required` without a `properties`
+  // map. The validator ignores extras (additionalProperties semantics
+  // are documented at the top of validateAgainstSchema). This test
+  // locks that in so a future editor doesn't "fix" it into a regression
+  // and silently tighten the surface for every existing caller.
+  test('accepts unknown extra keys when schema has required but no properties', () => {
+    const schema = {
+      type: 'object',
+      required: ['name'],
+      // Deliberately no `properties` — this is the shape that triggers
+      // the documented permissiveness.
+    };
+    const result = validateAgainstSchema(
+      { name: 'foo', extra: 'ignored', another: 42 },
+      schema
+    );
+    assert.deepEqual(result, { ok: true });
+  });
+
+  test('still rejects missing required when properties is absent', () => {
+    // Companion to the permissiveness test above: dropping `properties`
+    // must not also drop the `required` check.
+    const schema = {
+      type: 'object',
+      required: ['name'],
+    };
+    const result = validateAgainstSchema({ extra: 'only' }, schema);
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.some((e) => String(e).includes('name')));
+  });
+
 });
 
 // ---------------------------------------------------------------------------
