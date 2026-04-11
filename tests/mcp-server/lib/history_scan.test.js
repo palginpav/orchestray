@@ -436,4 +436,62 @@ describe('queryEvents', () => {
     }
   });
 
+  // B8 from the v2.0.11 solidification pass: non-ISO timestamps passed
+  // to `since` / `until` must throw INVALID_FILTER before the scan starts,
+  // so callers cannot silently get lexicographically-wrong results.
+  describe('ISO-8601 filter validation (B8)', () => {
+    const BAD_INPUTS = [
+      'yesterday',
+      '2026-04-11',               // date only
+      '2026-04-11T06:55:18',      // no Z
+      '2026-04-11T06:55:18+00:00', // offset form, not Z form
+      '',                          // empty string
+    ];
+
+    for (const bad of BAD_INPUTS) {
+      test('rejects filters.since = ' + JSON.stringify(bad), async () => {
+        const tmp = makeTmpProject();
+        try {
+          await assert.rejects(
+            () => queryEvents({ since: bad }, { roots: rootsFor(tmp) }),
+            (err) => err && err.code === 'INVALID_FILTER' && /since/.test(err.message)
+          );
+        } finally {
+          fs.rmSync(tmp, { recursive: true, force: true });
+        }
+      });
+
+      test('rejects filters.until = ' + JSON.stringify(bad), async () => {
+        const tmp = makeTmpProject();
+        try {
+          await assert.rejects(
+            () => queryEvents({ until: bad }, { roots: rootsFor(tmp) }),
+            (err) => err && err.code === 'INVALID_FILTER' && /until/.test(err.message)
+          );
+        } finally {
+          fs.rmSync(tmp, { recursive: true, force: true });
+        }
+      });
+    }
+
+    const GOOD_INPUTS = [
+      '2026-04-11T06:55:18Z',
+      '2026-04-11T06:55:18.123Z',
+    ];
+
+    for (const good of GOOD_INPUTS) {
+      test('accepts ' + good, async () => {
+        const tmp = makeTmpProject();
+        try {
+          // Populate nothing; just verify the call returns cleanly instead
+          // of throwing at the filter-validation gate.
+          const result = await queryEvents({ since: good, until: good }, { roots: rootsFor(tmp) });
+          assert.equal(result.total_matching, 0);
+        } finally {
+          fs.rmSync(tmp, { recursive: true, force: true });
+        }
+      });
+    }
+  });
+
 });

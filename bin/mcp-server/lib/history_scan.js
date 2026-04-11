@@ -187,6 +187,45 @@ async function* scanEvents(options) {
 // queryEvents
 // ---------------------------------------------------------------------------
 
+// Strict ISO-8601 UTC shape used by every event timestamp in this codebase.
+// Accepts: 2026-04-11T06:55:18Z and 2026-04-11T06:55:18.123Z. Rejects date-
+// only, local-time, and offset (+00:00) forms so that a caller passing
+// "yesterday" or "2026-04-11" cannot silently receive wrong results from
+// the downstream lexical string comparison in _matches. B8 from the
+// v2.0.11 solidification pass.
+const _ISO8601_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+
+function _isIsoTimestamp(s) {
+  return typeof s === 'string' && _ISO8601_UTC.test(s);
+}
+
+/**
+ * Validate `filters.since` and `filters.until` as strict ISO-8601 UTC
+ * strings before queryEvents begins scanning. Throws a synchronous Error
+ * with `code: 'INVALID_FILTER'` on bad input so the tool handler can
+ * translate it into a structured tool-result error instead of returning
+ * garbage matches.
+ */
+function _validateFilters(filters) {
+  if (!filters) return;
+  if (filters.since !== undefined && !_isIsoTimestamp(filters.since)) {
+    const e = new Error(
+      'history_scan: filters.since must be ISO-8601 UTC ' +
+        '(YYYY-MM-DDTHH:MM:SS[.sss]Z); got ' + JSON.stringify(filters.since)
+    );
+    e.code = 'INVALID_FILTER';
+    throw e;
+  }
+  if (filters.until !== undefined && !_isIsoTimestamp(filters.until)) {
+    const e = new Error(
+      'history_scan: filters.until must be ISO-8601 UTC ' +
+        '(YYYY-MM-DDTHH:MM:SS[.sss]Z); got ' + JSON.stringify(filters.until)
+    );
+    e.code = 'INVALID_FILTER';
+    throw e;
+  }
+}
+
 function _matches(ev, filters) {
   if (filters.since && typeof ev.timestamp === 'string' && ev.timestamp < filters.since) return false;
   if (filters.until && typeof ev.timestamp === 'string' && ev.timestamp > filters.until) return false;
@@ -202,6 +241,7 @@ function _matches(ev, filters) {
 
 async function queryEvents(filters, options) {
   const f = filters || {};
+  _validateFilters(f);
   const limit = typeof f.limit === 'number' ? f.limit : 100;
   const offset = typeof f.offset === 'number' ? f.offset : 0;
 

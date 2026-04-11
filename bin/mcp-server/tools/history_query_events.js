@@ -35,8 +35,20 @@ const EVENT_TYPES = [
 const INPUT_SCHEMA = {
   type: 'object',
   properties: {
-    since: { type: 'string', maxLength: 32 },
-    until: { type: 'string', maxLength: 32 },
+    since: {
+      type: 'string',
+      maxLength: 32,
+      description:
+        'ISO-8601 UTC timestamp: YYYY-MM-DDTHH:MM:SS[.sss]Z. Other forms ' +
+        '(date-only, local time, +00:00 offset) are rejected to avoid ' +
+        'silent mis-comparison against archived event timestamps.',
+    },
+    until: {
+      type: 'string',
+      maxLength: 32,
+      description:
+        'ISO-8601 UTC timestamp: YYYY-MM-DDTHH:MM:SS[.sss]Z. See `since`.',
+    },
     orchestration_ids: {
       type: 'array',
       items: { type: 'string' },
