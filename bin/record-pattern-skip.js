@@ -117,12 +117,18 @@ process.stdin.on('end', () => {
     const checkpoints = findCheckpointsForOrchestration(cwd, orchId);
 
     // Condition 2: at least one pattern_find row with result_count >= 1
+    // BUG-A-2.0.13: now that classifyOutcome/extractResultCount read the correct
+    // field (tool_response), result_count is genuinely populated for pattern_find rows.
+    // Pre-2.0.13, result_count was permanently null (due to BUG-A); tolerating null
+    // as "unknown" here would be actively wrong — fire only on real positive counts.
+    // Gate condition: result_count >= 1 (A-2 path per DESIGN §D2 "Impact surface").
     const patternFindRows = checkpoints.filter(r => r && r.tool === 'pattern_find');
     const patternFindWithResults = patternFindRows.filter(
       r => typeof r.result_count === 'number' && r.result_count >= 1
     );
     if (patternFindWithResults.length === 0) {
-      // pattern_find never returned results — advisory is not applicable.
+      // pattern_find never returned results, or all rows predate 2.0.13 with null counts.
+      // Advisory is not applicable.
       process.stdout.write(JSON.stringify({ continue: true }));
       process.exit(0);
     }

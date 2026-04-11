@@ -237,6 +237,85 @@ describe('D2 step 7 — idempotency', () => {
 });
 
 // ---------------------------------------------------------------------------
+// BUG-A-2.0.13 — advisory now functional with real result_count values
+// Before the BUG-A fix, result_count was permanently null (classifyOutcome/
+// extractResultCount read tool_result which was always undefined in Claude Code
+// 2.1.59). The advisory gate condition (result_count >= 1) was therefore never
+// satisfied — the advisory was silently broken. These tests verify post-fix
+// behavior using the new real result_count semantics.
+// ---------------------------------------------------------------------------
+
+describe('BUG-A-2.0.13 — advisory gate with real result_count from fixed extractor', () => {
+
+  test('advisory fires when pattern_find row has result_count=1 (minimum threshold)', () => {
+    // Pre-2.0.13: result_count was always null → advisory never fired.
+    // Post-2.0.13: result_count is populated from matches.length → advisory fires.
+    const { dir, auditDir, stateDir } = makeDir({ withOrch: true, orchestrationId: 'orch-buga-001' });
+    writeCheckpointRows(stateDir, 'orch-buga-001', ['pattern_find'], 1);
+
+    run(dir);
+    const events = readEvents(auditDir);
+    const skipEvents = events.filter(e => e.type === 'pattern_record_skipped');
+    assert.equal(skipEvents.length, 1,
+      'Advisory must fire when result_count === 1 (BUG-A-2.0.13 A-2 path)');
+    assert.equal(skipEvents[0].pattern_find_result_count_total, 1);
+  });
+
+  test('advisory does NOT fire when result_count=0 (no patterns found)', () => {
+    // result_count=0 means pattern_find returned no matches — nothing to record.
+    // The null-tolerance pre-fix path must not be present.
+    const { dir, auditDir, stateDir } = makeDir({ withOrch: true, orchestrationId: 'orch-buga-002' });
+    writeCheckpointRows(stateDir, 'orch-buga-002', ['pattern_find'], 0);
+
+    run(dir);
+    const events = readEvents(auditDir);
+    const skipEvents = events.filter(e => e.type === 'pattern_record_skipped');
+    assert.equal(skipEvents.length, 0,
+      'Advisory must NOT fire when result_count === 0');
+  });
+
+  test('advisory does NOT fire when result_count is null (pre-2.0.13 rows — historically accurate)', () => {
+    // Pre-2.0.13 rows have null result_count because BUG-A was present.
+    // Null must NOT be treated as "unknown = fire anyway" — that would be wrong
+    // under A-2. Null rows are pre-2.0.13 rows and advisory does not fire for them.
+    const { dir, auditDir, stateDir } = makeDir({ withOrch: true, orchestrationId: 'orch-buga-003' });
+    // Write a pattern_find row with null result_count (simulates pre-2.0.13 row)
+    fs.writeFileSync(
+      path.join(stateDir, 'mcp-checkpoint.jsonl'),
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        orchestration_id: 'orch-buga-003',
+        tool: 'pattern_find',
+        outcome: 'skipped',
+        phase: 'pre-decomposition',
+        result_count: null,
+      }) + '\n'
+    );
+
+    run(dir);
+    const events = readEvents(auditDir);
+    const skipEvents = events.filter(e => e.type === 'pattern_record_skipped');
+    assert.equal(skipEvents.length, 0,
+      'Advisory must NOT fire for null result_count (pre-2.0.13 rows; no null-tolerance path)');
+  });
+
+  test('advisory does NOT fire when pattern_record_application row also exists', () => {
+    const { dir, auditDir, stateDir } = makeDir({ withOrch: true, orchestrationId: 'orch-buga-004' });
+    writeCheckpointRows(stateDir, 'orch-buga-004', [
+      'pattern_find',
+      'pattern_record_application',
+    ], 3);
+
+    run(dir);
+    const events = readEvents(auditDir);
+    const skipEvents = events.filter(e => e.type === 'pattern_record_skipped');
+    assert.equal(skipEvents.length, 0,
+      'Advisory must NOT fire when PM called pattern_record_application');
+  });
+
+});
+
+// ---------------------------------------------------------------------------
 // Fail-open discipline
 // ---------------------------------------------------------------------------
 

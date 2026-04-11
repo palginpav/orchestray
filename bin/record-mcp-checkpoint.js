@@ -13,9 +13,10 @@
  *                 pattern_record_application.
  * Any other mcp__orchestray__* call is silently ignored (exit 0).
  *
- * PII discipline: tool_input and tool_result fields are NOT written to either
+ * PII discipline: tool_input and tool_response fields are NOT written to either
  * file. Only the outcome classification (answered|error|skipped) and the
- * result_count (pattern_find only, best-effort) are derived from tool_result.
+ * result_count (table-driven for all three retrieval tools) are derived from
+ * tool_response. Raw response content is never logged. (BUG-A-2.0.13 fix)
  *
  * The orchestration_id is read from .orchestray/audit/current-orchestration.json
  * via getCurrentOrchestrationFile() — the shared identity anchor that ensures
@@ -47,56 +48,68 @@ const ENFORCED_TOOLS = new Set([
 
 const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB cap — guards against runaway payloads OOMing the hook (T14 audit I14)
 
+// BUG-A-2.0.13: Claude Code 2.1.59 delivers MCP tool results as `event.tool_response`
+// (a JSON STRING), not as `event.tool_result` (which is `undefined`). The 2.0.12 hook
+// was written against an incorrect field name assumption. Probe record at:
+//   .orchestray/kb/artifacts/2013-posttooluse-probe-record.md
+// Both classifyOutcome and extractResultCount now read toolResponse (string) directly.
+// Parse is done once in the handler and the parsed object passed to both classifiers.
+
 /**
- * Classify tool_result into outcome.
- * Only reads isError — no other field of tool_result is logged (T4 Finding S1).
+ * Classify tool_response string into outcome.
+ * Only reads the top-level isError discriminator — raw content is never logged (PII).
  *
- * @param {*} toolResult - event.tool_result (may be undefined/null)
+ * @param {*} toolResponse - event.tool_response (should be a JSON string; may be undefined/null)
  * @returns {"answered"|"error"|"skipped"}
  */
-function classifyOutcome(toolResult) {
-  if (toolResult === undefined || toolResult === null) return 'skipped';
-  if (toolResult.isError === true) return 'error';
+function classifyOutcome(toolResponse) {
+  if (toolResponse === undefined || toolResponse === null) return 'skipped';
+  // Claude Code 2.1.59 sends tool_response as a JSON string for MCP tools.
+  // Parse defensively — malformed or non-object response is treated as 'error'.
+  if (typeof toolResponse !== 'string') {
+    // Future-proof: if Claude Code ever starts sending an object directly,
+    // fall through to the object-level isError check.
+    if (typeof toolResponse === 'object') {
+      return toolResponse.isError === true ? 'error' : 'answered';
+    }
+    return 'error';
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(toolResponse);
+  } catch (_parseErr) {
+    return 'error';
+  }
+  if (parsed && typeof parsed === 'object' && parsed.isError === true) return 'error';
   return 'answered';
 }
 
 /**
- * Extract result_count for pattern_find only (best-effort).
- * Reads content[0].text and structuredContent.count — no other fields (T4 Finding S1).
+ * Per-tool result_count extractors — table-driven for all three retrieval tools
+ * (resolved OQ-T1-2: uniform coverage for pattern_find, kb_search,
+ * history_find_similar_tasks). Accepts the already-parsed response object or null.
+ * Returns a number or null. Raw response content is never accessed here (PII).
+ */
+const RESULT_COUNT_EXTRACTORS = {
+  pattern_find:              (parsed) => Array.isArray(parsed && parsed.matches) ? parsed.matches.length : null,
+  kb_search:                 (parsed) => Array.isArray(parsed && parsed.matches) ? parsed.matches.length : null,
+  history_find_similar_tasks:(parsed) => Array.isArray(parsed && parsed.matches) ? parsed.matches.length : null,
+  pattern_record_application:()       => null, // write tool — no count applicable
+};
+
+/**
+ * Extract result_count from the already-parsed tool response object.
+ * All three retrieval tools share the same {matches:[...]} shape (probe-verified).
+ * Accepts the result of JSON.parse(event.tool_response), or null on parse failure.
  *
- * @param {string} tool
- * @param {*} toolResult
+ * @param {string} tool - short tool name (without mcp__orchestray__ prefix)
+ * @param {object|null} parsedResponse - parsed tool_response, or null
  * @returns {number|null}
  */
-function extractResultCount(tool, toolResult) {
-  if (tool !== 'pattern_find') return null;
-  if (!toolResult) return null;
-
-  // Prefer structuredContent.count if present (most reliable)
-  if (
-    toolResult.structuredContent &&
-    typeof toolResult.structuredContent.count === 'number'
-  ) {
-    return toolResult.structuredContent.count;
-  }
-
-  // Fall back to heuristic regex on content[0].text
-  try {
-    const text =
-      Array.isArray(toolResult.content) &&
-      toolResult.content[0] &&
-      typeof toolResult.content[0].text === 'string'
-        ? toolResult.content[0].text
-        : null;
-    if (text) {
-      const m = text.match(/(\d+)\s+match(?:es)?/i);
-      if (m) return parseInt(m[1], 10);
-    }
-  } catch (_e) {
-    // Best-effort — do not block on parse failure
-  }
-
-  return null;
+function extractResultCount(tool, parsedResponse) {
+  const extractor = RESULT_COUNT_EXTRACTORS[tool];
+  if (!extractor) return null;
+  return extractor(parsedResponse);
 }
 
 let input = '';
@@ -180,10 +193,17 @@ process.stdin.on('end', () => {
     }
 
     // Classify outcome and extract result_count (PII discipline: only these two
-    // derived values leave tool_result; the raw object is never logged).
-    const toolResult = event.tool_result;
-    const outcome = classifyOutcome(toolResult);
-    const result_count = extractResultCount(tool, toolResult);
+    // derived values leave tool_response; the raw string is never logged).
+    // Parse tool_response once here and pass the parsed object to both classifiers
+    // to avoid double-parse. If parse fails, parsedResponse stays null.
+    // BUG-A-2.0.13: field is tool_response (JSON string), not tool_result (undefined).
+    const toolResponse = event.tool_response;
+    let parsedResponse = null;
+    if (typeof toolResponse === 'string') {
+      try { parsedResponse = JSON.parse(toolResponse); } catch (_e) { /* parse failure handled per-classifier */ }
+    }
+    const outcome = classifyOutcome(toolResponse);
+    const result_count = extractResultCount(tool, parsedResponse);
 
     // Build the checkpoint row.
     const row = {
