@@ -860,6 +860,10 @@ Field notes:
 - `tool`: The short tool name — the `mcp__orchestray__` prefix is stripped before writing.
   Only the four enforced tools above are written; any other `mcp__orchestray__*` call is
   silently ignored by the hook.
+  **Note:** `pattern_record_skip_reason` is NOT recorded as a checkpoint row — its signal
+  flows via `mcp_tool_call` rows in `events.jsonl`, not via this event type. Consumers
+  that need to count skip-reason events should query `events.jsonl` via
+  `history_query_events`.
 - `outcome`: Derived from `event.tool_response` (a JSON string) — `"answered"` if parsed
   successfully and `isError` is absent/false, `"error"` on parse failure or `isError === true`,
   `"skipped"` if `tool_response` is absent or null. **2.0.13 note (BUG-A fix):** pre-2.0.13

@@ -21,6 +21,7 @@ const path = require('path');
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
+const { clearSessionCache } = require('./_lib/shield-session-cache');
 
 const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB cap — guards against runaway payloads OOMing the hook (T14 audit I14)
 
@@ -179,6 +180,15 @@ process.stdin.on('end', () => {
       }
     } catch (_e) {
       // ignore — never fail the hook over audit logging
+    }
+
+    // Clear the R14 session cache so the next context window starts fresh.
+    // The session_id comes from the same hook payload field used by context-shield.js.
+    try {
+      const sessionId = event.session_id || 'unknown';
+      clearSessionCache(cwd, sessionId);
+    } catch (_e) {
+      // ignore — never fail the hook over cache cleanup
     }
   } catch (_e) {
     // Swallow all errors — never block compaction

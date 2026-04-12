@@ -1,5 +1,10 @@
 'use strict';
 
+// CALLER: invoked by PM via Bash from agents/pm-reference/tier1-orchestration.md
+// Section 15 (cleanup). Not imported by any bin/ file directly — the only
+// production caller is a prompt-directed shell-out. See orch-1775930000-2014-audit
+// artifact 2014-audit-a4-wiring.md § "events-rotate.js verdict" for context.
+
 // 2013-W6-rotate — durable events.jsonl rotation with sentinel-based idempotence.
 //
 // Exports:

@@ -49,6 +49,8 @@ const { handleAskUser } = require('./elicit/ask_user');
 // Stage 2 tool handlers
 const patternFind = require('./tools/pattern_find');
 const patternRecordApplication = require('./tools/pattern_record_application');
+const patternRecordSkipReason = require('./tools/pattern_record_skip_reason');
+const costBudgetCheck = require('./tools/cost_budget_check');
 const historyQueryEvents = require('./tools/history_query_events');
 const historyFindSimilarTasks = require('./tools/history_find_similar_tasks');
 const kbSearch = require('./tools/kb_search');
@@ -60,7 +62,7 @@ const kbResource = require('./resources/kb_resource');
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'orchestray';
-const SERVER_VERSION = '2.0.12';
+const SERVER_VERSION = '2.0.14';
 
 // ---------------------------------------------------------------------------
 // Startup
@@ -128,6 +130,14 @@ const TOOL_TABLE = Object.freeze({
   pattern_record_application: {
     definition: patternRecordApplication.definition,
     handler: patternRecordApplication.handle,
+  },
+  pattern_record_skip_reason: {
+    definition: patternRecordSkipReason.definition,
+    handler: patternRecordSkipReason.handle,
+  },
+  cost_budget_check: {
+    definition: costBudgetCheck.definition,
+    handler: costBudgetCheck.handle,
   },
   history_query_events: {
     definition: historyQueryEvents.definition,

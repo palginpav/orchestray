@@ -7,6 +7,34 @@ const path = require('path');
 const VERSION = require('../package.json').version;
 const REPO = 'https://github.com/palginpav/orchestray';
 
+// Default MCP tool enable map for fresh installs.
+// When new MCP tools are added, append their key here with `true` so they are
+// enabled by default. This constant is the single source of truth consulted
+// when seeding `.orchestray/config.json` in a project that has no prior config.
+// Per 2014-scope-proposal.md §W1 AC4(d).
+// Note: ask_user is budget-gated in elicit/, not enable-gated — do not add it here.
+const FRESH_INSTALL_MCP_TOOLS_ENABLED = {
+  pattern_find: true,
+  pattern_record_application: true,
+  pattern_record_skip_reason: true,
+  cost_budget_check: true,
+  history_query_events: true,
+  history_find_similar_tasks: true,
+  kb_search: true,
+};
+
+// Default cost_budget_check config block for fresh installs.
+// Pricing values mirror bin/collect-agent-metrics.js PRICING constant.
+// Per 2014-scope-proposal.md §W3 AC4.
+const FRESH_INSTALL_COST_BUDGET_CHECK = {
+  pricing_table: {
+    haiku:  { input_per_1m: 1.00,  output_per_1m: 5.00  },
+    sonnet: { input_per_1m: 3.00,  output_per_1m: 15.00 },
+    opus:   { input_per_1m: 5.00,  output_per_1m: 25.00 },
+  },
+  last_verified: '2026-04-11',
+};
+
 // Parse arguments
 const args = process.argv.slice(2);
 const flags = {
@@ -256,6 +284,32 @@ function install(targetDir) {
   // 7. Write version file
   fs.writeFileSync(path.join(targetDir, 'orchestray', 'VERSION'), VERSION + '\n');
   track(path.join('orchestray', 'VERSION'));
+
+  // 8a. Seed .orchestray/config.json with default MCP tool enable map and
+  // cost_budget_check pricing table if no config file exists yet.
+  // Only written for fresh installs (file absent) — never overwrites user edits.
+  // The .orchestray/ directory is in the project root (process.cwd()), not in
+  // targetDir (.claude/). Constants FRESH_INSTALL_MCP_TOOLS_ENABLED and
+  // FRESH_INSTALL_COST_BUDGET_CHECK above are the single sources of truth for
+  // these seeds. Per 2014-scope-proposal.md §W1 AC4(d) and §W3 AC4.
+  const orchStateDir = path.join(process.cwd(), '.orchestray');
+  const freshConfigPath = path.join(orchStateDir, 'config.json');
+  if (!fs.existsSync(freshConfigPath)) {
+    const freshConfig = {
+      mcp_server: {
+        tools: FRESH_INSTALL_MCP_TOOLS_ENABLED,
+        cost_budget_check: FRESH_INSTALL_COST_BUDGET_CHECK,
+      },
+    };
+    try {
+      fs.mkdirSync(orchStateDir, { recursive: true });
+      fs.writeFileSync(freshConfigPath, JSON.stringify(freshConfig, null, 2) + '\n');
+      console.log(`  \x1b[32m✓\x1b[0m Seeded .orchestray/config.json with default MCP tool map and pricing table`);
+    } catch (_e) {
+      // Non-fatal: the config defaults via fail-open loaders if the write fails.
+      console.log(`  \x1b[33m⚠\x1b[0m Could not seed .orchestray/config.json (will use built-in defaults)`);
+    }
+  }
 
   // 8. Write manifest for clean uninstall
   const manifest = {

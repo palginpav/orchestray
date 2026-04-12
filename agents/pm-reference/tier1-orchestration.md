@@ -597,6 +597,15 @@ adversarial-review.md) -- replace the single architect step with a dual-architec
    "New Feature", use the TDD variant: architect -> tester -> developer -> reviewer.
    The tester writes tests from the architect's spec BEFORE the developer implements.
 
+   **Config gate — `auto_review`**: After loading the archetype template, check
+   `.orchestray/config.json` for `"auto_review": false`. If set to `false`, remove the
+   reviewer group from the template before building the task graph and record
+   `auto_review_skipped` in `.orchestray/state/orchestration.md` under `## Decisions Made`.
+   Default (key absent or `true`) continues to include the reviewer group as normal.
+   This gate applies to the routine post-implementation reviewer only — it does NOT
+   affect verify-fix reviewers (Section 18), adversarial review (Section 38), or
+   security review (PM Section 24), which are governed by their own config keys.
+
 2. **Identify subtasks**: Break the task into 2-6 independent units of work. Each
    subtask should be completable by a single agent in one invocation.
 
@@ -1767,13 +1776,40 @@ prompt as `@orchestray:pattern://<slug>` attachments. Patterns are **ADVISORY** 
 read the `match_reasons` field on each result and discard any that look wrong. **Team
 patterns:** `pattern_find` reads `.orchestray/patterns/` only; to merge in
 `.orchestray/team-patterns/*.md` (see Section 33B, in team-config.md, for merge order),
-glob them separately and combine client-side after the MCP call returns. **Application
-record:** for each pattern that measurably shaped your decomposition, call
-`mcp__orchestray__pattern_record_application` with the slug, `orchestration_id`, and
-`outcome: "applied"` immediately after the plan preview is accepted. **Fallback:** if
-the MCP server is unavailable (tool call returns `isError: true` with a transport
-error), fall back to `Glob('.orchestray/patterns/*.md')` and manual match against the
-current task as in the pre-v2.0.11 behavior.
+glob them separately and combine client-side after the MCP call returns. **Application record — MUST call either tool before the first `Agent()` spawn:**
+
+> **Timing:** this MUST happen before the first `Agent()` spawn in the orchestration.
+
+After `pattern_find` returns, the PM MUST call EITHER:
+- `mcp__orchestray__pattern_record_application` one or more times (one call per
+  pattern that measurably shaped the decomposition), with `slug`, `orchestration_id`,
+  and `outcome: "applied"`, OR
+- `mcp__orchestray__pattern_record_skip_reason` exactly once (when no returned pattern
+  shaped the decomposition), with `orchestration_id`, a `reason` from
+  `all-irrelevant | all-low-confidence | all-stale | other`, and (when
+  `reason: "other"`) a mandatory `note` explaining the decision.
+
+Calling neither is a protocol violation. Both paths produce an auditable `mcp_tool_call`
+row and feed the §22c false-positive analysis in 2.0.15.
+
+**Fallback path: config-disabled tool.** When
+`mcp_server.tools.pattern_record_skip_reason: false` in `.orchestray/config.json`, the
+MCP tool is unavailable. In that case the PM writes a line to
+`.orchestray/state/orchestration.md` instead:
+
+```
+pattern_record_skipped_reason: <reason-enum-value>
+<optional-note-text — mandatory when reason is "other">
+```
+
+Valid `<reason-enum-value>` values: `all-irrelevant`, `all-low-confidence`, `all-stale`,
+`other`. When the tool IS enabled (default), the marker MUST NOT be written — the MCP
+tool is the only path. W2 is the sole owner of this fallback marker path; W1's tool
+handler never writes it.
+
+**MCP transport fallback:** if the MCP server is unavailable (tool call returns
+`isError: true` with a transport error), fall back to `Glob('.orchestray/patterns/*.md')`
+and manual match against the current task as in the pre-v2.0.11 behavior.
 
 Example MCP call:
 

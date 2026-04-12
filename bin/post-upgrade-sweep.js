@@ -31,7 +31,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
-const { DEFAULT_MCP_ENFORCEMENT } = require('./_lib/config-schema');
+const { DEFAULT_MCP_ENFORCEMENT, DEFAULT_COST_BUDGET_CHECK } = require('./_lib/config-schema');
 
 const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB guard
 
@@ -289,6 +289,108 @@ function buildRoutingIndex(routingPath) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// W3 helper: pricing-table seed (2014-W3-pricing-table-seed)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run the W3 pricing-table seed operation.
+ *
+ * Reads .orchestray/config.json and checks for the
+ * mcp_server.cost_budget_check.pricing_table key. If absent, adds the default
+ * pricing table using DEFAULT_COST_BUDGET_CHECK from config-schema.js (the
+ * single source of truth). Never overwrites a user-customized pricing_table.
+ *
+ * Writes atomically via rename-dance. Touches the sentinel on success.
+ * Fails open on every error — never blocks the user prompt.
+ *
+ * @param {string} cwd          - Project root (absolute)
+ * @param {string} stateDir     - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to .pricing-table-migrated-2014
+ */
+function runW3PricingTableSeed(cwd, stateDir, sentinelPath) {
+  // 2014-W3-pricing-table-seed
+  if (existsSilent(sentinelPath)) return;
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_e) {
+    // Config missing or unreadable — skip; touch sentinel so we don't retry.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    // Malformed JSON — leave file untouched; fail-open.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Ensure mcp_server key exists
+  if (!parsed.mcp_server || typeof parsed.mcp_server !== 'object' || Array.isArray(parsed.mcp_server)) {
+    parsed.mcp_server = {};
+  }
+
+  // Check whether pricing_table is already present (user-customized or prior seed)
+  const existing = parsed.mcp_server.cost_budget_check;
+  if (
+    existing &&
+    typeof existing === 'object' &&
+    !Array.isArray(existing) &&
+    existing.pricing_table &&
+    typeof existing.pricing_table === 'object' &&
+    !Array.isArray(existing.pricing_table)
+  ) {
+    // pricing_table already exists — preserve user customization; just touch sentinel.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Seed the cost_budget_check block using DEFAULT_COST_BUDGET_CHECK.
+  // Preserve any existing non-pricing_table keys in cost_budget_check.
+  const costBudgetCheck = (existing && typeof existing === 'object' && !Array.isArray(existing))
+    ? existing
+    : {};
+
+  costBudgetCheck.pricing_table = {
+    haiku:  { input_per_1m: DEFAULT_COST_BUDGET_CHECK.pricing_table.haiku.input_per_1m,
+               output_per_1m: DEFAULT_COST_BUDGET_CHECK.pricing_table.haiku.output_per_1m },
+    sonnet: { input_per_1m: DEFAULT_COST_BUDGET_CHECK.pricing_table.sonnet.input_per_1m,
+               output_per_1m: DEFAULT_COST_BUDGET_CHECK.pricing_table.sonnet.output_per_1m },
+    opus:   { input_per_1m: DEFAULT_COST_BUDGET_CHECK.pricing_table.opus.input_per_1m,
+               output_per_1m: DEFAULT_COST_BUDGET_CHECK.pricing_table.opus.output_per_1m },
+  };
+  if (!costBudgetCheck.last_verified) {
+    costBudgetCheck.last_verified = DEFAULT_COST_BUDGET_CHECK.last_verified;
+  }
+  parsed.mcp_server.cost_budget_check = costBudgetCheck;
+
+  // Atomic rename-dance write
+  const tmpPath = configPath + '.w3-pricing-tmp';
+  try {
+    const out = JSON.stringify(parsed, null, 2) + '\n';
+    fs.writeFileSync(tmpPath, out, 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (_e) {
+    // Write/rename failed — clean up temp file if it exists; fail-open.
+    try { fs.unlinkSync(tmpPath); } catch (_e2) {}
+    return;
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Shared utilities
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -366,6 +468,7 @@ function main() {
       // ── Per-operation sentinels ─────────────────────────────────────────────
       const configSentinel = path.join(stateDir, '.config-migrated-2013');
       const checkpointSentinel = path.join(stateDir, '.mcp-checkpoint-migrated-2013');
+      const pricingTableSentinel = path.join(stateDir, '.pricing-table-migrated-2014');
 
       // ── W8: config migration ────────────────────────────────────────────────
       try {
@@ -379,6 +482,13 @@ function main() {
         runW11Migration(cwd, stateDir, checkpointSentinel);
       } catch (_e) {
         // Fail-open: any unexpected error in W11 must not block the prompt.
+      }
+
+      // ── W3: pricing-table seed ──────────────────────────────────────────────
+      try {
+        runW3PricingTableSeed(cwd, stateDir, pricingTableSentinel);
+      } catch (_e) {
+        // Fail-open: any unexpected error in W3 must not block the prompt.
       }
 
     } catch (_e) {

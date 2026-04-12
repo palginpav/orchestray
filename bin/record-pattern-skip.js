@@ -144,6 +144,54 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
+    // Condition 3b: check for a pattern_record_skip_reason MCP tool call in
+    // events.jsonl for this orchestration_id. If the PM explicitly recorded a
+    // structured skip reason, the omission is accounted for and no advisory
+    // should be emitted. This is the 2.0.14 W1 consumer branch.
+    try {
+      const auditDir = path.join(cwd, '.orchestray', 'audit');
+      const eventsFile = path.join(auditDir, 'events.jsonl');
+      if (fs.existsSync(eventsFile)) {
+        // When events.jsonl exceeds MAX_EVENTS_READ, this scan is skipped and the
+        // advisory fires as if no skip-reason call existed. This is a known latent
+        // degradation — it only bites in repos with long-running events.jsonl
+        // (pre-rotation). Once events-rotate fires, the file shrinks below the cap.
+        const MAX_EVENTS_READ = 2 * 1024 * 1024; // 2 MB guard
+        const stat = fs.statSync(eventsFile);
+        if (stat.size <= MAX_EVENTS_READ) {
+          const raw = fs.readFileSync(eventsFile, 'utf8');
+          const hasSkipReason = raw.split('\n').some(line => {
+            const trimmed = line.trim();
+            if (!trimmed) return false;
+            try {
+              const ev = JSON.parse(trimmed);
+              return (
+                ev &&
+                ev.type === 'mcp_tool_call' &&
+                ev.tool === 'pattern_record_skip_reason' &&
+                ev.orchestration_id === orchId &&
+                ev.outcome === 'answered'
+              );
+            } catch (_e) {
+              return false;
+            }
+          });
+          if (hasSkipReason) {
+            // PM called pattern_record_skip_reason — skip is structurally accounted for.
+            process.stdout.write(JSON.stringify({ continue: true }));
+            process.exit(0);
+          }
+        }
+      }
+    } catch (_skipCheckErr) {
+      // Fail-open: if the events.jsonl read fails for any reason, continue to
+      // the advisory emission path as before.
+      process.stderr.write(
+        '[orchestray] record-pattern-skip: events.jsonl read failed (' +
+        (_skipCheckErr && _skipCheckErr.message) + '); proceeding with advisory check\n'
+      );
+    }
+
     // --- All three conditions met — build advisory event ---
     // Sum result_count across all pattern_find rows (null counts as 0).
     const patternFindResultCountTotal = patternFindRows.reduce(

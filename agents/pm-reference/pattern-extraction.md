@@ -10,6 +10,12 @@ For an overview and integration points, see the main PM prompt Section 22.
 > files this protocol produces. If you change the frontmatter schema here, you
 > must update `bin/mcp-server/lib/frontmatter.js` and
 > `bin/mcp-server/tools/pattern_find.js` in lockstep.
+>
+> **Application record (MUST, post-find):** after `pattern_find` returns, call EITHER
+> `mcp__orchestray__pattern_record_application` (one or more times, if patterns shaped
+> the decomposition) OR `mcp__orchestray__pattern_record_skip_reason` (exactly once, if
+> none shaped it). See §22b in tier1-orchestration.md for the full directive. Calling
+> neither is a protocol violation.
 
 ---
 

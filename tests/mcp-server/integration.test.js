@@ -331,7 +331,7 @@ describe('A. protocol handshake', () => {
 
 describe('B. tools/list', () => {
 
-  test('default config returns all 6 tools',
+  test('default config returns all 8 tools',
     { timeout: TEST_TIMEOUT },
     async () => {
       await withServer(null, async (_tmp, client) => {
@@ -341,11 +341,13 @@ describe('B. tools/list', () => {
         const names = resp.result.tools.map((t) => t.name).sort();
         assert.deepEqual(names, [
           'ask_user',
+          'cost_budget_check',
           'history_find_similar_tasks',
           'history_query_events',
           'kb_search',
           'pattern_find',
           'pattern_record_application',
+          'pattern_record_skip_reason',
         ]);
       });
     }
@@ -360,9 +362,13 @@ describe('B. tools/list', () => {
           await initialize(client);
           const resp = await client.sendAndReceive({ method: 'tools/list', params: {} });
           const names = resp.result.tools.map((t) => t.name);
-          assert.equal(names.length, 5);
+          assert.equal(names.length, 7);
           assert.ok(!names.includes('pattern_find'),
             'pattern_find must be absent when disabled via shorthand');
+          assert.ok(names.includes('pattern_record_skip_reason'),
+            'new 2.0.14 tool pattern_record_skip_reason must still be present when unrelated tool is disabled');
+          assert.ok(names.includes('cost_budget_check'),
+            'new 2.0.14 tool cost_budget_check must still be present when unrelated tool is disabled');
         }
       );
     }
@@ -377,9 +383,13 @@ describe('B. tools/list', () => {
           await initialize(client);
           const resp = await client.sendAndReceive({ method: 'tools/list', params: {} });
           const names = resp.result.tools.map((t) => t.name);
-          assert.equal(names.length, 5);
+          assert.equal(names.length, 7);
           assert.ok(!names.includes('kb_search'),
             'kb_search must be absent when disabled via nested form');
+          assert.ok(names.includes('pattern_record_skip_reason'),
+            'new 2.0.14 tool pattern_record_skip_reason must still be present when unrelated tool is disabled');
+          assert.ok(names.includes('cost_budget_check'),
+            'new 2.0.14 tool cost_budget_check must still be present when unrelated tool is disabled');
         }
       );
     }

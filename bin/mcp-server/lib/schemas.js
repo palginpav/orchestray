@@ -528,6 +528,42 @@ function _validate(value, schema, pathStr, errors) {
   errors.push(_pathLabel(pathStr) + ': unsupported type "' + String(type) + '"');
 }
 
+// ---------------------------------------------------------------------------
+// PATTERN_RECORD_SKIP_REASON_REASONS — canonical enum for the skip-reason tool
+// ---------------------------------------------------------------------------
+
+/**
+ * The four-value reason enum for `pattern_record_skip_reason`.
+ * Exported so the tool handler and tests share a single source of truth.
+ * Per 2014-scope-proposal.md §W1 (R5 risk).
+ */
+const PATTERN_RECORD_SKIP_REASON_REASONS = deepFreeze(
+  ['all-irrelevant', 'all-low-confidence', 'all-stale', 'other']
+);
+
+// ---------------------------------------------------------------------------
+// COST_BUDGET_CHECK — canonical constants for the cost_budget_check tool
+// ---------------------------------------------------------------------------
+
+/**
+ * The supported effort levels for the cost_budget_check tool.
+ * Mirrors the subagent `effort` frontmatter field values.
+ * Exported so the tool handler and tests share a single source of truth.
+ * Per 2014-scope-proposal.md §W3.
+ */
+const COST_BUDGET_CHECK_EFFORT_VALUES = deepFreeze(
+  ['low', 'medium', 'high', 'max']
+);
+
+/**
+ * The model tiers recognized by the cost_budget_check tool.
+ * The tool normalizes full model IDs to one of these tiers.
+ * Per 2014-scope-proposal.md §W3.
+ */
+const COST_BUDGET_CHECK_MODEL_TIERS = deepFreeze(
+  ['haiku', 'sonnet', 'opus']
+);
+
 module.exports = {
   validateAskUserInput,
   validateAskUserOutput,
@@ -535,4 +571,7 @@ module.exports = {
   validateAgainstSchema,
   deepFreeze,
   ASK_USER_TOOL_DEFINITION,
+  PATTERN_RECORD_SKIP_REASON_REASONS,
+  COST_BUDGET_CHECK_EFFORT_VALUES,
+  COST_BUDGET_CHECK_MODEL_TIERS,
 };

@@ -3,6 +3,123 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.14] - 2026-04-11
+
+### Theme: "Close the §22c False-Positive Path"
+
+Unblock the §22c advisory→blocking transition by closing the legitimate-skip signal
+gap, add pre-spawn cost projection, and cut the two largest unchecked context taxes
+(post-decision `pattern_find` ambiguity and `Read` cache-replay). Four work items
+ship; one (§22c default flip) is explicitly deferred to 2.0.15 pending production
+data from the N≥20 prerequisite installed here.
+
+### Added
+
+- **W1 — `pattern_record_skip_reason` MCP tool.** New tool at
+  `bin/mcp-server/tools/pattern_record_skip_reason.js`, registered in
+  `bin/mcp-server/server.js` TOOL_TABLE and `bin/mcp-server/lib/schemas.js`.
+  When `pattern_find` returns results that do not shape a decomposition, the PM
+  calls this tool (exactly once) instead of remaining silent — producing an
+  auditable `mcp_tool_call` row with `tool: "pattern_record_skip_reason"`,
+  `orchestration_id`, and a four-value `reason` enum (`all-irrelevant`,
+  `all-low-confidence`, `all-stale`, `other`; `other` requires a mandatory `note`).
+  `bin/record-pattern-skip.js` no longer emits the `pattern_record_skipped` advisory
+  when a skip-reason call exists for the same `orchestration_id` in the pre-compact
+  window — the skip is structurally accounted for. The tool is seeded in the
+  `mcp_server.tools` enable map with default `true` on fresh installs (`bin/install.js`).
+
+- **W2 — §22b probe-side prompt hardening.**
+  `agents/pm-reference/tier1-orchestration.md` §22b now contains an explicit
+  "MUST call EITHER `pattern_record_application` (one or more times) OR
+  `pattern_record_skip_reason` (exactly once)" directive — not a suggestion.
+  Fallback marker path documented for when the MCP tool is config-disabled: the PM
+  writes `pattern_record_skipped_reason: <reason>` to
+  `.orchestray/state/orchestration.md`. W2 is the sole owner of this fallback path.
+  `agents/pm-reference/pattern-extraction.md` cross-references §22b so the two files
+  do not drift. A golden-file test (`tests/pm-prompt-22b-hardening.test.js`) asserts
+  the `MUST call either` directive and the fallback marker format are both present.
+
+- **W3 — `cost_budget_check` MCP tool + pricing-table config seed.** New tool at
+  `bin/mcp-server/tools/cost_budget_check.js`, registered after W1's TOOL_TABLE
+  delta. Accepts `{agent_type, model, effort?, estimated_input_tokens?,
+  estimated_output_tokens?}`; when token counts are omitted it computes defaults from
+  historical `agent_spawn` averages. Returns `would_exceed_max_cost_usd`,
+  `would_exceed_daily_cost_limit_usd`, estimated spawn cost, and warnings when no
+  cap is configured. A centralized pricing table at
+  `mcp_server.cost_budget_check.pricing_table` in `.orchestray/config.json` is seeded
+  on fresh installs (`bin/install.js`): Haiku $1/$5, Sonnet $3/$15, Opus $5/$25, with
+  a `last_verified` date for drift detection. `bin/collect-agent-metrics.js` now reads
+  from the same config-resolver rather than carrying its own constants (single source
+  of truth; eliminates the prior drift point flagged in CLAUDE.md). A new sub-operation
+  in `bin/post-upgrade-sweep.js` backfills the pricing table block for pre-2.0.14
+  installs, gated by an idempotent sentinel (same shape as 2.0.13's W8+W11 sub-ops).
+  Schema additions in `bin/_lib/config-schema.js`.
+
+- **W4 — CATRC: Cache-Aware Tool Result Compaction — new `bin/context-shield.js`
+  hook + R14 rule.** Net-new infrastructure: `bin/context-shield.js` (new
+  `PreToolUse:Read` hook script), `bin/_lib/shield-rules.js` (R14 rule module),
+  `bin/_lib/shield-session-cache.js` (session-scoped manifest helper). On a second
+  `Read` of the same `(file_path, mtime, size)` triple within a session with no
+  `offset`/`limit` change, the hook returns `permissionDecision: "deny"` with a
+  one-line hint pointing to the prior turn; re-reads with an explicit offset/limit or
+  after a file-on-disk change are always `allow`-ed. `hooks/hooks.json` now contains
+  a `PreToolUse` entry for the `Read` tool invoking `bin/context-shield.js`.
+  Session-scoped state at `.orchestray/state/shield-session/{session_id}-reads.jsonl`
+  is archived by `bin/pre-compact-archive.js` at session end. New config flag
+  `shield.r14_dedup_reads.enabled` (default `true`) seeded by `bin/install.js`;
+  set to `false` to disable the rule without removing the hook. Schema addition in
+  `bin/_lib/config-schema.js`.
+
+### Deferred to 2.0.15
+
+**§22c `pattern_record_application` advisory→blocking transition.** Deferred because
+T1's pre-2.0.14 data snapshot showed N=3 non-skipped `pattern_find` rows — well below
+the N≥20 prerequisite for a statistically meaningful false-positive analysis. 2.0.14
+closes the signal gap (W1 legitimate-skip tool + W2 MUST directive) so the 2.0.15
+scoping task has real K/F inputs to analyze. The transition will ship in 2.0.15 only
+if the §22c confidence-feedback analysis over the post-2.0.14 audit window shows a
+false-positive rate below a threshold to be set in 2.0.15's DESIGN.md.
+Machine-readable status in `.planning/phases/2014-mcp-surface-ext/DESIGN.md`:
+`transition_status: "no-go-data"`.
+
+Also deferred:
+- Any hook gate on `PreToolUse:Agent` enforcing `cost_budget_check` results (W3 ships
+  advisory only; hard enforcement is 2.0.15 per T3 Part D forward contract)
+- `mcp_enforcement.pattern_record_application: "hook-strict"` enum value (2.0.15)
+- R1–R13 shield rules (T2 asserted these existed in v2.0.11; T5-r1 confirmed they do
+  not; 2.0.14 ships R14 as the first and only rule in the new scaffold)
+- Dedup across `Grep` or `Bash` tool calls (R14 is `Read`-only)
+
+### Upgrade caveat / Recovery notes
+
+**Automatic pricing-table migration on first 2.0.14 use.** The first
+`UserPromptSubmit` after upgrade fires `bin/post-upgrade-sweep.js`, which now
+includes a third sub-operation (W3) that backfills the
+`mcp_server.cost_budget_check.pricing_table` block into `.orchestray/config.json` if
+absent. Idempotent, sentineled at `.orchestray/state/.pricing-table-migrated-2014`,
+fail-open. Manual rollback: delete the sentinel to re-run, or edit the config block
+directly.
+
+**Context-shield (W4) is on by default.** If re-reads that Claude Code previously
+allowed start returning `deny` unexpectedly, set `shield.r14_dedup_reads.enabled: false`
+in `.orchestray/config.json` to disable R14 without removing the hook. No session
+restart required.
+
+**MCP tool count is now 8** (was 6 in 2.0.13). New tools: `pattern_record_skip_reason`
+and `cost_budget_check`. Both are seeded `enabled: true` in the `mcp_server.tools`
+map on fresh installs; the upgrade sweep backfills them for existing installs.
+
+**`bin/collect-agent-metrics.js` pricing is now config-driven.** If you had a
+custom pricing override in the script directly (not standard usage but possible), the
+script now reads from `mcp_server.cost_budget_check.pricing_table` in
+`.orchestray/config.json`. Edit the config file to update pricing.
+
+**Tested against Claude Code 2.1.59.**
+
+Tests: 714 → 847 (+133 across W1/W2/W3/W4).
+
+---
+
 ## [2.0.13] - 2026-04-11
 
 ### Theme: "Close the Loop"

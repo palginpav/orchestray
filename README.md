@@ -13,7 +13,9 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 - **Auto-trigger** — complexity scoring detects when orchestration helps, self-calibrates over time
 - **Smart model routing** — assigns Haiku/Sonnet/Opus per subtask based on complexity, tracks cost savings; routing decisions are persisted to `.orchestray/state/routing.jsonl` and hook-enforced on every `Agent()`, `Explore()`, and `Task()` spawn, surviving context compaction and session reloads
 - **Mid-task elicitation** — agents can pause to ask the user a structured ≤5-field form via `mcp__orchestray__ask_user` and resume with the answers; no orchestration unwind required
-- **Hook-enforced MCP retrieval** — pre-decomposition `pattern_find`, `kb_search`, and `history_find_similar_tasks` calls are verified by `gate-agent-spawn.js` via a checkpoint ledger (`.orchestray/state/mcp-checkpoint.jsonl`) before the first orchestration spawn; falls back gracefully via `mcp_enforcement` config flags with no session restart required; the `mcp_enforcement` block is automatically migrated into `.orchestray/config.json` on first 2.0.13+ use
+- **Hook-enforced MCP retrieval** — pre-decomposition `pattern_find`, `kb_search`, and `history_find_similar_tasks` calls are verified by `gate-agent-spawn.js` via a checkpoint ledger (`.orchestray/state/mcp-checkpoint.jsonl`) before the first orchestration spawn; falls back gracefully via `mcp_enforcement` config flags with no session restart required; the `mcp_enforcement` block is automatically migrated into `.orchestray/config.json` on first 2.0.13+ use; after `pattern_find` returns, the PM calls either `pattern_record_application` or `pattern_record_skip_reason` to produce an auditable signal for every outcome
+- **Cache-Aware Tool Result Compaction (R14)** — a `PreToolUse:Read` hook (`bin/context-shield.js`) denies re-reads of the same `(file_path, mtime, size)` triple within a session with no `offset`/`limit` change, eliminating cache-replay token waste; re-reads with an explicit offset/limit or after on-disk changes are always allowed; disable per-session via `shield.r14_dedup_reads.enabled: false`
+- **Pre-spawn cost projection** — `cost_budget_check` MCP tool projects the cost of a proposed `Agent()` spawn against configured caps (`max_cost_usd`, `daily_cost_limit_usd`) before execution; pricing table lives in `.orchestray/config.json` under `mcp_server.cost_budget_check.pricing_table` (single source of truth shared with `bin/collect-agent-metrics.js`)
 - **PM-driven per-orchestration `events.jsonl` rotation** — at orchestration completion, the PM cleanup sequence atomically archives audit rows for the completed orchestration to `.orchestray/history/<orch-id>/events.jsonl`, keeping the live file bounded; the rotation is crash-safe via a three-state sentinel and idempotent on restart
 - **Explore dispatch coverage** — Claude Code's built-in `Explore` and `Task` dispatches are now gated alongside `Agent()` spawns so their model routing decisions are enforced and audited
 - **GitHub Issue integration** — orchestrate directly from GitHub issues via `gh` CLI
@@ -133,9 +135,20 @@ mcp_enforcement.global_kill_switch        true restores 2.0.11 enforcement behav
 audit.max_events_bytes_for_scan   Maximum bytes of events.jsonl scanned per hook invocation;
                                   override with ORCHESTRAY_MAX_EVENTS_BYTES env var (default: materially
                                   larger than the 2.0.12 cap; set lower on constrained environments)
+
+mcp_server.tools.pattern_record_skip_reason  Enable the pattern_record_skip_reason MCP tool (default: true)
+mcp_server.tools.cost_budget_check           Enable the cost_budget_check MCP tool (default: true)
+
+mcp_server.cost_budget_check.pricing_table   Per-model pricing used by cost_budget_check and collect-agent-metrics;
+                                              seeded on install with current Anthropic pricing (Haiku $1/$5,
+                                              Sonnet $3/$15, Opus $5/$25); edit this block to update prices
+                                              (single source of truth — eliminates two-table drift)
+
+shield.r14_dedup_reads.enabled    Enable R14 cache-replay dedup for Read tool calls (default: true);
+                                  set false to disable the context-shield hook without removing it
 ```
 
-The `mcp_enforcement` block is automatically added to `.orchestray/config.json` on the first `UserPromptSubmit` after upgrading to 2.0.13+ — no manual migration needed.
+The `mcp_enforcement` block is automatically added to `.orchestray/config.json` on the first `UserPromptSubmit` after upgrading to 2.0.13+ — no manual migration needed. On 2.0.14+, the same sweep also backfills the `mcp_server.cost_budget_check.pricing_table` block if absent.
 
 ### Health Signals
 
@@ -195,7 +208,7 @@ All orchestration state lives in `.orchestray/` (gitignored):
 ## Requirements
 
 - [Claude Code](https://claude.ai/code) v2.0.0+
-- Claude Code 2.1.59+ recommended — the BUG-A fix in 2.0.13 depends on the `PostToolUse` payload shape captured against CC 2.1.59; earlier versions may produce `outcome: "skipped"` rows in the MCP checkpoint ledger
+- Claude Code 2.1.59+ recommended — the BUG-A fix in 2.0.13 depends on the `PostToolUse` payload shape captured against CC 2.1.59; earlier versions may produce `outcome: "skipped"` rows in the MCP checkpoint ledger; the 2.0.14 context-shield hook also targets CC 2.1.59's `PreToolUse` payload shape
 - Agent Teams features require v2.1.32+ (opt-in)
 
 Agent Teams features (TaskCreated / TaskCompleted / TeammateIdle hooks) require Claude Code v2.1.32+ with the experimental flag `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` set in the environment or `settings.json`. Without the flag, these hooks are installed but dormant — nothing breaks, they simply never fire.

@@ -6,8 +6,13 @@ const path = require('path');
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
+const { loadCostBudgetCheckConfig } = require('./_lib/config-schema');
 
-// Model-based pricing per 1M tokens (current Anthropic rates as of 2026)
+// Module-level fallback pricing per 1M tokens (current Anthropic rates as of 2026).
+// Used ONLY when loadCostBudgetCheckConfig() fails (fail-open contract).
+// The authoritative source is mcp_server.cost_budget_check.pricing_table in
+// .orchestray/config.json; these values mirror that table to keep them in sync.
+// Per 2014-scope-proposal.md §W3.
 const PRICING = {
   opus:   { input: 5.00,  output: 25.00 },
   sonnet: { input: 3.00,  output: 15.00 },
@@ -15,24 +20,51 @@ const PRICING = {
 };
 
 /**
+ * Build a normalized pricing lookup from a config pricing_table or the PRICING fallback.
+ * Config table uses { input_per_1m, output_per_1m }; internal callers expect { input, output }.
+ *
+ * @param {object|null} configPricingTable - From loadCostBudgetCheckConfig().pricing_table, or null.
+ * @returns {object} Map of tier → { input: number, output: number }
+ */
+function buildPricingMap(configPricingTable) {
+  if (!configPricingTable || typeof configPricingTable !== 'object') return PRICING;
+  const result = {};
+  for (const [tier, entry] of Object.entries(configPricingTable)) {
+    if (entry && typeof entry.input_per_1m === 'number' && typeof entry.output_per_1m === 'number') {
+      result[tier] = { input: entry.input_per_1m, output: entry.output_per_1m };
+    }
+  }
+  // Ensure all three tiers are populated; fall back to PRICING for any missing tier.
+  for (const tier of ['opus', 'sonnet', 'haiku']) {
+    if (!result[tier]) result[tier] = PRICING[tier];
+  }
+  return result;
+}
+
+/**
  * Detect pricing tier from resolved model or agent_type string.
  * Explicit model assignment from routing takes priority over agent_type inference.
  * Default to sonnet rates for unknown agent types.
+ *
+ * @param {string} agentType
+ * @param {string|null} modelUsed
+ * @param {object} pricingMap - Normalized pricing map from buildPricingMap().
  */
-function getPricing(agentType, modelUsed) {
+function getPricing(agentType, modelUsed, pricingMap) {
+  const p = pricingMap || PRICING;
   // Explicit model assignment from routing takes priority
   if (modelUsed) {
     const m = modelUsed.toLowerCase();
-    if (m.includes('opus')) return PRICING.opus;
-    if (m.includes('haiku')) return PRICING.haiku;
-    if (m.includes('sonnet')) return PRICING.sonnet;
+    if (m.includes('opus')) return p.opus;
+    if (m.includes('haiku')) return p.haiku;
+    if (m.includes('sonnet')) return p.sonnet;
   }
   // Fallback to agent_type detection (pre-routing compatibility)
   const t = (agentType || '').toLowerCase();
-  if (t.includes('opus')) return PRICING.opus;
-  if (t.includes('haiku')) return PRICING.haiku;
+  if (t.includes('opus')) return p.opus;
+  if (t.includes('haiku')) return p.haiku;
   // architect, developer, reviewer, and any unknown types use sonnet rates
-  return PRICING.sonnet;
+  return p.sonnet;
 }
 
 /**
@@ -334,10 +366,20 @@ process.stdin.on('end', () => {
       modelResolutionNote = 'routing scan skipped: events.jsonl exceeds scan cap (' + MAX_EVENTS_BYTES + ' bytes); cost falls back to agent_type heuristic';
     }
 
+    // Load pricing table from config (single source of truth per §W3).
+    // Falls back to module-level PRICING constant if config is unavailable.
+    let pricingMap = PRICING;
+    try {
+      const costCfg = loadCostBudgetCheckConfig(cwd);
+      pricingMap = buildPricingMap(costCfg.pricing_table);
+    } catch (_pricingErr) {
+      // Fail-open: use module-level PRICING fallback
+    }
+
     // Estimate cost based on resolved model (or agent_type fallback) and token usage
-    const rates = getPricing(agentType, resolvedModel);
+    const rates = getPricing(agentType, resolvedModel, pricingMap);
     const estimatedCostUsd = estimateCost(totalUsage, rates);
-    const estimatedCostOpusBaselineUsd = estimateCost(totalUsage, PRICING.opus);
+    const estimatedCostOpusBaselineUsd = estimateCost(totalUsage, pricingMap.opus);
 
     // Construct audit event -- different shape for team vs subagent events
     let auditEvent;
