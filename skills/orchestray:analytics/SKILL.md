@@ -271,25 +271,18 @@ cat .orchestray/config.json | jq .v2017_experiments
 |------|--------|---------|--------------|
 | `global_kill_switch` | `true`/`false` | `false` | Disables ALL v2017 experiments simultaneously |
 | `prompt_caching` | `"off"/"on"` | `"off"` | S1: Block A/B/C cache-hygiene layout in `agents/pm.md` |
-| `pm_prose_strip` | `"off"/"shadow"/"on"` | `"off"` | S3: PM prose strip + agent-body dedupe |
 | `adaptive_verbosity` | `"off"/"on"` | `"off"` | S4: Adaptive response-length budgets in delegation templates |
-
-**`shadow` state** applies only to `pm_prose_strip`. In shadow mode the lean
-prompt is assembled and logged but the full (fat) prompt is served to the model.
-No behavior changes — it is measurement-only. Use shadow before enabling `"on"`
-to verify the stripped prompt produces no regressions.
 
 **To toggle a flag:** edit `.orchestray/config.json` directly, then restart the
 Claude Code session (agent definitions are cached at session start).
 
 ```jsonc
-// Example: enable shadow mode for prose-strip
+// Example: enable prompt_caching
 {
   "v2017_experiments": {
     "__schema_version": 1,
     "global_kill_switch": false,
-    "prompt_caching": "off",
-    "pm_prose_strip": "shadow",
+    "prompt_caching": "on",
     "adaptive_verbosity": "off"
   }
 }

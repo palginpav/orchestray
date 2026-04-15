@@ -33,11 +33,11 @@ const FRESH_INSTALL_MCP_TOOLS_ENABLED = {
 
 // Default v2017_experiments block for fresh installs.
 // All flags default off; __schema_version: 1. Per v2017-design.md §4.1 T4.
+// (pm_prose_strip removed in v2.0.18 — FC3b cleanup)
 const FRESH_INSTALL_V2017_EXPERIMENTS = {
   __schema_version: 1,
   global_kill_switch: false,
   prompt_caching: 'off',
-  pm_prose_strip: 'off',
   adaptive_verbosity: 'off',
 };
 
@@ -47,10 +47,6 @@ const FRESH_INSTALL_CACHE_CHOREOGRAPHY = {
   pre_commit_guard_enabled: false,
   drift_warn_threshold_hex_changes: 1,
 };
-
-// Default pm_prompt_variant for fresh installs. Per T19.
-// Runtime switch (Phase 5) not yet wired — stored for future use.
-const FRESH_INSTALL_PM_PROMPT_VARIANT = 'lean';
 
 // Default adaptive_verbosity block for fresh installs.
 // enabled defaults off (opt-in, also requires v2017_experiments.adaptive_verbosity='on'). Per T22.
@@ -374,8 +370,6 @@ function install(targetDir) {
       v2017_experiments: FRESH_INSTALL_V2017_EXPERIMENTS,
       // T12 (v2.0.17): cache_choreography — pre-commit guard opt-in + drift threshold
       cache_choreography: FRESH_INSTALL_CACHE_CHOREOGRAPHY,
-      // T19 (v2.0.17): pm_prompt_variant — 'lean' | 'fat' rollback key (Phase 5 runtime switch not yet wired)
-      pm_prompt_variant: FRESH_INSTALL_PM_PROMPT_VARIANT,
       // T22 (v2.0.17): adaptive_verbosity — response-length budget (opt-in; also requires experiment flag)
       adaptive_verbosity: FRESH_INSTALL_ADAPTIVE_VERBOSITY,
     };
@@ -407,60 +401,6 @@ function install(targetDir) {
   );
 
   console.log(`  \x1b[32m✓\x1b[0m Wrote VERSION (${VERSION})`);
-
-  // 8b. T-S3 (v2.0.17-E): if pm_prompt_variant === 'fat', apply the fat variant
-  // now so agents/pm.md is in the correct state immediately after install.
-  // This reads the config we just wrote (or an existing one if the file was
-  // already present). Fails open — an error here does not abort the install.
-  {
-    let installVariant = 'lean';
-    try {
-      const cfgRaw = fs.readFileSync(freshConfigPath, 'utf8');
-      const cfgParsed = JSON.parse(cfgRaw);
-      if (cfgParsed && typeof cfgParsed === 'object' && !Array.isArray(cfgParsed)) {
-        const val = cfgParsed.pm_prompt_variant;
-        if (typeof val === 'string') installVariant = val;
-        else if (val && typeof val === 'object' && typeof val.variant === 'string') installVariant = val.variant;
-      }
-    } catch (_e) {
-      // Config unreadable — keep lean default.
-    }
-
-    if (installVariant === 'fat') {
-      const stateDir = path.join(orchStateDir, 'state');
-      const pmVariantMarkerPath = path.join(stateDir, '.pm-variant');
-      // Check if already fat (skip spawn if already applied).
-      let alreadyFat = false;
-      try {
-        if (fs.readFileSync(pmVariantMarkerPath, 'utf8').trim() === 'fat') {
-          alreadyFat = true;
-        }
-      } catch (_e) {}
-
-      if (!alreadyFat) {
-        try {
-          const { spawnSync } = require('child_process');
-          const applyScript = path.join(__dirname, 'apply-pm-variant.js');
-          const result = spawnSync(process.execPath, [applyScript], {
-            cwd: process.cwd(),
-            timeout: 10000,
-            encoding: 'utf8',
-            stdio: 'pipe',
-          });
-          if (result.status === 0) {
-            console.log(`  \x1b[32m✓\x1b[0m Applied pm_prompt_variant=fat (pm.md switched to fat variant)`);
-          } else {
-            console.log(`  \x1b[33m⚠\x1b[0m pm_prompt_variant=fat: could not apply automatically. Run: node bin/apply-pm-variant.js`);
-            if (result.stderr) {
-              process.stderr.write(result.stderr);
-            }
-          }
-        } catch (_e) {
-          console.log(`  \x1b[33m⚠\x1b[0m pm_prompt_variant=fat: could not apply automatically. Run: node bin/apply-pm-variant.js`);
-        }
-      }
-    }
-  }
 
   console.log('');
   console.log('  \x1b[32mDone!\x1b[0m Start Claude Code and Orchestray is ready.');

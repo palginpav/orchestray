@@ -37,9 +37,9 @@ const {
   DEFAULT_COST_BUDGET_ENFORCEMENT,
   DEFAULT_V2017_EXPERIMENTS,
   DEFAULT_CACHE_CHOREOGRAPHY,
-  DEFAULT_PM_PROMPT_VARIANT,
   DEFAULT_ADAPTIVE_VERBOSITY,
 } = require('./_lib/config-schema');
+const { atomicAppendJsonl } = require('./_lib/atomic-append');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1529,61 +1529,69 @@ function runT12CacheChoreographySeed(cwd, stateDir, sentinelPath) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// T19 (2017): pm_prompt_variant config key seed
+// FC3b (2018): legacy key auto-strip
 // ──────────────────────────────────────────────────────────────────────────────
 
 /**
- * Run the T19 pm_prompt_variant seed.
+ * Strip pm_prompt_variant and pm_prose_strip from .orchestray/config.json if
+ * present. Emits a config_key_stripped audit event listing the keys removed.
  *
- * If the `pm_prompt_variant` key is absent, seeds it with 'lean' (the default).
- * If it is already set (any value, including 'fat'), preserves it — operator intent.
+ * Idempotent: if neither key is present the function is a no-op and no event
+ * is emitted. Running twice has the same net effect as running once.
  *
- * NOTE: the runtime switch that reads this key is Phase 5 territory. For now,
- * this seed only makes the key discoverable to operators who want rollback access.
+ * Fails open on every error — never blocks the user prompt.
  *
- * Idempotent sentinel: .orchestray/state/.pm-prompt-variant-seeded-2017
- *
- * @param {string} cwd          - Project root (absolute)
- * @param {string} stateDir     - Absolute path to .orchestray/state/
- * @param {string} sentinelPath - Absolute path to sentinel file
+ * @param {string} cwd      - Project root (absolute)
+ * @param {string} stateDir - Absolute path to .orchestray/state/ (unused, kept for call-site symmetry)
  */
-function runT19PmPromptVariantSeed(cwd, stateDir, sentinelPath) {
-  // T19-pm-prompt-variant-seed-2017
-  if (existsSilent(sentinelPath)) return;
-
+function runFC3bLegacyKeyStrip(cwd, _stateDir) {
   const configPath = path.join(cwd, '.orchestray', 'config.json');
 
   let raw;
   try {
     raw = fs.readFileSync(configPath, 'utf8');
   } catch (_e) {
-    touchSilent(sentinelPath, stateDir);
-    return;
+    return; // Config absent — nothing to strip.
   }
 
   let parsed;
   try {
     parsed = JSON.parse(raw);
   } catch (_e) {
-    touchSilent(sentinelPath, stateDir);
-    return;
+    return; // Malformed config — fail-open, do not corrupt.
   }
 
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    touchSilent(sentinelPath, stateDir);
     return;
   }
 
-  // Key already present (any value) — preserve operator setting.
-  if ('pm_prompt_variant' in parsed) {
-    touchSilent(sentinelPath, stateDir);
-    return;
+  // Top-level legacy keys to strip.
+  const topLevelToStrip = ['pm_prompt_variant', 'pm_prose_strip'];
+  const strippedTopLevel = topLevelToStrip.filter(k => k in parsed);
+
+  for (const k of strippedTopLevel) {
+    delete parsed[k];
   }
 
-  // Key absent — seed with default ('lean').
-  parsed.pm_prompt_variant = DEFAULT_PM_PROMPT_VARIANT.variant;
+  // Strip pm_prose_strip from v2017_experiments sub-object if present.
+  let strippedInExperiments = false;
+  if (
+    parsed.v2017_experiments &&
+    typeof parsed.v2017_experiments === 'object' &&
+    !Array.isArray(parsed.v2017_experiments) &&
+    'pm_prose_strip' in parsed.v2017_experiments
+  ) {
+    delete parsed.v2017_experiments.pm_prose_strip;
+    strippedInExperiments = true;
+  }
 
-  const tmpPath = configPath + '.t19-2017-pm-prompt-variant-tmp';
+  const anyStripped = strippedTopLevel.length > 0 || strippedInExperiments;
+
+  if (!anyStripped) {
+    return; // Idempotent no-op — nothing to do.
+  }
+
+  const tmpPath = configPath + '.fc3b-2018-strip-tmp';
   try {
     const out = JSON.stringify(parsed, null, 2) + '\n';
     fs.writeFileSync(tmpPath, out, 'utf8');
@@ -1593,125 +1601,22 @@ function runT19PmPromptVariantSeed(cwd, stateDir, sentinelPath) {
     return;
   }
 
-  touchSilent(sentinelPath, stateDir);
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// T-S3 (2017): pm_prompt_variant runtime apply
-// ──────────────────────────────────────────────────────────────────────────────
-
-/**
- * Run the T-S3 pm_prompt_variant apply step.
- *
- * If pm_prompt_variant === 'fat' in config AND the .pm-variant marker does NOT
- * already say 'fat', invoke bin/apply-pm-variant.js to switch pm.md over to the
- * fat (pre-strip) variant.
- *
- * Fails open on every error — never blocks the user prompt.
- *
- * Idempotent sentinel: .orchestray/state/.pm-variant-applied-2017
- *
- * Note: the sentinel is set once and never reset — it only prevents the spawn
- * overhead on sessions where the variant is already correct. apply-pm-variant.js
- * itself is idempotent (it checks .pm-variant before writing anything).
- *
- * @param {string} cwd      - Project root (absolute)
- * @param {string} stateDir - Absolute path to .orchestray/state/
- * @param {string} sentinelPath - Absolute path to sentinel file
- */
-function runTS3PmVariantApply(cwd, stateDir, sentinelPath) {
-  // T-S3-pm-variant-apply-2017
-  if (existsSilent(sentinelPath)) return;
-
-  // Read pm_prompt_variant from config.
-  const configPath = path.join(cwd, '.orchestray', 'config.json');
-  let variant = 'lean'; // default
-  try {
-    const raw = fs.readFileSync(configPath, 'utf8');
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      const val = parsed.pm_prompt_variant;
-      if (typeof val === 'string') {
-        variant = val;
-      } else if (val && typeof val === 'object' && typeof val.variant === 'string') {
-        variant = val.variant;
-      }
-    }
-  } catch (_e) {
-    // Config unreadable — assume lean (fail-open); touch sentinel so we don't retry.
-    touchSilent(sentinelPath, stateDir);
-    return;
-  }
-
-  // Only act when fat is requested.
-  if (variant !== 'fat') {
-    // Seed the lean-hash reference so apply-pm-variant.js has a baseline.
-    // We do this by invoking apply-pm-variant.js with the lean path (no-op on content).
-    // On lean this just ensures the .pm-lean-hash is seeded; it exits 0 without writes.
+  // Emit audit event only for top-level key removals (fail-open).
+  // Sub-object cleanup is silent — it accompanies the top-level strip.
+  if (strippedTopLevel.length > 0) {
     try {
-      const { spawnSync } = require('child_process');
-      const applyScript = path.join(__dirname, 'apply-pm-variant.js');
-      if (existsSilent(applyScript)) {
-        spawnSync(process.execPath, [applyScript], {
-          cwd,
-          timeout: 10000,
-          stdio: 'ignore',
-        });
-      }
+      const auditDir = path.join(cwd, '.orchestray', 'audit');
+      fs.mkdirSync(auditDir, { recursive: true });
+      atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), {
+        timestamp: new Date().toISOString(),
+        type: 'config_key_stripped',
+        keys_stripped: strippedTopLevel,
+        release: '2.0.18',
+      });
     } catch (_e) {
-      // Spawn failure is non-fatal.
+      // Audit failure is non-fatal.
     }
-    touchSilent(sentinelPath, stateDir);
-    return;
   }
-
-  // Check the .pm-variant marker — if already 'fat', no-op.
-  const pmVariantMarkerPath = path.join(stateDir, '.pm-variant');
-  try {
-    const markerContent = fs.readFileSync(pmVariantMarkerPath, 'utf8').trim();
-    if (markerContent === 'fat') {
-      // Already applied; touch sentinel so we skip the spawn next session.
-      touchSilent(sentinelPath, stateDir);
-      return;
-    }
-  } catch (_e) {
-    // Marker absent — proceed to apply.
-  }
-
-  // Invoke apply-pm-variant.js. Fail-open: log + continue if it fails.
-  try {
-    const { spawnSync } = require('child_process');
-    const applyScript = path.join(__dirname, 'apply-pm-variant.js');
-    if (!existsSilent(applyScript)) {
-      // Script not present (shouldn't happen post-install) — skip.
-      touchSilent(sentinelPath, stateDir);
-      return;
-    }
-    const result = spawnSync(process.execPath, [applyScript], {
-      cwd,
-      timeout: 10000,
-      encoding: 'utf8',
-      stdio: 'pipe',
-    });
-    if (result.status !== 0) {
-      try {
-        process.stderr.write(
-          '[orchestray] T-S3 pm-variant apply failed (non-zero exit). ' +
-          'Run `node bin/apply-pm-variant.js` manually for details.\n'
-        );
-        if (result.stderr) {
-          process.stderr.write(result.stderr);
-        }
-      } catch (_e2) {}
-      // Do NOT touch sentinel — allow retry next session.
-      return;
-    }
-  } catch (_e) {
-    // Spawn threw — fail-open, do not touch sentinel.
-    return;
-  }
-
-  touchSilent(sentinelPath, stateDir);
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1882,12 +1787,8 @@ function main() {
       const metricsQuerySeedSentinel = path.join(stateDir, '.metrics-query-seeded-2017');
       // T12 (v2.0.17): cache_choreography config block seed.
       const cacheChoreographySeedSentinel = path.join(stateDir, '.cache-choreography-seeded-2017');
-      // T19 (v2.0.17): pm_prompt_variant config key seed.
-      const pmPromptVariantSeedSentinel = path.join(stateDir, '.pm-prompt-variant-seeded-2017');
       // T22 (v2.0.17): adaptive_verbosity config block seed.
       const adaptiveVerbositySeedSentinel = path.join(stateDir, '.adaptive-verbosity-seeded-2017');
-      // T-S3 (v2.0.17): pm_prompt_variant runtime apply.
-      const pmVariantAppliedSentinel = path.join(stateDir, '.pm-variant-applied-2017');
 
       // ── W8: config migration ────────────────────────────────────────────────
       try {
@@ -2034,15 +1935,6 @@ function main() {
         // Fail-open.
       }
 
-      // ── T19 (2017): pm_prompt_variant config key seed ─────────────────────
-      // Seeds pm_prompt_variant: 'lean' on existing installs that lack the key.
-      // Fresh installs get it via install.js. Runtime switch is Phase 5.
-      try {
-        runT19PmPromptVariantSeed(cwd, stateDir, pmPromptVariantSeedSentinel);
-      } catch (_e) {
-        // Fail-open.
-      }
-
       // ── T22 (2017): adaptive_verbosity config block seed ──────────────────
       // Seeds adaptive_verbosity: { enabled: false, ... } on existing installs
       // that lack the block. Fresh installs get it via install.js.
@@ -2052,12 +1944,11 @@ function main() {
         // Fail-open.
       }
 
-      // ── T-S3 (2017): pm_prompt_variant runtime apply ──────────────────────
-      // If pm_prompt_variant === 'fat' and .pm-variant marker is not 'fat',
-      // invokes apply-pm-variant.js to switch pm.md to the fat variant.
-      // Fail-open: apply errors are logged to stderr but do not block the prompt.
+      // ── FC3b (2018): strip legacy pm_prompt_variant + pm_prose_strip keys ──
+      // Auto-strips both keys on every invocation — idempotent (no-op when absent).
+      // No sentinel needed: the function itself checks for key presence.
       try {
-        runTS3PmVariantApply(cwd, stateDir, pmVariantAppliedSentinel);
+        runFC3bLegacyKeyStrip(cwd, stateDir);
       } catch (_e) {
         // Fail-open.
       }

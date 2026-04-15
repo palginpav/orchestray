@@ -976,108 +976,7 @@ function validateCacheChoreographyConfig(obj) {
   return errors.length === 0 ? { valid: true } : { valid: false, errors };
 }
 
-// ---------------------------------------------------------------------------
-// pm_prompt_variant section defaults and loader (T19 v2.0.17)
-//
-// pm_prompt_variant — string, default 'lean'.
-//   Controls which pm.md variant the PM agent loads at session start.
-//   'lean' — reads agents/pm.md (the prose-stripped Phase 3 version)
-//   'fat'  — reads agents/pm.old.md (pre-strip rollback path)
-//
-//   NOTE: the runtime switch that actually changes which file pm.md frontmatter
-//   points to is Phase 5 territory. This config key is persisted here so that
-//   the config schema is complete; a runtime switcher will read this key when
-//   Phase 5 ships. For now, setting 'fat' has no runtime effect without a
-//   manual frontmatter edit.
-// ---------------------------------------------------------------------------
-
-const DEFAULT_PM_PROMPT_VARIANT = Object.freeze({
-  variant: 'lean',   // 'lean' | 'fat'
-});
-
-/**
- * Load and merge the pm_prompt_variant block from <cwd>/.orchestray/config.json.
- *
- * Fail-open contract: missing/malformed returns DEFAULT_PM_PROMPT_VARIANT.
- *
- * @param {string} cwd - Project root directory (absolute path).
- * @returns {{ variant: string }}
- */
-function loadPmPromptVariantConfig(cwd) {
-  const configPath = path.join(cwd, '.orchestray', 'config.json');
-  let raw;
-  try {
-    raw = fs.readFileSync(configPath, 'utf8');
-  } catch (_) {
-    return Object.assign({}, DEFAULT_PM_PROMPT_VARIANT);
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (_) {
-    return Object.assign({}, DEFAULT_PM_PROMPT_VARIANT);
-  }
-
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return Object.assign({}, DEFAULT_PM_PROMPT_VARIANT);
-  }
-
-  const fromFile = parsed.pm_prompt_variant;
-  // pm_prompt_variant may be stored as a plain string ('lean'/'fat') or as an
-  // object with a variant key — accept both shapes for ergonomics.
-  if (fromFile === null || fromFile === undefined) {
-    return Object.assign({}, DEFAULT_PM_PROMPT_VARIANT);
-  }
-  if (typeof fromFile === 'string') {
-    const merged = Object.assign({}, DEFAULT_PM_PROMPT_VARIANT, { variant: fromFile });
-    try {
-      const result = validatePmPromptVariantConfig(merged);
-      if (!result.valid) {
-        logStderr('pm_prompt_variant config warnings: ' + result.errors.join('; '));
-      }
-    } catch (_e) {}
-    return merged;
-  }
-  if (typeof fromFile !== 'object' || Array.isArray(fromFile)) {
-    return Object.assign({}, DEFAULT_PM_PROMPT_VARIANT);
-  }
-
-  const merged = Object.assign({}, DEFAULT_PM_PROMPT_VARIANT, sanitizeConfig(fromFile));
-
-  try {
-    const result = validatePmPromptVariantConfig(merged);
-    if (!result.valid) {
-      logStderr('pm_prompt_variant config warnings: ' + result.errors.join('; '));
-    }
-  } catch (_e) {
-    // Validation must never throw
-  }
-
-  return merged;
-}
-
-/**
- * Validate a pm_prompt_variant config object.
- *
- * @param {unknown} obj
- * @returns {{ valid: true } | { valid: false, errors: string[] }}
- */
-function validatePmPromptVariantConfig(obj) {
-  const errors = [];
-
-  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
-    return { valid: false, errors: ['pm_prompt_variant config must be an object'] };
-  }
-
-  if ('variant' in obj && !['lean', 'fat'].includes(obj.variant)) {
-    errors.push(
-      'pm_prompt_variant.variant must be "lean" or "fat" — got ' + JSON.stringify(obj.variant)
-    );
-  }
-
-  return errors.length === 0 ? { valid: true } : { valid: false, errors };
-}
+// (T19 pm_prompt_variant removed in v2.0.18 — FC3b cleanup)
 
 // ---------------------------------------------------------------------------
 // adaptive_verbosity section defaults and loader (T22 v2.0.17)
@@ -1198,17 +1097,15 @@ function validateAdaptiveVerbosityConfig(obj) {
 //   One-flip disables all v2017 experiments simultaneously (safety escape hatch).
 // v2017_experiments.prompt_caching — "off"|"on", default "off".
 //   S1: Block A/B/C cache-hygiene layout in agents/pm.md.
-// v2017_experiments.pm_prose_strip — "off"|"shadow"|"on", default "off".
-//   S3: PM prose strip + agent-body dedupe; "shadow" = dry-run (log but don't serve lean prompt).
 // v2017_experiments.adaptive_verbosity — "off"|"on", default "off".
 //   S4: Adaptive response-length budgets in delegation templates.
+// (pm_prose_strip removed in v2.0.18 — FC3b cleanup)
 // ---------------------------------------------------------------------------
 
 const DEFAULT_V2017_EXPERIMENTS = Object.freeze({
   __schema_version: 1,
   global_kill_switch: false,       // 2-state; one flip disables all v2017 experiments
   prompt_caching: 'off',           // 2-state: "off"|"on" → S1 cache-hygiene layout
-  pm_prose_strip: 'off',           // 3-state: "off"|"shadow"|"on" → S3 prose strip
   adaptive_verbosity: 'off',       // 2-state: "off"|"on" → S4 response-length budgets
 });
 
@@ -1218,7 +1115,7 @@ const DEFAULT_V2017_EXPERIMENTS = Object.freeze({
  * Fail-open contract: missing/malformed returns DEFAULT_V2017_EXPERIMENTS.
  *
  * @param {string} cwd - Project root directory (absolute path).
- * @returns {{ __schema_version: number, global_kill_switch: boolean, prompt_caching: string, pm_prose_strip: string, adaptive_verbosity: string }}
+ * @returns {{ __schema_version: number, global_kill_switch: boolean, prompt_caching: string, adaptive_verbosity: string }}
  */
 function loadV2017ExperimentsConfig(cwd) {
   const configPath = path.join(cwd, '.orchestray', 'config.json');
@@ -1292,11 +1189,7 @@ function validateV2017ExperimentsConfig(obj) {
     );
   }
 
-  if ('pm_prose_strip' in obj && !['off', 'shadow', 'on'].includes(obj.pm_prose_strip)) {
-    errors.push(
-      'v2017_experiments.pm_prose_strip must be "off", "shadow", or "on" — got ' + JSON.stringify(obj.pm_prose_strip)
-    );
-  }
+  // pm_prose_strip removed in v2.0.18 (FC3b cleanup) — unknown keys are silently ignored
 
   if ('adaptive_verbosity' in obj && !['off', 'on'].includes(obj.adaptive_verbosity)) {
     errors.push(
@@ -1361,10 +1254,6 @@ module.exports = {
   DEFAULT_CACHE_CHOREOGRAPHY,
   loadCacheChoreographyConfig,
   validateCacheChoreographyConfig,
-  // T19 (v2.0.17): pm_prompt_variant config key
-  DEFAULT_PM_PROMPT_VARIANT,
-  loadPmPromptVariantConfig,
-  validatePmPromptVariantConfig,
   // T22 (v2.0.17): adaptive_verbosity config block
   DEFAULT_ADAPTIVE_VERBOSITY,
   loadAdaptiveVerbosityConfig,

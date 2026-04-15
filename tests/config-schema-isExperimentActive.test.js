@@ -63,8 +63,10 @@ test('global_kill_switch=false does not suppress "on" flags', () => {
 // ---------------------------------------------------------------------------
 
 test('"shadow" state returns false (measurement-only, not behavior-active)', () => {
-  const cfg = { v2017_experiments: { pm_prose_strip: 'shadow' } };
-  assert.strictEqual(isExperimentActive(cfg, 'pm_prose_strip'), false);
+  // isExperimentActive only returns true for 'on'; any other truthy value (including
+  // 'shadow') must return false. Uses prompt_caching as the test vehicle.
+  const cfg = { v2017_experiments: { prompt_caching: 'shadow' } };
+  assert.strictEqual(isExperimentActive(cfg, 'prompt_caching'), false);
 });
 
 // ---------------------------------------------------------------------------
