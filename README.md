@@ -15,6 +15,10 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 - **Mid-task elicitation** — agents can pause to ask the user a structured ≤5-field form via `mcp__orchestray__ask_user` and resume with the answers; no orchestration unwind required
 - **Hook-enforced MCP retrieval** — pre-decomposition `pattern_find`, `kb_search`, and `history_find_similar_tasks` calls are verified by `gate-agent-spawn.js` via a checkpoint ledger (`.orchestray/state/mcp-checkpoint.jsonl`) before the first orchestration spawn; falls back gracefully via `mcp_enforcement` config flags with no session restart required; the `mcp_enforcement` block is automatically migrated into `.orchestray/config.json` on first 2.0.13+ use; after `pattern_find` returns, the PM calls either `pattern_record_application` or `pattern_record_skip_reason` to produce an auditable signal for every outcome
 - **Cache-Aware Tool Result Compaction (R14)** — a `PreToolUse:Read` hook (`bin/context-shield.js`) denies re-reads of the same `(file_path, mtime, size)` triple within a session with no `offset`/`limit` change, eliminating cache-replay token waste; re-reads with an explicit offset/limit or after on-disk changes are always allowed; disable per-session via `shield.r14_dedup_reads.enabled: false`
+- **Cache-choreographed PM prompt** — `agents/pm.md` organised into Block A (immutable prefix) / breakpoint sentinel / Block B (semi-stable) / Block C (tail); a `UserPromptSubmit` hook detects prefix drift and emits an audit event; opt-in pre-commit guard prevents accidental Block A edits
+- **Cache-hit and cost telemetry** — per-spawn and per-PM-turn metrics recorded in `agent_metrics.jsonl`; cache-hit sparklines, cost-delta vs frozen baseline, and active-experiment state visible in `/orchestray:analytics`
+- **Lean PM prompt** — `agents/pm.md` trimmed ~12% (WASTE-tier only: inline config JSON, duplicated warnings, navigation breadcrumbs); rollback without git history via `pm_prompt_variant: "fat"` (reads committed `agents/pm.old.md`)
+- **Adaptive response-length budgets** — reviewer and architect delegation templates include a `response_budget` line scaled to remaining cost margin; reviewer floor at 600 tokens prevents quality-signal truncation (opt-in experiment, default OFF)
 - **Pre-spawn cost projection** — `cost_budget_check` MCP tool projects the cost of a proposed `Agent()` spawn against configured caps (`max_cost_usd`, `daily_cost_limit_usd`) before execution; pricing table lives in `.orchestray/config.json` under `mcp_server.cost_budget_check.pricing_table` (single source of truth shared with `bin/collect-agent-metrics.js`)
 - **PM-driven per-orchestration `events.jsonl` rotation** — at orchestration completion, the PM cleanup sequence atomically archives audit rows for the completed orchestration to `.orchestray/history/<orch-id>/events.jsonl`, keeping the live file bounded; the rotation is crash-safe via a three-state sentinel and idempotent on restart
 - **Explore dispatch coverage** — Claude Code's built-in `Explore` and `Task` dispatches are now gated alongside `Agent()` spawns so their model routing decisions are enforced and audited
@@ -168,11 +172,32 @@ routing_gate.auto_seed_on_miss               When true, an Agent() spawn with no
 
 shield.r14_dedup_reads.enabled    Enable R14 cache-replay dedup for Read tool calls (default: true);
                                   set false to disable the context-shield hook without removing it
+
+pm_prompt_variant                 "lean" (default) loads the stripped agents/pm.md; "fat" loads agents/pm.old.md
+                                  (the committed pre-strip rollback target). Switching takes effect on the next
+                                  session start; no re-install required.
+
+v2017_experiments.prompt_caching      "off" (default) | "on" — enables bin/cache-prefix-lock.js drift detection
+                                      on every UserPromptSubmit. Monitors Block A stability; never modifies context.
+v2017_experiments.pm_prose_strip      "off" (default) | "shadow" | "on" — "shadow" generates the lean prompt and
+                                      logs the diff without serving it; "on" serves the stripped pm.md.
+v2017_experiments.adaptive_verbosity  "off" (default) | "on" — injects per-agent response-length budgets into
+                                      delegation templates. Reviewer minimum floor: 600 tokens.
+v2017_experiments.global_kill_switch  true disables all three v2017 behavior flags immediately, no session restart
+                                      needed (default: false).
+
+adaptive_verbosity.enabled            Enable adaptive response-length budgets (default: false; also controlled by
+                                      v2017_experiments.adaptive_verbosity)
+adaptive_verbosity.base_response_tokens    Base token budget for agent responses (default: 2000)
+adaptive_verbosity.reducer_on_late_phase   Multiplier applied in late orchestration phases (default: 0.4, range: 0.0–1.0)
+
+cache_choreography.enabled            Enable bin/cache-prefix-lock.js prefix-drift detection (default: false; also
+                                      controlled by v2017_experiments.prompt_caching)
 ```
 
-The `mcp_enforcement` block is automatically added to `.orchestray/config.json` on the first `UserPromptSubmit` after upgrading to 2.0.13+ — no manual migration needed. On 2.0.14+, the same sweep also backfills the `mcp_server.cost_budget_check.pricing_table` block if absent. On 2.0.15+, the sweep additionally seeds the `kb_write` tool enable entry and the `pattern_record_skip_reason` / `cost_budget_check` enforcement keys for existing installs. On 2.0.16+, the sweep seeds `routing_lookup`, `cost_budget_reserve`, `pattern_deprecate`, `max_per_task` defaults (20 each), `cost_budget_enforcement`, `cost_budget_reserve.ttl_minutes`, and `routing_gate.auto_seed_on_miss`.
+The `mcp_enforcement` block is automatically added to `.orchestray/config.json` on the first `UserPromptSubmit` after upgrading to 2.0.13+ — no manual migration needed. On 2.0.14+, the same sweep also backfills the `mcp_server.cost_budget_check.pricing_table` block if absent. On 2.0.15+, the sweep additionally seeds the `kb_write` tool enable entry and the `pattern_record_skip_reason` / `cost_budget_check` enforcement keys for existing installs. On 2.0.16+, the sweep seeds `routing_lookup`, `cost_budget_reserve`, `pattern_deprecate`, `max_per_task` defaults (20 each), `cost_budget_enforcement`, `cost_budget_reserve.ttl_minutes`, and `routing_gate.auto_seed_on_miss`. On 2.0.17+, the sweep seeds the `v2017_experiments` block (all flags `"off"`), `adaptive_verbosity`, `cache_choreography`, and `pm_prompt_variant: "lean"`.
 
-**MCP resource schemes (2.0.16+).** The MCP server exposes four read-only resource schemes: `kb://`, `history://`, `pattern://`, and `orchestration://`. The `orchestration://` scheme provides live and historical state — `orchestray:orchestration://current` returns the active orchestration phase and task list; sub-resources expose routing decisions (`/current/routing`) and checkpoint state (`/current/checkpoints`). To browse an archived orchestration, use `orchestray:orchestration://<orch-id>`; the `list()` inventory includes the 5 most recent archived IDs. MCP tool count is 12 as of 2.0.16.
+**MCP resource schemes (2.0.16+).** The MCP server exposes four read-only resource schemes: `kb://`, `history://`, `pattern://`, and `orchestration://`. The `orchestration://` scheme provides live and historical state — `orchestray:orchestration://current` returns the active orchestration phase and task list; sub-resources expose routing decisions (`/current/routing`) and checkpoint state (`/current/checkpoints`). To browse an archived orchestration, use `orchestray:orchestration://<orch-id>`; the `list()` inventory includes the 5 most recent archived IDs. MCP tool count is 13 as of 2.0.17 (`metrics_query` added; documented in `/orchestray:analytics` skill).
 
 **Routing-gate match key (2.0.15+).** The routing gate matches spawns on `(task_id, agent_type)` rather than the previous three-field tuple — forgiving to description drift. If you observe gate blocks on valid `Agent()` spawns, confirm that `routing.jsonl` is written before the spawn call; the PM's orchestration prompt now enforces this as a mandatory step.
 
@@ -181,6 +206,7 @@ The `mcp_enforcement` block is automatically added to `.orchestray/config.json` 
 `/orchestray:analytics` includes a **Health Signals** section that:
 - Warns when `mcp_enforcement.global_kill_switch` is `true` in `.orchestray/config.json` (the gate is bypassed; all MCP checkpoint enforcement is off)
 - Scans recent `events.jsonl` for unpaired `kill_switch_activated` events to surface an active kill-switch window that was never closed
+- Reports `prefix_drift` events from `bin/cache-prefix-lock.js` when Block A of `agents/pm.md` changed between sessions (2.0.17+, when `v2017_experiments.prompt_caching` is `"on"`)
 
 If the kill switch is active, the analytics output shows a bold warning with the config key and file path needed to clear it.
 
@@ -219,9 +245,14 @@ All orchestration state lives in `.orchestray/` (gitignored):
 ```
 .orchestray/
   state/          # Active orchestration state
+    .block-a-hash           # Block A hex hash used by cache-prefix-lock.js (2.0.17+)
   kb/             # Shared knowledge base
   audit/          # Event logs and metrics
   history/        # Archived orchestrations
+  metrics/        # Per-spawn and per-PM-turn JSONL metrics (gitignored, 2.0.17+)
+    agent_metrics.jsonl           # Per-spawn rows + pm_turn rows
+    orchestration_rollup.jsonl    # Per-orchestration rollup
+    archive/                      # Rotated files (50 MB threshold)
   specialists/    # Persistent specialist registry
   patterns/       # Extracted learning patterns (gitignored)
   playbooks/      # User-authored project playbooks

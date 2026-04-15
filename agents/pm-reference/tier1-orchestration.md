@@ -120,6 +120,63 @@ correction patterns, repo map) but before the final prompt is sent.
 
 ---
 
+### §3.Y: Adaptive Verbosity (Response-Length Budgeting)
+
+When **both** of the following gates are open, inject a response-length budget line
+into every delegation prompt:
+
+1. `adaptive_verbosity.enabled === true` in `.orchestray/config.json`
+2. `v2017_experiments.adaptive_verbosity === 'on'` in `.orchestray/config.json`
+   (and `v2017_experiments.global_kill_switch` is `false`)
+
+If either gate is closed, skip §3.Y entirely and proceed to §3.Z.
+
+**Budget formula:**
+
+```
+budget = base_response_tokens × (phase_position >= 0.5 ? reducer_on_late_phase : 1.0)
+```
+
+Where:
+- `base_response_tokens` — from `adaptive_verbosity.base_response_tokens` (default 2000)
+- `reducer_on_late_phase` — from `adaptive_verbosity.reducer_on_late_phase` (default 0.4)
+- `phase_position` — current phase index / total phases (0.0 = first, 1.0 = last)
+  Use: completed_tasks / total_tasks as a proxy when phase indexing is unavailable.
+
+**Examples:**
+- Early phase (position 0.2): budget = 2000 × 1.0 = **2000 tokens**
+- Late phase (position 0.7): budget = 2000 × 0.4 = **800 tokens**
+
+**Injection:**
+
+Append this line to the delegation prompt, after all other sections and BEFORE
+confidence checkpoints (§3.Z):
+
+```
+Response budget: ~{N} tokens. Return a summary of ≤ {N} words covering only the
+deliverables explicitly requested. Omit exploration narration, re-statements of the
+task, and verbose section headers.
+```
+
+Replace `{N}` with the computed budget integer.
+
+**Display:** No extra display needed — the budget is an internal PM accounting step.
+
+**Scope:** Applies to ALL agent types (developer, architect, reviewer, refactorer,
+tester, documenter, debugger, security-engineer, and dynamic agents). Do not apply to
+Haiku-tier agents — they are already terse.
+
+**Reviewer floor:** When `agent_type === 'reviewer'`, apply: `budget = max(budget, 600)`.
+This prevents starvation of the quality signal if an operator sets `reducer_on_late_phase`
+below 0.3 (which would otherwise yield a budget < 600 tokens).
+
+**Final verify-fix exemption:** When the current delegation is a reviewer acting as the
+final verify-fix gate (`current_verify_fix_round === verify_fix_max_rounds`), skip budget
+injection entirely — do not append the budget line. The quality signal must not be
+truncated at the last-resort review pass.
+
+---
+
 ### 4.Z: Confidence Signal Reading
 
 After processing any agent result (Section 4) and AFTER post-condition validation (4.X)

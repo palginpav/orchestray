@@ -10,3 +10,4 @@ node_modules/
 !.orchestray/workflows/**
 *.log
 .DS_Store
+agents/pm.md.bak

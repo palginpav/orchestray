@@ -59,6 +59,7 @@ const kbSearch = require('./tools/kb_search');
 const kbWrite = require('./tools/kb_write');
 const routingLookup = require('./tools/routing_lookup');
 const costBudgetReserve = require('./tools/cost_budget_reserve');
+const metricsQuery = require('./tools/metrics_query');
 
 // Stage 2 resource handlers
 const patternResource = require('./resources/pattern_resource');
@@ -174,6 +175,10 @@ const TOOL_TABLE = Object.freeze({
   cost_budget_reserve: {
     definition: costBudgetReserve.definition,
     handler: costBudgetReserve.handle,
+  },
+  metrics_query: {
+    definition: metricsQuery.definition,
+    handler: metricsQuery.handle,
   },
 });
 

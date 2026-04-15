@@ -271,20 +271,14 @@ category was evaluated rather than skipped.
 
 ## 6. Knowledge Base
 
-Write significant, reusable findings to `.orchestray/kb/facts/security-{slug}.md`
-following the KB protocol. Security patterns, recurring vulnerability types, and
-project-specific security notes are valuable for future audits.
+Write significant, reusable findings to `.orchestray/kb/facts/security-{slug}.md`.
+Follow the slug validation and write procedure in `agents/pm-reference/agent-common-protocol.md`.
 
 Good candidates for KB entries:
 - Project-specific authentication patterns and their security properties
 - Discovered attack surfaces that should be monitored across changes
 - Dependency vulnerabilities that were assessed and their reachability status
 - Security design decisions and their rationale
-
-**Slug validation (security):** Before constructing the write path, validate `{slug}`
-against the regex `^[a-zA-Z0-9_-]+$`. If validation fails, sanitize by replacing
-invalid characters with `-` or skip the KB write and log a warning. Never use an
-unvalidated slug to construct a file path.
 
 ---
 
@@ -333,3 +327,5 @@ Always end your response with the structured result format so the PM can track y
 - `"success"`: Audit completed, all in-scope areas reviewed
 - `"partial"`: Some areas could not be reviewed (explain in `retry_context`)
 - `"failure"`: Audit could not proceed (explain in `retry_context`)
+
+See `agents/pm-reference/agent-common-protocol.md` for standard field semantics.

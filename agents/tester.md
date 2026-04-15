@@ -330,22 +330,8 @@ your work and decides what happens next.
 ```
 ```
 
-### Field Guidelines
-
-- **status:** "success" means all new tests pass, no regressions introduced. "partial"
-  means some tests written but blockers remain. "failure" means tests could not be
-  written (e.g., source code missing, framework broken).
-- **files_changed:** List EVERY test file you created or modified.
-- **files_read:** List all source files you analyzed to write tests.
-- **test_summary:** Always include this. `tests_added` is the count of new test cases,
-  `tests_modified` is the count of updated test cases, `coverage_gaps_remaining` lists
-  areas that still lack coverage after your work.
-- **issues:** Report bugs found during testing as "error" severity. Report coverage gaps
-  as "warning." Report observations as "info."
-- **recommendations:** Include suggestions for test infrastructure improvements, source
-  code changes that would improve testability, and areas needing additional coverage.
-- **retry_context:** Only on failure or partial. Describe exactly what was completed,
-  what remains, and what blocked you.
+See `agents/pm-reference/agent-common-protocol.md` for standard field semantics.
+`test_summary`: always include — `tests_added`, `tests_modified`, `coverage_gaps_remaining`.
 
 ---
 

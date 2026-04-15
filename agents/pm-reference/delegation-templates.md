@@ -451,3 +451,54 @@ diff to identify any discrepancies between intent and rendered result.
   The reviewer proceeds with standard text-only review.
 - Cap at 10 screenshot paths in the list (per visual-review.md cap rules).
 - Before/after pairs should be listed together so the reviewer examines them side by side.
+
+---
+
+## Response-Length Budget Line (§3.Y Adaptive Verbosity)
+
+When `adaptive_verbosity.enabled === true` AND `v2017_experiments.adaptive_verbosity === 'on'`
+(see §3.Y in tier1-orchestration.md), append this line to the delegation prompt for every
+agent type. Compute `{N}` per the §3.Y formula before injecting.
+
+Place this line AFTER all other content sections (task description, context, playbooks,
+correction patterns, repo map, design preferences, architectural constraints, visual review,
+upstream traces) and BEFORE confidence checkpoints (§3.Z). If §3.Y gates are closed,
+omit this section entirely.
+
+### Template Line
+
+```
+Response budget: ~{N} tokens. Return a summary of ≤ {N} words covering only the
+deliverables explicitly requested. Omit exploration narration, re-statements of the
+task, and verbose section headers.
+```
+
+### Per-Agent Defaults (base_response_tokens = 2000, reducer = 0.4)
+
+| Agent type | Early phase (< 0.5) | Late phase (≥ 0.5) |
+|---|---|---|
+| developer | ~2000 tokens | ~800 tokens |
+| architect | ~2000 tokens | ~800 tokens |
+| reviewer | ~2000 tokens | ~800 tokens |
+| refactorer | ~2000 tokens | ~800 tokens |
+| tester | ~2000 tokens | ~800 tokens |
+| documenter | ~2000 tokens | ~800 tokens |
+| debugger | ~2000 tokens | ~800 tokens |
+| security-engineer | ~2000 tokens | ~800 tokens |
+| dynamic agents | ~2000 tokens | ~800 tokens |
+
+Haiku-tier agents: skip injection — they are already terse.
+
+Note: reviewer agents get a minimum-600-token floor — `{N}` is never less than 600
+regardless of phase or reducer value (see §3.Y reviewer floor rule).
+
+Note: final-round verify-fix reviewers are exempt — if `current_verify_fix_round ===
+verify_fix_max_rounds`, omit this budget line entirely for that reviewer delegation.
+
+### Injection Rules
+
+- Only inject when both gates are open (see §3.Y). If either is closed, omit entirely.
+- The `{N}` value is the integer budget in tokens (rounded to nearest 50 for readability).
+- Do NOT include this section in first-spawn (pre-decomposition) PM self-calls.
+- Do NOT include this section in Haiku-tier agent delegations.
+- Do NOT include this section in the final verify-fix reviewer delegation (see exemption note above).

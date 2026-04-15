@@ -134,7 +134,9 @@ The user wants to see aggregate performance analytics across orchestration histo
    - If no routing_outcome events found: show "No model routing data available (pre-routing orchestrations)."
    - If no agent cost data found: show "No per-agent cost data available."
 
-8. **Pattern Effectiveness Dashboard**: After displaying the main analytics, show pattern learning metrics.
+8. **Cache Performance, Cost Delta, Active Experiments**: After displaying the main analytics and before Health Signals, show the cache/cost/experiment sections. See the **Cache Performance**, **Cost Delta**, and **Active Experiments** sections below for display logic.
+
+9. **Pattern Effectiveness Dashboard**: After displaying the main analytics, show pattern learning metrics.
 
    **Read pattern files**: Glob `.orchestray/patterns/*.md` and parse each file's YAML frontmatter. Normalize fields to handle both Section 22 and Section 30 schemas:
    - `category` (or `type` for Section 30 corrections -- use `frontmatter.category || frontmatter.type || "unknown"`)
@@ -182,6 +184,183 @@ The user wants to see aggregate performance analytics across orchestration histo
    ```
 
    After displaying the pattern learning section (whether populated or empty), add: "Run `/orchestray:patterns` for detailed pattern effectiveness data."
+
+## Cache Performance
+
+Cache-hit ratio measures how much of the PM and subagent input was served from
+Anthropic's prompt cache vs. freshly billed. Higher is cheaper.
+
+**Formula** (applied per row in `agent_metrics.jsonl`):
+
+    cache_hit_ratio = cache_read / (cache_read + cache_create + input_tokens)
+
+**Query by agent kind:**
+
+```
+metrics_query({ window: "7d", group_by: "agent_kind", metric: "cache_hit_ratio" })
+```
+
+Expected output (example):
+
+| agent_kind | turns | hit_ratio |
+|------------|------:|----------:|
+| developer  | 493   | 0.9444    |
+| reviewer   | 289   | 0.9114    |
+| architect  | 111   | 0.8743    |
+
+**Measured baseline** (70 orchestrations, 2026-04-08 → 2026-04-15,
+source: `v2017-baseline-measured.md`):
+
+- Weighted subagent average: **0.9394**
+- Ceiling: ~0.95 (cache saturated — normal at full PM-tier warm-up)
+- Floor: 0.00 (no cache — typically first turn of a new session)
+
+**PM-turn ratios** (`pm_cache_hit_ratio` in `orchestration_rollup.jsonl`) become
+available once `capture-pm-turn.js` (T3) has recorded ≥10 Stop events. Until
+then the field is `null`; the subagent ratios above are the operative signal.
+
+---
+
+## Cost Delta
+
+Compare current-window cost against the frozen baseline to detect regressions.
+
+**Query:**
+
+```
+metrics_query({ window: "7d", group_by: "none", metric: "cost_usd" })
+```
+
+Returns mean and p50 across orchestrations in the window.
+
+**Frozen baseline** (source: `v2017-baseline-measured.md`, n = 70):
+
+| Metric | Value     |
+|--------|----------:|
+| mean   | $100.75   |
+| p50    | $11.42    |
+| p75    | $54.70    |
+| p90    | $554.29   |
+
+**Guardrail:** if `mean_cost > baseline_mean × 1.05` ($105.79), emit a warning
+before the Overview table:
+
+```
+WARNING: Mean orchestration cost ($X.XX) exceeds baseline × 1.05 ($105.79).
+Check experiment flags — see Active Experiments below.
+```
+
+No alert needed if only p90/max shift; those are driven by task size.
+
+---
+
+## Active Experiments
+
+v2.0.17 ships three opt-in experiment flags plus a global kill switch, stored
+in `.orchestray/config.json` under the `v2017_experiments` key.
+
+**Read current state:**
+
+```bash
+cat .orchestray/config.json | jq .v2017_experiments
+```
+
+**Flag reference:**
+
+| Flag | Values | Default | What it does |
+|------|--------|---------|--------------|
+| `global_kill_switch` | `true`/`false` | `false` | Disables ALL v2017 experiments simultaneously |
+| `prompt_caching` | `"off"/"on"` | `"off"` | S1: Block A/B/C cache-hygiene layout in `agents/pm.md` |
+| `pm_prose_strip` | `"off"/"shadow"/"on"` | `"off"` | S3: PM prose strip + agent-body dedupe |
+| `adaptive_verbosity` | `"off"/"on"` | `"off"` | S4: Adaptive response-length budgets in delegation templates |
+
+**`shadow` state** applies only to `pm_prose_strip`. In shadow mode the lean
+prompt is assembled and logged but the full (fat) prompt is served to the model.
+No behavior changes — it is measurement-only. Use shadow before enabling `"on"`
+to verify the stripped prompt produces no regressions.
+
+**To toggle a flag:** edit `.orchestray/config.json` directly, then restart the
+Claude Code session (agent definitions are cached at session start).
+
+```jsonc
+// Example: enable shadow mode for prose-strip
+{
+  "v2017_experiments": {
+    "__schema_version": 1,
+    "global_kill_switch": false,
+    "prompt_caching": "off",
+    "pm_prose_strip": "shadow",
+    "adaptive_verbosity": "off"
+  }
+}
+```
+
+Schema loader: `loadV2017ExperimentsConfig(cwd)` in `bin/_lib/config-schema.js`.
+
+---
+
+## MCP Tools Exposed
+
+### `metrics_query`
+
+The primary interface for v2.0.17 cache and cost telemetry. Reads
+`.orchestray/metrics/agent_metrics.jsonl` and
+`.orchestray/metrics/orchestration_rollup.jsonl`.
+
+**Signature:**
+
+```typescript
+metrics_query(params: {
+  window:   string,            // "7d" | "14d" | "30d" | "all"
+  group_by: "agent_kind" | "model" | "orchestration_id" | "none",
+  metric:   "cache_hit_ratio" | "input_tokens" | "output_tokens" | "cost_usd" | "count"
+}) => MetricsResult
+```
+
+**Return shape:**
+
+```jsonc
+{
+  "groups": [
+    {
+      "key":  "developer",
+      "n":    493,
+      "mean": 0.9444,
+      "p50":  null          // p50 only for cost_usd metric
+    }
+  ],
+  "meta": {
+    "window":           "7d",
+    "group_by":         "agent_kind",
+    "metric":           "cache_hit_ratio",
+    "total_rows":       1,
+    "source_files":     ["agent_metrics.jsonl", "orchestration_rollup.jsonl"],
+    "metrics_disabled": false
+  }
+}
+```
+
+For `group_by: "none"`, `groups` contains a single entry with `key: "total"`.
+`p50` is populated only when `metric` is `"cost_usd"`.
+`metrics_disabled` is `true` when the kill-switch is active or metrics collection is
+otherwise disabled; the field is present on all responses.
+
+**Example calls:**
+
+```
+// Cache hit ratio by agent kind, last 7 days
+metrics_query({ window: "7d", group_by: "agent_kind", metric: "cache_hit_ratio" })
+
+// Overall cost distribution, last 30 days
+metrics_query({ window: "30d", group_by: "none", metric: "cost_usd" })
+
+// Cost breakdown by model, all time
+metrics_query({ window: "all", group_by: "model", metric: "cost_usd" })
+```
+
+`metrics_query` is documented here only. It is not in README.md.
+
+---
 
 ## Health Signals
 

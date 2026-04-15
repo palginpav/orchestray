@@ -114,9 +114,10 @@ function makeDir({
     fs.writeFileSync(path.join(stateDir, '.kb-write-migrated-2015'), '', 'utf8');
   }
   if (v2016Sentinels) {
-    // Default-on for this suite: 2.0.16 sub-ops are not under test here and
-    // should not mutate the config during unrelated migration tests.
-    // Includes DEV1/DEV-A sentinels (W1/W5/W2/D1/D4) and DEV-B sentinels (D2/D3/D5/D7).
+    // Default-on for this suite: 2.0.16 and 2.0.17 sub-ops are not under test
+    // here and should not mutate the config during unrelated migration tests.
+    // Includes DEV1/DEV-A sentinels (W1/W5/W2/D1/D4), DEV-B sentinels (D2/D3/D5/D7),
+    // and v2.0.17 T4/T5/T12/T19/T22 sentinels.
     for (const name of [
       '.pattern-record-app-migrated-2016',
       '.cost-budget-enforcement-migrated-2016',
@@ -128,6 +129,13 @@ function makeDir({
       '.cost-budget-hard-block-default-2016',
       '.cost-budget-reserve-ttl-seed-2016',
       '.routing-gate-auto-seed-2016',
+      // v2.0.17 additions (T4/T5)
+      '.v2017-experiments-seeded',
+      '.metrics-query-seeded-2017',
+      // v2.0.17 additions (T12/T19/T22)
+      '.cache-choreography-seeded-2017',
+      '.pm-prompt-variant-seeded-2017',
+      '.adaptive-verbosity-seeded-2017',
     ]) {
       fs.writeFileSync(path.join(stateDir, name), '', 'utf8');
     }

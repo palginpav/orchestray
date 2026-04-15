@@ -224,21 +224,7 @@ your work and decides what happens next.
 ```
 ```
 
-### Field Guidelines
-
-- **status:** "success" means all requested documentation was written and verified
-  against the code. "partial" means some documentation written but gaps remain.
-  "failure" means documentation could not be produced (e.g., source code missing or
-  incomprehensible).
-- **files_changed:** List EVERY documentation file you created or modified.
-- **files_read:** List all source files, design docs, and existing documentation you
-  read to inform your writing.
-- **issues:** Report stale documentation as "warning." Report missing critical docs as
-  "error." Report suggestions as "info."
-- **recommendations:** Include areas needing additional documentation, suggested
-  follow-up tasks, and code changes that would improve documentability.
-- **retry_context:** Only on failure or partial. Describe what was completed, what
-  remains, and what blocked you.
+See `agents/pm-reference/agent-common-protocol.md` for standard field semantics.
 
 ---
 

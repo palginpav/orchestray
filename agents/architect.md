@@ -301,20 +301,7 @@ to parse your output and pass relevant information to the next agent in the work
 ```
 ```
 
-### Field Guidelines
-
-- **status:** Use "success" when the design is complete and actionable. Use "partial"
-  when some aspects could not be designed (e.g., missing information). Use "failure"
-  when the task cannot be designed as described.
-- **files_changed:** List the design document(s) you created.
-- **files_read:** List all files you read during analysis. This helps the PM understand
-  what context informed your design.
-- **issues:** Report any concerns discovered during analysis. Use "error" for blockers,
-  "warning" for concerns, "info" for observations.
-- **recommendations:** Practical notes for the developer. Implementation order, tricky
-  areas, things to watch out for.
-- **retry_context:** Only include on failure or partial. Explain what went wrong so the
-  PM can provide better context on retry.
+See `agents/pm-reference/agent-common-protocol.md` for standard field semantics.
 
 ---
 

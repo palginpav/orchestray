@@ -67,6 +67,15 @@
             "timeout": 3
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cache-prefix-lock.js",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SubagentStart": [
@@ -76,6 +85,17 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/audit-event.js start",
             "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/capture-pm-turn.js",
+            "timeout": 10
           }
         ]
       }

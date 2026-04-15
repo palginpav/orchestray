@@ -86,6 +86,9 @@ const DEFAULT_MCP_ENFORCEMENT = Object.freeze({
   cost_budget_reserve: 'allow',
   // v2.0.16 D1: pattern_deprecate is a write tool (not spawn-gate) — 'allow' is safe.
   pattern_deprecate: 'allow',
+  // v2.0.17 T5: metrics_query is read-only telemetry — 'allow' prevents
+  // unknown_tool_policy:'block' from blocking it on fresh and upgraded installs.
+  metrics_query: 'allow',
   unknown_tool_policy: 'block',
   global_kill_switch: false,
 });
@@ -183,6 +186,8 @@ function validateMcpEnforcement(obj) {
     'cost_budget_reserve',
     // v2.0.16 D1
     'pattern_deprecate',
+    // v2.0.17 T5
+    'metrics_query',
   ];
   for (const key of perToolKeys) {
     if (key in obj) {
@@ -872,6 +877,460 @@ const DEFAULT_MAX_PER_TASK = Object.freeze({
   pattern_record_application: 20,
 });
 
+// ---------------------------------------------------------------------------
+// cache_choreography section defaults and loader (T12 v2.0.17)
+//
+// cache_choreography.pre_commit_guard_enabled — boolean, default false.
+//   When true, install.js --pre-commit-guard wires up .git/hooks/pre-commit to
+//   alert on Block A changes missing an 'BLOCK-A: approved' commit-message line.
+//   Strictly opt-in: the default is false. Run bin/install-pre-commit-guard.sh to
+//   install the hook after enabling this flag.
+//
+// cache_choreography.drift_warn_threshold_hex_changes — positive integer, default 1.
+//   Number of hex-content changes to Block A before emitting a drift warning.
+//   Default 1 means alert on ANY change (fail-fast to keep cache hygiene tight).
+// ---------------------------------------------------------------------------
+
+const DEFAULT_CACHE_CHOREOGRAPHY = Object.freeze({
+  pre_commit_guard_enabled: false,          // opt-in; run install-pre-commit-guard.sh to wire the hook
+  drift_warn_threshold_hex_changes: 1,      // alert on any change (0 = disable warnings)
+});
+
+/**
+ * Load and merge the cache_choreography block from <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing/malformed returns DEFAULT_CACHE_CHOREOGRAPHY.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ pre_commit_guard_enabled: boolean, drift_warn_threshold_hex_changes: number }}
+ */
+function loadCacheChoreographyConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_CACHE_CHOREOGRAPHY);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_CACHE_CHOREOGRAPHY);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_CACHE_CHOREOGRAPHY);
+  }
+
+  const fromFile = parsed.cache_choreography;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_CACHE_CHOREOGRAPHY);
+  }
+
+  const merged = Object.assign({}, DEFAULT_CACHE_CHOREOGRAPHY, sanitizeConfig(fromFile));
+
+  try {
+    const result = validateCacheChoreographyConfig(merged);
+    if (!result.valid) {
+      logStderr('cache_choreography config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) {
+    // Validation must never throw
+  }
+
+  return merged;
+}
+
+/**
+ * Validate a cache_choreography config object.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateCacheChoreographyConfig(obj) {
+  const errors = [];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['cache_choreography must be an object'] };
+  }
+
+  if ('pre_commit_guard_enabled' in obj && typeof obj.pre_commit_guard_enabled !== 'boolean') {
+    errors.push(
+      'cache_choreography.pre_commit_guard_enabled must be a boolean — got ' +
+      JSON.stringify(obj.pre_commit_guard_enabled)
+    );
+  }
+
+  if ('drift_warn_threshold_hex_changes' in obj) {
+    const v = obj.drift_warn_threshold_hex_changes;
+    if (!Number.isInteger(v) || v < 0) {
+      errors.push(
+        'cache_choreography.drift_warn_threshold_hex_changes must be a non-negative integer — got ' +
+        JSON.stringify(v)
+      );
+    }
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
+// ---------------------------------------------------------------------------
+// pm_prompt_variant section defaults and loader (T19 v2.0.17)
+//
+// pm_prompt_variant — string, default 'lean'.
+//   Controls which pm.md variant the PM agent loads at session start.
+//   'lean' — reads agents/pm.md (the prose-stripped Phase 3 version)
+//   'fat'  — reads agents/pm.old.md (pre-strip rollback path)
+//
+//   NOTE: the runtime switch that actually changes which file pm.md frontmatter
+//   points to is Phase 5 territory. This config key is persisted here so that
+//   the config schema is complete; a runtime switcher will read this key when
+//   Phase 5 ships. For now, setting 'fat' has no runtime effect without a
+//   manual frontmatter edit.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_PM_PROMPT_VARIANT = Object.freeze({
+  variant: 'lean',   // 'lean' | 'fat'
+});
+
+/**
+ * Load and merge the pm_prompt_variant block from <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing/malformed returns DEFAULT_PM_PROMPT_VARIANT.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ variant: string }}
+ */
+function loadPmPromptVariantConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_PM_PROMPT_VARIANT);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_PM_PROMPT_VARIANT);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_PM_PROMPT_VARIANT);
+  }
+
+  const fromFile = parsed.pm_prompt_variant;
+  // pm_prompt_variant may be stored as a plain string ('lean'/'fat') or as an
+  // object with a variant key — accept both shapes for ergonomics.
+  if (fromFile === null || fromFile === undefined) {
+    return Object.assign({}, DEFAULT_PM_PROMPT_VARIANT);
+  }
+  if (typeof fromFile === 'string') {
+    const merged = Object.assign({}, DEFAULT_PM_PROMPT_VARIANT, { variant: fromFile });
+    try {
+      const result = validatePmPromptVariantConfig(merged);
+      if (!result.valid) {
+        logStderr('pm_prompt_variant config warnings: ' + result.errors.join('; '));
+      }
+    } catch (_e) {}
+    return merged;
+  }
+  if (typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_PM_PROMPT_VARIANT);
+  }
+
+  const merged = Object.assign({}, DEFAULT_PM_PROMPT_VARIANT, sanitizeConfig(fromFile));
+
+  try {
+    const result = validatePmPromptVariantConfig(merged);
+    if (!result.valid) {
+      logStderr('pm_prompt_variant config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) {
+    // Validation must never throw
+  }
+
+  return merged;
+}
+
+/**
+ * Validate a pm_prompt_variant config object.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validatePmPromptVariantConfig(obj) {
+  const errors = [];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['pm_prompt_variant config must be an object'] };
+  }
+
+  if ('variant' in obj && !['lean', 'fat'].includes(obj.variant)) {
+    errors.push(
+      'pm_prompt_variant.variant must be "lean" or "fat" — got ' + JSON.stringify(obj.variant)
+    );
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
+// ---------------------------------------------------------------------------
+// adaptive_verbosity section defaults and loader (T22 v2.0.17)
+//
+// adaptive_verbosity.enabled — boolean, default false.
+//   When false, the PM does not inject response-length budgets into delegations.
+//   Opt-in: set to true AND set v2017_experiments.adaptive_verbosity='on' to
+//   activate. Both gates must be open for the feature to apply.
+//
+// adaptive_verbosity.base_response_tokens — positive integer, default 2000.
+//   Default agent response budget (approximate token count). Passed as
+//   "Response budget: ~{N} tokens" in each delegation prompt.
+//
+// adaptive_verbosity.reducer_on_late_phase — number 0.0..1.0, default 0.4.
+//   Multiplier applied to base_response_tokens when phase_position >= 0.5
+//   (past the midpoint of the orchestration). Reduces output-token tail
+//   for late-phase agents whose tasks are typically narrower.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_ADAPTIVE_VERBOSITY = Object.freeze({
+  enabled: false,                 // opt-in; also requires v2017_experiments.adaptive_verbosity='on'
+  base_response_tokens: 2000,     // default delegation budget in tokens
+  reducer_on_late_phase: 0.4,     // multiply budget for phases past midpoint (phase_position >= 0.5)
+});
+
+/**
+ * Load and merge the adaptive_verbosity block from <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing/malformed returns DEFAULT_ADAPTIVE_VERBOSITY.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ enabled: boolean, base_response_tokens: number, reducer_on_late_phase: number }}
+ */
+function loadAdaptiveVerbosityConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_ADAPTIVE_VERBOSITY);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_ADAPTIVE_VERBOSITY);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_ADAPTIVE_VERBOSITY);
+  }
+
+  const fromFile = parsed.adaptive_verbosity;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_ADAPTIVE_VERBOSITY);
+  }
+
+  const merged = Object.assign({}, DEFAULT_ADAPTIVE_VERBOSITY, sanitizeConfig(fromFile));
+
+  try {
+    const result = validateAdaptiveVerbosityConfig(merged);
+    if (!result.valid) {
+      logStderr('adaptive_verbosity config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) {
+    // Validation must never throw
+  }
+
+  return merged;
+}
+
+/**
+ * Validate an adaptive_verbosity config object.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateAdaptiveVerbosityConfig(obj) {
+  const errors = [];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['adaptive_verbosity must be an object'] };
+  }
+
+  if ('enabled' in obj && typeof obj.enabled !== 'boolean') {
+    errors.push(
+      'adaptive_verbosity.enabled must be a boolean — got ' + JSON.stringify(obj.enabled)
+    );
+  }
+
+  if ('base_response_tokens' in obj) {
+    const v = obj.base_response_tokens;
+    if (!Number.isInteger(v) || v <= 0) {
+      errors.push(
+        'adaptive_verbosity.base_response_tokens must be a positive integer — got ' + JSON.stringify(v)
+      );
+    }
+  }
+
+  if ('reducer_on_late_phase' in obj) {
+    const v = obj.reducer_on_late_phase;
+    if (typeof v !== 'number' || v < 0 || v > 1) {
+      errors.push(
+        'adaptive_verbosity.reducer_on_late_phase must be a number 0.0..1.0 — got ' + JSON.stringify(v)
+      );
+    }
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
+// ---------------------------------------------------------------------------
+// v2017_experiments section defaults and loader (T4 v2.0.17)
+//
+// v2017_experiments.__schema_version — literal 1; bumped when new keys are added.
+// v2017_experiments.global_kill_switch — boolean, default false.
+//   One-flip disables all v2017 experiments simultaneously (safety escape hatch).
+// v2017_experiments.prompt_caching — "off"|"on", default "off".
+//   S1: Block A/B/C cache-hygiene layout in agents/pm.md.
+// v2017_experiments.pm_prose_strip — "off"|"shadow"|"on", default "off".
+//   S3: PM prose strip + agent-body dedupe; "shadow" = dry-run (log but don't serve lean prompt).
+// v2017_experiments.adaptive_verbosity — "off"|"on", default "off".
+//   S4: Adaptive response-length budgets in delegation templates.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_V2017_EXPERIMENTS = Object.freeze({
+  __schema_version: 1,
+  global_kill_switch: false,       // 2-state; one flip disables all v2017 experiments
+  prompt_caching: 'off',           // 2-state: "off"|"on" → S1 cache-hygiene layout
+  pm_prose_strip: 'off',           // 3-state: "off"|"shadow"|"on" → S3 prose strip
+  adaptive_verbosity: 'off',       // 2-state: "off"|"on" → S4 response-length budgets
+});
+
+/**
+ * Load and merge the v2017_experiments block from <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing/malformed returns DEFAULT_V2017_EXPERIMENTS.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ __schema_version: number, global_kill_switch: boolean, prompt_caching: string, pm_prose_strip: string, adaptive_verbosity: string }}
+ */
+function loadV2017ExperimentsConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_V2017_EXPERIMENTS);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_V2017_EXPERIMENTS);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_V2017_EXPERIMENTS);
+  }
+
+  const fromFile = parsed.v2017_experiments;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_V2017_EXPERIMENTS);
+  }
+
+  // Shallow merge: defaults fill in missing keys; file values win for present keys.
+  // sanitizeConfig strips __proto__/constructor/prototype to prevent prototype pollution.
+  const merged = Object.assign({}, DEFAULT_V2017_EXPERIMENTS, sanitizeConfig(fromFile));
+
+  try {
+    const result = validateV2017ExperimentsConfig(merged);
+    if (!result.valid) {
+      logStderr('v2017_experiments config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) {
+    // Validation must never throw
+  }
+
+  return merged;
+}
+
+/**
+ * Validate a v2017_experiments config object.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateV2017ExperimentsConfig(obj) {
+  const errors = [];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['v2017_experiments must be an object'] };
+  }
+
+  if ('__schema_version' in obj && obj.__schema_version !== 1) {
+    errors.push(
+      'v2017_experiments.__schema_version must be 1 — got ' + JSON.stringify(obj.__schema_version)
+    );
+  }
+
+  if ('global_kill_switch' in obj && typeof obj.global_kill_switch !== 'boolean') {
+    errors.push(
+      'v2017_experiments.global_kill_switch must be a boolean — got ' + JSON.stringify(obj.global_kill_switch)
+    );
+  }
+
+  if ('prompt_caching' in obj && !['off', 'on'].includes(obj.prompt_caching)) {
+    errors.push(
+      'v2017_experiments.prompt_caching must be "off" or "on" — got ' + JSON.stringify(obj.prompt_caching)
+    );
+  }
+
+  if ('pm_prose_strip' in obj && !['off', 'shadow', 'on'].includes(obj.pm_prose_strip)) {
+    errors.push(
+      'v2017_experiments.pm_prose_strip must be "off", "shadow", or "on" — got ' + JSON.stringify(obj.pm_prose_strip)
+    );
+  }
+
+  if ('adaptive_verbosity' in obj && !['off', 'on'].includes(obj.adaptive_verbosity)) {
+    errors.push(
+      'v2017_experiments.adaptive_verbosity must be "off" or "on" — got ' + JSON.stringify(obj.adaptive_verbosity)
+    );
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
+/**
+ * Check if a v2.0.17 experiment flag is active ('on' state).
+ *
+ * @param {object|null|undefined} cfg - Root config object. MUST contain a `v2017_experiments`
+ *   sub-object (i.e. the full config root, NOT just the experiments block).
+ *   Do NOT pass the experiments block directly — pass the full config.
+ *   Use loadV2017ExperimentsConfig to load the block, then wrap as
+ *   { v2017_experiments: loaded } if you only have the sub-block.
+ *   Passing the experiments block directly will silently return false for all flags.
+ * @param {string} flagName - Flag key (e.g. 'prompt_caching', 'adaptive_verbosity').
+ * @returns {boolean} true only if flag === 'on' AND global_kill_switch !== true.
+ *   'shadow' returns false (measurement-only, not behavior-active).
+ *   Any error (null cfg, missing key, etc.) returns false (fail-open).
+ */
+function isExperimentActive(cfg, flagName) {
+  try {
+    const block = cfg && cfg.v2017_experiments;
+    if (!block) return false;
+    if (block.global_kill_switch === true) return false;
+    const v = block[flagName];
+    return v === 'on';  // 'shadow' is measurement-only, not "active" for behavior gating
+  } catch { return false; }
+}
+
 module.exports = {
   DEFAULT_MCP_ENFORCEMENT,
   loadMcpEnforcement,
@@ -893,5 +1352,22 @@ module.exports = {
   // D5 (v2.0.16): cost_budget_reserve TTL config
   DEFAULT_COST_BUDGET_RESERVE,
   loadCostBudgetReserveConfig,
+  // T4 (v2.0.17): v2017 experiment flags
+  DEFAULT_V2017_EXPERIMENTS,
+  loadV2017ExperimentsConfig,
+  validateV2017ExperimentsConfig,
+  isExperimentActive,
+  // T12 (v2.0.17): cache_choreography config block
+  DEFAULT_CACHE_CHOREOGRAPHY,
+  loadCacheChoreographyConfig,
+  validateCacheChoreographyConfig,
+  // T19 (v2.0.17): pm_prompt_variant config key
+  DEFAULT_PM_PROMPT_VARIANT,
+  loadPmPromptVariantConfig,
+  validatePmPromptVariantConfig,
+  // T22 (v2.0.17): adaptive_verbosity config block
+  DEFAULT_ADAPTIVE_VERBOSITY,
+  loadAdaptiveVerbosityConfig,
+  validateAdaptiveVerbosityConfig,
   logStderr,
 };

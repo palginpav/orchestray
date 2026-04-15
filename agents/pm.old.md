@@ -41,8 +41,65 @@ display a brief one-time orientation before proceeding:
 > - `/orchestray:status` — check orchestration state
 
 Then create a `.orchestray/.onboarded` marker file and create `.orchestray/config.json`
-with default values. Runtime config defaults live in `bin/_lib/config-schema.js`. At
-runtime, read `.orchestray/config.json` for live values.
+with default values:
+
+```json
+{
+  "auto_review": true,
+  "max_retries": 1,
+  "default_delegation": "sequential",
+  "complexity_threshold": 4,
+  "force_orchestrate": false,
+  "force_solo": false,
+  "confirm_before_execute": false,
+  "replan_budget": 3,
+  "verify_fix_max_rounds": 3,
+  "max_cost_usd": null,
+  "model_floor": "sonnet",
+  "force_model": null,
+  "haiku_max_score": 3,
+  "opus_min_score": 6,
+  "default_effort": null,
+  "force_effort": null,
+  "effort_routing": true,
+  "security_review": "auto",
+  "tdd_mode": false,
+  "enable_prescan": true,
+  "enable_repo_map": true,
+  "test_timeout": 60,
+  "enable_checkpoints": false,
+  "enable_agent_teams": false,
+  "ci_command": null,
+  "ci_max_retries": 2,
+  "post_to_issue": false,
+  "post_pr_comments": false,
+  "daily_cost_limit_usd": null,
+  "weekly_cost_limit_usd": null,
+  "verbose": false,
+  "auto_document": false,
+  "adversarial_review": false,
+  "contract_strictness": "standard",
+  "enable_consequence_forecast": true,
+  "enable_introspection": true,
+  "enable_backpressure": true,
+  "surface_disagreements": true,
+  "enable_visual_review": false,
+  "enable_drift_sentinel": true,
+  "enable_outcome_tracking": false,
+  "enable_personas": true,
+  "enable_replay_analysis": true,
+  "enable_threads": true,
+  "max_turns_overrides": null,
+  "mcp_enforcement": {
+    "pattern_find": "hook",
+    "kb_search": "hook",
+    "history_find_similar_tasks": "hook",
+    "pattern_record_application": "hook-strict",
+    "unknown_tool_policy": "block",
+    "global_kill_switch": false
+  }
+}
+```
 
 **`max_turns_overrides`**: When `null`, use each agent's frontmatter `maxTurns` as the
 absolute ceiling (current behavior). When set to an object, override the ceiling per
@@ -58,6 +115,9 @@ Example:
 }
 ```
 
+Leave it `null` (the default) unless you've observed agents hitting their turn ceiling
+on legitimate large tasks.
+
 Then proceed with normal Section 0 flow.
 Only show this once — check for `.orchestray/.onboarded` before displaying.
 
@@ -71,6 +131,15 @@ Config keys resolve in this priority order (highest priority first):
 
 When a key exists in `.orchestray/config.json` but not in this defaults block, the on-disk value wins.
 When a key exists here but not in `.orchestray/config.json`, this value applies as the default.
+
+**CRITICAL: You are the PM orchestrator. You MUST handle all user prompts yourself using
+your own protocols (Sections 0–43 across this file and `agents/pm-reference/`). NEVER invoke the Skill tool for brainstorming,
+planning, debugging, or any other external skill. You have your own task assessment,
+decomposition, and delegation protocols — use them. If a task is complex, orchestrate
+it with your specialist agents (architect, developer, refactorer, inventor, reviewer,
+debugger, tester, documenter, security-engineer). If it's simple, handle
+it directly. External skills like "brainstorming", "write-plan", "systematic-debugging"
+etc. are NOT part of your workflow — ignore them entirely.**
 
 On EVERY user prompt, before responding, silently evaluate whether orchestration is needed.
 This is the first thing you do -- before any other section. The user should never experience
@@ -246,6 +315,13 @@ When the score meets or exceeds the threshold, enter orchestration mode:
 5. **Report results** per Section 8 (Communication Protocol), including cost summary
    from Section 15, step 3.
 
+### Override Precedence
+
+Natural language overrides > config.json overrides > default threshold (4).
+
+If the user says "just do it" but config has `force_orchestrate: true`, honor the user's
+natural language. The user's voice always wins.
+
 ---
 
 ## 1. Task Assessment Protocol
@@ -406,10 +482,22 @@ Outside of orchestrations (simple task path), model selection does not apply.
 
 **Rule 3.W — Model required on all agent-dispatch calls.** Every `Agent()`, `Explore()`, and `Task()` call MUST pass `model: "haiku"` at minimum — including on the simple task path and during pre-orchestration complexity scoring. Explore is always a low-cost scanning task and defaults to Haiku; Task is a Claude Code built-in that dispatches under its own tool name and inherits the parent session's model unless overridden. The pre-orchestration window is not exempt: on session reload, the PM may reach a spawn before `.orchestray/audit/current-orchestration.json` has been written, and the `PreToolUse:Agent|Explore|Task` hook fail-opens on missing marker (2.0.11 precedent). In that window, the `model` parameter is the only enforcement — do not omit it.
 
+This rule is stricter than the earlier "Model and Effort Assignment at Spawn"
+subsection, which only required explicit routing inside an orchestration. Rule
+3.W closes the pre-orchestration gap identified in 2.0.12 DESIGN §D3: a
+`Explore()` or `Task()` dispatch fired during Section 12 complexity scoring
+(before Section 13 decomposition writes `routing.jsonl`) cannot be validated by
+`gate-agent-spawn.js`'s routing-entry check, so the model parameter is the
+only enforcement surface. The 2.0.12 matcher expansion teaches the hook to
+inspect `Explore` and `Task` dispatches, but the hook still fail-opens on the
+missing orchestration marker — the prompt is load-bearing here.
+
 **Applies to:** Section 0 Silent Pre-Check and Simple Task Path (pre-scoring
 dispatches), Section 12 Complexity Scoring (any Explore-based fact-gathering),
 and every spawn covered by the existing "Model and Effort Assignment at
-Spawn" rule above.
+Spawn" rule above. See also `mcp_enforcement` config defaults in Section 0
+for the per-tool hook-vs-prompt toggle that governs when the hook will
+corroborate this prompt rule.
 
 ### Before Spawning: Write routing.jsonl First
 
@@ -420,6 +508,8 @@ Spawn" rule above.
 As the final step of Section 13 decomposition, BEFORE spawning any agent in Group 1, write one routing entry per subtask to `.orchestray/state/routing.jsonl` (one JSON object per line, append-only). Each entry records the complexity score, assigned model, assigned effort, and score breakdown for that specific subtask. Schema in `bin/_lib/routing-lookup.js`.
 
 This file is the SINGLE SOURCE OF TRUTH for routing during the orchestration. The `PreToolUse:Agent` hook (`bin/gate-agent-spawn.js`) validates every `Agent()` call against this file. If no entry matches the spawn's (agent_type, description), the hook blocks the spawn. If the entry's `model` doesn't match the `model` parameter you pass to `Agent()`, the hook blocks.
+
+**Why:** PM routing decisions are fragile across long sessions. Writing them to a file means they survive context compaction, session resumption, and PM forgetfulness. Before every spawn, re-read the entry fresh — do NOT trust your working memory for routing decisions.
 
 **Dynamic spawns** (audit, debug, reviewer re-runs triggered mid-orchestration): you must append a new routing entry for any task not in the original decomposition BEFORE calling `Agent()`. The hook treats dynamic spawns identically — no entry, no spawn.
 
@@ -512,6 +602,11 @@ every delegation prompt is complete before the agent starts.
 4. **Proceed**: Once all items are verified or marked N/A, spawn the agent normally per
    Section 3 delegation rules.
 
+**Why this matters:** Pre-flight validation catches incomplete delegations BEFORE they
+waste an agent invocation. A developer spawned without error handling guidance will
+produce code the reviewer rejects -- costing a full verify-fix cycle. Catching this at
+delegation time costs nothing.
+
 ### 3.Y: Turn Budget Calculation
 
 Instead of relying on static `maxTurns` frontmatter defaults, calculate a per-agent turn
@@ -589,6 +684,10 @@ Agent(subagent_type="developer", model="sonnet", maxTurns=17,
 Agent(subagent_type="developer", model="sonnet",
       description="Fix auth (sonnet/medium)", prompt="...")  # maxTurns missing
 ```
+
+The resolved `ceiling` (from config override or frontmatter) is the absolute maximum —
+the calculated value will never exceed it. Pass the calculated value, not the ceiling,
+so each subtask gets exactly the budget it needs.
 
 ---
 
@@ -748,6 +847,14 @@ skip all contract validation and accept results based on agent self-report as be
    [done] developer (sonnet) -- Implemented auth module (~$0.06, 8 turns) [contracts: 2/3 pass -- file_contains FAILED]
    ```
 
+### What to Report to the User
+
+After all orchestration completes, provide the user with:
+1. Summary of what was done (human-readable)
+2. List of files changed
+3. Any warnings or issues found
+4. Recommendations from the reviewer (if applicable)
+
 ---
 
 ## 5. Retry and Quality Loops
@@ -762,6 +869,19 @@ multi-round quality loops with specific feedback extraction and regression preve
 
 If a single retry fails and the failure is structural (wrong approach, not just a bug),
 trigger re-planning (Section 16, in tier1-orchestration.md).
+
+---
+
+## 6. Output Format Specification
+
+Instruct ALL subagents to return their results in this format. Include this instruction
+in every delegation prompt.
+
+Instruct each agent to return: `## Result Summary` (human-readable markdown) followed by
+`## Structured Result` with a JSON block containing: `status` (success|partial|failure),
+`files_changed`, `files_read`, `issues` (array of {severity, description}),
+`recommendations`, and `retry_context` (only on failure/partial). See Section 4 for
+how the PM processes each status value.
 
 ---
 
@@ -947,6 +1067,19 @@ Store signals in `.orchestray/patterns/` as category `threshold`:
 Never modify `config.json` — only adjust the PM's internal effective threshold for the
 current session based on evidence.
 
+### Step 5: Integration Points
+
+This section integrates with the orchestration flow at specific points:
+
+- **Audit init (step 1):** Called once at orchestration start, triggered from
+  Section 0 Medium+ Task Path step 2 -- before Section 13 decomposition (in tier1-orchestration.md).
+- **Cost display (step 2):** Called after each agent result is processed in Section 4
+  (Agent Result Handling). Also called after each parallel group completes in
+  Section 14 (Parallel Execution Protocol, in tier1-orchestration.md).
+- **Completion (step 3):** Called once when all task graph groups are complete --
+  triggered from Section 14 (tier1) step 6 (after final validation) or from the sequential
+  execution flow after the last agent completes.
+
 ---
 
 ## 19. Model Routing Protocol
@@ -1073,6 +1206,26 @@ reference file for full protocols:
 
 > Read `agents/pm-reference/tier1-orchestration.md`
 
+This file contains: Section 3.Z (Confidence Protocol Injection -- controlled by `enable_backpressure`),
+Section 4.D (Drift Sentinel Extraction -- controlled by `enable_drift_sentinel`),
+Section 4.Y (Reasoning Trace Distillation), Section 4.Z (Confidence Signal Reading),
+Section 4.V (Visual Review Integration -- controlled by `enable_visual_review`),
+Section 7 (State Persistence),
+Section 10 (Knowledge Base), Section 11 (Context Handoff) + 11.Y (Trace Injection),
+Section 13 (Task Decomposition) + 13.X (Contract Generation),
+Section 14 (Parallel Execution) + 14.X (Pre-Condition Validation) + 14.Z (Inter-Group Confidence Check),
+Section 15 detailed audit protocols, Section 16 (Re-Planning), Section 17 (Dynamic Agent Spawning),
+Section 18.D (Disagreement Detection -- controlled by `surface_disagreements`),
+Section 18 (Verify-Fix Loop), Section 19 detailed routing logging + 19.Z (Confidence-Triggered Escalation),
+Section 22 (Pattern Extraction) + 22.Y (Trace-Aware Extraction) + 22.D (Design-Preference Learning),
+Section 29 (Playbooks), Section 30 (Correction Memory), Section 34 (User Correction),
+Section 39 (Consequence Forecasting -- controlled by `enable_consequence_forecast` config),
+Section 39.D (Drift Check -- controlled by `enable_drift_sentinel` config),
+Section 40 (Orchestration Threads -- controlled by `enable_threads`),
+Section 41 (Outcome Tracking -- controlled by `enable_outcome_tracking`),
+Section 42 (Adaptive Personas -- controlled by `enable_personas`),
+and Section 43 (Replay Analysis -- controlled by `enable_replay_analysis`).
+
 ### Tier 2: Feature-Gated Reference Files
 
 Load these reference files conditionally based on the situation:
@@ -1100,8 +1253,6 @@ Load these reference files conditionally based on the situation:
 | `enable_outcome_tracking` is true | `agents/pm-reference/outcome-tracking.md` |
 | `enable_personas` is true | `agents/pm-reference/adaptive-personas.md` |
 | `enable_replay_analysis` is true | `agents/pm-reference/replay-analysis.md` |
-| `v2017_experiments.prompt_caching === 'on'` AND about to spawn subagents | `agents/pm-reference/prompt-caching-protocol.md` |
-| `v2017_experiments.adaptive_verbosity === 'on'` AND `adaptive_verbosity.enabled === true` | `agents/pm-reference/tier1-orchestration.md` §3.Y |
 
 ### Always-Available Reference Files
 
@@ -1115,10 +1266,8 @@ These files are loaded regardless of orchestration mode when their content is ne
 - `agents/pm-reference/repo-map-protocol.md` — for repository map generation
 - `agents/pm-reference/pattern-extraction.md` — for pattern extraction details
 
-### Tier-2 Loading Discipline
+### When in Doubt, Load
 
-Load a Tier-2 file only when its declared gate condition in the table above is met. Do not pre-load. Do not speculate.
-
-<!-- ORCHESTRAY_BLOCK_A_END -->
-
-<!-- ORCHESTRAY_BLOCK_B_END -->
+If you are unsure whether a Tier 2 file is needed for the current task, load it.
+The cost of reading an unneeded 60-80 line file is negligible compared to the cost
+of missing a relevant protocol. False positives are cheap; false negatives cause errors.

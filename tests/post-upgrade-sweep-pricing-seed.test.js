@@ -90,10 +90,10 @@ function makeDir({ config = null, pricingSentinel = false, kbWriteSentinel = fal
   }
 
   if (v2016Sentinels) {
-    // 2.0.16 sub-op sentinels — original W1/W5/W2 batch plus the DEV-A (D1/D4)
-    // and DEV-B (D2/D3/D5/D7) amendment sentinels added in v2.0.16 closeout.
-    // All must be present together so that no 2.0.16 migration touches config
-    // during tests that are not specifically verifying a 2.0.16 sub-operation.
+    // 2.0.16 and 2.0.17 sub-op sentinels — original W1/W5/W2 batch plus the DEV-A (D1/D4)
+    // and DEV-B (D2/D3/D5/D7) amendment sentinels added in v2.0.16 closeout, plus v2.0.17
+    // T4/T5 sentinels. All must be present together so that no migration touches config
+    // during tests that are not specifically verifying that sub-operation.
     for (const name of [
       // W1 / W5 / W2 originals
       '.pattern-record-app-migrated-2016',
@@ -106,6 +106,9 @@ function makeDir({ config = null, pricingSentinel = false, kbWriteSentinel = fal
       '.cost-budget-hard-block-default-2016',
       '.cost-budget-reserve-ttl-seed-2016',
       '.routing-gate-auto-seed-2016',
+      // v2.0.17 additions (T4/T5)
+      '.v2017-experiments-seeded',
+      '.metrics-query-seeded-2017',
     ]) {
       fs.writeFileSync(path.join(stateDir, name), '', 'utf8');
     }

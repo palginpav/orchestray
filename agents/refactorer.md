@@ -238,6 +238,8 @@ Always end your response with the structured result format.
 ```
 ```
 
+See `agents/pm-reference/agent-common-protocol.md` for standard field semantics.
+
 ---
 
 ## 7. Anti-Patterns

@@ -295,6 +295,8 @@ Structure your deliverable as follows:
 ```
 ```
 
+See `agents/pm-reference/agent-common-protocol.md` for standard field semantics.
+
 ---
 
 ## 5. Anti-Patterns

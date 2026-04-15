@@ -27,6 +27,37 @@ const FRESH_INSTALL_MCP_TOOLS_ENABLED = {
   // v2.0.16 new tools (W3/W4)
   routing_lookup: true,
   cost_budget_reserve: true,
+  // v2.0.17 T5: metrics_query telemetry tool
+  metrics_query: true,
+};
+
+// Default v2017_experiments block for fresh installs.
+// All flags default off; __schema_version: 1. Per v2017-design.md §4.1 T4.
+const FRESH_INSTALL_V2017_EXPERIMENTS = {
+  __schema_version: 1,
+  global_kill_switch: false,
+  prompt_caching: 'off',
+  pm_prose_strip: 'off',
+  adaptive_verbosity: 'off',
+};
+
+// Default cache_choreography block for fresh installs.
+// pre_commit_guard_enabled defaults off (opt-in only). Per T12.
+const FRESH_INSTALL_CACHE_CHOREOGRAPHY = {
+  pre_commit_guard_enabled: false,
+  drift_warn_threshold_hex_changes: 1,
+};
+
+// Default pm_prompt_variant for fresh installs. Per T19.
+// Runtime switch (Phase 5) not yet wired — stored for future use.
+const FRESH_INSTALL_PM_PROMPT_VARIANT = 'lean';
+
+// Default adaptive_verbosity block for fresh installs.
+// enabled defaults off (opt-in, also requires v2017_experiments.adaptive_verbosity='on'). Per T22.
+const FRESH_INSTALL_ADAPTIVE_VERBOSITY = {
+  enabled: false,
+  base_response_tokens: 2000,
+  reducer_on_late_phase: 0.4,
 };
 
 // Default cost_budget_check config block for fresh installs.
@@ -48,6 +79,7 @@ const flags = {
   local: args.includes('--local') || args.includes('-l'),
   uninstall: args.includes('--uninstall') || args.includes('-u'),
   help: args.includes('--help') || args.includes('-h'),
+  preCommitGuard: args.includes('--pre-commit-guard'),
 };
 
 if (flags.help) {
@@ -58,15 +90,18 @@ if (flags.help) {
   Usage: npx orchestray [options]
 
   Options:
-    -g, --global     Install globally (to ~/.claude/)
-    -l, --local      Install locally (to ./.claude/)
-    -u, --uninstall  Remove Orchestray files
-    -h, --help       Show this help
+    -g, --global          Install globally (to ~/.claude/)
+    -l, --local           Install locally (to ./.claude/)
+    -u, --uninstall       Remove Orchestray files
+    -h, --help            Show this help
+        --pre-commit-guard  Install the Block A pre-commit guard hook (opt-in;
+                            requires cache_choreography.pre_commit_guard_enabled=true)
 
   Examples:
-    npx orchestray --global     # Install for all projects
-    npx orchestray --local      # Install for current project only
-    npx orchestray --uninstall  # Remove Orchestray
+    npx orchestray --global               # Install for all projects
+    npx orchestray --local                # Install for current project only
+    npx orchestray --uninstall            # Remove Orchestray
+    npx orchestray --pre-commit-guard     # Install pre-commit guard (opt-in)
 `);
   process.exit(0);
 }
@@ -102,6 +137,21 @@ const pkgRoot = path.resolve(__dirname, '..');
 
 if (flags.uninstall) {
   uninstall(configDir);
+  process.exit(0);
+}
+
+// --pre-commit-guard: invoke bin/install-pre-commit-guard.sh.
+// This is handled after the normal install flag checks so that
+// --global/--local context is already resolved above.
+if (flags.preCommitGuard) {
+  const { execFileSync } = require('child_process');
+  const guardScript = path.join(__dirname, 'install-pre-commit-guard.sh');
+  try {
+    execFileSync('bash', [guardScript], { stdio: 'inherit' });
+  } catch (e) {
+    // execFileSync exits non-zero on failure; stderr is already printed.
+    process.exit(1);
+  }
   process.exit(0);
 }
 
@@ -320,6 +370,14 @@ function install(targetDir) {
       cost_budget_enforcement: { enabled: false, hard_block: true },
       // D7 (v2.0.16 amendment): routing_gate.auto_seed_on_miss (discoverable default)
       routing_gate: { auto_seed_on_miss: true },
+      // T4 (v2.0.17): v2017 experiment flags — all default off
+      v2017_experiments: FRESH_INSTALL_V2017_EXPERIMENTS,
+      // T12 (v2.0.17): cache_choreography — pre-commit guard opt-in + drift threshold
+      cache_choreography: FRESH_INSTALL_CACHE_CHOREOGRAPHY,
+      // T19 (v2.0.17): pm_prompt_variant — 'lean' | 'fat' rollback key (Phase 5 runtime switch not yet wired)
+      pm_prompt_variant: FRESH_INSTALL_PM_PROMPT_VARIANT,
+      // T22 (v2.0.17): adaptive_verbosity — response-length budget (opt-in; also requires experiment flag)
+      adaptive_verbosity: FRESH_INSTALL_ADAPTIVE_VERBOSITY,
     };
     try {
       fs.mkdirSync(orchStateDir, { recursive: true });
@@ -349,6 +407,61 @@ function install(targetDir) {
   );
 
   console.log(`  \x1b[32m✓\x1b[0m Wrote VERSION (${VERSION})`);
+
+  // 8b. T-S3 (v2.0.17-E): if pm_prompt_variant === 'fat', apply the fat variant
+  // now so agents/pm.md is in the correct state immediately after install.
+  // This reads the config we just wrote (or an existing one if the file was
+  // already present). Fails open — an error here does not abort the install.
+  {
+    let installVariant = 'lean';
+    try {
+      const cfgRaw = fs.readFileSync(freshConfigPath, 'utf8');
+      const cfgParsed = JSON.parse(cfgRaw);
+      if (cfgParsed && typeof cfgParsed === 'object' && !Array.isArray(cfgParsed)) {
+        const val = cfgParsed.pm_prompt_variant;
+        if (typeof val === 'string') installVariant = val;
+        else if (val && typeof val === 'object' && typeof val.variant === 'string') installVariant = val.variant;
+      }
+    } catch (_e) {
+      // Config unreadable — keep lean default.
+    }
+
+    if (installVariant === 'fat') {
+      const stateDir = path.join(orchStateDir, 'state');
+      const pmVariantMarkerPath = path.join(stateDir, '.pm-variant');
+      // Check if already fat (skip spawn if already applied).
+      let alreadyFat = false;
+      try {
+        if (fs.readFileSync(pmVariantMarkerPath, 'utf8').trim() === 'fat') {
+          alreadyFat = true;
+        }
+      } catch (_e) {}
+
+      if (!alreadyFat) {
+        try {
+          const { spawnSync } = require('child_process');
+          const applyScript = path.join(__dirname, 'apply-pm-variant.js');
+          const result = spawnSync(process.execPath, [applyScript], {
+            cwd: process.cwd(),
+            timeout: 10000,
+            encoding: 'utf8',
+            stdio: 'pipe',
+          });
+          if (result.status === 0) {
+            console.log(`  \x1b[32m✓\x1b[0m Applied pm_prompt_variant=fat (pm.md switched to fat variant)`);
+          } else {
+            console.log(`  \x1b[33m⚠\x1b[0m pm_prompt_variant=fat: could not apply automatically. Run: node bin/apply-pm-variant.js`);
+            if (result.stderr) {
+              process.stderr.write(result.stderr);
+            }
+          }
+        } catch (_e) {
+          console.log(`  \x1b[33m⚠\x1b[0m pm_prompt_variant=fat: could not apply automatically. Run: node bin/apply-pm-variant.js`);
+        }
+      }
+    }
+  }
+
   console.log('');
   console.log('  \x1b[32mDone!\x1b[0m Start Claude Code and Orchestray is ready.');
   console.log('');

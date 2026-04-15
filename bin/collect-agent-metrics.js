@@ -8,6 +8,7 @@ const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { loadCostBudgetCheckConfig } = require('./_lib/config-schema');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
+const { appendJsonlWithRotation } = require('./_lib/jsonl-rotate');
 
 // Module-level fallback pricing per 1M tokens (current Anthropic rates as of 2026).
 // Used ONLY when loadCostBudgetCheckConfig() fails (fail-open contract).
@@ -166,6 +167,39 @@ function resolveMaxEventBytes() {
 
   // Source 3: built-in default
   return MAX_EVENTS_BYTES_DEFAULT;
+}
+
+/**
+ * Check whether events.jsonl contains an orchestration_complete event for
+ * `orchestrationId`. Uses a cheap substring pre-filter before JSON parsing,
+ * mirroring the routing_outcome scan pattern above.
+ *
+ * Returns false on any read error (fail-open).
+ *
+ * @param {string} eventsPath
+ * @param {string} orchestrationId
+ * @returns {boolean}
+ */
+function _hasOrchestrationComplete(eventsPath, orchestrationId) {
+  try {
+    if (!fs.existsSync(eventsPath)) return false;
+    const stat = fs.statSync(eventsPath);
+    // Cap at 50 MB to avoid blocking the hook budget on huge audit files.
+    if (stat.size > 50 * 1024 * 1024) return false;
+    const content = fs.readFileSync(eventsPath, 'utf8');
+    for (const line of content.split('\n')) {
+      if (!line || !line.includes('"orchestration_complete"')) continue;
+      try {
+        const ev = JSON.parse(line);
+        if (ev.type === 'orchestration_complete' && ev.orchestration_id === orchestrationId) {
+          return true;
+        }
+      } catch (_e) {}
+    }
+    return false;
+  } catch (_e) {
+    return false;
+  }
 }
 
 let input = '';
@@ -469,6 +503,58 @@ process.stdin.on('end', () => {
 
     // Append to events.jsonl
     atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), auditEvent);
+
+    // Emit per-spawn row to agent_metrics.jsonl (§4.2 S5 measurement surface).
+    // Fail-open: any error here must never block the agent stop.
+    if (process.env.ORCHESTRAY_METRICS_DISABLED !== '1') {
+      try {
+        const metricsDir  = path.join(cwd, '.orchestray', 'metrics');
+        fs.mkdirSync(metricsDir, { recursive: true });
+        const metricsPath = path.join(metricsDir, 'agent_metrics.jsonl');
+
+        const metricsRow = {
+          row_type:           'agent_spawn',
+          schema_version:     1,
+          timestamp:          auditEvent.timestamp,
+          orchestration_id:   orchestrationId,
+          agent_type:         agentType,
+          agent_id:           auditEvent.agent_id,
+          session_id:         auditEvent.session_id,
+          model_used:         resolvedModel,
+          turns_used:         turnsUsed,
+          usage: {
+            input_tokens:                   totalUsage.input_tokens,
+            output_tokens:                  totalUsage.output_tokens,
+            cache_read_input_tokens:        totalUsage.cache_read_input_tokens,
+            cache_creation_input_tokens:    totalUsage.cache_creation_input_tokens,
+          },
+          usage_source:       usageSource,
+          cost_confidence:    costConfidence,
+          estimated_cost_usd: estimatedCostUsd,
+        };
+        if (modelResolutionNote) metricsRow.model_resolution_note = modelResolutionNote;
+
+        appendJsonlWithRotation(metricsPath, metricsRow);
+      } catch (_metricsErr) {
+        // Fail-open: metrics write must never block agent stop
+      }
+
+      // Detect orchestration_complete in the just-written events.jsonl and
+      // trigger a rollup if this event closes the orchestration.
+      try {
+        const eventsPath = path.join(auditDir, 'events.jsonl');
+        // Quick substring pre-check to avoid a full parse on every agent stop.
+        if (auditEvent.type === 'orchestration_complete' ||
+            // Also check the newly written events for an orchestration_complete
+            // that may have been emitted by the PM before this hook fired.
+            _hasOrchestrationComplete(eventsPath, orchestrationId)) {
+          const { emitRollup } = require('./emit-orchestration-rollup');
+          emitRollup(cwd, orchestrationId);
+        }
+      } catch (_rollupErr) {
+        // Fail-open: rollup trigger must never block agent stop
+      }
+    }
   } catch (_e) {
     // Never block agent stop due to audit failure
   }

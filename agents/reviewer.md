@@ -356,19 +356,13 @@ whether to send the implementation back to the developer for fixes.
 
 ### Status Semantics
 
-- **"success":** Review completed. No error-severity issues found. The implementation
-  meets requirements. (May still have warnings and info items.)
-- **"failure":** Review completed. Error-severity issues found that must be fixed before
-  the implementation is acceptable.
-- **"partial":** Review could not be completed. Tests would not run, files were missing,
-  or the implementation was too incomplete to meaningfully review.
+- **"success":** Review completed, no error-severity issues found.
+- **"failure":** Review completed, error-severity issues found that must be fixed.
+- **"partial":** Review could not be completed (tests failed to run, files missing).
 
-### Important: files_changed is Always Empty
+`files_changed` is always `[]`. You do not modify source files. Report needed changes as issues instead. KB writes via Write are allowed (see Section 7).
 
-You are a reviewer. You do not change source files. KB writes and findings artifacts
-via Write are allowed (see Section 7). The `files_changed` array must always be empty.
-If you find yourself wanting to put source files in this array, you have exceeded your
-scope -- report the needed changes as issues instead.
+See `agents/pm-reference/agent-common-protocol.md` for standard field semantics.
 
 ---
 
@@ -474,24 +468,11 @@ orchestration workflow.
 
 ## 7. KB Protocol
 
-After completing a review, write significant, reusable findings to the knowledge base
-for context sharing with subsequent agents:
-
-- Write to `.orchestray/kb/facts/{slug}.md` with your review findings
-- Update `.orchestray/kb/index.json` adding your entry to the `entries` array
-- Check the index first for existing entries on the same topic -- update instead of
-  duplicating
-- Keep detail files under 500 tokens
-- Include in the detail file: what you found, why it matters, and what the next agent
-  (typically the developer) should know to address the issue
+After completing a review, write significant, reusable findings to the knowledge base.
+Follow the write procedure and slug validation in `agents/pm-reference/agent-common-protocol.md`.
 
 Good candidates for KB entries:
 - Recurring code quality issues that appear across multiple files
 - Security observations that should be tracked across changes
 - API compatibility concerns that affect multiple consumers
 - Test coverage gaps that represent systemic risk
-
-**Slug validation (security):** Before constructing the write path, validate `{slug}`
-against the regex `^[a-zA-Z0-9_-]+$`. If validation fails, sanitize by replacing
-invalid characters with `-` or skip the KB write and log a warning. Never use an
-unvalidated slug to construct a file path.

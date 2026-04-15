@@ -31,7 +31,15 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
-const { DEFAULT_MCP_ENFORCEMENT, DEFAULT_COST_BUDGET_CHECK, DEFAULT_COST_BUDGET_ENFORCEMENT } = require('./_lib/config-schema');
+const {
+  DEFAULT_MCP_ENFORCEMENT,
+  DEFAULT_COST_BUDGET_CHECK,
+  DEFAULT_COST_BUDGET_ENFORCEMENT,
+  DEFAULT_V2017_EXPERIMENTS,
+  DEFAULT_CACHE_CHOREOGRAPHY,
+  DEFAULT_PM_PROMPT_VARIANT,
+  DEFAULT_ADAPTIVE_VERBOSITY,
+} = require('./_lib/config-schema');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1281,6 +1289,503 @@ function runD7RoutingGateAutoSeedSeed(cwd, stateDir, sentinelPath) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// T4 (2017): v2017_experiments block seed
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run the T4 v2017_experiments seed.
+ *
+ * If the `v2017_experiments` top-level block is absent, adds it with all keys
+ * defaulted to their off state. If the block is present, fills in any missing
+ * keys (additive-only — existing operator values are preserved).
+ *
+ * Idempotent sentinel: .orchestray/state/.v2017-experiments-seeded
+ * Mirrors the pattern used by W3, W5, W6, D5, D7, and other config migrations.
+ *
+ * @param {string} cwd          - Project root (absolute)
+ * @param {string} stateDir     - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to sentinel file
+ */
+function runT4V2017ExperimentsSeed(cwd, stateDir, sentinelPath) {
+  // T4-v2017-experiments-seed
+  if (existsSilent(sentinelPath)) return;
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_e) {
+    // Config missing — fresh install will get the block via install.js; touch sentinel.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    // Malformed JSON — leave file untouched; fail-open.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  const existing = parsed.v2017_experiments;
+  const defaults = DEFAULT_V2017_EXPERIMENTS;
+
+  if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+    // Block present — fill in only missing keys (additive-only; preserve operator values).
+    const missingKeys = Object.keys(defaults).filter(k => !(k in existing));
+    if (missingKeys.length === 0) {
+      // All schema keys present — no-op.
+      touchSilent(sentinelPath, stateDir);
+      return;
+    }
+    for (const k of missingKeys) {
+      existing[k] = defaults[k];
+    }
+  } else {
+    // Block absent entirely — add the full default block.
+    parsed.v2017_experiments = Object.assign({}, defaults);
+  }
+
+  // Atomic rename-dance write
+  const tmpPath = configPath + '.t4-2017-experiments-tmp';
+  try {
+    const out = JSON.stringify(parsed, null, 2) + '\n';
+    fs.writeFileSync(tmpPath, out, 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (_e) {
+    // Write/rename failed — clean up temp file if it exists; fail-open.
+    try { fs.unlinkSync(tmpPath); } catch (_e2) {}
+    return;
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// T5 helper: backfill metrics_query tool enable + enforcement keys (2017-T5-metrics-query-seed)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Seed `mcp_server.tools.metrics_query = true` and
+ * `mcp_enforcement.metrics_query = 'allow'` on existing installs that predate v2.0.17.
+ * Fresh installs get both values via install.js and DEFAULT_MCP_ENFORCEMENT.
+ *
+ * Idempotent sentinel: .orchestray/state/.metrics-query-seeded-2017
+ *
+ * @param {string} cwd          - Project root (absolute)
+ * @param {string} stateDir     - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to sentinel file
+ */
+function runT5MetricsQuerySeed(cwd, stateDir, sentinelPath) {
+  // T5-metrics-query-seed
+  if (existsSilent(sentinelPath)) return;
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_e) {
+    // Config missing — fresh install will get these via install.js; touch sentinel.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let changed = false;
+
+  // 1. Backfill mcp_enforcement.metrics_query = 'allow'
+  const defaults = getDefaultMcpEnforcement();
+  if (!parsed.mcp_enforcement || typeof parsed.mcp_enforcement !== 'object' || Array.isArray(parsed.mcp_enforcement)) {
+    parsed.mcp_enforcement = defaults;
+    changed = true;
+  } else if (!('metrics_query' in parsed.mcp_enforcement)) {
+    parsed.mcp_enforcement.metrics_query = defaults.metrics_query;
+    changed = true;
+  }
+
+  // 2. Backfill mcp_server.tools.metrics_query = true
+  if (!parsed.mcp_server || typeof parsed.mcp_server !== 'object' || Array.isArray(parsed.mcp_server)) {
+    parsed.mcp_server = {};
+  }
+  if (!parsed.mcp_server.tools || typeof parsed.mcp_server.tools !== 'object' || Array.isArray(parsed.mcp_server.tools)) {
+    parsed.mcp_server.tools = {};
+  }
+  if (!('metrics_query' in parsed.mcp_server.tools)) {
+    parsed.mcp_server.tools.metrics_query = true;
+    changed = true;
+  }
+
+  if (!changed) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Atomic rename-dance write
+  const tmpPath = configPath + '.t5-2017-metrics-query-tmp';
+  try {
+    const out = JSON.stringify(parsed, null, 2) + '\n';
+    fs.writeFileSync(tmpPath, out, 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (_e) {
+    try { fs.unlinkSync(tmpPath); } catch (_e2) {}
+    return;
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// T12 (2017): cache_choreography config block seed
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run the T12 cache_choreography seed.
+ *
+ * If the `cache_choreography` top-level block is absent, adds it with all keys
+ * at their safe defaults (pre_commit_guard_enabled: false — opt-in only).
+ * If the block is present, preserves it entirely (operator intent).
+ *
+ * Idempotent sentinel: .orchestray/state/.cache-choreography-seeded-2017
+ * Mirrors the pattern used by runT4V2017ExperimentsSeed.
+ *
+ * @param {string} cwd          - Project root (absolute)
+ * @param {string} stateDir     - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to sentinel file
+ */
+function runT12CacheChoreographySeed(cwd, stateDir, sentinelPath) {
+  // T12-cache-choreography-seed-2017
+  if (existsSilent(sentinelPath)) return;
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_e) {
+    // Config missing — fresh install will get the block via install.js; touch sentinel.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    // Malformed JSON — leave file untouched; fail-open.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // If block already present, preserve user's values — no-op.
+  if (
+    parsed.cache_choreography &&
+    typeof parsed.cache_choreography === 'object' &&
+    !Array.isArray(parsed.cache_choreography)
+  ) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Block absent — seed with canonical defaults.
+  parsed.cache_choreography = Object.assign({}, DEFAULT_CACHE_CHOREOGRAPHY);
+
+  const tmpPath = configPath + '.t12-2017-cache-choreography-tmp';
+  try {
+    const out = JSON.stringify(parsed, null, 2) + '\n';
+    fs.writeFileSync(tmpPath, out, 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (_e) {
+    try { fs.unlinkSync(tmpPath); } catch (_e2) {}
+    return;
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// T19 (2017): pm_prompt_variant config key seed
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run the T19 pm_prompt_variant seed.
+ *
+ * If the `pm_prompt_variant` key is absent, seeds it with 'lean' (the default).
+ * If it is already set (any value, including 'fat'), preserves it — operator intent.
+ *
+ * NOTE: the runtime switch that reads this key is Phase 5 territory. For now,
+ * this seed only makes the key discoverable to operators who want rollback access.
+ *
+ * Idempotent sentinel: .orchestray/state/.pm-prompt-variant-seeded-2017
+ *
+ * @param {string} cwd          - Project root (absolute)
+ * @param {string} stateDir     - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to sentinel file
+ */
+function runT19PmPromptVariantSeed(cwd, stateDir, sentinelPath) {
+  // T19-pm-prompt-variant-seed-2017
+  if (existsSilent(sentinelPath)) return;
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Key already present (any value) — preserve operator setting.
+  if ('pm_prompt_variant' in parsed) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Key absent — seed with default ('lean').
+  parsed.pm_prompt_variant = DEFAULT_PM_PROMPT_VARIANT.variant;
+
+  const tmpPath = configPath + '.t19-2017-pm-prompt-variant-tmp';
+  try {
+    const out = JSON.stringify(parsed, null, 2) + '\n';
+    fs.writeFileSync(tmpPath, out, 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (_e) {
+    try { fs.unlinkSync(tmpPath); } catch (_e2) {}
+    return;
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// T-S3 (2017): pm_prompt_variant runtime apply
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run the T-S3 pm_prompt_variant apply step.
+ *
+ * If pm_prompt_variant === 'fat' in config AND the .pm-variant marker does NOT
+ * already say 'fat', invoke bin/apply-pm-variant.js to switch pm.md over to the
+ * fat (pre-strip) variant.
+ *
+ * Fails open on every error — never blocks the user prompt.
+ *
+ * Idempotent sentinel: .orchestray/state/.pm-variant-applied-2017
+ *
+ * Note: the sentinel is set once and never reset — it only prevents the spawn
+ * overhead on sessions where the variant is already correct. apply-pm-variant.js
+ * itself is idempotent (it checks .pm-variant before writing anything).
+ *
+ * @param {string} cwd      - Project root (absolute)
+ * @param {string} stateDir - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to sentinel file
+ */
+function runTS3PmVariantApply(cwd, stateDir, sentinelPath) {
+  // T-S3-pm-variant-apply-2017
+  if (existsSilent(sentinelPath)) return;
+
+  // Read pm_prompt_variant from config.
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let variant = 'lean'; // default
+  try {
+    const raw = fs.readFileSync(configPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const val = parsed.pm_prompt_variant;
+      if (typeof val === 'string') {
+        variant = val;
+      } else if (val && typeof val === 'object' && typeof val.variant === 'string') {
+        variant = val.variant;
+      }
+    }
+  } catch (_e) {
+    // Config unreadable — assume lean (fail-open); touch sentinel so we don't retry.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Only act when fat is requested.
+  if (variant !== 'fat') {
+    // Seed the lean-hash reference so apply-pm-variant.js has a baseline.
+    // We do this by invoking apply-pm-variant.js with the lean path (no-op on content).
+    // On lean this just ensures the .pm-lean-hash is seeded; it exits 0 without writes.
+    try {
+      const { spawnSync } = require('child_process');
+      const applyScript = path.join(__dirname, 'apply-pm-variant.js');
+      if (existsSilent(applyScript)) {
+        spawnSync(process.execPath, [applyScript], {
+          cwd,
+          timeout: 10000,
+          stdio: 'ignore',
+        });
+      }
+    } catch (_e) {
+      // Spawn failure is non-fatal.
+    }
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Check the .pm-variant marker — if already 'fat', no-op.
+  const pmVariantMarkerPath = path.join(stateDir, '.pm-variant');
+  try {
+    const markerContent = fs.readFileSync(pmVariantMarkerPath, 'utf8').trim();
+    if (markerContent === 'fat') {
+      // Already applied; touch sentinel so we skip the spawn next session.
+      touchSilent(sentinelPath, stateDir);
+      return;
+    }
+  } catch (_e) {
+    // Marker absent — proceed to apply.
+  }
+
+  // Invoke apply-pm-variant.js. Fail-open: log + continue if it fails.
+  try {
+    const { spawnSync } = require('child_process');
+    const applyScript = path.join(__dirname, 'apply-pm-variant.js');
+    if (!existsSilent(applyScript)) {
+      // Script not present (shouldn't happen post-install) — skip.
+      touchSilent(sentinelPath, stateDir);
+      return;
+    }
+    const result = spawnSync(process.execPath, [applyScript], {
+      cwd,
+      timeout: 10000,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+    if (result.status !== 0) {
+      try {
+        process.stderr.write(
+          '[orchestray] T-S3 pm-variant apply failed (non-zero exit). ' +
+          'Run `node bin/apply-pm-variant.js` manually for details.\n'
+        );
+        if (result.stderr) {
+          process.stderr.write(result.stderr);
+        }
+      } catch (_e2) {}
+      // Do NOT touch sentinel — allow retry next session.
+      return;
+    }
+  } catch (_e) {
+    // Spawn threw — fail-open, do not touch sentinel.
+    return;
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// T22 (2017): adaptive_verbosity config block seed
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run the T22 adaptive_verbosity seed.
+ *
+ * If the `adaptive_verbosity` top-level block is absent, adds it with all keys
+ * at their safe defaults (enabled: false — opt-in only).
+ * If the block is present, preserves it entirely (operator intent).
+ *
+ * Idempotent sentinel: .orchestray/state/.adaptive-verbosity-seeded-2017
+ * Mirrors the pattern used by runW5CostBudgetEnforcementSeed.
+ *
+ * @param {string} cwd          - Project root (absolute)
+ * @param {string} stateDir     - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to sentinel file
+ */
+function runT22AdaptiveVerbositySeed(cwd, stateDir, sentinelPath) {
+  // T22-adaptive-verbosity-seed-2017
+  if (existsSilent(sentinelPath)) return;
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // If block already present, preserve user's values — no-op.
+  if (
+    parsed.adaptive_verbosity &&
+    typeof parsed.adaptive_verbosity === 'object' &&
+    !Array.isArray(parsed.adaptive_verbosity)
+  ) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Block absent — seed with canonical defaults.
+  parsed.adaptive_verbosity = Object.assign({}, DEFAULT_ADAPTIVE_VERBOSITY);
+
+  const tmpPath = configPath + '.t22-2017-adaptive-verbosity-tmp';
+  try {
+    const out = JSON.stringify(parsed, null, 2) + '\n';
+    fs.writeFileSync(tmpPath, out, 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (_e) {
+    try { fs.unlinkSync(tmpPath); } catch (_e2) {}
+    return;
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Shared utilities
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -1371,6 +1876,18 @@ function main() {
       const routingGateAutoSeedSentinel = path.join(stateDir, '.routing-gate-auto-seed-2016');
       // D1/D4 (v2.0.16 amendment): pattern_deprecate seed + reservation GC.
       const patternDeprecateSeedSentinel = path.join(stateDir, '.pattern-deprecate-seeded-2016');
+      // T4 (v2.0.17): v2017_experiments block seed.
+      const v2017ExperimentsSentinel = path.join(stateDir, '.v2017-experiments-seeded');
+      // T5 (v2.0.17): metrics_query tool enable + enforcement seed.
+      const metricsQuerySeedSentinel = path.join(stateDir, '.metrics-query-seeded-2017');
+      // T12 (v2.0.17): cache_choreography config block seed.
+      const cacheChoreographySeedSentinel = path.join(stateDir, '.cache-choreography-seeded-2017');
+      // T19 (v2.0.17): pm_prompt_variant config key seed.
+      const pmPromptVariantSeedSentinel = path.join(stateDir, '.pm-prompt-variant-seeded-2017');
+      // T22 (v2.0.17): adaptive_verbosity config block seed.
+      const adaptiveVerbositySeedSentinel = path.join(stateDir, '.adaptive-verbosity-seeded-2017');
+      // T-S3 (v2.0.17): pm_prompt_variant runtime apply.
+      const pmVariantAppliedSentinel = path.join(stateDir, '.pm-variant-applied-2017');
 
       // ── W8: config migration ────────────────────────────────────────────────
       try {
@@ -1486,6 +2003,61 @@ function main() {
       // No sentinel needed — the session lock prevents repeat execution.
       try {
         runD4ReservationGcSweep(cwd);
+      } catch (_e) {
+        // Fail-open.
+      }
+
+      // ── T4 (2017): v2017_experiments block seed ────────────────────────────
+      // Adds v2017_experiments with all flags defaulted off on existing installs
+      // that predate v2.0.17. Fresh installs get the block via install.js.
+      try {
+        runT4V2017ExperimentsSeed(cwd, stateDir, v2017ExperimentsSentinel);
+      } catch (_e) {
+        // Fail-open.
+      }
+
+      // ── T5 (2017): metrics_query tool enable + enforcement seed ────────────
+      // Backfills mcp_server.tools.metrics_query and mcp_enforcement.metrics_query
+      // on existing installs. Fresh installs get both via install.js defaults.
+      try {
+        runT5MetricsQuerySeed(cwd, stateDir, metricsQuerySeedSentinel);
+      } catch (_e) {
+        // Fail-open.
+      }
+
+      // ── T12 (2017): cache_choreography config block seed ──────────────────
+      // Seeds cache_choreography: { pre_commit_guard_enabled: false, ... } on
+      // existing installs that lack the block. Fresh installs get it via install.js.
+      try {
+        runT12CacheChoreographySeed(cwd, stateDir, cacheChoreographySeedSentinel);
+      } catch (_e) {
+        // Fail-open.
+      }
+
+      // ── T19 (2017): pm_prompt_variant config key seed ─────────────────────
+      // Seeds pm_prompt_variant: 'lean' on existing installs that lack the key.
+      // Fresh installs get it via install.js. Runtime switch is Phase 5.
+      try {
+        runT19PmPromptVariantSeed(cwd, stateDir, pmPromptVariantSeedSentinel);
+      } catch (_e) {
+        // Fail-open.
+      }
+
+      // ── T22 (2017): adaptive_verbosity config block seed ──────────────────
+      // Seeds adaptive_verbosity: { enabled: false, ... } on existing installs
+      // that lack the block. Fresh installs get it via install.js.
+      try {
+        runT22AdaptiveVerbositySeed(cwd, stateDir, adaptiveVerbositySeedSentinel);
+      } catch (_e) {
+        // Fail-open.
+      }
+
+      // ── T-S3 (2017): pm_prompt_variant runtime apply ──────────────────────
+      // If pm_prompt_variant === 'fat' and .pm-variant marker is not 'fat',
+      // invokes apply-pm-variant.js to switch pm.md to the fat variant.
+      // Fail-open: apply errors are logged to stderr but do not block the prompt.
+      try {
+        runTS3PmVariantApply(cwd, stateDir, pmVariantAppliedSentinel);
       } catch (_e) {
         // Fail-open.
       }

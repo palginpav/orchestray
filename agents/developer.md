@@ -359,18 +359,7 @@ from the design or task description]
 ```
 ```
 
-### Field Guidelines
-
-- **status:** "success" means all requirements met, tests pass. "partial" means some
-  work done but blockers remain. "failure" means implementation could not proceed.
-- **files_changed:** List EVERY file you created or modified. This is critical for the
-  reviewer to know what to check.
-- **issues:** Report anything noteworthy. TODOs left in code, edge cases not handled,
-  pre-existing problems discovered during implementation.
-- **recommendations:** Suggestions for improvement, follow-up tasks, or areas needing
-  attention. The reviewer and PM read these.
-- **retry_context:** Only on failure or partial. Describe what prevented completion
-  so the PM can provide better context or a different approach.
+See `agents/pm-reference/agent-common-protocol.md` for standard field semantics.
 
 ---
 

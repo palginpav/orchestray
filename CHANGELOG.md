@@ -3,6 +3,174 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.17] - 2026-04-15
+
+### Theme: "Measurement foundation + honest hygiene"
+
+2.0.16 closed the MCP surface and activated enforcement gates; 2.0.17 ships the
+context-saving instrumentation, trims the PM token surface, and stages three
+opt-in experiments.
+
+Four shipped items:
+
+- **Phase 1 — Measurement harness.** PM-turn usage is now captured alongside
+  subagent metrics. `/orchestray:analytics` gains Cache Performance, Cost Delta,
+  and Active Experiments sections. Previously, PM-turn token counts were invisible;
+  they are now recorded in `agent_metrics.jsonl` and surfaced per-orchestration.
+- **Phase 2 — Cache-choreography hygiene.** `agents/pm.md` reorganised into
+  Block A (immutable prefix) / breakpoint sentinel / Block B (semi-stable) /
+  Block C (tail). Ships as drift-prevention discipline: the measured subagent
+  cache-hit ratio over 74 pre-2.0.17 orchestrations was already **0.94** — near
+  ceiling — so this is hygiene, not a cost lever.
+- **Phase 3 — PM prose strip (~12% lines).** WASTE-tier prose removed from
+  `agents/pm.md` (1273 → 1124 lines; inline config JSON, duplicated warnings,
+  navigation breadcrumbs). Zero behavioral regressions. Originally targeted 20%;
+  the additional PARTIAL pedagogical cuts were held back for safety.
+- **Phase 4 — Adaptive verbosity.** Per-agent response-length budgets injected
+  into delegation templates. Reviewer floor at 600 tokens; final verify-fix
+  reviewer exempt. Prompt-only, no runtime code, default OFF.
+
+Context saving instrumentation shipped. PM cache-hit ratio is now observable but not gated.
+
+### Added
+
+- **PM-turn capture (`bin/capture-pm-turn.js`).** A `Stop`-hook that reads the
+  session transcript's last assistant `usage` block and appends a `pm_turn` row
+  to `agent_metrics.jsonl`. PM-turn token counts were previously invisible; this
+  is the first release where they are recorded. Fail-open; suppressed via
+  `ORCHESTRAY_METRICS_DISABLED=1`.
+- **`/orchestray:analytics` v2 — three new sections.** Cache Performance (subagent
+  and PM cache-hit sparklines), Cost Delta vs frozen v2.0.16 baseline (raw means +
+  p50), and Active Experiments. The analytics command now shows whether any
+  `v2017_experiments` flags are live and what their current state is.
+- **`bin/emit-orchestration-rollup.js` and `bin/_lib/analytics.js`.** Per-orchestration
+  rollup computed once on `orchestration_complete`; raw means + p50 stored in
+  `orchestration_rollup.jsonl`. Used by the analytics command to generate cost-delta
+  and cache-trend views without re-scanning the full event log.
+- **`bin/_lib/jsonl-rotate.js`.** Generic JSONL rotation helper shared by the new
+  metrics pipeline. Rotates at 50 MB; old files land in
+  `.orchestray/metrics/archive/`.
+- **`v2017_experiments` config block** with three opt-in flags:
+  `prompt_caching`, `pm_prose_strip`, `adaptive_verbosity`. Each defaults `"off"`.
+  `pm_prose_strip` is 3-state (`"off" | "shadow" | "on"`); the other two are
+  2-state. A shared `global_kill_switch` disables all three with one config edit
+  and no session restart.
+- **`bin/cache-prefix-lock.js` UserPromptSubmit hook.** Validates that
+  `agents/pm.md` Block A is bitwise-stable within a session. On mismatch, emits
+  a `prefix_drift` audit event and exits without injecting `additionalContext`
+  (fail-open; no hook-side text injection on either path). Enabled when
+  `v2017_experiments.prompt_caching` is `"on"`.
+- **Opt-in pre-commit guard** (`bin/install-pre-commit-guard.sh`). Rejects commits
+  that change pm.md Block A (everything before `<!-- ORCHESTRAY_BLOCK_A_END -->`)
+  without a `BLOCK-A: approved` line in the commit message. Never overwrites an
+  existing user-managed pre-commit hook. To install: (1) set
+  `cache_choreography.pre_commit_guard_enabled: true` in `.orchestray/config.json`;
+  (2) run `npx orchestray --pre-commit-guard`.
+- **`bin/replay-last-n.sh`** — routing-replay harness for Phase 2 cache-choreography
+  regression detection (10 tests in `tests/replay-last-n.test.js`).
+- **`bin/apply-pm-variant.js`** — runtime switcher for `pm_prompt_variant`. On `fat`,
+  copies `agents/pm.old.md` over `agents/pm.md` with a SHA-256 manual-edit guard,
+  `--force` override, and `pm.md.bak` safety backup. Invoked by `install.js` at
+  install time and by `post-upgrade-sweep.js` on subsequent sessions via an
+  idempotency sentinel (`.pm-variant-applied-2017`).
+- **`agents/pm-reference/prompt-caching-protocol.md`** — new Tier-2 file.
+  Documents the Block A/B/C caching discipline, the append-only rule for mid-release
+  edits, and the pre-commit guard opt-in.
+- **`agents/pm.old.md`** — committed verbatim copy of the pre-strip PM prompt.
+  Used by `pm_prompt_variant: "fat"` as a rollback target that works for
+  plugin-installed users (no git history required). Deleted in v2.0.18 after GA.
+- **`pm_prompt_variant` config key** (`"fat" | "lean"`, default `"lean"`). Set
+  `"fat"` to load `agents/pm.old.md` instead of the stripped `agents/pm.md`
+  without a session restart.
+- **`agents/pm-reference/agent-common-protocol.md`** — new shared Tier-2 file
+  that consolidates boilerplate repeated across nine non-PM agent bodies. Loaded
+  by all nine agents; reduces per-body duplication by ~400 tokens each.
+- **Adaptive response-length budgets** in delegation templates. The PM injects a
+  `response_budget` line into each agent delegation that scales output to the
+  remaining cost margin. Reviewer minimum floor: 600 tokens (prevents quality-signal
+  truncation). Final verify-fix reviewer is exempt from budget reduction. Controlled
+  by `v2017_experiments.adaptive_verbosity` (default `"off"`).
+
+### Changed
+
+- **`agents/pm.md`: 1273 → 1124 lines (~12% reduction).** WASTE-tier prose removed:
+  inline config-defaults JSON (old lines 46–101), duplicated "CRITICAL" warnings
+  collapsed, pedagogical anti-pattern prose trimmed, navigation breadcrumbs removed.
+  No imperative rule, judgment-call passage, or section anchor was touched. The
+  pre-strip prompt is preserved as `agents/pm.old.md`.
+- **`agents/pm.md` restructured into Block A / B / C layout.** Stable sections
+  (0–11) form Block A; the `<!-- ORCHESTRAY_BLOCK_A_END -->` sentinel separates
+  them from the semi-stable Block B. Cache-coherent layout; no protocol removed.
+- **Section Loading Protocol flipped from advisory to strict.** "When in Doubt,
+  Load" replaced by "load only on declared gate" (Tier-2 Loading Discipline). This
+  is the folded S2′ benefit delivered as a one-line prompt change; the planned
+  `tier2://` MCP resource layer is deferred to v2.0.18.
+- **Nine non-PM agent bodies deduped** via `agents/pm-reference/agent-common-protocol.md`.
+  Shared boilerplate extracted from: architect, developer, reviewer, debugger,
+  tester, refactorer, documenter, inventor, security-engineer. Net aggregate
+  reduction: −92 lines across the nine files.
+- **`bin/collect-agent-metrics.js` extended** to emit `agent_spawn` rows to
+  `agent_metrics.jsonl` and to detect the `orchestration_complete` sentinel for
+  triggering rollup. MCP tool count: 12 → 13 (`metrics_query` added).
+
+### Experiments (all default `"off"`, opt-in)
+
+- **`v2017_experiments.prompt_caching`** — enables `bin/cache-prefix-lock.js`
+  drift detection on every `UserPromptSubmit`. Monitors Block A stability; never
+  modifies context.
+- **`v2017_experiments.pm_prose_strip`** — toggles between stripped `agents/pm.md`
+  (`"on"`) and the committed rollback target `agents/pm.old.md` (`"fat"` variant).
+  The `"shadow"` state generates the lean prompt and logs the diff without serving it.
+- **`v2017_experiments.adaptive_verbosity`** — injects per-agent response-length
+  budgets into delegation templates. No effect when `"off"`.
+
+### Fixed
+
+- **`isExperimentActive` JSDoc corrected.** The function signature accepts the root
+  config object, not the `v2017_experiments` sub-block. JSDoc previously described
+  the wrong call convention; callers passing the root config were already correct.
+- **Reviewer-budget floor (≥ 600 tokens) prevents quality-signal truncation.** When
+  adaptive verbosity is active, reviewers were at risk of hitting a budget so low
+  their output would be meaningless. The floor ensures minimum viable reviewer output
+  regardless of cost margin.
+
+### Known gaps / deferred to 2.0.18
+
+- **Measured cost delta.** Instrumentation ships in this release; a post-deployment
+  window will produce the numbers (mean first-turn PM input tokens, median orch
+  cost delta, subagent cache-hit floor) in a future release.
+- **`CLAUDE.md` operational split.** `CLAUDE.md` is gitignored; the split cannot
+  ship in a `release:` commit. Deferred pending user decision on
+  template-materialisation approach.
+- **JIT Tier-2 `orchestray:tier2://` MCP resource.** S2 proper is deferred;
+  S2′ strict-dispatch flip ships in this release (see Changed above).
+
+### Migration
+
+Fully backwards-compatible. All new flags default `"off"`.
+
+`post-upgrade-sweep.js` seeds the `v2017_experiments` block and the
+`adaptive_verbosity` config block on first 2.0.17 run. On 2.0.16+, the sweep
+also seeds `cache_choreography` and any missing `pm_prompt_variant` key.
+Existing `.orchestray/config.json` files are extended, not rewritten.
+
+Rollback without a re-release: set `v2017_experiments.global_kill_switch: true`
+to disable all three behavior flags in under 30 seconds with no session restart.
+To restore the pre-strip PM prompt, set `pm_prompt_variant: "fat"` — reads from
+the committed `agents/pm.old.md` artifact; no git history required.
+
+On 2.0.17+, the `post-upgrade-sweep.js` sweep seeds: `v2017_experiments` block
+(all flags `"off"`), `adaptive_verbosity` config block, `cache_choreography`
+block, and `pm_prompt_variant: "lean"`.
+
+### Tests
+
++155 new tests across Phases 2/3/4 + post-signoff scope expansion (apply-pm-variant:
+12 tests, replay-last-n: 10 tests) + 10 contract tests for `isExperimentActive` +
+2 Round-1 fix tests (F014 + F019) = **1287 total**.
+
+---
+
 ## [2.0.16] - 2026-04-15
 
 ### Theme: "Close the deferred gates"
