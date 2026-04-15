@@ -70,8 +70,10 @@ afterEach(() => {
  * @param {object|null}  [opts.config]         - Content for config.json; null = omit file
  * @param {string|null}  [opts.checkpointRaw]  - Raw JSONL for mcp-checkpoint.jsonl; null = omit
  * @param {string|null}  [opts.routingRaw]     - Raw JSONL for routing.jsonl; null = omit
- * @param {boolean}      [opts.configSentinel] - Pre-create the W8 sentinel
+ * @param {boolean}      [opts.configSentinel] - Pre-create the W8 sentinel (.config-migrated-2013)
  * @param {boolean}      [opts.checkpointSentinel] - Pre-create the W11 sentinel
+ * @param {boolean}      [opts.enforcementKeysSentinel] - Pre-create the W5 2.0.15 sentinel
+ * @param {boolean}      [opts.kbWriteSentinel] - Pre-create the W6 2.0.15 sentinel (.kb-write-migrated-2015)
  */
 function makeDir({
   config = null,
@@ -79,6 +81,8 @@ function makeDir({
   routingRaw = null,
   configSentinel = false,
   checkpointSentinel = false,
+  enforcementKeysSentinel = false,
+  kbWriteSentinel = false,
 } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-sweep-test-'));
   cleanup.push(dir);
@@ -101,6 +105,12 @@ function makeDir({
   }
   if (checkpointSentinel) {
     fs.writeFileSync(path.join(stateDir, '.mcp-checkpoint-migrated-2013'), '', 'utf8');
+  }
+  if (enforcementKeysSentinel) {
+    fs.writeFileSync(path.join(stateDir, '.enforcement-keys-migrated-2015'), '', 'utf8');
+  }
+  if (kbWriteSentinel) {
+    fs.writeFileSync(path.join(stateDir, '.kb-write-migrated-2015'), '', 'utf8');
   }
 
   return dir;
@@ -286,12 +296,20 @@ describe('W8 config migration', () => {
   });
 
   test('W8-E: config sentinel already exists → no migration runs', () => {
-    // Config has no mcp_enforcement block, but sentinel is pre-created
-    const dir = makeDir({ config: { auto_review: true }, configSentinel: true });
+    // Config has no mcp_enforcement block, but W8 sentinel is pre-created.
+    // We also pre-create W5 (enforcement-keys-migrated-2015) and W6
+    // (kb-write-migrated-2015) sentinels so that all config-related migrations
+    // are already done — nothing should change the file.
+    const dir = makeDir({
+      config: { auto_review: true },
+      configSentinel: true,
+      enforcementKeysSentinel: true,
+      kbWriteSentinel: true,
+    });
     run(dir);
     const cfg = readConfig(dir);
     assert.equal(cfg.mcp_enforcement, undefined,
-      'mcp_enforcement should not be added when sentinel already present');
+      'mcp_enforcement should not be added when all config migration sentinels already present');
   });
 
 });
@@ -523,6 +541,110 @@ describe('session lock', () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
+// W5 (2.0.15): enforcement keys backfill
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('W5 enforcement keys backfill (2.0.15)', () => {
+
+  test('W5-A: existing mcp_enforcement without new 2.0.15 keys → keys backfilled', () => {
+    // Simulate a config that was written by the 2.0.13/2.0.14 W8 migration —
+    // it has mcp_enforcement but lacks pattern_record_skip_reason and cost_budget_check.
+    const dir = makeDir({
+      config: {
+        mcp_enforcement: {
+          pattern_find: 'hook',
+          kb_search: 'hook',
+          history_find_similar_tasks: 'hook',
+          pattern_record_application: 'hook',
+          unknown_tool_policy: 'block',
+          global_kill_switch: false,
+        },
+      },
+      configSentinel: true, // W8 already ran
+    });
+    run(dir);
+    const cfg = readConfig(dir);
+    assert.equal(cfg.mcp_enforcement.pattern_record_skip_reason, 'allow',
+      'pattern_record_skip_reason must be backfilled');
+    assert.equal(cfg.mcp_enforcement.cost_budget_check, 'allow',
+      'cost_budget_check must be backfilled');
+    // Existing keys must be preserved
+    assert.equal(cfg.mcp_enforcement.pattern_find, 'hook',
+      'existing pattern_find must be preserved');
+    assert.equal(cfg.mcp_enforcement.unknown_tool_policy, 'block',
+      'existing unknown_tool_policy must be preserved');
+  });
+
+  test('W5-B: keys already present → no-op (idempotent)', () => {
+    const dir = makeDir({
+      config: {
+        mcp_enforcement: {
+          pattern_find: 'hook',
+          kb_search: 'hook',
+          history_find_similar_tasks: 'hook',
+          pattern_record_application: 'hook',
+          pattern_record_skip_reason: 'allow',
+          cost_budget_check: 'prompt', // user customized
+          unknown_tool_policy: 'block',
+          global_kill_switch: false,
+        },
+      },
+      configSentinel: true,
+    });
+    run(dir);
+    const cfg = readConfig(dir);
+    // User customization must be preserved
+    assert.equal(cfg.mcp_enforcement.cost_budget_check, 'prompt',
+      'user-customized cost_budget_check value must not be overwritten');
+  });
+
+  test('W5-C: sentinel already exists → no-op even when keys are missing', () => {
+    const dir = makeDir({
+      config: {
+        mcp_enforcement: {
+          pattern_find: 'hook',
+          kb_search: 'hook',
+          history_find_similar_tasks: 'hook',
+          pattern_record_application: 'hook',
+          unknown_tool_policy: 'block',
+          global_kill_switch: false,
+          // pattern_record_skip_reason and cost_budget_check intentionally absent
+        },
+      },
+      configSentinel: true,
+      enforcementKeysSentinel: true, // W5 already ran
+      kbWriteSentinel: true,         // W6 already ran (prevents W6 adding kb_write)
+    });
+    run(dir);
+    const cfg = readConfig(dir);
+    assert.equal(cfg.mcp_enforcement.pattern_record_skip_reason, undefined,
+      'keys must not be added when W5 sentinel is already present');
+    assert.equal(cfg.mcp_enforcement.cost_budget_check, undefined,
+      'keys must not be added when W5 sentinel is already present');
+  });
+
+  test('W5-D: sentinel created after successful migration', () => {
+    const dir = makeDir({
+      config: {
+        mcp_enforcement: {
+          pattern_find: 'hook',
+          kb_search: 'hook',
+          history_find_similar_tasks: 'hook',
+          pattern_record_application: 'hook',
+          unknown_tool_policy: 'block',
+          global_kill_switch: false,
+        },
+      },
+      configSentinel: true,
+    });
+    run(dir);
+    assert.ok(sentinelExists(dir, '.enforcement-keys-migrated-2015'),
+      'W5 sentinel must be created after migration');
+  });
+
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Grep anchors — verify the script contains required anchor strings
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -538,6 +660,212 @@ describe('grep anchors', () => {
     assert.ok(src.includes('2013-W11-ledger-sweep'),
       'script must contain 2013-W11-ledger-sweep grep anchor');
   });
+
+  test('script contains 2015-W5-enforcement-keys anchor', () => {
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    assert.ok(src.includes('2015-W5-enforcement-keys'),
+      'script must contain 2015-W5-enforcement-keys grep anchor');
+  });
+
+  test('script contains 2015-W6-kb-write-keys anchor', () => {
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    assert.ok(src.includes('2015-W6-kb-write-keys'),
+      'script must contain 2015-W6-kb-write-keys grep anchor');
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// W6 (2.0.15): kb_write enable seed
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('W6 kb_write enable seed (2.0.15)', () => {
+
+  test('W6-A: mcp_enforcement.kb_write backfilled when absent', () => {
+    // Config has mcp_enforcement but lacks the kb_write key.
+    // W6 must add mcp_enforcement.kb_write = 'allow'.
+    const dir = makeDir({
+      config: {
+        mcp_enforcement: {
+          pattern_find: 'hook',
+          kb_search: 'hook',
+          history_find_similar_tasks: 'hook',
+          pattern_record_application: 'hook',
+          pattern_record_skip_reason: 'allow',
+          cost_budget_check: 'allow',
+          unknown_tool_policy: 'block',
+          global_kill_switch: false,
+          // kb_write intentionally absent
+        },
+      },
+      configSentinel: true,
+      enforcementKeysSentinel: true,  // W5 already ran
+    });
+    run(dir);
+    const cfg = readConfig(dir);
+    assert.ok('kb_write' in cfg.mcp_enforcement,
+      'W6: mcp_enforcement.kb_write must be added by W6 migration');
+    assert.equal(cfg.mcp_enforcement.kb_write, 'allow',
+      'W6: mcp_enforcement.kb_write must default to "allow"');
+  });
+
+  test('W6-B: mcp_server.tools.kb_write backfilled when absent', () => {
+    // Config has mcp_server.tools but lacks kb_write.
+    // W6 must add mcp_server.tools.kb_write = true.
+    const dir = makeDir({
+      config: {
+        mcp_server: {
+          tools: {
+            pattern_find: true,
+            // kb_write intentionally absent
+          },
+        },
+        mcp_enforcement: {
+          pattern_find: 'hook',
+          kb_search: 'hook',
+          history_find_similar_tasks: 'hook',
+          pattern_record_application: 'hook',
+          pattern_record_skip_reason: 'allow',
+          cost_budget_check: 'allow',
+          kb_write: 'allow',
+          unknown_tool_policy: 'block',
+          global_kill_switch: false,
+        },
+      },
+      configSentinel: true,
+      enforcementKeysSentinel: true,
+    });
+    run(dir);
+    const cfg = readConfig(dir);
+    assert.ok(cfg.mcp_server && cfg.mcp_server.tools,
+      'W6: mcp_server.tools must exist');
+    assert.equal(cfg.mcp_server.tools.kb_write, true,
+      'W6: mcp_server.tools.kb_write must be set to true');
+  });
+
+  test('W6-C: both keys already present → no-op (idempotent)', () => {
+    // Both mcp_enforcement.kb_write and mcp_server.tools.kb_write already present.
+    // W6 must be a no-op and not overwrite user customizations.
+    const dir = makeDir({
+      config: {
+        mcp_server: {
+          tools: {
+            kb_write: false,  // user explicitly disabled — must be preserved
+          },
+        },
+        mcp_enforcement: {
+          pattern_find: 'hook',
+          kb_search: 'hook',
+          history_find_similar_tasks: 'hook',
+          pattern_record_application: 'hook',
+          pattern_record_skip_reason: 'allow',
+          cost_budget_check: 'allow',
+          kb_write: 'prompt',  // user customized — must be preserved
+          unknown_tool_policy: 'block',
+          global_kill_switch: false,
+        },
+      },
+      configSentinel: true,
+      enforcementKeysSentinel: true,
+    });
+    run(dir);
+    const cfg = readConfig(dir);
+    // User customizations must be preserved.
+    assert.equal(cfg.mcp_enforcement.kb_write, 'prompt',
+      'W6: user-customized mcp_enforcement.kb_write must not be overwritten');
+    assert.equal(cfg.mcp_server.tools.kb_write, false,
+      'W6: user-set mcp_server.tools.kb_write=false must not be overwritten');
+  });
+
+  test('W6-D: sentinel created after successful migration', () => {
+    // After W6 runs, a .kb-write-migrated-2015 sentinel must be created.
+    const dir = makeDir({
+      config: {
+        mcp_enforcement: {
+          pattern_find: 'hook',
+          kb_search: 'hook',
+          history_find_similar_tasks: 'hook',
+          pattern_record_application: 'hook',
+          pattern_record_skip_reason: 'allow',
+          cost_budget_check: 'allow',
+          unknown_tool_policy: 'block',
+          global_kill_switch: false,
+          // kb_write absent
+        },
+      },
+      configSentinel: true,
+      enforcementKeysSentinel: true,
+    });
+    run(dir);
+    assert.ok(sentinelExists(dir, '.kb-write-migrated-2015'),
+      'W6: .kb-write-migrated-2015 sentinel must be created after migration');
+  });
+
+  test('W6-E: sentinel already exists → no-op even when keys are missing', () => {
+    // W6 sentinel pre-created — migration must not run.
+    const dir = makeDir({
+      config: {
+        mcp_enforcement: {
+          pattern_find: 'hook',
+          kb_search: 'hook',
+          history_find_similar_tasks: 'hook',
+          pattern_record_application: 'hook',
+          pattern_record_skip_reason: 'allow',
+          cost_budget_check: 'allow',
+          unknown_tool_policy: 'block',
+          global_kill_switch: false,
+          // kb_write intentionally absent — but sentinel exists, so W6 skips
+        },
+      },
+      configSentinel: true,
+      enforcementKeysSentinel: true,
+      kbWriteSentinel: true,  // W6 already ran
+    });
+    run(dir);
+    const cfg = readConfig(dir);
+    assert.equal(cfg.mcp_enforcement.kb_write, undefined,
+      'W6: kb_write must NOT be added when .kb-write-migrated-2015 sentinel exists');
+  });
+
+  test('W6-F: idempotency — running sweep twice does not double-mutate config', () => {
+    // Second run must produce same result as first run (idempotent via sentinel).
+    const dir = makeDir({
+      config: {
+        mcp_enforcement: {
+          pattern_find: 'hook',
+          kb_search: 'hook',
+          history_find_similar_tasks: 'hook',
+          pattern_record_application: 'hook',
+          pattern_record_skip_reason: 'allow',
+          cost_budget_check: 'allow',
+          unknown_tool_policy: 'block',
+          global_kill_switch: false,
+          // kb_write absent
+        },
+      },
+      configSentinel: true,
+      enforcementKeysSentinel: true,
+    });
+
+    // First run — W6 should add kb_write.
+    const sessionId1 = 'idempotency-test-w6-session1';
+    const lockPath1 = path.join(os.tmpdir(), `orchestray-sweep-${sessionId1}.lock`);
+    cleanup.push(lockPath1);
+    try { fs.unlinkSync(lockPath1); } catch (_e) {}
+    run(dir, { session_id: sessionId1 });
+    const cfg1 = readConfig(dir);
+    assert.ok('kb_write' in cfg1.mcp_enforcement, 'after first run, kb_write must exist');
+
+    // Second run — sentinel already set; config must be unchanged.
+    const sessionId2 = 'idempotency-test-w6-session2';
+    const lockPath2 = path.join(os.tmpdir(), `orchestray-sweep-${sessionId2}.lock`);
+    cleanup.push(lockPath2);
+    try { fs.unlinkSync(lockPath2); } catch (_e) {}
+    run(dir, { session_id: sessionId2 });
+    const cfg2 = readConfig(dir);
+    assert.deepEqual(cfg2, cfg1,
+      'W6: second run must produce identical config to first run (idempotent)');
+  });
+
 });
 
 // ──────────────────────────────────────────────────────────────────────────────

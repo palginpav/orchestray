@@ -118,6 +118,63 @@ describe('kb_search input validation', () => {
     }
   });
 
+  // T3 T5 — query length boundary tests
+  test('T3 T5: accepts query of exactly 2 chars (min valid boundary)', async () => {
+    const tmp = makeTmpProject();
+    try {
+      const result = await withCwd(tmp, () =>
+        handle({ query: 'ab' }, makeContext(tmp))
+      );
+      // 2 chars is the minimum valid length — must NOT be an error.
+      assert.equal(result.isError, false,
+        'query of length 2 (min valid) must not be rejected');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('T3 T5: rejects query of exactly 1 char (below min boundary)', async () => {
+    const tmp = makeTmpProject();
+    try {
+      const result = await withCwd(tmp, () =>
+        handle({ query: 'x' }, makeContext(tmp))
+      );
+      assert.equal(result.isError, true,
+        'query of length 1 (below min=2) must be rejected');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('T3 T5: accepts query of exactly 500 chars (max valid boundary)', async () => {
+    const tmp = makeTmpProject();
+    try {
+      const maxQuery = 'a'.repeat(500);
+      const result = await withCwd(tmp, () =>
+        handle({ query: maxQuery }, makeContext(tmp))
+      );
+      // 500 chars is the maximum valid length — must NOT be an error.
+      assert.equal(result.isError, false,
+        'query of length 500 (max valid) must not be rejected');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('T3 T5: rejects query of exactly 501 chars (above max boundary)', async () => {
+    const tmp = makeTmpProject();
+    try {
+      const tooLong = 'b'.repeat(501);
+      const result = await withCwd(tmp, () =>
+        handle({ query: tooLong }, makeContext(tmp))
+      );
+      assert.equal(result.isError, true,
+        'query of length 501 (above max=500) must be rejected');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('rejects kb_sections containing unknown section', async () => {
     const tmp = makeTmpProject();
     try {

@@ -3,7 +3,7 @@
 /**
  * Streaming iterator over Orchestray audit + archive events.jsonl files.
  *
- * Per v2011c-stage2-plan.md §7.
+ * See CHANGELOG.md §2.0.11 (Stage 2 MCP tools & resources) for design context.
  *
  * Exports:
  *   async function* scanEvents(options?) -> AsyncGenerator<NormalizedEvent>
@@ -19,6 +19,12 @@
  *
  * The generator is total — file missing, permission denied, malformed JSONL
  * lines all log to stderr and continue. No exception escapes to the caller.
+ *
+ * Performance note (T3 P1): scanEvents is O(total events across all archives).
+ * For a project with many archived orchestrations every `history_query_events`
+ * call incurs one readFileSync per line per archive. Pass `max_archives` in
+ * options to cap the scan to the N most-recent archive directories (default:
+ * unlimited). Callers with large corpora should set this to bound latency.
  */
 
 const fs = require('node:fs');
@@ -152,6 +158,13 @@ async function* _scanFile(filepath, refUri, isLive, archiveMtimeCache) {
 
 async function* scanEvents(options) {
   const { liveAudit, historyDir } = _resolveRoots(options);
+  // T3 P1: optional max_archives cap. When set, only the N most-recent
+  // archive directories (lexicographic = chronological for ISO-timestamp dirs)
+  // are scanned, short-circuiting the O(total events) traversal.
+  const maxArchives =
+    (options && typeof options.max_archives === 'number' && options.max_archives > 0)
+      ? options.max_archives
+      : Infinity;
   const archiveMtimeCache = new Map();
 
   // Live audit first.
@@ -170,7 +183,10 @@ async function* scanEvents(options) {
       logStderr('history_scan: readdir failed on ' + historyDir + ': ' + (err && err.message));
       entries = [];
     }
-    const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name).sort();
+    // Sort ensures deterministic ordering; slice applies max_archives cap
+    // to the most-recent N entries (descending slice = tail of sorted list).
+    const allDirs = entries.filter((e) => e.isDirectory()).map((e) => e.name).sort();
+    const dirs = isFinite(maxArchives) ? allDirs.slice(-maxArchives) : allDirs;
     for (const dirName of dirs) {
       const jsonl = path.join(historyDir, dirName, 'events.jsonl');
       if (!fs.existsSync(jsonl)) continue;

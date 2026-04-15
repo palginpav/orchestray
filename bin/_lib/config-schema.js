@@ -10,19 +10,34 @@
  * so that changes take effect without a session restart (DESIGN §D6 rule 6:
  * "No session reload required").
  *
- * TODO: switch validateMcpEnforcement() to zod once zod is added to package.json
- * dependencies (CLAUDE.md recommends zod for schema validation; it is not currently
- * installed — see grep result that found no zod in bin/ or package.json). For now,
- * validation is implemented with plain JS type checks.
+ * TODO(post-2.0.15): switch validateMcpEnforcement() to zod once zod is added to package.json
  */
 
 const fs = require('fs');
 const path = require('path');
 
 /**
+ * Write a prefixed diagnostic line to stderr (mirrors logStderr in mcp-server/lib/rpc.js
+ * but lives here so _lib modules stay independent of the mcp-server subtree).
+ * @param {string} msg
+ */
+function logStderr(msg) {
+  try { process.stderr.write('[orchestray] ' + msg + '\n'); } catch (_e) {}
+}
+
+/**
  * Remove prototype-pollution keys from a user-supplied config object before
  * merging via Object.assign. Strips __proto__, constructor, and prototype so
  * a crafted config file cannot modify the merged object's prototype chain.
+ *
+ * S5 (T3 reviewer observation): This function is intentionally shallow — it
+ * does not recurse into nested objects (e.g., pricing_table tier entries).
+ * That is safe because all nested objects are consumed only by validators that
+ * read known keys (e.g., validateCostBudgetCheckConfig iterates
+ * Object.entries(pt) and only reads `input_per_1m`/`output_per_1m`). A
+ * prototype-polluted nested object cannot inject unexpected values through
+ * those read paths. No action required; this comment confirms the defense-in-
+ * depth is adequate.
  *
  * @param {unknown} obj
  * @returns {object} Safe shallow copy with dangerous keys removed, or {} on bad input.
@@ -49,11 +64,24 @@ const DEFAULT_MCP_ENFORCEMENT = Object.freeze({
   kb_search: 'hook',
   history_find_similar_tasks: 'hook',
   pattern_record_application: 'hook', // Advisory — read by bin/record-pattern-skip.js (PreCompact), NOT by the gate. Setting this to 'prompt' or 'allow' suppresses the pattern_record_skipped advisory event.
+  // T3 A1: Add 2.0.14 tools to the enforcement model. Default 'allow' because
+  // neither tool is gated (pattern_record_skip_reason is advisory-only;
+  // cost_budget_check is advisory-only in 2.0.14/2.0.15). Absent keys cause
+  // unknown_tool_policy to evaluate them, which can produce unexpected block/warn
+  // signals if an operator sets unknown_tool_policy:'block'.
+  pattern_record_skip_reason: 'allow',
+  cost_budget_check: 'allow',
+  // W6: kb_write is advisory/write-scoped (not a spawn-gate tool) — 'allow' is
+  // appropriate so unknown_tool_policy:'block' installations don't block it.
+  kb_write: 'allow',
   unknown_tool_policy: 'block',
   global_kill_switch: false,
 });
 
-const VALID_PER_TOOL_VALUES = ['hook', 'prompt', 'allow'];
+// W5 (v2.0.15): add `hook-warn` (unconditional warn-mode advisory) and
+// `hook-strict` (opt-in blocking) to the §22c escalation ladder. Stage B default-
+// flip to `hook-strict` is deferred to 2.0.16 pending the OQ1 data-gate audit.
+const VALID_PER_TOOL_VALUES = ['hook', 'hook-warn', 'hook-strict', 'prompt', 'allow'];
 const VALID_UNKNOWN_TOOL_POLICY = ['block', 'warn', 'allow'];
 
 /**
@@ -102,10 +130,7 @@ function loadMcpEnforcement(cwd) {
   try {
     const result = validateMcpEnforcement(merged);
     if (!result.valid) {
-      process.stderr.write(
-        '[orchestray] mcp_enforcement config warnings: ' +
-        result.errors.join('; ') + '\n'
-      );
+      logStderr('mcp_enforcement config warnings: ' + result.errors.join('; '));
     }
   } catch (_e) {
     // Validation itself should never throw, but fail-open just in case.
@@ -127,7 +152,19 @@ function validateMcpEnforcement(obj) {
     return { valid: false, errors: ['mcp_enforcement must be an object'] };
   }
 
-  const perToolKeys = ['pattern_find', 'kb_search', 'history_find_similar_tasks', 'pattern_record_application'];
+  // T3 A1: perToolKeys must stay in sync with DEFAULT_MCP_ENFORCEMENT. Add
+  // pattern_record_skip_reason and cost_budget_check so operator configs that
+  // include these keys are validated rather than silently accepted.
+  // W6: add kb_write (2.0.15 addition).
+  const perToolKeys = [
+    'pattern_find',
+    'kb_search',
+    'history_find_similar_tasks',
+    'pattern_record_application',
+    'pattern_record_skip_reason',
+    'cost_budget_check',
+    'kb_write',
+  ];
   for (const key of perToolKeys) {
     if (key in obj) {
       const v = obj[key];
@@ -154,6 +191,16 @@ function validateMcpEnforcement(obj) {
       errors.push(
         `mcp_enforcement.global_kill_switch must be a boolean — got ${JSON.stringify(v)}`
       );
+    }
+    // T1 H5 (v2.0.15): `kill_switch_reason` is required when the kill switch is
+    // active — makes blast-radius auditable in events.jsonl.
+    if (v === true) {
+      const reason = obj.kill_switch_reason;
+      if (typeof reason !== 'string' || reason.trim().length === 0) {
+        errors.push(
+          'mcp_enforcement.kill_switch_reason is required (non-empty string) when global_kill_switch is true'
+        );
+      }
     }
   }
 
@@ -220,10 +267,7 @@ function loadAuditConfig(cwd) {
   try {
     const result = validateAuditConfig(merged);
     if (!result.valid) {
-      process.stderr.write(
-        '[orchestray] audit config warnings: ' +
-        result.errors.join('; ') + '\n'
-      );
+      logStderr('audit config warnings: ' + result.errors.join('; '));
     }
   } catch (_e) {
     // Validation must never throw
@@ -341,10 +385,7 @@ function loadShieldConfig(cwd) {
   try {
     const result = validateShieldConfig({ r14_dedup_reads: r14Merged });
     if (!result.valid) {
-      process.stderr.write(
-        '[orchestray] shield config warnings: ' +
-        result.errors.join('; ') + '\n'
-      );
+      logStderr('shield config warnings: ' + result.errors.join('; '));
     }
   } catch (_e) {
     // Validation must never throw
@@ -483,10 +524,7 @@ function loadCostBudgetCheckConfig(cwd) {
   try {
     const result = validateCostBudgetCheckConfig({ pricing_table: mergedTable, last_verified: lastVerified });
     if (!result.valid) {
-      process.stderr.write(
-        '[orchestray] cost_budget_check config warnings: ' +
-        result.errors.join('; ') + '\n'
-      );
+      logStderr('cost_budget_check config warnings: ' + result.errors.join('; '));
     }
   } catch (_e) {
     // Validation must never throw
@@ -547,10 +585,12 @@ function validateCostBudgetCheckConfig(obj) {
 module.exports = {
   DEFAULT_MCP_ENFORCEMENT,
   loadMcpEnforcement,
+  validateMcpEnforcement,
   DEFAULT_AUDIT,
   loadAuditConfig,
   DEFAULT_SHIELD,
   loadShieldConfig,
   DEFAULT_COST_BUDGET_CHECK,
   loadCostBudgetCheckConfig,
+  logStderr,
 };

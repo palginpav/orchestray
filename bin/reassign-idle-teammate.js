@@ -25,14 +25,13 @@ const path = require('path');
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
+const { MAX_INPUT_BYTES } = require('./_lib/constants');
 
 // 1 MB cap: corrupted or runaway task-graph.md files could be arbitrarily
 // large, and reading them fully would OOM the hook process (Node default
 // heap is ~1.5 GB, but hook timeout is 5 s). On overflow we skip the
 // reassignment check and let the teammate stop cleanly. Per T13 audit I7.
 const MAX_SIZE = 1_048_576;
-
-const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB cap — guards against runaway payloads OOMing the hook (T14 audit I14)
 
 let input = '';
 process.stdin.setEncoding('utf8');

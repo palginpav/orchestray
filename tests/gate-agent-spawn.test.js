@@ -287,6 +287,7 @@ describe('D5 — config flags', () => {
     const dir = makeDir({ withOrch: true });
     writeMcpConfig(dir, {
       global_kill_switch: true,
+      kill_switch_reason: 'test: kill-switch short-circuit coverage',
     });
     // No checkpoint rows at all — but kill switch is on, so no MCP gate
     // Agent call with valid model but no routing.jsonl → falls through to allow
@@ -1337,4 +1338,240 @@ describe('2013-W4: AGENT_DISPATCH_ALLOWLIST + SKIP_ALLOWLIST drift guard', () =>
       assert.equal(skip.has(name), false, `'${name}' appears in both allowlists`);
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// W4 — task_id-based routing match (DEV-3 W4 behavior)
+// ---------------------------------------------------------------------------
+
+describe('W4 — task_id-based routing match', () => {
+
+  /** Write routing.jsonl with the given entries. */
+  function writeRoutingFile(dir, entries) {
+    const stateDir = path.join(dir, '.orchestray', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const lines = entries.map(e => JSON.stringify(e)).join('\n') + '\n';
+    fs.writeFileSync(path.join(stateDir, 'routing.jsonl'), lines);
+  }
+
+  /** Write mcp-checkpoint.jsonl with all 3 required tools. */
+  function writeFullCheckpoint(dir, orchId) {
+    const stateDir = path.join(dir, '.orchestray', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const now = new Date().toISOString();
+    const tools = ['pattern_find', 'kb_search', 'history_find_similar_tasks'];
+    const lines = tools.map(tool => JSON.stringify({
+      timestamp: now,
+      orchestration_id: orchId,
+      tool,
+      outcome: 'answered',
+      phase: 'pre-decomposition',
+      result_count: null,
+    })).join('\n') + '\n';
+    fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), lines);
+  }
+
+  /** Build a minimal routing entry with task_id. */
+  function routingEntryW4(overrides = {}) {
+    return {
+      timestamp: '2026-04-11T10:00:00.000Z',
+      orchestration_id: 'orch-test-001',
+      task_id: 'task-w4-1',
+      agent_type: 'developer',
+      description: 'Original description text',
+      model: 'sonnet',
+      effort: 'medium',
+      complexity_score: 4,
+      score_breakdown: {},
+      decided_by: 'pm',
+      decided_at: 'decomposition',
+      ...overrides,
+    };
+  }
+
+  test('W4-T1: task_id+agent_type match with drifted description — should allow + emit stderr warning', () => {
+    // W4 primary match: (task_id, agent_type) match succeeds even if description drifted.
+    // When descriptions differ, a warning is emitted to stderr but the spawn is ALLOWED.
+    const dir = makeDir({ withOrch: true });
+    writeRoutingFile(dir, [routingEntryW4()]);
+    writeFullCheckpoint(dir, 'orch-test-001');
+
+    const { status, stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: {
+        subagent_type: 'developer',
+        model: 'sonnet',
+        task_id: 'task-w4-1',
+        description: 'Completely different description due to drift',
+      },
+    });
+
+    assert.equal(status, 0,
+      'W4: task_id+agent_type match must allow spawn even with drifted description');
+    assert.ok(
+      stderr.includes('description drift') || stderr.includes('task_id'),
+      'W4: a warning about description drift or task_id match must be emitted to stderr'
+    );
+  });
+
+  test('W4-T2: task_id+agent_type match with IDENTICAL description — should allow silently (no warning)', () => {
+    // When task_id matches AND descriptions are identical, no warning should be emitted.
+    const dir = makeDir({ withOrch: true });
+    writeRoutingFile(dir, [routingEntryW4()]);
+    writeFullCheckpoint(dir, 'orch-test-001');
+
+    const { status, stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: {
+        subagent_type: 'developer',
+        model: 'sonnet',
+        task_id: 'task-w4-1',
+        description: 'Original description text',  // exact match
+      },
+    });
+
+    assert.equal(status, 0, 'W4: exact task_id+desc match must allow spawn');
+    // No description-drift warning expected when descriptions match.
+    assert.ok(!stderr.includes('description drift'),
+      'W4: no drift warning when descriptions are identical');
+  });
+
+  test('W4-T3: task_id present but no routing entry for that task_id — falls back to description match', () => {
+    // W4 fallback: task_id provided but produces no match → fall back to
+    // (agent_type, description) match. If that also fails → block.
+    const dir = makeDir({ withOrch: true });
+    writeRoutingFile(dir, [routingEntryW4({ task_id: 'task-OTHER' })]);
+    writeFullCheckpoint(dir, 'orch-test-001');
+
+    const { status, stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: {
+        subagent_type: 'developer',
+        model: 'sonnet',
+        task_id: 'task-w4-MISSING',     // this task_id has no routing entry
+        description: 'Some unmatched description',  // description also won't match
+      },
+    });
+
+    // Both tiers fail → gate blocks.
+    assert.equal(status, 2,
+      'W4: task_id miss + description miss → gate must block');
+    // The fallback warning about task_id miss should be in stderr.
+    assert.ok(
+      stderr.includes('task_id') || stderr.includes('no routing entry'),
+      'W4: stderr must mention task_id miss or no routing entry'
+    );
+  });
+
+  test('W4-T4: task_id present but no routing entry → falls back to description match that succeeds → allows', () => {
+    // W4 fallback path that SUCCEEDS: task_id misses but description match works.
+    const dir = makeDir({ withOrch: true });
+    // Routing entry has task_id='task-OTHER' (won't match) but description matches spawn.
+    writeRoutingFile(dir, [routingEntryW4({
+      task_id: 'task-OTHER',
+      description: 'Fix auth',
+    })]);
+    writeFullCheckpoint(dir, 'orch-test-001');
+
+    const { status, stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: {
+        subagent_type: 'developer',
+        model: 'sonnet',
+        task_id: 'task-w4-MISSING',  // task_id miss → fall back
+        description: 'Fix auth',     // description match → fallback succeeds
+      },
+    });
+
+    assert.equal(status, 0,
+      'W4: task_id miss + description match → fallback succeeds → allow');
+    // Fallback warning (task_id found no match) must appear in stderr.
+    assert.ok(
+      stderr.includes('task_id') || stderr.includes('description key'),
+      'W4: stderr must warn about falling back from task_id to description key'
+    );
+  });
+
+  test('W4b-T1: task_id absent but description has TASK-ID prefix — extract and match via task_id path', () => {
+    // W4b (v2.0.15 preflight): Claude Code drops unknown toolInput fields so
+    // toolInput.task_id is typically null. The gate now extracts task_id from
+    // the leading `TASK-ID ` token of the description when it matches the
+    // convention — this makes the W4 path activate in practice.
+    const dir = makeDir({ withOrch: true });
+    writeRoutingFile(dir, [routingEntryW4({
+      task_id: 'DEV-1',
+      description: 'DEV-1 bin/mcp-server fixes',  // routing desc
+    })]);
+    writeFullCheckpoint(dir, 'orch-test-001');
+
+    const { status, stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: {
+        subagent_type: 'developer',
+        model: 'sonnet',
+        // task_id intentionally absent
+        description: 'DEV-1 mcp-server fixes',  // drifted from routing desc — but shares DEV-1 prefix
+      },
+    });
+
+    assert.equal(status, 0,
+      'W4b: leading TASK-ID prefix in description must activate task_id match path');
+    assert.ok(
+      stderr.includes('description drift') || stderr.includes('task_id=DEV-1'),
+      'W4b: description-drift warning (or task_id=DEV-1 mention) expected; got: ' + JSON.stringify(stderr)
+    );
+  });
+
+  test('W4b-T2: description without TASK-ID prefix does not spuriously extract task_id', () => {
+    // Sanity check: descriptions that do not match the TASK-ID convention
+    // must NOT have a task_id extracted (avoid false-positive matches).
+    const dir = makeDir({ withOrch: true });
+    writeRoutingFile(dir, [routingEntryW4({ description: 'Fix auth' })]);
+    writeFullCheckpoint(dir, 'orch-test-001');
+
+    const { status, stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: {
+        subagent_type: 'developer',
+        model: 'sonnet',
+        description: 'Fix auth',  // no TASK-ID prefix
+      },
+    });
+
+    assert.equal(status, 0, 'W4b: existing fallback path still works');
+    assert.ok(!stderr.includes('task_id='),
+      'W4b: no spurious task_id diagnostic when description has no TASK-ID prefix');
+  });
+
+  test('W4-T5: spawn with missing task_id on toolInput — fallback path behaves as before (description match)', () => {
+    // W4 original behavior preserved: when task_id is absent from toolInput,
+    // the gate uses the existing (agent_type, description) match unchanged.
+    const dir = makeDir({ withOrch: true });
+    writeRoutingFile(dir, [routingEntryW4({ description: 'Fix auth' })]);
+    writeFullCheckpoint(dir, 'orch-test-001');
+
+    const { status, stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: {
+        subagent_type: 'developer',
+        model: 'sonnet',
+        // task_id intentionally absent
+        description: 'Fix auth',
+      },
+    });
+
+    assert.equal(status, 0,
+      'W4: absent task_id falls back to description match (original behavior preserved)');
+    // No task_id-related warnings when task_id is simply absent.
+    assert.ok(!stderr.includes('task_id='),
+      'W4: no task_id diagnostic when task_id absent from toolInput');
+  });
+
 });

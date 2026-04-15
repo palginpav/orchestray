@@ -7,7 +7,7 @@
  * Jaccard between the input `task_summary` and each task file's
  * (title + first 200 body chars), and returns the top matches.
  *
- * Per v2011b-architecture.md §3.2.4 and v2011c-stage2-plan.md §4.
+ * See CHANGELOG.md §2.0.11 (Stage 2 MCP tools & resources) for design context.
  */
 
 const fs = require('node:fs');
@@ -16,6 +16,8 @@ const path = require('node:path');
 const paths = require('../lib/paths');
 const { assertSafeSegment } = paths;
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
+const { toolSuccess, toolError } = require('../lib/tool-result');
+const { logStderr } = require('../lib/rpc');
 
 const INPUT_SCHEMA = {
   type: 'object',
@@ -66,9 +68,13 @@ async function handle(input, context) {
 
   let archiveDirs;
   try {
+    // T3 C3: sort archive dirs for deterministic processing order. Archive
+    // directory names are ISO timestamps and sort lexicographically (= chronologically),
+    // matching the precedent set in history_scan.js:173.
     archiveDirs = fs.readdirSync(historyDir, { withFileTypes: true })
       .filter((e) => e.isDirectory())
-      .map((e) => e.name);
+      .map((e) => e.name)
+      .sort();
   } catch (err) {
     return toolError('history_find_similar_tasks: readdir failed: ' + (err && err.message));
   }
@@ -81,7 +87,7 @@ async function handle(input, context) {
     try {
       taskFiles = fs.readdirSync(tasksDir).filter((n) => n.endsWith('.md'));
     } catch (err) {
-      try { process.stderr.write('[orchestray-mcp] history_find_similar_tasks: readdir failed ' + tasksDir + '\n'); } catch (_e) {}
+      logStderr('history_find_similar_tasks: readdir failed ' + tasksDir);
       continue;
     }
     for (const name of taskFiles) {
@@ -96,7 +102,7 @@ async function handle(input, context) {
       }
       const title = _extractH1(content);
       if (!title) {
-        try { process.stderr.write('[orchestray-mcp] history_find_similar_tasks: no title in ' + filepath + '\n'); } catch (_e) {}
+        logStderr('history_find_similar_tasks: no title in ' + filepath);
         continue;
       }
       const bodyAfterTitle = _bodyAfterH1(content);
@@ -175,21 +181,6 @@ function _jaccard(a, b) {
   for (const x of a) if (b.has(x)) overlap++;
   const union = new Set([...a, ...b]).size;
   return union === 0 ? 0 : overlap / union;
-}
-
-function toolSuccess(structuredContent) {
-  return {
-    isError: false,
-    content: [{ type: 'text', text: JSON.stringify(structuredContent) }],
-    structuredContent,
-  };
-}
-
-function toolError(text) {
-  return {
-    isError: true,
-    content: [{ type: 'text', text }],
-  };
 }
 
 module.exports = {

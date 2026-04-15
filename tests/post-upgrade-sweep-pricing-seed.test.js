@@ -57,7 +57,7 @@ afterEach(() => {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeDir({ config = null, pricingSentinel = false } = {}) {
+function makeDir({ config = null, pricingSentinel = false, kbWriteSentinel = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-pricing-seed-test-'));
   cleanup.push(dir);
 
@@ -76,6 +76,14 @@ function makeDir({ config = null, pricingSentinel = false } = {}) {
   if (pricingSentinel) {
     fs.writeFileSync(
       path.join(stateDir, '.pricing-table-migrated-2014'),
+      '',
+      'utf8'
+    );
+  }
+
+  if (kbWriteSentinel) {
+    fs.writeFileSync(
+      path.join(stateDir, '.kb-write-migrated-2015'),
       '',
       'utf8'
     );
@@ -168,14 +176,17 @@ describe('W3 pricing-table seed', () => {
   });
 
   test('W3-C: pricing-table sentinel already exists → no migration runs', () => {
-    const dir = makeDir({ config: { auto_review: true }, pricingSentinel: true });
+    // Pre-create both the W3 (pricing) sentinel and the W6 (kb-write) sentinel
+    // so that neither migration modifies the config. The intent is "all 2.0.14/2.0.15
+    // mcp_server-related migrations are already done; nothing touches the file."
+    const dir = makeDir({ config: { auto_review: true }, pricingSentinel: true, kbWriteSentinel: true });
     run(dir);
     const cfg = readConfig(dir);
-    // With sentinel, the W3 op must not run
+    // With both sentinels, neither W3 nor W6 op should run
     assert.equal(
       cfg.mcp_server,
       undefined,
-      'mcp_server block should not be added when pricing sentinel exists'
+      'mcp_server block should not be added when pricing and kb-write sentinels exist'
     );
   });
 

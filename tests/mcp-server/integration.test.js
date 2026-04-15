@@ -331,7 +331,7 @@ describe('A. protocol handshake', () => {
 
 describe('B. tools/list', () => {
 
-  test('default config returns all 8 tools',
+  test('default config returns all 9 tools',
     { timeout: TEST_TIMEOUT },
     async () => {
       await withServer(null, async (_tmp, client) => {
@@ -345,6 +345,7 @@ describe('B. tools/list', () => {
           'history_find_similar_tasks',
           'history_query_events',
           'kb_search',
+          'kb_write',
           'pattern_find',
           'pattern_record_application',
           'pattern_record_skip_reason',
@@ -362,13 +363,15 @@ describe('B. tools/list', () => {
           await initialize(client);
           const resp = await client.sendAndReceive({ method: 'tools/list', params: {} });
           const names = resp.result.tools.map((t) => t.name);
-          assert.equal(names.length, 7);
+          assert.equal(names.length, 8);
           assert.ok(!names.includes('pattern_find'),
             'pattern_find must be absent when disabled via shorthand');
           assert.ok(names.includes('pattern_record_skip_reason'),
             'new 2.0.14 tool pattern_record_skip_reason must still be present when unrelated tool is disabled');
           assert.ok(names.includes('cost_budget_check'),
             'new 2.0.14 tool cost_budget_check must still be present when unrelated tool is disabled');
+          assert.ok(names.includes('kb_write'),
+            'kb_write must still be present when unrelated tool is disabled');
         }
       );
     }
@@ -383,13 +386,15 @@ describe('B. tools/list', () => {
           await initialize(client);
           const resp = await client.sendAndReceive({ method: 'tools/list', params: {} });
           const names = resp.result.tools.map((t) => t.name);
-          assert.equal(names.length, 7);
+          assert.equal(names.length, 8);
           assert.ok(!names.includes('kb_search'),
             'kb_search must be absent when disabled via nested form');
           assert.ok(names.includes('pattern_record_skip_reason'),
             'new 2.0.14 tool pattern_record_skip_reason must still be present when unrelated tool is disabled');
           assert.ok(names.includes('cost_budget_check'),
             'new 2.0.14 tool cost_budget_check must still be present when unrelated tool is disabled');
+          assert.ok(names.includes('kb_write'),
+            'kb_write must still be present when unrelated tool is disabled');
         }
       );
     }
@@ -1000,6 +1005,117 @@ describe('K. resources/read', () => {
 // L. orchestray:history://audit/live
 // ===========================================================================
 
+// ===========================================================================
+// M. tools/call kb_write
+// ===========================================================================
+
+describe('M. tools/call kb_write', () => {
+
+  test('kb_write appears in tools/list with correct schema',
+    { timeout: TEST_TIMEOUT },
+    async () => {
+      await withServer(null, async (_tmp, client) => {
+        await initialize(client);
+        const resp = await client.sendAndReceive({ method: 'tools/list', params: {} });
+        assert.equal(resp.error, undefined);
+        const tool = resp.result.tools.find((t) => t.name === 'kb_write');
+        assert.ok(tool, 'kb_write must appear in tools/list');
+        assert.ok(tool.description && tool.description.length > 0, 'description must be non-empty');
+        assert.ok(tool.inputSchema, 'inputSchema must be present');
+        assert.deepEqual(tool.inputSchema.type, 'object');
+        assert.ok(Array.isArray(tool.inputSchema.required));
+        assert.ok(tool.inputSchema.required.includes('id'));
+        assert.ok(tool.inputSchema.required.includes('bucket'));
+        assert.ok(tool.inputSchema.required.includes('content'));
+        const bucketSchema = tool.inputSchema.properties && tool.inputSchema.properties.bucket;
+        assert.ok(bucketSchema, 'bucket property must be in schema');
+        assert.deepEqual(bucketSchema.enum, ['artifacts', 'facts', 'decisions']);
+      });
+    }
+  );
+
+  test('kb_write happy path: writes file and index entry',
+    { timeout: TEST_TIMEOUT },
+    async () => {
+      await withServer(
+        (tmp) => {
+          fs.mkdirSync(path.join(tmp, '.orchestray', 'kb', 'artifacts'), { recursive: true });
+        },
+        async (tmp, client) => {
+          await initialize(client);
+          const resp = await client.sendAndReceive({
+            method: 'tools/call',
+            params: {
+              name: 'kb_write',
+              arguments: {
+                id: 'integ-test-artifact',
+                bucket: 'artifacts',
+                path: 'integ-test-artifact.md',
+                author: 'integ-test',
+                topic: 'integration-test',
+                content: '# Integration Test\n\nHello from kb_write integration test.',
+              },
+            },
+          });
+          assert.equal(resp.error, undefined, 'must not produce a JSON-RPC error');
+          assert.equal(resp.result.isError, false, 'tool result must not be an error');
+          const sc = resp.result.structuredContent;
+          assert.equal(sc.id, 'integ-test-artifact');
+          assert.equal(sc.bucket, 'artifacts');
+          assert.ok(sc.bytes_written > 0);
+          assert.ok(typeof sc.index_entry_total === 'number');
+          // Verify the file was actually written to disk.
+          const filePath = path.join(tmp, '.orchestray', 'kb', 'artifacts', 'integ-test-artifact.md');
+          assert.ok(fs.existsSync(filePath), 'artifact file must exist on disk after write');
+          // Verify the index was updated.
+          const indexPath = path.join(tmp, '.orchestray', 'kb', 'index.json');
+          assert.ok(fs.existsSync(indexPath), 'index.json must exist after write');
+          const index = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+          const entry = (index.artifacts || []).find((e) => e.id === 'integ-test-artifact');
+          assert.ok(entry, 'index must contain the written entry');
+        }
+      );
+    }
+  );
+
+  test('kb_write disabled via config returns tool-result error',
+    { timeout: TEST_TIMEOUT },
+    async () => {
+      await withServer(
+        (tmp) => writeConfig(tmp, { mcp_server: { tools: { kb_write: false } } }),
+        async (_tmp, client) => {
+          await initialize(client);
+          const resp = await client.sendAndReceive({
+            method: 'tools/call',
+            params: {
+              name: 'kb_write',
+              arguments: {
+                id: 'should-fail',
+                bucket: 'artifacts',
+                path: 'should-fail.md',
+                author: 'test',
+                topic: 'test',
+                content: 'nope',
+              },
+            },
+          });
+          assert.equal(resp.error, undefined, 'must not be a JSON-RPC error');
+          assert.equal(resp.result.isError, true, 'must be a tool-result error when disabled');
+          assert.ok(
+            resp.result.content[0].text.includes('disabled'),
+            'error message must mention disabled'
+          );
+        }
+      );
+    }
+  );
+
+});
+
+// ===========================================================================
+// L. orchestray:history://audit/live
+// ===========================================================================
+
 describe('L. orchestray:history://audit/live', () => {
 
   test('reads the live events.jsonl file verbatim',
@@ -1038,6 +1154,264 @@ describe('L. orchestray:history://audit/live', () => {
           assert.equal(parsed[0].orchestration_id, 'orch-L');
           assert.equal(parsed[1].type, 'agent_start');
           assert.equal(parsed[1].orchestration_id, 'orch-L');
+        }
+      );
+    }
+  );
+
+});
+
+// ===========================================================================
+// N. tools/list with unknown config tool key (T3 T1)
+// ===========================================================================
+
+describe('N. tools/list with unknown config tool key', () => {
+
+  test('unknown key in mcp_server.tools does not contaminate tools/list',
+    { timeout: TEST_TIMEOUT },
+    async () => {
+      // T3 T1: set an unknown tool key in the config and assert tools/list is
+      // identical to the no-config case — the unknown key must neither appear
+      // in the list nor remove any known tool.
+      await withServer(
+        (tmp) => writeConfig(tmp, {
+          mcp_server: {
+            tools: {
+              some_unknown_key: true,
+              another_made_up_tool: { enabled: true },
+            },
+          },
+        }),
+        async (_tmp, client) => {
+          await initialize(client);
+          const resp = await client.sendAndReceive({ method: 'tools/list', params: {} });
+          assert.equal(resp.error, undefined, 'tools/list must not error');
+          const names = resp.result.tools.map((t) => t.name).sort();
+          // Must be exactly the known 9 tools — unknown keys neither added nor removed.
+          assert.deepEqual(names, [
+            'ask_user',
+            'cost_budget_check',
+            'history_find_similar_tasks',
+            'history_query_events',
+            'kb_search',
+            'kb_write',
+            'pattern_find',
+            'pattern_record_application',
+            'pattern_record_skip_reason',
+          ], 'unknown config keys must not contaminate tools/list');
+          // Verify neither unknown key name leaked into the tool list.
+          assert.ok(!names.includes('some_unknown_key'),
+            'some_unknown_key must not appear in tools/list');
+          assert.ok(!names.includes('another_made_up_tool'),
+            'another_made_up_tool must not appear in tools/list');
+        }
+      );
+    }
+  );
+
+  test('unknown key alongside disabled known tool still produces correct list',
+    { timeout: TEST_TIMEOUT },
+    async () => {
+      // T3 T1 variant: mix of unknown key + known tool disabled.
+      await withServer(
+        (tmp) => writeConfig(tmp, {
+          mcp_server: {
+            tools: {
+              pattern_find: false,        // known — should be excluded
+              some_unknown_key: true,     // unknown — should be silently ignored
+            },
+          },
+        }),
+        async (_tmp, client) => {
+          await initialize(client);
+          const resp = await client.sendAndReceive({ method: 'tools/list', params: {} });
+          assert.equal(resp.error, undefined);
+          const names = resp.result.tools.map((t) => t.name);
+          assert.equal(names.length, 8, 'only one known tool removed, unknown key ignored');
+          assert.ok(!names.includes('pattern_find'), 'pattern_find must be absent (disabled)');
+          assert.ok(!names.includes('some_unknown_key'), 'unknown key must not appear');
+        }
+      );
+    }
+  );
+
+});
+
+// ===========================================================================
+// O. pattern_record_skip_reason audit event end-to-end (T3 T2)
+// ===========================================================================
+
+describe('O. pattern_record_skip_reason audit event end-to-end', () => {
+
+  test('tools/call pattern_record_skip_reason appends mcp_tool_call audit row',
+    { timeout: TEST_TIMEOUT },
+    async () => {
+      // T3 T2: spawn the server, call pattern_record_skip_reason, and verify
+      // an mcp_tool_call audit row is appended to events.jsonl.
+      await withServer(
+        (tmp) => {
+          // Pre-create the audit dir so events.jsonl has a known location.
+          fs.mkdirSync(path.join(tmp, '.orchestray', 'audit'), { recursive: true });
+          // Seed a current-orchestration.json so the audit event gets an orch id.
+          fs.writeFileSync(
+            path.join(tmp, '.orchestray', 'audit', 'current-orchestration.json'),
+            JSON.stringify({ orchestration_id: 'orch-skip-reason-integ-test' })
+          );
+          // Seed an empty events.jsonl.
+          fs.writeFileSync(
+            path.join(tmp, '.orchestray', 'audit', 'events.jsonl'),
+            ''
+          );
+        },
+        async (tmp, client) => {
+          await initialize(client);
+
+          const before = new Date().toISOString();
+
+          const resp = await client.sendAndReceive({
+            method: 'tools/call',
+            params: {
+              name: 'pattern_record_skip_reason',
+              arguments: {
+                orchestration_id: 'orch-skip-reason-integ-test',
+                reason: 'all-irrelevant',
+                notes: 'none of the patterns matched this task type',
+              },
+            },
+          });
+
+          const after = new Date().toISOString();
+
+          assert.equal(resp.error, undefined, 'must not produce a JSON-RPC error');
+          assert.equal(resp.result.isError, false, 'tool result must not be an error');
+          // Tool handler returns recorded: true
+          const sc = resp.result.structuredContent;
+          assert.equal(sc.recorded, true, 'pattern_record_skip_reason must return recorded:true');
+
+          // Give the server a moment to flush the async audit write.
+          await new Promise((resolve) => setTimeout(resolve, 200));
+
+          // Read events.jsonl and find the mcp_tool_call row for this tool.
+          const eventsPath = path.join(tmp, '.orchestray', 'audit', 'events.jsonl');
+          const lines = fs.readFileSync(eventsPath, 'utf8')
+            .split('\n')
+            .filter((l) => l.trim())
+            .map((l) => JSON.parse(l));
+
+          const auditRow = lines.find(
+            (e) => e.type === 'mcp_tool_call' && e.tool === 'pattern_record_skip_reason'
+          );
+          assert.ok(auditRow, 'mcp_tool_call audit row for pattern_record_skip_reason must exist');
+
+          // Verify the full event shape.
+          assert.ok(
+            typeof auditRow.timestamp === 'string' && auditRow.timestamp.endsWith('Z'),
+            'audit event timestamp must be an ISO UTC string'
+          );
+          assert.equal(auditRow.orchestration_id, 'orch-skip-reason-integ-test',
+            'audit event must carry the orchestration_id');
+          assert.ok(
+            typeof auditRow.outcome === 'string' && auditRow.outcome.length > 0,
+            'audit event must have a non-empty outcome field'
+          );
+          assert.ok(
+            typeof auditRow.duration_ms === 'number' && auditRow.duration_ms >= 0,
+            'audit event must have a non-negative duration_ms'
+          );
+        }
+      );
+    }
+  );
+
+});
+
+// ===========================================================================
+// P. orchestray:history://orch/<id>/summary resource (T3 T3)
+// ===========================================================================
+
+describe('P. orchestray:history://orch/<id>/summary resource', () => {
+
+  test('resources/read with summary URI returns orchestration.md contents',
+    { timeout: TEST_TIMEOUT },
+    async () => {
+      // T3 T3: stage a minimal orchestration.md under a temp archive directory,
+      // send a resources/read for the summary URI, and assert the response
+      // contains the expected content with correct mimeType.
+      const ORCH_ID = 'orch-summary-integ-001';
+      const EXPECTED_CONTENT = '# Orchestration: ' + ORCH_ID + '\n\nStatus: complete\n\nUnique-summary-marker-9182\n';
+
+      await withServer(
+        (tmp) => {
+          const archiveDir = path.join(tmp, '.orchestray', 'history', ORCH_ID);
+          fs.mkdirSync(archiveDir, { recursive: true });
+          fs.writeFileSync(path.join(archiveDir, 'orchestration.md'), EXPECTED_CONTENT);
+        },
+        async (_tmp, client) => {
+          await initialize(client);
+
+          const uri = 'orchestray:history://orch/' + ORCH_ID + '/summary';
+          const resp = await client.sendAndReceive({
+            method: 'resources/read',
+            params: { uri },
+          });
+
+          assert.equal(resp.error, undefined, 'summary read must not produce a JSON-RPC error');
+          assert.ok(
+            Array.isArray(resp.result.contents) && resp.result.contents.length === 1,
+            'result must have exactly one content item'
+          );
+          const item = resp.result.contents[0];
+          assert.equal(item.uri, uri, 'returned uri must match requested uri');
+          assert.equal(item.mimeType, 'text/markdown',
+            'summary resource must have mimeType text/markdown');
+          assert.ok(
+            item.text.includes('Unique-summary-marker-9182'),
+            'returned text must contain the expected marker from orchestration.md'
+          );
+          assert.equal(item.text, EXPECTED_CONTENT,
+            'returned text must exactly match orchestration.md content');
+        }
+      );
+    }
+  );
+
+  test('resources/read for summary of non-existent orchestration returns not-found error',
+    { timeout: TEST_TIMEOUT },
+    async () => {
+      // T3 T3 error path: missing orchestration directory → RESOURCE_NOT_FOUND.
+      await withServer(null, async (_tmp, client) => {
+        await initialize(client);
+        const resp = await client.sendAndReceive({
+          method: 'resources/read',
+          params: { uri: 'orchestray:history://orch/orch-does-not-exist/summary' },
+        });
+        assert.ok(resp.error, 'missing summary must return a JSON-RPC error');
+        assert.equal(resp.error.code, -32002,
+          'error code must be -32002 (resource not found)');
+        assert.ok(resp.error.message.toLowerCase().includes('not found'),
+          'error message must mention not found');
+      });
+    }
+  );
+
+  test('resources/read for summary with existing orch dir but missing orchestration.md returns not-found error',
+    { timeout: TEST_TIMEOUT },
+    async () => {
+      // T3 T3 partial fixture: dir exists but orchestration.md absent.
+      const ORCH_ID = 'orch-summary-no-md';
+      await withServer(
+        (tmp) => {
+          // Create the directory but NOT the orchestration.md file.
+          fs.mkdirSync(path.join(tmp, '.orchestray', 'history', ORCH_ID), { recursive: true });
+        },
+        async (_tmp, client) => {
+          await initialize(client);
+          const resp = await client.sendAndReceive({
+            method: 'resources/read',
+            params: { uri: 'orchestray:history://orch/' + ORCH_ID + '/summary' },
+          });
+          assert.ok(resp.error, 'missing orchestration.md must return a JSON-RPC error');
+          assert.equal(resp.error.code, -32002);
         }
       );
     }

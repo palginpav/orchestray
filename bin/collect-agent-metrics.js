@@ -7,6 +7,7 @@ const { atomicAppendJsonl } = require('./_lib/atomic-append');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { loadCostBudgetCheckConfig } = require('./_lib/config-schema');
+const { MAX_INPUT_BYTES } = require('./_lib/constants');
 
 // Module-level fallback pricing per 1M tokens (current Anthropic rates as of 2026).
 // Used ONLY when loadCostBudgetCheckConfig() fails (fail-open contract).
@@ -117,8 +118,6 @@ function estimateCost(usage, rates) {
   const total = inputCost + outputCost + cacheReadCost + cacheCreateCost;
   return Math.round(total * 1_000_000) / 1_000_000; // 6 decimal places
 }
-
-const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB cap — guards against runaway payloads OOMing the hook (T14 audit I14)
 
 // ---------------------------------------------------------------------------
 // BUG-PERF-2.0.13: configurable events.jsonl scan cap (DESIGN §D5 phase 1).

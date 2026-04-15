@@ -53,8 +53,7 @@ const {
   REQUIRED_POST_DECOMPOSITION_TOOLS,
 } = require('./_lib/mcp-checkpoint');
 const { loadMcpEnforcement } = require('./_lib/config-schema');
-
-const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB cap — mirrors gate-agent-spawn.js:28
+const { MAX_INPUT_BYTES } = require('./_lib/constants');
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -158,6 +157,12 @@ process.stdin.on('end', () => {
         // (pre-rotation). Once events-rotate fires, the file shrinks below the cap.
         const MAX_EVENTS_READ = 2 * 1024 * 1024; // 2 MB guard
         const stat = fs.statSync(eventsFile);
+        if (stat.size > MAX_EVENTS_READ) {
+          // T3 P1: emit a one-line operator warning naming the orch so the silent bypass is observable.
+          process.stderr.write(
+            `[orchestray] record-pattern-skip: events.jsonl (${stat.size} bytes) exceeds ${MAX_EVENTS_READ} guard; skip-reason check bypassed for orch ${orchId}\n`
+          );
+        }
         if (stat.size <= MAX_EVENTS_READ) {
           const raw = fs.readFileSync(eventsFile, 'utf8');
           const hasSkipReason = raw.split('\n').some(line => {

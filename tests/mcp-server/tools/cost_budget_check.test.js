@@ -18,10 +18,14 @@
  *   I — both would_exceed_* booleans false when cap not exceeded
  *   J — token estimate defaults used when estimated_* fields omitted
  *   K — explicit token estimates used when provided
+ *   W1 — running-cost accumulation from events.jsonl
  */
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const {
   handle,
@@ -29,6 +33,7 @@ const {
   resolveModelTier,
   resolvePricingTable,
   computeCost,
+  readAccumulatedCost,
 } = require('../../../bin/mcp-server/tools/cost_budget_check');
 
 // ---------------------------------------------------------------------------
@@ -85,7 +90,10 @@ describe('A: default-config path (no pricing_table in config)', () => {
     const result = await handle(baseInput(), makeContext({}));
     const body = result.structuredContent;
     // deepEqual on sorted key set catches both missing AND unexpected extra keys.
+    // W1 adds accumulated_cost_usd; T2 F10 adds agent_type.
     assert.deepEqual(Object.keys(body).sort(), [
+      'accumulated_cost_usd',
+      'agent_type',
       'effort',
       'input_tokens_used',
       'last_verified',
@@ -658,5 +666,168 @@ describe('BUILTIN_PRICING_TABLE constant', () => {
   test('opus rates match collect-agent-metrics.js PRICING', () => {
     assert.equal(BUILTIN_PRICING_TABLE.opus.input_per_1m, 5.00);
     assert.equal(BUILTIN_PRICING_TABLE.opus.output_per_1m, 25.00);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W1: running-cost accumulation tests
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a temporary project root with events.jsonl pre-seeded with
+ * agent_stop events for the given orchestration_id.
+ */
+function makeTmpProjectRoot(orchId, agentStopEvents) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-cbc-test-'));
+  const auditDir = path.join(dir, '.orchestray', 'audit');
+  fs.mkdirSync(auditDir, { recursive: true });
+  const eventsPath = path.join(auditDir, 'events.jsonl');
+  const lines = agentStopEvents.map((ev) => JSON.stringify(
+    Object.assign({ type: 'agent_stop', orchestration_id: orchId }, ev)
+  ));
+  fs.writeFileSync(eventsPath, lines.join('\n') + '\n', 'utf8');
+  return dir;
+}
+
+function cleanTmpDir(dir) {
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+describe('W1: readAccumulatedCost helper', () => {
+  test('returns 0 when events.jsonl is absent', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-cbc-test-empty-'));
+    try {
+      const result = await readAccumulatedCost('orch-x', dir, null);
+      assert.equal(result.accumulated_usd, 0);
+      assert.equal(result.warnings.length, 0, 'no warnings for absent file');
+    } finally {
+      cleanTmpDir(dir);
+    }
+  });
+
+  test('sums cost_usd from matching agent_stop events', async () => {
+    const dir = makeTmpProjectRoot('orch-001', [
+      { cost_usd: 0.50, timestamp: '2026-04-13T10:00:00Z' },
+      { cost_usd: 0.30, timestamp: '2026-04-13T11:00:00Z' },
+    ]);
+    try {
+      const result = await readAccumulatedCost('orch-001', dir, null);
+      assert.ok(Math.abs(result.accumulated_usd - 0.80) < 0.0001,
+        `expected 0.80, got ${result.accumulated_usd}`);
+    } finally {
+      cleanTmpDir(dir);
+    }
+  });
+
+  test('ignores events from other orchestration_ids', async () => {
+    const dir = makeTmpProjectRoot('orch-001', [
+      { cost_usd: 0.50, timestamp: '2026-04-13T10:00:00Z' },
+    ]);
+    // Add an event for a different orchestration.
+    const eventsPath = path.join(dir, '.orchestray', 'audit', 'events.jsonl');
+    fs.appendFileSync(eventsPath,
+      JSON.stringify({ type: 'agent_stop', orchestration_id: 'orch-OTHER', cost_usd: 9.99 }) + '\n'
+    );
+    try {
+      const result = await readAccumulatedCost('orch-001', dir, null);
+      assert.ok(Math.abs(result.accumulated_usd - 0.50) < 0.0001,
+        'should only count orch-001 events');
+    } finally {
+      cleanTmpDir(dir);
+    }
+  });
+
+  test('ignores non-agent_stop events', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-cbc-test-types-'));
+    const auditDir = path.join(dir, '.orchestray', 'audit');
+    fs.mkdirSync(auditDir, { recursive: true });
+    const eventsPath = path.join(auditDir, 'events.jsonl');
+    // agent_start should not be summed.
+    fs.writeFileSync(eventsPath,
+      JSON.stringify({ type: 'agent_start', orchestration_id: 'orch-001', cost_usd: 0.50 }) + '\n' +
+      JSON.stringify({ type: 'agent_stop', orchestration_id: 'orch-001', cost_usd: 0.30 }) + '\n',
+      'utf8'
+    );
+    try {
+      const result = await readAccumulatedCost('orch-001', dir, null);
+      assert.ok(Math.abs(result.accumulated_usd - 0.30) < 0.0001,
+        'only agent_stop should be summed');
+    } finally {
+      cleanTmpDir(dir);
+    }
+  });
+
+  test('returns 0 when no events match the orchestration_id', async () => {
+    const dir = makeTmpProjectRoot('orch-OTHER', [
+      { cost_usd: 0.50, timestamp: '2026-04-13T10:00:00Z' },
+    ]);
+    try {
+      const result = await readAccumulatedCost('orch-001', dir, null);
+      assert.equal(result.accumulated_usd, 0);
+    } finally {
+      cleanTmpDir(dir);
+    }
+  });
+});
+
+describe('W1: handle() — would_exceed_max_cost_usd with accumulated cost', () => {
+  test('returns would_exceed_max_cost=true when accumulated+projected exceeds cap', async () => {
+    // max_cost=1.0, accumulated=$0.99, projected≈$0.10 → total ≈ $1.09 > $1.00
+    const orchId = 'orch-w1-test';
+    const dir = makeTmpProjectRoot(orchId, [
+      { cost_usd: 0.99, timestamp: '2026-04-13T10:00:00Z' },
+    ]);
+    try {
+      const input = baseInput({
+        model: 'haiku',
+        orchestration_id: orchId,
+        estimated_input_tokens: 50_000,
+        estimated_output_tokens: 10_000,
+        // haiku: 50K input * $1/1M = $0.05, 10K output * $5/1M = $0.05 → ~$0.10 projected
+      });
+      const ctx = { config: { max_cost_usd: 1.00 }, projectRoot: dir };
+      const result = await handle(input, ctx);
+      assert.equal(result.isError, false);
+      const body = result.structuredContent;
+      assert.equal(body.would_exceed_max_cost, true,
+        'must flag exceeded when accumulated+projected > cap');
+      assert.ok(body.accumulated_cost_usd > 0,
+        'accumulated_cost_usd must be populated');
+    } finally {
+      cleanTmpDir(dir);
+    }
+  });
+
+  test('returns would_exceed_max_cost=false when accumulated+projected is within cap', async () => {
+    const orchId = 'orch-w1-ok';
+    const dir = makeTmpProjectRoot(orchId, [
+      { cost_usd: 0.10, timestamp: '2026-04-13T10:00:00Z' },
+    ]);
+    try {
+      const input = baseInput({
+        model: 'haiku',
+        orchestration_id: orchId,
+        estimated_input_tokens: 1_000,
+        estimated_output_tokens: 500,
+        // haiku: ~$0.003 projected
+      });
+      const ctx = { config: { max_cost_usd: 1.00 }, projectRoot: dir };
+      const result = await handle(input, ctx);
+      assert.equal(result.isError, false);
+      const body = result.structuredContent;
+      assert.equal(body.would_exceed_max_cost, false,
+        'must be false when accumulated+projected < cap');
+    } finally {
+      cleanTmpDir(dir);
+    }
+  });
+
+  test('accumulated_cost_usd is present and numeric in result', async () => {
+    const result = await handle(baseInput(), makeContext({}));
+    assert.equal(result.isError, false);
+    assert.ok(typeof result.structuredContent.accumulated_cost_usd === 'number',
+      'accumulated_cost_usd must be a number');
+    assert.ok(result.structuredContent.accumulated_cost_usd >= 0,
+      'accumulated_cost_usd must be non-negative');
   });
 });

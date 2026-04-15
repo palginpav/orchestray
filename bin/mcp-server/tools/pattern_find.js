@@ -4,7 +4,7 @@
  * `pattern_find` MCP tool.
  *
  * Retrieves the most relevant orchestration patterns for a task summary.
- * Per v2011b-architecture.md §3.2.1 and v2011c-stage2-plan.md §4/§6.
+ * See CHANGELOG.md §2.0.11 (Stage 2 MCP tools & resources) for design context.
  *
  * Stateless per-call: reads every `.orchestray/patterns/*.md`, parses
  * frontmatter, and scores by keyword/role/file-glob overlap times
@@ -17,19 +17,10 @@ const path = require('node:path');
 const paths = require('../lib/paths');
 const frontmatter = require('../lib/frontmatter');
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
-
-const AGENT_ROLES = [
-  'pm',
-  'architect',
-  'developer',
-  'refactorer',
-  'reviewer',
-  'debugger',
-  'tester',
-  'documenter',
-  'inventor',
-  'security-engineer',
-];
+const { toolSuccess, toolError } = require('../lib/tool-result');
+const { sanitizeExcerpt } = require('../lib/excerpt');
+const { logStderr } = require('../lib/rpc');
+const { AGENT_ROLES } = require('../lib/constants');
 
 const CATEGORIES = [
   'decomposition',
@@ -98,7 +89,9 @@ async function handle(input, context) {
     return toolError('pattern_find: ' + (err && err.message ? err.message : String(err)));
   }
 
-  const mdFiles = entries.filter((n) => n.endsWith('.md'));
+  // T3 C2: sort before the scoring loop so tied scores yield deterministic
+  // output regardless of filesystem readdir ordering.
+  const mdFiles = entries.filter((n) => n.endsWith('.md')).sort();
   const index = [];
   for (const name of mdFiles) {
     const filepath = path.join(patternsDir, name);
@@ -106,12 +99,12 @@ async function handle(input, context) {
     try {
       content = fs.readFileSync(filepath, 'utf8');
     } catch (err) {
-      try { process.stderr.write('[orchestray-mcp] pattern_find: read failed ' + filepath + '\n'); } catch (_e) {}
+      logStderr('pattern_find: read failed ' + filepath);
       continue;
     }
     const parsed = frontmatter.parse(content);
     if (!parsed.hasFrontmatter) {
-      try { process.stderr.write('[orchestray-mcp] pattern_find.parse_error: ' + name + '\n'); } catch (_e) {}
+      logStderr('pattern_find.parse_error: ' + name);
       continue;
     }
     const slug = name.slice(0, -3); // strip .md
@@ -190,7 +183,9 @@ async function handle(input, context) {
     }
     if (fileBonus > 0) matchReasons.push('file-overlap');
 
-    const oneLine = _firstLine(description || entry.body);
+    // T3 S2: sanitize one_line to limit prompt-injection exposure.
+    // cap at 80 chars and strip markdown special sequences.
+    const oneLine = sanitizeExcerpt(_firstLine(description || entry.body));
 
     scored.push({
       slug: entry.slug,
@@ -283,25 +278,6 @@ function _firstLine(s) {
   const idx = s.indexOf('\n');
   const line = idx === -1 ? s : s.slice(0, idx);
   return line.trim().slice(0, 200);
-}
-
-// ---------------------------------------------------------------------------
-// Result shape helpers
-// ---------------------------------------------------------------------------
-
-function toolSuccess(structuredContent) {
-  return {
-    isError: false,
-    content: [{ type: 'text', text: JSON.stringify(structuredContent) }],
-    structuredContent,
-  };
-}
-
-function toolError(text) {
-  return {
-    isError: true,
-    content: [{ type: 'text', text }],
-  };
 }
 
 module.exports = {

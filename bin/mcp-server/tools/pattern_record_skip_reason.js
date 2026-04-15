@@ -4,14 +4,18 @@
  * `pattern_record_skip_reason` MCP tool.
  *
  * Records a structured "none of the returned patterns shaped this
- * decomposition" decision immediately after a `pattern_find` call. Produces
- * an `mcp_tool_call` audit row so the 2.0.15 §22c false-positive analysis
- * has machine-readable K/F signal inputs.
+ * decomposition" decision immediately after a `pattern_find` call. This
+ * handler is a pure result emitter — it does NOT emit the `mcp_tool_call`
+ * audit row itself. The central dispatcher in `server.js` (tools/call
+ * dispatch block) emits that event for all non-ask_user tools. The audit
+ * row will carry the `orchestration_id` from this tool's input (via the
+ * T2 F4 override in server.js) rather than the filesystem marker.
  *
  * Per 2014-scope-proposal.md §W1.
  */
 
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
+const { toolSuccess, toolError } = require('../lib/tool-result');
 
 // The four-value reason enum per scope-proposal §W1 R5 risk.
 const SKIP_REASONS = ['all-irrelevant', 'all-low-confidence', 'all-stale', 'other'];
@@ -38,8 +42,6 @@ const definition = deepFreeze({
   inputSchema: INPUT_SCHEMA,
 });
 
-// Note: orchestration_id input is validation-only and echoed in result; the audit event
-// uses readOrchestrationId() for consistency with pattern_record_application.
 async function handle(input, _context) {
   const validation = validateAgainstSchema(input, INPUT_SCHEMA);
   if (!validation.ok) {
@@ -64,21 +66,6 @@ async function handle(input, _context) {
   }
 
   return toolSuccess(result);
-}
-
-function toolSuccess(structuredContent) {
-  return {
-    isError: false,
-    content: [{ type: 'text', text: JSON.stringify(structuredContent) }],
-    structuredContent,
-  };
-}
-
-function toolError(text) {
-  return {
-    isError: true,
-    content: [{ type: 'text', text }],
-  };
 }
 
 module.exports = {

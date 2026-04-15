@@ -36,8 +36,7 @@ const path = require('path');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { loadShieldConfig } = require('./_lib/config-schema');
 const { RULES } = require('./_lib/shield-rules');
-
-const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB cap — guards against runaway payloads
+const { MAX_INPUT_BYTES } = require('./_lib/constants');
 
 // Env-var escape hatch: set ORCHESTRAY_SHIELD_DISABLED=1 for zero-overhead exit
 // when the shield is permanently disabled (avoids even one config readFileSync).

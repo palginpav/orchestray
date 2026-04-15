@@ -170,14 +170,21 @@ function findCheckpointsForOrchestration(cwd, orchestrationId) {
  * Phase filtering (A1 I2): only rows whose `phase` field equals phaseFilter
  * are considered. Pass null/undefined to disable phase filtering.
  *
+ * Contract: an empty `rows` array means NO tool has a matching row, so ALL
+ * tools in `requiredSet` are missing. The previous early-return `[]` on empty
+ * input was semantically inverted (T2 F5 — returns "nothing missing" when
+ * everything is missing). That guard has been removed. The gate in
+ * gate-agent-spawn.js retains its own `rowsForThisOrch.length === 0` pre-check
+ * for the explicit cross-orchestration fail-open path; that logic belongs in the
+ * gate, not here.
+ *
  * @param {CheckpointEntry[]} rows        - Already-fetched rows for one orchestration
  * @param {string[]}          requiredSet - Tool names that must each have ≥1 row
  * @param {string|null}       [phaseFilter='pre-decomposition'] - Phase to filter on
- * @returns {string[]} Tool names from requiredSet that have no matching row
+ * @returns {string[]} Tool names from requiredSet that have no matching row;
+ *   returns the full requiredSet when rows is empty (all tools are missing).
  */
 function missingRequiredToolsFromRows(rows, requiredSet, phaseFilter = 'pre-decomposition') {
-  if (!rows.length) return [];
-
   const filtered = phaseFilter != null
     ? rows.filter(e => e && e.phase === phaseFilter)
     : rows;

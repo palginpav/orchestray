@@ -38,6 +38,7 @@ const {
   missingRequiredToolsFromRows,
 } = require('./_lib/mcp-checkpoint');
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { MAX_INPUT_BYTES } = require('./_lib/constants');
 
 const VALID_TIERS = ['haiku', 'sonnet', 'opus'];
 
@@ -45,8 +46,6 @@ function isValidModel(model) {
   const m = model.toLowerCase();
   return VALID_TIERS.some(tier => m.includes(tier));
 }
-
-const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB cap — guards against runaway payloads OOMing the hook (T14 audit I14)
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -168,7 +167,73 @@ process.stdin.on('end', () => {
       try {
         const agentType = toolInput.subagent_type || '';
         const descRaw = toolInput.description || (toolInput.prompt && toolInput.prompt.substring(0, 80)) || '';
-        const entry = findRoutingEntry(cwd, agentType, descRaw);
+        // W4: task_id-based match (more forgiving than description match).
+        // The PM may embed task_id in toolInput.task_id. If present, try to match on
+        // (orchestration_id, task_id, agent_type) first — this is immune to description drift.
+        // If task_id is unavailable from the spawn context, fall back to (agent_type, description).
+        //
+        // W4b (v2.0.15 preflight): Claude Code's Agent() wire format currently drops
+        // unknown toolInput fields, so toolInput.task_id is almost always null in
+        // practice. To make W4 actually activate, extract a task_id from the leading
+        // token of the description when it matches our convention `TASK-ID <rest>`
+        // (e.g., "DEV-1 ...", "A1 ...", "T3 ..."). This mirrors how the PM writes
+        // task_id in routing.jsonl.
+        let spawnTaskId = toolInput.task_id || null;
+        if (!spawnTaskId && typeof descRaw === 'string') {
+          const m = descRaw.match(/^([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)\s/);
+          if (m) spawnTaskId = m[1];
+        }
+
+        let entry = null;
+        let matchedViaTaskId = false;
+
+        if (spawnTaskId) {
+          // Primary match: (task_id, agent_type) — description drift does not cause a miss.
+          const { readRoutingEntries } = require('./_lib/routing-lookup');
+          const allEntries = readRoutingEntries(cwd);
+          const taskIdMatches = allEntries.filter(e =>
+            e && e.task_id === spawnTaskId && e.agent_type === agentType
+          );
+          if (taskIdMatches.length > 0) {
+            // Take the most recent match (latest timestamp), mirroring findRoutingEntry behaviour.
+            taskIdMatches.sort((a, b) => {
+              const ta = a.timestamp || '';
+              const tb = b.timestamp || '';
+              if (tb > ta) return 1;
+              if (tb < ta) return -1;
+              return 0;
+            });
+            entry = taskIdMatches[0];
+            matchedViaTaskId = true;
+            // Warn if description drifted so operators can see the mismatch without hard-blocking.
+            const storedDesc = (entry.description || '').trim();
+            const lookupDesc = descRaw.substring(0, 80).trim();
+            if (storedDesc && lookupDesc && storedDesc !== lookupDesc &&
+                !storedDesc.startsWith(lookupDesc + ' ') &&
+                !lookupDesc.startsWith(storedDesc + ' ')) {
+              process.stderr.write(
+                '[orchestray] routing match fell back to task_id key — description drift detected ' +
+                '(task_id=' + spawnTaskId + ', agent=' + agentType + '). ' +
+                'Stored desc: ' + JSON.stringify(storedDesc) + ', ' +
+                'spawn desc: ' + JSON.stringify(lookupDesc) + '. ' +
+                'Update routing.jsonl description to match the actual Agent() call to silence.\n'
+              );
+            }
+          }
+        }
+
+        if (!entry) {
+          // Fallback: (agent_type, description) match — existing behaviour.
+          // If task_id was present but produced no match, this fallback still runs.
+          if (spawnTaskId) {
+            process.stderr.write(
+              '[orchestray] routing match fell back to description key (task_id=' + spawnTaskId +
+              ' found no match for agent=' + agentType + '). ' +
+              'Ensure routing.jsonl entry has matching task_id + agent_type.\n'
+            );
+          }
+          entry = findRoutingEntry(cwd, agentType, descRaw);
+        }
 
         if (entry === null) {
           const descPreview = descRaw.substring(0, 80);
@@ -188,6 +253,7 @@ process.stdin.on('end', () => {
           process.stderr.write(
             '[orchestray] model routing mismatch: routing.jsonl says ' + entry.model +
             ' for task ' + (entry.task_id || '(unknown)') +
+            (matchedViaTaskId ? ' (matched via task_id)' : '') +
             ' but Agent() was called with model=' + model + '. ' +
             'The PM must pass the model recorded at decomposition time. ' +
             'Re-read routing.jsonl.\n'
@@ -253,7 +319,7 @@ process.stdin.on('end', () => {
                 // after BUG-B is fixed, phase-strictness at the gate is defense-in-depth
                 // we cannot afford — the gate's job is "did the PM call the tool", not
                 // "did the PM call it at the right phase label". Do NOT revert without
-                // reading .planning/phases/2013-mcp-learning-loop-live/DESIGN.md §D1.
+                // reading CHANGELOG.md §2.0.13 BUG-B / BUG-D.
                 const missing = missingRequiredToolsFromRows(rowsForThisOrch, enforcedTools, null);
 
                 if (missing.length > 0) {

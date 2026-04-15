@@ -3,7 +3,7 @@
 /**
  * `orchestray:kb://` resource handler.
  *
- * Per v2011b-architecture.md §3.3 and v2011c-stage2-plan.md §9.
+ * See CHANGELOG.md §2.0.11 (Stage 2 MCP tools & resources) for design context.
  */
 
 const fs = require('node:fs');

@@ -6,8 +6,7 @@ const path = require('path');
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
-
-const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB cap — guards against runaway payloads OOMing the hook (T14 audit I14)
+const { MAX_INPUT_BYTES } = require('./_lib/constants');
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -65,7 +64,7 @@ process.stdin.on('end', () => {
         // wins — we exit(2) below regardless of whether the audit log
         // was written, but operators can now distinguish "rejected cleanly"
         // from "rejected but audit trail is broken".
-        console.error('[orchestray] audit write failed: ' + auditErr.message);
+        process.stderr.write('[orchestray] validate-task-completion: audit write failed: ' + auditErr.message + '\n');
       }
 
       process.stderr.write(

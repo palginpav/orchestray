@@ -133,11 +133,12 @@ mcp_enforcement.unknown_tool_policy       block/warn/allow — policy for unreco
 mcp_enforcement.global_kill_switch        true restores 2.0.11 enforcement behaviour; no session restart needed (default: false)
 
 audit.max_events_bytes_for_scan   Maximum bytes of events.jsonl scanned per hook invocation;
-                                  override with ORCHESTRAY_MAX_EVENTS_BYTES env var (default: materially
-                                  larger than the 2.0.12 cap; set lower on constrained environments)
+                                  override with ORCHESTRAY_MAX_EVENTS_BYTES env var (default: 32 MB
+                                  (vs the prior 2 MB cap); set lower on constrained environments)
 
 mcp_server.tools.pattern_record_skip_reason  Enable the pattern_record_skip_reason MCP tool (default: true)
 mcp_server.tools.cost_budget_check           Enable the cost_budget_check MCP tool (default: true)
+mcp_server.tools.kb_write                    Enable the kb_write MCP tool for atomic artifact write + index.json update (default: true)
 
 mcp_server.cost_budget_check.pricing_table   Per-model pricing used by cost_budget_check and collect-agent-metrics;
                                               seeded on install with current Anthropic pricing (Haiku $1/$5,
@@ -148,7 +149,9 @@ shield.r14_dedup_reads.enabled    Enable R14 cache-replay dedup for Read tool ca
                                   set false to disable the context-shield hook without removing it
 ```
 
-The `mcp_enforcement` block is automatically added to `.orchestray/config.json` on the first `UserPromptSubmit` after upgrading to 2.0.13+ — no manual migration needed. On 2.0.14+, the same sweep also backfills the `mcp_server.cost_budget_check.pricing_table` block if absent.
+The `mcp_enforcement` block is automatically added to `.orchestray/config.json` on the first `UserPromptSubmit` after upgrading to 2.0.13+ — no manual migration needed. On 2.0.14+, the same sweep also backfills the `mcp_server.cost_budget_check.pricing_table` block if absent. On 2.0.15+, the sweep additionally seeds the `kb_write` tool enable entry and the `pattern_record_skip_reason` / `cost_budget_check` enforcement keys for existing installs.
+
+**Routing-gate match key (2.0.15+).** The routing gate matches spawns on `(task_id, agent_type)` rather than the previous three-field tuple — forgiving to description drift. If you observe gate blocks on valid `Agent()` spawns, confirm that `routing.jsonl` is written before the spawn call; the PM's orchestration prompt now enforces this as a mandatory step.
 
 ### Health Signals
 
@@ -208,7 +211,7 @@ All orchestration state lives in `.orchestray/` (gitignored):
 ## Requirements
 
 - [Claude Code](https://claude.ai/code) v2.0.0+
-- Claude Code 2.1.59+ recommended — the BUG-A fix in 2.0.13 depends on the `PostToolUse` payload shape captured against CC 2.1.59; earlier versions may produce `outcome: "skipped"` rows in the MCP checkpoint ledger; the 2.0.14 context-shield hook also targets CC 2.1.59's `PreToolUse` payload shape
+- Claude Code 2.1.59+ recommended — earlier versions may produce `outcome: "skipped"` rows in the MCP checkpoint ledger; the context-shield hook also targets CC 2.1.59's `PreToolUse` payload shape
 - Agent Teams features require v2.1.32+ (opt-in)
 
 Agent Teams features (TaskCreated / TaskCompleted / TeammateIdle hooks) require Claude Code v2.1.32+ with the experimental flag `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` set in the environment or `settings.json`. Without the flag, these hooks are installed but dormant — nothing breaks, they simply never fire.
@@ -217,10 +220,10 @@ Agent Teams features (TaskCreated / TaskCompleted / TeammateIdle hooks) require 
 
 ### Gate blocks first spawn after upgrade
 
-If `gate-agent-spawn.js` blocks the PM's first `Agent()` call after upgrading to 2.0.13+, the most likely cause is that the automatic W11 migration did not yet run (it fires on the next `UserPromptSubmit`, not at install time). Try the following in order:
+If `gate-agent-spawn.js` blocks the PM's first `Agent()` call after upgrading to 2.0.13+, the most likely cause is that the automatic checkpoint-ledger migration has not yet run (it fires on the next `UserPromptSubmit`, not at install time). Try the following in order:
 
-1. **Wait for the sweep.** On the next user prompt the `bin/post-upgrade-sweep.js` hook will run and flip any BUG-B-poisoned rows in `.orchestray/state/mcp-checkpoint.jsonl`. If the gate then passes, you're done.
-2. **Nuclear option — kill switch.** Set `mcp_enforcement.global_kill_switch: true` in `.orchestray/config.json` to bypass the checkpoint gate entirely and complete the in-flight orchestration. Clear it once you're done. No session restart is required.
+1. **Wait for the sweep.** On the next user prompt the `bin/post-upgrade-sweep.js` hook will run and repair any stale phase rows in `.orchestray/state/mcp-checkpoint.jsonl`. If the gate then passes, you're done.
+2. **Nuclear option — kill switch.** Set `mcp_enforcement.global_kill_switch: true` (and a non-empty `kill_switch_reason`) in `.orchestray/config.json` to bypass the checkpoint gate entirely and complete the in-flight orchestration. Clear both fields once you're done. No session restart is required.
 3. **Manual sentinel reset.** If the sweep appears stuck, delete `.orchestray/state/.mcp-checkpoint-migrated-2013` to force it to re-run on the next prompt.
 
 Reference: `bin/post-upgrade-sweep.js` is the automatic recovery path. `mcp_enforcement.global_kill_switch` is the always-available manual escape hatch.

@@ -4,14 +4,15 @@
  * `history_query_events` MCP tool.
  *
  * Filtered query over the live audit and every archived orchestration's
- * events.jsonl. Per v2011b-architecture.md §3.2.3 and
- * v2011c-stage2-plan.md §4/§7.
+ * events.jsonl. See CHANGELOG.md §2.0.11 (Stage 2 MCP tools & resources) for design context.
  */
 
 const path = require('node:path');
 
 const { queryEvents } = require('../lib/history_scan');
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
+const { toolSuccess, toolError } = require('../lib/tool-result');
+const { AGENT_ROLES } = require('../lib/constants');
 
 const EVENT_TYPES = [
   'agent_start',
@@ -58,7 +59,9 @@ const INPUT_SCHEMA = {
       type: 'array',
       items: { type: 'string', enum: EVENT_TYPES },
     },
-    agent_role: { type: 'string' },
+    // T3 D2: enum constraint prevents silent zero-result typos.
+    // Exact equality is used in history_scan._matches so a bad value returns no events.
+    agent_role: { type: 'string', enum: AGENT_ROLES },
     limit: { type: 'integer', minimum: 1, maximum: 500 },
     offset: { type: 'integer', minimum: 0 },
   },
@@ -96,21 +99,6 @@ async function handle(input, context) {
   } catch (err) {
     return toolError('history_query_events: ' + (err && err.message ? err.message : String(err)));
   }
-}
-
-function toolSuccess(structuredContent) {
-  return {
-    isError: false,
-    content: [{ type: 'text', text: JSON.stringify(structuredContent) }],
-    structuredContent,
-  };
-}
-
-function toolError(text) {
-  return {
-    isError: true,
-    content: [{ type: 'text', text }],
-  };
 }
 
 module.exports = {

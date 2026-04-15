@@ -37,6 +37,8 @@ const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { readRoutingEntries } = require('./_lib/routing-lookup');
 
 const { appendCheckpointEntry } = require('./_lib/mcp-checkpoint');
+// T3 X3: MAX_INPUT_BYTES is now the shared constant from _lib/constants.js.
+const { MAX_INPUT_BYTES } = require('./_lib/constants');
 
 /** Tools this hook enforces. Any mcp__orchestray__ call not in this set is ignored. */
 const ENFORCED_TOOLS = new Set([
@@ -45,8 +47,6 @@ const ENFORCED_TOOLS = new Set([
   'history_find_similar_tasks',
   'pattern_record_application',
 ]);
-
-const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB cap — guards against runaway payloads OOMing the hook (T14 audit I14)
 
 // BUG-A-2.0.13: Claude Code 2.1.59 delivers MCP tool results as `event.tool_response`
 // (a JSON STRING), not as `event.tool_result` (which is `undefined`). The 2.0.12 hook
@@ -181,7 +181,7 @@ process.stdin.on('end', () => {
     // blocking on audit-data corruption.
     //
     // Do NOT revert to file-existence heuristic.
-    // See .planning/phases/2013-mcp-learning-loop-live/DESIGN.md §D1.
+    // See CHANGELOG.md §2.0.13 BUG-B / BUG-D for the design rationale.
     let phase;
     try {
       const allRoutingEntries = readRoutingEntries(cwd);

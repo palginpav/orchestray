@@ -51,9 +51,13 @@ const LOCK_BACKOFF_MS = 50;
  */
 function cacheFilePath(cwd, sessionId) {
   const stateDir = path.join(cwd, '.orchestray', 'state');
-  // Sanitize session_id: replace any path-separator characters so a malformed
-  // session_id cannot cause a directory traversal.
-  const safeId = String(sessionId || 'unknown').replace(/[/\\]/g, '_').slice(0, 128);
+  // S3: Use the same allow-list approach as assertSafeSegment in
+  // bin/mcp-server/lib/paths.js — replace anything not in [a-zA-Z0-9_-] with
+  // '_'. The previous replace(/[/\\]/g, '_') only stripped path separators and
+  // missed other filesystem-special characters (null bytes, colons on Windows,
+  // etc.). The allow-list is the source-of-truth approach used elsewhere in the
+  // plugin; duplicating it here avoids a circular require with the MCP server.
+  const safeId = String(sessionId || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
   return path.join(stateDir, '.shield-session-' + safeId + '.json');
 }
 

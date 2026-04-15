@@ -3,7 +3,7 @@
 /**
  * Hand-written JSON-Schema subset validators for the Orchestray MCP server.
  *
- * Per v2011c-stage1-plan.md §3.2. No external deps — Stage 1 discipline is
+ * See CHANGELOG.md §2.0.11 (Stage 1 MCP surface) for design context. No external deps —
  * Node 20 stdlib only.
  *
  * Public contract:
@@ -317,7 +317,7 @@ const ASK_USER_TOOL_DEFINITION = deepFreeze({
  *
  * Returns { ok: true } | { ok: false, errors: string[] }. Pure; never throws.
  *
- * Per v2011c-stage2-plan.md §5.
+ * See CHANGELOG.md §2.0.11 (Stage 2 MCP tools & resources) for design context.
  */
 
 // Keywords we deliberately do NOT validate. `additionalProperties` is
@@ -564,6 +564,17 @@ const COST_BUDGET_CHECK_MODEL_TIERS = deepFreeze(
   ['haiku', 'sonnet', 'opus']
 );
 
+// ---------------------------------------------------------------------------
+// KB_WRITE_BUCKETS — canonical bucket enum for the kb_write tool
+// ---------------------------------------------------------------------------
+
+/**
+ * The three valid KB buckets accepted by the `kb_write` tool.
+ * Exported so the tool handler and tests share a single source of truth.
+ * Per v2015-architect-mcp-design.md §W6.
+ */
+const KB_WRITE_BUCKETS = deepFreeze(['artifacts', 'facts', 'decisions']);
+
 module.exports = {
   validateAskUserInput,
   validateAskUserOutput,
@@ -574,4 +585,5 @@ module.exports = {
   PATTERN_RECORD_SKIP_REASON_REASONS,
   COST_BUDGET_CHECK_EFFORT_VALUES,
   COST_BUDGET_CHECK_MODEL_TIERS,
+  KB_WRITE_BUCKETS,
 };

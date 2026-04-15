@@ -7,7 +7,7 @@
  * caller paths are accepted in Stage 1 — all inputs come from the server's
  * own environment (env vars, __dirname, process.cwd()).
  *
- * Per v2011c-stage1-plan.md §3.1.
+ * See CHANGELOG.md §2.0.11 (Stage 1 MCP surface) for design context.
  */
 
 const fs = require('node:fs');

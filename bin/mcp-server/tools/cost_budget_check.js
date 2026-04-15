@@ -12,9 +12,14 @@
  * for subagent contexts (OQ1 decision: PM-only in 2.0.14, deferred for 2.0.15).
  */
 
+const fs = require('node:fs');
+const path = require('node:path');
+
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
 const { loadCostBudgetCheckConfig } = require('../../_lib/config-schema');
 const { resolveSafeCwd } = require('../../_lib/resolve-project-cwd');
+const { toolSuccess, toolError } = require('../lib/tool-result');
+const { AGENT_ROLES } = require('../lib/constants');
 
 // ---------------------------------------------------------------------------
 // Built-in pricing table (fall-back when config is missing or malformed).
@@ -56,8 +61,8 @@ const INPUT_SCHEMA = {
     effort: {
       type: 'string',
       enum: EFFORT_VALUES,
-      // Advisory-only in 2.0.14: effort is captured and echoed in result.effort
-      // but no cost multiplier is applied. Multiplier support is deferred to 2.0.15.
+      // Advisory-only: effort is captured and echoed in result.effort but no
+      // cost multiplier is applied. Multiplier support remains deferred beyond 2.0.15.
       description: 'Effort level (low, medium, high, max). Optional — advisory only.',
     },
     orchestration_id: {
@@ -77,6 +82,13 @@ const INPUT_SCHEMA = {
       minimum: 0,
       maximum: 2_000_000,
       description: 'Estimated output tokens. If omitted, historical averages are used.',
+    },
+    // T2 F10: agent_type was documented in CHANGELOG but missing from the schema.
+    // Optional — included for richer advisory output; does not affect cost projection.
+    agent_type: {
+      type: 'string',
+      enum: AGENT_ROLES,
+      description: 'Agent role for the proposed spawn (optional — informational only).',
     },
   },
 };
@@ -211,6 +223,86 @@ function computeCost(inputTokens, outputTokens, rates) {
 }
 
 // ---------------------------------------------------------------------------
+// Running-cost accumulation (W1)
+// ---------------------------------------------------------------------------
+
+// Maximum bytes to read from events.jsonl (same guard as record-pattern-skip.js).
+const MAX_EVENTS_READ = 2 * 1024 * 1024; // 2 MB
+
+/**
+ * Sum `cost_usd` from `agent_stop` events in events.jsonl for the given
+ * orchestration_id.
+ *
+ * Fail-open contract: any I/O or parse error returns
+ * `{ accumulated_usd: 0, warnings: ['running_cost_unavailable'] }` rather
+ * than throwing. The caller adds this to projectedCostUsd before cap checks.
+ *
+ * @param {string} orchId
+ * @param {string|null} projectRoot
+ * @param {string|null} dateFilter - ISO date string 'YYYY-MM-DD' for daily/weekly filter (or null for total)
+ * @returns {Promise<{ accumulated_usd: number, warnings: string[] }>}
+ */
+async function readAccumulatedCost(orchId, projectRoot, dateFilter) {
+  const unavailable = { accumulated_usd: 0, warnings: ['running_cost_unavailable'] };
+  if (!projectRoot || !orchId) return unavailable;
+
+  let eventsPath;
+  try {
+    eventsPath = path.join(projectRoot, '.orchestray', 'audit', 'events.jsonl');
+  } catch (_e) {
+    return unavailable;
+  }
+
+  // Size guard — skip accumulation if file is too large to avoid blocking.
+  try {
+    const stat = fs.statSync(eventsPath);
+    if (stat.size > MAX_EVENTS_READ) {
+      return { accumulated_usd: 0, warnings: ['running_cost_unavailable'] };
+    }
+  } catch (_e) {
+    // File absent or unreadable — no accumulated cost.
+    return { accumulated_usd: 0, warnings: [] };
+  }
+
+  let totalUsd = 0;
+  let parseOk = true;
+
+  try {
+    const raw = fs.readFileSync(eventsPath, 'utf8');
+    for (const rawLine of raw.split('\n')) {
+      const line = rawLine.trim();
+      if (line.length === 0) continue;
+      let ev;
+      try {
+        ev = JSON.parse(line);
+      } catch (_e) {
+        continue;
+      }
+      if (!ev || typeof ev !== 'object') continue;
+      if (ev.orchestration_id !== orchId) continue;
+      if (ev.type !== 'agent_stop') continue;
+
+      // Apply date filter for daily/weekly accumulation.
+      if (dateFilter && typeof ev.timestamp === 'string') {
+        if (!ev.timestamp.startsWith(dateFilter)) continue;
+      }
+
+      // Sum cost — try cost_usd first, then nested cost.cost_usd.
+      const costField =
+        (typeof ev.cost_usd === 'number') ? ev.cost_usd :
+        (ev.cost && typeof ev.cost.cost_usd === 'number') ? ev.cost.cost_usd :
+        0;
+      totalUsd += costField;
+    }
+  } catch (_e) {
+    parseOk = false;
+  }
+
+  if (!parseOk) return unavailable;
+  return { accumulated_usd: totalUsd, warnings: [] };
+}
+
+// ---------------------------------------------------------------------------
 // Budget limit checks
 // ---------------------------------------------------------------------------
 
@@ -278,6 +370,19 @@ async function handle(input, context) {
   // Compute projected cost
   const projectedCostUsd = computeCost(inputTokens, outputTokens, rates);
 
+  // W1: Read accumulated running cost from events.jsonl for this orchestration.
+  // Fail-open: if unavailable, project-only comparison still runs; warnings are appended.
+  const today = new Date().toISOString().slice(0, 10); // 'YYYY-MM-DD'
+  const [accTotal, accDaily] = await Promise.all([
+    readAccumulatedCost(input.orchestration_id, projectRoot, null),
+    readAccumulatedCost(input.orchestration_id, projectRoot, today),
+  ]);
+  const accumulatedUsd = accTotal.accumulated_usd;
+  const accumulatedDailyUsd = accDaily.accumulated_usd;
+  // Weekly accumulation: sum everything (no practical per-week filter without
+  // knowing the week boundary; use total accumulated as conservative estimate).
+  const accumulatedWeeklyUsd = accTotal.accumulated_usd;
+
   // Read cost caps
   const caps = readCostCaps(config);
   const anyCap = caps.max_cost_usd !== null ||
@@ -305,27 +410,42 @@ async function handle(input, context) {
     );
   }
 
-  // Budget limit checks (only meaningful when caps are configured)
+  // Propagate running_cost_unavailable warnings from both accumulators.
+  // B2 (v2.0.15 preflight): merge accDaily.warnings too — the daily scan
+  // can diverge from the total scan on partial reads and its warnings were
+  // previously swallowed.
+  for (const w of accTotal.warnings) {
+    if (!warnings.includes(w)) warnings.push(w);
+  }
+  for (const w of accDaily.warnings) {
+    if (!warnings.includes(w)) warnings.push(w);
+  }
+
+  // W1: Cap comparisons include accumulated spend + projected cost.
+  const totalForMaxCap = accumulatedUsd + projectedCostUsd;
+  const totalForDailyCap = accumulatedDailyUsd + projectedCostUsd;
+  const totalForWeeklyCap = accumulatedWeeklyUsd + projectedCostUsd;
+
   const wouldExceedMaxCost =
-    caps.max_cost_usd !== null && projectedCostUsd > caps.max_cost_usd;
+    caps.max_cost_usd !== null && totalForMaxCap > caps.max_cost_usd;
   const wouldExceedDailyLimit =
-    caps.daily_cost_limit_usd !== null && projectedCostUsd > caps.daily_cost_limit_usd;
+    caps.daily_cost_limit_usd !== null && totalForDailyCap > caps.daily_cost_limit_usd;
   const wouldExceedWeeklyLimit =
-    caps.weekly_cost_limit_usd !== null && projectedCostUsd > caps.weekly_cost_limit_usd;
+    caps.weekly_cost_limit_usd !== null && totalForWeeklyCap > caps.weekly_cost_limit_usd;
 
   if (wouldExceedMaxCost) {
     warnings.push(
-      `projected cost $${projectedCostUsd.toFixed(4)} exceeds max_cost_usd $${caps.max_cost_usd}`
+      `accumulated+projected cost $${totalForMaxCap.toFixed(4)} exceeds max_cost_usd $${caps.max_cost_usd}`
     );
   }
   if (wouldExceedDailyLimit) {
     warnings.push(
-      `projected cost $${projectedCostUsd.toFixed(4)} exceeds daily_cost_limit_usd $${caps.daily_cost_limit_usd}`
+      `accumulated+projected daily cost $${totalForDailyCap.toFixed(4)} exceeds daily_cost_limit_usd $${caps.daily_cost_limit_usd}`
     );
   }
   if (wouldExceedWeeklyLimit) {
     warnings.push(
-      `projected cost $${projectedCostUsd.toFixed(4)} exceeds weekly_cost_limit_usd $${caps.weekly_cost_limit_usd}`
+      `accumulated+projected cost $${totalForWeeklyCap.toFixed(4)} exceeds weekly_cost_limit_usd $${caps.weekly_cost_limit_usd} (conservative estimate — true weekly filter not implemented)`
     );
   }
 
@@ -334,6 +454,8 @@ async function handle(input, context) {
     model: input.model,
     model_tier: tier,
     effort: input.effort || null,
+    agent_type: input.agent_type || null,
+    accumulated_cost_usd: accumulatedUsd,
     projected_cost_usd: projectedCostUsd,
     pricing_source: pricingSource,
     last_verified: lastVerified,
@@ -349,25 +471,6 @@ async function handle(input, context) {
   return toolSuccess(result);
 }
 
-// ---------------------------------------------------------------------------
-// Response helpers
-// ---------------------------------------------------------------------------
-
-function toolSuccess(structuredContent) {
-  return {
-    isError: false,
-    content: [{ type: 'text', text: JSON.stringify(structuredContent) }],
-    structuredContent,
-  };
-}
-
-function toolError(text) {
-  return {
-    isError: true,
-    content: [{ type: 'text', text }],
-  };
-}
-
 module.exports = {
   definition,
   handle,
@@ -375,4 +478,5 @@ module.exports = {
   resolveModelTier,
   resolvePricingTable,
   computeCost,
+  readAccumulatedCost,
 };

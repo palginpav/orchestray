@@ -3,7 +3,7 @@
 /**
  * `orchestray:pattern://` resource handler.
  *
- * Per v2011b-architecture.md §3.3 and v2011c-stage2-plan.md §9.
+ * See CHANGELOG.md §2.0.11 (Stage 2 MCP tools & resources) for design context.
  *
  * Exports:
  *   async list(context)
@@ -16,6 +16,7 @@ const path = require('node:path');
 
 const paths = require('../lib/paths');
 const frontmatter = require('../lib/frontmatter');
+const audit = require('../lib/audit');
 
 function _root(context) {
   return (context && context.projectRoot) || null;
@@ -50,6 +51,17 @@ async function list(context) {
     const parsed = frontmatter.parse(content);
     if (!parsed.hasFrontmatter) {
       try { process.stderr.write('[orchestray-mcp] pattern_resource.list: skip (no frontmatter) ' + name + '\n'); } catch (_e2) {}
+      // T1 H4 (v2.0.15): emit mcp_data_quality audit event so malformed/missing
+      // frontmatter is observable in events.jsonl, not just stderr.
+      // B4 (v2.0.15 preflight): use canonical buildDataQualityEvent helper so
+      // the event shape matches buildAuditEvent / buildResourceAuditEvent.
+      try {
+        audit.writeAuditEvent(audit.buildDataQualityEvent({
+          source: 'pattern_resource.list',
+          file: name,
+          reason: 'no_frontmatter',
+        }));
+      } catch (_e3) { /* fail-open */ }
       continue;
     }
     const fm = parsed.frontmatter;

@@ -4,7 +4,7 @@
  * `pattern_record_application` MCP tool.
  *
  * Increments `times_applied` and updates `last_applied` on a pattern file.
- * Per v2011b-architecture.md §3.2.2 and v2011c-stage2-plan.md §4/§6.
+ * See CHANGELOG.md §2.0.11 (Stage 2 MCP tools & resources) for design context.
  */
 
 const fs = require('node:fs');
@@ -13,6 +13,7 @@ const path = require('node:path');
 const paths = require('../lib/paths');
 const frontmatter = require('../lib/frontmatter');
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
+const { toolSuccess, toolError } = require('../lib/tool-result');
 
 const OUTCOMES = ['applied', 'applied-success', 'applied-failure'];
 
@@ -123,21 +124,6 @@ function _toInt(v, fallback) {
     if (Number.isFinite(n)) return Math.trunc(n);
   }
   return fallback;
-}
-
-function toolSuccess(structuredContent) {
-  return {
-    isError: false,
-    content: [{ type: 'text', text: JSON.stringify(structuredContent) }],
-    structuredContent,
-  };
-}
-
-function toolError(text) {
-  return {
-    isError: true,
-    content: [{ type: 'text', text }],
-  };
 }
 
 module.exports = {

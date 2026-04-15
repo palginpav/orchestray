@@ -4,7 +4,7 @@
 /**
  * Orchestray MCP server — stdio JSON-RPC 2.0 loop.
  *
- * Per v2011c-stage1-plan.md §3.5 and §4. Stage 1 surface:
+ * See CHANGELOG.md §2.0.11 (Stage 1 MCP surface) for design context. Stage 1 surface:
  *   - initialize
  *   - notifications/initialized (no-op)
  *   - tools/list        -> [ASK_USER_TOOL_DEFINITION] or [] if disabled
@@ -45,6 +45,7 @@ const {
   parseLine,
 } = require('./lib/rpc');
 const { handleAskUser } = require('./elicit/ask_user');
+const { toolError } = require('./lib/tool-result');
 
 // Stage 2 tool handlers
 const patternFind = require('./tools/pattern_find');
@@ -54,6 +55,7 @@ const costBudgetCheck = require('./tools/cost_budget_check');
 const historyQueryEvents = require('./tools/history_query_events');
 const historyFindSimilarTasks = require('./tools/history_find_similar_tasks');
 const kbSearch = require('./tools/kb_search');
+const kbWrite = require('./tools/kb_write');
 
 // Stage 2 resource handlers
 const patternResource = require('./resources/pattern_resource');
@@ -62,7 +64,8 @@ const kbResource = require('./resources/kb_resource');
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'orchestray';
-const SERVER_VERSION = '2.0.14';
+// T3 C1: derive version from package.json — single source of truth.
+const SERVER_VERSION = require('../../package.json').version;
 
 // ---------------------------------------------------------------------------
 // Startup
@@ -151,6 +154,10 @@ const TOOL_TABLE = Object.freeze({
     definition: kbSearch.definition,
     handler: kbSearch.handle,
   },
+  kb_write: {
+    definition: kbWrite.definition,
+    handler: kbWrite.handle,
+  },
 });
 
 const RESOURCE_HANDLERS = Object.freeze({
@@ -178,13 +185,6 @@ function buildResourceContext(config) {
     projectRoot,
     config,
     logger: logStderr,
-  };
-}
-
-function toolResultError(text) {
-  return {
-    isError: true,
-    content: [{ type: 'text', text }],
   };
 }
 
@@ -324,19 +324,19 @@ async function dispatchRequest(config, msg) {
     const args = (params && params.arguments) || {};
 
     if (!isServerEnabled(config)) {
-      sendResult(id, toolResultError('server disabled'));
+      sendResult(id, toolError('server disabled'));
       return;
     }
 
     const entry = TOOL_TABLE[name];
     if (!entry) {
       // Per §3.5: unknown tool name returns a tool-result error, not JSON-RPC.
-      sendResult(id, toolResultError('unknown tool: ' + String(name)));
+      sendResult(id, toolError('unknown tool: ' + String(name)));
       return;
     }
 
     if (!isToolEnabled(config, name)) {
-      sendResult(id, toolResultError('tool disabled: ' + name));
+      sendResult(id, toolError('tool disabled: ' + name));
       return;
     }
 
@@ -352,7 +352,7 @@ async function dispatchRequest(config, msg) {
     } catch (err) {
       // Handlers promise totality; this is a safety net for programmer errors.
       logStderr(name + ' handler threw: ' + (err && err.message));
-      result = toolResultError(
+      result = toolError(
         name + ': ' + (err && err.message ? err.message : String(err))
       );
       outcome = 'error';
@@ -363,13 +363,22 @@ async function dispatchRequest(config, msg) {
     // outcomes) via context.auditSink, so skip the generic emission for it
     // to avoid double-logging. B4 cleanup: route through buildAuditEvent so
     // event shape + outcome validation stay in a single place.
+    //
+    // T2 F4: prefer orchestration_id from tool input (when supplied) over
+    // readOrchestrationId() — important during recovery or cross-orchestration
+    // scenarios where the filesystem marker may differ from the PM's intent.
     if (name !== 'ask_user') {
       try {
+        const orchIdOverride =
+          (args && typeof args.orchestration_id === 'string' && args.orchestration_id.length > 0)
+            ? args.orchestration_id
+            : undefined;
         writeAuditEvent(buildAuditEvent({
           tool: name,
           outcome,
           duration_ms: Date.now() - startedAt,
           form_fields_count: 0,
+          orchestration_id_override: orchIdOverride,
         }));
       } catch (_e) { /* fail-open */ }
     }

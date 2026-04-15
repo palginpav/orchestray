@@ -19,6 +19,7 @@ const path = require('path');
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
+const { MAX_INPUT_BYTES } = require('./_lib/constants');
 
 const VALID_TIERS = ['haiku', 'sonnet', 'opus'];
 
@@ -30,8 +31,6 @@ function normalizeModel(model) {
   }
   return model; // Return as-is if unrecognized (shouldn't reach here past the gate)
 }
-
-const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB cap — guards against runaway payloads OOMing the hook (T14 audit I14)
 
 let input = '';
 process.stdin.setEncoding('utf8');

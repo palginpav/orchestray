@@ -3,6 +3,133 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.15] - 2026-04-15
+
+### Theme: "Harden what shipped in 2.0.14"
+
+Correctness fixes across the Read cache-replay shield and the `cost_budget_check`
+tool, a new `kb_write` MCP tool that eliminates KB index drift, prompt-injection
+hardening on tool result excerpts, a more forgiving routing-gate match, and the
+always-on pattern advisory.
+
+### Added
+
+- **`kb_write` MCP tool.** Atomically writes a KB artifact file and updates
+  `.orchestray/kb/index.json` under a single exclusive lock. Fixes the long-standing
+  drift where KB directories accumulated artifact files that were never registered in
+  the index. Seeded enabled on fresh installs and backfilled automatically on upgrade.
+  MCP tool count is now 9 (was 8 in 2.0.14).
+- **Data-quality audit events.** When a pattern file is skipped because it lacks
+  frontmatter, an `mcp_data_quality` event is now appended to `events.jsonl` alongside
+  the existing stderr warning, so data-quality incidents are observable in post-run
+  analysis.
+- **`hook-warn` and `hook-strict` enforcement values.** The per-tool enforcement enum
+  under `mcp_enforcement` now accepts `"hook-warn"` (always-on advisory) and
+  `"hook-strict"` (opt-in blocking) in addition to `"hook"`, `"prompt"`, and `"allow"`.
+
+### Changed
+
+- **`cost_budget_check` now includes accumulated session spend.** Cap comparisons
+  (`would_exceed_max_cost_usd`, `would_exceed_daily_cost_limit_usd`,
+  `would_exceed_weekly_cost_limit_usd`) now sum prior `agent_stop` costs for the given
+  `orchestration_id` before comparing against caps. Results will be more conservative
+  than in 2.0.14 — that is the correct behaviour.
+- **Tool result excerpts are sanitised.** Excerpts returned by `kb_search` and
+  `pattern_find` are capped at 80 characters and stripped of markdown-special
+  characters before inclusion, closing a prompt-injection surface.
+- **`history_query_events` `agent_role` is now enum-validated.** Typos previously
+  returned zero results silently; they now produce a validation error.
+- **Routing gate matches on task identity.** The `PreToolUse:Agent` gate now matches
+  spawns on `(task_id, agent_type)` — either supplied explicitly or derived from the
+  leading `TASK-ID` token of the description — rather than requiring exact description
+  text. Description drift no longer blocks valid spawns.
+- **Pattern advisory is always on.** The `pattern_record_application` advisory emits
+  regardless of `mcp_enforcement` config value. Previously suppressed when the config
+  value was `"allow"`; now only the blocking-gate variant (planned for a future
+  release) is suppressed by `"allow"`.
+- **Server version is sourced from `package.json`.** `SERVER_VERSION` now reads from
+  the package manifest at load time rather than a hardcoded string, eliminating drift
+  on version bumps.
+
+### Fixed
+
+- **Read cache-replay shield (R14) — path normalisation.** A file accessed via a
+  relative path and again via its absolute-path equivalent within the same session is
+  now correctly recognised as the same file and deduplicated.
+- **Read cache-replay shield (R14) — missing-file handling.** Reading a path that
+  does not exist no longer caches a denial sentinel that could incorrectly block the
+  same path once the file came into existence.
+- **Read cache-replay shield (R14) — PDF page-range reads.** Repeated reads of the
+  same PDF with different `pages` selections are no longer mis-identified as cache
+  replays of a full-file read.
+- **`pattern_record_skip_reason` audit gap.** The `PostToolUse` hook matcher now
+  includes this tool, so skip-reason calls are audited consistently with the other
+  MCP tools.
+- **MCP tool audit event source of truth.** MCP tool audit events now prefer the
+  `orchestration_id` supplied in the tool input over the filesystem-cached value,
+  eliminating a corner case where the two could diverge during recovery.
+- **`pattern_find` and `history_find_similar_tasks` result ordering.** Result order
+  is now deterministic across Node.js versions (stable secondary sort on tied scores).
+- **Upgrade-sweep migrations preserve newline shape.** Files rewritten by the
+  upgrade sweep now retain the exact trailing-newline presence of the original.
+- **Pattern-skip size-guard bypass is now observable.** When the `events.jsonl` scan
+  is skipped because the file exceeds the 2 MB guard, an operator warning naming the
+  orchestration is written to stderr instead of silently proceeding.
+- **`cost_budget_check` input schema.** The `agent_type` field is now present on the
+  input schema (previously documented but missing).
+
+### Security
+
+- **Prompt-injection hardening on tool excerpts.** `kb_search` and `pattern_find`
+  excerpts are capped at 80 characters and markdown-special characters stripped before
+  returning them, reducing the attack surface exposed by untrusted KB and pattern file
+  content.
+- **Session-ID sanitiser uses an allow-list.** The shield session-state path no longer
+  accepts arbitrary session-ID characters; only a safe allow-list is permitted,
+  preventing path-traversal via crafted IDs.
+- **`kill_switch_reason` required when the kill switch is active.** Setting
+  `mcp_enforcement.global_kill_switch: true` now requires a non-empty
+  `kill_switch_reason` string. Blast-radius rationale is captured at the config level
+  rather than reconstructed from logs.
+
+### Deferred to a future release
+
+- Default-flip of the `pattern_record_application` advisory to blocking mode
+  (conditional on a follow-up false-positive review).
+- An `orchestration://` read-only resource for live orchestration state.
+- A `routing_lookup` MCP tool (superseded for this release by the routing-gate match
+  relaxation above).
+- A `cost_budget_reserve` MCP tool for pre-spawn budget holds.
+- Activation of the `ask_user` `max_per_task` rate limit.
+
+### Documentation
+
+- The 2.0.14 entry referenced an incorrect path for the R14 shield session-state file.
+  The actual path is `.orchestray/state/.shield-session-{session_id}.json`. The 2.0.14
+  entry has been corrected in place.
+
+### Upgrade notes
+
+- **MCP tool count is now 9** (was 8). The new `kb_write` tool is seeded enabled on
+  fresh installs and backfilled automatically by the upgrade sweep on existing installs.
+- **`cost_budget_check` results will be more conservative.** The new accumulated-cost
+  comparison is the intended behaviour; a session near its cap will now be flagged
+  correctly.
+- **Pattern advisory prints on every orchestration.** If you previously suppressed it
+  with `mcp_enforcement.pattern_record_application: "allow"`, you will now see
+  warn-level output regardless. The `"allow"` setting still suppresses the blocking
+  gate (not yet enabled in this release).
+- **R14 dedup now treats relative and absolute paths as equivalent.** If a workflow
+  relied on re-reading the same file via two different path spellings within a session,
+  the second read will now be deduplicated.
+- **`global_kill_switch: true` now requires `kill_switch_reason`.** If you have the
+  kill switch enabled in `.orchestray/config.json`, add a non-empty
+  `kill_switch_reason` field; otherwise validation will fail on next config load.
+
+Tests: 847 → 931.
+
+---
+
 ## [2.0.14] - 2026-04-11
 
 ### Theme: "Close the §22c False-Positive Path"
@@ -64,7 +191,8 @@ data from the N≥20 prerequisite installed here.
   one-line hint pointing to the prior turn; re-reads with an explicit offset/limit or
   after a file-on-disk change are always `allow`-ed. `hooks/hooks.json` now contains
   a `PreToolUse` entry for the `Read` tool invoking `bin/context-shield.js`.
-  Session-scoped state at `.orchestray/state/shield-session/{session_id}-reads.jsonl`
+  Session-scoped state at `.orchestray/state/.shield-session-{session_id}.json`
+  (corrected in 2.0.15; prior entry incorrectly stated `shield-session/{id}-reads.jsonl`)
   is archived by `bin/pre-compact-archive.js` at session end. New config flag
   `shield.r14_dedup_reads.enabled` (default `true`) seeded by `bin/install.js`;
   set to `false` to disable the rule without removing the hook. Schema addition in
@@ -79,7 +207,7 @@ closes the signal gap (W1 legitimate-skip tool + W2 MUST directive) so the 2.0.1
 scoping task has real K/F inputs to analyze. The transition will ship in 2.0.15 only
 if the §22c confidence-feedback analysis over the post-2.0.14 audit window shows a
 false-positive rate below a threshold to be set in 2.0.15's DESIGN.md.
-Machine-readable status in `.planning/phases/2014-mcp-surface-ext/DESIGN.md`:
+Machine-readable status (historical, from the 2.0.14 design phase):
 `transition_status: "no-go-data"`.
 
 Also deferred:
@@ -260,9 +388,9 @@ the PM ran the MCP trio for the first time in a project with an existing
 `routing.jsonl` and its first `Agent()` spawn blocked. That single incident
 revealed the full chain: BUG-B (phase poisoning) + BUG-C (gate strict-filter)
 + BUG-D (misleading message), plus surfaced BUG-A (classifyOutcome blindness)
-for separate investigation. Details in
-`.planning/phases/2013-mcp-learning-loop-live/DESIGN.md` §D1 + §D2 and the probe
-record at `.orchestray/kb/artifacts/2013-posttooluse-probe-record.md`.
+for separate investigation. Original design notes lived in the 2.0.13 phase
+directory (removed in 2.0.15 cleanup); the probe record remains at
+`.orchestray/kb/artifacts/2013-posttooluse-probe-record.md`.
 
 ### Deferred to 2.0.14
 

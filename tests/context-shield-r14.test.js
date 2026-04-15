@@ -523,3 +523,183 @@ describe('shield-session-cache unit tests', () => {
     assert.ok(!fs.existsSync(cf));
   });
 });
+
+// ---------------------------------------------------------------------------
+// T3 T4 — MAX_CACHE_ENTRIES pruning test
+// ---------------------------------------------------------------------------
+
+describe('shield-session-cache MAX_CACHE_ENTRIES pruning (T3 T4)', () => {
+  test('inserting MAX_CACHE_ENTRIES+1 entries prunes cache to ~half size', () => {
+    // The MAX_CACHE_ENTRIES constant is 5000. Inserting 5001 entries must trigger
+    // the prune-oldest-half logic, shrinking the cache from 5000 to ~2500.
+    // We use a smaller synthetic approach: directly verify the pruning branch via
+    // sequential recordRead calls with staggered first_seen timestamps.
+    //
+    // Strategy: call recordRead 5001 times with unique paths. After the last call,
+    // the cache file on disk should have significantly fewer than 5001 entries.
+    // We accept a range of [2400, 2600] to tolerate any off-by-one in the pruning.
+    const dir = makeDir();
+    const sessionId = 'prune-test-session';
+    const mtime = '2026-04-11T00:00:00.000Z';
+
+    // 5001 unique paths — one more than MAX_CACHE_ENTRIES (5000)
+    const OVER_CAP = 5001;
+    for (let i = 0; i < OVER_CAP; i++) {
+      recordRead(dir, sessionId, '/tmp/file-' + i + '.md', null, null, mtime, i);
+    }
+
+    // Read the resulting cache file and count entries.
+    const cf = cacheFilePath(dir, sessionId);
+    assert.ok(fs.existsSync(cf), 'cache file must exist after writes');
+    const raw = fs.readFileSync(cf, 'utf8');
+    const parsed = JSON.parse(raw);
+    const entryCount = Object.keys(parsed).length;
+
+    // After pruning, the cache must be significantly smaller than 5001.
+    // The prune logic deletes Math.floor(keys.length / 2) entries when keys.length >= 5000.
+    // Inserting entry #5001 triggers: 5000 entries → prune 2500 → 2500 remain → then the
+    // new entry is added → 2501 entries. We allow [2400, 2600] for float rounding safety.
+    assert.ok(
+      entryCount >= 2400 && entryCount <= 2600,
+      'after pruning, cache should have ~2500 entries, got ' + entryCount
+    );
+    assert.ok(entryCount < 5001, 'cache must NOT have grown to 5001+ entries (unbounded)');
+  });
+
+  test('cache prune preserves most-recent entries (newest survive)', () => {
+    // Verify that the pruning discards old entries and the most recent entry
+    // (added last, as the trigger) survives the prune.
+    const dir = makeDir();
+    const sessionId = 'prune-recent-session';
+    const mtime = '2026-04-11T00:00:00.000Z';
+
+    // Insert MAX_CACHE_ENTRIES entries with old first_seen timestamps.
+    const OVER_CAP = 5001;
+    for (let i = 0; i < OVER_CAP - 1; i++) {
+      recordRead(dir, sessionId, '/tmp/old-' + i + '.md', null, null, mtime, i);
+    }
+
+    // The very last entry — this triggers the prune. Its path should survive.
+    const lastPath = '/tmp/last-entry-survives.md';
+    recordRead(dir, sessionId, lastPath, null, null, mtime, OVER_CAP);
+
+    const cf = cacheFilePath(dir, sessionId);
+    const raw = fs.readFileSync(cf, 'utf8');
+    const parsed = JSON.parse(raw);
+
+    // The last-inserted entry's key must be present (newest survives prune).
+    const { buildCacheKey } = require('../bin/_lib/shield-session-cache');
+    const lastKey = buildCacheKey(lastPath, null, null);
+    assert.ok(lastKey in parsed, 'the most-recently added entry must survive the prune');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shield R14 new behavior coverage (DEV-2 fixes)
+// ---------------------------------------------------------------------------
+
+describe('Shield R14 — W2 path normalization (relative vs absolute)', () => {
+  test('relative and absolute path variants deduplicate identically', () => {
+    // W2 (T2 F2): context-shield normalizes file_path via path.resolve(cwd, rawFilePath)
+    // before building the cache key. A relative path and its absolute equivalent must
+    // deduplicate against each other — otherwise two cache entries exist for the same file.
+    const dir = makeDir();
+    const filePath = makeFile(dir, 'dedup-norm.md', '# Normalization test\n');
+    const sessionId = 'test-session-norm-001';
+
+    // First read using the ABSOLUTE path.
+    const firstPayload = readPayload(dir, filePath, { sessionId, turn: 1 });
+    const first = runShield(firstPayload);
+    assert.equal(first.status, 0);
+    assert.equal(parseDecision(first.stdout).permissionDecision, 'allow',
+      'first read (absolute path) must be allowed');
+
+    // Second read using the RELATIVE path (relative to cwd).
+    const relPath = path.relative(dir, filePath);
+    const secondPayload = readPayload(dir, relPath, { sessionId, turn: 2 });
+    const second = runShield(secondPayload);
+    assert.equal(second.status, 0);
+    // Must be DENIED because the absolute path was already read and the file is unchanged.
+    assert.equal(
+      parseDecision(second.stdout).permissionDecision,
+      'deny',
+      'second read via relative path must be denied (same file, already in cache via absolute path)'
+    );
+  });
+});
+
+describe('Shield R14 — W3 non-existent path returns allow', () => {
+  test('second read of non-existent path returns allow (no mtime to deduplicate on)', () => {
+    // W3 (T2 F3): if the file does not exist, fileStat is null → allow unconditionally.
+    // A non-existent file has no mtime, so caching an empty mtime for it would cause
+    // a false-deny on the second probe of the same nonexistent path.
+    const dir = makeDir();
+    const nonExistentPath = path.join(dir, 'does-not-exist.md');
+    const sessionId = 'test-session-nonexist';
+
+    // First read — file doesn't exist yet → allow (no mtime).
+    const first = runShield(readPayload(dir, nonExistentPath, { sessionId, turn: 1 }));
+    assert.equal(first.status, 0);
+    assert.equal(parseDecision(first.stdout).permissionDecision, 'allow',
+      'first read of non-existent file must be allowed');
+
+    // Second read of the same non-existent path — must ALSO be allowed (W3 guard).
+    const second = runShield(readPayload(dir, nonExistentPath, { sessionId, turn: 2 }));
+    assert.equal(second.status, 0);
+    assert.equal(
+      parseDecision(second.stdout).permissionDecision,
+      'allow',
+      'second read of non-existent file must also be allowed (W3 missing-file guard)'
+    );
+  });
+});
+
+describe('Shield R14 — T2 F6 toolInput.pages bypass', () => {
+  test('toolInput.pages set bypasses dedup (PDF page-range reads always allowed)', () => {
+    // T2 F6: two reads of the same PDF file with toolInput.pages set must both be
+    // allowed through even after the first read warms the cache.
+    // Pages parameter is treated identically to offset/limit — sliced reads always allowed.
+    const dir = makeDir();
+    const pdfPath = makeFile(dir, 'report.pdf', '%PDF-1.4 fake pdf content\n');
+    const sessionId = 'test-session-pages';
+
+    // First read WITH pages parameter — must be allowed.
+    const first = runShield(readPayload(dir, pdfPath, {
+      sessionId,
+      turn: 1,
+      toolInput: { pages: '1-5', file_path: pdfPath },
+    }));
+    assert.equal(first.status, 0);
+    assert.equal(parseDecision(first.stdout).permissionDecision, 'allow',
+      'first read with pages must be allowed');
+
+    // Second read WITH pages parameter — must ALSO be allowed (pages bypasses dedup).
+    const second = runShield(readPayload(dir, pdfPath, {
+      sessionId,
+      turn: 2,
+      toolInput: { pages: '1-5', file_path: pdfPath },
+    }));
+    assert.equal(second.status, 0);
+    assert.equal(
+      parseDecision(second.stdout).permissionDecision,
+      'allow',
+      'second read with pages parameter must be allowed (pages bypasses dedup)'
+    );
+
+    // Third read of same PDF WITHOUT pages — this is a full read.
+    // If the cache was NOT poisoned by the pages reads, this is a first full read → allow.
+    const third = runShield(readPayload(dir, pdfPath, { sessionId, turn: 3 }));
+    assert.equal(third.status, 0);
+    assert.equal(parseDecision(third.stdout).permissionDecision, 'allow',
+      'first full read (no pages) after pages reads must be allowed');
+
+    // Fourth read of same PDF WITHOUT pages — should now be denied (second full read).
+    const fourth = runShield(readPayload(dir, pdfPath, { sessionId, turn: 4 }));
+    assert.equal(fourth.status, 0);
+    assert.equal(
+      parseDecision(fourth.stdout).permissionDecision,
+      'deny',
+      'second full read (no pages) must be denied (cache hit from third read)'
+    );
+  });
+});

@@ -34,7 +34,7 @@
         ]
       },
       {
-        "matcher": "mcp__orchestray__pattern_find|mcp__orchestray__kb_search|mcp__orchestray__history_find_similar_tasks|mcp__orchestray__pattern_record_application",
+        "matcher": "mcp__orchestray__pattern_find|mcp__orchestray__kb_search|mcp__orchestray__history_find_similar_tasks|mcp__orchestray__pattern_record_application|mcp__orchestray__pattern_record_skip_reason",
         "hooks": [
           {
             "type": "command",

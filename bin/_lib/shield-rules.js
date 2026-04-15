@@ -33,6 +33,7 @@
  * catches the error and treats it as { decision: 'allow' }.
  */
 
+const path = require('path');
 const { lookupCache, recordRead } = require('./shield-session-cache');
 
 // ---------------------------------------------------------------------------
@@ -59,9 +60,25 @@ const R14 = {
     const { toolInput, cwd, sessionId, fileStat, event } = ctx;
 
     // Extract the target file path from the tool input.
-    const filePath = toolInput.file_path || toolInput.path || '';
-    if (!filePath) {
+    const rawFilePath = toolInput.file_path || toolInput.path || '';
+    if (!rawFilePath) {
       // No path to cache — allow through.
+      return { decision: 'allow' };
+    }
+
+    // W2 (T2 F2): Normalize the file path to absolute BEFORE building any cache
+    // key. Claude Code may send a relative path on one invocation and an absolute
+    // path on another for the same file; without normalization, the two strings
+    // produce two distinct cache keys, defeating dedup silently.
+    const filePath = path.resolve(cwd, rawFilePath);
+
+    // W3 (T2 F3): If the file does not exist (fileStat is null), allow through
+    // unconditionally — a non-existent file has no mtime to deduplicate on.
+    // The CHANGELOG comment "Rules handle null fileStat as 'no mtime → allow
+    // through'" documents this intent; this guard enforces it.  Caching an
+    // empty-string mtime for a missing file causes a false-deny on the second
+    // probe of the same nonexistent path (e.g., checking before creating).
+    if (!fileStat) {
       return { decision: 'allow' };
     }
 
@@ -70,17 +87,23 @@ const R14 = {
     const offset = (toolInput.offset !== undefined && toolInput.offset !== null) ? toolInput.offset : null;
     const limit = (toolInput.limit !== undefined && toolInput.limit !== null) ? toolInput.limit : null;
 
-    // If the caller explicitly provides offset OR limit, they are doing a
-    // targeted slice.  Sliced reads are ALWAYS allowed through — the dedup
+    // T2 F6: Treat a `pages` parameter (PDF page-range reads) as a sliced read
+    // signal, mirroring the offset/limit bypass.  Two reads of the same PDF
+    // with different page ranges have identical offset=null/limit=null but
+    // request different content; they must both be allowed through.
+    const pages = (toolInput.pages !== undefined && toolInput.pages !== null) ? toolInput.pages : null;
+
+    // If the caller explicitly provides offset, limit, OR pages, they are doing
+    // a targeted slice.  Sliced reads are ALWAYS allowed through — the dedup
     // targets full-file re-reads only.  This ensures the agent can always
     // re-slice with different bounds without being blocked.
-    if (offset !== null || limit !== null) {
+    if (offset !== null || limit !== null || pages !== null) {
       return { decision: 'allow' };
     }
 
-    // No offset/limit — this is a full-file read.
+    // No offset/limit/pages — this is a full-file read.
     // Get the current mtime for freshness checking.
-    const currentMtime = fileStat ? fileStat.mtime.toISOString() : '';
+    const currentMtime = fileStat.mtime.toISOString();
     const turn = event.turn_number || event.turn || 0;
 
     // Check the cache.  Cache key is built with offset=null and limit=null

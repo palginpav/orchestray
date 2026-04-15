@@ -3,7 +3,7 @@
 /**
  * `ask_user` tool handler.
  *
- * Per v2011c-stage1-plan.md §3.4 and §5. This handler is pure: it depends
+ * See CHANGELOG.md §2.0.11 (Stage 1 MCP surface) for design context. Pure handler: depends
  * only on its `context` argument for side effects (elicitation transport,
  * audit sink). The server wires the real `sendElicitation` and `auditSink`
  * at spawn time; tests inject fakes.
@@ -244,7 +244,8 @@ function classifyAction(result) {
 }
 
 function buildElicitationMessage(title, question) {
-  return String(title) + '\n\n' + String(question);
+  // title and question are already validated as strings by validateAskUserInput.
+  return title + '\n\n' + question;
 }
 
 function resolveTimeoutSeconds(input, config) {

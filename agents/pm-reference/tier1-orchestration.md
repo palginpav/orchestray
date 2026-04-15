@@ -824,6 +824,26 @@ patterns. Single-task groups do not need worktree isolation.
 
 ### Spawning Parallel Agents
 
+**Step 0 (MANDATORY): Write routing.jsonl rows before ANY Agent() call.**
+
+Before calling `Agent()` for any task in the group (or any sequential task), you MUST
+write a routing row for each task to `.orchestray/state/routing.jsonl`. The
+`PreToolUse:Agent` hook (`bin/gate-agent-spawn.js`) will hard-block the spawn if no
+matching row exists — there is no retry path except writing the row first.
+
+Use the canonical one-liner to append each row:
+
+```bash
+printf '%s\n' '{"timestamp":"<ISO>","orchestration_id":"<orch-id>","task_id":"<task-N>","agent_type":"<role>","description":"<first-80-chars>","model":"<tier>","effort":"<level>","complexity_score":<N>,"score_breakdown":{"file_count":<N>,"cross_cutting":<N>,"description":<N>,"keywords":<N>},"decided_by":"pm","decided_at":"decomposition"}' >> .orchestray/state/routing.jsonl
+```
+
+- `task_id` must be the same value you will pass as `toolInput.task_id` on the `Agent()` call.
+  The gate uses `(task_id, agent_type)` as the primary match key (W4 — immune to description drift).
+  If you omit `task_id`, the gate falls back to `(agent_type, description)` with a warning.
+- Write ALL rows for the group BEFORE the first `Agent()` call in that group.
+- For dynamic/re-plan spawns not in the original decomposition, append a new row with a
+  fresh timestamp before calling `Agent()`.
+
 For each task in a parallel group:
 
 1. **Spawn the assigned agent** with the task description (per Section 3 delegation rules).
@@ -1868,6 +1888,33 @@ written by §22b.R (DESIGN §D6 rule 6).
 
 Run AFTER orchestration completes but BEFORE extracting new patterns (22a). Update
 confidence scores for applied patterns: +0.1 on success, -0.2 on failure.
+
+#### §22c Stage A — Post-Decomposition Warn Mode (v2.0.15, ships unconditionally)
+
+**What it means.** During the post-decomposition window (after the first `Agent()` spawn
+of an orchestration), the PM is expected to have called either
+`mcp__orchestray__pattern_record_application` OR `mcp__orchestray__pattern_record_skip_reason`
+for this `orchestration_id`. If neither call is recorded in `mcp-checkpoint.jsonl` (or in
+`events.jsonl` for skip-reason) by the time the session compacts, the
+`bin/record-pattern-skip.js` PreCompact hook emits a `pattern_record_skipped` advisory
+event to `events.jsonl`.
+
+**Stage A behaviour.** Advisory only — no spawn is blocked. The event is a warn-mode
+signal for observability and analytics. The PM should treat a `pattern_record_skipped`
+event as a cue to complete the §22b protocol on the next orchestration, not as a gate
+failure.
+
+**Stage B — blocking enforcement.** Deferred. Stage B (where a second Agent() spawn
+is hard-blocked if no post-decomposition record exists) is gated on open question OQ1:
+the post-2.0.14 audit window must show N ≥ 20 answered rows, ≤ 20% forced
+`pattern_record_application` calls, and `other` skip-reason ≤ 30% before Stage B
+is safe to ship.
+<!-- Stage B gated on OQ1 — do NOT land blocking enforcement here until OQ1 resolves -->
+
+**Escalation ladder:**
+- Stage A (current): warn, allow — advisory event in `events.jsonl`
+- Stage B (2.0.16 candidate): warn on first omission, block on second spawn — requires OQ1 go
+- Stage C (2.0.17 candidate): default flip to `hook-strict` — requires 2.0.15 field data
 
 ### 22d. Pruning
 

@@ -20,6 +20,7 @@
 const fs = require('fs');
 const path = require('path');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
+const { MAX_INPUT_BYTES } = require('./_lib/constants');
 
 // Complexity signals (mirrors PM Section 12 heuristics)
 const COMPLEXITY_KEYWORDS = [
@@ -111,8 +112,6 @@ function scoreComplexity(prompt) {
 
   return score;
 }
-
-const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB cap — guards against runaway payloads OOMing the hook (T14 audit I14)
 
 function main() {
   let input = '';

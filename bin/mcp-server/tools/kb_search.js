@@ -8,7 +8,7 @@
  * entirely — reads the filesystem directly so stale index entries don't
  * leak into results.
  *
- * Per v2011b-architecture.md §3.2.5 and v2011c-stage2-plan.md §4.
+ * See CHANGELOG.md §2.0.11 (Stage 2 MCP tools & resources) for design context.
  */
 
 const fs = require('node:fs');
@@ -16,6 +16,8 @@ const path = require('node:path');
 
 const paths = require('../lib/paths');
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
+const { toolSuccess, toolError } = require('../lib/tool-result');
+const { sanitizeExcerpt } = require('../lib/excerpt');
 
 const SECTIONS = ['artifacts', 'facts', 'decisions'];
 
@@ -73,6 +75,9 @@ async function handle(input, context) {
 
   const candidates = [];
 
+  // T3 P2: readdirSync + readFileSync per file in a tight loop. Acceptable
+  // for current scale (tens to low hundreds of files). If KB grows above
+  // ~500 files, add mtime-keyed in-process caching to avoid redundant I/O.
   for (const section of sectionsToScan) {
     const sectionDir = path.join(kbDir, section);
     if (!fs.existsSync(sectionDir)) continue;
@@ -97,7 +102,9 @@ async function handle(input, context) {
       const hayTokens = _tokenize(haystack);
       const score = _score(queryTokens, hayTokens, title, input.query);
       if (score <= 0) continue;
-      const excerpt = _collapseWhitespace(bodyExcerpt).slice(0, 240);
+      // T3 S1: sanitize excerpt — strip markdown special sequences and cap at
+      // 80 chars to limit prompt-injection attack surface in tool output.
+      const excerpt = sanitizeExcerpt(bodyExcerpt);
       candidates.push({
         slug,
         section,
@@ -196,24 +203,7 @@ function _escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function _collapseWhitespace(s) {
-  return (s || '').replace(/\s+/g, ' ').trim();
-}
 
-function toolSuccess(structuredContent) {
-  return {
-    isError: false,
-    content: [{ type: 'text', text: JSON.stringify(structuredContent) }],
-    structuredContent,
-  };
-}
-
-function toolError(text) {
-  return {
-    isError: true,
-    content: [{ type: 'text', text }],
-  };
-}
 
 module.exports = {
   definition,

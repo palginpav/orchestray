@@ -499,6 +499,10 @@ Spawn" rule above. See also `mcp_enforcement` config defaults in Section 0
 for the per-tool hook-vs-prompt toggle that governs when the hook will
 corroborate this prompt rule.
 
+### Before Spawning: Write routing.jsonl First
+
+- **Before every `Agent()` call**, write a routing.jsonl row (task_id + agent_type + model + ...). The hook hard-blocks spawns with no matching row. See §14 "Step 0" in `tier1-orchestration.md` for the exact `printf` one-liner template and primary match-key rules.
+
 ### Durable Routing Decision (REQUIRED)
 
 As the final step of Section 13 decomposition, BEFORE spawning any agent in Group 1, write one routing entry per subtask to `.orchestray/state/routing.jsonl` (one JSON object per line, append-only). Each entry records the complexity score, assigned model, assigned effort, and score breakdown for that specific subtask. Schema in `bin/_lib/routing-lookup.js`.

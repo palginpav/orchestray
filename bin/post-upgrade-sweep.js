@@ -32,8 +32,7 @@ const path = require('path');
 const os = require('os');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { DEFAULT_MCP_ENFORCEMENT, DEFAULT_COST_BUDGET_CHECK } = require('./_lib/config-schema');
-
-const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB guard
+const { MAX_INPUT_BYTES } = require('./_lib/constants');
 
 // ──────────────────────────────────────────────────────────────────────────────
 // W8 helper: additive config.json migration (2013-W8-config-migration)
@@ -234,10 +233,32 @@ function runW11Migration(cwd, stateDir, sentinelPath) {
     return;
   }
 
-  // Atomic rename-dance write
+  // Atomic rename-dance write.
+  // T2 F9: Preserve trailing-newline presence faithfully.  The standard JSONL
+  // writer (atomicAppendJsonl) always ends files with '\n', so
+  // ledgerRaw.endsWith('\n') is true for well-formed files.  outLines.join('\n')
+  // reconstructs the original bytes correctly in that case (the split produced
+  // a trailing empty string; join re-adds the final '\n').  For non-standard
+  // inputs that lack a trailing newline we must NOT add one — doing so would
+  // turn a one-liner-per-line file into one that ends with '\n', meaning the
+  // NEXT atomicAppendJsonl append would produce a valid new line.  But more
+  // importantly, we must not REMOVE the trailing newline from standard files.
+  // Solution: detect the original state and use per-line newlines to guarantee
+  // each line ends correctly regardless of origin.
+  const hadTrailingNewline = ledgerRaw.endsWith('\n');
   const tmpPath = checkpointPath + '.migrated';
   try {
-    fs.writeFileSync(tmpPath, outLines.join('\n'), 'utf8');
+    // Each non-empty line gets its own '\n'.  Empty strings (trailing split
+    // artifact from standard JSONL) are filtered out.  If the original file
+    // had a trailing newline we preserve it via the per-line approach; if it
+    // didn't, omitting the trailing element faithfully matches the original.
+    let outContent;
+    if (hadTrailingNewline) {
+      outContent = outLines.filter(l => l.trim()).map(l => l + '\n').join('');
+    } else {
+      outContent = outLines.filter(l => l.trim()).join('\n');
+    }
+    fs.writeFileSync(tmpPath, outContent, 'utf8');
     fs.renameSync(tmpPath, checkpointPath);
   } catch (_e) {
     // Write/rename failed — clean up; fail-open.
@@ -391,6 +412,189 @@ function runW3PricingTableSeed(cwd, stateDir, sentinelPath) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// W5 helper: backfill new 2.0.15 mcp_enforcement keys (2015-W5-enforcement-keys)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run the W5 enforcement-keys backfill operation.
+ *
+ * Adds `pattern_record_skip_reason` and `cost_budget_check` to the
+ * mcp_enforcement block in .orchestray/config.json if they are absent.
+ * These keys were added to DEFAULT_MCP_ENFORCEMENT in 2.0.15 (T3 A1 fix);
+ * existing installs won't have them — missing keys cause unknown_tool_policy
+ * to evaluate those tool names, which can produce unexpected block/warn signals
+ * if an operator set unknown_tool_policy:'block'.
+ *
+ * Idempotent sentinel: .orchestray/state/.enforcement-keys-migrated-2015.
+ * Mirrors the W8 (2.0.13) and W3 (2.0.14) patterns.
+ *
+ * @param {string} cwd          - Project root (absolute)
+ * @param {string} stateDir     - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to .enforcement-keys-migrated-2015
+ */
+function runW5EnforcementKeysMigration(cwd, stateDir, sentinelPath) {
+  // 2015-W5-enforcement-keys
+  if (existsSilent(sentinelPath)) return;
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_e) {
+    // Config missing or unreadable — nothing to migrate; touch sentinel.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    // Malformed JSON — leave file untouched; fail-open.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // New keys introduced in 2.0.15 with their DEFAULT_MCP_ENFORCEMENT values.
+  // kb_write is handled separately by the W6 migration below.
+  const newKeys = ['pattern_record_skip_reason', 'cost_budget_check'];
+  const defaults = getDefaultMcpEnforcement();
+
+  const existing = parsed.mcp_enforcement;
+
+  // Check whether the block exists at all
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+    // Block absent entirely — the W8 migration should have added it; if not,
+    // run W8 logic now to add the full default block (includes new keys).
+    parsed.mcp_enforcement = defaults;
+  } else {
+    // Block present — check for missing new keys only.
+    const missingKeys = newKeys.filter(k => !(k in existing));
+    if (missingKeys.length === 0) {
+      // All new keys already present — no-op.
+      touchSilent(sentinelPath, stateDir);
+      return;
+    }
+    for (const k of missingKeys) {
+      existing[k] = defaults[k];
+    }
+  }
+
+  // Atomic rename-dance write
+  const tmpPath = configPath + '.w5-enforcement-tmp';
+  try {
+    const out = JSON.stringify(parsed, null, 2) + '\n';
+    fs.writeFileSync(tmpPath, out, 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (_e) {
+    // Write/rename failed — clean up temp file if it exists; fail-open.
+    try { fs.unlinkSync(tmpPath); } catch (_e2) {}
+    return;
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// W6 helper: backfill kb_write enable + enforcement key (2015-W6-kb-write-keys)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run the W6 kb_write key backfill.
+ *
+ * Adds `kb_write: true` to `mcp_server.tools` and `kb_write: 'allow'` to
+ * `mcp_enforcement` in .orchestray/config.json if they are absent.
+ * These keys were introduced in 2.0.15 (W6); existing installs won't have
+ * them, causing unknown_tool_policy:'block' to block the new tool.
+ *
+ * Idempotent sentinel: .orchestray/state/.kb-write-migrated-2015.
+ * Mirrors the W5 (2.0.15) pattern.
+ *
+ * @param {string} cwd          - Project root (absolute)
+ * @param {string} stateDir     - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to .kb-write-migrated-2015
+ */
+function runW6KbWriteMigration(cwd, stateDir, sentinelPath) {
+  // 2015-W6-kb-write-keys
+  if (existsSilent(sentinelPath)) return;
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_e) {
+    // Config missing or unreadable — nothing to migrate; touch sentinel.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    // Malformed JSON — leave file untouched; fail-open.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let changed = false;
+
+  // 1. Backfill mcp_enforcement.kb_write
+  const defaults = getDefaultMcpEnforcement();
+  if (!parsed.mcp_enforcement || typeof parsed.mcp_enforcement !== 'object' || Array.isArray(parsed.mcp_enforcement)) {
+    parsed.mcp_enforcement = defaults;
+    changed = true;
+  } else if (!('kb_write' in parsed.mcp_enforcement)) {
+    parsed.mcp_enforcement.kb_write = defaults.kb_write;
+    changed = true;
+  }
+
+  // 2. Backfill mcp_server.tools.kb_write
+  if (!parsed.mcp_server || typeof parsed.mcp_server !== 'object' || Array.isArray(parsed.mcp_server)) {
+    parsed.mcp_server = {};
+  }
+  if (!parsed.mcp_server.tools || typeof parsed.mcp_server.tools !== 'object' || Array.isArray(parsed.mcp_server.tools)) {
+    parsed.mcp_server.tools = {};
+  }
+  if (!('kb_write' in parsed.mcp_server.tools)) {
+    parsed.mcp_server.tools.kb_write = true;
+    changed = true;
+  }
+
+  if (!changed) {
+    // Both keys already present — no-op.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Atomic rename-dance write
+  const tmpPath = configPath + '.w6-kb-write-tmp';
+  try {
+    const out = JSON.stringify(parsed, null, 2) + '\n';
+    fs.writeFileSync(tmpPath, out, 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (_e) {
+    // Write/rename failed — clean up temp file if it exists; fail-open.
+    try { fs.unlinkSync(tmpPath); } catch (_e2) {}
+    return;
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Shared utilities
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -469,6 +673,8 @@ function main() {
       const configSentinel = path.join(stateDir, '.config-migrated-2013');
       const checkpointSentinel = path.join(stateDir, '.mcp-checkpoint-migrated-2013');
       const pricingTableSentinel = path.join(stateDir, '.pricing-table-migrated-2014');
+      const enforcementKeysSentinel = path.join(stateDir, '.enforcement-keys-migrated-2015');
+      const kbWriteKeysSentinel = path.join(stateDir, '.kb-write-migrated-2015');
 
       // ── W8: config migration ────────────────────────────────────────────────
       try {
@@ -489,6 +695,20 @@ function main() {
         runW3PricingTableSeed(cwd, stateDir, pricingTableSentinel);
       } catch (_e) {
         // Fail-open: any unexpected error in W3 must not block the prompt.
+      }
+
+      // ── W5: 2.0.15 enforcement keys backfill ───────────────────────────────
+      try {
+        runW5EnforcementKeysMigration(cwd, stateDir, enforcementKeysSentinel);
+      } catch (_e) {
+        // Fail-open: any unexpected error in W5 must not block the prompt.
+      }
+
+      // ── W6: kb_write enable + enforcement key backfill ─────────────────────
+      try {
+        runW6KbWriteMigration(cwd, stateDir, kbWriteKeysSentinel);
+      } catch (_e) {
+        // Fail-open: any unexpected error in W6 must not block the prompt.
       }
 
     } catch (_e) {

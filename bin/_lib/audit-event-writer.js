@@ -24,8 +24,7 @@ const path = require('path');
 const { atomicAppendJsonl } = require('./atomic-append');
 const { resolveSafeCwd } = require('./resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./orchestration-state');
-
-const MAX_INPUT_BYTES = 1024 * 1024; // 1 MB cap — guards against runaway payloads OOMing the hook (T14 audit I14)
+const { MAX_INPUT_BYTES } = require('./constants');
 
 function writeAuditEvent({ type, mode, extraFieldsPicker }) {
   let input = '';

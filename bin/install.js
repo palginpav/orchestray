@@ -21,6 +21,7 @@ const FRESH_INSTALL_MCP_TOOLS_ENABLED = {
   history_query_events: true,
   history_find_similar_tasks: true,
   kb_search: true,
+  kb_write: true,
 };
 
 // Default cost_budget_check config block for fresh installs.

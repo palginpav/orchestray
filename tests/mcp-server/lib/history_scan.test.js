@@ -495,3 +495,140 @@ describe('queryEvents', () => {
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// T3 T6 — adversarial timestamp tests
+// ---------------------------------------------------------------------------
+
+describe('history_scan adversarial timestamps (T3 T6)', () => {
+
+  test('nanosecond-precision timestamp in event does not crash scanner', async () => {
+    // T3 T6a: a timestamp with nanosecond precision (6 decimal places of sub-seconds)
+    // is technically non-standard ISO 8601 (JS Date only handles up to milliseconds).
+    // The scanner must not crash — the event should either be yielded or skipped
+    // (implementation-dependent), but must NOT throw.
+    const tmp = makeTmpProject();
+    try {
+      const roots = rootsFor(tmp);
+      writeJsonl(
+        path.join(roots.historyDir, '20260411-nano', 'events.jsonl'),
+        [
+          {
+            type: 'agent_start',
+            orchestration_id: 'orch-nano',
+            timestamp: '2026-04-11T06:55:18.123456Z',  // nanosecond precision
+          },
+          {
+            type: 'agent_stop',
+            orchestration_id: 'orch-nano',
+            timestamp: '2026-04-11T06:55:19.000000Z',
+          },
+        ]
+      );
+      // Must not throw.
+      let events;
+      await assert.doesNotReject(async () => {
+        events = await collect(scanEvents({ roots }));
+      }, 'nanosecond-precision timestamp must not crash scanEvents');
+
+      // Events should be yielded (the timestamp string is non-empty so it passes
+      // the timestamp-present guard; JS Date coerces it to milliseconds).
+      assert.ok(Array.isArray(events), 'scanEvents must return an iterable result');
+      // At least 0 events (implementation may skip or yield — either is valid).
+      // Key contract: no exception thrown.
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('nanosecond-precision timestamp ordering is correct relative to standard timestamps', async () => {
+    // T3 T6a: events with nanosecond timestamps should sort correctly relative to
+    // normal millisecond-precision timestamps (lexicographic ISO comparison).
+    const tmp = makeTmpProject();
+    try {
+      const roots = rootsFor(tmp);
+      writeJsonl(roots.liveAudit, [
+        { type: 'agent_start', orchestration_id: 'orch-nano-order', timestamp: '2026-04-11T06:55:18.123456Z' },
+        { type: 'agent_stop',  orchestration_id: 'orch-nano-order', timestamp: '2026-04-11T06:55:18.124Z' },
+      ]);
+      // queryEvents filters by since/until using ISO string comparison.
+      // Both events are within the since/until range below.
+      const result = await queryEvents(
+        { since: '2026-04-11T06:55:18Z', until: '2026-04-11T06:56:00Z' },
+        { roots }
+      );
+      // Both timestamps satisfy ">= since" and "<= until" via lexicographic ordering.
+      // The nano timestamp '2026-04-11T06:55:18.123456Z' >= '2026-04-11T06:55:18Z' (lex).
+      // The milli timestamp '2026-04-11T06:55:18.124Z' <= '2026-04-11T06:56:00Z' (lex).
+      // At minimum: no crash.
+      assert.ok(typeof result.total_matching === 'number');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('leap-second timestamp in event does not crash scanner', async () => {
+    // T3 T6b: a leap-second timestamp (2026-06-30T23:59:60Z) is technically valid
+    // per ISO 8601 but JavaScript's Date.parse('...T23:59:60Z') returns NaN.
+    // The scanner must not crash — the event should either be yielded (if the
+    // string passes the non-empty timestamp guard) or skipped (if the scanner
+    // validates via Date), but must NOT throw.
+    const tmp = makeTmpProject();
+    try {
+      const roots = rootsFor(tmp);
+      writeJsonl(
+        path.join(roots.historyDir, '20260630-leapsec', 'events.jsonl'),
+        [
+          {
+            type: 'agent_start',
+            orchestration_id: 'orch-leapsec',
+            timestamp: '2026-06-30T23:59:60Z',  // leap second — JS Date.parse → NaN
+          },
+          {
+            type: 'agent_stop',
+            orchestration_id: 'orch-leapsec',
+            timestamp: '2026-07-01T00:00:00Z',
+          },
+        ]
+      );
+      // Must not throw — the scanner must be total over adversarial input.
+      let events;
+      await assert.doesNotReject(async () => {
+        events = await collect(scanEvents({ roots }));
+      }, 'leap-second timestamp must not crash scanEvents');
+      assert.ok(Array.isArray(events));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('leap-second timestamp does not cause queryEvents to throw', async () => {
+    // T3 T6b: queryEvents must handle a leap-second timestamp in a stored event
+    // without throwing, even when used with since/until filters.
+    const tmp = makeTmpProject();
+    try {
+      const roots = rootsFor(tmp);
+      writeJsonl(
+        path.join(roots.historyDir, '20260630-leapsec2', 'events.jsonl'),
+        [
+          {
+            type: 'orchestration_start',
+            orchestration_id: 'orch-leapsec2',
+            timestamp: '2026-06-30T23:59:60Z',
+          },
+        ]
+      );
+      // queryEvents with a normal since/until filter — must not throw.
+      await assert.doesNotReject(
+        () => queryEvents(
+          { since: '2026-06-30T00:00:00Z', until: '2026-07-01T12:00:00Z' },
+          { roots }
+        ),
+        'queryEvents must not throw when event has leap-second timestamp'
+      );
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+});

@@ -4,7 +4,7 @@
  * Flat-YAML frontmatter parser, stringifier, and atomic field rewriter for
  * Orchestray pattern files.
  *
- * Per v2011c-stage2-plan.md §6.
+ * See CHANGELOG.md §2.0.11 (Stage 2 MCP tools & resources) for design context.
  *
  * Supported frontmatter syntax (the subset Orchestray actually writes):
  *   key: string            foo: bar baz
@@ -186,8 +186,7 @@ function _serializeValue(v) {
 /**
  * Concurrent-writer race intentional in Stage 2; acceptable because PM serializes
  * pattern_record_application calls. To fix: wrap in bin/_lib/atomic-append.js
- * lockfile helper. See v2011c-stage2-plan.md §6 and PM decision in
- * .orchestray/state/orchestration.md G1 checkpoint.
+ * lockfile helper. See CHANGELOG.md §2.0.11 for the original rationale.
  */
 function rewriteField(filepath, fieldName, newValue) {
   let content;
