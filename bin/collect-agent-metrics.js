@@ -496,6 +496,34 @@ process.stdin.on('end', () => {
         };
 
         atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), variantCEvent);
+
+        // LL6: write a pending entry to routing-pending.jsonl so that when
+        // PostToolUse:Agent fires (after SubagentStop) it can correlate the
+        // spawn-side data (model, description) with the stop-side data (tokens,
+        // turns, result) and emit a merged routing_decision event.
+        // Key: (orchestration_id, agent_type). PostToolUse matches by this pair
+        // plus temporal proximity (nearest unmatched entry).
+        // Team events are excluded — they correlate differently via task_id.
+        if (!isTeamEvent) {
+          try {
+            const stateDir = path.join(cwd, '.orchestray', 'state');
+            fs.mkdirSync(stateDir, { recursive: true });
+            const pendingPath = path.join(stateDir, 'routing-pending.jsonl');
+            const pendingEntry = {
+              orchestration_id: orchestrationId,
+              agent_id: event.agent_id || null,
+              agent_type: agentType,
+              stop_timestamp: variantCEvent.timestamp,
+              turns_used: turnsUsed,
+              input_tokens: totalUsage.input_tokens,
+              output_tokens: totalUsage.output_tokens,
+              result: variantCResult,
+            };
+            atomicAppendJsonl(pendingPath, pendingEntry);
+          } catch (_pendingErr) {
+            // Fail open — pending write must never block the agent_stop write.
+          }
+        }
       } catch (_variantCErr) {
         // Fail open — Variant C emission must never block the agent_stop write.
       }

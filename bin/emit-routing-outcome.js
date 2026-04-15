@@ -8,6 +8,11 @@
  * .orchestray/audit/events.jsonl so collect-agent-metrics.js can resolve costs
  * without relying on the PM to emit the event manually.
  *
+ * LL6 addition: also emits a merged `routing_decision` event when stop-side data
+ * is available in .orchestray/state/routing-pending.jsonl. The pending file is
+ * written by collect-agent-metrics.js at SubagentStop time (which fires before
+ * PostToolUse:Agent). Correlation key: (orchestration_id, agent_type).
+ *
  * Fails open on all errors — a broken hook must not block agent completion.
  *
  * Input:  JSON on stdin (Claude Code PostToolUse hook payload)
@@ -20,6 +25,104 @@ const { atomicAppendJsonl } = require('./_lib/atomic-append');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
+
+// ---------------------------------------------------------------------------
+// Per-model output token caps used to compute completion_volume_ratio.
+// completion_volume_ratio = output_tokens / MODEL_OUTPUT_CAPS[model]
+// A ratio > 1.0 is possible if the cap is a typical-run ceiling, not a hard
+// API limit. Label it a volume signal, not a quality score (LL6 design note).
+// ---------------------------------------------------------------------------
+const MODEL_OUTPUT_CAPS = {
+  haiku:  32768,
+  sonnet: 32768,
+  opus:   32768,
+};
+
+/**
+ * Compute completion_volume_ratio for a given output_tokens count and model.
+ * Returns null if the model is unrecognized or output_tokens is not a positive number.
+ *
+ * @param {number} outputTokens
+ * @param {string|null} model  Normalized model tier string ('haiku'|'sonnet'|'opus')
+ * @returns {number|null}
+ */
+function completionVolumeRatio(outputTokens, model) {
+  if (typeof outputTokens !== 'number' || outputTokens <= 0) return null;
+  const cap = model && MODEL_OUTPUT_CAPS[model];
+  if (!cap) return null;
+  return Math.round((outputTokens / cap) * 10000) / 10000; // 4 decimal places
+}
+
+// ---------------------------------------------------------------------------
+// Pending-file helpers for LL6 spawn/stop correlation.
+//
+// routing-pending.jsonl is written by collect-agent-metrics.js at SubagentStop
+// time. PostToolUse:Agent fires after SubagentStop, so the pending entry is
+// already present when we need it.
+//
+// Correlation: find the OLDEST unmatched entry for (orchestration_id, agent_type)
+// (oldest = most likely to correspond to this spawn). Remove it from the file
+// after reading so the next spawn of the same agent_type in the same orch gets
+// a fresh entry.
+// ---------------------------------------------------------------------------
+
+const MAX_PENDING_READ = 512 * 1024; // 512 KB — pending file should be tiny
+
+/**
+ * Attempt to pop (read + remove) the oldest pending entry matching
+ * (orchestration_id, agent_type) from routing-pending.jsonl.
+ *
+ * Returns the matched entry object, or null if not found or on any error.
+ * Fail-open: never throws.
+ *
+ * @param {string} pendingPath
+ * @param {string} orchestrationId
+ * @param {string|null} agentType
+ * @returns {object|null}
+ */
+function popPendingEntry(pendingPath, orchestrationId, agentType) {
+  try {
+    if (!fs.existsSync(pendingPath)) return null;
+    const stat = fs.statSync(pendingPath);
+    if (stat.size > MAX_PENDING_READ) {
+      process.stderr.write('[orchestray] routing-pending.jsonl too large (' + stat.size + ' bytes); skipping merge\n');
+      return null;
+    }
+    const raw = fs.readFileSync(pendingPath, 'utf8');
+    const lines = raw.split('\n');
+    let matchIdx = -1;
+    const parsed = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) { parsed.push(null); continue; }
+      let obj;
+      try { obj = JSON.parse(line); } catch (_e) { parsed.push(null); continue; }
+      parsed.push(obj);
+      // Find oldest (first) match for (orchestration_id, agent_type)
+      if (
+        matchIdx === -1 &&
+        obj.orchestration_id === orchestrationId &&
+        obj.agent_type === agentType
+      ) {
+        matchIdx = i;
+      }
+    }
+    if (matchIdx === -1) return null;
+    const matched = parsed[matchIdx];
+
+    // Rewrite the pending file without the matched entry (compaction)
+    const remaining = parsed
+      .filter((_, i) => i !== matchIdx && parsed[i] !== null)
+      .map(obj => JSON.stringify(obj))
+      .join('\n');
+    fs.writeFileSync(pendingPath, remaining ? remaining + '\n' : '');
+
+    return matched;
+  } catch (_e) {
+    // Fail open — any error in pending-file manipulation must not block the hook.
+    return null;
+  }
+}
 
 const VALID_TIERS = ['haiku', 'sonnet', 'opus'];
 
@@ -101,6 +204,49 @@ process.stdin.on('end', () => {
     fs.mkdirSync(auditDir, { recursive: true });
     try { fs.chmodSync(auditDir, 0o700); } catch (_e) { /* best-effort hardening; chmod may fail on exotic filesystems */ }
     atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), routingEvent);
+
+    // LL6: attempt to emit a merged routing_decision event.
+    // SubagentStop fires before PostToolUse:Agent, so collect-agent-metrics.js
+    // has already written the stop-side data to routing-pending.jsonl. Pop the
+    // matching entry and merge it with the spawn-side data from this hook.
+    // Idempotency: popPendingEntry removes the entry atomically, so a second
+    // PostToolUse for the same agent never sees the same pending row.
+    try {
+      const pendingPath = path.join(cwd, '.orchestray', 'state', 'routing-pending.jsonl');
+      const stopSide = popPendingEntry(pendingPath, orchestrationId, agentType);
+      if (stopSide) {
+        const spawnTs = routingEvent.timestamp;
+        const stopTs = stopSide.stop_timestamp || new Date().toISOString();
+        const durationMs = Math.max(0, Date.parse(stopTs) - Date.parse(spawnTs));
+        const mergedEvent = {
+          timestamp: stopTs,
+          type: 'routing_decision',
+          orchestration_id: orchestrationId,
+          agent_id: stopSide.agent_id || null,
+          agent_type: agentType,
+          tool_name: toolName,
+          description: description,
+          model_assigned: normalizedModel,
+          effort_assigned: effort,
+          turns_used: stopSide.turns_used || 0,
+          input_tokens: stopSide.input_tokens || 0,
+          output_tokens: stopSide.output_tokens || 0,
+          result: stopSide.result || null,
+          completion_volume_ratio: completionVolumeRatio(stopSide.output_tokens || 0, normalizedModel),
+          spawn_timestamp: spawnTs,
+          duration_ms: durationMs,
+        };
+        atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), mergedEvent);
+      } else {
+        // No matching stop-side entry: orphaned spawn (agent may not have started,
+        // or pending file was unavailable). No merged event emitted. This is normal
+        // for agents that fail immediately (pre-start). No warning needed here —
+        // the stop-side will emit an "unmatched" warning if it ever fires without
+        // a matching spawn.
+      }
+    } catch (_mergeErr) {
+      // Fail open — merge failure must never block the routing_outcome write.
+    }
 
   } catch (_e) {
     // Fail open — never block agent completion due to audit failure

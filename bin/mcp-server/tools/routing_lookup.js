@@ -13,6 +13,12 @@
  *     { ts, orchestration_id, task_id, agent_type, model, effort,
  *       description, rationale, complexity_score, decided_by, decided_at }
  *
+ * LL6 extension: also reads routing_decision merged events from events.jsonl.
+ * routing_decision rows are returned preferentially (merged: true) over the
+ * split routing_outcome pair. Historical events.jsonl files only have split
+ * routing_outcome rows; the tool synthesises routing_decision rows on-the-fly
+ * from matched Variant A + Variant C pairs (merged: false, synthesised: true).
+ *
  * Per v2016-release-plan.md §W3.
  */
 
@@ -24,6 +30,10 @@ const { toolSuccess, toolError } = require('../lib/tool-result');
 
 // Maximum bytes to read from routing.jsonl to avoid blocking on huge files.
 const MAX_ROUTING_READ = 2 * 1024 * 1024; // 2 MB
+
+// Maximum bytes to read from events.jsonl for routing_decision lookup.
+// Large enough to cover typical session sizes without blocking.
+const MAX_EVENTS_READ = 4 * 1024 * 1024; // 4 MB
 
 const INPUT_SCHEMA = deepFreeze({
   type: 'object',
@@ -136,6 +146,173 @@ function normalizeEntry(entry) {
   };
 }
 
+/**
+ * Read and parse events.jsonl, returning routing_decision rows and raw
+ * routing_outcome rows for synthesis. Capped at MAX_EVENTS_READ bytes.
+ * Returns newest-first.
+ *
+ * @param {string} eventsPath - Absolute path to events.jsonl
+ * @returns {{ decisions: object[], hookRows: object[], stopRows: object[] }}
+ */
+function readRoutingEventsFromAudit(eventsPath) {
+  const decisions = [];
+  const hookRows = [];
+  const stopRows = [];
+  try {
+    const stat = fs.statSync(eventsPath);
+    let raw;
+    if (stat.size > MAX_EVENTS_READ) {
+      // Read the last MAX_EVENTS_READ bytes and skip the (likely truncated) first line.
+      const fd = fs.openSync(eventsPath, 'r');
+      try {
+        const buf = Buffer.alloc(MAX_EVENTS_READ);
+        const bytesRead = fs.readSync(fd, buf, 0, MAX_EVENTS_READ, stat.size - MAX_EVENTS_READ);
+        raw = buf.slice(0, bytesRead).toString('utf8');
+        const firstNl = raw.indexOf('\n');
+        if (firstNl !== -1) raw = raw.slice(firstNl + 1);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } else {
+      raw = fs.readFileSync(eventsPath, 'utf8');
+    }
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let obj;
+      try { obj = JSON.parse(trimmed); } catch (_e) { continue; }
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) continue;
+      const type = obj.type;
+      if (type === 'routing_decision') {
+        decisions.push(obj);
+      } else if (type === 'routing_outcome') {
+        if (obj.source === 'hook') hookRows.push(obj);
+        else if (obj.source === 'subagent_stop') stopRows.push(obj);
+      }
+    }
+  } catch (_e) {
+    // File missing or unreadable — return empty collections
+  }
+  decisions.reverse();
+  hookRows.reverse();
+  stopRows.reverse();
+  return { decisions, hookRows, stopRows };
+}
+
+// Per-model output token caps (mirrors emit-routing-outcome.js MODEL_OUTPUT_CAPS).
+const MODEL_OUTPUT_CAPS = {
+  haiku:  32768,
+  sonnet: 32768,
+  opus:   32768,
+};
+
+/**
+ * Synthesise routing_decision rows on-the-fly from matched Variant A (hook) +
+ * Variant C (subagent_stop) routing_outcome pairs in historical events.jsonl.
+ *
+ * Matching key: (orchestration_id, agent_type). For each Variant C row, find
+ * the nearest Variant A row in the same (orch, agent_type) bucket. Once
+ * matched, neither row is reused (greedy earliest-match).
+ *
+ * @param {object[]} hookRows  - Variant A routing_outcome rows, newest-first
+ * @param {object[]} stopRows  - Variant C routing_outcome rows, newest-first
+ * @returns {object[]} Synthesised routing_decision rows (newest-first)
+ */
+function synthesiseDecisions(hookRows, stopRows) {
+  // Build a map: key=(orch_id + '|' + agent_type) -> array of hook rows (indices)
+  const hookByKey = new Map();
+  for (let i = 0; i < hookRows.length; i++) {
+    const row = hookRows[i];
+    const key = (row.orchestration_id || '') + '|' + (row.agent_type || '');
+    if (!hookByKey.has(key)) hookByKey.set(key, []);
+    hookByKey.get(key).push(i);
+  }
+  const usedHookIdx = new Set();
+  const synthesised = [];
+
+  for (const stopRow of stopRows) {
+    const key = (stopRow.orchestration_id || '') + '|' + (stopRow.agent_type || '');
+    const candidates = hookByKey.get(key);
+    if (!candidates) continue;
+    // Pick the first unused candidate (greedy earliest-written = least index since
+    // hookRows is newest-first; we want oldest match → pick the highest index).
+    let chosenIdx = -1;
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      if (!usedHookIdx.has(candidates[i])) { chosenIdx = candidates[i]; break; }
+    }
+    if (chosenIdx === -1) continue;
+    usedHookIdx.add(chosenIdx);
+    const hookRow = hookRows[chosenIdx];
+
+    const stopTs = stopRow.timestamp || null;
+    const spawnTs = hookRow.timestamp || null;
+    let durationMs = null;
+    if (stopTs && spawnTs) {
+      const d = Date.parse(stopTs) - Date.parse(spawnTs);
+      if (!isNaN(d) && d >= 0) durationMs = d;
+    }
+    const outputTokens = stopRow.output_tokens || 0;
+    const model = hookRow.model_assigned || null;
+    const cap = model && MODEL_OUTPUT_CAPS[model];
+    const ratio = (outputTokens > 0 && cap)
+      ? Math.round((outputTokens / cap) * 10000) / 10000
+      : null;
+
+    synthesised.push({
+      timestamp: stopTs,
+      type: 'routing_decision',
+      orchestration_id: stopRow.orchestration_id || null,
+      agent_id: stopRow.agent_id || null,
+      agent_type: stopRow.agent_type || null,
+      tool_name: hookRow.tool_name || null,
+      description: hookRow.description || null,
+      model_assigned: model,
+      effort_assigned: hookRow.effort_assigned || null,
+      turns_used: stopRow.turns_used || 0,
+      input_tokens: stopRow.input_tokens || 0,
+      output_tokens: outputTokens,
+      result: stopRow.result || null,
+      completion_volume_ratio: ratio,
+      spawn_timestamp: spawnTs,
+      duration_ms: durationMs,
+      synthesised: true,  // marks this as synthesised from historical pairs, not emitted
+    });
+  }
+  // Return newest-first (already newest-first since stopRows is newest-first)
+  return synthesised;
+}
+
+/**
+ * Normalise a routing_decision event into the output shape for routing_lookup.
+ *
+ * @param {object} ev
+ * @param {boolean} [merged=true]  true = emitted merged event; false = synthesised
+ * @returns {object}
+ */
+function normalizeDecisionEntry(ev, merged) {
+  return {
+    ts: ev.timestamp || null,
+    orchestration_id: ev.orchestration_id || null,
+    agent_id: ev.agent_id || null,
+    agent_type: ev.agent_type || null,
+    tool_name: ev.tool_name || null,
+    description: ev.description || null,
+    model_assigned: ev.model_assigned || null,
+    effort_assigned: ev.effort_assigned || null,
+    turns_used: (typeof ev.turns_used === 'number') ? ev.turns_used : null,
+    input_tokens: (typeof ev.input_tokens === 'number') ? ev.input_tokens : null,
+    output_tokens: (typeof ev.output_tokens === 'number') ? ev.output_tokens : null,
+    result: ev.result || null,
+    completion_volume_ratio: (typeof ev.completion_volume_ratio === 'number') ? ev.completion_volume_ratio : null,
+    spawn_timestamp: ev.spawn_timestamp || null,
+    duration_ms: (typeof ev.duration_ms === 'number') ? ev.duration_ms : null,
+    merged: merged !== false,
+    synthesised: ev.synthesised === true,
+    // Preserve task_id if present (PM-emitted Variant B might set it)
+    task_id: ev.task_id || null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
@@ -159,20 +336,66 @@ async function handle(input, context) {
     return toolError('routing_lookup: cannot resolve project root');
   }
 
-  const routingPath = path.join(projectRoot, '.orchestray', 'state', 'routing.jsonl');
-  const allEntries = readAllRoutingEntries(routingPath);
-
   // Apply filters
   const orchId = (input && typeof input.orchestration_id === 'string') ? input.orchestration_id : null;
   const taskId = (input && typeof input.task_id === 'string') ? input.task_id : null;
   const agentType = (input && typeof input.agent_type === 'string') ? input.agent_type : null;
 
+  // -----------------------------------------------------------------------
+  // Step 1: collect routing_decision events from events.jsonl (emitted or
+  // synthesised from historical Variant A + Variant C pairs).
+  // routing_decision rows are preferred over the split routing_outcome pair.
+  // -----------------------------------------------------------------------
+  const eventsPath = path.join(projectRoot, '.orchestray', 'audit', 'events.jsonl');
+  const { decisions: emittedDecisions, hookRows, stopRows } = readRoutingEventsFromAudit(eventsPath);
+  const synthesised = synthesiseDecisions(hookRows, stopRows);
+
+  // Build a dedup key set from emitted decisions so synthesised rows for the
+  // same agent_id are not double-counted.
+  const emittedAgentIds = new Set(
+    emittedDecisions.map(d => d.agent_id).filter(Boolean)
+  );
+  const filteredSynthesised = synthesised.filter(
+    d => !d.agent_id || !emittedAgentIds.has(d.agent_id)
+  );
+
+  // Merge emitted + filtered synthesised, newest-first
+  const allDecisions = [...emittedDecisions, ...filteredSynthesised].sort((a, b) => {
+    const ta = a.timestamp ? Date.parse(a.timestamp) : 0;
+    const tb = b.timestamp ? Date.parse(b.timestamp) : 0;
+    return tb - ta; // newest first
+  });
+
+  // -----------------------------------------------------------------------
+  // Step 2: also read routing.jsonl (PM-written decomposition decisions).
+  // These are a separate source and are NOT merged with routing_decision rows.
+  // -----------------------------------------------------------------------
+  const routingPath = path.join(projectRoot, '.orchestray', 'state', 'routing.jsonl');
+  const allRoutingEntries = readAllRoutingEntries(routingPath);
+
+  // -----------------------------------------------------------------------
+  // Step 3: apply filters and build combined matches list.
+  // routing_decision rows appear first (preferred); routing.jsonl rows follow.
+  // -----------------------------------------------------------------------
   const matches = [];
-  for (const entry of allEntries) {
+
+  // Filter and normalise routing_decision rows
+  for (const ev of allDecisions) {
+    if (orchId !== null && ev.orchestration_id !== orchId) continue;
+    if (taskId !== null && (ev.task_id || null) !== taskId) continue;
+    if (agentType !== null && ev.agent_type !== agentType) continue;
+    matches.push(normalizeDecisionEntry(ev, !ev.synthesised));
+  }
+
+  // Filter and normalise routing.jsonl entries (legacy PM decomposition log)
+  for (const entry of allRoutingEntries) {
     if (orchId !== null && entry.orchestration_id !== orchId) continue;
     if (taskId !== null && entry.task_id !== taskId) continue;
     if (agentType !== null && entry.agent_type !== agentType) continue;
-    matches.push(normalizeEntry(entry));
+    const normalized = normalizeEntry(entry);
+    normalized.merged = false;
+    normalized.synthesised = false;
+    matches.push(normalized);
   }
 
   // F10: cap result at 500 entries to match the documented limit.

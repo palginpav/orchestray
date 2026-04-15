@@ -152,7 +152,7 @@ instead. `agent_id` is safe only within a single event-type subset.
    output. Consumers MUST treat `source: "subagent_stop"` result as "completion
    observed, quality unknown" — not authoritative for task outcome.
 
-### Consumer guidance
+### Consumer guidance — routing_outcome (legacy)
 
 Downstream readers (`bin/collect-agent-metrics.js`, pattern extraction, analytics) MUST
 handle all three variants. Match on `(orchestration_id, agent_type)` — apply this
@@ -176,6 +176,11 @@ New effort fields (Variant B):
 On escalation, the `escalated_from` field records the previous model and `escalation_count`
 increments. For example, a Haiku task that escalated to Sonnet would have:
 
+> **Prefer `routing_decision` (Variant D below) over these three variants.**
+> The split routing_outcome pair is retained for backward compatibility.
+> New consumers SHOULD prefer `routing_decision` rows which carry both halves
+> merged into a single actionable event.
+
 ```json
 {
   "escalation_count": 1,
@@ -184,6 +189,71 @@ increments. For example, a Haiku task that escalated to Sonnet would have:
   "result": "escalated"
 }
 ```
+
+---
+
+### Variant D — `routing_decision` (merged, v2.0.18+)
+
+Emitted by `bin/emit-routing-outcome.js` at `PostToolUse:Agent` time after
+correlating the spawn-side data (Variant A) with the stop-side data written by
+`bin/collect-agent-metrics.js` to `.orchestray/state/routing-pending.jsonl`.
+
+**Correlation key:** `(orchestration_id, agent_type)`. The pending file entry is
+written at `SubagentStop` time (which fires before `PostToolUse:Agent`), so both
+sides are available when the merged event is emitted.
+
+**Idempotency:** the pending file entry is consumed (removed) on match, so only
+one `routing_decision` is ever emitted per agent invocation.
+
+**Orphan handling:**
+- If the stop-side is missing when `PostToolUse:Agent` fires (out-of-order, failed
+  agent that never reached `SubagentStop`): no `routing_decision` is emitted.
+  The existing Variant A `routing_outcome` row remains as the sole record.
+- If `SubagentStop` fires but no matching `PostToolUse:Agent` follows (e.g., the
+  PM cancelled the task): `collect-agent-metrics.js` emits a one-line stderr
+  warning `routing_decision unmatched: <agent_id>` when it detects the pending
+  entry was not consumed after the orchestration ends. The Variant C row remains.
+
+**`completion_volume_ratio`:** `output_tokens / MODEL_OUTPUT_CAPS[model]` where
+`MODEL_OUTPUT_CAPS` is defined in `bin/emit-routing-outcome.js`. Currently all
+three tiers have a cap of 32768 output tokens. This is a **volume signal, not a
+quality score** — a ratio of 1.0 means the agent used the full typical-run output
+budget; it does not indicate task quality.
+
+```json
+{
+  "timestamp": "<stop-time ISO 8601>",
+  "type": "routing_decision",
+  "orchestration_id": "...",
+  "agent_id": "...",
+  "agent_type": "developer",
+  "tool_name": "Agent | Explore | Task",
+  "description": "<tool_input.description truncated to 200 chars>",
+  "model_assigned": "<haiku|sonnet|opus>",
+  "effort_assigned": "<low|medium|high|max or null>",
+  "turns_used": 42,
+  "input_tokens": 12000,
+  "output_tokens": 5000,
+  "result": "<success|error|unknown>",
+  "completion_volume_ratio": 0.1526,
+  "spawn_timestamp": "<PostToolUse hook timestamp>",
+  "duration_ms": 45000
+}
+```
+
+**Historical synthesis:** `routing_lookup` synthesises `routing_decision` rows
+on-the-fly from matched Variant A + Variant C `routing_outcome` pairs found in
+`events.jsonl`. Synthesised rows carry `synthesised: true` in the tool response;
+emitted rows carry `merged: true`. Consumers SHOULD prefer `merged: true` rows
+over `synthesised: true` rows for the same agent invocation (emitted rows used
+the actual agent_id as the correlation key; synthesised rows use only agent_type
+and may have a small misattribution risk under parallel same-type spawns).
+
+**Retained for backward compatibility:** Variant A, B, and C `routing_outcome`
+rows continue to be emitted unchanged. Consumers that currently read
+`routing_outcome` rows are not affected. New consumers SHOULD query
+`routing_lookup` (which returns merged/synthesised rows preferentially) rather
+than scanning `events.jsonl` directly for `routing_outcome`.
 
 ---
 
