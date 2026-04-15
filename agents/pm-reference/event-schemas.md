@@ -341,6 +341,56 @@ Appended when a specialist from the registry is reused for a subtask:
 
 ---
 
+## Pattern Skip Enriched Event (W11 LL1)
+
+Appended by `mcp__orchestray__pattern_record_skip_reason` when the PM records a
+structured skip decision for a pattern returned by `pattern_find`. This event is emitted
+**in addition to** the standard `mcp_tool_call` audit row and carries counterfactual
+signal so operators can distinguish "skipped because contextually mismatched" from
+"skipped because forgotten."
+
+Cross-ref: the MCP tool that emits this event is `pattern_record_skip_reason`
+(`bin/mcp-server/tools/pattern_record_skip_reason.js`). The structured skip-recording
+contract is documented in `pattern-extraction.md §22b-pre`.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "pattern_skip_enriched",
+  "orchestration_id": "<current orch id>",
+  "pattern_name": "<kebab-case pattern slug, or null if not provided>",
+  "match_quality": "strong-match | weak-match | edge-case",
+  "skip_category": "contextual-mismatch | stale | superseded | operator-override | forgotten",
+  "skip_reason": "<freeform prose, or null>",
+  "cited_confidence": 0.35,
+  "superseded_by": "<name of superseding pattern>"
+}
+```
+
+Field notes:
+- `pattern_name`: Identifies which pattern was skipped. Optional in the tool call but
+  highly recommended for retrospective analysis — without it the event cannot be
+  correlated back to a specific pattern.
+- `match_quality`: How well the pattern's context predicate matched the current task.
+  `strong-match` = the pattern clearly applied; `weak-match` = partial overlap;
+  `edge-case` = the pattern's documented context was at the boundary of applicability.
+- `skip_category`: The primary reason the pattern was not applied. See
+  `pattern-extraction.md §22b-pre` for the full taxonomy and guidance on when to use each.
+- `skip_reason`: Free-form prose (from either the `skip_reason` or `note` input field).
+  May be `null` when no prose was provided.
+- `cited_confidence`: Optional. The `decayed_confidence` value from `pattern_find`
+  results at decision time. Present only when the PM passed `cited_confidence` in the
+  tool call. Useful for clustering analysis (e.g., "do stale skips cluster at 0.3–0.4?").
+- `superseded_by`: Optional. Present only when `skip_category` is `"superseded"`.
+  Names the pattern that takes precedence.
+
+**Operator-facing warning:** when `skip_category: forgotten` exceeds 30% of the last
+25 `pattern_skip_enriched` events for a given orchestration, the MCP server emits a
+one-line stderr warning: `"pattern skip enrichment: <X>% forgotten over last <N> skips
+— consider explicit categorisation"`. This is advisory and never blocks the tool call.
+
+---
+
 ## Pattern Pruned Event
 
 Appended when low-value patterns are removed during pruning (step 7 of the learn skill):

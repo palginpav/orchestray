@@ -86,6 +86,68 @@ reported, confidence feedback applied via Section 22c).
 
 ---
 
+## 22b-pre. Structured Skip-Recording Contract (W11 LL1)
+
+When `pattern_find` returns N patterns and the PM does NOT apply one or more of them, it
+MUST call `mcp__orchestray__pattern_record_skip_reason` for each unapplied pattern.
+
+### Required fields (W11)
+
+| Field | Values | Guidance |
+|-------|--------|----------|
+| `match_quality` | `strong-match`, `weak-match`, `edge-case` | How well the pattern's context predicate matched the current task |
+| `skip_category` | See table below | The primary reason this pattern was skipped |
+
+### skip_category taxonomy
+
+| Category | When to use |
+|----------|-------------|
+| `contextual-mismatch` | Pattern matched the surface criteria but key context differs (e.g., pattern is for "parallel file-exclusive updates", current task is cross-cutting) |
+| `stale` | Pattern's `decayed_confidence` was below the threshold the PM would normally act on. **Use this when `decayed_confidence < 0.4`** (per §22d-pre decay guidance) |
+| `superseded` | Another pattern in the result set supersedes this one — pass its name in `superseded_by` |
+| `operator-override` | User explicitly directed a different approach |
+| `forgotten` | **Fallback only** — use when no other category fits. Choosing `forgotten` logs a stderr warning when its rate exceeds 30% over the last 25 skips for the current orchestration. Prefer an explicit category. |
+
+### Optional fields
+
+| Field | Guidance |
+|-------|----------|
+| `cited_confidence` | The `decayed_confidence` value from `pattern_find` results seen at decision time. Provide this whenever available — it lets retrospective analysis see whether skips cluster around specific decay thresholds. |
+| `superseded_by` | Name of the superseding pattern. Required when `skip_category: superseded`; must be omitted otherwise. |
+| `skip_reason` | Free-form prose (1–3 sentences) explaining the skip. Complements the structured `skip_category`. |
+
+### Stale threshold rule
+
+If `pattern_find` returns a pattern with `decayed_confidence < 0.4` AND you decide to
+skip it, `skip_category` SHOULD be `stale` (unless another category is more precisely
+correct). Pass `cited_confidence: <value>` so the threshold can be verified in analysis.
+
+### Forgotten-rate guard
+
+The MCP tool counts `pattern_skip_enriched` events for the current orchestration over a
+rolling window of the last 25 calls. If `forgotten` category exceeds **30%** of that
+window, it emits a stderr warning:
+
+```
+pattern skip enrichment: <X>% forgotten over last <N> skips — consider explicit categorisation
+```
+
+If the PM observes this warning repeated across multiple orchestrations, it should pause
+at the next pre-decomposition check and be more deliberate about skip-recording categories.
+
+### Backward compatibility
+
+The legacy `reason` field (`all-irrelevant`, `all-low-confidence`, `all-stale`, `other`)
+is preserved and still required. It is now the high-level prose companion to the
+structured `skip_category`. Map the categories approximately:
+- `skip_category: stale` → `reason: all-stale`
+- `skip_category: contextual-mismatch` → `reason: all-irrelevant`
+- `skip_category: superseded` → `reason: all-irrelevant`
+- `skip_category: operator-override` → `reason: other` (with `note` explaining)
+- `skip_category: forgotten` → `reason: other` (with `note: "pattern seen but not explicitly weighed"`)
+
+---
+
 ## 22b. Pattern Application (Pre-Decomposition)
 
 **Read path has moved to MCP.** The live procedure is in `tier1-orchestration.md`
