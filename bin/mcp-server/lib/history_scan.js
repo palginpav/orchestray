@@ -76,14 +76,32 @@ function _normalizeEvent(raw, sourcePath, lineNumber) {
     return null;
   }
 
-  // Drop legacy `event` field; keep all other properties.
+  const hasTimestamp = typeof raw.timestamp === 'string' && raw.timestamp.length > 0;
+  const hasTs = typeof raw.ts === 'string' && raw.ts.length > 0;
+
+  if (hasTimestamp && hasTs && raw.timestamp !== raw.ts) {
+    logStderr(
+      'history_scan: schema drift at ' + sourcePath + ':' + lineNumber +
+      ' (timestamp=' + raw.timestamp + ', ts=' + raw.ts + ') — preferring timestamp'
+    );
+  }
+
+  // Resolve canonical timestamp: `timestamp` wins if present; fall back to `ts`.
+  const resolvedTimestamp = hasTimestamp ? raw.timestamp : (hasTs ? raw.ts : undefined);
+
+  // Drop legacy `event` and `ts` fields; keep all other properties.
   const out = {};
   for (const [k, v] of Object.entries(raw)) {
     if (k === 'event') continue;
     if (k === 'type') continue;
+    if (k === 'ts') continue;
+    if (k === 'timestamp') continue;
     out[k] = v;
   }
   out.type = eventType;
+  if (resolvedTimestamp !== undefined) {
+    out.timestamp = resolvedTimestamp;
+  }
   return out;
 }
 
