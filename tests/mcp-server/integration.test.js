@@ -331,7 +331,7 @@ describe('A. protocol handshake', () => {
 
 describe('B. tools/list', () => {
 
-  test('default config returns all 9 tools',
+  test('default config returns all 12 tools',
     { timeout: TEST_TIMEOUT },
     async () => {
       await withServer(null, async (_tmp, client) => {
@@ -342,13 +342,16 @@ describe('B. tools/list', () => {
         assert.deepEqual(names, [
           'ask_user',
           'cost_budget_check',
+          'cost_budget_reserve',
           'history_find_similar_tasks',
           'history_query_events',
           'kb_search',
           'kb_write',
+          'pattern_deprecate',
           'pattern_find',
           'pattern_record_application',
           'pattern_record_skip_reason',
+          'routing_lookup',
         ]);
       });
     }
@@ -363,7 +366,7 @@ describe('B. tools/list', () => {
           await initialize(client);
           const resp = await client.sendAndReceive({ method: 'tools/list', params: {} });
           const names = resp.result.tools.map((t) => t.name);
-          assert.equal(names.length, 8);
+          assert.equal(names.length, 11);
           assert.ok(!names.includes('pattern_find'),
             'pattern_find must be absent when disabled via shorthand');
           assert.ok(names.includes('pattern_record_skip_reason'),
@@ -372,6 +375,8 @@ describe('B. tools/list', () => {
             'new 2.0.14 tool cost_budget_check must still be present when unrelated tool is disabled');
           assert.ok(names.includes('kb_write'),
             'kb_write must still be present when unrelated tool is disabled');
+          assert.ok(names.includes('pattern_deprecate'),
+            'new 2.0.16 tool pattern_deprecate must still be present when unrelated tool is disabled');
         }
       );
     }
@@ -386,7 +391,7 @@ describe('B. tools/list', () => {
           await initialize(client);
           const resp = await client.sendAndReceive({ method: 'tools/list', params: {} });
           const names = resp.result.tools.map((t) => t.name);
-          assert.equal(names.length, 8);
+          assert.equal(names.length, 11);
           assert.ok(!names.includes('kb_search'),
             'kb_search must be absent when disabled via nested form');
           assert.ok(names.includes('pattern_record_skip_reason'),
@@ -395,6 +400,8 @@ describe('B. tools/list', () => {
             'new 2.0.14 tool cost_budget_check must still be present when unrelated tool is disabled');
           assert.ok(names.includes('kb_write'),
             'kb_write must still be present when unrelated tool is disabled');
+          assert.ok(names.includes('pattern_deprecate'),
+            'new 2.0.16 tool pattern_deprecate must still be present when unrelated tool is disabled');
         }
       );
     }
@@ -894,9 +901,9 @@ describe('J. resources/templates/list', () => {
           'history task template must be present');
         assert.ok(templateUris.includes('orchestray:kb://{section}/{slug}'),
           'kb template must be present');
-        // Pattern + 2 history + kb = 4 templates from the three resource modules.
-        assert.equal(templates.length, 4,
-          'exactly 4 resource templates expected (1 pattern + 2 history + 1 kb)');
+        // Pattern + 2 history + kb + orchestration = 5 templates (2.0.16 added orchestration://).
+        assert.equal(templates.length, 5,
+          'exactly 5 resource templates expected (1 pattern + 2 history + 1 kb + 1 orchestration)');
       });
     }
   );
@@ -1187,17 +1194,20 @@ describe('N. tools/list with unknown config tool key', () => {
           const resp = await client.sendAndReceive({ method: 'tools/list', params: {} });
           assert.equal(resp.error, undefined, 'tools/list must not error');
           const names = resp.result.tools.map((t) => t.name).sort();
-          // Must be exactly the known 9 tools — unknown keys neither added nor removed.
+          // Must be exactly the known 12 tools — unknown keys neither added nor removed.
           assert.deepEqual(names, [
             'ask_user',
             'cost_budget_check',
+            'cost_budget_reserve',
             'history_find_similar_tasks',
             'history_query_events',
             'kb_search',
             'kb_write',
+            'pattern_deprecate',
             'pattern_find',
             'pattern_record_application',
             'pattern_record_skip_reason',
+            'routing_lookup',
           ], 'unknown config keys must not contaminate tools/list');
           // Verify neither unknown key name leaked into the tool list.
           assert.ok(!names.includes('some_unknown_key'),
@@ -1227,7 +1237,7 @@ describe('N. tools/list with unknown config tool key', () => {
           const resp = await client.sendAndReceive({ method: 'tools/list', params: {} });
           assert.equal(resp.error, undefined);
           const names = resp.result.tools.map((t) => t.name);
-          assert.equal(names.length, 8, 'only one known tool removed, unknown key ignored');
+          assert.equal(names.length, 11, 'only one known tool removed, unknown key ignored');
           assert.ok(!names.includes('pattern_find'), 'pattern_find must be absent (disabled)');
           assert.ok(!names.includes('some_unknown_key'), 'unknown key must not appear');
         }

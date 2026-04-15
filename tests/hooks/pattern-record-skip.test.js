@@ -350,3 +350,67 @@ describe('fail-open discipline', () => {
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// W16 P1 — 2MB guard stderr warning (T3 P1 regression)
+// ---------------------------------------------------------------------------
+// Verifies that when events.jsonl exceeds the 2MB read guard, the script
+// emits a one-line stderr warning naming the orchestration ID and the bypass.
+// Without this warning the silent degradation is invisible to operators.
+// Source: v2015-reviewer-final.md T3 P1 FAIL; fix shipped in record-pattern-skip.js:161-165.
+
+describe('W16 P1 — 2MB guard: stderr warning emitted when events.jsonl exceeds guard', () => {
+
+  test('oversized events.jsonl emits "[orchestray] record-pattern-skip:" warning on stderr', () => {
+    // Arrange: active orchestration with a pattern_find checkpoint row (condition 2),
+    // no pattern_record_application row (condition 3), and an events.jsonl that is
+    // larger than the 2MB guard so the skip-reason scan is bypassed.
+    const orchId = 'orch-2mb-guard-001';
+    const { dir, auditDir, stateDir } = makeDir({ withOrch: true, orchestrationId: orchId });
+    writeCheckpointRows(stateDir, orchId, ['pattern_find'], 2);
+
+    // Write a synthetic events.jsonl that exceeds 2 MB (2 * 1024 * 1024 = 2097152 bytes).
+    // We use a padded JSON line repeated to cross the threshold.
+    const MAX_EVENTS_READ = 2 * 1024 * 1024;
+    const singleLine = JSON.stringify({ type: 'mcp_tool_call', orchestration_id: orchId, padding: 'x'.repeat(200) }) + '\n';
+    const repeatCount = Math.ceil((MAX_EVENTS_READ + 1) / singleLine.length);
+    const oversizedContent = singleLine.repeat(repeatCount);
+    fs.writeFileSync(path.join(auditDir, 'events.jsonl'), oversizedContent);
+
+    // Act: run the script.
+    const { stderr, status } = run(dir);
+
+    // Assert: must exit 0 (fail-open discipline).
+    assert.equal(status, 0, 'Must exit 0 even when events.jsonl exceeds guard (fail-open)');
+
+    // Assert: stderr must contain the [orchestray] prefix + script name + guard mention.
+    assert.ok(
+      stderr.includes('[orchestray] record-pattern-skip:'),
+      'stderr must include [orchestray] record-pattern-skip: prefix; got: ' + stderr
+    );
+    assert.ok(
+      stderr.toLowerCase().includes('exceeds'),
+      'stderr must mention "exceeds" (the guard bypass); got: ' + stderr
+    );
+    assert.ok(
+      stderr.includes(orchId),
+      'stderr warning must name the orchestration ID (' + orchId + '); got: ' + stderr
+    );
+  });
+
+  test('undersized events.jsonl does NOT emit the 2MB guard warning', () => {
+    // Regression complement: a small events.jsonl must not trigger the warning.
+    // This prevents false positives from the guard in the normal case.
+    const orchId = 'orch-2mb-guard-002';
+    const { dir, stateDir } = makeDir({ withOrch: true, orchestrationId: orchId });
+    writeCheckpointRows(stateDir, orchId, ['pattern_find'], 1);
+    // No events.jsonl created — the file does not exist (well below 2MB).
+    const { stderr, status } = run(dir);
+    assert.equal(status, 0, 'Must exit 0 when events.jsonl is small/absent');
+    assert.ok(
+      !stderr.includes('exceeds'),
+      'stderr must NOT mention "exceeds" for a small/absent events.jsonl; got: ' + stderr
+    );
+  });
+
+});

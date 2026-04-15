@@ -90,11 +90,12 @@ describe('A: default-config path (no pricing_table in config)', () => {
     const result = await handle(baseInput(), makeContext({}));
     const body = result.structuredContent;
     // deepEqual on sorted key set catches both missing AND unexpected extra keys.
-    // W1 adds accumulated_cost_usd; T2 F10 adds agent_type.
+    // W1 adds accumulated_cost_usd; T2 F10 adds agent_type; W15 adds effort_multiplier.
     assert.deepEqual(Object.keys(body).sort(), [
       'accumulated_cost_usd',
       'agent_type',
       'effort',
+      'effort_multiplier',
       'input_tokens_used',
       'last_verified',
       'model',
@@ -691,6 +692,18 @@ function makeTmpProjectRoot(orchId, agentStopEvents) {
 
 function cleanTmpDir(dir) {
   fs.rmSync(dir, { recursive: true, force: true });
+}
+
+/**
+ * Write a cost-reservations.jsonl file in the given project root.
+ * Each record is a reservation row; `created_at` and `expires_at` are
+ * ISO strings for timing.
+ */
+function writeReservations(dir, rows) {
+  const stateDir = path.join(dir, '.orchestray', 'state');
+  fs.mkdirSync(stateDir, { recursive: true });
+  const lines = rows.map(r => JSON.stringify(r));
+  fs.writeFileSync(path.join(stateDir, 'cost-reservations.jsonl'), lines.join('\n') + '\n', 'utf8');
 }
 
 describe('W1: readAccumulatedCost helper', () => {

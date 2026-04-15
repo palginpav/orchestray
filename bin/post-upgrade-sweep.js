@@ -31,7 +31,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
-const { DEFAULT_MCP_ENFORCEMENT, DEFAULT_COST_BUDGET_CHECK } = require('./_lib/config-schema');
+const { DEFAULT_MCP_ENFORCEMENT, DEFAULT_COST_BUDGET_CHECK, DEFAULT_COST_BUDGET_ENFORCEMENT } = require('./_lib/config-schema');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -595,6 +595,692 @@ function runW6KbWriteMigration(cwd, stateDir, sentinelPath) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// W1 (2016): pattern_record_application default-flip backward-compat seed
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run the W1 2016 pattern_record_application seed.
+ *
+ * The 2.0.16 release (initial) changed DEFAULT_MCP_ENFORCEMENT.pattern_record_application
+ * from 'hook' to 'hook-warn'; the 2.0.16 amendment flipped the default again to
+ * 'hook-strict' (see runD2PatternRecordAppStageCSeed below). To preserve
+ * backward compatibility for existing installs, W1 seeds the explicit prior
+ * value 'hook' when the key is absent — this pre-empts D2 on the same upgrade
+ * path, so existing installs stay on 'hook' (fully permissive) rather than the
+ * new 'hook-strict' default. Fresh installs get 'hook-strict' from
+ * DEFAULT_MCP_ENFORCEMENT. D2 only mutates when W1 did not run (e.g., config
+ * existed pre-2.0.14 with an mcp_enforcement block but no pattern_record_application
+ * key AND W1's sentinel was already touched).
+ *
+ * Idempotent sentinel: .orchestray/state/.pattern-record-app-migrated-2016.
+ *
+ * @param {string} cwd          - Project root (absolute)
+ * @param {string} stateDir     - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to sentinel file
+ */
+function runW1PatternRecordAppSeed(cwd, stateDir, sentinelPath) {
+  // 2016-W1-pattern-record-app-default-flip
+  if (existsSilent(sentinelPath)) return;
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_e) {
+    // Config missing — touch sentinel; fresh installs will get new default.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  const existing = parsed.mcp_enforcement;
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+    // Block absent — W8/W5 migrations should have added it. If not, skip; the
+    // full default block (now with 'hook-warn') will be seeded by W8 on next run.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // If pattern_record_application is already explicitly set, preserve it.
+  if ('pattern_record_application' in existing) {
+    // Key present — no-op. Respect whatever the operator configured.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Key absent on an existing install — seed with prior value 'hook' so this
+  // upgrade doesn't silently change behavior.
+  existing.pattern_record_application = 'hook';
+
+  const tmpPath = configPath + '.w1-2016-pra-tmp';
+  try {
+    const out = JSON.stringify(parsed, null, 2) + '\n';
+    fs.writeFileSync(tmpPath, out, 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (_e) {
+    try { fs.unlinkSync(tmpPath); } catch (_e2) {}
+    return;
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// W5 (2016): cost_budget_enforcement block seed
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run the W5 2016 cost_budget_enforcement seed.
+ *
+ * Adds `cost_budget_enforcement: {enabled: false, hard_block: true}` to
+ * .orchestray/config.json if the block is absent. This ensures existing installs
+ * get the explicit defaults rather than relying on runtime fallback, enabling
+ * operators to discover and tune the new config key.
+ *
+ * hard_block is seeded as true to match the runtime default in
+ * DEFAULT_COST_BUDGET_ENFORCEMENT. Operators who prefer soft-warn mode should
+ * set hard_block: false explicitly in .orchestray/config.json.
+ *
+ * Idempotent sentinel: .orchestray/state/.cost-budget-enforcement-migrated-2016.
+ *
+ * @param {string} cwd          - Project root (absolute)
+ * @param {string} stateDir     - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to sentinel file
+ */
+function runW5CostBudgetEnforcementSeed(cwd, stateDir, sentinelPath) {
+  // 2016-W5-cost-budget-enforcement-seed
+  if (existsSilent(sentinelPath)) return;
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // If block already present, preserve user's values — no-op.
+  if (
+    parsed.cost_budget_enforcement &&
+    typeof parsed.cost_budget_enforcement === 'object' &&
+    !Array.isArray(parsed.cost_budget_enforcement)
+  ) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Seed the block with canonical defaults (enabled: false, hard_block: true).
+  // hard_block: true matches DEFAULT_COST_BUDGET_ENFORCEMENT so fresh installs
+  // and migrations both end at the same default unless the operator opts out.
+  parsed.cost_budget_enforcement = { enabled: false, hard_block: true };
+
+  const tmpPath = configPath + '.w5-2016-cbe-tmp';
+  try {
+    const out = JSON.stringify(parsed, null, 2) + '\n';
+    fs.writeFileSync(tmpPath, out, 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (_e) {
+    try { fs.unlinkSync(tmpPath); } catch (_e2) {}
+    return;
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// W2 (2016): backfill new v2.0.16 MCP tool-enable keys + max_per_task seeds
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run the W2 2016 new-tools backfill.
+ *
+ * Adds new v2.0.16 tool-enable keys (`routing_lookup`, `cost_budget_reserve`)
+ * to `mcp_server.tools` and their enforcement keys to `mcp_enforcement`, plus
+ * seeds `mcp_server.max_per_task` with per-task rate-limit defaults for
+ * `ask_user`, `kb_write`, and `pattern_record_application` (OQ4 values: 20).
+ *
+ * Idempotent sentinel: .orchestray/state/.v2016-new-tools-seeded.
+ * Does not overwrite keys already present (additive-only per DEV1 convention).
+ *
+ * @param {string} cwd          - Project root (absolute)
+ * @param {string} stateDir     - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to sentinel file
+ */
+function runW2NewToolsSeed(cwd, stateDir, sentinelPath) {
+  // 2016-W2-new-tools-seed
+  if (existsSilent(sentinelPath)) return;
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_e) {
+    // Config missing — fresh install will get these via install.js; touch sentinel.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let changed = false;
+
+  // 1. Backfill mcp_enforcement keys for new tools
+  const defaults = getDefaultMcpEnforcement();
+  if (!parsed.mcp_enforcement || typeof parsed.mcp_enforcement !== 'object' || Array.isArray(parsed.mcp_enforcement)) {
+    parsed.mcp_enforcement = defaults;
+    changed = true;
+  } else {
+    for (const k of ['routing_lookup', 'cost_budget_reserve']) {
+      if (!(k in parsed.mcp_enforcement)) {
+        parsed.mcp_enforcement[k] = defaults[k];
+        changed = true;
+      }
+    }
+  }
+
+  // 2. Backfill mcp_server.tools enable keys for new tools
+  if (!parsed.mcp_server || typeof parsed.mcp_server !== 'object' || Array.isArray(parsed.mcp_server)) {
+    parsed.mcp_server = {};
+  }
+  if (!parsed.mcp_server.tools || typeof parsed.mcp_server.tools !== 'object' || Array.isArray(parsed.mcp_server.tools)) {
+    parsed.mcp_server.tools = {};
+  }
+  for (const toolKey of ['routing_lookup', 'cost_budget_reserve']) {
+    if (!(toolKey in parsed.mcp_server.tools)) {
+      parsed.mcp_server.tools[toolKey] = true;
+      changed = true;
+    }
+  }
+
+  // 3. Seed mcp_server.max_per_task defaults (OQ4: ask_user:20, kb_write:20, pra:20)
+  if (!parsed.mcp_server.max_per_task || typeof parsed.mcp_server.max_per_task !== 'object' || Array.isArray(parsed.mcp_server.max_per_task)) {
+    parsed.mcp_server.max_per_task = {};
+  }
+  const mptDefaults = { ask_user: 20, kb_write: 20, pattern_record_application: 20 };
+  for (const [toolKey, defaultMax] of Object.entries(mptDefaults)) {
+    if (!(toolKey in parsed.mcp_server.max_per_task)) {
+      parsed.mcp_server.max_per_task[toolKey] = defaultMax;
+      changed = true;
+    }
+  }
+
+  if (!changed) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Atomic rename-dance write
+  const tmpPath = configPath + '.w2-2016-new-tools-tmp';
+  try {
+    const out = JSON.stringify(parsed, null, 2) + '\n';
+    fs.writeFileSync(tmpPath, out, 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (_e) {
+    try { fs.unlinkSync(tmpPath); } catch (_e2) {}
+    return;
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// D1 (2016): pattern_deprecate tool enable seed
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Seed the pattern_deprecate tool enable key and its enforcement key for
+ * existing installs that predate D1. Fresh installs get both via install.js.
+ *
+ * Idempotent sentinel: .orchestray/state/.pattern-deprecate-seeded-2016
+ *
+ * @param {string} cwd          - Project root (absolute)
+ * @param {string} stateDir     - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to sentinel file
+ */
+function runD1PatternDeprecateSeed(cwd, stateDir, sentinelPath) {
+  // D1-pattern-deprecate-seed-2016
+  if (existsSilent(sentinelPath)) return;
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_e) {
+    // Config missing — fresh install gets seeds via install.js.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let changed = false;
+
+  // Seed mcp_enforcement.pattern_deprecate = 'allow' when absent.
+  // If the block is missing entirely, seed the full defaults (W6/W2 pattern)
+  // so D1 is robust to execution-order changes (e.g., if W8 hasn't run yet).
+  if (!parsed.mcp_enforcement || typeof parsed.mcp_enforcement !== 'object' || Array.isArray(parsed.mcp_enforcement)) {
+    parsed.mcp_enforcement = getDefaultMcpEnforcement();
+    changed = true;
+  } else if (!('pattern_deprecate' in parsed.mcp_enforcement)) {
+    parsed.mcp_enforcement.pattern_deprecate = getDefaultMcpEnforcement().pattern_deprecate;
+    changed = true;
+  }
+
+  // Seed mcp_server.tools.pattern_deprecate = true when absent
+  if (!parsed.mcp_server || typeof parsed.mcp_server !== 'object' || Array.isArray(parsed.mcp_server)) {
+    parsed.mcp_server = {};
+  }
+  if (!parsed.mcp_server.tools || typeof parsed.mcp_server.tools !== 'object' || Array.isArray(parsed.mcp_server.tools)) {
+    parsed.mcp_server.tools = {};
+  }
+  if (!('pattern_deprecate' in parsed.mcp_server.tools)) {
+    parsed.mcp_server.tools.pattern_deprecate = true;
+    changed = true;
+  }
+
+  if (!changed) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  const tmpPath = configPath + '.d1-2016-pd-tmp';
+  try {
+    const out = JSON.stringify(parsed, null, 2) + '\n';
+    fs.writeFileSync(tmpPath, out, 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (_e) {
+    try { fs.unlinkSync(tmpPath); } catch (_e2) {}
+    return;
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// D4 (2016): reservation ledger GC sweep
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run a one-time-per-session GC sweep of cost-reservations.jsonl to drop expired rows.
+ *
+ * The session lock already prevents this from running more than once per session.
+ * Fail-silent throughout — GC failure must never block the user prompt.
+ *
+ * @param {string} cwd - Project root (absolute)
+ */
+function runD4ReservationGcSweep(cwd) {
+  try {
+    const { gcReservations } = require('./_lib/cost-helpers');
+    gcReservations(cwd);
+  } catch (_e) {
+    // Fail-silent — GC error must not block the prompt.
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// D2 (2016 amendment): Stage C pattern_record_application default-flip seed
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run the D2 Stage C seed.
+ *
+ * The D2 change flips DEFAULT_MCP_ENFORCEMENT.pattern_record_application from
+ * 'hook-warn' to 'hook-strict'. To preserve backward compatibility for existing
+ * installs, this migration seeds 'hook-warn' explicitly when the key is absent.
+ *
+ * IMPORTANT: on the common 2.0.15→2.0.16 upgrade path, runW12016 runs FIRST
+ * and has already seeded 'hook' (the pre-2.0.14 value) into the same key. D2
+ * then observes the key present and no-ops — leaving the install on 'hook'
+ * (fully permissive), not 'hook-warn'. This is safer than the 'hook-warn' this
+ * function documents for its own isolated contract. Fresh installs get
+ * 'hook-strict' from DEFAULT_MCP_ENFORCEMENT.
+ *
+ * If the key is already explicitly set (any value, including 'hook-strict'),
+ * it is preserved untouched. This respects the operator's intent.
+ *
+ * Idempotent sentinel: .orchestray/state/.pattern-record-app-stage-c-2016
+ *
+ * @param {string} cwd          - Project root (absolute)
+ * @param {string} stateDir     - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to sentinel file
+ */
+function runD2PatternRecordAppStageCSeed(cwd, stateDir, sentinelPath) {
+  if (existsSilent(sentinelPath)) return;
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_e) {
+    // Fresh install — will get new default ('hook-strict') via DEFAULT_MCP_ENFORCEMENT.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  const existing = parsed.mcp_enforcement;
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+    // mcp_enforcement block absent — user will get hook-strict from the new default.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Key already explicitly set — preserve it (operator intent).
+  if ('pattern_record_application' in existing) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Key absent on an existing install — seed with 'hook-warn' (prior default) so
+  // the upgrade does not silently activate blocking on an existing install.
+  existing.pattern_record_application = 'hook-warn';
+
+  const tmpPath = configPath + '.d2-2016-stage-c-tmp';
+  try {
+    const out = JSON.stringify(parsed, null, 2) + '\n';
+    fs.writeFileSync(tmpPath, out, 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (_e) {
+    try { fs.unlinkSync(tmpPath); } catch (_e2) {}
+    return;
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// D3 (2016 amendment): cost_budget_enforcement.hard_block default flip seed
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run the D3 hard_block seed.
+ *
+ * Behaviour (revised in v2.0.16 preflight fix):
+ *
+ * - If the `cost_budget_enforcement` block is ABSENT → write the full default block
+ *   (which has `hard_block: true`) so fresh installs and pre-W5 installs get the new
+ *   default. Touch sentinel.
+ * - If the block EXISTS → no-op. Preserve the operator's explicit settings, including
+ *   any explicit `hard_block: false` choice for soft-block mode. Touch sentinel.
+ *
+ * Rationale: DEFAULT_COST_BUDGET_ENFORCEMENT (hard_block: true) already covers fresh
+ * installs via the config initialisation path. D3 only needs to back-fill the block
+ * when it is completely absent. Writing over an existing block would silently convert
+ * an operator who chose soft-block (hard_block: false) to hard-blocking behaviour on
+ * their next `enabled: true` activation.
+ *
+ * Idempotent sentinel: .orchestray/state/.cost-budget-hard-block-default-2016
+ *
+ * @param {string} cwd          - Project root (absolute)
+ * @param {string} stateDir     - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to sentinel file
+ */
+function runD3CostBudgetHardBlockSeed(cwd, stateDir, sentinelPath) {
+  if (existsSilent(sentinelPath)) return;
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_e) {
+    // Fresh install — will get new default (hard_block: true) via DEFAULT_COST_BUDGET_ENFORCEMENT.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  const block = parsed.cost_budget_enforcement;
+  if (block && typeof block === 'object' && !Array.isArray(block)) {
+    // Block exists — preserve operator's settings (including hard_block: false).
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Block absent — seed the full default block so the operator gets hard_block: true
+  // on a fresh activation of cost_budget_enforcement.
+  parsed.cost_budget_enforcement = Object.assign({}, DEFAULT_COST_BUDGET_ENFORCEMENT);
+
+  const tmpPath = configPath + '.d3-2016-hard-block-tmp';
+  try {
+    const out = JSON.stringify(parsed, null, 2) + '\n';
+    fs.writeFileSync(tmpPath, out, 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (_e) {
+    try { fs.unlinkSync(tmpPath); } catch (_e2) {}
+    return;
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// D5 (2016 amendment): mcp_server.cost_budget_reserve.ttl_minutes seed
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run the D5 cost_budget_reserve.ttl_minutes seed.
+ *
+ * Seeds mcp_server.cost_budget_reserve: { ttl_minutes: 30 } when the key is absent.
+ * Makes the config key discoverable to operators who want to tune the TTL.
+ * Preserves any existing value.
+ *
+ * Idempotent sentinel: .orchestray/state/.cost-budget-reserve-ttl-seed-2016
+ *
+ * @param {string} cwd          - Project root (absolute)
+ * @param {string} stateDir     - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to sentinel file
+ */
+function runD5CostBudgetReserveTTLSeed(cwd, stateDir, sentinelPath) {
+  if (existsSilent(sentinelPath)) return;
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Ensure mcp_server block exists.
+  if (!parsed.mcp_server || typeof parsed.mcp_server !== 'object' || Array.isArray(parsed.mcp_server)) {
+    parsed.mcp_server = {};
+  }
+
+  // If cost_budget_reserve sub-block already has ttl_minutes, preserve.
+  const reserveBlock = parsed.mcp_server.cost_budget_reserve;
+  if (
+    reserveBlock &&
+    typeof reserveBlock === 'object' &&
+    !Array.isArray(reserveBlock) &&
+    'ttl_minutes' in reserveBlock
+  ) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Seed ttl_minutes: 30 (default).
+  if (!reserveBlock || typeof reserveBlock !== 'object' || Array.isArray(reserveBlock)) {
+    parsed.mcp_server.cost_budget_reserve = { ttl_minutes: 30 };
+  } else {
+    parsed.mcp_server.cost_budget_reserve.ttl_minutes = 30;
+  }
+
+  const tmpPath = configPath + '.d5-2016-reserve-ttl-tmp';
+  try {
+    const out = JSON.stringify(parsed, null, 2) + '\n';
+    fs.writeFileSync(tmpPath, out, 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (_e) {
+    try { fs.unlinkSync(tmpPath); } catch (_e2) {}
+    return;
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// D7 (2016 amendment): routing_gate.auto_seed_on_miss seed
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run the D7 routing_gate.auto_seed_on_miss seed.
+ *
+ * Seeds routing_gate: { auto_seed_on_miss: true } when the block is absent.
+ * Makes the config key discoverable to operators who want to disable auto-seeding.
+ * Preserves any existing routing_gate block.
+ *
+ * Idempotent sentinel: .orchestray/state/.routing-gate-auto-seed-2016
+ *
+ * @param {string} cwd          - Project root (absolute)
+ * @param {string} stateDir     - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to sentinel file
+ */
+function runD7RoutingGateAutoSeedSeed(cwd, stateDir, sentinelPath) {
+  if (existsSilent(sentinelPath)) return;
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // If routing_gate block already exists, preserve it entirely.
+  if (
+    parsed.routing_gate &&
+    typeof parsed.routing_gate === 'object' &&
+    !Array.isArray(parsed.routing_gate)
+  ) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Seed the block with default (auto_seed_on_miss: true).
+  parsed.routing_gate = { auto_seed_on_miss: true };
+
+  const tmpPath = configPath + '.d7-2016-routing-gate-tmp';
+  try {
+    const out = JSON.stringify(parsed, null, 2) + '\n';
+    fs.writeFileSync(tmpPath, out, 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (_e) {
+    try { fs.unlinkSync(tmpPath); } catch (_e2) {}
+    return;
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Shared utilities
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -675,6 +1361,16 @@ function main() {
       const pricingTableSentinel = path.join(stateDir, '.pricing-table-migrated-2014');
       const enforcementKeysSentinel = path.join(stateDir, '.enforcement-keys-migrated-2015');
       const kbWriteKeysSentinel = path.join(stateDir, '.kb-write-migrated-2015');
+      const patternRecordAppSentinel = path.join(stateDir, '.pattern-record-app-migrated-2016');
+      const costBudgetEnforcementSentinel = path.join(stateDir, '.cost-budget-enforcement-migrated-2016');
+      const newToolsSeedSentinel = path.join(stateDir, '.v2016-new-tools-seeded');
+      // D2/D3/D5/D7 (v2.0.16 amendment): distinct sentinels that do not collide with above.
+      const patternRecordAppStageCSentinel = path.join(stateDir, '.pattern-record-app-stage-c-2016');
+      const costBudgetHardBlockSentinel = path.join(stateDir, '.cost-budget-hard-block-default-2016');
+      const costBudgetReserveTTLSentinel = path.join(stateDir, '.cost-budget-reserve-ttl-seed-2016');
+      const routingGateAutoSeedSentinel = path.join(stateDir, '.routing-gate-auto-seed-2016');
+      // D1/D4 (v2.0.16 amendment): pattern_deprecate seed + reservation GC.
+      const patternDeprecateSeedSentinel = path.join(stateDir, '.pattern-deprecate-seeded-2016');
 
       // ── W8: config migration ────────────────────────────────────────────────
       try {
@@ -709,6 +1405,89 @@ function main() {
         runW6KbWriteMigration(cwd, stateDir, kbWriteKeysSentinel);
       } catch (_e) {
         // Fail-open: any unexpected error in W6 must not block the prompt.
+      }
+
+      // ── W1 (2016): pattern_record_application default-flip seed ────────────
+      // Preserve backward compatibility: existing installs that had
+      // pattern_record_application explicitly set to 'hook' keep 'hook'.
+      // Installs with no explicit key get the new default ('hook-strict' after
+      // the 2.0.16 amendment) from DEFAULT_MCP_ENFORCEMENT. This migration
+      // seeds 'hook' explicitly on UPGRADE so the new default only affects
+      // fresh installs — W1 pre-empts D2 on this path; see D2 docblock.
+      try {
+        runW1PatternRecordAppSeed(cwd, stateDir, patternRecordAppSentinel);
+      } catch (_e) {
+        // Fail-open: any unexpected error must not block the prompt.
+      }
+
+      // ── W5 (2016): cost_budget_enforcement block seed ──────────────────────
+      try {
+        runW5CostBudgetEnforcementSeed(cwd, stateDir, costBudgetEnforcementSentinel);
+      } catch (_e) {
+        // Fail-open: any unexpected error must not block the prompt.
+      }
+
+      // ── W2 (2016): new-tools enable + max_per_task rate-limit seed ─────────
+      // Backfills routing_lookup + cost_budget_reserve enable keys and seeds
+      // max_per_task defaults for ask_user, kb_write, pattern_record_application.
+      try {
+        runW2NewToolsSeed(cwd, stateDir, newToolsSeedSentinel);
+      } catch (_e) {
+        // Fail-open: any unexpected error must not block the prompt.
+      }
+
+      // ── D2 (2016 amendment): Stage C default-flip seed ─────────────────────
+      // Preserves backward compat: existing installs with no explicit
+      // pattern_record_application key get 'hook-warn' seeded so the new
+      // 'hook-strict' default only affects fresh installs.
+      try {
+        runD2PatternRecordAppStageCSeed(cwd, stateDir, patternRecordAppStageCSentinel);
+      } catch (_e) {
+        // Fail-open.
+      }
+
+      // ── D3 (2016 amendment): hard_block default flip seed ──────────────────
+      // For existing installs that already have cost_budget_enforcement block,
+      // preserve their explicit hard_block value. Only affects fresh installs
+      // (via DEFAULT_COST_BUDGET_ENFORCEMENT) and absent-key installs.
+      try {
+        runD3CostBudgetHardBlockSeed(cwd, stateDir, costBudgetHardBlockSentinel);
+      } catch (_e) {
+        // Fail-open.
+      }
+
+      // ── D5 (2016 amendment): cost_budget_reserve.ttl_minutes seed ──────────
+      // Seeds mcp_server.cost_budget_reserve.ttl_minutes = 30 on installs that
+      // lack the key, making the config discoverable to operators.
+      try {
+        runD5CostBudgetReserveTTLSeed(cwd, stateDir, costBudgetReserveTTLSentinel);
+      } catch (_e) {
+        // Fail-open.
+      }
+
+      // ── D7 (2016 amendment): routing_gate.auto_seed_on_miss seed ───────────
+      // Seeds routing_gate: { auto_seed_on_miss: true } on installs that lack the
+      // block, making the DX safety net discoverable and operator-overridable.
+      try {
+        runD7RoutingGateAutoSeedSeed(cwd, stateDir, routingGateAutoSeedSentinel);
+      } catch (_e) {
+        // Fail-open.
+      }
+
+      // ── D1 (2016 amendment): pattern_deprecate tool enable seed ────────────
+      try {
+        runD1PatternDeprecateSeed(cwd, stateDir, patternDeprecateSeedSentinel);
+      } catch (_e) {
+        // Fail-open.
+      }
+
+      // ── D4 (2016 amendment): reservation ledger GC sweep ──────────────────
+      // Session-scoped (runs once per session via the shared session lock above).
+      // No sentinel needed — the session lock prevents repeat execution.
+      try {
+        runD4ReservationGcSweep(cwd);
+      } catch (_e) {
+        // Fail-open.
       }
 
     } catch (_e) {

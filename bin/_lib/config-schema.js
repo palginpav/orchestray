@@ -10,7 +10,7 @@
  * so that changes take effect without a session restart (DESIGN §D6 rule 6:
  * "No session reload required").
  *
- * TODO(post-2.0.15): switch validateMcpEnforcement() to zod once zod is added to package.json
+ * TODO(backlog): switch validateMcpEnforcement() to zod once zod is added to package.json
  */
 
 const fs = require('fs');
@@ -63,7 +63,12 @@ const DEFAULT_MCP_ENFORCEMENT = Object.freeze({
   pattern_find: 'hook',
   kb_search: 'hook',
   history_find_similar_tasks: 'hook',
-  pattern_record_application: 'hook', // Advisory — read by bin/record-pattern-skip.js (PreCompact), NOT by the gate. Setting this to 'prompt' or 'allow' suppresses the pattern_record_skipped advisory event.
+  // D2 v2.0.16 Stage C: default flipped from 'hook-warn' to 'hook-strict' (blocking).
+  // User explicitly approved this flip (2026-04-15) with zero field data — see D2 risk note in
+  // v2016-devb-report.md. Mitigation: post-upgrade-sweep seeds 'hook-warn' on existing installs
+  // so the strict default only hits fresh installs. Set pattern_record_application:'hook-warn'
+  // in .orchestray/config.json to opt back to advisory mode.
+  pattern_record_application: 'hook-strict', // Second-spawn post-decomposition gate: 'hook-warn' = warn+allow; 'hook-strict' = block. Set by the gate in gate-agent-spawn.js. Advisory-only for first spawn.
   // T3 A1: Add 2.0.14 tools to the enforcement model. Default 'allow' because
   // neither tool is gated (pattern_record_skip_reason is advisory-only;
   // cost_budget_check is advisory-only in 2.0.14/2.0.15). Absent keys cause
@@ -74,13 +79,22 @@ const DEFAULT_MCP_ENFORCEMENT = Object.freeze({
   // W6: kb_write is advisory/write-scoped (not a spawn-gate tool) — 'allow' is
   // appropriate so unknown_tool_policy:'block' installations don't block it.
   kb_write: 'allow',
+  // v2.0.16 new tools: routing_lookup and cost_budget_reserve are advisory-only
+  // (no spawn-gate role) — 'allow' prevents unknown_tool_policy:'block' from
+  // blocking them on fresh and upgraded installs.
+  routing_lookup: 'allow',
+  cost_budget_reserve: 'allow',
+  // v2.0.16 D1: pattern_deprecate is a write tool (not spawn-gate) — 'allow' is safe.
+  pattern_deprecate: 'allow',
   unknown_tool_policy: 'block',
   global_kill_switch: false,
 });
 
 // W5 (v2.0.15): add `hook-warn` (unconditional warn-mode advisory) and
-// `hook-strict` (opt-in blocking) to the §22c escalation ladder. Stage B default-
-// flip to `hook-strict` is deferred to 2.0.16 pending the OQ1 data-gate audit.
+// `hook-strict` (opt-in blocking) to the §22c escalation ladder.
+// Stage C shipped in the 2.0.16 amendment: default is now `hook-strict` (blocking).
+// Operators can revert to advisory mode via mcp_enforcement.pattern_record_application: 'hook-warn'
+// (or 'hook') in .orchestray/config.json.
 const VALID_PER_TOOL_VALUES = ['hook', 'hook-warn', 'hook-strict', 'prompt', 'allow'];
 const VALID_UNKNOWN_TOOL_POLICY = ['block', 'warn', 'allow'];
 
@@ -164,6 +178,11 @@ function validateMcpEnforcement(obj) {
     'pattern_record_skip_reason',
     'cost_budget_check',
     'kb_write',
+    // v2.0.16 additions (W3/W4)
+    'routing_lookup',
+    'cost_budget_reserve',
+    // v2.0.16 D1
+    'pattern_deprecate',
   ];
   for (const key of perToolKeys) {
     if (key in obj) {
@@ -456,7 +475,7 @@ const DEFAULT_COST_BUDGET_CHECK = Object.freeze({
  * so the tool can still project costs at safe defaults.
  *
  * @param {string} cwd - Project root directory (absolute path).
- * @returns {{ pricing_table: object, last_verified: string }}
+ * @returns {{ pricing_table: object, last_verified: string, effort_multipliers: object|null }}
  */
 function loadCostBudgetCheckConfig(cwd) {
   const configPath = path.join(cwd, '.orchestray', 'config.json');
@@ -467,6 +486,7 @@ function loadCostBudgetCheckConfig(cwd) {
     return {
       pricing_table: Object.assign({}, DEFAULT_COST_BUDGET_CHECK.pricing_table),
       last_verified: DEFAULT_COST_BUDGET_CHECK.last_verified,
+      effort_multipliers: null,
     };
   }
 
@@ -477,6 +497,7 @@ function loadCostBudgetCheckConfig(cwd) {
     return {
       pricing_table: Object.assign({}, DEFAULT_COST_BUDGET_CHECK.pricing_table),
       last_verified: DEFAULT_COST_BUDGET_CHECK.last_verified,
+      effort_multipliers: null,
     };
   }
 
@@ -484,6 +505,7 @@ function loadCostBudgetCheckConfig(cwd) {
     return {
       pricing_table: Object.assign({}, DEFAULT_COST_BUDGET_CHECK.pricing_table),
       last_verified: DEFAULT_COST_BUDGET_CHECK.last_verified,
+      effort_multipliers: null,
     };
   }
 
@@ -492,6 +514,7 @@ function loadCostBudgetCheckConfig(cwd) {
     return {
       pricing_table: Object.assign({}, DEFAULT_COST_BUDGET_CHECK.pricing_table),
       last_verified: DEFAULT_COST_BUDGET_CHECK.last_verified,
+      effort_multipliers: null,
     };
   }
 
@@ -500,6 +523,7 @@ function loadCostBudgetCheckConfig(cwd) {
     return {
       pricing_table: Object.assign({}, DEFAULT_COST_BUDGET_CHECK.pricing_table),
       last_verified: DEFAULT_COST_BUDGET_CHECK.last_verified,
+      effort_multipliers: null,
     };
   }
 
@@ -520,6 +544,14 @@ function loadCostBudgetCheckConfig(cwd) {
       ? fromFile.last_verified
       : DEFAULT_COST_BUDGET_CHECK.last_verified;
 
+  // W15 (v2.0.16): load optional effort_multipliers sub-block.
+  // null/absent → callers fall back to DEFAULT_EFFORT_MULTIPLIERS.
+  const emFromFile = fromFile.effort_multipliers;
+  const effortMultipliers =
+    (emFromFile && typeof emFromFile === 'object' && !Array.isArray(emFromFile))
+      ? sanitizeConfig(emFromFile)
+      : null;
+
   // Validate and warn — always return merged (fail-open).
   try {
     const result = validateCostBudgetCheckConfig({ pricing_table: mergedTable, last_verified: lastVerified });
@@ -530,7 +562,7 @@ function loadCostBudgetCheckConfig(cwd) {
     // Validation must never throw
   }
 
-  return { pricing_table: mergedTable, last_verified: lastVerified };
+  return { pricing_table: mergedTable, last_verified: lastVerified, effort_multipliers: effortMultipliers };
 }
 
 /**
@@ -582,6 +614,264 @@ function validateCostBudgetCheckConfig(obj) {
   return errors.length === 0 ? { valid: true } : { valid: false, errors };
 }
 
+// ---------------------------------------------------------------------------
+// cost_budget_enforcement section defaults and loader (W5 v2.0.16)
+//
+// cost_budget_enforcement.enabled — boolean, default false.
+//   When false, the gate-cost-budget.js PreToolUse:Agent hook skips all checks.
+//   Opt-in: set to true to activate the H1 cost gate.
+//
+// cost_budget_enforcement.hard_block — boolean, default true (D3 v2.0.16).
+//   When true: exit 2 on breach (hard block). When false: stderr warn + exit 0.
+//   This is LOW-RISK because enforcement is only active when enabled=true (default false).
+//   Operators who explicitly enable enforcement get hard-block by default, which is the
+//   expected behavior for a cost gate. Downgrade to false in config if soft-block is needed.
+//   Post-upgrade-sweep seeds existing explicit 'hard_block: false' values intact.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_COST_BUDGET_ENFORCEMENT = Object.freeze({
+  enabled: false,
+  hard_block: true,
+});
+
+/**
+ * Load and merge the cost_budget_enforcement block from
+ * <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing/malformed returns DEFAULT_COST_BUDGET_ENFORCEMENT.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ enabled: boolean, hard_block: boolean }}
+ */
+function loadCostBudgetEnforcementConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_COST_BUDGET_ENFORCEMENT);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_COST_BUDGET_ENFORCEMENT);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_COST_BUDGET_ENFORCEMENT);
+  }
+
+  const fromFile = parsed.cost_budget_enforcement;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_COST_BUDGET_ENFORCEMENT);
+  }
+
+  const merged = Object.assign({}, DEFAULT_COST_BUDGET_ENFORCEMENT, sanitizeConfig(fromFile));
+
+  try {
+    const result = validateCostBudgetEnforcementConfig(merged);
+    if (!result.valid) {
+      logStderr('cost_budget_enforcement config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) {
+    // Validation must never throw
+  }
+
+  return merged;
+}
+
+/**
+ * Validate a cost_budget_enforcement config object.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateCostBudgetEnforcementConfig(obj) {
+  const errors = [];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['cost_budget_enforcement must be an object'] };
+  }
+
+  if ('enabled' in obj && typeof obj.enabled !== 'boolean') {
+    errors.push(
+      'cost_budget_enforcement.enabled must be a boolean — got ' + JSON.stringify(obj.enabled)
+    );
+  }
+
+  if ('hard_block' in obj && typeof obj.hard_block !== 'boolean') {
+    errors.push(
+      'cost_budget_enforcement.hard_block must be a boolean — got ' + JSON.stringify(obj.hard_block)
+    );
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
+// ---------------------------------------------------------------------------
+// routing_gate section defaults and loader (D7 v2.0.16)
+//
+// routing_gate.auto_seed_on_miss — boolean, default true.
+//   When true: if no routing entry is found for an Agent() spawn (task_id + description
+//   both miss), the gate emits a stderr warning and auto-seeds a synthetic entry to
+//   routing.jsonl rather than hard-blocking (exit 2). The PM should write a proper
+//   entry per Section 19 before spawning. Set to false to restore the prior hard-fail.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_ROUTING_GATE = Object.freeze({
+  auto_seed_on_miss: true,
+});
+
+/**
+ * Load and merge the routing_gate config section from <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing/malformed returns DEFAULT_ROUTING_GATE.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ auto_seed_on_miss: boolean }}
+ */
+function loadRoutingGateConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_ROUTING_GATE);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_ROUTING_GATE);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_ROUTING_GATE);
+  }
+
+  const fromFile = parsed.routing_gate;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_ROUTING_GATE);
+  }
+
+  const merged = Object.assign({}, DEFAULT_ROUTING_GATE, sanitizeConfig(fromFile));
+
+  // Validate auto_seed_on_miss
+  if ('auto_seed_on_miss' in merged && typeof merged.auto_seed_on_miss !== 'boolean') {
+    logStderr('routing_gate.auto_seed_on_miss must be a boolean — got ' + JSON.stringify(merged.auto_seed_on_miss) + '; using default');
+    merged.auto_seed_on_miss = DEFAULT_ROUTING_GATE.auto_seed_on_miss;
+  }
+
+  return merged;
+}
+
+// ---------------------------------------------------------------------------
+// cost_budget_reserve section defaults and loader (D5 v2.0.16)
+//
+// mcp_server.cost_budget_reserve.ttl_minutes — integer 1..1440, default 30.
+//   Controls how long a cost reservation remains active. The reservation's
+//   expires_at is computed as created_at + ttl_minutes * 60 * 1000 ms.
+//   Used by loadReservationTTLMs() in cost-helpers.js.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_COST_BUDGET_RESERVE = Object.freeze({
+  ttl_minutes: 30,
+});
+
+/**
+ * Load the cost_budget_reserve config section TTL value.
+ * Returns ttl_minutes as an integer, validated to range 1..1440.
+ * Falls back to DEFAULT_COST_BUDGET_RESERVE.ttl_minutes on any error.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ ttl_minutes: number }}
+ */
+function loadCostBudgetReserveConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_COST_BUDGET_RESERVE);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_COST_BUDGET_RESERVE);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_COST_BUDGET_RESERVE);
+  }
+
+  const mcpServer = parsed.mcp_server;
+  if (!mcpServer || typeof mcpServer !== 'object' || Array.isArray(mcpServer)) {
+    return Object.assign({}, DEFAULT_COST_BUDGET_RESERVE);
+  }
+
+  const fromFile = mcpServer.cost_budget_reserve;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_COST_BUDGET_RESERVE);
+  }
+
+  let ttl = DEFAULT_COST_BUDGET_RESERVE.ttl_minutes;
+  if ('ttl_minutes' in fromFile) {
+    const v = fromFile.ttl_minutes;
+    if (Number.isInteger(v) && v >= 1 && v <= 1440) {
+      ttl = v;
+    } else {
+      logStderr(
+        'mcp_server.cost_budget_reserve.ttl_minutes must be an integer 1..1440 — got ' +
+        JSON.stringify(v) + '; using default 30'
+      );
+    }
+  }
+
+  return { ttl_minutes: ttl };
+}
+
+// ---------------------------------------------------------------------------
+// effort_multipliers for cost_budget_check (W15 v2.0.16)
+//
+// Hardcoded defaults based on internal calibration. Configurable via
+// mcp_server.cost_budget_check.effort_multipliers (null/absent → use defaults).
+//   low:    0.7 (below-average compute/token usage)
+//   medium: 1.0 (baseline — no adjustment)
+//   high:   1.4 (above-average compute/token usage)
+//   max:    1.8 (maximum reasoning depth — Opus 4.6 only)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_EFFORT_MULTIPLIERS = Object.freeze({
+  low:    0.7,
+  medium: 1.0,
+  high:   1.4,
+  max:    1.8,
+});
+
+// ---------------------------------------------------------------------------
+// max_per_task defaults (W6 v2.0.16)
+//
+// Per-task call limits for rate-limited MCP tools. These are enforced by
+// bin/mcp-server/lib/tool-counts.js when both orchestration_id and task_id
+// are supplied in a tool call.
+//
+// Values (OQ4): ask_user: 20, kb_write: 20, pattern_record_application: 20.
+// TODO(backlog): surface max_per_task in the schema loader so it can be
+// validated and documented via loadMcpServerConfig; for now tool-counts.js
+// reads from mcp_server.max_per_task.<tool> directly.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_MAX_PER_TASK = Object.freeze({
+  ask_user: 20,
+  kb_write: 20,
+  pattern_record_application: 20,
+});
+
 module.exports = {
   DEFAULT_MCP_ENFORCEMENT,
   loadMcpEnforcement,
@@ -592,5 +882,16 @@ module.exports = {
   loadShieldConfig,
   DEFAULT_COST_BUDGET_CHECK,
   loadCostBudgetCheckConfig,
+  DEFAULT_COST_BUDGET_ENFORCEMENT,
+  loadCostBudgetEnforcementConfig,
+  validateCostBudgetEnforcementConfig,
+  DEFAULT_EFFORT_MULTIPLIERS,
+  DEFAULT_MAX_PER_TASK,
+  // D7 (v2.0.16): routing_gate auto-seed on miss
+  DEFAULT_ROUTING_GATE,
+  loadRoutingGateConfig,
+  // D5 (v2.0.16): cost_budget_reserve TTL config
+  DEFAULT_COST_BUDGET_RESERVE,
+  loadCostBudgetReserveConfig,
   logStderr,
 };

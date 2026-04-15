@@ -533,3 +533,103 @@ describe('K. definition shape', () => {
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// L. W6 rate-limit: pre-check happens before write; failure path no count
+// ---------------------------------------------------------------------------
+
+const { COUNTS_FILE } = require('../../../bin/mcp-server/lib/tool-counts.js');
+
+function makeContextWithLimit(tmp, maxPerTask) {
+  return {
+    projectRoot: tmp,
+    config: { mcp_server: { max_per_task: maxPerTask } },
+    logger: () => {},
+  };
+}
+
+function countLedgerRecords(tmp, orchId, taskId, toolName) {
+  const lp = path.join(tmp, COUNTS_FILE);
+  if (!fs.existsSync(lp)) return 0;
+  const lines = fs.readFileSync(lp, 'utf8').split('\n').filter(Boolean);
+  let n = 0;
+  for (const line of lines) {
+    try {
+      const obj = JSON.parse(line);
+      if (obj.orchestration_id === orchId && obj.task_id === taskId && obj.tool_name === toolName) n++;
+    } catch (_) {}
+  }
+  return n;
+}
+
+describe('L. W6 rate-limit behavior', () => {
+
+  test('rate-limit pre-check blocks call before any file write when limit exceeded', async () => {
+    const tmp = makeTmpProject();
+    try {
+      // Pre-fill ledger with 2 records to match the limit.
+      const lp = path.join(tmp, COUNTS_FILE);
+      fs.mkdirSync(path.dirname(lp), { recursive: true });
+      const record = (n) => JSON.stringify({ ts: new Date().toISOString(), orchestration_id: 'orch-rl', task_id: 'task-rl', tool_name: 'kb_write', n }) + '\n';
+      fs.writeFileSync(lp, record(1) + record(2));
+
+      const ctx = makeContextWithLimit(tmp, { kb_write: 2 });
+      const result = await handle(
+        baseInput({ id: 'rl-blocked', path: 'rl-blocked.md', orchestration_id: 'orch-rl', task_id: 'task-rl' }),
+        ctx
+      );
+      assert.equal(result.isError, true, 'should be blocked by rate limit');
+      assert.ok(
+        result.content[0].text.includes('rate limit') || result.content[0].text.includes('max_per_task'),
+        'error must mention rate limit'
+      );
+
+      // Artifact file must NOT have been written.
+      const artifactPath = path.join(tmp, '.orchestray', 'kb', 'artifacts', 'rl-blocked.md');
+      assert.equal(fs.existsSync(artifactPath), false, 'artifact file must not be written when rate-limited');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('failed kb_write (overwrite=false conflict) does not increment the ledger counter', async () => {
+    const tmp = makeTmpProject();
+    try {
+      const ctx = makeContextWithLimit(tmp, { kb_write: 10 });
+      const input1 = baseInput({ id: 'rl-no-count', path: 'rl-no-count.md', orchestration_id: 'orch-nc', task_id: 'task-nc' });
+
+      // First write should succeed.
+      const r1 = await handle(input1, ctx);
+      assert.equal(r1.isError, false);
+      const countAfterSuccess = countLedgerRecords(tmp, 'orch-nc', 'task-nc', 'kb_write');
+      assert.equal(countAfterSuccess, 1, 'one record after successful write');
+
+      // Second write with same id, overwrite=false should fail.
+      const r2 = await handle({ ...input1, id: 'rl-no-count', overwrite: false }, ctx);
+      assert.equal(r2.isError, true, 'second write without overwrite must fail');
+
+      // Counter must NOT have incremented on the failed write.
+      const countAfterFailure = countLedgerRecords(tmp, 'orch-nc', 'task-nc', 'kb_write');
+      assert.equal(countAfterFailure, 1, 'failed write must not increment the counter');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('successful kb_write increments ledger counter exactly once', async () => {
+    const tmp = makeTmpProject();
+    try {
+      const ctx = makeContextWithLimit(tmp, { kb_write: 10 });
+      const input = baseInput({ id: 'rl-once', path: 'rl-once.md', orchestration_id: 'orch-once', task_id: 'task-once' });
+
+      const result = await handle(input, ctx);
+      assert.equal(result.isError, false);
+
+      const count = countLedgerRecords(tmp, 'orch-once', 'task-once', 'kb_write');
+      assert.equal(count, 1, 'exactly one ledger record after one successful write');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+});

@@ -16,31 +16,20 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
-const { loadCostBudgetCheckConfig } = require('../../_lib/config-schema');
+const { loadCostBudgetCheckConfig, DEFAULT_EFFORT_MULTIPLIERS } = require('../../_lib/config-schema');
 const { resolveSafeCwd } = require('../../_lib/resolve-project-cwd');
 const { toolSuccess, toolError } = require('../lib/tool-result');
 const { AGENT_ROLES } = require('../lib/constants');
 
-// ---------------------------------------------------------------------------
-// Built-in pricing table (fall-back when config is missing or malformed).
-// Values must match bin/collect-agent-metrics.js PRICING constant.
-//   haiku:  input $1.00/1M, output $5.00/1M
-//   sonnet: input $3.00/1M, output $15.00/1M
-//   opus:   input $5.00/1M, output $25.00/1M
-// ---------------------------------------------------------------------------
-const BUILTIN_PRICING_TABLE = deepFreeze({
-  haiku:  { input_per_1m: 1.00,  output_per_1m: 5.00  },
-  sonnet: { input_per_1m: 3.00,  output_per_1m: 15.00 },
-  opus:   { input_per_1m: 5.00,  output_per_1m: 25.00 },
-});
-
-// Historical-average token estimates (conservative defaults when history is
-// absent — chosen to over-estimate rather than under-estimate cost).
-const DEFAULT_TOKEN_ESTIMATES = deepFreeze({
-  haiku:  { input: 50_000,  output: 8_000  },
-  sonnet: { input: 80_000,  output: 12_000 },
-  opus:   { input: 100_000, output: 15_000 },
-});
+// Shared cost helpers — canonical source for pricing table, token estimates,
+// reservation reader, and cap helpers (F09: de-duplicated from three callers).
+const {
+  BUILTIN_PRICING_TABLE,
+  DEFAULT_TOKEN_ESTIMATES,
+  getRatesForTier,
+  readCostCaps,
+  readActiveReservations,
+} = require('../../_lib/cost-helpers');
 
 // Supported model aliases. We accept full model IDs and normalize them to
 // tier keys (haiku | sonnet | opus). Unknown values default to sonnet.
@@ -61,9 +50,10 @@ const INPUT_SCHEMA = {
     effort: {
       type: 'string',
       enum: EFFORT_VALUES,
-      // Advisory-only: effort is captured and echoed in result.effort but no
-      // cost multiplier is applied. Multiplier support remains deferred beyond 2.0.15.
-      description: 'Effort level (low, medium, high, max). Optional — advisory only.',
+      // W15 (v2.0.16): effort multiplier is now applied to projected cost.
+      // Multiplier table: low=0.7, medium=1.0, high=1.4, max=1.8.
+      // Configurable via mcp_server.cost_budget_check.effort_multipliers in config.
+      description: 'Effort level (low, medium, high, max). Optional — applies cost multiplier: low=0.7x, medium=1.0x, high=1.4x, max=1.8x.',
     },
     orchestration_id: {
       type: 'string',
@@ -163,26 +153,7 @@ function resolvePricingTable(config) {
   return { table: BUILTIN_PRICING_TABLE, source: 'builtin', last_verified: today };
 }
 
-/**
- * Get per-1M-token rates for a given model tier from the pricing table.
- * Falls back to builtin rates if the config table is missing the tier.
- *
- * @param {object} table - The pricing table (from config or builtin)
- * @param {string} tier  - One of 'haiku' | 'sonnet' | 'opus'
- * @returns {{ input_per_1m: number, output_per_1m: number }}
- */
-function getRatesForTier(table, tier) {
-  const entry = table && table[tier];
-  if (
-    entry &&
-    typeof entry.input_per_1m === 'number' &&
-    typeof entry.output_per_1m === 'number'
-  ) {
-    return { input_per_1m: entry.input_per_1m, output_per_1m: entry.output_per_1m };
-  }
-  // Fall back to builtin for this tier
-  return BUILTIN_PRICING_TABLE[tier] || BUILTIN_PRICING_TABLE.sonnet;
-}
+// getRatesForTier is imported from ../../_lib/cost-helpers (F09).
 
 // ---------------------------------------------------------------------------
 // Token estimation
@@ -220,6 +191,40 @@ function resolveTokenEstimates(tier, inputTokens, outputTokens) {
 function computeCost(inputTokens, outputTokens, rates) {
   return (inputTokens / 1_000_000) * rates.input_per_1m +
          (outputTokens / 1_000_000) * rates.output_per_1m;
+}
+
+// ---------------------------------------------------------------------------
+// Effort multiplier (W15 v2.0.16)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the effort multiplier for a given effort level.
+ *
+ * Uses the configurable effort_multipliers table from
+ * mcp_server.cost_budget_check.effort_multipliers in the loaded config;
+ * falls back to DEFAULT_EFFORT_MULTIPLIERS if absent or malformed.
+ *
+ * @param {string|null|undefined} effort - Effort level string or null/undefined
+ * @param {object|null} effortMultipliersConfig - Optional custom multipliers table
+ * @returns {number} Multiplier value (1.0 when effort is absent)
+ */
+function resolveEffortMultiplier(effort, effortMultipliersConfig) {
+  if (!effort) return 1.0;
+
+  // Prefer caller-supplied config table; fall back to hardcoded defaults.
+  const table =
+    (effortMultipliersConfig &&
+      typeof effortMultipliersConfig === 'object' &&
+      !Array.isArray(effortMultipliersConfig))
+      ? effortMultipliersConfig
+      : DEFAULT_EFFORT_MULTIPLIERS;
+
+  const multiplier = table[effort];
+  if (typeof multiplier === 'number' && multiplier > 0) {
+    return multiplier;
+  }
+  // Unknown effort value or bad config — fall back to 1.0 (no adjustment).
+  return 1.0;
 }
 
 // ---------------------------------------------------------------------------
@@ -306,21 +311,7 @@ async function readAccumulatedCost(orchId, projectRoot, dateFilter) {
 // Budget limit checks
 // ---------------------------------------------------------------------------
 
-/**
- * Read cost caps from config. All values may be null (unconfigured).
- *
- * @param {object|null} config
- * @returns {{ max_cost_usd: number|null, daily_cost_limit_usd: number|null, weekly_cost_limit_usd: number|null }}
- */
-function readCostCaps(config) {
-  const maxCost =
-    (config && typeof config.max_cost_usd === 'number') ? config.max_cost_usd : null;
-  const daily =
-    (config && typeof config.daily_cost_limit_usd === 'number') ? config.daily_cost_limit_usd : null;
-  const weekly =
-    (config && typeof config.weekly_cost_limit_usd === 'number') ? config.weekly_cost_limit_usd : null;
-  return { max_cost_usd: maxCost, daily_cost_limit_usd: daily, weekly_cost_limit_usd: weekly };
-}
+// readCostCaps is imported from ../../_lib/cost-helpers (F09).
 
 // ---------------------------------------------------------------------------
 // Main handler
@@ -367,8 +358,26 @@ async function handle(input, context) {
   const { input: inputTokens, output: outputTokens, from_history: fromHistory } =
     resolveTokenEstimates(tier, input.estimated_input_tokens, input.estimated_output_tokens);
 
-  // Compute projected cost
-  const projectedCostUsd = computeCost(inputTokens, outputTokens, rates);
+  // Compute projected cost (base, before effort multiplier)
+  const baseCostUsd = computeCost(inputTokens, outputTokens, rates);
+
+  // W15 (v2.0.16): apply effort multiplier.
+  // Read configurable multipliers from mcp_server.cost_budget_check.effort_multipliers;
+  // fall back to DEFAULT_EFFORT_MULTIPLIERS if absent.
+  let effortMultipliersConfig = null;
+  if (projectRoot) {
+    try {
+      const loaded = loadCostBudgetCheckConfig(resolveSafeCwd(projectRoot));
+      effortMultipliersConfig = (loaded && loaded.effort_multipliers) || null;
+    } catch (_e) {
+      // Fail-open: use defaults
+    }
+  } else if (config && config.mcp_server && config.mcp_server.cost_budget_check &&
+             config.mcp_server.cost_budget_check.effort_multipliers) {
+    effortMultipliersConfig = config.mcp_server.cost_budget_check.effort_multipliers;
+  }
+  const effortMultiplier = resolveEffortMultiplier(input.effort, effortMultipliersConfig);
+  const projectedCostUsd = baseCostUsd * effortMultiplier;
 
   // W1: Read accumulated running cost from events.jsonl for this orchestration.
   // Fail-open: if unavailable, project-only comparison still runs; warnings are appended.
@@ -377,11 +386,25 @@ async function handle(input, context) {
     readAccumulatedCost(input.orchestration_id, projectRoot, null),
     readAccumulatedCost(input.orchestration_id, projectRoot, today),
   ]);
-  const accumulatedUsd = accTotal.accumulated_usd;
-  const accumulatedDailyUsd = accDaily.accumulated_usd;
+
+  // F01 (v2.0.16): Add unexpired reservations to accumulated spend so that
+  // parallel-spawn pre-checks account for in-flight cost commitments.
+  // readActiveReservations is synchronous and fail-open (returns 0 on error).
+  // A2-S2 fix: use reserved_daily_usd (filtered to today) for the daily accumulator
+  // so that reservations created yesterday don't inflate the daily-cap total.
+  const todayStartMs = new Date(today + 'T00:00:00.000Z').getTime();
+  const activeRes = readActiveReservations(
+    input.orchestration_id, projectRoot, { sinceTimestamp: todayStartMs }
+  );
+  for (const w of activeRes.warnings) {
+    if (!accTotal.warnings.includes(w)) accTotal.warnings.push(w);
+  }
+
+  const accumulatedUsd = accTotal.accumulated_usd + activeRes.reserved_usd;
+  const accumulatedDailyUsd = accDaily.accumulated_usd + activeRes.reserved_daily_usd;
   // Weekly accumulation: sum everything (no practical per-week filter without
   // knowing the week boundary; use total accumulated as conservative estimate).
-  const accumulatedWeeklyUsd = accTotal.accumulated_usd;
+  const accumulatedWeeklyUsd = accumulatedUsd;
 
   // Read cost caps
   const caps = readCostCaps(config);
@@ -454,6 +477,7 @@ async function handle(input, context) {
     model: input.model,
     model_tier: tier,
     effort: input.effort || null,
+    effort_multiplier: effortMultiplier,
     agent_type: input.agent_type || null,
     accumulated_cost_usd: accumulatedUsd,
     projected_cost_usd: projectedCostUsd,
@@ -479,4 +503,5 @@ module.exports = {
   resolvePricingTable,
   computeCost,
   readAccumulatedCost,
+  resolveEffortMultiplier,
 };

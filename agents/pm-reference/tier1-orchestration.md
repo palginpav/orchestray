@@ -1767,6 +1767,40 @@ result.
 confidence signal indicates the result quality is genuinely insufficient, not for
 marginal improvements. Confidence >= 0.4 does not trigger escalation.
 
+### 19.R: routing_lookup — Debugging and Observability
+
+`mcp__orchestray__routing_lookup` reads past routing decisions from `routing.jsonl`.
+Call it when:
+- Debugging a routing-gate miss (e.g., `gate-agent-spawn` blocked a spawn with "no routing record").
+- Verifying that a previous spawn was recorded correctly (agent_type, model, task_id).
+- Retrieving routing history for an orchestration before attempting a re-plan.
+
+**Example invocation:**
+```
+mcp__orchestray__routing_lookup({ orchestration_id: "orch-...", task_id: "T1" })
+```
+Returns matching routing entries or an empty list if none found.
+
+### 19.C: cost_budget_reserve — Pre-Reservation Before Parallel Spawns
+
+`mcp__orchestray__cost_budget_reserve` reserves projected cost BEFORE spawning expensive
+agents. The `gate-cost-budget.js` hook includes active reservations in its cap comparison,
+so parallel spawns each see the others' reserved cost and avoid collective overruns.
+
+Call it when spawning multiple agents in parallel that together might breach `max_cost_usd`
+or `daily_cost_limit_usd`. Call BEFORE the Agent() invocations, not after.
+
+**Example invocation:**
+```
+mcp__orchestray__cost_budget_reserve({
+  orchestration_id: "orch-...", task_id: "T2",
+  agent_type: "developer", model: "claude-sonnet-4-6", effort: "medium"
+})
+```
+The default TTL is 30 minutes; operators can override via
+`mcp_server.cost_budget_reserve.ttl_minutes` in config.json. Reservations expire
+automatically — no manual cleanup needed.
+
 ---
 
 ## 22. Pattern Extraction & Application Protocol
@@ -1904,17 +1938,37 @@ signal for observability and analytics. The PM should treat a `pattern_record_sk
 event as a cue to complete the §22b protocol on the next orchestration, not as a gate
 failure.
 
-**Stage B — blocking enforcement.** Deferred. Stage B (where a second Agent() spawn
-is hard-blocked if no post-decomposition record exists) is gated on open question OQ1:
-the post-2.0.14 audit window must show N ≥ 20 answered rows, ≤ 20% forced
-`pattern_record_application` calls, and `other` skip-reason ≤ 30% before Stage B
-is safe to ship.
-<!-- Stage B gated on OQ1 — do NOT land blocking enforcement here until OQ1 resolves -->
+#### §22c Stage C — Second-Spawn Gate (v2.0.16, shipped)
+
+**What shipped in 2.0.16.** The `bin/gate-agent-spawn.js` PreToolUse:Agent hook now
+enforces a post-decomposition check on second-and-subsequent `Agent()` spawns within an
+orchestration. Enforcement mode is controlled by
+`mcp_enforcement.pattern_record_application` in `.orchestray/config.json`:
+
+- **`hook-strict`** (default in 2.0.16): on a second spawn with no post-decomposition
+  record, emit a `mcp_checkpoint_missing` event to `events.jsonl` with
+  `phase: 'post-decomposition'` and exit 2 (deny spawn). Re-run §22b to unblock — call
+  the missing tool, then retry.
+- **`hook-warn`** (soft mode): on a second spawn with no post-decomposition record,
+  emit a stderr warning and allow the spawn. The PM should call
+  `mcp__orchestray__pattern_record_application` or `mcp__orchestray__pattern_record_skip_reason`
+  before the next spawn.
+- **`hook`, `prompt`, `allow`**: Stage C gate is skipped entirely for these values.
+
+**First-spawn carve-out:** the gate only activates after `routing.jsonl` exists for the
+current orchestration (i.e., after decomposition). Pre-decomposition spawns are not gated.
+
+**Re-entry on hook-strict block.** If a second spawn is blocked under `hook-strict`,
+follow the §22b.R re-entry protocol: call `mcp__orchestray__pattern_record_application`
+(or `mcp__orchestray__pattern_record_skip_reason`) for the current `orchestration_id`,
+then retry the spawn. The gate reads both `mcp-checkpoint.jsonl` and `events.jsonl` for
+the record — either path satisfies the requirement. Emergency override: set
+`mcp_enforcement.global_kill_switch=true` or set `pattern_record_application` to `allow`.
 
 **Escalation ladder:**
-- Stage A (current): warn, allow — advisory event in `events.jsonl`
-- Stage B (2.0.16 candidate): warn on first omission, block on second spawn — requires OQ1 go
-- Stage C (2.0.17 candidate): default flip to `hook-strict` — requires 2.0.15 field data
+- Stage A (v2.0.15): warn, allow — advisory event in `events.jsonl`
+- Stage B (v2.0.16): `hook-warn` default (warn+allow on second spawn); `hook-strict` opt-in (block)
+- Stage C (v2.0.16, shipped): `hook-strict` is now the default — OQ1 field-data gate cleared
 
 ### 22d. Pruning
 

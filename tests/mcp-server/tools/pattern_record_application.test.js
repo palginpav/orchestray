@@ -343,3 +343,112 @@ describe('pattern_record_application behavior', () => {
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// W6 rate-limit: pre-check happens before pattern write; failure no count
+// ---------------------------------------------------------------------------
+
+const { COUNTS_FILE } = require('../../../bin/mcp-server/lib/tool-counts.js');
+
+function makeContextWithLimit(tmp, maxPerTask) {
+  return {
+    projectRoot: tmp,
+    pluginRoot: tmp,
+    config: { mcp_server: { max_per_task: maxPerTask } },
+    logger: () => {},
+  };
+}
+
+function countLedgerRecords(tmp, orchId, taskId, toolName) {
+  const lp = path.join(tmp, COUNTS_FILE);
+  if (!fs.existsSync(lp)) return 0;
+  const lines = fs.readFileSync(lp, 'utf8').split('\n').filter(Boolean);
+  let n = 0;
+  for (const line of lines) {
+    try {
+      const obj = JSON.parse(line);
+      if (obj.orchestration_id === orchId && obj.task_id === taskId && obj.tool_name === toolName) n++;
+    } catch (_) {}
+  }
+  return n;
+}
+
+describe('W6 rate-limit behavior', () => {
+
+  test('rate-limit pre-check blocks call before pattern write when limit exceeded', async () => {
+    const tmp = makeTmpProject();
+    try {
+      writePattern(tmp, 'sample', {
+        name: 'sample', category: 'decomposition', confidence: 0.7, times_applied: 0,
+      });
+
+      // Pre-fill ledger to the limit.
+      const lp = path.join(tmp, COUNTS_FILE);
+      fs.mkdirSync(path.dirname(lp), { recursive: true });
+      const record = (n) => JSON.stringify({
+        ts: new Date().toISOString(),
+        orchestration_id: 'orch-rl', task_id: 'task-rl', tool_name: 'pattern_record_application', n,
+      }) + '\n';
+      fs.writeFileSync(lp, record(1) + record(2));
+
+      const ctx = makeContextWithLimit(tmp, { pattern_record_application: 2 });
+      const result = await handle(
+        validInput({ orchestration_id: 'orch-rl', task_id: 'task-rl' }),
+        ctx
+      );
+      assert.equal(result.isError, true, 'should be blocked by rate limit');
+      assert.ok(
+        result.content[0].text.includes('rate limit') || result.content[0].text.includes('max_per_task'),
+        'error must mention rate limit'
+      );
+
+      // Pattern file times_applied must NOT have been incremented.
+      const raw = readPatternRaw(tmp, 'sample');
+      assert.ok(raw.includes('times_applied: 0'), 'pattern file must not be modified when rate-limited');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('failed pattern_record_application (unknown slug) does not increment ledger counter', async () => {
+    const tmp = makeTmpProject();
+    try {
+      const ctx = makeContextWithLimit(tmp, { pattern_record_application: 10 });
+
+      // Call with a slug that doesn't exist — handler will fail after pre-check.
+      const result = await handle(
+        validInput({ slug: 'nonexistent-rl', orchestration_id: 'orch-nc', task_id: 'task-nc' }),
+        ctx
+      );
+      assert.equal(result.isError, true, 'should fail for unknown slug');
+
+      // Counter must NOT have incremented on the failed call.
+      const count = countLedgerRecords(tmp, 'orch-nc', 'task-nc', 'pattern_record_application');
+      assert.equal(count, 0, 'failed call must not increment the counter');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('successful pattern_record_application increments ledger counter exactly once', async () => {
+    const tmp = makeTmpProject();
+    try {
+      writePattern(tmp, 'sample', {
+        name: 'sample', category: 'decomposition', confidence: 0.7, times_applied: 0,
+      });
+      const ctx = makeContextWithLimit(tmp, { pattern_record_application: 10 });
+
+      const result = await handle(
+        validInput({ orchestration_id: 'orch-once', task_id: 'task-once' }),
+        ctx
+      );
+      assert.equal(result.isError, false);
+
+      const count = countLedgerRecords(tmp, 'orch-once', 'task-once', 'pattern_record_application');
+      assert.equal(count, 1, 'exactly one ledger record after one successful call');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+});

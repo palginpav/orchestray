@@ -3,6 +3,245 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.16] - 2026-04-15
+
+### Theme: "Close the deferred gates"
+
+2.0.15 built the safety scaffolding; 2.0.16 makes it enforce. Three new MCP
+tools (`routing_lookup`, `cost_budget_reserve`, `pattern_deprecate`) give agents
+direct observability into routing decisions, the ability to pre-reserve budget
+before a parallel spawn, and a way to retire stale patterns; a new
+`orchestration://` read-only resource exposes live and archived orchestration
+state to any MCP client; `pattern_record_application` enforcement advances to
+`hook-strict` by default — second spawns are blocked until the PM records its
+pattern decision; `cost_budget_enforcement.hard_block` defaults to `true` for
+operators who have enabled budget enforcement; the `cost_budget` PreToolUse gate
+ships (default disabled, flip-to-enable in one config line); `max_per_task` rate
+limits activate for `ask_user`, `kb_write`, and `pattern_record_application`;
+reservation ledger GC keeps `cost-reservations.jsonl` bounded; the reservation
+TTL is now configurable; the routing gate auto-seeds on first miss instead of
+hard-blocking; and an `effort` multiplier flows into cost projection. A shared
+cost-helpers library consolidates previously duplicated pricing logic.
+
+### Added
+
+- **`routing_lookup` MCP tool.** Query `.orchestray/state/routing.jsonl` by
+  `orchestration_id`, `task_id`, or `agent_type`. Results are capped at 500
+  matches; the response includes `total` and `truncated` fields so callers know
+  when the cap was hit. MCP tool count is now 11 (was 9 in 2.0.15).
+- **`cost_budget_reserve` MCP tool.** Pre-reserve an estimated spawn cost before
+  launching a parallel agent. Appends a `cost_reservation` record to
+  `.orchestray/state/cost-reservations.jsonl` with a 30-minute TTL and returns
+  the projected cost. Accepts an optional `reservation_id` for idempotent
+  re-reservation. Accepts any `agent_type` string (not limited to built-in roles),
+  so dynamic specialist agents can reserve budget.
+- **`orchestration://` MCP resource scheme.** Read-only resource exposing live
+  orchestration state to any MCP client:
+  - `orchestray:orchestration://current` — merged view of
+    `.orchestray/state/orchestration.md` and
+    `.orchestray/audit/current-orchestration.json` (phase, group, task IDs,
+    pending-fix list).
+  - `orchestray:orchestration://current/tasks/<task_id>` — per-task markdown file
+    from `.orchestray/state/tasks/`.
+  - `orchestray:orchestration://current/routing` — full `routing.jsonl` for the
+    active orchestration.
+  - `orchestray:orchestration://current/checkpoints` — full
+    `mcp-checkpoint.jsonl` for the active orchestration.
+  - **Historical URI lookup.** `orchestray:orchestration://<orch-id>` exposes the
+    checkpoint ledger for any archived orchestration by ID. The `list()` inventory
+    includes the 5 most recent archived orchestration IDs alongside `current`.
+- **`pattern_deprecate` MCP tool.** Mark a pattern as deprecated so it is excluded
+  from `pattern_find` results. Seeded enabled on fresh installs and backfilled on
+  upgrade. MCP tool count is now 12 (was 11).
+- **Reservation ledger GC.** Expired reservation rows are swept out of
+  `cost-reservations.jsonl` opportunistically on each new `cost_budget_reserve`
+  call and via the post-upgrade sweep on first startup after upgrading. The ledger
+  no longer accumulates indefinitely.
+- **`cost_budget_reserve.ttl_minutes` config key** (default: 30, range: 1–1440).
+  The 30-minute reservation TTL was previously hardcoded; it is now configurable
+  under `mcp_server.cost_budget_reserve.ttl_minutes` in `.orchestray/config.json`.
+- **`routing_gate.auto_seed_on_miss` config key** (default: `true`). When the
+  routing gate encounters an `Agent()` spawn with no matching routing entry, it now
+  synthesizes an entry, emits a stderr warning, and allows the spawn — instead of
+  hard-blocking. This eliminates gate-blocks caused by routing-table gaps without
+  requiring manual config edits. Set `routing_gate.auto_seed_on_miss: false` to
+  restore the previous hard-block behavior.
+- **`bin/gate-cost-budget.js` PreToolUse:Agent hook.** Runs before
+  `gate-agent-spawn.js` on every `Agent()`, `Explore()`, and `Task()` spawn.
+  Sums accumulated session spend (including unexpired reservations) plus the
+  projected spawn cost and compares against `max_cost_usd` and
+  `daily_cost_limit_usd` caps. Default behavior: disabled. Opt in via
+  `cost_budget_enforcement.enabled: true` in `.orchestray/config.json`.
+- **`bin/mcp-server/lib/cost-helpers.js` shared pricing library.** Consolidates
+  `BUILTIN_PRICING_TABLE`, `DEFAULT_TOKEN_ESTIMATES`, `getRatesForTier`, and
+  `readCostCaps` into one import shared by `cost_budget_check`,
+  `cost_budget_reserve`, and `gate-cost-budget.js`, eliminating three-way drift
+  when Anthropic updates prices.
+- **`hook-strict` enforcement value for `pattern_record_application`.** The
+  per-tool enforcement enum now accepts `"hook-strict"` as a blocking mode: on a
+  second-or-later `Agent()` spawn within an orchestration, the gate blocks if
+  neither `pattern_record_application` nor `pattern_record_skip_reason` appears in
+  the orchestration's audit trail. First-spawn carve-out and kill-switch bypass are
+  retained. `"hook-strict"` is now the default (see Changed).
+- **`max_per_task` rate limits for `ask_user`, `kb_write`, and
+  `pattern_record_application`.** Each tool now tracks per-`(orchestration_id,
+  task_id)` call counts in `.orchestray/state/mcp-tool-counts.jsonl`. When a
+  tool's call count reaches `max_per_task` (default: 20), subsequent calls return
+  a rate-limit error for that task. Configurable per-tool under
+  `mcp_server.max_per_task` in `.orchestray/config.json`.
+- **`cost_budget_enforcement` config block.** New top-level config block with two
+  keys: `enabled` (default `false`) and `hard_block` (default `true`). When
+  `enabled: true` and `hard_block: true`, the cost gate blocks the spawn with
+  exit 2 on breach. Set `hard_block: false` to warn to stderr only and allow
+  the spawn.
+- **`effort` multiplier in `cost_budget_check` cost projection.** When an `effort`
+  level (`low`, `medium`, `high`, `max`) is supplied, the projected token estimate
+  is scaled by the configured multiplier before comparing against caps.
+- **Reservation records count toward accumulated cost.** Unexpired entries in
+  `.orchestray/state/cost-reservations.jsonl` are summed into the
+  `readAccumulatedCost` total used by both `cost_budget_check` and
+  `gate-cost-budget.js`, so a parallel spawn that already has a reservation is
+  counted before the next spawn is evaluated.
+- **Structured hook output on deny decisions.** `gate-cost-budget.js` and the
+  `hook-strict` deny path in `gate-agent-spawn.js` now emit a
+  `hookSpecificOutput` JSON object on stdout (with `hookEventName: "PreToolUse"`)
+  per the Claude Code PreToolUse protocol, in addition to the stderr message and
+  exit 2. This gives downstream tooling a machine-readable deny reason.
+
+### Changed
+
+- **MCP tool count: 9 → 12.** `routing_lookup`, `cost_budget_reserve`, and
+  `pattern_deprecate` are the three new tools.
+- **MCP resource scheme count: 3 → 4.** `orchestration://` joins `kb://`,
+  `history://`, and `pattern://`.
+- **`pattern_record_application` default enforcement changed to `hook-strict`.**
+  The second-or-later `Agent()` spawn within an orchestration is now blocked
+  (exit 2) by default if the PM has not called `pattern_record_application` or
+  `pattern_record_skip_reason` since the previous spawn. The previous default was
+  `hook-warn` (advisory only, spawn always proceeded). Rollback: set
+  `mcp_enforcement.pattern_record_application: "hook-warn"` in
+  `.orchestray/config.json`. Existing configs with an explicit value for this key
+  are preserved unchanged.
+- **`cost_budget_enforcement.hard_block` default changed to `true`.** When
+  `cost_budget_enforcement.enabled: true`, a budget breach now blocks the spawn
+  (exit 2) by default instead of warning only. This only affects operators who
+  have explicitly opted into budget enforcement — the gate remains disabled by
+  default (`cost_budget_enforcement.enabled: false`).
+- **`tool-counts.js` rate-limit API split into `checkLimit` + `recordSuccess`.**
+  The call counter now increments only on a successful tool outcome (after the
+  handler returns without error), not on every invocation attempt. Timeouts and
+  validation errors no longer consume quota.
+- **Reservation ledger writes are atomic.** `cost_budget_reserve` uses the
+  project's `atomicAppendJsonl` primitive (same as `gate-agent-spawn.js`)
+  instead of a bare `appendFileSync`, preventing line interleave under concurrent
+  writes.
+- **Resource-layer excerpt hardening.** `kb_resource` and `pattern_resource`
+  excerpts are now capped at 80 characters and stripped of markdown-special
+  characters before being returned to the client — the same sanitisation applied
+  to `kb_search` and `pattern_find` tool results in 2.0.15. Closes the
+  prompt-injection surface symmetrically at the resource layer.
+
+### Fixed
+
+- **Cost-budget reservations are now consumed by checks and the spawn gate.**
+  Previously, `cost_budget_reserve` wrote to `cost-reservations.jsonl` but no
+  code path ever read that file. Both `cost_budget_check` and `gate-cost-budget.js`
+  now sum unexpired reservations into the accumulated-cost total before comparing
+  against caps.
+- **Rate-limit counter fails closed on oversized ledger.** When
+  `mcp-tool-counts.jsonl` exceeds 1 MB, the counter now returns
+  `{exceeded: true}` (fail-closed) rather than returning an empty list that made
+  every tool appear to have zero calls, effectively disabling enforcement.
+- **Deterministic result ordering in `pattern_find` and
+  `history_find_similar_tasks`.** Result order is now stable across Node.js
+  versions via a secondary sort on tied scores. Regression tests added.
+- **`missingRequiredToolsFromRows` empty-array contract.** An edge case where
+  a missing-tools check returned an incorrect result on empty input was corrected.
+  Regression test added.
+- **`pattern_record_skip_reason` audit events use the correct orchestration ID in
+  the recovery path.** Previously the event could carry a stale filesystem-cached
+  ID instead of the one supplied in the tool input. Regression test added.
+- **`pattern_record_skip_reason` is included in the PostToolUse checkpoint
+  matcher.** Skip-reason calls are now audited consistently with the other MCP
+  tools. Regression test added.
+- **`record-pattern-skip.js` emits a stderr warning when the 2 MB size guard
+  triggers.** Previously, when `events.jsonl` exceeded 2 MB, the guard engaged
+  silently. Operators now see a named warning identifying the orchestration.
+  Regression test added.
+- **`routing_lookup` results are bounded at 500 matches** with `total` and
+  `truncated` fields. The tool description and the actual result set now agree.
+- **`orchestration://` reads and the Stage B post-decomposition check in
+  `gate-agent-spawn.js` cap `events.jsonl` reads at 2 MB**, preventing a hook
+  timeout on projects with a large audit trail.
+- **`cost_budget_reserve` accepts dynamic specialist `agent_type` values.** The
+  schema now accepts any string of 1–64 characters instead of the fixed
+  `AGENT_ROLES` enum, consistent with `cost_budget_check`.
+- **`cost_budget_reserve` honors the optional `reservation_id` input for
+  idempotent re-reservation.** Supplying the same `reservation_id` twice returns
+  the existing record without appending a duplicate row.
+
+### Security
+
+- **Resource-layer excerpt hardening closes a prompt-injection surface in
+  `kb_resource` and `pattern_resource`.** Symmetric to the 2.0.15 tool-layer fix
+  for `kb_search` and `pattern_find`.
+- **Rate-limit counter fails closed on ledger oversize**, preventing a misbehaving
+  agent loop (or a deliberate padding attack) from bypassing `max_per_task`
+  enforcement by inflating the ledger past the read threshold.
+
+### Upgrade notes
+
+- **MCP tool count is now 12** (was 9 in 2.0.15). `routing_lookup`,
+  `cost_budget_reserve`, and `pattern_deprecate` are seeded enabled on fresh
+  installs. Existing installs receive all three via the post-upgrade sweep on the
+  first `UserPromptSubmit` after upgrading.
+- **`max_per_task` defaults apply immediately to existing installs.** The upgrade
+  sweep seeds `max_per_task: 20` for `ask_user`, `kb_write`, and
+  `pattern_record_application` in `.orchestray/config.json` on first startup
+  after upgrading. Any task that calls one of these tools more than 20 times will
+  now receive a rate-limit error. Raise the limit under
+  `mcp_server.max_per_task.<tool_name>` in `.orchestray/config.json` if needed.
+- **Hook-strict default flip is a behavioral change.** The
+  `pattern_record_application` enforcement mode now defaults to `"hook-strict"`.
+  This means any second-or-later `Agent()` spawn is hard-blocked (exit 2) if the
+  PM has not called `mcp__orchestray__pattern_record_application` or
+  `mcp__orchestray__pattern_record_skip_reason` since the last spawn. This ships
+  without prior production field data — legitimate orchestrations may be blocked
+  if the PM agent misses the required protocol step. **Rollback**: set
+  `mcp_enforcement.pattern_record_application: "hook-warn"` in
+  `.orchestray/config.json` to restore advisory-only behavior immediately, without
+  a session restart. To gauge false-block rate, monitor `events.jsonl` for rows
+  with `type: mcp_checkpoint_missing` and `phase: post-decomposition`.
+- **Routing-gate auto-seed is on by default.** Previously, an unregistered
+  `Agent()` spawn (no matching entry in `routing.jsonl`) produced a hard block
+  (exit 2). Now the gate synthesizes an entry, logs a stderr warning, and allows
+  the spawn. If you relied on the gate to hard-block unregistered spawns, set
+  `routing_gate.auto_seed_on_miss: false` in `.orchestray/config.json`. No action
+  needed otherwise.
+- **`cost_budget_enforcement` ships disabled.** Opt in via
+  `.orchestray/config.json`:
+  ```json
+  {
+    "cost_budget_enforcement": { "enabled": true }
+  }
+  ```
+  With `enabled: true`, the gate now blocks spawns on budget breach by default
+  (`hard_block` defaults to `true` in 2.0.16). To warn only without blocking, set
+  `hard_block: false` explicitly.
+- **`cost_budget_reserve.ttl_minutes` now configurable.** The 30-minute default
+  is unchanged; add `mcp_server.cost_budget_reserve.ttl_minutes` to your config
+  to override.
+- **Reservations now count toward projected cost.** If you have existing callers
+  of `cost_budget_reserve` (none expected — the tool shipped in 2.0.16), their
+  unexpired reservations will now affect the spend total returned by
+  `cost_budget_check`.
+
+### Tests
+
+1041. No skipped, no todo.
+
+---
+
 ## [2.0.15] - 2026-04-15
 
 ### Theme: "Harden what shipped in 2.0.14"

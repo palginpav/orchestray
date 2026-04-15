@@ -4,15 +4,16 @@
 /**
  * Golden-file test for W5 — §22c Stage A prompt hardening (v2.0.15).
  *
+ * Updated in v2.0.16: Stage C shipped (hook-strict is now the default). The OQ1
+ * gate-comment (<!-- Stage B gated on OQ1 -->) has been intentionally removed as a
+ * stale artifact — OQ1 resolved, Stage C landed. The test suite has been updated to
+ * reflect the new reality instead of asserting the presence of the removed guard.
+ *
  * Asserts that agents/pm-reference/tier1-orchestration.md §22c contains:
  *   1. The "§22c Stage A" subsection heading.
- *   2. The Stage-B-gated-on-OQ1 marker comment (prevents accidental Stage B landing).
- *   3. The escalation ladder (Stage A → Stage B → Stage C).
- *   4. Advisory-only framing (warn, not block).
- *
- * If any of these fail, it means the §22c Stage A wording was accidentally removed,
- * softened, or the Stage B gate-comment was stripped — this test exists to make
- * that drift loud.
+ *   2. The escalation ladder (Stage A → Stage B → Stage C).
+ *   3. Advisory-only framing (warn, not block) at Stage A.
+ *   4. Stage C is reflected as shipped in 2.0.16.
  */
 
 const { test, describe } = require('node:test');
@@ -45,22 +46,21 @@ describe('W5 golden-file — §22c Stage A prompt (v2.0.15)', () => {
     );
   });
 
-  test('Stage-B-gated-on-OQ1 marker comment is present (prevents accidental Stage B landing)', () => {
-    // The HTML comment "<!-- Stage B gated on OQ1 — do NOT land blocking enforcement
-    // here until OQ1 resolves -->" must be present in §22c to prevent an accidental
-    // Stage B enforcement landing before OQ1 is resolved.
+  test('Stage C (v2.0.16) is documented as shipped, not a future candidate', () => {
+    // Stage C shipped in v2.0.16 — the prompt must NOT say Stage C is "deferred"
+    // or a "2.0.17 candidate". The OQ1 gate comment was intentionally removed.
     assert.ok(
-      src.includes('Stage B gated on OQ1'),
-      '§22c must contain the "Stage B gated on OQ1" marker comment to block accidental Stage B landing'
+      !src.includes('Stage C (2.0.17 candidate)') && !src.includes('Deferred to 2.0.17'),
+      '§22c must not describe Stage C as deferred or a 2.0.17 candidate (it shipped in 2.0.16)'
     );
   });
 
-  test('Stage-B-gated-on-OQ1 comment is an HTML comment (not plain text)', () => {
-    // Must be inside <!-- --> so it does not render as visible prompt text.
-    const commentIdx = src.indexOf('<!-- Stage B gated on OQ1');
+  test('hook-strict is documented as the 2.0.16 default', () => {
+    // Stage C flipped the default to hook-strict — the section must reflect this.
     assert.ok(
-      commentIdx !== -1,
-      'The Stage B gate-comment must be an HTML comment (<!-- ... -->) not plain text'
+      section22c.includes('hook-strict') &&
+      (section22c.includes('default') || section22c.includes('shipped')),
+      '§22c must document hook-strict as the shipped default in 2.0.16'
     );
   });
 

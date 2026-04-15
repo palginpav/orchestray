@@ -364,8 +364,10 @@ describe('D2 step 6 — MCP checkpoint gate', () => {
   test('D2 step 6: all 3 required tools present → gate exits 0', () => {
     const dir = makeDir({ withOrch: true });
     writeRoutingFile(dir, [routingEntry()]);
+    // Include pattern_record_application to satisfy the §22c post-decomp gate
+    // (routing.jsonl exists → second-spawn window → §22c hook-warn fires without it).
     writeCheckpointRows(dir, 'orch-test-001', [
-      'pattern_find', 'kb_search', 'history_find_similar_tasks',
+      'pattern_find', 'kb_search', 'history_find_similar_tasks', 'pattern_record_application',
     ]);
     const { status, stderr } = run({
       tool_name: 'Agent',
@@ -396,7 +398,15 @@ describe('D2 step 6 — MCP checkpoint gate', () => {
     // File does not exist — upgrade window. Gate must not block.
     const dir = makeDir({ withOrch: true });
     writeRoutingFile(dir, [routingEntry()]);
-    // No mcp-checkpoint.jsonl written — file absent
+    // No mcp-checkpoint.jsonl written — file absent.
+    // Write a pattern_record_application event to events.jsonl to satisfy the §22c
+    // post-decomp gate (routing.jsonl exists → second-spawn window active).
+    const auditDir = path.join(dir, '.orchestray', 'audit');
+    fs.mkdirSync(auditDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(auditDir, 'events.jsonl'),
+      JSON.stringify({ type: 'pattern_record_skip_reason', orchestration_id: 'orch-test-001' }) + '\n'
+    );
     const { status, stderr } = run({
       tool_name: 'Agent',
       cwd: dir,
@@ -412,7 +422,7 @@ describe('D2 step 6 — MCP checkpoint gate', () => {
     const dir = makeDir({ withOrch: true });
     writeRoutingFile(dir, [routingEntry()]);
 
-    // Write checkpoint rows for a DIFFERENT orchestration_id
+    // Write checkpoint rows for a DIFFERENT orchestration_id only.
     const stateDir = path.join(dir, '.orchestray', 'state');
     fs.mkdirSync(stateDir, { recursive: true });
     const now = new Date().toISOString();
@@ -427,6 +437,20 @@ describe('D2 step 6 — MCP checkpoint gate', () => {
       })
     ).join('\n') + '\n';
     fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), foreignRows);
+
+    // Satisfy §22c post-decomp gate via events.jsonl (routing.jsonl exists →
+    // second-spawn window is active). The gate also checks events.jsonl for a
+    // pattern_record_skip_reason event to clear the advisory condition.
+    const auditDir = path.join(dir, '.orchestray', 'audit');
+    fs.mkdirSync(auditDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(auditDir, 'events.jsonl'),
+      JSON.stringify({
+        type: 'pattern_record_skip_reason',
+        orchestration_id: 'orch-test-001',
+        timestamp: now,
+      }) + '\n'
+    );
 
     const { status, stderr } = run({
       tool_name: 'Agent',
@@ -448,6 +472,15 @@ describe('D2 step 6 — MCP checkpoint gate', () => {
     fs.writeFileSync(
       path.join(stateDir, 'mcp-checkpoint.jsonl'),
       '{{{CORRUPTED JSON}}}\nnot valid at all\n'
+    );
+
+    // D2 (v2.0.16): routing.jsonl exists → §22c second-spawn gate activates.
+    // Satisfy §22c so the test focuses on the mcp-checkpoint corruption fail-open path.
+    const auditDir = path.join(dir, '.orchestray', 'audit');
+    fs.mkdirSync(auditDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(auditDir, 'events.jsonl'),
+      JSON.stringify({ type: 'pattern_record_skip_reason', orchestration_id: 'orch-test-001', timestamp: new Date().toISOString() }) + '\n'
     );
 
     const { status } = run({
@@ -732,17 +765,27 @@ describe('G8 — BUG-B+C regression: repeated-orchestration gate pass-through', 
     );
 
     // Step 3: mcp-checkpoint.jsonl has three rows for orch-CURRENT with
-    //         phase='pre-decomposition' (correct per the BUG-B fix)
+    //         phase='pre-decomposition' (correct per the BUG-B fix),
+    //         PLUS a pattern_record_application row to satisfy the §22c
+    //         post-decomp gate (routing.jsonl exists → second-spawn window).
     const requiredTools = ['pattern_find', 'kb_search', 'history_find_similar_tasks'];
-    const checkpointRows = requiredTools.map(tool => JSON.stringify({
+    const checkpointRowsList = requiredTools.map(tool => JSON.stringify({
       timestamp: now,
       orchestration_id: 'orch-CURRENT',
       tool,
       outcome: 'answered',
       phase: 'pre-decomposition',
       result_count: tool === 'pattern_find' ? 2 : null,
-    })).join('\n') + '\n';
-    fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), checkpointRows);
+    }));
+    checkpointRowsList.push(JSON.stringify({
+      timestamp: now,
+      orchestration_id: 'orch-CURRENT',
+      tool: 'pattern_record_application',
+      outcome: 'answered',
+      phase: 'post-decomposition',
+      result_count: null,
+    }));
+    fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), checkpointRowsList.join('\n') + '\n');
 
     // Step 4: spawn developer agent — gate must exit 0
     const { status, stderr } = run({
@@ -806,8 +849,20 @@ describe('G8 — BUG-B+C regression: repeated-orchestration gate pass-through', 
       outcome: 'answered',
       phase: 'post-decomposition',   // deliberately wrong phase — gate must ignore
       result_count: null,
-    })).join('\n') + '\n';
-    fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), checkpointRows);
+    }));
+    // Satisfy the §22c Stage B post-decomp gate (D2 v2.0.16: default is hook-strict).
+    // routing.jsonl exists → second-spawn window is active. Add pattern_record_application
+    // so the gate passes and the BUG-C phase-filter defense-in-depth is the only thing
+    // being tested here.
+    checkpointRows.push(JSON.stringify({
+      timestamp: now,
+      orchestration_id: 'orch-CURRENT',
+      tool: 'pattern_record_application',
+      outcome: 'answered',
+      phase: 'post-decomposition',
+      result_count: null,
+    }));
+    fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), checkpointRows.join('\n') + '\n');
 
     const { status, stderr } = run({
       tool_name: 'Agent',
@@ -918,6 +973,27 @@ describe('routing.jsonl validation', () => {
     fs.writeFileSync(path.join(stateDir, 'routing.jsonl'), lines);
   }
 
+  /**
+   * Write a pattern_record_skip_reason event to events.jsonl for the given orchId.
+   * This satisfies the §22c post-decomp gate (routing.jsonl exists → second-spawn
+   * window) without adding checkpoint rows that would trigger the pre-decomp gate.
+   */
+  function writePostDecompSatisfied(dir, orchId) {
+    const auditDir = path.join(dir, '.orchestray', 'audit');
+    fs.mkdirSync(auditDir, { recursive: true });
+    const eventsPath = path.join(auditDir, 'events.jsonl');
+    const ev = JSON.stringify({
+      type: 'pattern_record_skip_reason',
+      orchestration_id: orchId,
+      timestamp: new Date().toISOString(),
+    }) + '\n';
+    if (fs.existsSync(eventsPath)) {
+      fs.appendFileSync(eventsPath, ev);
+    } else {
+      fs.writeFileSync(eventsPath, ev);
+    }
+  }
+
   /** Build a minimal routing entry. */
   function routingEntry(overrides = {}) {
     return {
@@ -939,6 +1015,8 @@ describe('routing.jsonl validation', () => {
   test('happy path — routing entry exists, model matches — exits 0', () => {
     const dir = makeDir({ withOrch: true });
     writeRoutingFile(dir, [routingEntry({ agent_type: 'developer', description: 'Fix auth', model: 'sonnet' })]);
+    // Satisfy §22c post-decomp gate: routing.jsonl exists → second-spawn window active.
+    writePostDecompSatisfied(dir, 'orch-test-001');
     const { status, stderr } = run({
       tool_name: 'Agent',
       cwd: dir,
@@ -951,6 +1029,8 @@ describe('routing.jsonl validation', () => {
   test('happy path — full model id matches short tier in routing entry — exits 0', () => {
     const dir = makeDir({ withOrch: true });
     writeRoutingFile(dir, [routingEntry({ agent_type: 'developer', description: 'Fix auth', model: 'sonnet' })]);
+    // Satisfy §22c post-decomp gate.
+    writePostDecompSatisfied(dir, 'orch-test-001');
     // Pass full model ID — should normalize to 'sonnet' and match
     const { status, stderr } = run({
       tool_name: 'Agent',
@@ -987,31 +1067,38 @@ describe('routing.jsonl validation', () => {
     assert.match(stderr, /model routing mismatch/i);
   });
 
-  test('no matching entry — different agent_type — exits 2', () => {
+  test('no matching entry — different agent_type — D7 auto-seeds + exits 0 with warning', () => {
+    // D7 (v2.0.16): when no routing entry is found, auto_seed_on_miss=true (default)
+    // causes the gate to emit a stderr warning, synthesize an entry, and exit 0.
     const dir = makeDir({ withOrch: true });
     // Only a developer entry exists
     writeRoutingFile(dir, [routingEntry({ agent_type: 'developer', description: 'Fix auth', model: 'sonnet' })]);
-    // Spawn as reviewer — no routing entry for reviewer
+    // Satisfy §22c post-decomp gate (D2: hook-strict default; routing.jsonl exists → second-spawn window).
+    writePostDecompSatisfied(dir, 'orch-test-001');
+    // Spawn as reviewer — no routing entry for reviewer → D7 auto-seeds
     const { status, stderr } = run({
       tool_name: 'Agent',
       cwd: dir,
       tool_input: { subagent_type: 'reviewer', model: 'sonnet', description: 'Fix auth' },
     });
-    assert.equal(status, 2);
-    assert.match(stderr, /no routing entry/i);
+    assert.equal(status, 0, 'D7: auto-seed on miss must exit 0 (warn + allow)');
+    assert.match(stderr, /auto-seeding/i, 'D7: auto-seed warning must appear in stderr');
   });
 
-  test('no matching entry — different description — exits 2', () => {
+  test('no matching entry — different description — D7 auto-seeds + exits 0 with warning', () => {
+    // D7 (v2.0.16): auto-seed on routing miss (default behavior).
     const dir = makeDir({ withOrch: true });
     writeRoutingFile(dir, [routingEntry({ agent_type: 'developer', description: 'Fix auth', model: 'sonnet' })]);
-    // Different description — no match
+    // Satisfy §22c post-decomp gate.
+    writePostDecompSatisfied(dir, 'orch-test-001');
+    // Different description — no match → D7 auto-seeds
     const { status, stderr } = run({
       tool_name: 'Agent',
       cwd: dir,
       tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Refactor logging' },
     });
-    assert.equal(status, 2);
-    assert.match(stderr, /no routing entry/i);
+    assert.equal(status, 0, 'D7: auto-seed on miss must exit 0 (warn + allow)');
+    assert.match(stderr, /auto-seeding/i, 'D7: auto-seed warning must appear in stderr');
   });
 
   test('description substring match — prefix match allows spawn — exits 0', () => {
@@ -1022,6 +1109,8 @@ describe('routing.jsonl validation', () => {
       description: 'Fix authentication module in auth/handler.js',
       model: 'sonnet',
     })]);
+    // Satisfy §22c post-decomp gate.
+    writePostDecompSatisfied(dir, 'orch-test-001');
     // Spawn uses shorter prefix — should match
     const { status, stderr } = run({
       tool_name: 'Agent',
@@ -1039,6 +1128,9 @@ describe('routing.jsonl validation', () => {
       routingEntry({ agent_type: 'developer', description: 'Fix auth', model: 'sonnet', timestamp: '2026-04-11T10:00:00.000Z' }),
       routingEntry({ agent_type: 'developer', description: 'Fix auth', model: 'opus',   timestamp: '2026-04-11T11:00:00.000Z' }),
     ]);
+    // Satisfy §22c post-decomp gate (D2 v2.0.16: hook-strict default). routing.jsonl
+    // exists → second-spawn window active. pattern_record_skip_reason written to events.
+    writePostDecompSatisfied(dir, 'orch-test-001');
     // Most recent says opus — passing opus should succeed
     const { status: statusOpus } = run({
       tool_name: 'Agent',
@@ -1354,21 +1446,34 @@ describe('W4 — task_id-based routing match', () => {
     fs.writeFileSync(path.join(stateDir, 'routing.jsonl'), lines);
   }
 
-  /** Write mcp-checkpoint.jsonl with all 3 required tools. */
+  /** Write mcp-checkpoint.jsonl with all 3 required pre-decomp tools plus
+   *  a pattern_record_application row to satisfy the §22c Stage B post-decomp
+   *  gate (D2 v2.0.16 default: hook-strict). W4 tests always write routing.jsonl
+   *  first, so the gate treats every spawn as a second-spawn-window spawn.
+   */
   function writeFullCheckpoint(dir, orchId) {
     const stateDir = path.join(dir, '.orchestray', 'state');
     fs.mkdirSync(stateDir, { recursive: true });
     const now = new Date().toISOString();
     const tools = ['pattern_find', 'kb_search', 'history_find_similar_tasks'];
-    const lines = tools.map(tool => JSON.stringify({
+    const rows = tools.map(tool => JSON.stringify({
       timestamp: now,
       orchestration_id: orchId,
       tool,
       outcome: 'answered',
       phase: 'pre-decomposition',
       result_count: null,
-    })).join('\n') + '\n';
-    fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), lines);
+    }));
+    // Satisfy §22c post-decomp gate: routing.jsonl exists → second-spawn window.
+    rows.push(JSON.stringify({
+      timestamp: now,
+      orchestration_id: orchId,
+      tool: 'pattern_record_application',
+      outcome: 'answered',
+      phase: 'post-decomposition',
+      result_count: null,
+    }));
+    fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), rows.join('\n') + '\n');
   }
 
   /** Build a minimal routing entry with task_id. */
@@ -1440,7 +1545,12 @@ describe('W4 — task_id-based routing match', () => {
 
   test('W4-T3: task_id present but no routing entry for that task_id — falls back to description match', () => {
     // W4 fallback: task_id provided but produces no match → fall back to
-    // (agent_type, description) match. If that also fails → block.
+    // (agent_type, description) match. If that also fails → D7 auto-seed kicks in.
+    //
+    // D7 (v2.0.16): when auto_seed_on_miss=true (default), a routing miss on both
+    // task_id and description tiers triggers auto-seeding: gate emits a stderr warning,
+    // synthesizes a routing entry, and exits 0 instead of blocking. This replaces the
+    // pre-D7 exit 2 block for the "both tiers miss" case.
     const dir = makeDir({ withOrch: true });
     writeRoutingFile(dir, [routingEntryW4({ task_id: 'task-OTHER' })]);
     writeFullCheckpoint(dir, 'orch-test-001');
@@ -1456,13 +1566,13 @@ describe('W4 — task_id-based routing match', () => {
       },
     });
 
-    // Both tiers fail → gate blocks.
-    assert.equal(status, 2,
-      'W4: task_id miss + description miss → gate must block');
-    // The fallback warning about task_id miss should be in stderr.
+    // D7 auto-seed: both tiers fail → gate auto-seeds + exits 0 with warning.
+    assert.equal(status, 0,
+      'W4+D7: task_id miss + description miss → D7 auto-seeds → gate exits 0');
+    // D7 must emit a warning mentioning auto-seeding or the task_id miss.
     assert.ok(
-      stderr.includes('task_id') || stderr.includes('no routing entry'),
-      'W4: stderr must mention task_id miss or no routing entry'
+      stderr.includes('auto-seeding') || stderr.includes('task_id') || stderr.includes('no routing entry'),
+      'W4+D7: stderr must mention auto-seeding or task_id miss'
     );
   });
 

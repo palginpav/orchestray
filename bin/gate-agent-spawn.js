@@ -30,9 +30,10 @@ const path = require('path');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { getRoutingFilePath, findRoutingEntry } = require('./_lib/routing-lookup');
-const { loadMcpEnforcement } = require('./_lib/config-schema');
+const { loadMcpEnforcement, loadRoutingGateConfig } = require('./_lib/config-schema');
 const {
   REQUIRED_PRE_DECOMPOSITION_TOOLS,
+  REQUIRED_POST_DECOMPOSITION_TOOLS,
   getCheckpointFilePath,
   findCheckpointsForOrchestration,
   missingRequiredToolsFromRows,
@@ -236,18 +237,82 @@ process.stdin.on('end', () => {
         }
 
         if (entry === null) {
-          const descPreview = descRaw.substring(0, 80);
-          process.stderr.write(
-            '[orchestray] no routing entry found for this spawn (agent=' + agentType +
-            ', desc=' + JSON.stringify(descPreview) + '). ' +
-            'Per Section 19, the PM must write a routing decision to ' +
-            '.orchestray/state/routing.jsonl before spawning. ' +
-            'Re-read the file or re-decompose the task.\n'
-          );
-          process.exit(2);
+          // D7 (v2.0.16): auto-seed on first miss — turns hard-fail into soft-warn + self-heal.
+          // When routing_gate.auto_seed_on_miss=true (default), emit a stderr warning and
+          // synthesize a routing entry in routing.jsonl. The PM should write a proper entry
+          // per Section 19 BEFORE spawning; this is a DX safety net for the first-miss case.
+          // When auto_seed_on_miss=false, restore the prior hard-fail behaviour (exit 2).
+          try {
+            const routingGateConfig = loadRoutingGateConfig(cwd);
+            if (routingGateConfig.auto_seed_on_miss === false) {
+              const descPreview = descRaw.substring(0, 80);
+              process.stderr.write(
+                '[orchestray] no routing entry found for this spawn (agent=' + agentType +
+                ', task_id=' + (spawnTaskId || 'null') + ', desc=' + JSON.stringify(descPreview) + '). ' +
+                'Per Section 19, the PM must write a routing decision to ' +
+                '.orchestray/state/routing.jsonl before spawning. ' +
+                'Set routing_gate.auto_seed_on_miss=true to auto-seed instead of hard-blocking.\n'
+              );
+              process.exit(2);
+            }
+
+            // auto_seed_on_miss=true (default): warn + synthesize entry + allow.
+            const descPreview = descRaw.substring(0, 80);
+            process.stderr.write(
+              '[orchestray] routing gate: no entry found for (agent=' + agentType +
+              ', task_id=' + (spawnTaskId || 'null') + ', description=' + JSON.stringify(descPreview) + ')' +
+              ' — auto-seeding from Agent call; PM should write the entry per Section 19 BEFORE the spawn.\n'
+            );
+
+            // Try to read orchestration_id for the synthetic entry.
+            let synthOrchId = 'unknown';
+            try {
+              const orchFileContent = fs.readFileSync(orchFile, 'utf8');
+              const parsedOrch = JSON.parse(orchFileContent);
+              if (parsedOrch && parsedOrch.orchestration_id) synthOrchId = parsedOrch.orchestration_id;
+            } catch (_orchReadErr) {
+              // Fall through with 'unknown'
+            }
+
+            // Synthesize the routing entry.
+            const synthEntry = {
+              ts: new Date().toISOString(),
+              orchestration_id: synthOrchId,
+              task_id: spawnTaskId || null,
+              agent_type: agentType,
+              // Use model from Agent call if available, else 'inherit' as placeholder.
+              model: (model && VALID_TIERS.find(tier => model.toLowerCase().includes(tier))) || 'inherit',
+              effort: 'medium',
+              description: descPreview,
+              rationale: 'auto-seeded on first-spawn miss — PM should replace with explicit routing decision',
+            };
+
+            atomicAppendJsonl(routingFile, synthEntry);
+            // Allow the spawn — entry is now in routing.jsonl for subsequent validation.
+            // Fall through (do not exit here) so the rest of the gate continues.
+            // The model mismatch check below will compare against synthEntry.model.
+            // Since synthEntry.model uses the spawn's own model tier, this won't block.
+            entry = synthEntry;
+          } catch (_autoSeedErr) {
+            // Fail-open: if auto-seed itself throws (e.g., permission denied on
+            // routing.jsonl), warn to stderr and allow the spawn. The audit event
+            // is emitted here so operators can diagnose the write failure without
+            // needing to grep hook logs.
+            process.stderr.write(
+              '[orchestray] routing_gate auto-seed write failed: ' +
+              (_autoSeedErr && _autoSeedErr.message) +
+              '; allowing spawn but routing.jsonl not updated\n'
+            );
+            // Set entry to a sentinel that will pass the model-mismatch check.
+            entry = { model: VALID_TIERS.find(tier => model.toLowerCase().includes(tier)) || 'sonnet' };
+          }
         }
 
-        // Normalize the tool_input model to a tier name for comparison
+        // Normalize the tool_input model to a tier name for comparison.
+        // Note: D7 auto-seeded entries trivially pass this check because
+        // synthEntry.model is derived from the spawn's own model tier.
+        // The check exists to catch stale routing entries from previous sessions
+        // where the operator changed the agent's model after decomposition.
         const modelNormalized = VALID_TIERS.find(tier => model.toLowerCase().includes(tier));
         if (modelNormalized !== entry.model) {
           process.stderr.write(
@@ -407,6 +472,173 @@ process.stdin.on('end', () => {
           (mcpErr && mcpErr.message) + '); failing open\n'
         );
         // Fall through to allow.
+      }
+    }
+
+    // §22c Stage B (v2.0.16): second-spawn post-decomposition gate.
+    // After the first Agent() spawn (i.e., routing.jsonl exists for this orch),
+    // check whether the PM called pattern_record_application OR pattern_record_skip_reason.
+    // Enforcement mode: 'hook-warn' = stderr warn + allow; 'hook-strict' = block (exit 2).
+    // Kill switch short-circuit retained. First-spawn carve-out: if routing.jsonl is absent,
+    // this is the pre-decomposition window — skip this gate entirely.
+    if (mcpEnforcement.global_kill_switch !== true) {
+      try {
+        const praEnforcement = mcpEnforcement.pattern_record_application;
+        // Only enforce when mode is 'hook-warn' or 'hook-strict'. 'hook', 'prompt', 'allow' skip.
+        if (praEnforcement === 'hook-warn' || praEnforcement === 'hook-strict') {
+          // First-spawn carve-out: routing.jsonl must exist for this to be a second-or-later spawn.
+          if (fs.existsSync(routingFile)) {
+            try {
+              const orchId = (() => {
+                try {
+                  const orchFileContent = fs.readFileSync(orchFile, 'utf8');
+                  const parsedOrch = JSON.parse(orchFileContent);
+                  return parsedOrch && parsedOrch.orchestration_id;
+                } catch (_e) {
+                  return null;
+                }
+              })();
+
+              if (orchId) {
+                const checkpointPath = getCheckpointFilePath(cwd);
+                const rowsForThisOrch = fs.existsSync(checkpointPath)
+                  ? findCheckpointsForOrchestration(cwd, orchId)
+                  : [];
+
+                // Check for EITHER pattern_record_application OR pattern_record_skip_reason.
+                // Either satisfies the post-decomposition protocol.
+                const postDecompTools = ['pattern_record_application', 'pattern_record_skip_reason'];
+                const hasPostDecompRecord = rowsForThisOrch.some(
+                  row => row && postDecompTools.includes(row.tool)
+                );
+
+                if (!hasPostDecompRecord) {
+                  // Also check events.jsonl for pattern_record_skip_reason events
+                  // (the skip-reason tool writes to events.jsonl, not just checkpoint).
+                  let hasEventsRecord = false;
+                  try {
+                    const eventsPath = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
+                    if (fs.existsSync(eventsPath)) {
+                      // F08: cap events.jsonl read at 2 MB to prevent blocking on huge files.
+                      const MAX_EVENTS_READ = 2 * 1024 * 1024;
+                      let eventsRaw;
+                      try {
+                        const evStat = fs.statSync(eventsPath);
+                        if (evStat.size > MAX_EVENTS_READ) {
+                          process.stderr.write(
+                            '[orchestray] gate-agent-spawn: events.jsonl exceeds 2 MB (' +
+                            evStat.size + ' bytes); reading tail only for §22c Stage B check\n'
+                          );
+                          const evFd = fs.openSync(eventsPath, 'r');
+                          try {
+                            const evBuf = Buffer.alloc(MAX_EVENTS_READ);
+                            const evBytesRead = fs.readSync(evFd, evBuf, 0, MAX_EVENTS_READ, evStat.size - MAX_EVENTS_READ);
+                            eventsRaw = evBuf.slice(0, evBytesRead).toString('utf8');
+                            const firstNl = eventsRaw.indexOf('\n');
+                            if (firstNl !== -1) eventsRaw = eventsRaw.slice(firstNl + 1);
+                          } finally {
+                            fs.closeSync(evFd);
+                          }
+                        } else {
+                          eventsRaw = fs.readFileSync(eventsPath, 'utf8');
+                        }
+                      } catch (_evReadErr) {
+                        // Fail-open: if we can't read events, don't block.
+                        hasEventsRecord = true;
+                        eventsRaw = null;
+                      }
+                      if (eventsRaw !== null) {
+                        for (const rawLine of eventsRaw.split('\n')) {
+                          const line = rawLine.trim();
+                          if (!line) continue;
+                          let ev;
+                          try { ev = JSON.parse(line); } catch (_e) { continue; }
+                          if (!ev || typeof ev !== 'object') continue;
+                          if (ev.orchestration_id !== orchId) continue;
+                          if (ev.type === 'pattern_record_skip_reason' ||
+                              ev.type === 'mcp_tool_call' && ev.tool === 'pattern_record_skip_reason') {
+                            hasEventsRecord = true;
+                            break;
+                          }
+                        }
+                      } // end if (eventsRaw !== null)
+                    } // end if (fs.existsSync(eventsPath))
+                  } catch (_evErr) {
+                    // Fail-open: if we can't read events, don't block.
+                    hasEventsRecord = true;
+                  }
+
+                  if (!hasEventsRecord) {
+                    if (praEnforcement === 'hook-strict') {
+                      // Emit machine-readable audit event before blocking.
+                      try {
+                        const eventsPath = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
+                        atomicAppendJsonl(eventsPath, {
+                          timestamp: new Date().toISOString(),
+                          type: 'mcp_checkpoint_missing',
+                          orchestration_id: orchId,
+                          missing_tools: ['pattern_record_application'],
+                          phase: 'post-decomposition',
+                          phase_mismatch: false,
+                          source: 'hook',
+                        });
+                      } catch (_emitErr) {
+                        process.stderr.write(
+                          '[orchestray] gate-agent-spawn: failed to emit post-decomp mcp_checkpoint_missing event (' +
+                          (_emitErr && _emitErr.message) + '); continuing to block\n'
+                        );
+                      }
+                      const hookStrictMsg =
+                        '[orchestray] §22c hook-strict: second Agent() spawn blocked — no ' +
+                        'pattern_record_application or pattern_record_skip_reason record found ' +
+                        'for orchestration ' + orchId + ' in post-decomposition window. ' +
+                        'Per §22b, call mcp__orchestray__pattern_record_application (or ' +
+                        'mcp__orchestray__pattern_record_skip_reason) before the next spawn. ' +
+                        'Emergency override: set mcp_enforcement.global_kill_switch=true or ' +
+                        'mcp_enforcement.pattern_record_application to "allow".';
+                      process.stderr.write(hookStrictMsg + '\n');
+                      // F14: emit structured hookSpecificOutput JSON on stdout so Claude Code
+                      // can surface a machine-readable denial reason (mirrors context-shield.js).
+                      process.stdout.write(JSON.stringify({
+                        hookSpecificOutput: {
+                          hookEventName: 'PreToolUse',
+                          permissionDecision: 'deny',
+                          permissionDecisionReason: hookStrictMsg,
+                        },
+                      }));
+                      process.exit(2);
+                    } else {
+                      // hook-warn: stderr warn + allow
+                      process.stderr.write(
+                        '[orchestray] §22c hook-warn: second Agent() spawn — no ' +
+                        'pattern_record_application or pattern_record_skip_reason record found ' +
+                        'for orchestration ' + orchId + '. Per §22b, call ' +
+                        'mcp__orchestray__pattern_record_application (or ' +
+                        'mcp__orchestray__pattern_record_skip_reason) to complete the protocol. ' +
+                        'To upgrade to blocking enforcement, set ' +
+                        'mcp_enforcement.pattern_record_application to "hook-strict".\n'
+                      );
+                      // Fall through to allow (exit 0 below)
+                    }
+                  }
+                }
+              }
+            } catch (_postDecompErr) {
+              // Fail-open: unexpected errors in post-decomp gate must not block.
+              process.stderr.write(
+                '[orchestray] gate-agent-spawn: post-decomp gate error (' +
+                (_postDecompErr && _postDecompErr.message) + '); failing open\n'
+              );
+            }
+          }
+          // If routing.jsonl is absent: pre-decomposition window — skip this gate.
+        }
+      } catch (_praErr) {
+        // Fail-open: fail-safe on any config/gate error.
+        process.stderr.write(
+          '[orchestray] gate-agent-spawn: §22c gate error (' +
+          (_praErr && _praErr.message) + '); failing open\n'
+        );
       }
     }
 

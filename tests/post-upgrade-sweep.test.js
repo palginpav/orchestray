@@ -83,6 +83,7 @@ function makeDir({
   checkpointSentinel = false,
   enforcementKeysSentinel = false,
   kbWriteSentinel = false,
+  v2016Sentinels = true,
 } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-sweep-test-'));
   cleanup.push(dir);
@@ -111,6 +112,25 @@ function makeDir({
   }
   if (kbWriteSentinel) {
     fs.writeFileSync(path.join(stateDir, '.kb-write-migrated-2015'), '', 'utf8');
+  }
+  if (v2016Sentinels) {
+    // Default-on for this suite: 2.0.16 sub-ops are not under test here and
+    // should not mutate the config during unrelated migration tests.
+    // Includes DEV1/DEV-A sentinels (W1/W5/W2/D1/D4) and DEV-B sentinels (D2/D3/D5/D7).
+    for (const name of [
+      '.pattern-record-app-migrated-2016',
+      '.cost-budget-enforcement-migrated-2016',
+      '.v2016-new-tools-seeded',
+      // DEV-A additions (D1/D4)
+      '.pattern-deprecate-seeded-2016',
+      // DEV-B additions (D2/D3/D5/D7)
+      '.pattern-record-app-stage-c-2016',
+      '.cost-budget-hard-block-default-2016',
+      '.cost-budget-reserve-ttl-seed-2016',
+      '.routing-gate-auto-seed-2016',
+    ]) {
+      fs.writeFileSync(path.join(stateDir, name), '', 'utf8');
+    }
   }
 
   return dir;
@@ -901,6 +921,146 @@ describe('combined W8+W11 sweep', () => {
     const rows = readCheckpointRows(dir);
     assert.equal(rows[0].phase, 'pre-decomposition', 'W11 should have flipped the row');
     assert.ok(sentinelExists(dir, '.mcp-checkpoint-migrated-2013'), 'W11 sentinel must exist');
+  });
+
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// A2-B1 regression: D3 must NOT overwrite an operator's explicit hard_block:false
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('A2-B1 regression: D3 preserves operator hard_block:false', () => {
+
+  /**
+   * Run a fresh sweep with only the D3 sentinel absent (all other 2016 sentinels
+   * pre-created so the rest of the sweep does not mutate config).
+   */
+  function makeD3Dir(costBudgetEnforcementBlock) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-d3-test-'));
+    cleanup.push(dir);
+
+    const orchestrayDir = path.join(dir, '.orchestray');
+    const stateDir = path.join(orchestrayDir, 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+
+    // Write config with the caller-supplied cost_budget_enforcement block.
+    const config = {};
+    if (costBudgetEnforcementBlock !== undefined) {
+      config.cost_budget_enforcement = costBudgetEnforcementBlock;
+    }
+    fs.writeFileSync(
+      path.join(orchestrayDir, 'config.json'),
+      JSON.stringify(config, null, 2) + '\n',
+      'utf8'
+    );
+
+    // Pre-create all 2016 sentinels EXCEPT D3 so only D3 runs.
+    for (const name of [
+      '.config-migrated-2013',
+      '.mcp-checkpoint-migrated-2013',
+      '.enforcement-keys-migrated-2015',
+      '.kb-write-migrated-2015',
+      '.pattern-record-app-migrated-2016',
+      '.cost-budget-enforcement-migrated-2016',
+      '.v2016-new-tools-seeded',
+      '.pattern-deprecate-seeded-2016',
+      '.pattern-record-app-stage-c-2016',
+      // '.cost-budget-hard-block-default-2016',  ← intentionally absent: D3 must run
+      '.cost-budget-reserve-ttl-seed-2016',
+      '.routing-gate-auto-seed-2016',
+    ]) {
+      fs.writeFileSync(path.join(stateDir, name), '', 'utf8');
+    }
+
+    return dir;
+  }
+
+  test('D3-A: existing hard_block:false is preserved (operator choice must not be overwritten)', () => {
+    // A2-B1 reproduction: W5 seeds hard_block:false; D3 used to unconditionally flip it to true.
+    const dir = makeD3Dir({ enabled: false, hard_block: false });
+    const sessionId = 'd3-test-a-' + Date.now();
+    const lockPath = lockPathFor(sessionId);
+    cleanup.push(lockPath);
+    try { fs.unlinkSync(lockPath); } catch (_e) {}
+
+    run(dir, { session_id: sessionId });
+
+    const cfg = readConfig(dir);
+    assert.equal(
+      cfg.cost_budget_enforcement.hard_block,
+      false,
+      'D3 must NOT overwrite an existing hard_block:false (A2-B1 regression)'
+    );
+    assert.ok(
+      sentinelExists(dir, '.cost-budget-hard-block-default-2016'),
+      'D3 sentinel must be created even when no-op'
+    );
+  });
+
+  test('D3-B: existing hard_block:true is preserved', () => {
+    const dir = makeD3Dir({ enabled: false, hard_block: true });
+    const sessionId = 'd3-test-b-' + Date.now();
+    const lockPath = lockPathFor(sessionId);
+    cleanup.push(lockPath);
+    try { fs.unlinkSync(lockPath); } catch (_e) {}
+
+    run(dir, { session_id: sessionId });
+
+    const cfg = readConfig(dir);
+    assert.equal(
+      cfg.cost_budget_enforcement.hard_block,
+      true,
+      'D3 must preserve existing hard_block:true'
+    );
+  });
+
+  test('D3-C: absent cost_budget_enforcement block gets seeded with hard_block:true', () => {
+    // When the block is completely absent, D3 seeds the full default (hard_block:true).
+    const dir = makeD3Dir(undefined); // no cost_budget_enforcement in config
+    const sessionId = 'd3-test-c-' + Date.now();
+    const lockPath = lockPathFor(sessionId);
+    cleanup.push(lockPath);
+    try { fs.unlinkSync(lockPath); } catch (_e) {}
+
+    run(dir, { session_id: sessionId });
+
+    const cfg = readConfig(dir);
+    assert.ok(
+      cfg.cost_budget_enforcement,
+      'D3 must seed cost_budget_enforcement block when absent'
+    );
+    assert.equal(
+      cfg.cost_budget_enforcement.hard_block,
+      true,
+      'D3 must seed hard_block:true when block was absent'
+    );
+    assert.ok(
+      sentinelExists(dir, '.cost-budget-hard-block-default-2016'),
+      'D3 sentinel must be created after seeding'
+    );
+  });
+
+  test('D3-D: D3 is idempotent — second run is a no-op', () => {
+    const dir = makeD3Dir({ enabled: false, hard_block: false });
+    const sessionId1 = 'd3-test-d-s1-' + Date.now();
+    const lockPath1 = lockPathFor(sessionId1);
+    cleanup.push(lockPath1);
+    try { fs.unlinkSync(lockPath1); } catch (_e) {}
+    run(dir, { session_id: sessionId1 });
+
+    // Second run (sentinel now exists → D3 must no-op).
+    const sessionId2 = 'd3-test-d-s2-' + Date.now();
+    const lockPath2 = lockPathFor(sessionId2);
+    cleanup.push(lockPath2);
+    try { fs.unlinkSync(lockPath2); } catch (_e) {}
+    run(dir, { session_id: sessionId2 });
+
+    const cfg = readConfig(dir);
+    assert.equal(
+      cfg.cost_budget_enforcement.hard_block,
+      false,
+      'D3 idempotency: hard_block:false must survive two sweep runs'
+    );
   });
 
 });

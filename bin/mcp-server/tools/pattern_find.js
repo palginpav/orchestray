@@ -135,6 +135,9 @@ async function handle(input, context) {
     const timesApplied = _numericInt(fm.times_applied, 0);
     const description = typeof fm.description === 'string' ? fm.description : '';
 
+    // D1 (v2.0.16): skip deprecated patterns so they never surface in search results.
+    if (fm.deprecated === true || fm.deprecated === 'true') { filteredOut++; continue; }
+
     // Category filter
     if (categoryFilter && !categoryFilter.has(category)) {
       filteredOut++;

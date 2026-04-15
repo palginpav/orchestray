@@ -7,7 +7,7 @@ tools: Read, Glob, Grep, Bash, Write, mcp__orchestray__pattern_find, mcp__orches
 model: inherit
 effort: high
 memory: project
-maxTurns: 55
+maxTurns: 85
 color: red
 ---
 

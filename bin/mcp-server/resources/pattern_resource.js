@@ -17,6 +17,7 @@ const path = require('node:path');
 const paths = require('../lib/paths');
 const frontmatter = require('../lib/frontmatter');
 const audit = require('../lib/audit');
+const { sanitizeExcerpt } = require('../lib/excerpt');
 
 function _root(context) {
   return (context && context.projectRoot) || null;
@@ -66,7 +67,13 @@ async function list(context) {
     }
     const fm = parsed.frontmatter;
     const name2 = (typeof fm.name === 'string' && fm.name) || slug;
-    const description = (typeof fm.description === 'string' && fm.description) || _firstLine(parsed.body) || '';
+    // W12 T3 S1/S2: frontmatter.description is author-controlled (use as-is);
+    // body fallback is raw file content — sanitize to strip markdown/injection chars
+    // and cap at 80 chars, matching the sanitization already applied in pattern_find.
+    const rawBodyLine = _firstLine(parsed.body);
+    const description = (typeof fm.description === 'string' && fm.description)
+      || sanitizeExcerpt(rawBodyLine)
+      || '';
     const conf = _toNum(fm.confidence, 0.5);
     const times = _toInt(fm.times_applied, 0);
     const lastApplied = typeof fm.last_applied === 'string' ? fm.last_applied : '';

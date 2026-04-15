@@ -612,6 +612,9 @@ describe('D6 smoke — end-to-end: fabricated ledger rows allow first spawn', ()
 
     // Write the 3 required checkpoint rows directly (simulating what
     // record-mcp-checkpoint.js would write during pre-decomposition).
+    // Also write a pattern_record_application row to satisfy the §22c Stage B
+    // post-decomp gate (D2 v2.0.16 default: hook-strict). routing.jsonl exists
+    // below → second-spawn window is active, so this row is required.
     const now = new Date().toISOString();
     const requiredTools = ['pattern_find', 'kb_search', 'history_find_similar_tasks'];
     const ledgerRows = requiredTools.map(tool => JSON.stringify({
@@ -621,8 +624,16 @@ describe('D6 smoke — end-to-end: fabricated ledger rows allow first spawn', ()
       outcome: 'answered',
       phase: 'pre-decomposition',
       result_count: tool === 'pattern_find' ? 2 : null,
-    })).join('\n') + '\n';
-    fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), ledgerRows);
+    }));
+    ledgerRows.push(JSON.stringify({
+      timestamp: now,
+      orchestration_id: 'orch-smoke-001',
+      tool: 'pattern_record_application',
+      outcome: 'answered',
+      phase: 'post-decomposition',
+      result_count: null,
+    }));
+    fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), ledgerRows.join('\n') + '\n');
 
     // Also write routing.jsonl with a matching entry so routing validation passes
     const routingEntry = JSON.stringify({

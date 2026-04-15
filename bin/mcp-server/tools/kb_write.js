@@ -22,6 +22,7 @@ const path = require('node:path');
 const paths = require('../lib/paths');
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
 const { toolSuccess, toolError } = require('../lib/tool-result');
+const { checkLimit, recordSuccess } = require('../lib/tool-counts');
 
 // ---------------------------------------------------------------------------
 // Lock primitive (extracted from atomic-append.js — no circular dependency)
@@ -121,6 +122,28 @@ async function handle(input, context) {
   const validation = validateAgainstSchema(input, INPUT_SCHEMA);
   if (!validation.ok) {
     return toolError('kb_write: ' + validation.errors.join('; '));
+  }
+
+  // W6 (v2.0.16): per-(orchestration_id, task_id) rate-limit pre-check.
+  // checkLimit is read-only — does NOT increment the counter.
+  // recordSuccess is called only on successful write (step 11).
+  // Only enforced when both ids are present in the call; advisory-only otherwise.
+  const orchId = (input && typeof input.orchestration_id === 'string') ? input.orchestration_id : null;
+  const taskId = (input && typeof input.task_id === 'string') ? input.task_id : null;
+  const _projectRoot = (context && context.projectRoot) || null;
+  const _config = (context && context.config) || null;
+  if (orchId && taskId && _projectRoot) {
+    const limitResult = checkLimit(
+      { orchestration_id: orchId, task_id: taskId, tool_name: 'kb_write' },
+      _projectRoot,
+      _config
+    );
+    if (limitResult.exceeded) {
+      return toolError(
+        'kb_write: max_per_task rate limit exceeded for task "' + taskId +
+        '" (' + limitResult.count + '/' + limitResult.maxAllowed + ' calls used)'
+      );
+    }
   }
 
   // id must match safe-segment pattern (alphanumeric start, then [a-zA-Z0-9_.-])
@@ -383,6 +406,14 @@ async function handle(input, context) {
     // ----------------------------------------------------------------
     // 11. Return success.
     // ----------------------------------------------------------------
+    // W6 (F06): record successful call only after artifact+index write succeeds.
+    if (orchId && taskId && _projectRoot) {
+      recordSuccess(
+        { orchestration_id: orchId, task_id: taskId, tool_name: 'kb_write' },
+        _projectRoot,
+        _config
+      );
+    }
     return toolSuccess({
       id: input.id,
       bucket,

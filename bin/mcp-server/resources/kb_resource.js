@@ -10,6 +10,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const paths = require('../lib/paths');
+const { sanitizeExcerpt } = require('../lib/excerpt');
 
 const SECTIONS = ['artifacts', 'facts', 'decisions'];
 const LIST_CAP = 100;
@@ -64,7 +65,10 @@ async function list(context) {
       } catch (_e) { /* swallow */ }
       try {
         const content = fs.readFileSync(filepath, 'utf8');
-        description = _extractH1(content) || slug;
+        // W12 T3 S1/S2: sanitize description to limit prompt-injection surface.
+        // _extractH1 returns up to DESCRIPTION_MAX raw chars; sanitizeExcerpt
+        // strips markdown chars and caps at 80 chars (same as kb_search/pattern_find).
+        description = sanitizeExcerpt(_extractH1(content)) || slug;
       } catch (_e) { /* swallow — description stays empty */ }
       rows.push({
         uri: 'orchestray:kb://' + section + '/' + slug,

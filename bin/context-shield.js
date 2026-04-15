@@ -13,9 +13,10 @@
  *
  * Input:  JSON on stdin (Claude Code PreToolUse hook payload)
  * Output: JSON on stdout:
- *   Allow:  { "hookSpecificOutput": { "permissionDecision": "allow" } }
+ *   Allow:  { "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "allow" } }
  *   Deny:   {
  *             "hookSpecificOutput": {
+ *               "hookEventName": "PreToolUse",
  *               "permissionDecision": "deny",
  *               "permissionDecisionReason": "<hint>"
  *             }
@@ -41,7 +42,7 @@ const { MAX_INPUT_BYTES } = require('./_lib/constants');
 // Env-var escape hatch: set ORCHESTRAY_SHIELD_DISABLED=1 for zero-overhead exit
 // when the shield is permanently disabled (avoids even one config readFileSync).
 if (process.env.ORCHESTRAY_SHIELD_DISABLED === '1') {
-  process.stdout.write(JSON.stringify({ hookSpecificOutput: { permissionDecision: 'allow' } }));
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } }));
   process.exit(0);
 }
 
@@ -50,12 +51,13 @@ if (process.env.ORCHESTRAY_SHIELD_DISABLED === '1') {
 // ---------------------------------------------------------------------------
 
 function allowDecision() {
-  return JSON.stringify({ hookSpecificOutput: { permissionDecision: 'allow' } });
+  return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } });
 }
 
 function denyDecision(reason) {
   return JSON.stringify({
     hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
       permissionDecisionReason: reason,
     },

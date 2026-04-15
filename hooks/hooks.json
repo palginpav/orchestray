@@ -6,6 +6,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/gate-cost-budget.js",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/gate-agent-spawn.js",
             "timeout": 5
           }

@@ -129,6 +129,11 @@ describe('gate + writer round-trip', () => {
     // Write routing.jsonl (decomposition happened after MCP calls)
     writeRoutingEntry(dir, orchId, 'developer', 'Build the feature', 'sonnet');
 
+    // Also run the writer for pattern_record_application to satisfy the §22c
+    // post-decomp gate (routing.jsonl exists → second-spawn window active;
+    // gate emits hook-warn advisory unless a post-decomp record exists).
+    runWriter(dir, 'mcp__orchestray__pattern_record_application', { isError: false });
+
     // Gate must allow the first spawn
     const gateResult = runGate(dir, {
       subagent_type: 'developer',

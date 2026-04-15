@@ -17,11 +17,16 @@ const FRESH_INSTALL_MCP_TOOLS_ENABLED = {
   pattern_find: true,
   pattern_record_application: true,
   pattern_record_skip_reason: true,
+  // v2.0.16 D1: pattern_deprecate tool
+  pattern_deprecate: true,
   cost_budget_check: true,
   history_query_events: true,
   history_find_similar_tasks: true,
   kb_search: true,
   kb_write: true,
+  // v2.0.16 new tools (W3/W4)
+  routing_lookup: true,
+  cost_budget_reserve: true,
 };
 
 // Default cost_budget_check config block for fresh installs.
@@ -300,7 +305,21 @@ function install(targetDir) {
       mcp_server: {
         tools: FRESH_INSTALL_MCP_TOOLS_ENABLED,
         cost_budget_check: FRESH_INSTALL_COST_BUDGET_CHECK,
+        // W6 (v2.0.16): per-task rate-limit seeds (OQ4: ask_user:20, kb_write:20, pra:20)
+        max_per_task: {
+          ask_user: 20,
+          kb_write: 20,
+          pattern_record_application: 20,
+        },
+        // D5 (v2.0.16 amendment): cost_budget_reserve TTL (discoverable default)
+        cost_budget_reserve: { ttl_minutes: 30 },
       },
+      // D3 (v2.0.16 amendment): cost_budget_enforcement with hard_block:true default.
+      // enabled:false means the gate is opt-in; hard_block:true is the correct default
+      // for operators who enable it (they expect hard blocking, not soft warn).
+      cost_budget_enforcement: { enabled: false, hard_block: true },
+      // D7 (v2.0.16 amendment): routing_gate.auto_seed_on_miss (discoverable default)
+      routing_gate: { auto_seed_on_miss: true },
     };
     try {
       fs.mkdirSync(orchStateDir, { recursive: true });

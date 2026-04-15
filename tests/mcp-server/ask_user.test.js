@@ -208,3 +208,142 @@ describe('handleAskUser', () => {
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// W6 rate-limit: pre-check happens before elicitation; failure no count
+// ---------------------------------------------------------------------------
+
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { COUNTS_FILE } = require('../../bin/mcp-server/lib/tool-counts.js');
+
+function makeTmpProject() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestray-ask-user-rl-test-'));
+  fs.mkdirSync(path.join(dir, '.orchestray', 'state'), { recursive: true });
+  return dir;
+}
+
+function makeContextWithLimit(tmp, maxPerTask, sendElicitation) {
+  return {
+    sendElicitation: sendElicitation || (async () => ({ action: 'accept', content: { confirm: true } })),
+    config: { mcp_server: { max_per_task: maxPerTask } },
+    auditSink: () => {},
+    projectRoot: tmp,
+  };
+}
+
+function countLedgerRecords(tmp, orchId, taskId, toolName) {
+  const lp = path.join(tmp, COUNTS_FILE);
+  if (!fs.existsSync(lp)) return 0;
+  const lines = fs.readFileSync(lp, 'utf8').split('\n').filter(Boolean);
+  let n = 0;
+  for (const line of lines) {
+    try {
+      const obj = JSON.parse(line);
+      if (obj.orchestration_id === orchId && obj.task_id === taskId && obj.tool_name === toolName) n++;
+    } catch (_) {}
+  }
+  return n;
+}
+
+describe('W6 rate-limit behavior for ask_user', () => {
+
+  test('rate-limit pre-check blocks call before sendElicitation when limit exceeded', async () => {
+    const tmp = makeTmpProject();
+    try {
+      // Pre-fill ledger to the limit (3 records for a limit of 3).
+      const lp = path.join(tmp, COUNTS_FILE);
+      const record = (n) => JSON.stringify({
+        ts: new Date().toISOString(),
+        orchestration_id: 'orch-rl', task_id: 'task-rl', tool_name: 'ask_user', n,
+      }) + '\n';
+      fs.writeFileSync(lp, record(1) + record(2) + record(3));
+
+      let elicitationCalled = false;
+      const ctx = makeContextWithLimit(tmp, { ask_user: 3 }, async () => {
+        elicitationCalled = true;
+        return { action: 'accept', content: {} };
+      });
+
+      const result = await handleAskUser(
+        validInput({ orchestration_id: 'orch-rl', task_id: 'task-rl' }),
+        ctx
+      );
+      assert.equal(result.isError, true, 'should be blocked by rate limit');
+      assert.ok(
+        result.content[0].text.includes('rate limit') || result.content[0].text.includes('max_per_task'),
+        'error must mention rate limit'
+      );
+      assert.equal(elicitationCalled, false, 'sendElicitation must NOT be called when rate-limited');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('timeout outcome does not increment the ledger counter', async () => {
+    const tmp = makeTmpProject();
+    try {
+      const ctx = makeContextWithLimit(tmp, { ask_user: 10 }, async () => {
+        const err = new Error('timeout');
+        err.code = 'TIMEOUT';
+        throw err;
+      });
+
+      const result = await handleAskUser(
+        validInput({ orchestration_id: 'orch-to', task_id: 'task-to' }),
+        ctx
+      );
+      assert.equal(result.isError, false, 'timeout should not be isError');
+      assert.equal(result.structuredContent && result.structuredContent.timedOut, true);
+
+      const count = countLedgerRecords(tmp, 'orch-to', 'task-to', 'ask_user');
+      assert.equal(count, 0, 'timeout must not increment the counter');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('cancel outcome does not increment the ledger counter', async () => {
+    const tmp = makeTmpProject();
+    try {
+      const ctx = makeContextWithLimit(tmp, { ask_user: 10 },
+        async () => ({ action: 'cancel' })
+      );
+
+      const result = await handleAskUser(
+        validInput({ orchestration_id: 'orch-cancel', task_id: 'task-cancel' }),
+        ctx
+      );
+      assert.equal(result.isError, false);
+      assert.equal(result.structuredContent.cancelled, true);
+
+      const count = countLedgerRecords(tmp, 'orch-cancel', 'task-cancel', 'ask_user');
+      assert.equal(count, 0, 'cancel outcome must not increment the counter');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('accepted (answered) outcome increments ledger counter exactly once', async () => {
+    const tmp = makeTmpProject();
+    try {
+      const ctx = makeContextWithLimit(tmp, { ask_user: 10 },
+        async () => ({ action: 'accept', content: { confirm: true } })
+      );
+
+      const result = await handleAskUser(
+        validInput({ orchestration_id: 'orch-ok', task_id: 'task-ok' }),
+        ctx
+      );
+      assert.equal(result.isError, false);
+      assert.equal(result.structuredContent.cancelled, false);
+
+      const count = countLedgerRecords(tmp, 'orch-ok', 'task-ok', 'ask_user');
+      assert.equal(count, 1, 'exactly one ledger record after accepted answer');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+});

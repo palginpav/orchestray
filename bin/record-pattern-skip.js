@@ -83,11 +83,16 @@ process.stdin.on('end', () => {
     const cwd = resolveSafeCwd(event.cwd);
 
     // --- Config check: pattern_record_application advisory gate ---
-    // If the user has set pattern_record_application to anything other than "hook",
-    // suppress advisory emission entirely (fail-open on config read errors).
+    // Suppress advisory emission when the user has opted out of tracking
+    // (values 'allow', 'prompt'). Keep advisory active for 'hook', 'hook-warn',
+    // and 'hook-strict' — all three represent active enforcement levels where
+    // the skip-advisory is meaningful.
+    // Fail-open on config read errors (default 'hook-warn' → advisory stays on).
     try {
       const mcpEnforcement = loadMcpEnforcement(cwd);
-      if (mcpEnforcement.pattern_record_application !== 'hook') {
+      const praVal = mcpEnforcement.pattern_record_application;
+      const ADVISORY_OFF_VALUES = new Set(['allow', 'prompt']);
+      if (ADVISORY_OFF_VALUES.has(praVal)) {
         process.stdout.write(JSON.stringify({ continue: true }));
         process.exit(0);
       }

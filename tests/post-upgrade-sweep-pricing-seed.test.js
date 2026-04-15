@@ -57,7 +57,7 @@ afterEach(() => {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeDir({ config = null, pricingSentinel = false, kbWriteSentinel = false } = {}) {
+function makeDir({ config = null, pricingSentinel = false, kbWriteSentinel = false, v2016Sentinels = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-pricing-seed-test-'));
   cleanup.push(dir);
 
@@ -87,6 +87,28 @@ function makeDir({ config = null, pricingSentinel = false, kbWriteSentinel = fal
       '',
       'utf8'
     );
+  }
+
+  if (v2016Sentinels) {
+    // 2.0.16 sub-op sentinels — original W1/W5/W2 batch plus the DEV-A (D1/D4)
+    // and DEV-B (D2/D3/D5/D7) amendment sentinels added in v2.0.16 closeout.
+    // All must be present together so that no 2.0.16 migration touches config
+    // during tests that are not specifically verifying a 2.0.16 sub-operation.
+    for (const name of [
+      // W1 / W5 / W2 originals
+      '.pattern-record-app-migrated-2016',
+      '.cost-budget-enforcement-migrated-2016',
+      '.v2016-new-tools-seeded',
+      // DEV-A additions (D1 pattern_deprecate seed; D4 uses session-lock, no sentinel)
+      '.pattern-deprecate-seeded-2016',
+      // DEV-B additions (D2/D3/D5/D7)
+      '.pattern-record-app-stage-c-2016',
+      '.cost-budget-hard-block-default-2016',
+      '.cost-budget-reserve-ttl-seed-2016',
+      '.routing-gate-auto-seed-2016',
+    ]) {
+      fs.writeFileSync(path.join(stateDir, name), '', 'utf8');
+    }
   }
 
   return dir;
@@ -179,14 +201,19 @@ describe('W3 pricing-table seed', () => {
     // Pre-create both the W3 (pricing) sentinel and the W6 (kb-write) sentinel
     // so that neither migration modifies the config. The intent is "all 2.0.14/2.0.15
     // mcp_server-related migrations are already done; nothing touches the file."
-    const dir = makeDir({ config: { auto_review: true }, pricingSentinel: true, kbWriteSentinel: true });
+    const dir = makeDir({
+      config: { auto_review: true },
+      pricingSentinel: true,
+      kbWriteSentinel: true,
+      v2016Sentinels: true,
+    });
     run(dir);
     const cfg = readConfig(dir);
-    // With both sentinels, neither W3 nor W6 op should run
+    // With all 2.0.14/2.0.15/2.0.16 sentinels, no sub-op should run.
     assert.equal(
       cfg.mcp_server,
       undefined,
-      'mcp_server block should not be added when pricing and kb-write sentinels exist'
+      'mcp_server block should not be added when all migration sentinels exist'
     );
   });
 

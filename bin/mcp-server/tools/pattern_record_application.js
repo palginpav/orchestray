@@ -14,6 +14,7 @@ const paths = require('../lib/paths');
 const frontmatter = require('../lib/frontmatter');
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
 const { toolSuccess, toolError } = require('../lib/tool-result');
+const { checkLimit, recordSuccess } = require('../lib/tool-counts');
 
 const OUTCOMES = ['applied', 'applied-success', 'applied-failure'];
 
@@ -23,6 +24,9 @@ const INPUT_SCHEMA = {
   properties: {
     slug: { type: 'string', minLength: 1, maxLength: 200 },
     orchestration_id: { type: 'string', minLength: 1, maxLength: 64 },
+    // task_id is optional but enables W6 per-task rate-limit enforcement
+    // when both orchestration_id and task_id are present.
+    task_id: { type: 'string', minLength: 1, maxLength: 64 },
     outcome: { type: 'string', enum: OUTCOMES },
     note: { type: 'string', maxLength: 500 },
   },
@@ -41,6 +45,28 @@ async function handle(input, context) {
   const validation = validateAgainstSchema(input, INPUT_SCHEMA);
   if (!validation.ok) {
     return toolError('pattern_record_application: ' + validation.errors.join('; '));
+  }
+
+  // W6 (v2.0.16): per-(orchestration_id, task_id) rate-limit pre-check.
+  // checkLimit is read-only — does NOT increment the counter.
+  // recordSuccess is called only after the pattern file is successfully written.
+  // Only enforced when task_id is present alongside orchestration_id.
+  const orchId = input.orchestration_id;
+  const taskId = (input && typeof input.task_id === 'string') ? input.task_id : null;
+  const _projectRoot = (context && context.projectRoot) || null;
+  const _config = (context && context.config) || null;
+  if (orchId && taskId && _projectRoot) {
+    const limitResult = checkLimit(
+      { orchestration_id: orchId, task_id: taskId, tool_name: 'pattern_record_application' },
+      _projectRoot,
+      _config
+    );
+    if (limitResult.exceeded) {
+      return toolError(
+        'pattern_record_application: max_per_task rate limit exceeded for task "' + taskId +
+        '" (' + limitResult.count + '/' + limitResult.maxAllowed + ' calls used)'
+      );
+    }
   }
 
   const slug = input.slug;
@@ -108,6 +134,15 @@ async function handle(input, context) {
   } catch (err) {
     try { fs.unlinkSync(tmp); } catch (_e) { /* swallow */ }
     return toolError('pattern_record_application: write failed (' + (err && err.code ? err.code : 'write_failed') + ')');
+  }
+
+  // W6 (F06): record successful call only after pattern file write succeeds.
+  if (orchId && taskId && _projectRoot) {
+    recordSuccess(
+      { orchestration_id: orchId, task_id: taskId, tool_name: 'pattern_record_application' },
+      _projectRoot,
+      _config
+    );
   }
 
   return toolSuccess({

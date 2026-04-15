@@ -3,11 +3,11 @@ name: pm
 description: Project manager that orchestrates complex tasks across specialized agents.
   Assesses task complexity and decides whether to handle solo or delegate to architect,
   developer, refactorer, inventor, reviewer, debugger, tester, documenter, and security-engineer agents.
-tools: Agent(architect, developer, refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer), Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__ask_user, mcp__orchestray__pattern_find, mcp__orchestray__pattern_record_application, mcp__orchestray__history_query_events, mcp__orchestray__history_find_similar_tasks, mcp__orchestray__kb_search
+tools: Agent(architect, developer, refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer), Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__ask_user, mcp__orchestray__cost_budget_reserve, mcp__orchestray__history_find_similar_tasks, mcp__orchestray__history_query_events, mcp__orchestray__kb_search, mcp__orchestray__kb_write, mcp__orchestray__pattern_deprecate, mcp__orchestray__pattern_find, mcp__orchestray__pattern_record_application, mcp__orchestray__pattern_record_skip_reason, mcp__orchestray__routing_lookup
 model: inherit
 effort: high
 memory: project
-maxTurns: 115
+maxTurns: 145
 color: purple
 ---
 
@@ -94,7 +94,7 @@ with default values:
     "pattern_find": "hook",
     "kb_search": "hook",
     "history_find_similar_tasks": "hook",
-    "pattern_record_application": "hook",
+    "pattern_record_application": "hook-strict",
     "unknown_tool_policy": "block",
     "global_kill_switch": false
   }

@@ -128,7 +128,10 @@ weekly_cost_limit_usd   Weekly spending limit (default: null)
 mcp_enforcement.pattern_find              Hook enforcement mode: hook/prompt/allow (default: hook)
 mcp_enforcement.kb_search                 Hook enforcement mode: hook/prompt/allow (default: hook)
 mcp_enforcement.history_find_similar_tasks  Hook enforcement mode: hook/prompt/allow (default: hook)
-mcp_enforcement.pattern_record_application  Advisory only — not gate-enforced; suppresses pattern_record_skipped advisory event when set to "prompt" or "allow" (default: hook)
+mcp_enforcement.pattern_record_application  Enforcement mode for the pattern-record protocol: "hook-strict" (default) blocks
+                                            the 2nd+ Agent() spawn until the PM records a pattern decision; "hook-warn" allows
+                                            the spawn with an advisory event only. Set "hook-warn" to roll back the 2.0.16
+                                            behavior change.
 mcp_enforcement.unknown_tool_policy       block/warn/allow — policy for unrecognised dispatch names (default: block)
 mcp_enforcement.global_kill_switch        true restores 2.0.11 enforcement behaviour; no session restart needed (default: false)
 
@@ -139,17 +142,37 @@ audit.max_events_bytes_for_scan   Maximum bytes of events.jsonl scanned per hook
 mcp_server.tools.pattern_record_skip_reason  Enable the pattern_record_skip_reason MCP tool (default: true)
 mcp_server.tools.cost_budget_check           Enable the cost_budget_check MCP tool (default: true)
 mcp_server.tools.kb_write                    Enable the kb_write MCP tool for atomic artifact write + index.json update (default: true)
+mcp_server.tools.routing_lookup              Enable the routing_lookup MCP tool (default: true)
+mcp_server.tools.cost_budget_reserve         Enable the cost_budget_reserve MCP tool (default: true)
+mcp_server.tools.pattern_deprecate           Enable the pattern_deprecate MCP tool (default: true)
+
+mcp_server.max_per_task.ask_user             Maximum ask_user calls per task before rate-limit error (default: 20)
+mcp_server.max_per_task.kb_write             Maximum kb_write calls per task before rate-limit error (default: 20)
+mcp_server.max_per_task.pattern_record_application  Maximum pattern_record_application calls per task (default: 20)
 
 mcp_server.cost_budget_check.pricing_table   Per-model pricing used by cost_budget_check and collect-agent-metrics;
                                               seeded on install with current Anthropic pricing (Haiku $1/$5,
                                               Sonnet $3/$15, Opus $5/$25); edit this block to update prices
                                               (single source of truth — eliminates two-table drift)
 
+cost_budget_enforcement.enabled              Enable the PreToolUse cost-budget gate hook (default: false)
+cost_budget_enforcement.hard_block           When true, gate blocks spawn on budget breach; when false, warns to
+                                              stderr only (default: true — applies only when enabled: true)
+
+mcp_server.cost_budget_reserve.ttl_minutes   How long a cost reservation stays valid, in minutes (default: 30,
+                                              range: 1–1440)
+
+routing_gate.auto_seed_on_miss               When true, an Agent() spawn with no matching routing entry is
+                                              allowed and a synthesized entry is added with a stderr warning;
+                                              when false, the gate hard-blocks unregistered spawns (default: true)
+
 shield.r14_dedup_reads.enabled    Enable R14 cache-replay dedup for Read tool calls (default: true);
                                   set false to disable the context-shield hook without removing it
 ```
 
-The `mcp_enforcement` block is automatically added to `.orchestray/config.json` on the first `UserPromptSubmit` after upgrading to 2.0.13+ — no manual migration needed. On 2.0.14+, the same sweep also backfills the `mcp_server.cost_budget_check.pricing_table` block if absent. On 2.0.15+, the sweep additionally seeds the `kb_write` tool enable entry and the `pattern_record_skip_reason` / `cost_budget_check` enforcement keys for existing installs.
+The `mcp_enforcement` block is automatically added to `.orchestray/config.json` on the first `UserPromptSubmit` after upgrading to 2.0.13+ — no manual migration needed. On 2.0.14+, the same sweep also backfills the `mcp_server.cost_budget_check.pricing_table` block if absent. On 2.0.15+, the sweep additionally seeds the `kb_write` tool enable entry and the `pattern_record_skip_reason` / `cost_budget_check` enforcement keys for existing installs. On 2.0.16+, the sweep seeds `routing_lookup`, `cost_budget_reserve`, `pattern_deprecate`, `max_per_task` defaults (20 each), `cost_budget_enforcement`, `cost_budget_reserve.ttl_minutes`, and `routing_gate.auto_seed_on_miss`.
+
+**MCP resource schemes (2.0.16+).** The MCP server exposes four read-only resource schemes: `kb://`, `history://`, `pattern://`, and `orchestration://`. The `orchestration://` scheme provides live and historical state — `orchestray:orchestration://current` returns the active orchestration phase and task list; sub-resources expose routing decisions (`/current/routing`) and checkpoint state (`/current/checkpoints`). To browse an archived orchestration, use `orchestray:orchestration://<orch-id>`; the `list()` inventory includes the 5 most recent archived IDs. MCP tool count is 12 as of 2.0.16.
 
 **Routing-gate match key (2.0.15+).** The routing gate matches spawns on `(task_id, agent_type)` rather than the previous three-field tuple — forgiving to description drift. If you observe gate blocks on valid `Agent()` spawns, confirm that `routing.jsonl` is written before the spawn call; the PM's orchestration prompt now enforces this as a mandatory step.
 

@@ -42,6 +42,7 @@ const {
   validateElicitationRequestedSchema,
 } = require('../lib/schemas');
 const { buildAuditEvent } = require('../lib/audit');
+const { checkLimit, recordSuccess } = require('../lib/tool-counts');
 
 const AUDIT_TOOL_NAME = 'ask_user';
 const DEFAULT_TIMEOUT_SECONDS = 120;
@@ -71,6 +72,34 @@ async function handleAskUser(input, context) {
   }
 
   const formFieldsCount = input.form.length;
+
+  // -------------------------------------------------------------------------
+  // 1b. W6 (v2.0.16): per-(orchestration_id, task_id) rate-limit pre-check.
+  //     checkLimit is read-only — it does NOT increment the counter.
+  //     recordSuccess is called only on outcome === 'answered' (accept branch).
+  //     Only enforced when both ids are present and a projectRoot is available.
+  // -------------------------------------------------------------------------
+  const orchId = (input && typeof input.orchestration_id === 'string') ? input.orchestration_id : null;
+  const taskId = (input && typeof input.task_id === 'string') ? input.task_id : null;
+  const projectRoot = (context && context.projectRoot) || null;
+  if (orchId && taskId && projectRoot) {
+    const limitResult = checkLimit(
+      { orchestration_id: orchId, task_id: taskId, tool_name: 'ask_user' },
+      projectRoot,
+      config
+    );
+    if (limitResult.exceeded) {
+      emitAudit(auditSink, {
+        outcome: 'error',
+        duration_ms: Date.now() - startedAt,
+        form_fields_count: formFieldsCount,
+      });
+      return toolError(
+        'ask_user: max_per_task rate limit exceeded for task "' + taskId +
+        '" (' + limitResult.count + '/' + limitResult.maxAllowed + ' calls used)'
+      );
+    }
+  }
 
   // -------------------------------------------------------------------------
   // 2. Translate form[] -> MCP requestedSchema, defensively validate
@@ -144,6 +173,14 @@ async function handleAskUser(input, context) {
       duration_ms: Date.now() - startedAt,
       form_fields_count: formFieldsCount,
     });
+    // W6 (F06): record successful call only on 'answered' outcome.
+    if (orchId && taskId && projectRoot) {
+      recordSuccess(
+        { orchestration_id: orchId, task_id: taskId, tool_name: 'ask_user' },
+        projectRoot,
+        config
+      );
+    }
     return toolSuccess({ cancelled: false, ...answers });
   }
 

@@ -48,6 +48,7 @@ const { handleAskUser } = require('./elicit/ask_user');
 const { toolError } = require('./lib/tool-result');
 
 // Stage 2 tool handlers
+const patternDeprecate = require('./tools/pattern_deprecate');
 const patternFind = require('./tools/pattern_find');
 const patternRecordApplication = require('./tools/pattern_record_application');
 const patternRecordSkipReason = require('./tools/pattern_record_skip_reason');
@@ -56,11 +57,14 @@ const historyQueryEvents = require('./tools/history_query_events');
 const historyFindSimilarTasks = require('./tools/history_find_similar_tasks');
 const kbSearch = require('./tools/kb_search');
 const kbWrite = require('./tools/kb_write');
+const routingLookup = require('./tools/routing_lookup');
+const costBudgetReserve = require('./tools/cost_budget_reserve');
 
 // Stage 2 resource handlers
 const patternResource = require('./resources/pattern_resource');
 const historyResource = require('./resources/history_resource');
 const kbResource = require('./resources/kb_resource');
+const orchestrationResource = require('./resources/orchestration_resource');
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'orchestray';
@@ -124,7 +128,12 @@ const TOOL_TABLE = Object.freeze({
       sendElicitation,
       auditSink: writeAuditEvent,
       config: _context && _context.config,
+      projectRoot: _context && _context.projectRoot,
     }),
+  },
+  pattern_deprecate: {
+    definition: patternDeprecate.definition,
+    handler: patternDeprecate.handle,
   },
   pattern_find: {
     definition: patternFind.definition,
@@ -158,12 +167,21 @@ const TOOL_TABLE = Object.freeze({
     definition: kbWrite.definition,
     handler: kbWrite.handle,
   },
+  routing_lookup: {
+    definition: routingLookup.definition,
+    handler: routingLookup.handle,
+  },
+  cost_budget_reserve: {
+    definition: costBudgetReserve.definition,
+    handler: costBudgetReserve.handle,
+  },
 });
 
 const RESOURCE_HANDLERS = Object.freeze({
   pattern: patternResource,
   history: historyResource,
   kb: kbResource,
+  orchestration: orchestrationResource,
 });
 
 function buildToolContext(config) {

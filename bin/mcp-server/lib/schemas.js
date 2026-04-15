@@ -294,6 +294,10 @@ const ASK_USER_TOOL_DEFINITION = deepFreeze({
         },
       },
       timeout_seconds: { type: 'integer', minimum: 10, maximum: 600 },
+      // W6 (v2.0.16): optional rate-limit context. When both are supplied,
+      // the server enforces max_per_task before sending the elicitation.
+      orchestration_id: { type: 'string', minLength: 1, maxLength: 64 },
+      task_id: { type: 'string', minLength: 1, maxLength: 64 },
     },
   },
 });
