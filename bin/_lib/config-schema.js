@@ -979,6 +979,152 @@ function validateCacheChoreographyConfig(obj) {
 // (T19 pm_prompt_variant removed in v2.0.18 — FC3b cleanup)
 
 // ---------------------------------------------------------------------------
+// pattern_decay section defaults and loader (W9 v2.0.18)
+//
+// pattern_decay.default_half_life_days — positive integer 1..3650, default 90.
+//   Half-life (in days) for exponential confidence decay in pattern_find results.
+//   The decay formula is:
+//     decayed_confidence = confidence * 0.5 ^ (age_days / half_life)
+//   where age_days is measured from last_applied (if set) or the pattern's
+//   creation timestamp (derived from created_from or file mtime as fallback).
+//
+//   A half-life of 90 days means a pattern not applied in 90 days decays to
+//   0.5× its original confidence. At 180 days, it decays to 0.25×.
+//
+// pattern_decay.category_overrides — object mapping category names to integer
+//   half-life values, e.g. {"anti-pattern": 180}. Optional; absent means use
+//   the global default. Fallback precedence (highest to lowest priority):
+//     1. per-pattern frontmatter `decay_half_life_days` (if present)
+//     2. category_overrides[pattern.category] (if key present)
+//     3. default_half_life_days (global default)
+//
+// Decay is computed on read in pattern_find.js; never written back to files.
+// Related config keys live in the mcp_server block (cost_budget_check, etc.);
+// pattern_decay is a sibling top-level section alongside audit, shield, etc.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_PATTERN_DECAY = Object.freeze({
+  /**
+   * Global half-life in days for pattern confidence decay.
+   * A pattern last applied N days ago has confidence * 0.5^(N/half_life).
+   * @type {number}
+   */
+  default_half_life_days: 90,
+  /**
+   * Per-category half-life overrides. Keys are category names (e.g. "anti-pattern").
+   * Values are integers 1..3650. Absent key → fall through to global default.
+   * @type {Object.<string,number>|null}
+   */
+  category_overrides: null,
+});
+
+/**
+ * Load and merge the pattern_decay block from <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing/malformed returns DEFAULT_PATTERN_DECAY so that
+ * decay still applies at safe defaults rather than crashing pattern_find.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ default_half_life_days: number, category_overrides: Object.<string,number>|null }}
+ */
+function loadPatternDecayConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return {
+      default_half_life_days: DEFAULT_PATTERN_DECAY.default_half_life_days,
+      category_overrides: null,
+    };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return {
+      default_half_life_days: DEFAULT_PATTERN_DECAY.default_half_life_days,
+      category_overrides: null,
+    };
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {
+      default_half_life_days: DEFAULT_PATTERN_DECAY.default_half_life_days,
+      category_overrides: null,
+    };
+  }
+
+  const fromFile = parsed.pattern_decay;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return {
+      default_half_life_days: DEFAULT_PATTERN_DECAY.default_half_life_days,
+      category_overrides: null,
+    };
+  }
+
+  const merged = Object.assign(
+    { default_half_life_days: DEFAULT_PATTERN_DECAY.default_half_life_days, category_overrides: null },
+    sanitizeConfig(fromFile)
+  );
+
+  try {
+    const result = validatePatternDecayConfig(merged);
+    if (!result.valid) {
+      logStderr('pattern_decay config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) {
+    // Validation must never throw
+  }
+
+  return {
+    default_half_life_days: merged.default_half_life_days,
+    category_overrides: merged.category_overrides,
+  };
+}
+
+/**
+ * Validate a pattern_decay config object.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validatePatternDecayConfig(obj) {
+  const errors = [];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['pattern_decay config must be an object'] };
+  }
+
+  if ('default_half_life_days' in obj) {
+    const v = obj.default_half_life_days;
+    if (!Number.isInteger(v) || v < 1 || v > 3650) {
+      errors.push(
+        'pattern_decay.default_half_life_days must be an integer 1..3650 — got ' + JSON.stringify(v)
+      );
+    }
+  }
+
+  if ('category_overrides' in obj && obj.category_overrides !== null) {
+    const co = obj.category_overrides;
+    if (typeof co !== 'object' || Array.isArray(co)) {
+      errors.push('pattern_decay.category_overrides must be an object or null');
+    } else {
+      for (const [cat, v] of Object.entries(co)) {
+        if (!Number.isInteger(v) || v < 1 || v > 3650) {
+          errors.push(
+            `pattern_decay.category_overrides.${cat} must be an integer 1..3650 — got ${JSON.stringify(v)}`
+          );
+        }
+      }
+    }
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
+// ---------------------------------------------------------------------------
 // adaptive_verbosity section defaults and loader (T22 v2.0.17)
 //
 // adaptive_verbosity.enabled — boolean, default false.
@@ -1258,5 +1404,9 @@ module.exports = {
   DEFAULT_ADAPTIVE_VERBOSITY,
   loadAdaptiveVerbosityConfig,
   validateAdaptiveVerbosityConfig,
+  // W9 (v2.0.18): pattern confidence decay
+  DEFAULT_PATTERN_DECAY,
+  loadPatternDecayConfig,
+  validatePatternDecayConfig,
   logStderr,
 };

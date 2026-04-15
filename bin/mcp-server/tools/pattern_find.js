@@ -21,6 +21,7 @@ const { toolSuccess, toolError } = require('../lib/tool-result');
 const { sanitizeExcerpt } = require('../lib/excerpt');
 const { logStderr } = require('../lib/rpc');
 const { AGENT_ROLES } = require('../lib/constants');
+const { loadPatternDecayConfig } = require('../../_lib/config-schema');
 
 const CATEGORIES = [
   'decomposition',
@@ -68,15 +69,26 @@ async function handle(input, context) {
   // Resolve patterns directory. Tool context may inject projectRoot for
   // tests — prefer it when present (matches fixture strategy in §13).
   let patternsDir;
+  let projectRoot;
   try {
     if (context && context.projectRoot) {
-      patternsDir = path.join(context.projectRoot, '.orchestray', 'patterns');
+      projectRoot = context.projectRoot;
+      patternsDir = path.join(projectRoot, '.orchestray', 'patterns');
     } else {
       patternsDir = paths.getPatternsDir();
+      projectRoot = process.cwd();
     }
   } catch (err) {
     // No project root — no patterns. Return empty match set, not an error.
     return toolSuccess({ matches: [], considered: 0, filtered_out: 0 });
+  }
+
+  // Load decay config. Fail-open: defaults if config missing/malformed.
+  let decayConfig;
+  try {
+    decayConfig = loadPatternDecayConfig(projectRoot);
+  } catch (_) {
+    decayConfig = { default_half_life_days: 90, category_overrides: null };
   }
 
   let entries;
@@ -112,6 +124,7 @@ async function handle(input, context) {
       slug,
       frontmatter: parsed.frontmatter,
       body: parsed.body,
+      filepath,
     });
   }
 
@@ -126,6 +139,8 @@ async function handle(input, context) {
 
   const scored = [];
   let filteredOut = 0;
+
+  const nowMs = Date.now();
 
   for (const entry of index) {
     const fm = entry.frontmatter;
@@ -190,10 +205,20 @@ async function handle(input, context) {
     // cap at 80 chars and strip markdown special sequences.
     const oneLine = sanitizeExcerpt(_firstLine(description || entry.body));
 
+    // W9 (v2.0.18): compute decayed_confidence using exponential decay.
+    // Reference timestamp: last_applied if set and parseable; otherwise file
+    // mtime. File mtime is the cheapest fallback — no history scanning needed,
+    // and it's a reasonable lower bound on "last touched" for new patterns.
+    const { decayedConfidence, ageDays } = _computeDecay(
+      confidence, fm, entry.filepath, category, decayConfig, nowMs
+    );
+
     scored.push({
       slug: entry.slug,
       uri: 'orchestray:pattern://' + entry.slug,
       confidence,
+      decayed_confidence: decayedConfidence,
+      age_days: ageDays,
       times_applied: timesApplied,
       category,
       one_line: oneLine,
@@ -281,6 +306,79 @@ function _firstLine(s) {
   const idx = s.indexOf('\n');
   const line = idx === -1 ? s : s.slice(0, idx);
   return line.trim().slice(0, 200);
+}
+
+// ---------------------------------------------------------------------------
+// Decay helpers (W9 v2.0.18)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute decayed_confidence and age_days for a pattern.
+ *
+ * Formula: decayed_confidence = confidence * 0.5 ^ (age_days / half_life)
+ *
+ * Reference timestamp precedence:
+ *   1. fm.last_applied — ISO 8601 string written by §22c when a pattern is applied.
+ *   2. file mtime — cheapest fallback; no history scanning required.
+ *      (created_from contains an orch-id string like "orch-1744122000" whose
+ *      embedded Unix timestamp could be parsed, but mtime is authoritative for
+ *      file age and avoids parsing the orch-id format.)
+ *
+ * Half-life precedence (highest to lowest):
+ *   1. fm.decay_half_life_days — per-pattern override in frontmatter.
+ *   2. decayConfig.category_overrides[category] — per-category override.
+ *   3. decayConfig.default_half_life_days — global default (90 days).
+ *
+ * @param {number} confidence - Raw pattern confidence (0..1).
+ * @param {object} fm - Parsed frontmatter object.
+ * @param {string} filepath - Absolute path to the pattern file (for mtime fallback).
+ * @param {string} category - Resolved pattern category string.
+ * @param {{ default_half_life_days: number, category_overrides: object|null }} decayConfig
+ * @param {number} nowMs - Current timestamp in milliseconds (Date.now()).
+ * @returns {{ decayedConfidence: number, ageDays: number }}
+ */
+function _computeDecay(confidence, fm, filepath, category, decayConfig, nowMs) {
+  // Resolve reference timestamp (ms since epoch).
+  let refMs = null;
+
+  // Prefer last_applied ISO 8601 string from frontmatter.
+  if (fm.last_applied && typeof fm.last_applied === 'string' && fm.last_applied !== 'null') {
+    const parsed = Date.parse(fm.last_applied);
+    if (!isNaN(parsed)) refMs = parsed;
+  }
+
+  // Fall back to file mtime.
+  if (refMs === null) {
+    try {
+      const stat = fs.statSync(filepath);
+      refMs = stat.mtimeMs;
+    } catch (_) {
+      // mtime unavailable — use nowMs (0 days old → no decay)
+      refMs = nowMs;
+    }
+  }
+
+  const ageDays = Math.max(0, Math.floor((nowMs - refMs) / 86400000));
+
+  // Resolve half-life using fallback chain.
+  let halfLife = decayConfig.default_half_life_days;
+  if (
+    decayConfig.category_overrides &&
+    typeof decayConfig.category_overrides === 'object' &&
+    category in decayConfig.category_overrides
+  ) {
+    const cv = decayConfig.category_overrides[category];
+    if (Number.isInteger(cv) && cv >= 1) halfLife = cv;
+  }
+  // Per-pattern frontmatter override (highest priority).
+  const perPattern = fm.decay_half_life_days;
+  if (Number.isInteger(perPattern) && perPattern >= 1) halfLife = perPattern;
+
+  const decayedConfidence = Math.round(
+    confidence * Math.pow(0.5, ageDays / halfLife) * 1000
+  ) / 1000;
+
+  return { decayedConfidence, ageDays };
 }
 
 module.exports = {

@@ -159,6 +159,57 @@ For each pattern noted as "applied" during Section 22b in this orchestration:
 
 ---
 
+## 22d-pre. Confidence Decay Model (W9 v2.0.18)
+
+`pattern_find` returns two confidence fields for every match:
+
+- **`confidence`** — raw value stored in the pattern file frontmatter (0.0–1.0). This
+  is the historically-accumulated score maintained by §22c and §41c feedback loops.
+  Use it for **human curation only** (e.g., deciding whether to promote or prune a
+  pattern manually).
+- **`decayed_confidence`** — time-weighted value computed on each read. This is what
+  the PM should use for **ranking and automatic pruning decisions**.
+
+### Formula
+
+```
+age_days          = (now − reference_timestamp) / 86 400 000 ms
+decayed_confidence = confidence × 0.5 ^ (age_days / half_life)
+```
+
+`reference_timestamp` is `last_applied` (set by §22c when a pattern is applied) if
+present and parseable; otherwise the pattern file's mtime.
+
+### Half-life configuration
+
+The half-life defaults to **90 days** (`pattern_decay.default_half_life_days` in
+`.orchestray/config.json`). Operators can override this value (range 1–3650 days).
+
+**Fallback precedence** (highest → lowest priority):
+
+1. Per-pattern frontmatter `decay_half_life_days` — set directly in the `.md` file to
+   give a specific pattern a custom half-life (useful for patterns known to stay
+   relevant longer, such as security anti-patterns).
+2. `pattern_decay.category_overrides[category]` in config — e.g. `{"anti-pattern": 180}`
+   gives all anti-patterns a 180-day half-life.
+3. `pattern_decay.default_half_life_days` — global default (90 days).
+
+### Interpretation guide
+
+| `decayed_confidence` vs `confidence` | Meaning |
+|--------------------------------------|---------|
+| ≥ 90% of raw | Recently applied or freshly created — treat as fully active. |
+| 50–89% of raw | Aging; the pattern is becoming less predictive. Consider running a task that would exercise it to reset the clock. |
+| < 50% of raw | Stale; the pattern has not been applied in more than one half-life. Weight it conservatively in decomposition decisions. |
+| → 0 | Effectively expired; the pruning score `decayed_confidence × times_applied` will be near zero and this pattern is a candidate for automatic removal. |
+
+> **Note:** 18 of 20 initial patterns have `times_applied: 0`, making the legacy pruning
+> score (`confidence × times_applied`) zero for all of them — effectively random. Using
+> `decayed_confidence` in the sort key makes ranking honest even for unapplied patterns
+> by penalising old unapplied ones relative to fresh ones.
+
+---
+
 ## 22d. Pruning
 
 Run AFTER writing new patterns in Section 22a step 7.

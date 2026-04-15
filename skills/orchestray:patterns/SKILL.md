@@ -23,9 +23,14 @@ The user wants to see the pattern learning dashboard showing what the system has
    - `min_confidence: 0.0` (no filter)
 
    The returned `matches` array contains objects with `slug`, `uri`, `category`,
-   `confidence` (numeric 0-1), `times_applied`, `one_line`, and `match_reasons`.
+   `confidence` (numeric 0-1), `decayed_confidence` (time-weighted, numeric 0-1),
+   `age_days` (integer), `times_applied`, `one_line`, and `match_reasons`.
    The server already normalizes confidence to numeric and merges Section 22 /
    Section 30 field aliases — no client-side normalization needed.
+
+   `decayed_confidence` applies exponential decay: `confidence × 0.5^(age_days / half_life)`
+   where `half_life` defaults to 90 days (configurable via `pattern_decay.default_half_life_days`).
+   `age_days` is measured from `last_applied` (if set) or the pattern file's mtime.
 
    Note: `pattern_find` reads `.orchestray/patterns/` only. To include
    `.orchestray/team-patterns/*.md`, glob them separately (same code as before)
@@ -78,17 +83,18 @@ The user wants to see the pattern learning dashboard showing what the system has
    Patterns applied: {total_applied} times across {orchestration_count} orchestrations
    ```
 
-6. **Section 2 -- Pattern Inventory**: Show all patterns in a table sorted by confidence descending, then by times_applied descending.
+6. **Section 2 -- Pattern Inventory**: Show all patterns in a table sorted by `decayed_confidence` descending, then by `times_applied` descending.
 
    ```
    ### Pattern Inventory
 
-   | Pattern | Category | Confidence | Applied | Last Applied | Source | Scope |
-   |---------|----------|------------|---------|--------------|--------|-------|
-   | {name} | {category} | {confidence} | {times_applied} | {last_applied or "never"} | {source} | {scope} |
+   | Pattern | Category | Confidence | Decayed | Age (days) | Applied | Last Applied | Source | Scope |
+   |---------|----------|------------|---------|------------|---------|--------------|--------|-------|
+   | {name} | {category} | {confidence} | {decayed_confidence} | {age_days} | {times_applied} | {last_applied or "never"} | {source} | {scope} |
    ```
 
-   Format confidence to 2 decimal places. Format last_applied as YYYY-MM-DD if present, otherwise "never".
+   Format `confidence` and `decayed_confidence` to 2 decimal places. Format `last_applied` as YYYY-MM-DD if present, otherwise "never".
+   When `decayed_confidence` is less than 50% of `confidence` (i.e. `decayed_confidence < confidence * 0.5`), mark the decayed value with a `*` suffix and show a footnote: `* Decayed to <50% of raw confidence — pattern has not been applied in more than one half-life.`
 
 7. **Section 3 -- Application History**: Show per-orchestration pattern usage from event data.
 
@@ -223,7 +229,7 @@ The user wants to see the pattern learning dashboard showing what the system has
     ## Pattern Detail: {name}
 
     **Category:** {category}
-    **Confidence:** {confidence}
+    **Confidence:** {confidence} (raw) / {decayed_confidence} (decayed, age {age_days} days)
     **Times Applied:** {times_applied}
     **Created From:** {source}
     **Scope:** {scope}
