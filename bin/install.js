@@ -538,32 +538,67 @@ function mergeHooks(targetDir) {
     if (!settings.hooks[event]) {
       settings.hooks[event] = newEntries;
     } else {
+      // Helper: extract the script basename from a hook command via the
+      // `/bin/<script>` substring. Parsing whitespace would fail on install
+      // paths containing spaces (macOS iCloud, Windows "Program Files").
+      const hookBasename = (h) => {
+        const m = (h.command || '').match(/\/bin\/([^\s"']+)/);
+        return m ? path.basename(m[1]) : null;
+      };
+
       for (const entry of newEntries) {
-        // Extract the script basename via the `/bin/<script>` substring rather
-        // than parsing whitespace: install paths may contain spaces (macOS
-        // iCloud, Windows "Program Files"), and split(' ') would mis-identify
-        // those commands as new and silently duplicate them on reinstall.
-        const scriptBasenames = (entry.hooks || [])
-          .map(h => {
-            const m = (h.command || '').match(/\/bin\/([^\s"']+)/);
-            return m ? path.basename(m[1]) : null;
-          })
-          .filter(Boolean);
-        // M5 fix: include `entry.matcher` in the dedup key. Two hook blocks
-        // with the same script but different matchers (e.g. "Agent" vs "Bash")
-        // are distinct entries and must both be installed.
-        const entryMatcher = entry.matcher;
-        const alreadyInstalled = scriptBasenames.some(name =>
-          settings.hooks[event].some(existing => {
-            // matcher must match (both undefined, or same string value)
-            if (existing.matcher !== entryMatcher) return false;
-            return (existing.hooks || []).some(h =>
-              h.command && h.command.includes('orchestray') && h.command.includes(name)
-            );
-          })
+        const entryMatcher = entry.matcher; // may be undefined
+        // Hook-level dedup (v2.0.20): the prior entry-level dedup silently
+        // dropped new hooks whenever any existing hook in the same
+        // (event, matcher) entry already matched. Example: v2.0.19 added
+        // `collect-context-telemetry.js` beside the existing `audit-event.js`
+        // under SubagentStart — the entry-level check matched on
+        // `audit-event.js` and short-circuited, dropping the new hook.
+        //
+        // Instead we compute the set of Orchestray-origin basenames already
+        // installed under the same (event, matcher) pair, then filter the
+        // new entry's hooks down to those NOT already installed. Non-
+        // Orchestray hooks (no "orchestray" in the command) never block an
+        // Orchestray install — another plugin's hook in the same matcher is
+        // a peer, not a duplicate.
+        const installedBasenames = new Set();
+        for (const existing of settings.hooks[event]) {
+          if (existing.matcher !== entryMatcher) continue;
+          for (const h of existing.hooks || []) {
+            if (!h.command || !h.command.includes('orchestray')) continue;
+            const name = hookBasename(h);
+            if (name) installedBasenames.add(name);
+          }
+        }
+
+        const newHooks = (entry.hooks || []).filter(h => {
+          const name = hookBasename(h);
+          // If basename is not derivable, treat it as new — the alternative
+          // (silently skipping) is exactly the class of bug this rewrite fixes.
+          return !name || !installedBasenames.has(name);
+        });
+
+        if (newHooks.length === 0) continue;
+
+        // Append to an existing entry with matching matcher when one exists;
+        // otherwise push a new entry. Two hook blocks with the same script
+        // but different matchers (e.g. "Agent" vs "Bash") remain distinct
+        // entries and must both be installed.
+        const matchingExisting = settings.hooks[event].find(
+          existing => existing.matcher === entryMatcher
         );
-        if (!alreadyInstalled) {
-          settings.hooks[event].push(entry);
+        if (matchingExisting) {
+          matchingExisting.hooks = (matchingExisting.hooks || []).concat(newHooks);
+        } else {
+          // Preserve matcher only when the source entry defined one —
+          // avoid writing `"matcher": undefined` (JSON.stringify drops
+          // undefined, but being explicit is clearer and survives any
+          // future serializer swap). Order the keys matcher-before-hooks
+          // to match the convention in hooks.json.
+          const pushed = {};
+          if (entryMatcher !== undefined) pushed.matcher = entryMatcher;
+          pushed.hooks = newHooks;
+          settings.hooks[event].push(pushed);
         }
       }
     }

@@ -178,3 +178,23 @@ Claude Code plugin-scope allowlist) would have caught this.
 **Tests:** new `tests/regression/v2019_1-statusline-wiring.test.js` pins the
 `subagentStatusLine` shape and asserts version parity across `package.json` and
 `.claude-plugin/plugin.json`.
+
+**Mid-stream addition — installer `mergeHooks()` dedup fix.** After the statusLine
+wiring landed, review of the upgrade path for v2.0.18 users uncovered a second bug
+in the same release surface: `bin/install.js` line-541 used entry-level dedup —
+for each new (event, matcher) entry from the source `hooks.json`, if ANY of that
+entry's hook basenames was already present at the target the ENTIRE new entry was
+skipped, silently losing any NEW hooks it also contained. The concrete casualty was
+v2.0.19's `collect-context-telemetry.js`, which was added as a second hook inside
+pre-existing entries under SubagentStart, SubagentStop, `PreToolUse(Agent|Explore|Task)`,
+and `PostToolUse(Agent|Explore|Task)`. Every v2.0.18-or-earlier user who ran
+`/orchestray:update` to v2.0.19 lost all four telemetry hooks without warning,
+which disabled the subagent status-bar segment even after fix A reshaped the
+settings.json block correctly. Rewritten to hook-level dedup: compute the set of
+Orchestray-origin basenames already at `(event, matcher)`, filter the incoming
+entry's hooks to those not yet present, and append survivors to the matching
+existing entry (or push a new entry if no matcher match exists). Pinned by
+`tests/regression/v2020-installer-hook-dedup.test.js` — five scenarios including
+the silent-drop repro, partial dedup, full idempotency, different-matcher
+distinctness, and non-Orchestray peer hook coexistence. Still v2.0.20 — no second
+version bump.

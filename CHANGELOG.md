@@ -29,6 +29,13 @@ in 2.0.19 that prevented the context status bar from rendering on fresh installs
   unreadable/malformed user settings, or when the entry already points at Orchestray.
 - **`.claude-plugin/plugin.json` version drift** — bumped from `2.0.17` (stale since
   v2.0.18) to `2.0.20` to match `package.json`.
+- **`bin/install.js` `mergeHooks()` dedup** — entry-level dedup silently dropped new
+  hooks when any existing hook in the same (event, matcher) entry already matched.
+  Every v2.0.18-or-earlier user who ran `/orchestray:update` to v2.0.19 lost the four
+  `collect-context-telemetry.js` hooks (SubagentStart, SubagentStop, pre/post-spawn)
+  without warning, which disabled the subagent status-bar segment. Rewritten to
+  hook-level dedup that appends missing hooks to the existing entry; existing hooks
+  are preserved verbatim.
 
 ### Unchanged
 
