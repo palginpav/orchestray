@@ -30,7 +30,7 @@ const path = require('path');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { getRoutingFilePath, findRoutingEntry } = require('./_lib/routing-lookup');
-const { loadMcpEnforcement, loadRoutingGateConfig } = require('./_lib/config-schema');
+const { loadMcpEnforcement, loadRoutingGateConfig, loadAntiPatternGateConfig, loadPatternDecayConfig } = require('./_lib/config-schema');
 const {
   REQUIRED_PRE_DECOMPOSITION_TOOLS,
   REQUIRED_POST_DECOMPOSITION_TOOLS,
@@ -642,6 +642,50 @@ process.stdin.on('end', () => {
       }
     }
 
+    // W12 (v2.0.18): Anti-pattern pre-spawn advisory gate.
+    // Matches the pending Agent() spawn against anti-pattern patterns in
+    // .orchestray/patterns/anti-pattern-*.md. When a strong-signal match is
+    // found (decayed_confidence >= threshold), injects an advisory into the
+    // spawned agent's context via additionalContext (OQ-TB-1 choice).
+    //
+    // Contract:
+    //   - ALWAYS exit 0 regardless of match/no-match. Never blocks a spawn.
+    //   - At most 1 advisory per spawn (cap enforced by config.max_advisories_per_spawn).
+    //   - Suppressed when skip_category:contextual-mismatch in recent events for same pattern.
+    //   - Kill-flag: anti_pattern_gate.enabled=false short-circuits before scan.
+    //   - Fail-open: any internal error logs to stderr and allows the spawn.
+    try {
+      const antiPatternResult = runAntiPatternAdvisoryGate(cwd, toolInput, orchFile);
+      if (antiPatternResult && antiPatternResult.additionalContext) {
+        // Emit advisory via additionalContext — reaches the spawned agent transparently.
+        process.stdout.write(JSON.stringify({ additionalContext: antiPatternResult.additionalContext }));
+        // Emit audit event (non-blocking — fail-open on write error).
+        try {
+          const eventsPath = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
+          atomicAppendJsonl(eventsPath, {
+            timestamp: new Date().toISOString(),
+            type: 'anti_pattern_advisory_shown',
+            orchestration_id: antiPatternResult.orchestration_id,
+            pattern_name: antiPatternResult.pattern_name,
+            agent_type: antiPatternResult.agent_type,
+            matched_trigger: antiPatternResult.matched_trigger,
+            decayed_confidence: antiPatternResult.decayed_confidence,
+          });
+        } catch (_evErr) {
+          process.stderr.write(
+            '[orchestray] gate-agent-spawn: failed to emit anti_pattern_advisory_shown event (' +
+            (_evErr && _evErr.message) + '); allowing spawn\n'
+          );
+        }
+      }
+    } catch (_apErr) {
+      // Fail-open: anti-pattern gate must never block a legitimate spawn.
+      process.stderr.write(
+        '[orchestray] gate-agent-spawn: anti-pattern advisory gate error (' +
+        (_apErr && _apErr.message) + '); failing open\n'
+      );
+    }
+
     // Valid model + routing entry + MCP checkpoints — allow the spawn.
     process.exit(0);
 
@@ -651,3 +695,349 @@ process.stdin.on('end', () => {
     process.exit(0);
   }
 });
+
+// ---------------------------------------------------------------------------
+// W12: Anti-pattern pre-spawn advisory gate implementation
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse YAML-style frontmatter from a markdown file.
+ * Returns null if no valid frontmatter block is found.
+ * Handles the subset of YAML used in pattern files:
+ *   scalar strings, numbers, ISO dates, and YAML sequence arrays.
+ *
+ * @param {string} content - Raw file content.
+ * @returns {object|null}
+ */
+function parsePatternFrontmatter(content) {
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!match) return null;
+  const block = match[1];
+  const fm = {};
+  let i = 0;
+  const lines = block.split(/\r?\n/);
+  while (i < lines.length) {
+    const line = lines[i];
+    // Key: value (scalar)
+    const scalarMatch = line.match(/^(\w[\w_-]*):\s*(.*)$/);
+    if (scalarMatch) {
+      const key = scalarMatch[1];
+      const rawVal = scalarMatch[2].trim();
+      // Peek ahead — if the next line(s) are array items (start with "  -"), collect them.
+      const arrayItems = [];
+      let j = i + 1;
+      while (j < lines.length && /^\s+-\s+/.test(lines[j])) {
+        arrayItems.push(lines[j].replace(/^\s+-\s+/, '').trim());
+        j++;
+      }
+      if (arrayItems.length > 0) {
+        fm[key] = arrayItems;
+        i = j;
+        continue;
+      }
+      // Scalar: attempt numeric, boolean, null coercion.
+      if (rawVal === 'null' || rawVal === '') {
+        fm[key] = null;
+      } else if (rawVal === 'true') {
+        fm[key] = true;
+      } else if (rawVal === 'false') {
+        fm[key] = false;
+      } else if (!isNaN(Number(rawVal)) && rawVal !== '') {
+        fm[key] = Number(rawVal);
+      } else {
+        fm[key] = rawVal;
+      }
+    }
+    i++;
+  }
+  return fm;
+}
+
+/**
+ * Read the last N events from events.jsonl filtered to a specific orchestration.
+ * Returns an empty array on any error (fail-open).
+ *
+ * @param {string} cwd
+ * @param {string} orchId
+ * @param {number} limit - Maximum number of events to scan (from the tail).
+ * @returns {object[]}
+ */
+function readRecentOrchEvents(cwd, orchId, limit) {
+  try {
+    const eventsPath = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
+    if (!fs.existsSync(eventsPath)) return [];
+    const MAX_READ = 512 * 1024; // 512 KB tail scan — well within latency budget
+    const stat = fs.statSync(eventsPath);
+    let raw;
+    if (stat.size > MAX_READ) {
+      const fd = fs.openSync(eventsPath, 'r');
+      try {
+        const buf = Buffer.alloc(MAX_READ);
+        const bytesRead = fs.readSync(fd, buf, 0, MAX_READ, stat.size - MAX_READ);
+        raw = buf.slice(0, bytesRead).toString('utf8');
+        // Drop the first (likely partial) line.
+        const firstNl = raw.indexOf('\n');
+        if (firstNl !== -1) raw = raw.slice(firstNl + 1);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } else {
+      raw = fs.readFileSync(eventsPath, 'utf8');
+    }
+    const events = [];
+    for (const rawLine of raw.split('\n')) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      let ev;
+      try { ev = JSON.parse(line); } catch (_) { continue; }
+      if (!ev || typeof ev !== 'object') continue;
+      if (ev.orchestration_id !== orchId) continue;
+      events.push(ev);
+    }
+    // Return the last `limit` events for this orchestration.
+    return events.slice(-limit);
+  } catch (_) {
+    return [];
+  }
+}
+
+/**
+ * Check whether a pattern has been suppressed by a contextual-mismatch skip
+ * in the last 10 events for this orchestration.
+ *
+ * @param {string} cwd
+ * @param {string} orchId
+ * @param {string} patternName
+ * @returns {boolean} true if suppressed
+ */
+function isPatternSkipEnrichedMismatch(cwd, orchId, patternName) {
+  const recentEvents = readRecentOrchEvents(cwd, orchId, 10);
+  return recentEvents.some(ev =>
+    ev.type === 'pattern_skip_enriched' &&
+    ev.pattern_name === patternName &&
+    ev.skip_category === 'contextual-mismatch'
+  );
+}
+
+/**
+ * Compute decayed_confidence using the same formula as W9's pattern_find.js.
+ * Re-implemented inline (not imported) because pattern_find.js is in the MCP
+ * server subtree and not exported for gate-agent-spawn consumption.
+ *
+ * Formula: decayed_confidence = confidence * 0.5 ^ (age_days / half_life)
+ *
+ * @param {number} confidence
+ * @param {object} fm - Parsed frontmatter.
+ * @param {string} filepath - For mtime fallback.
+ * @param {object} decayConfig - { default_half_life_days, category_overrides }
+ * @returns {number}
+ */
+function computeDecayedConfidence(confidence, fm, filepath, decayConfig) {
+  const nowMs = Date.now();
+  let refMs = null;
+
+  if (fm.last_applied && typeof fm.last_applied === 'string' && fm.last_applied !== 'null') {
+    const parsed = Date.parse(fm.last_applied);
+    if (!isNaN(parsed)) refMs = parsed;
+  }
+
+  if (refMs === null) {
+    try {
+      refMs = fs.statSync(filepath).mtimeMs;
+    } catch (_) {
+      refMs = nowMs; // 0 days old → no decay
+    }
+  }
+
+  const ageDays = Math.max(0, Math.floor((nowMs - refMs) / 86400000));
+
+  // Resolve half-life: per-pattern → category override → global default.
+  let halfLife = decayConfig.default_half_life_days;
+  const category = fm.category;
+  if (
+    decayConfig.category_overrides &&
+    typeof decayConfig.category_overrides === 'object' &&
+    category && category in decayConfig.category_overrides
+  ) {
+    const cv = decayConfig.category_overrides[category];
+    if (Number.isInteger(cv) && cv >= 1) halfLife = cv;
+  }
+  if (Number.isInteger(fm.decay_half_life_days) && fm.decay_half_life_days >= 1) {
+    halfLife = fm.decay_half_life_days;
+  }
+
+  return Math.round(confidence * Math.pow(0.5, ageDays / halfLife) * 1000) / 1000;
+}
+
+/**
+ * Check whether a spawn description matches any trigger in a trigger_actions array.
+ * Returns the first matching trigger string, or null if no match.
+ *
+ * Matching is case-insensitive substring match. Each trigger in the array is a
+ * plain substring (no regex). This is Option A from the DESIGN spec.
+ *
+ * @param {string} description - The Agent() spawn description.
+ * @param {string[]} triggerActions - Array of trigger substrings from frontmatter.
+ * @returns {string|null} First matching trigger, or null.
+ */
+function matchTriggerActions(description, triggerActions) {
+  if (!Array.isArray(triggerActions) || triggerActions.length === 0) return null;
+  const descLower = description.toLowerCase();
+  for (const trigger of triggerActions) {
+    if (typeof trigger === 'string' && trigger.length > 0) {
+      if (descLower.includes(trigger.toLowerCase())) {
+        return trigger;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Run the anti-pattern advisory gate for a pending Agent() spawn.
+ *
+ * Returns an object with `additionalContext` and audit metadata if an advisory
+ * should be shown, or null if no advisory is appropriate.
+ *
+ * Contract: NEVER throws. Any internal error returns null (fail-open).
+ *
+ * @param {string} cwd
+ * @param {object} toolInput - Parsed tool_input from the hook payload.
+ * @param {string} orchFile - Path to current-orchestration.json.
+ * @returns {{ additionalContext: string, orchestration_id: string, pattern_name: string,
+ *             agent_type: string, matched_trigger: string, decayed_confidence: number }|null}
+ */
+function runAntiPatternAdvisoryGate(cwd, toolInput, orchFile) {
+  // Load gate config — fail-open if absent/malformed.
+  const gateConfig = loadAntiPatternGateConfig(cwd);
+
+  // Kill flag: skip entire scan.
+  if (!gateConfig.enabled) return null;
+
+  const patternsDir = path.join(cwd, '.orchestray', 'patterns');
+  if (!fs.existsSync(patternsDir)) return null;
+
+  // Read anti-pattern files.
+  let patternFiles;
+  try {
+    patternFiles = fs.readdirSync(patternsDir).filter(f => f.startsWith('anti-pattern-') && f.endsWith('.md'));
+  } catch (_) {
+    return null;
+  }
+  if (patternFiles.length === 0) return null;
+
+  // Extract spawn context.
+  const agentType = toolInput.subagent_type || '';
+  const description = toolInput.description || (toolInput.prompt && toolInput.prompt.substring(0, 500)) || '';
+  if (!description) return null;
+
+  // Read orchestration_id for skip-enriched filter.
+  let orchId = null;
+  try {
+    if (fs.existsSync(orchFile)) {
+      const orchContent = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
+      orchId = (orchContent && orchContent.orchestration_id) || null;
+    }
+  } catch (_) { /* fail-open */ }
+
+  const decayConfig = loadPatternDecayConfig(cwd);
+  const threshold = typeof gateConfig.min_decayed_confidence === 'number'
+    ? gateConfig.min_decayed_confidence
+    : 0.65;
+
+  // Score all matching anti-patterns.
+  const candidates = [];
+  for (const filename of patternFiles) {
+    const filepath = path.join(patternsDir, filename);
+    let content;
+    try {
+      content = fs.readFileSync(filepath, 'utf8');
+    } catch (_) {
+      process.stderr.write('[orchestray] gate-agent-spawn: could not read anti-pattern file ' + filename + '\n');
+      continue;
+    }
+
+    let fm;
+    try {
+      fm = parsePatternFrontmatter(content);
+    } catch (_) {
+      process.stderr.write('[orchestray] gate-agent-spawn: failed to parse frontmatter in ' + filename + '\n');
+      continue;
+    }
+    if (!fm) continue;
+
+    // Option A: require trigger_actions field.
+    const triggerActions = fm.trigger_actions;
+    if (!Array.isArray(triggerActions) || triggerActions.length === 0) {
+      // Anti-pattern has no trigger_actions — skip (safe fallback, not an error).
+      continue;
+    }
+
+    // Require confidence field; skip if missing or invalid (malformed pattern guard).
+    const rawConfidence = fm.confidence;
+    if (typeof rawConfidence !== 'number' || isNaN(rawConfidence)) {
+      process.stderr.write('[orchestray] gate-agent-spawn: anti-pattern ' + filename + ' has no numeric confidence field; skipping\n');
+      continue;
+    }
+
+    // Check trigger match.
+    const matchedTrigger = matchTriggerActions(description, triggerActions);
+    if (!matchedTrigger) continue;
+
+    // Compute decayed_confidence using W9's formula.
+    const decayedConfidence = computeDecayedConfidence(rawConfidence, fm, filepath, decayConfig);
+
+    // Threshold filter.
+    if (decayedConfidence < threshold) continue;
+
+    // Skip-enriched filter: suppress if contextual-mismatch was recorded for this pattern.
+    const patternName = fm.name || filename.replace(/\.md$/, '');
+    if (orchId && isPatternSkipEnrichedMismatch(cwd, orchId, patternName)) continue;
+
+    // Compute specificity score: longer triggers are more specific (better match quality).
+    const triggerSpecificity = matchedTrigger.length / 100; // normalize to ~0.0..1.0 range
+    const score = decayedConfidence * (1 + triggerSpecificity);
+
+    candidates.push({
+      fm,
+      patternName,
+      matchedTrigger,
+      decayedConfidence,
+      score,
+      content,
+    });
+  }
+
+  if (candidates.length === 0) return null;
+
+  // Cap at 1 advisory (per DESIGN §Risks + config). Take the highest-scoring match.
+  const cap = Math.min(
+    Number.isInteger(gateConfig.max_advisories_per_spawn) && gateConfig.max_advisories_per_spawn >= 1
+      ? gateConfig.max_advisories_per_spawn
+      : 1,
+    1  // hard cap — never go above 1 regardless of config
+  );
+  candidates.sort((a, b) => b.score - a.score);
+  const top = candidates.slice(0, cap)[0];
+
+  // Build advisory text.
+  const approach = (top.fm.approach || top.fm.description || '').toString().trim();
+  const advisory = [
+    '[Anti-pattern advisory] The following anti-pattern applies to this task:',
+    '',
+    top.patternName + ': ' + (top.fm.description || '').toString().trim(),
+    '',
+    'Why it matched: trigger "' + top.matchedTrigger + '" matched in spawn description (decayed_confidence=' + top.decayedConfidence + ')',
+    '',
+    'Mitigation: ' + (approach || 'See pattern file for details.'),
+  ].join('\n');
+
+  return {
+    additionalContext: advisory,
+    orchestration_id: orchId || 'unknown',
+    pattern_name: top.patternName,
+    agent_type: agentType,
+    matched_trigger: top.matchedTrigger,
+    decayed_confidence: top.decayedConfidence,
+  };
+}

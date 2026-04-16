@@ -1125,6 +1125,144 @@ function validatePatternDecayConfig(obj) {
 }
 
 // ---------------------------------------------------------------------------
+// anti_pattern_gate section defaults and loader (W12 v2.0.18)
+//
+// anti_pattern_gate.enabled — boolean, default true.
+//   Kill flag: set to false to disable the entire anti-pattern advisory gate
+//   without touching other gate logic in gate-agent-spawn.js.
+//
+// anti_pattern_gate.min_decayed_confidence — number 0.0..1.0, default 0.65.
+//   Only anti-patterns with decayed_confidence >= this threshold emit advisories.
+//   Lowering to 0 means all matching anti-patterns advise (not recommended);
+//   raising to 1 effectively disables the gate.
+//
+// anti_pattern_gate.max_advisories_per_spawn — positive integer, default 1.
+//   Maximum number of advisory injections per single Agent() spawn. Capped at 1
+//   per the DESIGN §Risks mitigation. Do NOT raise above 1 without a rethink —
+//   the additionalContext injection path is designed for a single focused advisory.
+//
+// The gate is a hot-path component (PreToolUse hook); this block is loaded on
+// every spawn. Fail-open contract: any missing/malformed block returns defaults.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_ANTI_PATTERN_GATE = Object.freeze({
+  /**
+   * Kill flag: false disables the entire anti-pattern matching logic.
+   * Other gate-agent-spawn.js logic continues to run.
+   * @type {boolean}
+   */
+  enabled: true,
+  /**
+   * Minimum decayed_confidence for an anti-pattern match to emit an advisory.
+   * Range 0.0..1.0. Default 0.65 per DESIGN §Risks.
+   * @type {number}
+   */
+  min_decayed_confidence: 0.65,
+  /**
+   * Maximum advisories injected per single Agent() spawn. MUST remain 1.
+   * Future-proofing key: do not raise without a rethink of the injection path.
+   * @type {number}
+   */
+  max_advisories_per_spawn: 1,
+});
+
+/**
+ * Load and merge the anti_pattern_gate block from <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing/malformed returns DEFAULT_ANTI_PATTERN_GATE so the
+ * gate activates at safe defaults rather than crashing.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ enabled: boolean, min_decayed_confidence: number, max_advisories_per_spawn: number }}
+ */
+function loadAntiPatternGateConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_ANTI_PATTERN_GATE);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_ANTI_PATTERN_GATE);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_ANTI_PATTERN_GATE);
+  }
+
+  const fromFile = parsed.anti_pattern_gate;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_ANTI_PATTERN_GATE);
+  }
+
+  const merged = Object.assign({}, DEFAULT_ANTI_PATTERN_GATE, sanitizeConfig(fromFile));
+
+  try {
+    const result = validateAntiPatternGateConfig(merged);
+    if (!result.valid) {
+      logStderr('anti_pattern_gate config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) {
+    // Validation must never throw
+  }
+
+  return {
+    enabled: typeof merged.enabled === 'boolean' ? merged.enabled : DEFAULT_ANTI_PATTERN_GATE.enabled,
+    min_decayed_confidence: typeof merged.min_decayed_confidence === 'number'
+      ? merged.min_decayed_confidence
+      : DEFAULT_ANTI_PATTERN_GATE.min_decayed_confidence,
+    max_advisories_per_spawn: Number.isInteger(merged.max_advisories_per_spawn) && merged.max_advisories_per_spawn >= 1
+      ? merged.max_advisories_per_spawn
+      : DEFAULT_ANTI_PATTERN_GATE.max_advisories_per_spawn,
+  };
+}
+
+/**
+ * Validate an anti_pattern_gate config object.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateAntiPatternGateConfig(obj) {
+  const errors = [];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['anti_pattern_gate must be an object'] };
+  }
+
+  if ('enabled' in obj && typeof obj.enabled !== 'boolean') {
+    errors.push(
+      'anti_pattern_gate.enabled must be a boolean — got ' + JSON.stringify(obj.enabled)
+    );
+  }
+
+  if ('min_decayed_confidence' in obj) {
+    const v = obj.min_decayed_confidence;
+    if (typeof v !== 'number' || v < 0 || v > 1) {
+      errors.push(
+        'anti_pattern_gate.min_decayed_confidence must be a number 0.0..1.0 — got ' + JSON.stringify(v)
+      );
+    }
+  }
+
+  if ('max_advisories_per_spawn' in obj) {
+    const v = obj.max_advisories_per_spawn;
+    if (!Number.isInteger(v) || v < 1) {
+      errors.push(
+        'anti_pattern_gate.max_advisories_per_spawn must be a positive integer — got ' + JSON.stringify(v)
+      );
+    }
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
+// ---------------------------------------------------------------------------
 // adaptive_verbosity section defaults and loader (T22 v2.0.17)
 //
 // adaptive_verbosity.enabled — boolean, default false.
@@ -1408,5 +1546,9 @@ module.exports = {
   DEFAULT_PATTERN_DECAY,
   loadPatternDecayConfig,
   validatePatternDecayConfig,
+  // W12 (v2.0.18): anti-pattern pre-spawn advisory gate
+  DEFAULT_ANTI_PATTERN_GATE,
+  loadAntiPatternGateConfig,
+  validateAntiPatternGateConfig,
   logStderr,
 };

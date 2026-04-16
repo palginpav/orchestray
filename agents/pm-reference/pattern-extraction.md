@@ -64,6 +64,12 @@ reported, confidence feedback applied via Section 22c).
    last_applied: null
    created_from: {orch-id}
    description: {one-line description for matching}
+   # trigger_actions (anti-patterns only, W12 LL3): list of substring triggers.
+   # When present, gate-agent-spawn.js matches incoming Agent() descriptions
+   # against these strings (case-insensitive substring). Anti-patterns without
+   # this field will NOT fire advisory injections. Omit for positive patterns.
+   trigger_actions:
+     - {keyword or short phrase from the anti-pattern's context}
    ---
 
    # Pattern: {Human Readable Name}
@@ -77,6 +83,15 @@ reported, confidence feedback applied via Section 22c).
    ## Evidence
    - {orch-id}: {brief outcome description}
    ```
+
+   **`trigger_actions` guidance (anti-patterns only):**
+   - Add 2–8 short substrings that appear in typical Agent() spawn descriptions
+     that would trigger this anti-pattern (e.g., `"whole codebase"`, `"full audit"`,
+     `"review entire"`).
+   - Matching is case-insensitive substring. No regex — keep triggers simple.
+   - Without `trigger_actions`, the pattern is still used by `pattern_find` for
+     the PM's pre-decomposition consultation but will NOT emit advisory injections
+     to spawned agents. This is intentional (safe fallback, not an error).
 
 6. **Report to user:** Show a brief table of extracted patterns (Name, Category,
    Confidence). If no patterns extracted, say "No novel patterns identified from
@@ -285,3 +300,61 @@ Run AFTER writing new patterns in Section 22a step 7.
 4. Log: "Pruned {N} low-value patterns: {names}"
 5. Append `pattern_pruned` event(s) to the current audit trail (if still active)
    or note in output.
+
+---
+
+## 22e. Anti-Pattern Pre-Spawn Advisory Gate (W12 LL3)
+
+The pre-spawn advisory gate (`bin/gate-agent-spawn.js`) automatically injects
+anti-pattern advisories into the context of spawned agents when a high-confidence
+match is detected. This is a **passive, advisory-only** gate — it never blocks spawns.
+
+### How it works (OQ-TB-1 choice)
+
+1. On every `Agent()` spawn, the hook reads all `anti-pattern-*.md` files from
+   `.orchestray/patterns/`.
+2. For each anti-pattern that has a `trigger_actions` field, it performs a
+   **case-insensitive substring match** against the spawn's `description` string.
+3. Matching patterns are filtered by `decayed_confidence >= 0.65` (config-tunable
+   via `anti_pattern_gate.min_decayed_confidence`).
+4. Patterns suppressed by a recent `pattern_skip_enriched` event with
+   `skip_category: contextual-mismatch` for the same orchestration are excluded.
+5. The **top 1** match (by `decayed_confidence × trigger_specificity`) emits an
+   `additionalContext` hook response — Claude Code injects this into the spawned
+   agent's context transparently.
+6. An `anti_pattern_advisory_shown` audit event is emitted for every advisory.
+
+### Advisory format (what the spawned agent sees)
+
+```
+[Anti-pattern advisory] The following anti-pattern applies to this task:
+
+<pattern-name>: <description>
+
+Why it matched: trigger "<trigger>" matched in spawn description (decayed_confidence=<N>)
+
+Mitigation: <approach field from the pattern>
+```
+
+Spawned agents should check for this marker and take it into account when planning.
+See `agent-common-protocol.md §Anti-pattern Advisory` for the agent-side contract.
+
+### Kill flag
+
+Set `anti_pattern_gate.enabled: false` in `.orchestray/config.json` to disable the
+entire gate. All other gate-agent-spawn.js logic continues unchanged. Default: `true`.
+
+### Config keys
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `anti_pattern_gate.enabled` | `true` | Kill flag for the entire advisory gate |
+| `anti_pattern_gate.min_decayed_confidence` | `0.65` | Minimum threshold for advisory emission |
+| `anti_pattern_gate.max_advisories_per_spawn` | `1` | Hard cap per spawn (do not raise) |
+
+### Suppression via skip_enriched
+
+If the PM records `pattern_record_skip_reason` with `skip_category: contextual-mismatch`
+for a pattern in the current orchestration, that pattern's advisory will be suppressed
+on subsequent spawns within the same orchestration. This prevents the gate from
+re-advising on patterns the PM has already explicitly evaluated and dismissed.

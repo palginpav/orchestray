@@ -1200,3 +1200,59 @@ the kill switch is currently "open" (activated without a subsequent deactivation
 
 **Schema stability:** additive only. Consumers that do not recognise this event type
 should ignore it. New fields will only be added as optional.
+
+---
+
+## Anti-Pattern Advisory Shown Event
+
+IMPLEMENTED (as of v2.0.18, W12 LL3). Emitted by `bin/gate-agent-spawn.js` (PreToolUse
+hook) when the anti-pattern advisory gate fires an advisory injection into a spawned
+agent's context via the `additionalContext` hook mechanism.
+
+This event is **advisory-only** — it never correlates with a blocked spawn. Every
+emission of this event means an `additionalContext` string was injected and the spawn
+was allowed (exit 0). Grep anchor: `W12-LL3-anti-pattern-advisory`.
+
+Written via `atomicAppendJsonl` to `.orchestray/audit/events.jsonl`. Fail-open: if the
+write fails, a stderr warning is emitted and the spawn proceeds normally.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "anti_pattern_advisory_shown",
+  "orchestration_id": "<current orch id, or 'unknown' if no orchestration active>",
+  "pattern_name": "<kebab-case name from pattern frontmatter>",
+  "agent_type": "<subagent_type from the Agent() call, or empty string>",
+  "matched_trigger": "<the trigger_actions substring that matched>",
+  "decayed_confidence": "<number 0.0..1.0, computed at advisory time>"
+}
+```
+
+**Fields:**
+- `timestamp`: ISO 8601 UTC string. Canonical field name — not `ts`.
+- `type`: Always `"anti_pattern_advisory_shown"`. Canonical field name — not `event`.
+- `orchestration_id`: The current orchestration's ID, or `"unknown"` when no
+  orchestration file is readable.
+- `pattern_name`: The `name` field from the anti-pattern's frontmatter, or the
+  filename stem if `name` is absent.
+- `agent_type`: The `subagent_type` from the `Agent()` tool input. Empty string when
+  the spawn did not specify a type.
+- `matched_trigger`: The specific `trigger_actions` substring that produced the match.
+  Useful for tuning: if this trigger fires false-positives, tighten the pattern's
+  `trigger_actions` list.
+- `decayed_confidence`: The `decayed_confidence` computed at advisory time using W9's
+  exponential decay formula. Always >= `anti_pattern_gate.min_decayed_confidence` (0.65
+  by default) since sub-threshold matches are filtered before emission.
+
+**Consumer guidance:**
+- Analytics: count advisories per pattern to identify which anti-patterns are most
+  frequently triggered and whether the threshold is calibrated correctly.
+- Suppression audit: join with `pattern_skip_enriched` events (W11) on
+  `(orchestration_id, pattern_name)` to see how often a PM explicitly dismisses an
+  advisory via `contextual-mismatch` skip — a high dismiss rate on a specific pattern
+  suggests either a too-broad `trigger_actions` list or a threshold that's too low.
+- Per-agent breakdown: group by `agent_type` to see which agent roles most often
+  receive advisory context.
+
+**Schema stability:** additive only. Consumers that do not recognise this event type
+should ignore it. New fields will only be added as optional.

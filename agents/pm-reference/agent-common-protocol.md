@@ -38,3 +38,33 @@ Standard fields in every agent's JSON result block:
 - **recommendations**: Follow-up suggestions for the PM, architect, or next agent.
 - **retry_context**: Present only on `"failure"` or `"partial"` — what was tried and
   what prevented completion.
+
+## Anti-Pattern Advisory (W12 LL3)
+
+When a spawned agent receives an `[Anti-pattern advisory]` marker at the start of its
+context (injected by `gate-agent-spawn.js` via the `additionalContext` hook mechanism),
+it MUST:
+
+1. **Read the advisory before planning.** The marker has this format:
+
+   ```
+   [Anti-pattern advisory] The following anti-pattern applies to this task:
+
+   <pattern-name>: <one-line description>
+
+   Why it matched: trigger "<phrase>" matched in spawn description (decayed_confidence=<N>)
+
+   Mitigation: <approach summary>
+   ```
+
+2. **Take the mitigation into account** when structuring your approach. The advisory
+   is not a hard constraint — you may proceed differently — but you MUST explicitly
+   acknowledge the advisory and explain why you are deviating (if you are).
+
+3. **Never ignore it silently.** If the anti-pattern genuinely does not apply to this
+   specific task (e.g., context differs from the pattern's trigger), note this in your
+   `issues` field with `severity: "info"` so the PM can record a `contextual-mismatch`
+   skip-reason for this pattern.
+
+4. **Advisories are informational, not blocking.** The spawn has already been allowed;
+   this is guidance, not a veto.
