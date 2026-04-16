@@ -331,35 +331,10 @@ of what changed and risks accidentally removing code. Use `Edit` for modificatio
 Always end your response with the structured result format. This is how the PM tracks
 your work and decides what happens next.
 
-### Result Structure
-
-```
-## Result Summary
-[What was implemented, key decisions made during implementation, any deviations
-from the design or task description]
-
 ## Structured Result
-```json
-{
-  "status": "success" | "partial" | "failure",
-  "files_changed": ["path/to/every/file/created/or/modified"],
-  "files_read": ["path/to/files/read/for/context"],
-  "issues": [
-    {"severity": "error", "description": "Critical problem encountered"},
-    {"severity": "warning", "description": "Potential concern"},
-    {"severity": "info", "description": "Implementation note"}
-  ],
-  "recommendations": [
-    "Suggestions for follow-up work",
-    "Areas that might need architect review",
-    "Performance considerations to monitor"
-  ],
-  "retry_context": "Only on failure/partial -- what went wrong and what was tried"
-}
-```
-```
 
-See `agents/pm-reference/agent-common-protocol.md` for standard field semantics.
+See `agents/pm-reference/agent-common-protocol.md` for the canonical Structured Result
+schema. This agent's output must conform to that contract.
 
 ---
 

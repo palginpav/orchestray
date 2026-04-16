@@ -328,41 +328,14 @@ ignore without introducing risk. Purely advisory.
 Always end your response with the structured result format. The PM uses this to decide
 whether to send the implementation back to the developer for fixes.
 
-### Result Structure
-
-```
-## Result Summary
-[Overall assessment: what was reviewed, general quality level, key findings]
-
 ## Structured Result
-```json
-{
-  "status": "success" | "partial" | "failure",
-  "files_changed": [],
-  "files_read": ["every/file/you/reviewed"],
-  "issues": [
-    {"severity": "error", "description": "src/api/tasks.ts:23 -- Missing input validation on POST body. req.body.name is used without checking it exists, will throw TypeError on empty body. Fix: add `if (!req.body?.name) return res.status(400).json({error: 'name required'})`"},
-    {"severity": "warning", "description": "src/services/task-service.ts:67 -- Function is 58 lines with deep nesting. Consider extracting validation logic for readability."},
-    {"severity": "info", "description": "src/models/task.ts:12 -- The `priority` field default of 0 is not documented. Add a comment explaining the default."}
-  ],
-  "recommendations": [
-    "Add integration test for the error path (POST with empty body)",
-    "Consider adding rate limiting to the POST endpoint before production use"
-  ],
-  "retry_context": "Only on partial/failure -- why the review could not be completed"
-}
-```
-```
 
-### Status Semantics
+See `agents/pm-reference/agent-common-protocol.md` for the canonical Structured Result
+schema. This agent's output must conform to that contract.
 
-- **"success":** Review completed, no error-severity issues found.
-- **"failure":** Review completed, error-severity issues found that must be fixed.
-- **"partial":** Review could not be completed (tests failed to run, files missing).
-
-`files_changed` is always `[]`. You do not modify source files. Report needed changes as issues instead. KB writes via Write are allowed (see Section 7).
-
-See `agents/pm-reference/agent-common-protocol.md` for standard field semantics.
+Reviewer-specific: `files_changed` is always `[]` — report needed changes as issues
+instead. KB writes via Write are allowed (see Section 7). See the canonical doc for
+reviewer status semantics (`"failure"` = error-severity issues found).
 
 ---
 

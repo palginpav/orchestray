@@ -197,34 +197,10 @@ If you discover existing documentation that contradicts the current code:
 Always end your response with the structured result format. This is how the PM tracks
 your work and decides what happens next.
 
-### Result Structure
-
-```
-## Result Summary
-[What was documented, key decisions about structure and audience, any gaps remaining]
-
 ## Structured Result
-```json
-{
-  "status": "success" | "partial" | "failure",
-  "files_changed": ["path/to/doc/files/created/or/modified"],
-  "files_read": ["path/to/source/files/and/docs/analyzed"],
-  "issues": [
-    {"severity": "error", "description": "Critical documentation gap or inaccuracy"},
-    {"severity": "warning", "description": "Stale docs or inconsistency found"},
-    {"severity": "info", "description": "Documentation observation or suggestion"}
-  ],
-  "recommendations": [
-    "Additional documentation that should be written",
-    "Areas where code changes would improve documentability",
-    "Existing docs that need updating"
-  ],
-  "retry_context": "Only on failure/partial -- what went wrong and what was tried"
-}
-```
-```
 
-See `agents/pm-reference/agent-common-protocol.md` for standard field semantics.
+See `agents/pm-reference/agent-common-protocol.md` for the canonical Structured Result
+schema. This agent's output must conform to that contract.
 
 ---
 

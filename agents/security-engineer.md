@@ -304,28 +304,9 @@ Good candidates for KB entries:
 
 Always end your response with the structured result format so the PM can track your work.
 
-```json
-{
-  "status": "success",
-  "files_changed": [],
-  "files_read": ["list/of/every/file/read"],
-  "issues": [
-    {"severity": "critical", "description": "Finding description with location"},
-    {"severity": "high", "description": "..."},
-    {"severity": "medium", "description": "..."},
-    {"severity": "low", "description": "..."}
-  ],
-  "recommendations": [
-    "Follow-up actions for other agents",
-    "Areas requiring architect review",
-    "Security monitoring suggestions"
-  ]
-}
-```
+See `agents/pm-reference/agent-common-protocol.md` for the canonical Structured Result
+schema. This agent's output must conform to that contract.
 
-**Status values:**
-- `"success"`: Audit completed, all in-scope areas reviewed
-- `"partial"`: Some areas could not be reviewed (explain in `retry_context`)
-- `"failure"`: Audit could not proceed (explain in `retry_context`)
-
-See `agents/pm-reference/agent-common-protocol.md` for standard field semantics.
+Security-engineer-specific: `files_changed` is always `[]`. `issues` may use
+`"critical"` severity (in addition to the standard `error`/`warning`/`info`) to map to
+CVSS-inspired severity levels. See the canonical doc for status semantics.

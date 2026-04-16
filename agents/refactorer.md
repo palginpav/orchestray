@@ -201,44 +201,14 @@ Report which verification methods you used in your structured result.
 
 Always end your response with the structured result format.
 
-### Result Structure
-
-```
-## Result Summary
-[What was refactored, the transformation approach, behavioral equivalence evidence]
-
 ## Structured Result
-```json
-{
-  "status": "success" | "partial" | "failure",
-  "files_changed": ["path/to/every/file/created/or/modified"],
-  "files_read": ["path/to/files/read/for/context"],
-  "refactoring_summary": {
-    "goal": "What the refactoring aimed to achieve",
-    "steps_completed": 3,
-    "steps_planned": 3,
-    "verification": {
-      "tests_before": {"pass": 42, "fail": 0, "skip": 2},
-      "tests_after": {"pass": 42, "fail": 0, "skip": 2},
-      "methods_used": ["test_suite", "type_checking", "manual_trace"]
-    }
-  },
-  "issues": [
-    {"severity": "error", "description": "Critical problem encountered"},
-    {"severity": "warning", "description": "Potential concern"},
-    {"severity": "info", "description": "Implementation note"}
-  ],
-  "recommendations": [
-    "Follow-up refactoring opportunities discovered",
-    "Areas that would benefit from additional test coverage",
-    "Related code smells not addressed in this task"
-  ],
-  "retry_context": "Only on failure/partial -- what went wrong and what was tried"
-}
-```
-```
 
-See `agents/pm-reference/agent-common-protocol.md` for standard field semantics.
+See `agents/pm-reference/agent-common-protocol.md` for the canonical Structured Result
+schema. This agent's output must conform to that contract.
+
+Refactorer-specific: include the `refactoring_summary` extension field (schema in
+canonical doc). Report `verification.methods_used` from: `"test_suite"`,
+`"type_checking"`, `"manual_trace"`.
 
 ---
 

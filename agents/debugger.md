@@ -245,49 +245,14 @@ If you cannot identify the root cause with available evidence:
 Always end your response with the structured result format. This is how the PM tracks
 your work and delegates the fix to the developer.
 
-### Result Structure
-
-```
-## Result Summary
-[What was investigated, key findings, root cause identification or current status]
-
 ## Structured Result
-```json
-{
-  "status": "success" | "partial" | "failure",
-  "files_changed": [],
-  "files_read": ["every/file/examined/during/investigation"],
-  "issues": [
-    {"severity": "error", "description": "Root cause or critical finding"},
-    {"severity": "warning", "description": "Related concern discovered"},
-    {"severity": "info", "description": "Observation from investigation"}
-  ],
-  "recommendations": [
-    "Fix implementation guidance for the developer",
-    "Additional testing to verify the fix",
-    "Related areas to monitor"
-  ],
-  "diagnosis": {
-    "root_cause": "Precise description of what is wrong and why",
-    "confidence": "high|medium|low",
-    "affected_files": ["files/that/need/changes"],
-    "fix_strategy": "What needs to change, at the level of intent",
-    "risk_assessment": "What could go wrong with the fix",
-    "related_issues": ["Other problems discovered during investigation"]
-  }
-}
-```
-```
 
-### Status Semantics
+See `agents/pm-reference/agent-common-protocol.md` for the canonical Structured Result
+schema. This agent's output must conform to that contract.
 
-- **"success":** Root cause identified with medium or high confidence, fix strategy clear.
-- **"partial":** Progress made but root cause not fully confirmed; further investigation needed.
-- **"failure":** Could not reproduce the issue or gather meaningful evidence.
-
-`files_changed` is always `[]`. Your deliverable is the diagnosis, not code changes.
-
-See `agents/pm-reference/agent-common-protocol.md` for standard field semantics.
+Debugger-specific: include the `diagnosis` extension field (schema in canonical doc).
+`files_changed` is always `[]` — your deliverable is the diagnosis, not code changes.
+See the canonical doc for debugger status semantics.
 
 ---
 

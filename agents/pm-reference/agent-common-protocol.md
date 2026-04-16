@@ -39,6 +39,46 @@ Standard fields in every agent's JSON result block:
 - **retry_context**: Present only on `"failure"` or `"partial"` — what was tried and
   what prevented completion.
 
+### Role-Specific Extension Fields
+
+Certain agent roles add extra top-level fields to the standard contract. These are
+required only for the named role; all other agents omit them.
+
+- **`diagnosis`** (debugger only): Object with `root_cause` (string), `confidence`
+  (`"high"` | `"medium"` | `"low"`), `affected_files` (string[]),
+  `fix_strategy` (string), `risk_assessment` (string), and
+  `related_issues` (string[]). `files_changed` is always `[]` for the debugger.
+
+- **`test_summary`** (tester only): Object with `tests_added` (number),
+  `tests_modified` (number), and `coverage_gaps_remaining` (string[]).
+  Always include this field — use `0` / `[]` when nothing was added.
+
+- **`invention_summary`** (inventor only): Object with `name` (string),
+  `verdict` (`"recommend"` | `"recommend_with_caveats"` | `"do_not_recommend"`),
+  `prototype_location` (string), and `novel_vs_existing` (string — one-sentence
+  justification of custom over existing tools).
+
+- **`refactoring_summary`** (refactorer only): Object with `goal` (string),
+  `steps_completed` (number), `steps_planned` (number), and `verification`
+  (object with `tests_before`, `tests_after` — each `{pass, fail, skip}` — and
+  `methods_used` string[]). Report which verification methods were used:
+  `"test_suite"`, `"type_checking"`, `"manual_trace"`.
+
+### Role-Specific Status Semantics
+
+- **reviewer** — `"success"` = no error-severity issues found; `"failure"` = one or more
+  error-severity issues found (review complete, implementation must be fixed);
+  `"partial"` = review could not complete (files missing, tests would not run).
+  `files_changed` is always `[]`.
+
+- **debugger** — `"success"` = root cause identified (medium or high confidence), fix
+  strategy clear; `"partial"` = progress made but root cause unconfirmed; `"failure"` =
+  could not reproduce or gather evidence. `files_changed` is always `[]`.
+
+- **security-engineer** — `"success"` = audit completed, all in-scope areas reviewed;
+  `"partial"` = some areas could not be reviewed; `"failure"` = audit could not proceed.
+  `files_changed` is always `[]`.
+
 ## Anti-Pattern Advisory (W12 LL3)
 
 When a spawned agent receives an `[Anti-pattern advisory]` marker at the start of its

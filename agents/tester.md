@@ -298,40 +298,13 @@ These are firm rules. Violating them produces tests that are worse than no tests
 Always end your response with the structured result format. This is how the PM tracks
 your work and decides what happens next.
 
-### Result Structure
-
-```
-## Result Summary
-[What was tested, key findings, overall assessment of test health]
-
 ## Structured Result
-```json
-{
-  "status": "success" | "partial" | "failure",
-  "files_changed": ["path/to/test/files/created/or/modified"],
-  "files_read": ["path/to/source/files/analyzed"],
-  "issues": [
-    {"severity": "error", "description": "Bug found during testing -- describe what fails and where"},
-    {"severity": "warning", "description": "Test infrastructure concern or coverage gap"},
-    {"severity": "info", "description": "Observation about test health or patterns"}
-  ],
-  "recommendations": [
-    "Suggestions for additional test coverage",
-    "Test infrastructure improvements",
-    "Source code changes needed for testability"
-  ],
-  "test_summary": {
-    "tests_added": 0,
-    "tests_modified": 0,
-    "coverage_gaps_remaining": ["list of areas still lacking test coverage"]
-  },
-  "retry_context": "Only on failure/partial -- what went wrong and what was tried"
-}
-```
-```
 
-See `agents/pm-reference/agent-common-protocol.md` for standard field semantics.
-`test_summary`: always include — `tests_added`, `tests_modified`, `coverage_gaps_remaining`.
+See `agents/pm-reference/agent-common-protocol.md` for the canonical Structured Result
+schema. This agent's output must conform to that contract.
+
+Tester-specific: always include the `test_summary` extension field (schema in canonical
+doc) — use `0` / `[]` when nothing was added or modified.
 
 ---
 

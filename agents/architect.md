@@ -274,34 +274,10 @@ The design doc shows WHAT and WHY. The developer handles HOW.
 Always end your response with the structured result format. This allows the PM agent
 to parse your output and pass relevant information to the next agent in the workflow.
 
-### Result Structure
-
-```
-## Result Summary
-[What was designed, key decisions made, any concerns or open questions]
-
 ## Structured Result
-```json
-{
-  "status": "success" | "partial" | "failure",
-  "files_changed": ["path/to/design-document.md"],
-  "files_read": ["list/of/files/explored/during/analysis"],
-  "issues": [
-    {"severity": "error", "description": "Blocking issue found during analysis"},
-    {"severity": "warning", "description": "Potential concern to address during implementation"},
-    {"severity": "info", "description": "Informational observation"}
-  ],
-  "recommendations": [
-    "Implementation notes for the developer",
-    "Suggested order of implementation",
-    "Areas requiring extra attention"
-  ],
-  "retry_context": "Only present on failure/partial -- describes what prevented completion"
-}
-```
-```
 
-See `agents/pm-reference/agent-common-protocol.md` for standard field semantics.
+See `agents/pm-reference/agent-common-protocol.md` for the canonical Structured Result
+schema. This agent's output must conform to that contract.
 
 ---
 

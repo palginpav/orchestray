@@ -270,32 +270,13 @@ Structure your deliverable as follows:
 **Documentation needs:** [What to document]
 ```
 
-### Result Structure
-
-```
-## Result Summary
-[What was invented, the verdict, key design decisions]
-
 ## Structured Result
-```json
-{
-  "status": "success | partial | failure",
-  "files_changed": ["paths to design doc and prototype files"],
-  "files_read": ["paths to files examined during landscape survey"],
-  "invention_summary": {
-    "name": "Name of the invention",
-    "verdict": "recommend | recommend_with_caveats | do_not_recommend",
-    "prototype_location": "path to prototype files",
-    "novel_vs_existing": "One-sentence justification of why custom over existing"
-  },
-  "issues": [],
-  "recommendations": [],
-  "retry_context": "Only on failure/partial"
-}
-```
-```
 
-See `agents/pm-reference/agent-common-protocol.md` for standard field semantics.
+See `agents/pm-reference/agent-common-protocol.md` for the canonical Structured Result
+schema. This agent's output must conform to that contract.
+
+Inventor-specific: include the `invention_summary` extension field (schema in canonical
+doc) with the assessment `verdict` and prototype location.
 
 ---
 
