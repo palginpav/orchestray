@@ -136,3 +136,45 @@ New tests: +62 (`tests/telemetry/*.test.js`). Net gain from baseline: +62.
    "new bin script" W-items should budget 2–3× production LOC for test coverage.
 
 5. **VF2 ran in parallel with W7's documenter, but required a post-hoc CHANGELOG amend because W7 finished before VF2 published its summary. For this pattern to ship cleanly without amends, W7 must wait for VF2's summary artifact before writing the CHANGELOG, OR the PM must reliably re-trigger the documenter after parallel fix-waves land.**
+
+---
+
+## v2.0.20 hotfix
+
+**Release date:** 2026-04-16
+**Trigger:** user-facing report — status bar never rendered after `npx orchestray --global`.
+**Design doc:** `.orchestray/kb/artifacts/2019_1-bugfix-statusline-design.md`
+
+**Root cause:** v2.0.19 wired `bin/statusline.js` via the plugin `settings.json`'s
+`statusLine` key. Claude Code plugin `settings.json` honors only `agent` and
+`subagentStatusLine` — the `statusLine` block was silently discarded. The session-scope
+`statusLine` must live in user-scope `~/.claude/settings.json`, not the plugin bundle.
+
+**Why 2.0.20 and not 2.0.19.1:** `2.0.19.1` is not valid semver and `npm publish` would
+reject it. Per the design doc's Ambiguity #2, PM resolved to a standard patch bump
+(2.0.20) so `npm install orchestray@latest` actually fetches the fix; the CHANGELOG
+title captures the "v2.0.19 statusLine hotfix" narrative explicitly.
+
+**Fixes shipped:**
+
+| Fix | File(s) | Change |
+|-----|---------|--------|
+| A | `settings.json` | `statusLine` block → `subagentStatusLine` block |
+| B | `README.md` | New "Post-install: enable context status bar" subsection |
+| C | `bin/reset-context-telemetry.js` | SessionStart advisory when user-scope `statusLine` missing |
+| Side | `.claude-plugin/plugin.json` | `2.0.17` → `2.0.20` (corrects v2.0.18-era drift) |
+
+**Calibration note:** `bin/statusline.js` required zero code change. Both `statusLine`
+and `subagentStatusLine` payload shapes provide the four fields it actually reads
+(`session_id`, `model.id`, `model.display_name`, `cwd`). Future releases should
+explicitly list the stdin fields consumed in any new hook/render contract so "which
+payload shape does this work with?" is answerable without re-reading the source.
+
+**Process note:** the v2.0.19 pre-ship audit loop did not include a manual smoke test
+of "fresh install renders status bar." Adding a "plugin settings.json key coverage"
+check to future release audits (grep `settings.json` for any key outside the
+Claude Code plugin-scope allowlist) would have caught this.
+
+**Tests:** new `tests/regression/v2019_1-statusline-wiring.test.js` pins the
+`subagentStatusLine` shape and asserts version parity across `package.json` and
+`.claude-plugin/plugin.json`.

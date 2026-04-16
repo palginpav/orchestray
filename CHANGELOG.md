@@ -3,6 +3,39 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.20] - 2026-04-16
+
+### Theme: "v2.0.19 statusLine hotfix"
+
+Surgical patch. No feature work. Fixes a plugin-scope `settings.json` mis-wiring shipped
+in 2.0.19 that prevented the context status bar from rendering on fresh installs.
+
+### Fixed
+
+- **Plugin `settings.json` wiring** — replaced the dead `statusLine` block (silently
+  ignored by Claude Code in plugin scope) with a `subagentStatusLine` block pointing
+  at the same `bin/statusline.js` script. Plugin `settings.json` honors only `agent`
+  and `subagentStatusLine`; the session-scope `statusLine` must live in user-scope
+  `~/.claude/settings.json`. This change silently activates the subagent status bar
+  for every install with no user action.
+- **README post-install instructions** — added a "Post-install: enable context status
+  bar" subsection under Install with a copy-pasteable `~/.claude/settings.json`
+  snippet. Calls out that `${CLAUDE_PLUGIN_ROOT}` does NOT expand in user-scope
+  settings and that the absolute path must be substituted.
+- **SessionStart advisory hint** — `bin/reset-context-telemetry.js` now emits a
+  one-line stderr hint when `~/.claude/settings.json` is missing a `statusLine`
+  entry pointing at Orchestray's `statusline.js`. Advisory-only; never auto-modifies
+  user settings. Silent on fresh installs where the file does not yet exist, on
+  unreadable/malformed user settings, or when the entry already points at Orchestray.
+- **`.claude-plugin/plugin.json` version drift** — bumped from `2.0.17` (stale since
+  v2.0.18) to `2.0.20` to match `package.json`.
+
+### Unchanged
+
+- `bin/statusline.js` is shape-agnostic — it reads only `session_id`, `model.id`,
+  `model.display_name`, and `cwd` off stdin, fields that both `statusLine` and
+  `subagentStatusLine` payload shapes provide. No script change required.
+
 ## [2.0.19] - 2026-04-16
 
 ### Theme: "Context status bar + six-angle context-saving bundle"

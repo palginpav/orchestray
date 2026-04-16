@@ -85,6 +85,43 @@ npx orchestray --local
 npx orchestray --global --uninstall
 ```
 
+### Post-install: enable context status bar (optional)
+
+The context status bar for the **main session** is opt-in and lives in your user-scope
+Claude Code settings (not the plugin). Plugin settings cannot register a session-scope
+`statusLine` — Claude Code only honors `agent` and `subagentStatusLine` from a plugin.
+(Subagent status is already wired automatically by Orchestray's plugin settings — no
+action needed for that.)
+
+To enable the **main session** status bar, add the following to
+`~/.claude/settings.json` (create the file if it does not exist). Replace
+`/ABSOLUTE/PATH/TO/orchestray` with the real install path — `${CLAUDE_PLUGIN_ROOT}`
+does NOT expand in user-scope settings, so you must substitute the absolute path to
+the plugin's `bin/statusline.js`.
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "node /ABSOLUTE/PATH/TO/orchestray/bin/statusline.js",
+    "padding": 0
+  }
+}
+```
+
+For a global install via `npx orchestray --global`, the path is usually
+`~/.claude/plugins/orchestray/bin/statusline.js`; resolve the absolute form with
+`readlink -f ~/.claude/plugins/orchestray/bin/statusline.js` on Linux/macOS.
+
+Restart Claude Code after the edit. Verify with:
+
+```bash
+echo '{}' | node /ABSOLUTE/PATH/TO/orchestray/bin/statusline.js --dump-stdin
+```
+
+To disable without removing the entry, set `context_statusbar.enabled: false` in
+`.orchestray/config.json`.
+
 ## Usage
 
 Orchestray activates automatically on complex prompts. You can also use slash commands:

@@ -12,9 +12,38 @@
  * W3 / v2.0.19 Pillar B.
  */
 
+const fs   = require('node:fs');
+const os   = require('node:os');
+const path = require('node:path');
+
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { resetCache }     = require('./_lib/context-telemetry-cache');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
+
+/**
+ * v2.0.20 hotfix: advisory check that the user-scope `~/.claude/settings.json`
+ * wires Orchestray's `bin/statusline.js` as the session-scope `statusLine`.
+ * Plugin `settings.json` cannot register a session-scope statusLine (Claude Code
+ * honors only `agent` and `subagentStatusLine` from a plugin), so the main-session
+ * status bar requires a user-scope entry. Fail-open: any error → silent skip.
+ */
+function checkUserStatusline() {
+  try {
+    const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+    if (!fs.existsSync(settingsPath)) return;
+    let raw;
+    try { raw = fs.readFileSync(settingsPath, 'utf8'); } catch (_) { return; }
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch (_) { return; }
+    const cmd = parsed && parsed.statusLine && typeof parsed.statusLine.command === 'string'
+      ? parsed.statusLine.command
+      : '';
+    if (cmd.indexOf('orchestray/bin/statusline.js') !== -1) return;
+    process.stderr.write('orchestray: status bar not configured at user scope — see README "Enable context status bar"\n');
+  } catch (_) {
+    // fail-open; never crash SessionStart
+  }
+}
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -37,6 +66,7 @@ process.stdin.on('end', () => {
     const sessId = event.session_id || null;
 
     resetCache(cwd, sessId);
+    checkUserStatusline();
   } catch (err) {
     process.stderr.write('[orchestray] reset-context-telemetry: error (fail-open): ' + String(err) + '\n');
   }
