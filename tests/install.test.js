@@ -724,3 +724,86 @@ describe('per-file manifest uninstall (DEF-5)', () => {
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// INC-2018-02: fresh-install config must include v2.0.18 config blocks
+// ---------------------------------------------------------------------------
+
+describe('fresh-install config seeds v2.0.18 blocks (INC-2018-02)', () => {
+
+  test('seeded config.json contains all four v2.0.18 top-level blocks', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const result = spawnSync(process.execPath, [SCRIPT, '--local'], {
+        encoding: 'utf8',
+        timeout: 15000,
+        cwd: tmpDir,
+        env: { ...process.env },
+      });
+      assert.equal(result.status, 0, `install failed: ${result.stderr}`);
+
+      const configPath = path.join(tmpDir, '.orchestray', 'config.json');
+      assert.ok(fs.existsSync(configPath), '.orchestray/config.json must be created on fresh install');
+
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+
+      // pattern_decay (W9)
+      assert.ok(cfg.pattern_decay, 'config.json must contain pattern_decay block');
+      assert.equal(typeof cfg.pattern_decay.default_half_life_days, 'number',
+        'pattern_decay.default_half_life_days must be a number');
+      assert.equal(cfg.pattern_decay.default_half_life_days, 90);
+      assert.ok(
+        cfg.pattern_decay.category_overrides !== null &&
+        typeof cfg.pattern_decay.category_overrides === 'object' &&
+        !Array.isArray(cfg.pattern_decay.category_overrides),
+        'pattern_decay.category_overrides must be an object'
+      );
+
+      // anti_pattern_gate (W12)
+      assert.ok(cfg.anti_pattern_gate, 'config.json must contain anti_pattern_gate block');
+      assert.equal(cfg.anti_pattern_gate.enabled, true);
+      assert.equal(cfg.anti_pattern_gate.min_decayed_confidence, 0.65);
+      assert.equal(cfg.anti_pattern_gate.max_advisories_per_spawn, 1);
+
+      // state_sentinel (W7)
+      assert.ok(cfg.state_sentinel, 'config.json must contain state_sentinel block');
+      assert.equal(cfg.state_sentinel.pause_check_enabled, true);
+      assert.equal(cfg.state_sentinel.cancel_grace_seconds, 5);
+
+      // redo_flow (W8)
+      assert.ok(cfg.redo_flow, 'config.json must contain redo_flow block');
+      assert.equal(cfg.redo_flow.max_cascade_depth, 10);
+      assert.equal(cfg.redo_flow.commit_prefix, 'redo');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('pre-existing config.json is not overwritten by re-install', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      // First install — seeds config.
+      spawnSync(process.execPath, [SCRIPT, '--local'], {
+        encoding: 'utf8', timeout: 15000, cwd: tmpDir, env: { ...process.env },
+      });
+
+      // Mutate the config to simulate operator customization.
+      const configPath = path.join(tmpDir, '.orchestray', 'config.json');
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      cfg.pattern_decay.default_half_life_days = 999;
+      fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n');
+
+      // Second install — must NOT overwrite operator changes.
+      spawnSync(process.execPath, [SCRIPT, '--local'], {
+        encoding: 'utf8', timeout: 15000, cwd: tmpDir, env: { ...process.env },
+      });
+
+      const cfgAfter = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      assert.equal(cfgAfter.pattern_decay.default_half_life_days, 999,
+        'pre-existing config must not be overwritten on re-install');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+});

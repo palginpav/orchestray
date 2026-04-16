@@ -136,6 +136,11 @@ function makeDir({
       '.cache-choreography-seeded-2017',
       '.pm-prompt-variant-seeded-2017',
       '.adaptive-verbosity-seeded-2017',
+      // v2.0.18 additions (W9/W12/W7/W8)
+      '.pattern-decay-seeded-2018',
+      '.anti-pattern-gate-seeded-2018',
+      '.state-sentinel-seeded-2018',
+      '.redo-flow-seeded-2018',
     ]) {
       fs.writeFileSync(path.join(stateDir, name), '', 'utf8');
     }
@@ -1069,6 +1074,206 @@ describe('A2-B1 regression: D3 preserves operator hard_block:false', () => {
       false,
       'D3 idempotency: hard_block:false must survive two sweep runs'
     );
+  });
+
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// v2.0.18 config block seeds (W9/W12/W7/W8)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Build an isolated dir with all sentinels EXCEPT the four 2018 block sentinels,
+ * so only W9/W12/W7/W8 run during the test sweep.
+ *
+ * @param {object|null} config - Content for .orchestray/config.json (null = omit)
+ */
+function make2018SeedDir(config = null) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-2018-seed-test-'));
+  cleanup.push(dir);
+
+  const orchestrayDir = path.join(dir, '.orchestray');
+  const stateDir = path.join(orchestrayDir, 'state');
+  fs.mkdirSync(stateDir, { recursive: true });
+
+  if (config !== null) {
+    fs.writeFileSync(
+      path.join(orchestrayDir, 'config.json'),
+      JSON.stringify(config, null, 2) + '\n',
+      'utf8'
+    );
+  }
+
+  // Suppress all pre-2018 migrations so they don't mutate config during test.
+  for (const name of [
+    '.config-migrated-2013',
+    '.mcp-checkpoint-migrated-2013',
+    '.pricing-table-migrated-2014',
+    '.enforcement-keys-migrated-2015',
+    '.kb-write-migrated-2015',
+    '.pattern-record-app-migrated-2016',
+    '.cost-budget-enforcement-migrated-2016',
+    '.v2016-new-tools-seeded',
+    '.pattern-deprecate-seeded-2016',
+    '.pattern-record-app-stage-c-2016',
+    '.cost-budget-hard-block-default-2016',
+    '.cost-budget-reserve-ttl-seed-2016',
+    '.routing-gate-auto-seed-2016',
+    '.v2017-experiments-seeded',
+    '.metrics-query-seeded-2017',
+    '.cache-choreography-seeded-2017',
+    '.pm-prompt-variant-seeded-2017',
+    '.adaptive-verbosity-seeded-2017',
+  ]) {
+    fs.writeFileSync(path.join(stateDir, name), '', 'utf8');
+  }
+
+  return dir;
+}
+
+describe('v2.0.18 config block seeds (W9 pattern_decay / W12 anti_pattern_gate / W7 state_sentinel / W8 redo_flow)', () => {
+
+  test('FC3c-A: all four blocks are seeded when config has none of them', () => {
+    const dir = make2018SeedDir({ mcp_enforcement: { global_kill_switch: false } });
+    const sessionId = 'fc3c-a-' + Date.now();
+    const lockPath = lockPathFor(sessionId);
+    cleanup.push(lockPath);
+    try { fs.unlinkSync(lockPath); } catch (_e) {}
+
+    run(dir, { session_id: sessionId });
+
+    const cfg = readConfig(dir);
+
+    // pattern_decay
+    assert.ok(cfg.pattern_decay, 'pattern_decay block must be seeded');
+    assert.equal(cfg.pattern_decay.default_half_life_days, 90, 'default_half_life_days must be 90');
+    assert.deepEqual(cfg.pattern_decay.category_overrides, {}, 'category_overrides must be empty object');
+
+    // anti_pattern_gate
+    assert.ok(cfg.anti_pattern_gate, 'anti_pattern_gate block must be seeded');
+    assert.equal(cfg.anti_pattern_gate.enabled, true, 'anti_pattern_gate.enabled must be true');
+    assert.equal(cfg.anti_pattern_gate.min_decayed_confidence, 0.65);
+    assert.equal(cfg.anti_pattern_gate.max_advisories_per_spawn, 1);
+
+    // state_sentinel
+    assert.ok(cfg.state_sentinel, 'state_sentinel block must be seeded');
+    assert.equal(cfg.state_sentinel.pause_check_enabled, true);
+    assert.equal(cfg.state_sentinel.cancel_grace_seconds, 5);
+
+    // redo_flow
+    assert.ok(cfg.redo_flow, 'redo_flow block must be seeded');
+    assert.equal(cfg.redo_flow.max_cascade_depth, 10);
+    assert.equal(cfg.redo_flow.commit_prefix, 'redo');
+  });
+
+  test('FC3c-B: each block emits a config_key_seeded audit event', () => {
+    const dir = make2018SeedDir({ mcp_enforcement: { global_kill_switch: false } });
+    const sessionId = 'fc3c-b-' + Date.now();
+    const lockPath = lockPathFor(sessionId);
+    cleanup.push(lockPath);
+    try { fs.unlinkSync(lockPath); } catch (_e) {}
+
+    run(dir, { session_id: sessionId });
+
+    const eventsPath = path.join(dir, '.orchestray', 'audit', 'events.jsonl');
+    assert.ok(fs.existsSync(eventsPath), 'events.jsonl must exist after seeding');
+    const rows = fs.readFileSync(eventsPath, 'utf8')
+      .split('\n')
+      .filter(l => l.trim())
+      .map(l => JSON.parse(l))
+      .filter(e => e.type === 'config_key_seeded');
+
+    const seededKeys = rows.map(e => e.key);
+    assert.ok(seededKeys.includes('pattern_decay'), 'pattern_decay seed event must be emitted');
+    assert.ok(seededKeys.includes('anti_pattern_gate'), 'anti_pattern_gate seed event must be emitted');
+    assert.ok(seededKeys.includes('state_sentinel'), 'state_sentinel seed event must be emitted');
+    assert.ok(seededKeys.includes('redo_flow'), 'redo_flow seed event must be emitted');
+  });
+
+  test('FC3c-C: existing blocks are preserved, no event emitted for them', () => {
+    const dir = make2018SeedDir({
+      pattern_decay: { default_half_life_days: 30, category_overrides: { custom: 14 } },
+      anti_pattern_gate: { enabled: false, min_decayed_confidence: 0.9, max_advisories_per_spawn: 2 },
+      state_sentinel: { pause_check_enabled: false, cancel_grace_seconds: 10 },
+      redo_flow: { max_cascade_depth: 5, commit_prefix: 'fix' },
+    });
+    const sessionId = 'fc3c-c-' + Date.now();
+    const lockPath = lockPathFor(sessionId);
+    cleanup.push(lockPath);
+    try { fs.unlinkSync(lockPath); } catch (_e) {}
+
+    run(dir, { session_id: sessionId });
+
+    const cfg = readConfig(dir);
+
+    // All blocks must keep their operator-specified values.
+    assert.equal(cfg.pattern_decay.default_half_life_days, 30, 'operator pattern_decay must be preserved');
+    assert.deepEqual(cfg.pattern_decay.category_overrides, { custom: 14 });
+    assert.equal(cfg.anti_pattern_gate.enabled, false, 'operator anti_pattern_gate must be preserved');
+    assert.equal(cfg.anti_pattern_gate.min_decayed_confidence, 0.9);
+    assert.equal(cfg.state_sentinel.pause_check_enabled, false, 'operator state_sentinel must be preserved');
+    assert.equal(cfg.state_sentinel.cancel_grace_seconds, 10);
+    assert.equal(cfg.redo_flow.max_cascade_depth, 5, 'operator redo_flow must be preserved');
+    assert.equal(cfg.redo_flow.commit_prefix, 'fix');
+
+    // No seed events should have been emitted.
+    const eventsPath = path.join(dir, '.orchestray', 'audit', 'events.jsonl');
+    if (fs.existsSync(eventsPath)) {
+      const seedEvents = fs.readFileSync(eventsPath, 'utf8')
+        .split('\n')
+        .filter(l => l.trim())
+        .map(l => JSON.parse(l))
+        .filter(e => e.type === 'config_key_seeded');
+      assert.equal(seedEvents.length, 0, 'no seed events must be emitted when all blocks are present');
+    }
+  });
+
+  test('FC3c-D: second sweep run does not emit duplicate events (idempotent)', () => {
+    const dir = make2018SeedDir({ mcp_enforcement: { global_kill_switch: false } });
+
+    // First run (seeds all four blocks).
+    const sessionId1 = 'fc3c-d-s1-' + Date.now();
+    const lockPath1 = lockPathFor(sessionId1);
+    cleanup.push(lockPath1);
+    try { fs.unlinkSync(lockPath1); } catch (_e) {}
+    run(dir, { session_id: sessionId1 });
+
+    const eventsPath = path.join(dir, '.orchestray', 'audit', 'events.jsonl');
+    const countAfterFirst = fs.existsSync(eventsPath)
+      ? fs.readFileSync(eventsPath, 'utf8').split('\n').filter(l => l.trim() && JSON.parse(l).type === 'config_key_seeded').length
+      : 0;
+    assert.equal(countAfterFirst, 4, 'exactly four seed events after first run');
+
+    // Second run — all sentinels now exist; must be a complete no-op.
+    const sessionId2 = 'fc3c-d-s2-' + Date.now();
+    const lockPath2 = lockPathFor(sessionId2);
+    cleanup.push(lockPath2);
+    try { fs.unlinkSync(lockPath2); } catch (_e) {}
+    run(dir, { session_id: sessionId2 });
+
+    const countAfterSecond = fs.readFileSync(eventsPath, 'utf8')
+      .split('\n')
+      .filter(l => l.trim() && JSON.parse(l).type === 'config_key_seeded')
+      .length;
+    assert.equal(countAfterSecond, 4, 'no additional seed events after second run (idempotent)');
+  });
+
+  test('FC3c-E: sweep is a no-op when config.json is missing', () => {
+    // Config absent — helpers must touch sentinels and not crash.
+    const dir = make2018SeedDir(null);
+    const sessionId = 'fc3c-e-' + Date.now();
+    const lockPath = lockPathFor(sessionId);
+    cleanup.push(lockPath);
+    try { fs.unlinkSync(lockPath); } catch (_e) {}
+
+    const { status } = run(dir, { session_id: sessionId });
+    assert.equal(status, 0, 'must exit 0 even when config is missing');
+
+    // Sentinels must be created so we don't retry.
+    assert.ok(sentinelExists(dir, '.pattern-decay-seeded-2018'), 'W9 sentinel must be created');
+    assert.ok(sentinelExists(dir, '.anti-pattern-gate-seeded-2018'), 'W12 sentinel must be created');
+    assert.ok(sentinelExists(dir, '.state-sentinel-seeded-2018'), 'W7 sentinel must be created');
+    assert.ok(sentinelExists(dir, '.redo-flow-seeded-2018'), 'W8 sentinel must be created');
   });
 
 });

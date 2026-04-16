@@ -38,6 +38,10 @@ const {
   DEFAULT_V2017_EXPERIMENTS,
   DEFAULT_CACHE_CHOREOGRAPHY,
   DEFAULT_ADAPTIVE_VERBOSITY,
+  DEFAULT_PATTERN_DECAY,
+  DEFAULT_ANTI_PATTERN_GATE,
+  DEFAULT_STATE_SENTINEL,
+  DEFAULT_REDO_FLOW,
 } = require('./_lib/config-schema');
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
@@ -1529,6 +1533,348 @@ function runT12CacheChoreographySeed(cwd, stateDir, sentinelPath) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// W9 (2018): pattern_decay config block seed
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run the W9 pattern_decay seed.
+ *
+ * If the `pattern_decay` top-level block is absent, adds it with canonical
+ * defaults (default_half_life_days: 90, category_overrides: {}). If the block
+ * is present, preserves it entirely (operator intent).
+ *
+ * Idempotent sentinel: .orchestray/state/.pattern-decay-seeded-2018
+ * Mirrors the pattern used by runT12CacheChoreographySeed.
+ *
+ * @param {string} cwd          - Project root (absolute)
+ * @param {string} stateDir     - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to sentinel file
+ */
+function runW9PatternDecaySeed(cwd, stateDir, sentinelPath) {
+  // W9-pattern-decay-seed-2018
+  if (existsSilent(sentinelPath)) return;
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_e) {
+    // Config missing — fresh install will get the block via install.js; touch sentinel.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    // Malformed JSON — leave file untouched; fail-open.
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // If block already present, preserve user's values — no-op.
+  if (
+    parsed.pattern_decay &&
+    typeof parsed.pattern_decay === 'object' &&
+    !Array.isArray(parsed.pattern_decay)
+  ) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Block absent — seed with canonical defaults. Use empty object for
+  // category_overrides (rather than null) so operators can add entries directly.
+  parsed.pattern_decay = {
+    default_half_life_days: DEFAULT_PATTERN_DECAY.default_half_life_days,
+    category_overrides: {},
+  };
+
+  const tmpPath = configPath + '.w9-2018-pattern-decay-tmp';
+  try {
+    const out = JSON.stringify(parsed, null, 2) + '\n';
+    fs.writeFileSync(tmpPath, out, 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (_e) {
+    try { fs.unlinkSync(tmpPath); } catch (_e2) {}
+    return;
+  }
+
+  try {
+    const auditDir = path.join(cwd, '.orchestray', 'audit');
+    fs.mkdirSync(auditDir, { recursive: true });
+    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), {
+      timestamp: new Date().toISOString(),
+      type: 'config_key_seeded',
+      key: 'pattern_decay',
+      release: '2.0.18',
+    });
+  } catch (_e) {
+    // Audit failure is non-fatal.
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// W12 (2018): anti_pattern_gate config block seed
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run the W12 anti_pattern_gate seed.
+ *
+ * If the `anti_pattern_gate` top-level block is absent, adds it with canonical
+ * defaults (enabled: true, min_decayed_confidence: 0.65, max_advisories_per_spawn: 1).
+ * If the block is present, preserves it entirely (operator intent).
+ *
+ * Idempotent sentinel: .orchestray/state/.anti-pattern-gate-seeded-2018
+ * Mirrors the pattern used by runT12CacheChoreographySeed.
+ *
+ * @param {string} cwd          - Project root (absolute)
+ * @param {string} stateDir     - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to sentinel file
+ */
+function runW12AntiPatternGateSeed(cwd, stateDir, sentinelPath) {
+  // W12-anti-pattern-gate-seed-2018
+  if (existsSilent(sentinelPath)) return;
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // If block already present, preserve user's values — no-op.
+  if (
+    parsed.anti_pattern_gate &&
+    typeof parsed.anti_pattern_gate === 'object' &&
+    !Array.isArray(parsed.anti_pattern_gate)
+  ) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Block absent — seed with canonical defaults.
+  parsed.anti_pattern_gate = Object.assign({}, DEFAULT_ANTI_PATTERN_GATE);
+
+  const tmpPath = configPath + '.w12-2018-anti-pattern-gate-tmp';
+  try {
+    const out = JSON.stringify(parsed, null, 2) + '\n';
+    fs.writeFileSync(tmpPath, out, 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (_e) {
+    try { fs.unlinkSync(tmpPath); } catch (_e2) {}
+    return;
+  }
+
+  try {
+    const auditDir = path.join(cwd, '.orchestray', 'audit');
+    fs.mkdirSync(auditDir, { recursive: true });
+    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), {
+      timestamp: new Date().toISOString(),
+      type: 'config_key_seeded',
+      key: 'anti_pattern_gate',
+      release: '2.0.18',
+    });
+  } catch (_e) {
+    // Audit failure is non-fatal.
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// W7 (2018): state_sentinel config block seed
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run the W7 state_sentinel seed.
+ *
+ * If the `state_sentinel` top-level block is absent, adds it with canonical
+ * defaults (pause_check_enabled: true, cancel_grace_seconds: 5). If the block
+ * is present, preserves it entirely (operator intent).
+ *
+ * Idempotent sentinel: .orchestray/state/.state-sentinel-seeded-2018
+ * Mirrors the pattern used by runT22AdaptiveVerbositySeed.
+ *
+ * @param {string} cwd          - Project root (absolute)
+ * @param {string} stateDir     - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to sentinel file
+ */
+function runW7StateSentinelSeed(cwd, stateDir, sentinelPath) {
+  // W7-state-sentinel-seed-2018
+  if (existsSilent(sentinelPath)) return;
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // If block already present, preserve user's values — no-op.
+  if (
+    parsed.state_sentinel &&
+    typeof parsed.state_sentinel === 'object' &&
+    !Array.isArray(parsed.state_sentinel)
+  ) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Block absent — seed with canonical defaults.
+  parsed.state_sentinel = Object.assign({}, DEFAULT_STATE_SENTINEL);
+
+  const tmpPath = configPath + '.w7-2018-state-sentinel-tmp';
+  try {
+    const out = JSON.stringify(parsed, null, 2) + '\n';
+    fs.writeFileSync(tmpPath, out, 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (_e) {
+    try { fs.unlinkSync(tmpPath); } catch (_e2) {}
+    return;
+  }
+
+  try {
+    const auditDir = path.join(cwd, '.orchestray', 'audit');
+    fs.mkdirSync(auditDir, { recursive: true });
+    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), {
+      timestamp: new Date().toISOString(),
+      type: 'config_key_seeded',
+      key: 'state_sentinel',
+      release: '2.0.18',
+    });
+  } catch (_e) {
+    // Audit failure is non-fatal.
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// W8 (2018): redo_flow config block seed
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run the W8 redo_flow seed.
+ *
+ * If the `redo_flow` top-level block is absent, adds it with canonical
+ * defaults (max_cascade_depth: 10, commit_prefix: "redo"). If the block
+ * is present, preserves it entirely (operator intent).
+ *
+ * Idempotent sentinel: .orchestray/state/.redo-flow-seeded-2018
+ * Mirrors the pattern used by runT22AdaptiveVerbositySeed.
+ *
+ * @param {string} cwd          - Project root (absolute)
+ * @param {string} stateDir     - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to sentinel file
+ */
+function runW8RedoFlowSeed(cwd, stateDir, sentinelPath) {
+  // W8-redo-flow-seed-2018
+  if (existsSilent(sentinelPath)) return;
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // If block already present, preserve user's values — no-op.
+  if (
+    parsed.redo_flow &&
+    typeof parsed.redo_flow === 'object' &&
+    !Array.isArray(parsed.redo_flow)
+  ) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Block absent — seed with canonical defaults.
+  parsed.redo_flow = Object.assign({}, DEFAULT_REDO_FLOW);
+
+  const tmpPath = configPath + '.w8-2018-redo-flow-tmp';
+  try {
+    const out = JSON.stringify(parsed, null, 2) + '\n';
+    fs.writeFileSync(tmpPath, out, 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (_e) {
+    try { fs.unlinkSync(tmpPath); } catch (_e2) {}
+    return;
+  }
+
+  try {
+    const auditDir = path.join(cwd, '.orchestray', 'audit');
+    fs.mkdirSync(auditDir, { recursive: true });
+    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), {
+      timestamp: new Date().toISOString(),
+      type: 'config_key_seeded',
+      key: 'redo_flow',
+      release: '2.0.18',
+    });
+  } catch (_e) {
+    // Audit failure is non-fatal.
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // FC3b (2018): legacy key auto-strip
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -1789,6 +2135,14 @@ function main() {
       const cacheChoreographySeedSentinel = path.join(stateDir, '.cache-choreography-seeded-2017');
       // T22 (v2.0.17): adaptive_verbosity config block seed.
       const adaptiveVerbositySeedSentinel = path.join(stateDir, '.adaptive-verbosity-seeded-2017');
+      // W9 (v2.0.18): pattern_decay config block seed.
+      const patternDecaySeedSentinel = path.join(stateDir, '.pattern-decay-seeded-2018');
+      // W12 (v2.0.18): anti_pattern_gate config block seed.
+      const antiPatternGateSeedSentinel = path.join(stateDir, '.anti-pattern-gate-seeded-2018');
+      // W7 (v2.0.18): state_sentinel config block seed.
+      const stateSentinelSeedSentinel = path.join(stateDir, '.state-sentinel-seeded-2018');
+      // W8 (v2.0.18): redo_flow config block seed.
+      const redoFlowSeedSentinel = path.join(stateDir, '.redo-flow-seeded-2018');
 
       // ── W8: config migration ────────────────────────────────────────────────
       try {
@@ -1940,6 +2294,42 @@ function main() {
       // that lack the block. Fresh installs get it via install.js.
       try {
         runT22AdaptiveVerbositySeed(cwd, stateDir, adaptiveVerbositySeedSentinel);
+      } catch (_e) {
+        // Fail-open.
+      }
+
+      // ── W9 (2018): pattern_decay config block seed ────────────────────────
+      // Seeds pattern_decay: { default_half_life_days: 90, category_overrides: {} }
+      // on existing installs that lack the block. Fresh installs get it via install.js.
+      try {
+        runW9PatternDecaySeed(cwd, stateDir, patternDecaySeedSentinel);
+      } catch (_e) {
+        // Fail-open.
+      }
+
+      // ── W12 (2018): anti_pattern_gate config block seed ───────────────────
+      // Seeds anti_pattern_gate defaults on existing installs that lack the block.
+      // Fresh installs get it via install.js.
+      try {
+        runW12AntiPatternGateSeed(cwd, stateDir, antiPatternGateSeedSentinel);
+      } catch (_e) {
+        // Fail-open.
+      }
+
+      // ── W7 (2018): state_sentinel config block seed ───────────────────────
+      // Seeds state_sentinel defaults on existing installs that lack the block.
+      // Fresh installs get it via install.js.
+      try {
+        runW7StateSentinelSeed(cwd, stateDir, stateSentinelSeedSentinel);
+      } catch (_e) {
+        // Fail-open.
+      }
+
+      // ── W8 (2018): redo_flow config block seed ────────────────────────────
+      // Seeds redo_flow defaults on existing installs that lack the block.
+      // Fresh installs get it via install.js.
+      try {
+        runW8RedoFlowSeed(cwd, stateDir, redoFlowSeedSentinel);
       } catch (_e) {
         // Fail-open.
       }

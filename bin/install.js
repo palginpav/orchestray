@@ -56,6 +56,39 @@ const FRESH_INSTALL_ADAPTIVE_VERBOSITY = {
   reducer_on_late_phase: 0.4,
 };
 
+// Default pattern_decay block for fresh installs.
+// Uses canonical defaults from DEFAULT_PATTERN_DECAY in config-schema.js.
+// Per v2018 W9: global half-life 90 days, no per-category overrides.
+const FRESH_INSTALL_PATTERN_DECAY = {
+  default_half_life_days: 90,
+  category_overrides: {},
+};
+
+// Default anti_pattern_gate block for fresh installs.
+// Uses canonical defaults from DEFAULT_ANTI_PATTERN_GATE in config-schema.js.
+// Per v2018 W12: enabled by default, threshold 0.65, max 1 advisory per spawn.
+const FRESH_INSTALL_ANTI_PATTERN_GATE = {
+  enabled: true,
+  min_decayed_confidence: 0.65,
+  max_advisories_per_spawn: 1,
+};
+
+// Default state_sentinel block for fresh installs.
+// Uses canonical defaults from DEFAULT_STATE_SENTINEL in config-schema.js.
+// Per v2018 W7: pause check enabled, 5-second cancel grace window.
+const FRESH_INSTALL_STATE_SENTINEL = {
+  pause_check_enabled: true,
+  cancel_grace_seconds: 5,
+};
+
+// Default redo_flow block for fresh installs.
+// Uses canonical defaults from DEFAULT_REDO_FLOW in config-schema.js.
+// Per v2018 W8: max cascade depth 10, commit prefix "redo".
+const FRESH_INSTALL_REDO_FLOW = {
+  max_cascade_depth: 10,
+  commit_prefix: 'redo',
+};
+
 // Default cost_budget_check config block for fresh installs.
 // Pricing values mirror bin/collect-agent-metrics.js PRICING constant.
 // Per 2014-scope-proposal.md §W3 AC4.
@@ -372,6 +405,14 @@ function install(targetDir) {
       cache_choreography: FRESH_INSTALL_CACHE_CHOREOGRAPHY,
       // T22 (v2.0.17): adaptive_verbosity — response-length budget (opt-in; also requires experiment flag)
       adaptive_verbosity: FRESH_INSTALL_ADAPTIVE_VERBOSITY,
+      // W9 (v2.0.18): pattern_decay — confidence half-life for pattern matching
+      pattern_decay: FRESH_INSTALL_PATTERN_DECAY,
+      // W12 (v2.0.18): anti_pattern_gate — pre-spawn advisory gate config
+      anti_pattern_gate: FRESH_INSTALL_ANTI_PATTERN_GATE,
+      // W7 (v2.0.18): state_sentinel — pause/cancel sentinel config
+      state_sentinel: FRESH_INSTALL_STATE_SENTINEL,
+      // W8 (v2.0.18): redo_flow — cascade depth + commit prefix config
+      redo_flow: FRESH_INSTALL_REDO_FLOW,
     };
     try {
       fs.mkdirSync(orchStateDir, { recursive: true });
