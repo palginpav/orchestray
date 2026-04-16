@@ -17,8 +17,15 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 - **Cache-Aware Tool Result Compaction (R14)** — a `PreToolUse:Read` hook (`bin/context-shield.js`) denies re-reads of the same `(file_path, mtime, size)` triple within a session with no `offset`/`limit` change, eliminating cache-replay token waste; re-reads with an explicit offset/limit or after on-disk changes are always allowed; disable per-session via `shield.r14_dedup_reads.enabled: false`
 - **Cache-choreographed PM prompt** — `agents/pm.md` organised into Block A (immutable prefix) / breakpoint sentinel / Block B (semi-stable) / Block C (tail); a `UserPromptSubmit` hook detects prefix drift and emits an audit event; opt-in pre-commit guard prevents accidental Block A edits
 - **Cache-hit and cost telemetry** — per-spawn and per-PM-turn metrics recorded in `agent_metrics.jsonl`; cache-hit sparklines, cost-delta vs frozen baseline, and active-experiment state visible in `/orchestray:analytics`
-- **Lean PM prompt** — `agents/pm.md` trimmed ~12% (WASTE-tier only: inline config JSON, duplicated warnings, navigation breadcrumbs); rollback without git history via `pm_prompt_variant: "fat"` (reads committed `agents/pm.old.md`)
+- **Lean PM prompt** — `agents/pm.md` trimmed ~12% (WASTE-tier only: inline config JSON, duplicated warnings, navigation breadcrumbs); pre-strip rollback scaffolding (`pm_prompt_variant`, `pm.old.md`) retired in v2.0.18
 - **Adaptive response-length budgets** — reviewer and architect delegation templates include a `response_budget` line scaled to remaining cost margin; reviewer floor at 600 tokens prevents quality-signal truncation (opt-in experiment, default OFF)
+- **Live-tail observability** — `/orchestray:watch` polls the current orchestration and renders a compact agent-status table; `/orchestray:state peek` gives a read-only snapshot at any time
+- **Mid-flight operator control** — `/orchestray:state pause` blocks further spawns between groups; `/orchestray:state cancel` triggers a clean abort with state archival; `/orchestray:state gc` archives or discards leaked state dirs
+- **W-item replay** — `/orchestray:redo <W-id> [--cascade]` re-runs a single step or its full dependent closure; batch confirmation upfront
+- **Plan preview** — `/orchestray:run --preview` shows the decomposition and cost estimate before any agents are spawned
+- **Honest pattern confidence** — `pattern_find` returns `decayed_confidence` and `age_days`; patterns lose confidence over time so stale advice is surfaced clearly, not silently applied
+- **Counterfactual skip signal** — `pattern_record_skip_reason` captures structured `match_quality` and `skip_category` for every skipped pattern, enabling retrospective loop-quality analysis
+- **Anti-pattern advisory gate** — before each agent spawn, matching anti-patterns are injected as advisories into the spawned agent's context; advisory-only, never blocks
 - **Pre-spawn cost projection** — `cost_budget_check` MCP tool projects the cost of a proposed `Agent()` spawn against configured caps (`max_cost_usd`, `daily_cost_limit_usd`) before execution; pricing table lives in `.orchestray/config.json` under `mcp_server.cost_budget_check.pricing_table` (single source of truth shared with `bin/collect-agent-metrics.js`)
 - **PM-driven per-orchestration `events.jsonl` rotation** — at orchestration completion, the PM cleanup sequence atomically archives audit rows for the completed orchestration to `.orchestray/history/<orch-id>/events.jsonl`, keeping the live file bounded; the rotation is crash-safe via a three-state sentinel and idempotent on restart
 - **Explore dispatch coverage** — Claude Code's built-in `Explore` and `Task` dispatches are now gated alongside `Agent()` spawns so their model routing decisions are enforced and audited
@@ -81,8 +88,15 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | Command | What it does |
 |---------|-------------|
 | `/orchestray:run [task]` | Manually trigger orchestration |
+| `/orchestray:run --preview` | Show decomposition plan and cost estimate before executing |
 | `/orchestray:issue [#/url]` | Orchestrate from a GitHub issue |
 | `/orchestray:status` | Check orchestration state |
+| `/orchestray:watch` | Live-tail the current orchestration (refreshes until complete) |
+| `/orchestray:state peek` | Read-only snapshot of active and leaked state dirs |
+| `/orchestray:state gc` | Archive or discard leaked state dirs |
+| `/orchestray:state pause` | Pause between groups (blocks further spawns) |
+| `/orchestray:state cancel` | Clean-abort the current orchestration with state archival |
+| `/orchestray:redo <W-id>` | Re-run a W-item; use `--cascade` to re-run dependents too |
 | `/orchestray:config` | View/modify settings |
 | `/orchestray:report` | Generate audit report with cost breakdown |
 | `/orchestray:playbooks` | Manage project-specific playbooks |
@@ -173,14 +187,8 @@ routing_gate.auto_seed_on_miss               When true, an Agent() spawn with no
 shield.r14_dedup_reads.enabled    Enable R14 cache-replay dedup for Read tool calls (default: true);
                                   set false to disable the context-shield hook without removing it
 
-pm_prompt_variant                 "lean" (default) loads the stripped agents/pm.md; "fat" loads agents/pm.old.md
-                                  (the committed pre-strip rollback target). Switching takes effect on the next
-                                  session start; no re-install required.
-
 v2017_experiments.prompt_caching      "off" (default) | "on" — enables bin/cache-prefix-lock.js drift detection
                                       on every UserPromptSubmit. Monitors Block A stability; never modifies context.
-v2017_experiments.pm_prose_strip      "off" (default) | "shadow" | "on" — "shadow" generates the lean prompt and
-                                      logs the diff without serving it; "on" serves the stripped pm.md.
 v2017_experiments.adaptive_verbosity  "off" (default) | "on" — injects per-agent response-length budgets into
                                       delegation templates. Reviewer minimum floor: 600 tokens.
 v2017_experiments.global_kill_switch  true disables all three v2017 behavior flags immediately, no session restart
@@ -193,9 +201,22 @@ adaptive_verbosity.reducer_on_late_phase   Multiplier applied in late orchestrat
 
 cache_choreography.enabled            Enable bin/cache-prefix-lock.js prefix-drift detection (default: false; also
                                       controlled by v2017_experiments.prompt_caching)
+
+state_sentinel.pause_check_enabled    Enable the pause/cancel sentinel PreToolUse hook (default: true); set false
+                                      to inert the entire sentinel check without removing the hook
+state_sentinel.cancel_grace_seconds   Seconds after cancel.sentinel creation before spawns are blocked (default: 5)
+
+anti_pattern_gate.min_decayed_confidence  Minimum decayed confidence for anti-pattern advisories to fire (default: 0.65);
+                                          patterns below this threshold are suppressed even if they match
+
+redo_flow.max_cascade_depth           Maximum W-item cascade depth for /orchestray:redo --cascade (default: 5)
+redo_flow.commit_prefix               Git commit prefix used when redo produces a commit (default: "redo:")
+
+pattern_decay_default_half_life_days        Default confidence half-life for all pattern categories (default: 90)
+pattern_decay.anti_pattern_half_life_days   Half-life override for anti-pattern category (default: 180)
 ```
 
-The `mcp_enforcement` block is automatically added to `.orchestray/config.json` on the first `UserPromptSubmit` after upgrading to 2.0.13+ — no manual migration needed. On 2.0.14+, the same sweep also backfills the `mcp_server.cost_budget_check.pricing_table` block if absent. On 2.0.15+, the sweep additionally seeds the `kb_write` tool enable entry and the `pattern_record_skip_reason` / `cost_budget_check` enforcement keys for existing installs. On 2.0.16+, the sweep seeds `routing_lookup`, `cost_budget_reserve`, `pattern_deprecate`, `max_per_task` defaults (20 each), `cost_budget_enforcement`, `cost_budget_reserve.ttl_minutes`, and `routing_gate.auto_seed_on_miss`. On 2.0.17+, the sweep seeds the `v2017_experiments` block (all flags `"off"`), `adaptive_verbosity`, `cache_choreography`, and `pm_prompt_variant: "lean"`.
+The `mcp_enforcement` block is automatically added to `.orchestray/config.json` on the first `UserPromptSubmit` after upgrading to 2.0.13+ — no manual migration needed. On 2.0.14+, the same sweep also backfills the `mcp_server.cost_budget_check.pricing_table` block if absent. On 2.0.15+, the sweep additionally seeds the `kb_write` tool enable entry and the `pattern_record_skip_reason` / `cost_budget_check` enforcement keys for existing installs. On 2.0.16+, the sweep seeds `routing_lookup`, `cost_budget_reserve`, `pattern_deprecate`, `max_per_task` defaults (20 each), `cost_budget_enforcement`, `cost_budget_reserve.ttl_minutes`, and `routing_gate.auto_seed_on_miss`. On 2.0.17+, the sweep seeds the `v2017_experiments` block (all flags `"off"`), `adaptive_verbosity`, and `cache_choreography`. On 2.0.18+, the sweep also auto-strips the now-removed `pm_prompt_variant` and `pm_prose_strip` keys (emits a `config_key_stripped` audit event).
 
 **MCP resource schemes (2.0.16+).** The MCP server exposes four read-only resource schemes: `kb://`, `history://`, `pattern://`, and `orchestration://`. The `orchestration://` scheme provides live and historical state — `orchestray:orchestration://current` returns the active orchestration phase and task list; sub-resources expose routing decisions (`/current/routing`) and checkpoint state (`/current/checkpoints`). To browse an archived orchestration, use `orchestray:orchestration://<orch-id>`; the `list()` inventory includes the 5 most recent archived IDs. MCP tool count is 13 as of 2.0.17 (`metrics_query` added; documented in `/orchestray:analytics` skill).
 

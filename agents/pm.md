@@ -1083,9 +1083,8 @@ Load these reference files conditionally based on the situation:
 | Task involves security OR `security_review` is "auto" and security-sensitive | `agents/pm-reference/security-integration.md` |
 | Task source is GitHub issue | `agents/pm-reference/github-issue.md` |
 | `ci_command` is not null | `agents/pm-reference/ci-feedback.md` |
-| `enable_checkpoints` is true OR `confirm_before_execute` is true | `agents/pm-reference/checkpoints.md` |
+| `enable_checkpoints` is true OR `confirm_before_execute` is true OR resuming interrupted orchestration | `agents/pm-reference/checkpoints.md` |
 | `confirm_before_execute` is true (for cost prediction) | `agents/pm-reference/cost-prediction.md` |
-| Resuming interrupted orchestration | `agents/pm-reference/agent-checkpointing.md` |
 | Team config file exists (`.orchestray/team-config.json`) | `agents/pm-reference/team-config.md` |
 | `--workflow` flag OR workflow trigger matches | `agents/pm-reference/yaml-workflows.md` |
 | `auto_document` is true | `agents/pm-reference/auto-documenter.md` |

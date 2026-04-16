@@ -1354,3 +1354,139 @@ Emitted by the PM after executing the clean-abort sequence: renaming the state d
   measure the cancel-to-abort latency (how many groups ran between request and abort).
 
 **Schema stability:** additive only. New fields will only be added as optional.
+
+---
+
+## Section 23: State GC Events (W5 v2.0.18)
+
+Two events emitted by `bin/state-gc.js` during the `/orchestray:state gc` operation.
+Both use canonical `timestamp`/`type` fields. Grep anchor: `W5-UX4b-state-gc`.
+
+### `state_gc_run`
+
+Emitted once per `state-gc.js` invocation (both dry-run and mutating). Summarises what
+the run found and acted on.
+
+Cross-ref: emitted by `bin/state-gc.js`.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "state_gc_run",
+  "mode": "archive | discard",
+  "dry_run": true,
+  "keep_days": 7,
+  "archived": 0,
+  "discarded": 0,
+  "skipped_active": 1
+}
+```
+
+**Fields:**
+- `mode`: The effective mode (`archive` renames to `-abandoned`; `discard` deletes).
+- `dry_run`: `true` for `--dry-run` invocations; `false` for mutating runs.
+- `keep_days`: Age threshold in days (dirs older than this are considered leaked).
+- `archived`: Number of dirs renamed to `*-abandoned`.
+- `discarded`: Number of dirs deleted (only non-zero when `mode: "discard"`).
+- `skipped_active`: Number of dirs skipped because they matched an active orchestration.
+
+### `state_gc_discarded`
+
+Emitted once per discarded directory (only when `--mode=discard` is active). Gives
+fine-grained audit signal for each deletion.
+
+Cross-ref: emitted by `bin/state-gc.js` immediately after each `fs.rmSync()` call.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "state_gc_discarded",
+  "dir": "orch-1234567890"
+}
+```
+
+**Fields:**
+- `dir`: The directory name (relative, not full path) that was deleted.
+
+**Consumer guidance:**
+- To audit all gc runs: filter `events.jsonl` for `type: "state_gc_run"`.
+- To find what was deleted in a discard run: filter for `type: "state_gc_discarded"` with
+  timestamps matching the corresponding `state_gc_run`.
+- `state_gc_discarded` events are only emitted when `mode: "discard"`. Archive-mode runs
+  do not emit per-dir events (only the summary `state_gc_run` event).
+
+---
+
+## Section 24: Redo Event (W8 v2.0.18)
+
+### `w_item_redo_requested`
+
+Emitted by `bin/redo-wave-item.js` when the user confirms a `/orchestray:redo` invocation
+(or triggers it via the skill). Records the W-item targeted and whether cascade was
+requested.
+
+Cross-ref: emitted by `bin/redo-wave-item.js`; triggered by `skills/orchestray:redo/SKILL.md`.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "w_item_redo_requested",
+  "w_id": "W4",
+  "prompt_override_file": null,
+  "cascade": true,
+  "dry_run": false
+}
+```
+
+**Fields:**
+- `w_id`: The W-item identifier being redone (e.g., `"W4"`).
+- `prompt_override_file`: Path to a prompt-override file if `--prompt` was passed; `null`
+  otherwise.
+- `cascade`: `true` if `--cascade` was passed (full dependent closure will be re-run);
+  `false` if only the named W-item will be re-run.
+- `dry_run`: `true` if `--dry-run` was passed (no `redo.pending` written); `false` for
+  actual redo.
+
+**Consumer guidance:**
+- Pair `w_item_redo_requested` with subsequent `routing_outcome` / `routing_decision` rows
+  on `orchestration_id` to measure redo quality vs. original run.
+- A `cascade: true` event followed by multiple `routing_decision` rows is the expected
+  pattern for a cascaded redo.
+
+---
+
+## Section 25: Config Key Stripped Event (W3 v2.0.18)
+
+### `config_key_stripped`
+
+Emitted by `bin/post-upgrade-sweep.js` when `runFC3bLegacyKeyStrip` removes deprecated
+config keys (`pm_prompt_variant` and/or `pm_prose_strip`) from `.orchestray/config.json`
+on first use after upgrading to v2.0.18.
+
+Cross-ref: emitted by `bin/post-upgrade-sweep.js`.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "config_key_stripped",
+  "keys_stripped": ["pm_prompt_variant"],
+  "release": "2.0.18"
+}
+```
+
+**Fields:**
+- `keys_stripped`: Array of top-level config keys that were removed. Typically
+  `["pm_prompt_variant"]`, `["pm_prose_strip"]`, or `["pm_prompt_variant", "pm_prose_strip"]`
+  depending on what was present. `pm_prose_strip` inside `v2017_experiments` is stripped
+  silently (sub-object cleanup is not listed in `keys_stripped`).
+- `release`: The Orchestray version that performed the strip. Always `"2.0.18"` for the
+  initial FC3b sweep.
+
+**Consumer guidance:**
+- This event fires at most once per install (the strip is idempotent). A second post-upgrade
+  sweep run after the keys are already gone emits no event.
+- Use this event to audit whether a given install has had its legacy keys cleaned. Absence
+  of this event in `events.jsonl` means either (a) the install never had those keys, or
+  (b) the upgrade sweep has not run yet.
+
+**Schema stability:** additive only. New fields will only be added as optional.

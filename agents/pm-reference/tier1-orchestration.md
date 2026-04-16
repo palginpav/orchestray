@@ -462,7 +462,7 @@ work before proceeding:
 
 **Fine-grained resume with checkpoints:**
 If `.orchestray/state/checkpoints.json` exists, use Section 32's Resume Protocol
-(in agent-checkpointing.md) to skip completed agents and resume from the interruption
+(in checkpoints.md §32) to skip completed agents and resume from the interruption
 point. This prevents re-running agents whose results are already in the codebase.
 
 3. If `.orchestray/state/orchestration.md` does not exist, or its status is `completed`:
@@ -989,7 +989,7 @@ For each task in a parallel group:
 1. **Spawn the assigned agent** with the task description (per Section 3 delegation rules).
    Each agent runs with worktree isolation -- the `isolation: worktree` frontmatter field
    on each specialist agent handles this automatically.
-   Write a `running` checkpoint for this task per Section 32 (in agent-checkpointing.md).
+   Write a `running` checkpoint for this task per Section 32 (in checkpoints.md).
    After the agent completes and results are processed (Section 4), update the checkpoint
    to `completed`.
 

@@ -3,6 +3,111 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.18] - 2026-04-16
+
+### Theme: "Operator ergonomics + honest learning loop + rollback-scaffolding removal"
+
+Track A gives operators first-class mid-flight visibility and control. Track B makes
+the pattern learning loop honest. Track C retires the v2.0.17 rollback scaffolding
+and collapses duplicated files. Net LOC negative. Test count up.
+
+### Added
+
+- **`/orchestray:watch`** — live-tail poller for the current orchestration. Renders a
+  compact agent-status table that refreshes until the orchestration completes or the
+  user interrupts.
+- **`/orchestray:state` namespace** — four subcommands behind one skill:
+  - `peek` — read-only summary of leaked or active state dirs.
+  - `gc` — archive or discard leaked state dirs; respects `--keep-days` and `--mode`.
+  - `pause` — writes a pause sentinel; blocks further agent spawns between groups.
+  - `cancel` — writes a cancel sentinel; triggers clean-abort with state archival.
+- **`/orchestray:redo <W-id> [--cascade] [--prompt <file>]`** — re-run a single W-item
+  or its full dependent closure. Batch confirmation upfront; no per-item prompts.
+- **`/orchestray:run --preview`** — show the decomposition plan and estimated costs before
+  execution; accept or abort without spawning any agents.
+- **Time-based pattern confidence decay** — `pattern_find` now returns `decayed_confidence`
+  and `age_days` alongside raw confidence. Default half-life: 90 days (configurable via
+  `pattern_decay_default_half_life_days`); anti-patterns decay at 180 days by default.
+  Patterns without `last_applied` fall back to `days_since_created`.
+- **Counterfactual skip enrichment** — `pattern_record_skip_reason` MCP tool now records
+  structured `match_quality` (`strong-match | weak-match | edge-case`) and `skip_category`
+  fields alongside free-form prose. Enables retrospective analysis of why patterns were
+  not applied.
+- **`routing_decision` merged event (Variant D)** — `bin/emit-routing-outcome.js` now
+  correlates spawn-side and stop-side data into a single `routing_decision` row per
+  agent invocation. `routing_lookup` synthesises these on-the-fly for historical data.
+  New consumers should prefer Variant D over the legacy split Variant A/C pair.
+- **Anti-pattern pre-spawn advisory gate** — `gate-agent-spawn.js` checks matching
+  anti-patterns via `pattern_find` before each `Agent()` spawn and injects advisories
+  into `additionalContext`. The `anti_pattern_advisory_shown` audit event fires on each
+  injection. Gate is advisory-only (never blocks the spawn); capped at 1 advisory per
+  spawn to prevent noise.
+- **Sentinel-check `PreToolUse:Agent` hook** (`bin/check-pause-sentinel.js`) — runs
+  before each `Agent()` spawn and blocks if a pause or cancel sentinel is present.
+  Respects `cancel_grace_seconds` config; exits 0 (allow) / 1 (cancel-abort) / 2 (pause-block).
+- **New config blocks**: `state_sentinel` (pause/cancel sentinel settings), `anti_pattern_gate`
+  (advisory gate settings), `redo_flow` (cascade depth + commit prefix), `pattern_decay`
+  (half-life defaults).
+- **New audit events**: `state_pause_set`, `state_pause_resumed`, `state_cancel_requested`,
+  `state_cancel_aborted`, `state_gc_run`, `state_gc_discarded`, `anti_pattern_advisory_shown`,
+  `pattern_skip_enriched`, `routing_decision`, `w_item_redo_requested`, `config_key_stripped`.
+  All use canonical `timestamp`/`type` fields. Documented in `agents/pm-reference/event-schemas.md`.
+
+### Changed
+
+- **`history_scan._normalizeEvent()` now maps `ts → timestamp` symmetrically** with
+  the existing `event → type` mapping (FC2). Previously, `orchestration_start` rows
+  that used only the legacy `ts` field were silently dropped on the live
+  `history_query_events` path. Both legacy fields are now remapped and stripped.
+- **`agent-common-protocol.md` is now the single source of the Structured Result schema.**
+  Nine agent bodies (architect, developer, reviewer, debugger, tester, refactorer,
+  documenter, inventor, security-engineer) replaced their inline JSON schema blocks with
+  a short reference to the canonical doc. Net: −190 lines across the nine files.
+- **`checkpoints.md` absorbed `agent-checkpointing.md`.** Section 32 (fine-grained agent
+  checkpointing for resume) is now a subsection of `checkpoints.md`. The dispatch-table
+  row in `agents/pm.md` is collapsed into a single condition covering both interactive
+  checkpoints and resume scenarios.
+- **`bin/emit-routing-outcome.js`** extended with `MODEL_OUTPUT_CAPS` table,
+  `completionVolumeRatio()` helper, and merge logic reading from `routing-pending.jsonl`.
+- **`routing_lookup` MCP tool** updated to return `routing_decision` rows preferentially
+  from `events.jsonl`; synthesises from historical Variant A + C pairs on-the-fly.
+  Synthesised rows carry `synthesised: true`; emitted rows carry `merged: true`.
+
+### Removed
+
+- **`agents/pm.old.md`** — the pre-strip PM prompt committed as a rollback target in
+  v2.0.17. Deleted as pre-announced. FC3.
+- **`bin/apply-pm-variant.js`** — runtime switcher for `pm_prompt_variant`. Deleted with
+  its test file (`tests/apply-pm-variant.test.js`). FC3.
+- **`tests/pm-md-prose-strip-replay.test.js`** — tested the deleted flag. Removed. FC3.
+- **Config keys `pm_prompt_variant` and `pm_prose_strip`** — stripped from
+  `.orchestray/config.json` automatically on first post-upgrade run by
+  `bin/post-upgrade-sweep.js` (`runFC3bLegacyKeyStrip`). The strip emits a
+  `config_key_stripped` audit event. No operator action required.
+- **`agents/pm-reference/agent-checkpointing.md`** — content merged into
+  `checkpoints.md §32`. File deleted. Dispatch table updated in `agents/pm.md`.
+
+### Fixed
+
+- **Silent data-loss in `history_query_events` live path** — `orchestration_start` rows
+  written with only the legacy `ts` field (not `timestamp`) were silently dropped.
+  Fixed in FC2 by extending `_normalizeEvent()` to back-fill `timestamp` from `ts`.
+
+### Migration — removal of experimental rollback scaffolding
+
+v2.0.17 pre-announced the removal of `pm_prompt_variant` and `pm_prose_strip` for v2.0.18.
+This release deletes both.
+
+**Automatic migration:** On first use of Orchestray after upgrading, `bin/post-upgrade-sweep.js`
+silently removes these keys from `.orchestray/config.json`. No operator action required.
+The removal emits a `config_key_stripped` audit event.
+
+**Manual cleanup (if desired):** Users who previously set `pm_prompt_variant: "fat"` or
+toggled `pm_prose_strip` in a custom config can remove those keys; the auto-sweep will
+otherwise handle them. No runtime impact.
+
+---
+
 ## [2.0.17] - 2026-04-15
 
 ### Theme: "Measurement foundation + honest hygiene"
