@@ -79,6 +79,52 @@ required only for the named role; all other agents omit them.
   `"partial"` = some areas could not be reviewed; `"failure"` = audit could not proceed.
   `files_changed` is always `[]`.
 
+## Commit Message Discipline for W-Items
+
+Every W-item (a developer agent executing a numbered work-item in a multi-W
+orchestration) MUST include a `## Handoff` subsection in its commit message body.
+This subsection is the **authoritative durable handoff** — it is readable by any
+downstream W-item via `git show <sha>` and survives worktree teardown, session
+restart, and `.orchestray/` cleanup.
+
+### Why commit body, not KB artifact
+
+`.orchestray/kb/artifacts/` is gitignored and ephemeral to the session in which it
+is written. W-items that run in separate worktrees or after a session restart cannot
+reliably read those files. The git commit body is always available.
+
+KB artifacts MAY still be written for the benefit of agents running in the **same
+active session** — they are useful scratch during the orchestration. But they are
+**session-scoped scratch only**. Do not treat them as the handoff record.
+
+### Handoff subsection format
+
+```
+<commit title line>
+
+<prose: 1-2 paragraphs of what changed and why>
+
+## Handoff
+
+**Files changed:** <brief list — one line per file or file group>
+**Test delta:** <e.g. "+7 tests (1478 → 1485)" or "no tests added">
+**Invariants established:** <one key load-bearing fact downstream W-items must know>
+**Downstream cues:** <markers, line numbers, or contracts the next W-item needs>
+```
+
+### Size and tone
+
+Keep the Handoff subsection to **5–15 lines**. It is a targeted briefing, not a
+full artifact dump. Include only what the NEXT W-item needs to avoid re-discovering
+context or breaking an invariant you established.
+
+### Relation to Structured Result
+
+The `## Handoff` block is commit-message companion content. It does NOT replace the
+JSON Structured Result (which the PM reads from the agent's response). Both are
+required for W-items. The Structured Result goes in the agent's response body; the
+Handoff block goes in the git commit message.
+
 ## Anti-Pattern Advisory (W12 LL3)
 
 When a spawned agent receives an `[Anti-pattern advisory]` marker at the start of its

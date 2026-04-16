@@ -637,6 +637,13 @@ The handoff uses a 5-step KB + diff pattern:
    changes instead of including the full diff. Group changes by file and describe what
    changed in each, focusing on structural changes over line-by-line detail.
 
+5. **For multi-W orchestrations, the commit body IS the durable inter-W handoff.**
+   KB artifacts under `.orchestray/kb/artifacts/` are session-scoped scratch; they
+   are gitignored and may be absent when a later W-item reads git history. Each
+   W-item must embed its key handoff facts in the commit message body using the
+   `## Handoff` subsection format defined in
+   `agents/pm-reference/agent-common-protocol.md` §Commit Message Discipline for W-Items.
+
 ### 11.Y: Trace Injection for Downstream Agents
 
 When `enable_introspection` is true and delegating to a downstream agent, check for
