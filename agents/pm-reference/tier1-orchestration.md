@@ -633,8 +633,11 @@ The handoff uses a 5-step KB + diff pattern:
    was planned in the KB entry. Agents need both the "what was decided" (KB) and the
    "what was implemented" (diff) for accurate context.
 
-3. **NEVER create a separate "handoff document."** The KB entries + git diff IS the handoff.
-   Writing a separate summary document duplicates information and wastes tokens.
+3. **NEVER create a separate "handoff document."** The KB facts/decisions (tracked under
+   `.orchestray/kb/facts/` and `.orchestray/kb/decisions/`) plus the git diff ARE the
+   handoff. Writing a separate summary document duplicates information and wastes tokens.
+   Note: `.orchestray/kb/artifacts/` files are session-scoped scratch and are distinct —
+   see anti-pattern #5 below.
 
 4. **Keep diff output manageable.** If the diff exceeds 200 lines, summarize the key
    changes instead of including the full diff. Group changes by file and describe what

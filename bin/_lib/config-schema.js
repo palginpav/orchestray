@@ -1013,9 +1013,9 @@ const DEFAULT_PATTERN_DECAY = Object.freeze({
   /**
    * Per-category half-life overrides. Keys are category names (e.g. "anti-pattern").
    * Values are integers 1..3650. Absent key → fall through to global default.
-   * @type {Object.<string,number>|null}
+   * @type {Object.<string,number>}
    */
-  category_overrides: null,
+  category_overrides: {},
 });
 
 /**
@@ -1025,7 +1025,7 @@ const DEFAULT_PATTERN_DECAY = Object.freeze({
  * decay still applies at safe defaults rather than crashing pattern_find.
  *
  * @param {string} cwd - Project root directory (absolute path).
- * @returns {{ default_half_life_days: number, category_overrides: Object.<string,number>|null }}
+ * @returns {{ default_half_life_days: number, category_overrides: Object.<string,number> }}
  */
 function loadPatternDecayConfig(cwd) {
   const configPath = path.join(cwd, '.orchestray', 'config.json');
@@ -1035,7 +1035,7 @@ function loadPatternDecayConfig(cwd) {
   } catch (_) {
     return {
       default_half_life_days: DEFAULT_PATTERN_DECAY.default_half_life_days,
-      category_overrides: null,
+      category_overrides: {},
     };
   }
 
@@ -1045,14 +1045,14 @@ function loadPatternDecayConfig(cwd) {
   } catch (_) {
     return {
       default_half_life_days: DEFAULT_PATTERN_DECAY.default_half_life_days,
-      category_overrides: null,
+      category_overrides: {},
     };
   }
 
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return {
       default_half_life_days: DEFAULT_PATTERN_DECAY.default_half_life_days,
-      category_overrides: null,
+      category_overrides: {},
     };
   }
 
@@ -1060,7 +1060,7 @@ function loadPatternDecayConfig(cwd) {
   if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
     return {
       default_half_life_days: DEFAULT_PATTERN_DECAY.default_half_life_days,
-      category_overrides: null,
+      category_overrides: {},
     };
   }
 

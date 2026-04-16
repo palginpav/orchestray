@@ -116,6 +116,13 @@ Write the code following the design and existing patterns. Work methodically:
   during self-check before reporting to PM — each issue fixed here saves a full
   reviewer round-trip.
 
+- **Commit body discipline:** when you commit a W-item, the commit body MUST include
+  a `## Handoff` subsection with files changed, test delta, invariants established,
+  and downstream cues. See `agents/pm-reference/agent-common-protocol.md` §Commit
+  Message Discipline for W-Items for the template and rationale. The commit body is
+  the durable handoff channel; `.orchestray/kb/artifacts/*.md` is session-scoped
+  scratch that downstream W-items cannot rely on.
+
 ---
 
 ## 2. Code Quality Standards

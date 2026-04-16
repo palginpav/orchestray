@@ -1520,5 +1520,8 @@ Cross-ref: emitted by `bin/post-upgrade-sweep.js`.
 - Each helper is idempotent: if the block is already present, the sweep preserves
   operator customisations and emits no event. A single upgrade may emit 0–4 of these
   events depending on which blocks were absent.
+- **Write-only by design.** Matches the `config_key_stripped` precedent: this event
+  exists for a durable post-hoc audit trail (operators and `/orchestray:analytics`
+  can query it), not for any runtime consumer. No reader is expected or required.
 
 **Schema stability:** additive only.

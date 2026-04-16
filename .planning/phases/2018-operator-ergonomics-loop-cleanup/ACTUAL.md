@@ -11,8 +11,8 @@
 | Metric | DESIGN projection | Actual | Delta |
 |--------|-------------------|--------|-------|
 | W-items shipped | 14 (W1–W14) | 14 | 0 |
-| Total commits (incl. post-release) | ~15–17 implied | 20 (8b0ceee … WX3) | +3–5 |
-| Net LOC delta | ≈ −1,900 | +8,328 (11,398 ins / 3,070 del) | **+10,228** |
+| Total commits (incl. post-release) | ~15–17 implied | 24 (8b0ceee … R3-cleanup) | +7–9 |
+| Net LOC delta | ≈ −1,900 | +8,535 (11,611 ins / 3,076 del, live count vs v2.0.17 tip) | **+10,435** |
 | Test baseline (v2.0.17) | 1,285 pass | 1,285 pass | 0 |
 | Test count post-release | ~1,340 pass (≥1,273 + 60–80 new) | **1,478 pass** | +138 above top of range |
 | New tests added (gross) | +60–80 | +237 gross | +157–177 |
@@ -21,7 +21,7 @@
 | Execution cost (orchestration) | $8–12 (estimate); budget envelope $15 | ~$13 orchestration + ~$2–3 post-release batch | ~$15–16 total; within envelope with buffer consumed |
 | Worktree spawns | 7 planned | 7 attempted | 0 |
 | Worktree clean success rate | 100% assumed | ~57% (4 of 7 clean; W5, W7, W10 misbehaved) | −43 pp |
-| Audit rounds | 1 round expected + 1 doc-only | 2 rounds (Round 1: 9 findings; Round 2: closed 6 actionable + 2 nits) | on target |
+| Audit rounds | 1 round expected + 1 doc-only | 3 rounds (R1: 9 findings; R2: closed 6 actionable + 2 nits; R3: 4 majors + 7 minors/info all fixed) | +1 round |
 
 **Key headline:** The LOC projection was off by ~10× in the wrong direction. The DESIGN estimated a net reduction because FC3 deletes ~2,450 lines of rollback scaffolding and FC1 deduplicates ~190 lines of agent boilerplate. What the DESIGN did not model is that TDD-mode produces dense test files — each W-item's new test suite added 200–1,500 lines of test code, dwarfing any prose or production-code reduction. Track A alone (UX operator commands, pure additions) came in at +5,499 net LOC.
 
