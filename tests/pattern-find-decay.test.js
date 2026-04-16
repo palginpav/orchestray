@@ -187,7 +187,7 @@ describe('pattern_find decay — W9 LL2', () => {
     );
   });
 
-  test('config override pattern_decay_default_half_life_days: 30 → 30-day-old pattern decays to 0.5×', async () => {
+  test('config override pattern_decay.default_half_life_days: 30 → 30-day-old pattern decays to 0.5×', async () => {
     const tmp = makeTmpProject();
     const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString();
     writePattern(tmp, 'short-halflife', {

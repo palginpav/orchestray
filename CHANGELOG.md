@@ -27,8 +27,9 @@ and collapses duplicated files. Net LOC negative. Test count up.
   execution; accept or abort without spawning any agents.
 - **Time-based pattern confidence decay** — `pattern_find` now returns `decayed_confidence`
   and `age_days` alongside raw confidence. Default half-life: 90 days (configurable via
-  `pattern_decay_default_half_life_days`); anti-patterns decay at 180 days by default.
-  Patterns without `last_applied` fall back to `days_since_created`.
+  `pattern_decay.default_half_life_days`); anti-patterns decay at 180 days by default
+  via `pattern_decay.category_overrides["anti-pattern"]`. Patterns without `last_applied`
+  fall back to `days_since_created`.
 - **Counterfactual skip enrichment** — `pattern_record_skip_reason` MCP tool now records
   structured `match_quality` (`strong-match | weak-match | edge-case`) and `skip_category`
   fields alongside free-form prose. Enables retrospective analysis of why patterns were
