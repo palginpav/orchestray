@@ -47,6 +47,63 @@ const { atomicAppendJsonl } = require('./_lib/atomic-append');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 
 // ──────────────────────────────────────────────────────────────────────────────
+// v2.0.21: upgrade-pending warning
+// ──────────────────────────────────────────────────────────────────────────────
+
+const UPGRADE_SENTINEL_PATH = path.join(os.homedir(), '.claude', '.orchestray-upgrade-pending');
+const UPGRADE_SENTINEL_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+/**
+ * Detect that `bin/install.js` ran since this session may have started, and
+ * emit a one-time-per-session stderr warning telling the user to restart
+ * Claude Code so the agent registry (cached at session start) picks up any
+ * new agent definitions. The /agents UI does NOT trigger a registry rescan
+ * in current Claude Code versions — verified empirically during v2.0.21.
+ *
+ * Strategy:
+ *  1. install.js writes ~/.claude/.orchestray-upgrade-pending with metadata.
+ *  2. This function is called from every UserPromptSubmit. Per-session marker
+ *     under /tmp/ prevents duplicate warnings within the same session.
+ *  3. Sentinel auto-cleans after UPGRADE_SENTINEL_TTL_MS to avoid a stale
+ *     global sentinel haunting future sessions indefinitely.
+ *
+ * Fail-open: any I/O error is swallowed.
+ *
+ * @param {string|null} sessionId - Sanitized session id from the hook payload.
+ */
+function emitUpgradePendingWarning(sessionId) {
+  try {
+    if (!fs.existsSync(UPGRADE_SENTINEL_PATH)) return;
+
+    let data = {};
+    try { data = JSON.parse(fs.readFileSync(UPGRADE_SENTINEL_PATH, 'utf8')); } catch (_e) { /* malformed — treat as empty */ }
+
+    // Auto-cleanup if the sentinel is older than the TTL (covers the case
+    // where the user already restarted the relevant sessions and the
+    // sentinel is stale).
+    const installedMs = data.installed_at ? new Date(data.installed_at).getTime() : 0;
+    if (installedMs && (Date.now() - installedMs) > UPGRADE_SENTINEL_TTL_MS) {
+      try { fs.unlinkSync(UPGRADE_SENTINEL_PATH); } catch (_e) { /* ignore */ }
+      return;
+    }
+
+    if (!sessionId) return;
+    const sessionMarkerPath = path.join(os.tmpdir(), 'orchestray-upgrade-warned-' + sessionId);
+    if (fs.existsSync(sessionMarkerPath)) return; // already warned this session
+
+    process.stderr.write(
+      '[orchestray] Upgraded to v' + (data.version || '?') +
+      ' since this session may have started. RESTART Claude Code to load any new agents — ' +
+      'the /agents UI does NOT trigger a registry rescan in current versions.\n'
+    );
+
+    try { fs.writeFileSync(sessionMarkerPath, '', 'utf8'); } catch (_e) { /* ignore */ }
+  } catch (_e) {
+    // Best-effort warning; never block the user prompt.
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // W8 helper: additive config.json migration (2013-W8-config-migration)
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -2093,6 +2150,12 @@ function main() {
       const sessionId = (data.session_id || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_');
       const cwd = resolveSafeCwd(data.cwd);
       const stateDir = path.join(cwd, '.orchestray', 'state');
+
+      // v2.0.21: emit upgrade-pending warning BEFORE the session lock so it
+      // fires on the first UserPromptSubmit per session, not only the first
+      // ever (the lock blocks subsequent runs but the warning's own
+      // per-session marker handles in-session deduplication).
+      emitUpgradePendingWarning(sessionId);
 
       // ── Session lock: fast-path — once per session ──────────────────────────
       const lockPath = path.join(os.tmpdir(), `orchestray-sweep-${sessionId}.lock`);

@@ -50,19 +50,27 @@ describe('v2.0.21 — plugin settings.json statusline wiring', () => {
   });
 });
 
-describe('v2.0.21 — version parity across package.json and plugin.json', () => {
+describe('version parity across package.json and plugin.json', () => {
+  // Version-agnostic: derives expected from package.json so the test does not
+  // need a per-release literal bump. Catches the "forgot to bump plugin.json"
+  // failure mode that prior versions of this test were guarding against.
   const pkg    = readJson('package.json');
   const plugin = readJson('.claude-plugin/plugin.json');
 
-  test('package.json version is 2.0.21', () => {
-    assert.equal(pkg.version, '2.0.21');
+  test('package.json version is a valid semver string', () => {
+    assert.equal(typeof pkg.version, 'string');
+    assert.match(
+      pkg.version,
+      /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/,
+      `package.json version is not valid semver: ${pkg.version}`,
+    );
   });
 
-  test('.claude-plugin/plugin.json version is 2.0.21', () => {
-    assert.equal(plugin.version, '2.0.21');
-  });
-
-  test('package.json and plugin.json versions match', () => {
-    assert.equal(pkg.version, plugin.version);
+  test('.claude-plugin/plugin.json version equals package.json version', () => {
+    assert.equal(
+      plugin.version,
+      pkg.version,
+      `version drift: package.json=${pkg.version}, plugin.json=${plugin.version}`,
+    );
   });
 });
