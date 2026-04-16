@@ -209,8 +209,8 @@ state_sentinel.cancel_grace_seconds   Seconds after cancel.sentinel creation bef
 anti_pattern_gate.min_decayed_confidence  Minimum decayed confidence for anti-pattern advisories to fire (default: 0.65);
                                           patterns below this threshold are suppressed even if they match
 
-redo_flow.max_cascade_depth           Maximum W-item cascade depth for /orchestray:redo --cascade (default: 5)
-redo_flow.commit_prefix               Git commit prefix used when redo produces a commit (default: "redo:")
+redo_flow.max_cascade_depth           Maximum W-item cascade depth for /orchestray:redo --cascade (default: 10)
+redo_flow.commit_prefix               Git commit prefix used when redo produces a commit (default: "redo")
 
 pattern_decay.default_half_life_days              Default confidence half-life in days (default: 90)
 pattern_decay.category_overrides.anti-pattern     Half-life override for anti-pattern category (default: 180)

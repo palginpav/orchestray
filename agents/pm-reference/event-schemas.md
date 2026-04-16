@@ -1490,3 +1490,35 @@ Cross-ref: emitted by `bin/post-upgrade-sweep.js`.
   (b) the upgrade sweep has not run yet.
 
 **Schema stability:** additive only. New fields will only be added as optional.
+
+---
+
+### `config_key_seeded`
+
+Emitted by `bin/post-upgrade-sweep.js` when one of the v2.0.18 seed helpers
+(`runW9PatternDecaySeed`, `runW12AntiPatternGateSeed`, `runW7StateSentinelSeed`,
+`runW8RedoFlowSeed`) backfills a missing config block into `.orchestray/config.json`
+on first use after upgrading. Complements `config_key_stripped`.
+
+Cross-ref: emitted by `bin/post-upgrade-sweep.js`.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "config_key_seeded",
+  "key": "pattern_decay",
+  "release": "2.0.18"
+}
+```
+
+**Fields:**
+- `key`: The top-level config block that was seeded. One of `pattern_decay`,
+  `anti_pattern_gate`, `state_sentinel`, `redo_flow` for the v2.0.18 batch.
+- `release`: The Orchestray version that performed the seeding.
+
+**Consumer guidance:**
+- Each helper is idempotent: if the block is already present, the sweep preserves
+  operator customisations and emits no event. A single upgrade may emit 0–4 of these
+  events depending on which blocks were absent.
+
+**Schema stability:** additive only.
