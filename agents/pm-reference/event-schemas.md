@@ -1256,3 +1256,101 @@ write fails, a stderr warning is emitted and the spawn proceeds normally.
 
 **Schema stability:** additive only. Consumers that do not recognise this event type
 should ignore it. New fields will only be added as optional.
+
+
+---
+
+## Section 22: Pause/Cancel Sentinel Events (W7 v2.0.18)
+
+Four events emitted by the pause/cancel sentinel protocol. All written via
+`appendFileSync` to `.orchestray/audit/events.jsonl`. All use canonical field names
+(`timestamp`/`type`, not `ts`/`event`). Grep anchor: `W7-UX4cd-sentinel`.
+
+### `state_pause_set`
+
+Emitted by `bin/state-pause.js` when `.orchestray/state/pause.sentinel` is
+successfully created.
+
+```json
+{
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "state_pause_set",
+  "orchestration_id": "<current orch id, or 'unknown'>",
+  "reason": "<operator-supplied string, or null>",
+  "paused_at": "<ISO 8601 UTC — same as timestamp>"
+}
+```
+
+**Fields:**
+- `timestamp`: Canonical ISO 8601 UTC string.
+- `type`: Always `"state_pause_set"`.
+- `orchestration_id`: Read from `.orchestray/state/orchestration.md`; `"unknown"` when no active orchestration.
+- `reason`: Optional operator-supplied message passed via `--reason=<msg>`; null if absent.
+- `paused_at`: ISO 8601 timestamp of the pause action (matches `timestamp`).
+
+### `state_pause_resumed`
+
+Emitted by `bin/state-pause.js --resume` when the pause sentinel is successfully removed.
+
+```json
+{
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "state_pause_resumed",
+  "orchestration_id": "<orch id from the deleted sentinel, or 'unknown'>",
+  "resumed_at": "<ISO 8601 UTC>"
+}
+```
+
+**Fields:**
+- `orchestration_id`: Read from the sentinel file before deletion (not from orchestration.md).
+- `resumed_at`: ISO 8601 timestamp of the resume action.
+
+### `state_cancel_requested`
+
+Emitted by `bin/state-cancel.js` when `.orchestray/state/cancel.sentinel` is
+successfully created.
+
+```json
+{
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "state_cancel_requested",
+  "orchestration_id": "<current orch id, or 'unknown'>",
+  "reason": "<operator-supplied string, or null>",
+  "requested_at": "<ISO 8601 UTC — same as timestamp>"
+}
+```
+
+**Fields:**
+- `reason`: Optional operator-supplied message; null if absent.
+- `requested_at`: ISO 8601 timestamp written into the sentinel file. The sentinel hook
+  (`check-pause-sentinel.js`) reads this field to enforce the grace window
+  (`cancel_grace_seconds`).
+
+### `state_cancel_aborted`
+
+Emitted by the PM after executing the clean-abort sequence: renaming the state dir to
+`.orchestray/history/orch-<id>-cancelled/`. Written to `.orchestray/audit/events.jsonl`
+(the audit log, which is NOT inside the renamed state dir).
+
+```json
+{
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "state_cancel_aborted",
+  "orchestration_id": "<orch id from cancel sentinel>",
+  "archived_to": ".orchestray/history/orch-<id>-cancelled",
+  "events_jsonl_preserved": true
+}
+```
+
+**Fields:**
+- `archived_to`: Relative path (from project root) of the renamed state directory.
+- `events_jsonl_preserved`: Always `true` — the `events.jsonl` inside the archived
+  state dir is never deleted. Future analytics can replay the partial orchestration.
+
+**Consumer guidance:**
+- To find all cancelled orchestrations: grep for `state_cancel_aborted` in
+  `.orchestray/audit/events.jsonl` or check for `orch-*-cancelled/` dirs in history.
+- Pair `state_cancel_requested` and `state_cancel_aborted` on `orchestration_id` to
+  measure the cancel-to-abort latency (how many groups ran between request and abort).
+
+**Schema stability:** additive only. New fields will only be added as optional.

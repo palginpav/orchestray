@@ -1263,6 +1263,130 @@ function validateAntiPatternGateConfig(obj) {
 }
 
 // ---------------------------------------------------------------------------
+// state_sentinel section defaults and loader (W7 v2.0.18)
+//
+// state_sentinel.pause_check_enabled — boolean, default true.
+//   Kill flag: set to false to inert the entire pause/cancel sentinel check in
+//   check-pause-sentinel.js without removing sentinel files. Useful for emergency
+//   bypass when the sentinel hook misbehaves. Other gate-agent-spawn.js logic
+//   continues to run regardless.
+//
+// state_sentinel.cancel_grace_seconds — non-negative number, default 5.
+//   After cancel.sentinel is written, the hook allows Agent() spawns for this many
+//   seconds so any in-flight call can finish cleanly before blocking begins.
+//   Set to 0 to block immediately. Set to a larger value (e.g., 30) if your PM
+//   typically has long inter-spawn gaps.
+//
+// The sentinel files live in .orchestray/state/:
+//   pause.sentinel  — created by bin/state-pause.js; deleted by --resume.
+//   cancel.sentinel — created by bin/state-cancel.js; deleted by clean-abort.
+//
+// This section is a sibling top-level config block alongside audit, shield, etc.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_STATE_SENTINEL = Object.freeze({
+  /**
+   * Kill flag: false exits the sentinel check without reading files.
+   * Other gate logic in gate-agent-spawn.js still runs.
+   * @type {boolean}
+   */
+  pause_check_enabled: true,
+  /**
+   * Grace window (seconds) after cancel.sentinel is written before blocking.
+   * Allows any in-flight Agent() call that was already issued to finish.
+   * Range: 0..3600. Default 5.
+   * @type {number}
+   */
+  cancel_grace_seconds: 5,
+});
+
+/**
+ * Load and merge the state_sentinel block from <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing/malformed returns DEFAULT_STATE_SENTINEL so the
+ * hook still runs at safe defaults rather than crashing.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ pause_check_enabled: boolean, cancel_grace_seconds: number }}
+ */
+function loadStateSentinelConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_STATE_SENTINEL);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_STATE_SENTINEL);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_STATE_SENTINEL);
+  }
+
+  const fromFile = parsed.state_sentinel;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_STATE_SENTINEL);
+  }
+
+  const merged = Object.assign({}, DEFAULT_STATE_SENTINEL, sanitizeConfig(fromFile));
+
+  try {
+    const result = validateStateSentinelConfig(merged);
+    if (!result.valid) {
+      logStderr('state_sentinel config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) {
+    // Validation must never throw
+  }
+
+  return {
+    pause_check_enabled: typeof merged.pause_check_enabled === 'boolean'
+      ? merged.pause_check_enabled
+      : DEFAULT_STATE_SENTINEL.pause_check_enabled,
+    cancel_grace_seconds: Number.isFinite(merged.cancel_grace_seconds) && merged.cancel_grace_seconds >= 0
+      ? merged.cancel_grace_seconds
+      : DEFAULT_STATE_SENTINEL.cancel_grace_seconds,
+  };
+}
+
+/**
+ * Validate a state_sentinel config object.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateStateSentinelConfig(obj) {
+  const errors = [];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['state_sentinel must be an object'] };
+  }
+
+  if ('pause_check_enabled' in obj && typeof obj.pause_check_enabled !== 'boolean') {
+    errors.push(
+      'state_sentinel.pause_check_enabled must be a boolean — got ' + JSON.stringify(obj.pause_check_enabled)
+    );
+  }
+
+  if ('cancel_grace_seconds' in obj) {
+    const v = obj.cancel_grace_seconds;
+    if (!Number.isFinite(v) || v < 0 || v > 3600) {
+      errors.push(
+        'state_sentinel.cancel_grace_seconds must be a number 0..3600 — got ' + JSON.stringify(v)
+      );
+    }
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
+// ---------------------------------------------------------------------------
 // adaptive_verbosity section defaults and loader (T22 v2.0.17)
 //
 // adaptive_verbosity.enabled — boolean, default false.
@@ -1550,5 +1674,9 @@ module.exports = {
   DEFAULT_ANTI_PATTERN_GATE,
   loadAntiPatternGateConfig,
   validateAntiPatternGateConfig,
+  // W7 (v2.0.18): pause/cancel sentinel config
+  DEFAULT_STATE_SENTINEL,
+  loadStateSentinelConfig,
+  validateStateSentinelConfig,
   logStderr,
 };

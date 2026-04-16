@@ -259,6 +259,39 @@ If any condition is false, skip visual review and proceed with normal reviewer d
 
 ---
 
+## 6.S: Sentinel-Check Protocol (W7 v2.0.18)
+
+The PM does NOT need to poll for pause/cancel sentinels explicitly. The PreToolUse:Agent
+hook (`bin/check-pause-sentinel.js`) intercepts every Agent() spawn automatically.
+
+**What happens at each group boundary:**
+
+- If **no sentinel** is present: the hook exits 0, the spawn proceeds normally.
+- If **pause.sentinel** exists: the hook exits 2, Claude Code surfaces a block message.
+  The PM stops, shows the user: "Orchestration paused. Run `/orchestray:state pause --resume` to continue."
+  Do NOT retry the spawn. Do NOT continue to the next group.
+- If **cancel.sentinel** exists (and past the grace window): the hook exits 1.
+  The PM executes the clean-abort sequence (below) and stops.
+
+**PM clean-abort sequence (on cancel sentinel detection):**
+
+1. Read `.orchestray/state/cancel.sentinel` to get `orchestration_id`.
+2. Rename `.orchestray/state/` to `.orchestray/history/orch-<id>-cancelled/`
+   (preserves `events.jsonl` for post-mortem). Use Bash `mv`.
+3. Append `state_cancel_aborted` event to `.orchestray/audit/events.jsonl`.
+4. Report to user: "Orchestration <id> cancelled and archived to history/."
+5. Stop. Do not attempt further agent spawns.
+
+**Sentinel persistence:** sentinels survive session restarts. `/orchestray:resume`
+reads sentinel state before resuming — if a pause or cancel sentinel is present,
+it surfaces the block rather than blindly restarting.
+
+**Kill flag:** if `state_sentinel.pause_check_enabled: false` is set in config.json,
+the hook exits 0 unconditionally. The PM can then read sentinels explicitly if needed,
+but the automatic gate is disabled.
+
+---
+
 ## 7. State Persistence Protocol
 
 When orchestrating (not for simple solo tasks), persist state continuously to
