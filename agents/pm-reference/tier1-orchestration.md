@@ -270,8 +270,11 @@ hook (`bin/check-pause-sentinel.js`) intercepts every Agent() spawn automaticall
 - If **pause.sentinel** exists: the hook exits 2, Claude Code surfaces a block message.
   The PM stops, shows the user: "Orchestration paused. Run `/orchestray:state pause --resume` to continue."
   Do NOT retry the spawn. Do NOT continue to the next group.
-- If **cancel.sentinel** exists (and past the grace window): the hook exits 1.
-  The PM executes the clean-abort sequence (below) and stops.
+- If **cancel.sentinel** exists (and past the grace window): the hook exits 2
+  (same as pause — Claude Code only treats non-zero PreToolUse exit codes of 2 as a block).
+  The PM distinguishes cancel from pause by reading the sentinel file, not the exit code.
+  When `.orchestray/state/cancel.sentinel` is present, the PM executes the clean-abort
+  sequence (below) and stops.
 
 **PM clean-abort sequence (on cancel sentinel detection):**
 

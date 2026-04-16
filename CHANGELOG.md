@@ -45,7 +45,7 @@ and collapses duplicated files. Net LOC negative. Test count up.
   spawn to prevent noise.
 - **Sentinel-check `PreToolUse:Agent` hook** (`bin/check-pause-sentinel.js`) — runs
   before each `Agent()` spawn and blocks if a pause or cancel sentinel is present.
-  Respects `cancel_grace_seconds` config; exits 0 (allow) / 1 (cancel-abort) / 2 (pause-block).
+  Respects `cancel_grace_seconds` config; exits 0 (allow) / 2 (block — cancel or pause; PM distinguishes by reading the sentinel file).
 - **New config blocks**: `state_sentinel` (pause/cancel sentinel settings), `anti_pattern_gate`
   (advisory gate settings), `redo_flow` (cascade depth + commit prefix), `pattern_decay`
   (half-life defaults).
@@ -116,8 +116,10 @@ and harden operational discipline. No new features; no config migration required
 
 **Operational discipline**
 
-- **All 10 core agents**: `maxTurns` raised from 75 → 125 to prevent mid-task exhaustion on
-  large W-items (observed root cause of W7 failure during v2.0.18 orchestration).
+- **All 10 core agents**: `maxTurns` raised by +30 uniformly to prevent mid-task exhaustion
+  on large W-items (observed root cause of W7 failure during v2.0.18 orchestration).
+  Post-bump ceilings: 105 (architect, reviewer, documenter, security-engineer),
+  115 (debugger, tester), 125 (developer, refactorer, inventor), 175 (pm).
 - **W-item commit-body handoff discipline** — `agents/pm-reference/tier1-orchestration.md`
   now requires a `## Handoff` subsection in every W-item commit body. The subsection records
   files changed, test delta, invariants established, and downstream cues for the next agent
@@ -129,8 +131,9 @@ and harden operational discipline. No new features; no config migration required
   fallback to disjoint-file serial execution for long sequential orchestrations.
 - **Calibration retrospective** — `ACTUAL.md` for the v2.0.18 phase captures headline metrics,
   per-W-item size calibration verdicts, and the worktree isolation track record.
-  `.planning/phases/*/ACTUAL.md` is now excluded from the `.planning/phases/*/` gitignore
-  exception so retrospectives are version-tracked.
+  `.planning/phases/*/ACTUAL.md` is now added as a negation (`!.planning/phases/*/ACTUAL.md`)
+  in `.gitignore` so retrospectives are version-tracked while `DESIGN.md` and `VECTORS.md`
+  remain ignored.
 
 ### Migration — removal of experimental rollback scaffolding
 
