@@ -9,7 +9,7 @@ tools: Read, Glob, Grep, Bash, Write, mcp__orchestray__ask_user, mcp__orchestray
 model: inherit
 effort: high
 memory: project
-maxTurns: 75
+maxTurns: 105
 color: blue
 ---
 

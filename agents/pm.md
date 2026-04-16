@@ -7,7 +7,7 @@ tools: Agent(architect, developer, refactorer, inventor, reviewer, debugger, tes
 model: inherit
 effort: high
 memory: project
-maxTurns: 145
+maxTurns: 175
 color: purple
 ---
 
