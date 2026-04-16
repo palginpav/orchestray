@@ -7,8 +7,8 @@
  * Covers:
  *   - state-pause.js creates sentinel; --resume removes it; idempotent on both ends.
  *   - state-cancel.js creates sentinel; idempotent; --force overwrites.
- *   - check-pause-sentinel.js exits 0/1/2 correctly.
- *   - cancel_grace_seconds honoured: fresh sentinel → exit 0; stale → exit 1.
+ *   - check-pause-sentinel.js exits 0/2 correctly.
+ *   - cancel_grace_seconds honoured: fresh sentinel → exit 0; stale → exit 2.
  *   - Cancel clean-abort: when state dir is renamed, events.jsonl is preserved.
  *   - Audit events: all 4 event types have canonical shape (timestamp/type, correct fields).
  *   - Kill flag: state_sentinel.pause_check_enabled: false → exit 0 regardless of sentinels.
@@ -313,7 +313,7 @@ describe('check-pause-sentinel.js', () => {
     assert.ok(r.stdout.includes('--resume'), 'includes resume instructions');
   });
 
-  test('exits 1 when cancel.sentinel is present and past grace window', () => {
+  test('exits 2 when cancel.sentinel is present and past grace window', () => {
     const { dir, cancelPath } = makeProject({
       config: { state_sentinel: { cancel_grace_seconds: 0 } },
     });
@@ -327,7 +327,7 @@ describe('check-pause-sentinel.js', () => {
     }));
 
     const r = runSentinelCheck(dir);
-    assert.strictEqual(r.status, 1, 'exits 1 on cancel sentinel past grace');
+    assert.strictEqual(r.status, 2, 'exits 2 on cancel sentinel past grace');
     assert.ok(r.stdout.includes('cancelled:'), 'prints cancelled: <orch-id>');
   });
 
@@ -366,7 +366,7 @@ describe('check-pause-sentinel.js', () => {
     }));
 
     const r = runSentinelCheck(dir);
-    assert.strictEqual(r.status, 1, 'cancel takes priority (exit 1, not 2)');
+    assert.strictEqual(r.status, 2, 'cancel takes priority over pause (both exit 2)');
     assert.ok(r.stdout.includes('cancelled:'));
   });
 
@@ -417,7 +417,7 @@ describe('cancel_grace_seconds', () => {
     assert.strictEqual(r.status, 0, 'within 5s grace → exit 0');
   });
 
-  test('stale cancel sentinel (0s grace) → exit 1', () => {
+  test('stale cancel sentinel (0s grace) → exit 2', () => {
     const { dir, cancelPath } = makeProject({
       config: { state_sentinel: { cancel_grace_seconds: 0 } },
     });
@@ -430,10 +430,10 @@ describe('cancel_grace_seconds', () => {
     }));
 
     const r = runSentinelCheck(dir);
-    assert.strictEqual(r.status, 1, 'past grace → exit 1');
+    assert.strictEqual(r.status, 2, 'past grace → exit 2');
   });
 
-  test('no requested_at in sentinel → treated as past grace (exit 1 at 0s)', () => {
+  test('no requested_at in sentinel → treated as past grace (exit 2 at 0s)', () => {
     const { dir, cancelPath } = makeProject({
       config: { state_sentinel: { cancel_grace_seconds: 0 } },
     });
@@ -444,9 +444,9 @@ describe('cancel_grace_seconds', () => {
     }));
 
     const r = runSentinelCheck(dir);
-    // No requested_at → can't compute grace; script should either exit 1 or 0 (fail-open).
+    // No requested_at → can't compute grace; script should either exit 2 or 0 (fail-open).
     // The contract is: it must not crash.
-    assert.ok(r.status === 0 || r.status === 1, 'does not crash on missing requested_at');
+    assert.ok(r.status === 0 || r.status === 2, 'does not crash on missing requested_at');
   });
 
 });

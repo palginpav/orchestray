@@ -11,7 +11,7 @@
  *
  * Exit semantics:
  *   0 — no sentinel; allow spawn to proceed.
- *   1 — cancel.sentinel present (after grace window); print block reason.
+ *   2 — cancel.sentinel present (after grace window); print block reason.
  *   2 — pause.sentinel present; print block reason with resume instructions.
  *
  * Grace window: a fresh cancel.sentinel (written within `cancel_grace_seconds`
@@ -31,7 +31,7 @@
  *
  * Input:  JSON on stdin (Claude Code PreToolUse hook payload) — not consumed,
  *         only stdin is drained to avoid EPIPE.
- * Output: block message to stdout (exit 1/2) or nothing (exit 0).
+ * Output: block message to stdout (exit 2) or nothing (exit 0).
  *
  * Fail-open: any internal error → exit 0 (operators must never be hard-blocked
  * by a buggy sentinel script).
@@ -166,7 +166,7 @@ function main() {
         'The PM will archive state to history/orch-' + orchId + '-cancelled/ at the next boundary.\n' +
         'To clear without archiving (not recommended): delete .orchestray/state/cancel.sentinel\n'
       );
-      process.exit(1);
+      process.exit(2);
     }
 
     // 2. Check pause sentinel.
