@@ -1387,6 +1387,127 @@ function validateStateSentinelConfig(obj) {
 }
 
 // ---------------------------------------------------------------------------
+// redo_flow section defaults and loader (W8 v2.0.18)
+//
+// redo_flow.max_cascade_depth — positive integer, default 10.
+//   Maximum number of transitive downstream dependents to include in a
+//   --cascade redo closure. Prevents runaway recursion on pathological
+//   dependency graphs. Range: 1..1000. Default 10.
+//
+// redo_flow.commit_prefix — non-empty string, default "redo".
+//   Prefix used in redo commit messages: "<commit_prefix>(<W-id>): ...".
+//   Operators can customise to match their project commit conventions.
+//
+// ---------------------------------------------------------------------------
+
+const DEFAULT_REDO_FLOW = Object.freeze({
+  /**
+   * Maximum cascade depth when computing transitive dependent closure.
+   * Prevents infinite loops on cycles or very deep graphs.
+   * Range: 1..1000. Default 10.
+   * @type {number}
+   */
+  max_cascade_depth: 10,
+  /**
+   * Prefix for redo commit messages: "<prefix>(<W-id>): ...".
+   * Default: "redo".
+   * @type {string}
+   */
+  commit_prefix: 'redo',
+});
+
+/**
+ * Load and merge the redo_flow block from <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing/malformed returns DEFAULT_REDO_FLOW.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ max_cascade_depth: number, commit_prefix: string }}
+ */
+function loadRedoFlowConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_REDO_FLOW);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_REDO_FLOW);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_REDO_FLOW);
+  }
+
+  const fromFile = parsed.redo_flow;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_REDO_FLOW);
+  }
+
+  const merged = Object.assign({}, DEFAULT_REDO_FLOW, sanitizeConfig(fromFile));
+
+  try {
+    const result = validateRedoFlowConfig(merged);
+    if (!result.valid) {
+      logStderr('redo_flow config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) {
+    // Validation must never throw
+  }
+
+  return {
+    max_cascade_depth:
+      Number.isFinite(merged.max_cascade_depth) &&
+      merged.max_cascade_depth >= 1 &&
+      merged.max_cascade_depth <= 1000
+        ? Math.floor(merged.max_cascade_depth)
+        : DEFAULT_REDO_FLOW.max_cascade_depth,
+    commit_prefix:
+      typeof merged.commit_prefix === 'string' && merged.commit_prefix.length > 0
+        ? merged.commit_prefix
+        : DEFAULT_REDO_FLOW.commit_prefix,
+  };
+}
+
+/**
+ * Validate a redo_flow config object.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateRedoFlowConfig(obj) {
+  const errors = [];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['redo_flow must be an object'] };
+  }
+
+  if ('max_cascade_depth' in obj) {
+    const v = obj.max_cascade_depth;
+    if (!Number.isFinite(v) || v < 1 || v > 1000 || !Number.isInteger(v)) {
+      errors.push(
+        'redo_flow.max_cascade_depth must be an integer 1..1000 — got ' + JSON.stringify(v)
+      );
+    }
+  }
+
+  if ('commit_prefix' in obj) {
+    if (typeof obj.commit_prefix !== 'string' || obj.commit_prefix.length === 0) {
+      errors.push(
+        'redo_flow.commit_prefix must be a non-empty string — got ' + JSON.stringify(obj.commit_prefix)
+      );
+    }
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
+// ---------------------------------------------------------------------------
 // adaptive_verbosity section defaults and loader (T22 v2.0.17)
 //
 // adaptive_verbosity.enabled — boolean, default false.
@@ -1678,5 +1799,9 @@ module.exports = {
   DEFAULT_STATE_SENTINEL,
   loadStateSentinelConfig,
   validateStateSentinelConfig,
+  // W8 (v2.0.18): redo_flow config
+  DEFAULT_REDO_FLOW,
+  loadRedoFlowConfig,
+  validateRedoFlowConfig,
   logStderr,
 };

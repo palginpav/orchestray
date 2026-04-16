@@ -2,15 +2,24 @@
 name: run
 description: Trigger multi-agent orchestration on a task
 disable-model-invocation: true
-argument-hint: [task description]
+argument-hint: "[--preview] [task description]"
 ---
 
 # Orchestrate Task
 
 You are receiving this because the user invoked `/orchestray:run`. Orchestrate the following task using your multi-agent delegation protocol.
 
+<!-- W8 v2.0.18: --preview flag handling (UX2)
+  If $ARGUMENTS contains the token "--preview" (anywhere in the string):
+    1. Strip "--preview" from $ARGUMENTS to obtain the clean task description.
+    2. The effective invocation prompt is the task description below PLUS the
+       PREVIEW MODE instruction appended at the end of this file.
+  If "--preview" is NOT present: proceed normally with the standard protocol.
+-->
+
 ## Task
 
+<!-- Strip "--preview" from the raw arguments to get the actual task description. -->
 $ARGUMENTS
 
 ## Orchestration Instructions
@@ -57,3 +66,30 @@ After orchestration completes:
 - List all files changed across all agents
 - Report any issues or warnings from agents
 - Archive orchestration state to `.orchestray/history/{timestamp}-orchestration/`
+
+---
+
+<!-- W8 v2.0.18: PREVIEW MODE instruction block (UX2)
+
+If the string "--preview" appeared anywhere in $ARGUMENTS, append the following
+instruction to your invocation prompt. This is the only change --preview makes.
+The PM reads this instruction and halts after decomposition.
+
+PREVIEW MODE — perform decomposition and complexity scoring only. Do the following:
+1. Score the task complexity (Section 12).
+2. Decompose the task into W-items (Section 13): identify agents, sizes, dependencies,
+   and parallel groups.
+3. Print the W-item table in this format:
+   | W | Title | Agent | Model/Effort | Size | Est. Cost | Depends on |
+   | -- | ----- | ----- | ------------ | ---- | --------- | ---------- |
+   (Cost estimates are approximate; actual usage will vary.)
+   Use the cost formula from §6.T of tier1-orchestration.md:
+     base_cost(XS)=$0.25, S=$0.45, M=$0.70, L=$1.20, XL=$2.50
+     multiplier: haiku/low=0.35, sonnet/medium=1.0, opus/high=2.2
+   Per-item estimate = base_cost × multiplier.
+4. Do NOT write any state files. Do NOT write orchestration.md, task-graph.md,
+   tasks/, or any audit file.
+5. Do NOT spawn any subagents.
+6. Stop after displaying the preview table and print:
+   "Preview only. Re-issue `/orchestray:run <task>` (without --preview) to execute."
+-->

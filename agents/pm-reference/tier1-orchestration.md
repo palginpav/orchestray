@@ -292,6 +292,56 @@ but the automatic gate is disabled.
 
 ---
 
+## 6.T: Preview and Redo Protocol (W8 v2.0.18)
+
+### Preview Mode
+
+When the invocation prompt contains the text "PREVIEW MODE", the PM MUST:
+
+1. Score complexity (Section 12) and decompose the task into W-items (Section 13).
+2. Print the W-item table:
+   ```
+   Cost estimates are approximate; actual usage will vary.
+   | W  | Title | Agent | Model/Effort | Size | Est. Cost | Depends on |
+   | -- | ----- | ----- | ------------ | ---- | --------- | ---------- |
+   ```
+   Cost formula: `estimate = base_cost(size) × model_multiplier`
+   - `base_cost`: XS=$0.25, S=$0.45, M=$0.70, L=$1.20, XL=$2.50
+   - `model_multiplier`: haiku/low=0.35, sonnet/medium=1.0, opus/high=2.2
+3. Do NOT write any state files (no `orchestration.md`, `task-graph.md`, `tasks/`,
+   audit files).
+4. Do NOT spawn any subagents.
+5. Stop and instruct the user: "Preview only. Re-issue `/orchestray:run <task>`
+   (without --preview) to execute."
+
+### Redo Flow
+
+On each PM tick after a group completes, check for `.orchestray/state/redo.pending`.
+
+**If `redo.pending` is present:**
+
+1. Parse the JSON file: `{ w_ids: [...], prompt_override_file: <path|null>, commit_prefix: "redo" }`.
+2. For each W-id in `w_ids` (in listed order, which is dependency-respecting):
+   a. Re-read the task file from `.orchestray/state/tasks/<W-id>.md`.
+   b. If `prompt_override_file` is non-null, read the file and prepend its contents
+      to the delegation prompt as "Override instructions:".
+   c. Respawn the developer agent for the W-item.
+   d. Await completion and update state normally.
+   e. Commit the result with message prefix `<commit_prefix>(<W-id>):` (e.g.
+      `redo(W4): ...`). Each re-run produces a NEW commit -- never an amend.
+3. Delete `redo.pending` after all items in the list complete.
+4. Report to the user: "Redo complete: [W-id list]."
+
+**Cascade semantics:** `redo.pending` ordering is dependency-respecting (topological).
+The closure was computed by `bin/redo-wave-item.js` before writing the file; the PM
+processes items in the order listed without re-computing the graph.
+
+**Cascade depth cap:** `redo_flow.max_cascade_depth` (default 10) limits the closure
+size. If the closure was capped, `bin/redo-wave-item.js` warned the user upfront; the
+PM does not need to re-check.
+
+---
+
 ## 7. State Persistence Protocol
 
 When orchestrating (not for simple solo tasks), persist state continuously to
