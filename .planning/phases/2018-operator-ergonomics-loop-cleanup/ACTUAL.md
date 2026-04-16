@@ -115,3 +115,20 @@ DESIGN size labels used: XS ≈ 0–100 net LOC, S ≈ 100–300, M ≈ 300–60
 ## How to use this file
 
 Before drafting DESIGN.md for any release of comparable scope (10+ W-items, mix of new-capability and cleanup tracks, TDD-mode on), skim this file first. The size-calibration table is the primary artifact: cross-reference your DESIGN's size labels against the "Verdict" column to see where the v2.0.18 architect was systematically wrong. Apply a 3–5× multiplier to any XS/S/M label on a "new capability" W-item before citing it in the budget estimate. The worktree isolation track record is the secondary artifact: if you are planning parallel worktree spawns, read the failure-mode table and the WX3 guidance in `agents/pm-reference/tier1-orchestration.md` before committing to that execution pattern.
+
+---
+
+## Post-release addenda
+
+Eight commits landed after the release commit (bfa17d5) to close audit findings and harden operational discipline. Listed in chronological order:
+
+- **d068beb** `post-release: +30 maxTurns on all 10 core agents` — raised agent maxTurns 75 → 125 after W7 exhaustion incident; applied to all 10 core agent definitions uniformly.
+- **afe9eeb** `fix: pattern_decay config keys in the nested shape (BUG-2018-02, COS-2018-01)` — corrected the nesting level of `pattern_decay` config keys so configurable half-life values are reachable at runtime.
+- **5d7efeb** `fix: cancel-sentinel hook exits 2 (BUG-2018-01)` — `check-pause-sentinel.js` exit code corrected from 1 to 2 on cancel sentinel; previously the wrong code bypassed the pause path silently.
+- **7def865** `fix: install.js + post-upgrade-sweep seed the 4 new v2.0.18 config blocks (INC-02/03)` — both entry points now seed `state_sentinel`, `anti_pattern_gate`, `redo_flow`, and `pattern_decay` on fresh install and first-run upgrade.
+- **78fbf60** `fix: README redo_flow drift + config_key_seeded schema (R2 nits)` — README and defaults documentation aligned with code behaviour for `redo_flow` cascade depth and `config_key_seeded` schema.
+- **144d74f** `docs: W-item commit message discipline (Handoff subsection)` — `tier1-orchestration.md` updated to require a `## Handoff` subsection in every W-item commit body as the canonical handoff channel.
+- **a56b3e6** `post-release: DESIGN calibration retrospective + worktree-guidance fixes` — corrected the false frontmatter-field claim for `isolation: worktree`; added stale-base-ref harness limitation guidance and fallback recommendation.
+- **c6ce904** `chore: .planning/phases/*/ACTUAL.md exception + v2.0.18 retrospective tracked` — `ACTUAL.md` files excluded from the `.planning` gitignore exception so retrospectives are version-tracked; WX3 retrospective content committed.
+
+**Lessons internalised by these commits:** maxTurns calibration for large W-items; commit-body as canonical handoff channel; worktree isolation as unreliable for long sequential orchestrations. Deferred to v2.0.19: INC-2018-04 (cherry-pick vs merge protocol drift) and DS-01 (stale worktree cleanup hygiene).

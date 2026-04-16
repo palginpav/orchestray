@@ -94,6 +94,44 @@ and collapses duplicated files. Net LOC negative. Test count up.
   written with only the legacy `ts` field (not `timestamp`) were silently dropped.
   Fixed in FC2 by extending `_normalizeEvent()` to back-fill `timestamp` from `ts`.
 
+### Post-release refinements
+
+Eight commits landed after the v2.0.18 release commit (bfa17d5) to close audit findings
+and harden operational discipline. No new features; no config migration required.
+
+**Audit-directed fixes**
+
+- **cancel-sentinel hook** — `check-pause-sentinel.js` now exits 2 (block) on a cancel
+  sentinel, not exit 1 (abort). Previously the wrong exit code bypassed the pause path
+  silently. (BUG-2018-01)
+- **`pattern_decay` config keys** — corrected the nested shape; keys were being seeded at
+  the wrong nesting level, making the configurable half-life values unreachable at runtime.
+  (BUG-2018-02, COS-2018-01)
+- **`install.js` + `post-upgrade-sweep.js`** — both now seed all four v2.0.18 config blocks
+  (`state_sentinel`, `anti_pattern_gate`, `redo_flow`, `pattern_decay`) on fresh install and
+  first-run upgrade respectively. Previously these blocks were absent from seeded configs,
+  causing silent fallback to hard-coded defaults. (INC-2018-02, INC-2018-03)
+- **README / defaults alignment** — `redo_flow` cascade depth and `config_key_seeded` schema
+  documentation corrected to match code behaviour. (R2 nits)
+
+**Operational discipline**
+
+- **All 10 core agents**: `maxTurns` raised from 75 → 125 to prevent mid-task exhaustion on
+  large W-items (observed root cause of W7 failure during v2.0.18 orchestration).
+- **W-item commit-body handoff discipline** — `agents/pm-reference/tier1-orchestration.md`
+  now requires a `## Handoff` subsection in every W-item commit body. The subsection records
+  files changed, test delta, invariants established, and downstream cues for the next agent
+  in sequence. Commit body is the canonical handoff channel; external artifact files are
+  supplementary.
+- **Worktree failure-mode guidance** — corrected a false claim in `tier1-orchestration.md`
+  that `isolation: worktree` is a frontmatter field. Isolation is an `Agent()` tool parameter
+  set per-invocation. Added guidance on the stale-base-ref harness limitation and recommended
+  fallback to disjoint-file serial execution for long sequential orchestrations.
+- **Calibration retrospective** — `ACTUAL.md` for the v2.0.18 phase captures headline metrics,
+  per-W-item size calibration verdicts, and the worktree isolation track record.
+  `.planning/phases/*/ACTUAL.md` is now excluded from the `.planning/phases/*/` gitignore
+  exception so retrospectives are version-tracked.
+
 ### Migration — removal of experimental rollback scaffolding
 
 v2.0.17 pre-announced the removal of `pm_prompt_variant` and `pm_prose_strip` for v2.0.18.
