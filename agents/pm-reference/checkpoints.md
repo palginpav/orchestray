@@ -78,7 +78,7 @@ Commands: remove <n>, model <n> <opus|sonnet|haiku>, add <agent> after <n>, swap
 ### Constraints
 - Cannot add more than 6 total tasks (Section 13 limit, in tier1-orchestration.md)
 - Cannot remove all tasks
-- Agent types must be valid: pm, architect, developer, refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer, or a registered specialist name
+- Agent types must be valid: pm, architect, developer, refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer, release-manager, ux-critic, platform-oracle, or a registered specialist name
 
 ---
 

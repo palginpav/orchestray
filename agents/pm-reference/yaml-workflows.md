@@ -36,7 +36,7 @@ without a workflow or fix the file. Do not attempt validation on unparseable fil
 1. **Required fields:** `name`, `description`, and `steps` must be present and non-empty.
 2. **Step count:** `steps` array must have 1-6 entries (matches Section 13 limit, in tier1-orchestration.md). Reject if exceeded.
 3. **Step fields:** Each step must have `id` (string), `agent` (valid agent name), and `task` (non-empty string).
-4. **Agent types:** Each step's `agent` must be a valid core agent (architect, developer, refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer) or a registered specialist name (Section 21). Reject unknown agent types.
+4. **Agent types:** Each step's `agent` must be a valid core agent (architect, developer, refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer, release-manager, ux-critic, platform-oracle) or a registered specialist name (Section 21). Reject unknown agent types.
 5. **Model values:** If `model` is specified, it must be `haiku`, `sonnet`, `opus`, or `inherit`. Reject invalid values. `inherit` means the PM's Section 19 routing determines the model.
 6. **Dependency references:** Every id listed in `depends_on` must exist as a step `id` in the same file. Reject dangling references.
 7. **No circular dependencies:** Build a dependency graph and check for cycles. Reject if any cycle is found.

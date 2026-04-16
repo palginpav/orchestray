@@ -18,6 +18,12 @@
  * @param {(payload: Object) => Object} options.extraFieldsPicker - Function
  *   that returns script-specific fields to merge into the event. Receives the
  *   parsed stdin payload.
+ * @param {(payload: Object, ctx: { orchestrationId: string, baseTimestamp: string }) => Array<Object>} [options.additionalEventsPicker]
+ *   v2.0.21 — Optional function returning an array of *additional* fully-formed
+ *   events to append after the primary event. Used to emit `dynamic_agent_spawn`
+ *   alongside `agent_start` when the spawned agent is non-canonical. Each event
+ *   should include its own `type`; `timestamp` and `orchestration_id` fields are
+ *   provided in `ctx` for convenience but the picker may override them.
  */
 const fs = require('fs');
 const path = require('path');
@@ -26,7 +32,7 @@ const { resolveSafeCwd } = require('./resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./orchestration-state');
 const { MAX_INPUT_BYTES } = require('./constants');
 
-function writeAuditEvent({ type, mode, extraFieldsPicker }) {
+function writeAuditEvent({ type, mode, extraFieldsPicker, additionalEventsPicker }) {
   let input = '';
   process.stdin.setEncoding('utf8');
   process.stdin.on('error', () => {
@@ -77,8 +83,28 @@ function writeAuditEvent({ type, mode, extraFieldsPicker }) {
         : {};
       Object.assign(auditEvent, extras);
 
-      // Append to events.jsonl
-      atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), auditEvent);
+      // Append the primary event to events.jsonl
+      const eventsPath = path.join(auditDir, 'events.jsonl');
+      atomicAppendJsonl(eventsPath, auditEvent);
+
+      // v2.0.21: optionally append additional events (e.g. dynamic_agent_spawn).
+      if (typeof additionalEventsPicker === 'function') {
+        try {
+          const extra = additionalEventsPicker(event, {
+            orchestrationId,
+            baseTimestamp: auditEvent.timestamp,
+          });
+          if (Array.isArray(extra)) {
+            for (const ev of extra) {
+              if (ev && typeof ev === 'object') {
+                atomicAppendJsonl(eventsPath, ev);
+              }
+            }
+          }
+        } catch (_e) {
+          // Best-effort; never block on additional-event picker failure.
+        }
+      }
     } catch (_e) {
       // Never block the hook due to audit failure
     }

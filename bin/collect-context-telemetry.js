@@ -27,6 +27,7 @@ const { updateCache }            = require('./_lib/context-telemetry-cache');
 const { extractLastAssistantUsage, extractFirstAssistantModel } = require('./_lib/transcript-usage');
 const { safeRealpath, isInsideAllowed, encodeProjectPath } = require('./_lib/path-containment');
 const { lookupModel, resolveContextWindow } = require('./_lib/models');
+const { runJanitor }             = require('./_lib/subagent-janitor');
 
 let _staging_counter = 0;
 
@@ -162,6 +163,7 @@ function handleStart(event, cwd) {
   updateCache(cwd, (cache) => {
     // Try to consume staged spawn info.
     let staged = null;
+    let stagedKey = null;
     if (cache._spawn_staging) {
       // Find the most recent unstale staging entry.
       let latestKey = null;
@@ -172,6 +174,7 @@ function handleStart(event, cwd) {
       }
       if (latestKey) {
         staged = cache._spawn_staging[latestKey];
+        stagedKey = latestKey; // Equals the PreToolUse tool_use_id when one was present.
         delete cache._spawn_staging[latestKey];
       }
     }
@@ -189,16 +192,28 @@ function handleStart(event, cwd) {
       }
     }
 
-    // Resolve model in priority order: staged > .meta.json > transcript first-assistant > null.
+    // Resolve model in priority order: staged > .meta.json > transcript first-assistant
+    // > parent's session model > null.
+    // The parent fallback (v2.0.21) handles inherit-mode subagents whose own model is
+    // not yet known at SubagentStart — without it, the row renders with a 200K context
+    // window default even though Opus subagents have 1M.
     let resolvedModel = (staged && staged.model) || metaModel || null;
     if (!resolvedModel && transcriptPath) {
       resolvedModel = extractFirstAssistantModel(transcriptPath);
+    }
+    if (!resolvedModel && cache.session && cache.session.model) {
+      resolvedModel = cache.session.model;
     }
 
     // Resolve context window.
     const contextWindow = resolveContextWindow(resolvedModel, null);
 
     const now = new Date().toISOString();
+    // tool_use_id links this row back to the PreToolUse event so PostToolUse
+    // can remove the row even when its payload omits agent_id (v2.0.21 fix).
+    // Only store real Claude Code tool ids (toolu_*); synthetic spawn-* keys are
+    // an internal staging-map detail and can't match any future PostToolUse event.
+    const toolUseIdLink = (stagedKey && stagedKey.startsWith('toolu_')) ? stagedKey : null;
     const newRow = {
       agent_id:        agentId,
       agent_type:      metaAgentType || 'unknown',
@@ -210,6 +225,7 @@ function handleStart(event, cwd) {
       started_at:      now,
       last_seen_at:    now,
       transcript_path: transcriptPath || event.agent_transcript_path || null,
+      tool_use_id:     toolUseIdLink,
     };
 
     // Upsert: replace existing row for this agent_id if present.
@@ -257,45 +273,86 @@ function handleStop(event, cwd) {
   }
 
   updateCache(cwd, (cache) => {
-    if (!cache.active_subagents) return cache;
+    if (!cache.active_subagents) cache.active_subagents = [];
     const idx = cache.active_subagents.findIndex((r) => r.agent_id === agentId);
-    if (idx < 0) return cache; // Row already removed by post-spawn or missing — no-op.
+    if (idx >= 0) {
+      const row = cache.active_subagents[idx];
+      cache.active_subagents[idx] = Object.assign({}, row, {
+        tokens:       finalTokens || row.tokens,
+        last_seen_at: new Date().toISOString(),
+      });
+    }
 
-    const row = cache.active_subagents[idx];
-    cache.active_subagents[idx] = Object.assign({}, row, {
-      tokens:       finalTokens || row.tokens,
-      last_seen_at: new Date().toISOString(),
-    });
+    // v2.0.21: also sweep stale siblings while we're holding the lock. The
+    // parent Stop hook (capture-pm-turn.js) was the only janitor before, but
+    // Stop fires too rarely to keep the cache fresh in long sessions.
+    try {
+      const sessId = cache.session_id || event.session_id || null;
+      if (sessId) runJanitor(cwd, sessId, cache);
+    } catch (_e) {
+      // Janitor is best-effort; never block the cache write.
+    }
+
     return cache;
   });
 }
 
 /**
- * post-spawn: Remove the active_subagents[] row on PostToolUse.
+ * post-spawn: Remove the active_subagents[] row on PostToolUse(Agent|Explore|Task).
  *
- * SubagentStop ordering relative to PostToolUse is not guaranteed; we remove
- * the row here idempotently (no-op if already removed by SubagentStop).
+ * v2.0.21: PostToolUse payloads do NOT include `agent_id` at the top level the way
+ * SubagentStop does. The pre-v2.0.21 implementation read `event.agent_id` and
+ * early-returned, leaving every row to expire via the slow janitor path (which
+ * itself only ran on the rarely-firing parent Stop hook). Now we try multiple
+ * locator strategies and fall back to a stale-row sweep, so the row is removed
+ * even when none of the identifiers are present.
  *
  * @param {object} event
  * @param {string} cwd
  */
 function handlePostSpawn(event, cwd) {
-  const agentId = event.agent_id || null;
-  if (!agentId) return;
+  // Try every identifier the payload might offer, in priority order.
+  const topAgentId  = event.agent_id || null;
+  const respAgentId = (event.tool_response && event.tool_response.agent_id) || null;
+  const toolUseId   = event.tool_use_id || null;
 
   updateCache(cwd, (cache) => {
-    if (!cache.active_subagents) return cache;
-    cache.active_subagents = cache.active_subagents.filter((r) => r.agent_id !== agentId);
+    if (!Array.isArray(cache.active_subagents) || cache.active_subagents.length === 0) {
+      return cache;
+    }
+
+    const before = cache.active_subagents.length;
+    cache.active_subagents = cache.active_subagents.filter((r) => {
+      if (topAgentId  && r.agent_id    === topAgentId)  return false;
+      if (respAgentId && r.agent_id    === respAgentId) return false;
+      if (toolUseId   && r.tool_use_id === toolUseId)   return false;
+      return true;
+    });
+
+    // If no identifier matched, fall back to a janitor sweep so we still
+    // converge on the right state instead of letting rows accumulate.
+    if (cache.active_subagents.length === before) {
+      try {
+        const sessId = cache.session_id || event.session_id || null;
+        if (sessId) runJanitor(cwd, sessId, cache);
+      } catch (_e) { /* best-effort */ }
+    }
+
     return cache;
   });
 }
 
-// ── Session janitor (called from handleStop's updateCache context) ─────────────
-// NOTE: The janitor runs on the Stop hook side via capture-pm-turn.js extension
-// (updateSessionTelemetry). It is NOT called from the subagent-side SubagentStop
-// handler here, because the subagent-side hooks run inside the subagent process
-// and do not have access to the parent session's subagents directory listing.
-// The janitor is implemented in the updateSessionTelemetry function exported below.
+// ── Session janitor ───────────────────────────────────────────────────────────
+// v2.0.21: The janitor is called from BOTH `capture-pm-turn.js` (Stop hook) and
+// `handleStop` here (SubagentStop hook). The latter is necessary because the
+// parent Stop hook fires far less often than user prompts in practice, leaving
+// the cache stale between bursts of subagent activity. The shared implementation
+// lives in `_lib/subagent-janitor.js`.
+//
+// Note about scope: subagent-side hooks DO have access to the parent session's
+// subagents directory because `event.session_id` here is the parent's session,
+// and `cache.session_id` is populated by reset-context-telemetry.js at session
+// start. The earlier comment claiming otherwise was incorrect.
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 

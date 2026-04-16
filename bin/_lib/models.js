@@ -8,12 +8,18 @@
  */
 
 const MODELS = {
+  'claude-opus-4-7':   { short: 'opu-4-7', display: 'Opus 4.7',   window_default: 200000, window_1m: 1000000 },
   'claude-opus-4-6':   { short: 'opu-4-6', display: 'Opus 4.6',   window_default: 200000, window_1m: 1000000 },
   'claude-sonnet-4-6': { short: 'son-4-6', display: 'Sonnet 4.6', window_default: 200000 },
   'claude-haiku-4-5':  { short: 'hai-4-5', display: 'Haiku 4.5',  window_default: 200000 },
 };
 
-const MODEL_UNKNOWN = { short: '?', display: 'unknown', window_default: 200000 };
+// MODEL_UNKNOWN includes window_1m so the observed-tokens bump (statusline.js
+// `bumpWindowIfObservedExceeds`) can rescue render correctness when a fresh
+// Claude model ships before this table is updated. Better to bump to 1M and
+// be wrong by ~2x for a hypothetical 500K-context model than to render an
+// impossible >100% fill that the user will assume is a bug.
+const MODEL_UNKNOWN = { short: '?', display: 'unknown', window_default: 200000, window_1m: 1000000 };
 
 /**
  * Look up model metadata by full model ID string.

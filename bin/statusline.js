@@ -114,12 +114,56 @@ function typeCode(agentType) {
   return agentType.slice(0, 3).toLowerCase();
 }
 
+/**
+ * If the observed prompt fill exceeds the metadata-resolved window, bump the
+ * displayed window to the model's maximum variant. This handles extended-context
+ * mode (e.g. Opus 4.6 1M) when neither the `[1m]` suffix nor a "1M" display-name
+ * signal reaches the renderer — observation alone proves we're in the larger
+ * variant, since you cannot have a prompt larger than the actual context window.
+ *
+ * Returns the original window if no bump applies.
+ *
+ * @param {number} window         - Currently resolved context window.
+ * @param {number} observedTokens - Observed prompt fill (input + cache_*).
+ * @param {string|null} modelId   - Model ID for max-window lookup.
+ * @returns {number}
+ */
+function bumpWindowIfObservedExceeds(window, observedTokens, modelId) {
+  if (observedTokens > window) {
+    const meta = lookupModel(modelId);
+    if (meta.window_1m && meta.window_1m > window) {
+      return meta.window_1m;
+    }
+  }
+  return window;
+}
+
 // ── Block renderers ───────────────────────────────────────────────────────────
+//
+// Token semantics (v2.0.21 — disambiguation note):
+//
+// The displayed `FILL/TOTAL` numbers represent **context-window prompt fill**,
+// computed as `total_prompt = input + cache_read + cache_creation`. Output
+// tokens are deliberately EXCLUDED because they leave the model and do not
+// occupy the next turn's context window. So this number is ALWAYS LESS than
+// what Claude Code's per-spawn UI shows ("X tokens"), which sums input +
+// output + cache. Both are correct — they answer different questions:
+//
+//   - Statusline (`FILL/TOTAL`): "How close to my context limit am I?"
+//   - Claude Code UI ("X tokens"): "How many tokens did this turn transact?"
+//
+// If you want to compare against Claude's per-spawn number, add the `output`
+// field from the same row's `tokens` blob to our `total_prompt`. We do not
+// display output here because context-pressure decisions only care about the
+// prompt side.
 
 /**
  * Render the parent session block.
  * Format: [ctx PCT FILL/TOTAL MODEL]
  * With pressure: [ctx PCT!  FILL/TOTAL MODEL] or [ctx PCT!! FILL/TOTAL MODEL]
+ *
+ * `FILL` is context-window prompt fill (input + cache_read + cache_creation),
+ * NOT total tokens transacted. See block comment above.
  *
  * @param {object} session - cache.session
  * @param {number} contextWindow
@@ -128,12 +172,12 @@ function typeCode(agentType) {
  * @returns {string}
  */
 function renderParent(session, contextWindow, thresholds, modelId) {
-  const tokens  = (session && session.tokens && session.tokens.total_prompt) || 0;
-  const fill    = formatTokens(tokens);
-  const total   = formatTokens(contextWindow);
-  const p       = pct(tokens, contextWindow);
-  const marker  = pressureMarker(tokens, contextWindow, thresholds);
-  const model   = modelShort(modelId || (session && session.model));
+  const promptTokens = (session && session.tokens && session.tokens.total_prompt) || 0;
+  const fill   = formatTokens(promptTokens);
+  const total  = formatTokens(contextWindow);
+  const p      = pct(promptTokens, contextWindow);
+  const marker = pressureMarker(promptTokens, contextWindow, thresholds);
+  const model  = modelShort(modelId || (session && session.model));
 
   return '[ctx ' + p + marker + ' ' + fill + '/' + total + ' ' + model + ']';
 }
@@ -142,17 +186,20 @@ function renderParent(session, contextWindow, thresholds, modelId) {
  * Render one subagent block.
  * Format: [TYPE3 PCT FILL/TOTAL MODEL3 EFFORT2]
  *
+ * `FILL` is context-window prompt fill (input + cache_read + cache_creation),
+ * NOT total tokens transacted. See block comment above.
+ *
  * @param {object} agent
  * @param {{ warn: number, critical: number }} thresholds
  * @returns {string}
  */
 function renderSubagent(agent, thresholds) {
-  const tokens = (agent.tokens && agent.tokens.total_prompt) || 0;
+  const promptTokens = (agent.tokens && agent.tokens.total_prompt) || 0;
   const window = agent.context_window || 200000;
-  const fill   = formatTokens(tokens);
+  const fill   = formatTokens(promptTokens);
   const total  = formatTokens(window);
-  const p      = pct(tokens, window);
-  const marker = pressureMarker(tokens, window, thresholds);
+  const p      = pct(promptTokens, window);
+  const marker = pressureMarker(promptTokens, window, thresholds);
   const model  = modelShort(agent.model);
   const type   = typeCode(agent.agent_type);
   const effort = effortCode(agent.effort);
@@ -194,7 +241,17 @@ function render(cache, payload, config) {
   const payloadModel   = (payload.model && payload.model.id) || null;
   const payloadDisplay = (payload.model && payload.model.display_name) || null;
   const sessionModel   = payloadModel || (cache.session && cache.session.model) || null;
-  const contextWindow  = resolveContextWindow(sessionModel, payloadDisplay);
+  let contextWindow    = resolveContextWindow(sessionModel, payloadDisplay);
+
+  // v2.0.21: Observed-tokens fallback for extended-context mode.
+  // If the recorded prompt fill exceeds the metadata-resolved window, the model
+  // must be running in its larger variant (e.g. Opus 4.6 1M instead of 200K)
+  // even though no `[1m]` suffix or "1M" display-name signal reached us. Bump
+  // the window to the model's max so the percentage and ratio render correctly
+  // instead of showing impossible >100% fill.
+  if (!stale && cache.session && cache.session.tokens) {
+    contextWindow = bumpWindowIfObservedExceeds(contextWindow, cache.session.tokens.total_prompt || 0, sessionModel);
+  }
 
   const thresholds = config.pressure_thresholds || { warn: 75, critical: 90 };
   const widthCap   = config.width_cap || 120;
@@ -213,7 +270,14 @@ function render(cache, payload, config) {
     : [];
 
   if (subagents.length > 0) {
-    const parts = subagents.map((a) => renderSubagent(a, thresholds));
+    // Apply the same observed-tokens bump per row before rendering.
+    const parts = subagents.map((a) => {
+      const observed = (a.tokens && a.tokens.total_prompt) || 0;
+      const baseWin = a.context_window || 200000;
+      const bumped = bumpWindowIfObservedExceeds(baseWin, observed, a.model);
+      const rowForRender = (bumped !== baseWin) ? Object.assign({}, a, { context_window: bumped }) : a;
+      return renderSubagent(rowForRender, thresholds);
+    });
     const combined = line + ' > ' + parts.join(' ');
     line = truncate(combined, widthCap);
   } else {

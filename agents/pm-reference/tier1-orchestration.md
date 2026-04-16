@@ -814,7 +814,7 @@ Write a task graph as a markdown document with YAML frontmatter. Store it as
 ```
 ## Task 1: {title}
 
-- **Agent:** architect | developer | refactorer | inventor | reviewer | debugger | tester | documenter | security-engineer
+- **Agent:** architect | developer | refactorer | inventor | reviewer | debugger | tester | documenter | security-engineer | release-manager | ux-critic | platform-oracle
 - **Depends on:** task IDs (e.g., "Task 1, Task 2") or "none"
 - **Parallel group:** group number
 - **Files (read):** list of file paths this task reads for context
@@ -1561,28 +1561,54 @@ graph restructuring.
 
 When task decomposition (Section 13) or re-planning (Section 16) identifies a subtask
 that requires domain expertise not covered by the core agents (architect, developer,
-refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer), the PM can spawn an ephemeral specialist agent. Dynamic agents are created
-on demand and removed after completion.
+refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer,
+release-manager, ux-critic, platform-oracle), the PM can spawn an ephemeral
+specialist agent. Dynamic agents are created on demand and removed after completion.
 
 ### When to Spawn Dynamic Agents
 
 Consider spawning a dynamic agent when ALL of these apply:
 
-1. **The subtask requires domain expertise not covered by the core agents.**
-   Examples: database migration specialist, security auditor, performance profiler.
-   Note: documentation and testing now have dedicated agents (documenter, tester).
+1. **The subtask requires domain expertise not covered by any of the 13 core agents.**
+   The core roster (architect, developer, refactorer, inventor, reviewer, debugger,
+   tester, documenter, security-engineer, release-manager, ux-critic, platform-oracle,
+   pm) covers most software engineering work. Dynamic agents fill the residual
+   slivers. Concrete examples that genuinely fit no core agent:
+   - **MCP tool author for a new tool category** — needs MCP-specific patterns
+     (handler shape, schema validation, elicitation flow) beyond developer's general
+     code-writing scope
+   - **DSL or grammar specialist** — for projects defining a custom config language
+     or query syntax; needs parser-design patterns beyond architect's design scope
+   - **Framework-specific migration agent** — e.g. Rails 7→8 with framework-specific
+     deprecation map; debugger investigates bugs but doesn't own migration playbooks
+   - **Compliance auditor for a specific regulation** — e.g. HIPAA, PCI-DSS, GDPR
+     line-item check; security-engineer handles general security but not regulatory
+     line-by-line conformance
+   - **Domain-specific validator** — e.g. FHIR healthcare bundle validator, financial
+     statement reconciler; each needs domain knowledge no generalist carries
+
+   If you're tempted to spawn a dynamic agent for "performance engineer", "data
+   engineer", "release manager", or "auditor" — STOP. Use architect's perf-budget
+   mode (performance), architect with a migration-design template (data), the new
+   `release-manager` core agent (release), or fix reviewer's chunking (audit) instead.
 
 2. **The subtask has unique tool restrictions** different from the core agents, OR
    benefits from a highly focused system prompt that would be diluted if added to a
    core agent's instructions.
 
-3. **The core agents genuinely cannot handle the task well.** Most tasks fit
-   architect/developer/reviewer. Per research: the 3-5 agent sweet spot means dynamic
-   agents add overhead and should be RARE.
+3. **The core agents genuinely cannot handle the task well.** Most tasks fit one of
+   the 13 cores. Per research: the 3-5 agent sweet spot per orchestration means
+   dynamic agents add overhead and should be RARE — expect <1 per release cycle in
+   a healthy repo.
 
 There is no hard cap on dynamic agents (per D-03). The PM decides based on task needs,
 and the token budget provides the natural limit. However, per Anti-Pattern #10
 (Section 9), never spawn dynamic agents for tasks the core agents can handle.
+
+When you DO spawn one and it succeeds, evaluate it against the save criteria in
+`agents/pm-reference/specialist-protocol.md` §"Save Decision Criteria" and persist
+to the registry if it qualifies. Otherwise the dynamic-agent surface never
+accumulates and every novel task reinvents the same agent.
 
 ### Agent Definition Generation
 

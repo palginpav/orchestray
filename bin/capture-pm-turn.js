@@ -27,6 +27,7 @@ const { extractLastAssistantUsage } = require('./_lib/transcript-usage');
 const { safeRealpath, isInsideAllowed, encodeProjectPath } = require('./_lib/path-containment');
 const { updateCache }              = require('./_lib/context-telemetry-cache');
 const { lookupModel, resolveContextWindow } = require('./_lib/models');
+const { runJanitor }               = require('./_lib/subagent-janitor');
 
 // ── Self-test mode ────────────────────────────────────────────────────────────
 // `node bin/capture-pm-turn.js --self-test` smoke-tests the extraction logic
@@ -34,6 +35,37 @@ const { lookupModel, resolveContextWindow } = require('./_lib/models');
 if (process.argv.includes('--self-test')) {
   runSelfTest();
   process.exit(0);
+}
+
+// ── Stop-hook audit trail (v2.0.21 diagnostic) ───────────────────────────────
+/**
+ * Append one diagnostic row per Stop-hook invocation.
+ *
+ * Purpose: we observed sessions where Stop fires far less often than user prompts
+ * (or fires with payloads missing transcript_path), which silently breaks PM
+ * telemetry refresh. This log captures what we actually receive.
+ *
+ * @param {string} cwd
+ * @param {object} event   - Raw hook payload (may be empty {}).
+ * @param {string} outcome - One of: no_transcript, disabled, path_outside_allowed,
+ *                           no_extracted_usage, success, error.
+ */
+function logStopHookFire(cwd, event, outcome) {
+  try {
+    const auditPath = path.join(cwd, '.orchestray', 'state', 'stop-hook.jsonl');
+    fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+    const row = {
+      ts:             new Date().toISOString(),
+      session_id:     event.session_id || null,
+      has_transcript: !!event.transcript_path,
+      cwd_present:    !!event.cwd,
+      payload_keys:   Object.keys(event || {}).sort(),
+      outcome:        outcome,
+    };
+    fs.appendFileSync(auditPath, JSON.stringify(row) + '\n', 'utf8');
+  } catch (_e) {
+    // Diagnostic is best-effort; never block Stop on audit failure.
+  }
 }
 
 // ── Transcript parsing ────────────────────────────────────────────────────────
@@ -76,9 +108,11 @@ function updateSessionTelemetry(cwd, extracted, event) {
 
       // Janitor: walk the subagents directory and self-heal.
       // Runs on every Stop tick (~10-60s cadence).
+      // v2.0.21: shared with collect-context-telemetry.js stop so SubagentStop
+      // also triggers a sweep — Stop fires too rarely to be the only janitor.
       try {
         if (sessionId) {
-          _janitorPass(cwd, sessionId, cache);
+          runJanitor(cwd, sessionId, cache);
         }
       } catch (_e) {
         // Janitor is best-effort; never block the cache write.
@@ -91,86 +125,8 @@ function updateSessionTelemetry(cwd, extracted, event) {
   }
 }
 
-/**
- * Janitor pass: reconcile active_subagents[] with the .meta.json files on disk.
- *
- * 1. Adds any agent-<id> whose .jsonl was mtime-touched in the last 60s but is
- *    missing from active_subagents[] (recovers from lost SubagentStart events).
- * 2. Removes any row in active_subagents[] whose .jsonl mtime is older than 60s
- *    AND whose last_seen_at is older than 60s (recovers from lost SubagentStop events).
- *
- * Mutates `cache.active_subagents` in place.
- *
- * @param {string} cwd
- * @param {string} sessionId
- * @param {object} cache  - Cache object (mutated in place).
- */
-function _janitorPass(cwd, sessionId, cache) {
-  const subDir = path.join(os.homedir(), '.claude', 'projects',
-    '-' + encodeProjectPath(cwd),
-    sessionId, 'subagents');
-
-  let entries;
-  try {
-    entries = fs.readdirSync(subDir);
-  } catch (_e) {
-    return; // Subagents dir does not exist yet — nothing to do.
-  }
-
-  const now = Date.now();
-  const STALE_MS = 60000; // 60 seconds
-
-  // Build a set of active agent_ids for O(1) lookup.
-  if (!Array.isArray(cache.active_subagents)) cache.active_subagents = [];
-  const activeIds = new Set(cache.active_subagents.map((r) => r.agent_id));
-
-  // 1. Recover lost SubagentStart: .jsonl mtime-touched in last 60s but not in active_subagents.
-  for (const entry of entries) {
-    const match = entry.match(/^agent-([^.]+)\.jsonl$/);
-    if (!match) continue;
-    const agentId = match[1];
-    if (activeIds.has(agentId)) continue;
-
-    const jsonlPath = path.join(subDir, entry);
-    let mtime;
-    try { mtime = fs.statSync(jsonlPath).mtimeMs; } catch (_e) { continue; }
-    if (now - mtime > STALE_MS) continue; // Not recently active — skip.
-
-    // Recover: read .meta.json for type info.
-    const metaPath = path.join(subDir, 'agent-' + agentId + '.meta.json');
-    const meta = (() => { try { return JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch (_e) { return null; } })();
-
-    cache.active_subagents.push({
-      agent_id:        agentId,
-      agent_type:      (meta && meta.agentType) || 'unknown',
-      description:     (meta && meta.description) || null,
-      model:           (meta && meta.model) || null,
-      effort:          null,
-      context_window:  resolveContextWindow((meta && meta.model) || null, null),
-      tokens:          null,
-      started_at:      new Date(mtime).toISOString(),
-      last_seen_at:    new Date(mtime).toISOString(),
-      transcript_path: jsonlPath,
-    });
-    activeIds.add(agentId);
-  }
-
-  // 2. Reap stale rows: both .jsonl mtime AND last_seen_at older than 60s.
-  cache.active_subagents = cache.active_subagents.filter((row) => {
-    const lastSeen = row.last_seen_at ? new Date(row.last_seen_at).getTime() : 0;
-    if (now - lastSeen <= STALE_MS) return true; // Recently seen — keep.
-
-    // Check .jsonl mtime.
-    const tPath = row.transcript_path;
-    if (tPath) {
-      try {
-        const mtime = fs.statSync(tPath).mtimeMs;
-        if (now - mtime <= STALE_MS) return true; // File recently touched — keep.
-      } catch (_e) { /* file gone — fall through to reap */ }
-    }
-    return false; // Both stale — remove.
-  });
-}
+// Janitor implementation lives in bin/_lib/subagent-janitor.js (extracted v2.0.21)
+// so collect-context-telemetry.js stop can run it too. Imported as `runJanitor` above.
 
 // ── Self-test ─────────────────────────────────────────────────────────────────
 function runSelfTest() {
@@ -222,19 +178,23 @@ process.stdin.on('data', (chunk) => {
   }
 });
 process.stdin.on('end', () => {
+  let event = {};
+  let cwd   = null;
   try {
+    event = JSON.parse(input || '{}');
+    cwd   = resolveSafeCwd(event.cwd);
+
     // Respect metrics kill-switch.
     if (process.env.ORCHESTRAY_METRICS_DISABLED === '1') {
+      logStopHookFire(cwd, event, 'disabled');
       process.stdout.write(JSON.stringify({ continue: true }));
       process.exit(0);
     }
 
-    const event = JSON.parse(input || '{}');
-    const cwd   = resolveSafeCwd(event.cwd);
-
     // Stop event provides transcript_path (the session agent's own transcript).
     const transcriptPath = event.transcript_path || null;
     if (!transcriptPath) {
+      logStopHookFire(cwd, event, 'no_transcript');
       process.stdout.write(JSON.stringify({ continue: true }));
       process.exit(0);
     }
@@ -246,6 +206,7 @@ process.stdin.on('end', () => {
 
     if (!isInsideAllowed(resolved, cwdResolved, claudeHome)) {
       process.stderr.write('[orchestray] capture-pm-turn: transcript path outside allowed dirs; skipping\n');
+      logStopHookFire(cwd, event, 'path_outside_allowed');
       process.stdout.write(JSON.stringify({ continue: true }));
       process.exit(0);
     }
@@ -253,6 +214,7 @@ process.stdin.on('end', () => {
     const extracted = extractLastAssistantUsage(transcriptPath);
     if (!extracted) {
       // No assistant message found — silent skip (first turn, empty session, etc.)
+      logStopHookFire(cwd, event, 'no_extracted_usage');
       process.stdout.write(JSON.stringify({ continue: true }));
       process.exit(0);
     }
@@ -282,9 +244,11 @@ process.stdin.on('end', () => {
     // Fail-open: errors inside updateSessionTelemetry do not propagate here.
     updateSessionTelemetry(cwd, extracted, event);
 
+    logStopHookFire(cwd, event, 'success');
   } catch (err) {
     // Fail-open: never block Stop on telemetry error.
     process.stderr.write('[orchestray] capture-pm-turn: error (fail-open): ' + String(err) + '\n');
+    if (cwd) logStopHookFire(cwd, event, 'error');
   }
 
   process.stdout.write(JSON.stringify({ continue: true }));

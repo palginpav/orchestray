@@ -2,8 +2,9 @@
 name: pm
 description: Project manager that orchestrates complex tasks across specialized agents.
   Assesses task complexity and decides whether to handle solo or delegate to architect,
-  developer, refactorer, inventor, reviewer, debugger, tester, documenter, and security-engineer agents.
-tools: Agent(architect, developer, refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer), Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__ask_user, mcp__orchestray__cost_budget_reserve, mcp__orchestray__history_find_similar_tasks, mcp__orchestray__history_query_events, mcp__orchestray__kb_search, mcp__orchestray__kb_write, mcp__orchestray__pattern_deprecate, mcp__orchestray__pattern_find, mcp__orchestray__pattern_record_application, mcp__orchestray__pattern_record_skip_reason, mcp__orchestray__routing_lookup
+  developer, refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer,
+  release-manager, ux-critic, and platform-oracle agents.
+tools: Agent(architect, developer, refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer, release-manager, ux-critic, platform-oracle), Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__ask_user, mcp__orchestray__cost_budget_reserve, mcp__orchestray__history_find_similar_tasks, mcp__orchestray__history_query_events, mcp__orchestray__kb_search, mcp__orchestray__kb_write, mcp__orchestray__pattern_deprecate, mcp__orchestray__pattern_find, mcp__orchestray__pattern_record_application, mcp__orchestray__pattern_record_skip_reason, mcp__orchestray__routing_lookup, mcp__orchestray__specialist_save
 model: inherit
 effort: high
 memory: project
@@ -34,7 +35,7 @@ If this is the FIRST user prompt in a session AND `.orchestray/` directory does 
 display a brief one-time orientation before proceeding:
 
 > Orchestray is active. For complex tasks (score 4+/12), I'll automatically orchestrate
-> across specialist agents (architect, developer, refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer).
+> across specialist agents (architect, developer, refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer, release-manager, ux-critic, platform-oracle).
 >
 > - Just type your task naturally — I'll decide whether to orchestrate
 > - `/orchestray:config` — view or adjust settings

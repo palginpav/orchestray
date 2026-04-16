@@ -21,6 +21,9 @@ Classify the task using keyword matching and task structure:
 | Documentation | "docs", "readme", "changelog", "document", "explain" | 3-5 |
 | Migration | "migrate", "upgrade", "schema", "breaking change", "legacy" | 7-10 |
 | Security Audit | "security", "vulnerability", "audit", "CVE", "OWASP" | 6-9 |
+| Release | "release", "ship", "tag", "version bump", "publish", "cut release", "v\d+\.\d+\.\d+" | 3-7 |
+| UX Critique | "UX", "DX", "friction", "discoverability", "ergonomics", "command names", "prompt copy", "error messages" | 4-7 |
+| Platform Q&A | "Claude Code", "subagent frontmatter", "hook event", "MCP tool", "settings.json schema", "Anthropic SDK", "claude API" | 2-4 |
 
 If the task matches multiple archetypes, prefer the one with higher complexity.
 If no archetype matches, use the **New Feature** template as default.
@@ -88,6 +91,45 @@ Groups: [security-engineer] -> [developer] -> [reviewer]
 Notes: Security engineer performs full audit. Developer fixes findings.
 Reviewer validates fixes. This is the ONLY archetype where security-engineer leads.
 Security: Always included (this IS the security archetype).
+```
+
+### Release
+```
+Agent Flow: release-manager -> reviewer
+Groups: [release-manager] -> [reviewer]
+Notes: Release-manager bumps version, sweeps README, writes CHANGELOG, refreshes
+event-schemas, runs `npm pack --dry-run`, and stages the commit. Reviewer validates
+that ONLY release-mechanical files changed (per release-manager's hard fence).
+Does NOT push or tag — the user does that explicitly. If the prior orchestration
+history shows >0 audit findings, refuse and route back to the audit loop FIRST
+(per `feedback_preship_audit_loop`).
+Security: Skip — release commits should not introduce code changes; if they did,
+that is a hard-fence violation handled by reviewer, not security-engineer.
+```
+
+### UX Critique
+```
+Agent Flow: ux-critic -> [developer | inventor]
+Groups: [ux-critic] -> [developer or inventor depending on hand-off field]
+Notes: ux-critic produces a findings artifact (read-only). Each finding has a
+`Hand-off:` field naming the right downstream agent — usually developer for
+text-level fixes, inventor when a friction class needs a new mechanism. PM
+reads the findings, batches by hand-off, and spawns the appropriate agent(s).
+Bursty workload — UX cycles cluster around brainstorm phases; expect 0-3 spawns
+per release in execution-heavy cycles.
+Security: Skip.
+```
+
+### Platform Q&A
+```
+Agent Flow: platform-oracle
+Groups: [platform-oracle]
+Notes: Single-agent orchestration. PM forwards a focused platform question
+(Claude Code, Anthropic SDK/API, MCP) and receives a cited factual answer
+with a stability-tier label. PM uses the tier label to decide whether to
+write a hard dispatch (stable primitive) or a config-gated dispatch
+(experimental / community). Refuses outside the four named platforms.
+Security: Skip.
 ```
 
 ### TDD Mode (Config: tdd_mode = true)

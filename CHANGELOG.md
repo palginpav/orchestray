@@ -3,6 +3,84 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.21] - 2026-04-16
+
+### Theme: "Three new agents + specialist registry fix + telemetry overhaul"
+
+Extends the core agent roster from 10 to 13, fixes the specialist registry that had
+never populated across 90+ orchestrations, overhauled telemetry to close multiple
+dead code paths, and hardens the routing gate against cross-orchestration collisions.
+
+### Added
+
+- **`release-manager` agent** — owns the release commit gate: version bump, CHANGELOG,
+  README sweep, event-schema sync, pre-publish verification, and tag prep. Prevents
+  release surfaces from drifting between releases (addresses the `feedback_release_readme_sweep`
+  pattern).
+- **`ux-critic` agent** — adversarial read-only critique of user-facing surfaces (slash
+  commands, error messages, statusLine output, README claims) for friction, discoverability,
+  consistency, and surprise. Read-only; never modifies files.
+- **`platform-oracle` agent** — authoritative answers to platform questions (Claude Code,
+  Anthropic SDK/API, MCP) via WebFetch + cited URLs. Distinguishes stable primitives from
+  experimental/community features. Prevents the PM from reasoning from stale or
+  hallucinated platform knowledge.
+- **`mcp__orchestray__specialist_save` MCP tool** (`bin/mcp-server/tools/specialist_save.js`)
+  — atomic write path for saving dynamic agent definitions to `.orchestray/specialists/`.
+  Previously the PM had to write files manually; the tool validates the schema and updates
+  the registry index atomically.
+- **`dynamic_agent_spawn` audit event** — auto-emitted by `bin/audit-event-writer.js` on
+  every non-canonical `agent_type` detection, so the specialist registry has a verifiable
+  audit trail for each dynamic agent ever spawned.
+- **Shared janitor module** (`bin/_lib/subagent-janitor.js`) — extracted from
+  `capture-pm-turn.js`, now called from both `capture-pm-turn.js` (Stop hook) and
+  `collect-context-telemetry.js` (SubagentStop). Stale subagent rows are now reaped
+  within ~60s of any subagent activity, not only on rare PM Stop fires.
+- **`claude-opus-4-7` model entry** — added to `bin/_lib/models.js` MODELS table with
+  1M context-window variant. `MODEL_UNKNOWN` now includes a `window_1m: 1000000` default
+  so future model rollouts don't break statusline rendering.
+
+### Fixed
+
+- **Specialist registry never populated** — diagnosed root cause as a circular doc pointer
+  between `agents/pm.md` §20 and `agents/pm-reference/specialist-protocol.md`: each file
+  said the other had the save criteria; neither did. Also: PM never spawned dynamic agents
+  because trigger examples were too abstract. Fixes: concrete save criteria added to
+  `specialist-protocol.md`; concrete dynamic-agent trigger examples added to
+  `tier1-orchestration.md` §17.
+- **`collect-context-telemetry.js` post-spawn handler was a dead no-op** — rewritten with
+  multi-strategy match: `event.agent_id` → `event.tool_response.agent_id` →
+  `event.tool_use_id` → janitor sweep fallback. Prior implementation assumed
+  `PostToolUse` payload carries `agent_id` at top level, which it does not.
+- **Subagent rows missing `tool_use_id`** — subagent rows now record `tool_use_id` at
+  `PreToolUse` time so the post-spawn handler can correlate via that field when agent_id
+  is unavailable.
+- **Subagent model resolution missing fallback** — added 4th fallback to parent's
+  `cache.session.model`; previously `model: inherit` agents whose own model was not yet
+  known at `SubagentStart` resolved to `null`.
+- **MCP server crash on post-install layout** — `bin/mcp-server/server.js` no longer
+  crashes on startup when `package.json` is absent (install layout). Reads version from
+  `VERSION` first, falls back to `package.json` for source/dev runs.
+- **Statusline impossible display for 1M-context models** — `[ctx 99%!! 264.4K/200K]`
+  could render when context window resolved to the standard 200K ceiling. Fixed by
+  resolving the 1M window for Opus 4.7 and similar models, producing correct fills
+  like `[ctx 28% 283.3K/1M]`.
+- **Cross-orchestration task_id collision in routing gate** — `bin/gate-agent-spawn.js`
+  task_id matching is now scoped to current `orchestration_id` first, falls back to
+  global only when no current-orchestration match is found. Prevents W2-as-opus retries
+  caused by task_id overlap across separate orchestrations.
+- **Stop-hook under-firing now measurable** — `bin/capture-pm-turn.js` appends to
+  `.orchestray/state/stop-hook.jsonl` on every invocation with `success`/`no_transcript`/
+  `disabled`/... outcome so the rate of Stop hook misfires is observable.
+
+### Changed
+
+- **Agent roster: 10 → 13 core agents** — all enumerations of "the 10 core agents" in
+  `agents/pm.md`, `agents/pm-reference/`, `CLAUDE.md`, and tests updated to 13.
+  Reserved-name blocklist updated in 4 locations to include `release-manager`,
+  `ux-critic`, `platform-oracle`.
+- **PM tools list extended** — `agents/pm.md` now lists `mcp__orchestray__specialist_save`
+  as an available tool.
+
 ## [2.0.20] - 2026-04-16
 
 ### Theme: "v2.0.19 statusLine hotfix"

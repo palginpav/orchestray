@@ -297,6 +297,34 @@ zero tool calls, zero extra cost. Items that cannot be addressed should be noted
 - [ ] Output format specified? (threat model, vulnerability report, remediation plan)
 - [ ] Exploration hygiene stated? (delegation says: "Use Glob for structure and Grep with `output_mode: files_with_matches` to locate candidates; Read only files you intend to act on. The Repository Map is authoritative for project layout — do not Glob the whole repo to re-discover structure.")
 
+### Release Manager Checklist
+
+- [ ] Target version explicit? (e.g. "v2.0.21" — bump type may be inferred from change set if uninstructed)
+- [ ] Prior tag named? (so the agent can `git log <prior>..HEAD` for the change range)
+- [ ] Release surfaces inventoried? (CHANGELOG.md, README.md, package.json, VERSION, manifest.json, event-schemas.md — list any unusual ones)
+- [ ] Verification gate stated? (lint + tests + `npm pack --dry-run` must all pass; iterative-audit clean per `feedback_preship_audit_loop`)
+- [ ] Hard-fence reminder included? (release-manager refuses any diff with >2 non-release files; if non-release work is needed, PM must spawn the right agent first)
+- [ ] No-push contract reaffirmed? (release-manager stages the commit only; user/PM does the push and tag)
+- [ ] Commit-style guidance: terse one-liner, no `Co-Authored-By` or "Generated with" trailers (per `feedback_commit_style`)
+
+### UX Critic Checklist
+
+- [ ] Surface scope stated? (which user-facing artifacts: slash commands, errors, statusLine, README, config keys, agent role descriptions)
+- [ ] Persona requested? (first-time user, returning-after-month, power-user-with-sister-tool, operator-under-pressure — pick one or two)
+- [ ] Rubric dimensions referenced? (friction, discoverability, consistency, surprise — defaults to all four if unspecified)
+- [ ] Findings format reminder? (every finding must include current state, friction observed, proposed rewrite, hand-off agent)
+- [ ] Read-only mandate reaffirmed? (ux-critic NEVER edits source; produces an artifact for developer/inventor/architect to act on)
+- [ ] Cap stated? (>15 findings in one pass = stop and let PM batch the fixes; do not pad to look productive)
+
+### Platform Oracle Checklist
+
+- [ ] Question crisply phrased? (a single answerable question, not "tell me about hooks" — e.g. "does PreToolUse fire for tool calls inside subagents, and what fields does the payload contain?")
+- [ ] Platform named? (Claude Code | Anthropic SDK | Anthropic API | MCP — refuse if outside these four)
+- [ ] Stability tier required in the answer? (so PM can branch on stable-primitive vs experimental vs plugin/community vs undocumented)
+- [ ] Citation requirement stated? (every claim must cite a fetched URL or `file:line` of installed code; no uncited assertions)
+- [ ] Cross-reference scope? (explicitly invite or restrict reading installed code under `~/.claude/` or `node_modules/`)
+- [ ] Scope refusal reminded? (oracle returns "out of scope, route to {agent}" rather than guessing on platforms it doesn't cover)
+
 ---
 
 ## Confidence Checkpoint Instructions

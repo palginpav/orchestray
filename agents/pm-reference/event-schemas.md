@@ -292,6 +292,46 @@ Field notes:
 
 ---
 
+## Dynamic Agent Spawn Event (v2.0.21+)
+
+Auto-emitted by `bin/audit-event.js` (via the `additionalEventsPicker` extension
+in `bin/_lib/audit-event-writer.js`) whenever a non-canonical `agent_type` is
+detected during `SubagentStart` — i.e., an agent name not in the 17-entry
+canonical set (the 13 Orchestray cores plus `Explore`, `Plan`, `general-purpose`,
+`Task` from Claude Code's built-ins). Fires alongside the standard `agent_start`
+event with the same timestamp; consumers can join on (`agent_id`, `timestamp`).
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "dynamic_agent_spawn",
+  "orchestration_id": "<current orch id>",
+  "agent_id": "<subagent id from SubagentStart payload>",
+  "agent_type": "<dynamic agent name>",
+  "session_id": "<parent session id>"
+}
+```
+
+Field notes:
+- `agent_id`: The subagent's stable id from the `SubagentStart` payload — same
+  value as on the paired `agent_start` event.
+- `agent_type`: The non-canonical agent name (e.g. `researcher`,
+  `claude-code-guide`, or any project-defined specialist).
+- `session_id`: The parent (PM) session id, not the subagent's own session.
+- `timestamp` is shared with the paired `agent_start` event.
+
+Note: `tool_name` and the spawn `description` are NOT in this event because
+`SubagentStart` payloads do not carry them. To recover those, join on
+(`agent_id`, `timestamp`) against the corresponding `routing_outcome` event
+emitted from `PostToolUse(Agent|Explore|Task)`.
+
+Cross-ref: if the dynamic agent is subsequently saved via
+`mcp__orchestray__specialist_save`, a `specialist_saved` event follows.
+Consumers can join on (`orchestration_id`, `agent_type`) to correlate spawn
+and save events.
+
+---
+
 ## Section 20: Specialist Saved Event
 
 Appended when a dynamic agent is saved as a persistent specialist:

@@ -192,9 +192,26 @@ process.stdin.on('end', () => {
           // Primary match: (task_id, agent_type) — description drift does not cause a miss.
           const { readRoutingEntries } = require('./_lib/routing-lookup');
           const allEntries = readRoutingEntries(cwd);
-          const taskIdMatches = allEntries.filter(e =>
+          const allTaskMatches = allEntries.filter(e =>
             e && e.task_id === spawnTaskId && e.agent_type === agentType
           );
+
+          // v2.0.21: scope task_id matches to the current orchestration first.
+          // Without this, task_ids like "W2" / "W3" collide across orchestrations
+          // and the gate matches a stale prior-orchestration entry, falsely flagging
+          // model drift. Fall back to global matches only if the current
+          // orchestration has no matching entry.
+          let currentOrchId = null;
+          try {
+            const orchFile = path.join(cwd, '.orchestray', 'audit', 'current-orchestration.json');
+            currentOrchId = JSON.parse(fs.readFileSync(orchFile, 'utf8')).orchestration_id || null;
+          } catch (_e) { /* no active orch file — global fallback */ }
+
+          const sameOrchMatches = currentOrchId
+            ? allTaskMatches.filter(e => e.orchestration_id === currentOrchId)
+            : [];
+          const taskIdMatches = sameOrchMatches.length > 0 ? sameOrchMatches : allTaskMatches;
+
           if (taskIdMatches.length > 0) {
             // Take the most recent match (latest timestamp), mirroring findRoutingEntry behaviour.
             taskIdMatches.sort((a, b) => {

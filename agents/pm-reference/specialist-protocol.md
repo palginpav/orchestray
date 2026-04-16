@@ -1,11 +1,67 @@
 # Specialist Save & Reuse Protocol Reference
 
 Detailed step-by-step procedures for saving and reusing dynamic agent specialists.
-For decision criteria (when to save, when not to save), see the main PM prompt Sections 20-21.
+The save and reuse decision criteria live in this file (§"Save Decision Criteria"
+below); the main PM prompt (`pm.md` Sections 20–21) defines WHEN to consult them.
+
+---
+
+## Save Decision Criteria
+
+The PM evaluates whether to save a successful dynamic agent at the end of an
+orchestration. With 13 core agents already in the roster, dynamic agents are
+genuinely rare — the bar to promote one to a saved specialist must be
+correspondingly higher.
+
+### Save IF all of these apply
+
+1. **Distinct from the 13 cores.** The agent's role is not covered by `pm`,
+   `architect`, `developer`, `refactorer`, `inventor`, `reviewer`, `debugger`,
+   `tester`, `documenter`, `security-engineer`, `release-manager`, `ux-critic`,
+   or `platform-oracle`. If a sharper instruction to a core agent would have
+   sufficed, do NOT save.
+
+2. **Reusable across tasks.** The role applies to a recurring class of work,
+   not a single task. "Postgres migration specialist" reusable; "fix the
+   2026-04-16 Foo bug" not reusable.
+
+3. **Non-trivially used in this orchestration.** The agent ran for at least
+   3 turns AND its system prompt contains > 200 words of domain-specific
+   instruction (i.e., it is not a thin wrapper around a generalist).
+
+4. **Succeeded.** The agent produced its expected output and the downstream
+   reviewer (if any) accepted it. Failed agents are anti-patterns, not
+   templates.
+
+### Do NOT save if any of these apply
+
+1. **Task-specific paths or identifiers in the agent prompt.** "Audit the
+   `bin/foo.js:142` race condition" cannot be generalized.
+2. **One-time scripts.** Renames, one-off backfills, throwaway migrations.
+3. **Workflow / pipeline pretending to be an agent.** "Spawn architect, then
+   developer, then reviewer" is a pipeline-template (`pipeline-templates.md`),
+   not an agent.
+4. **Agent failed even after retry to success.** If the agent needed
+   hand-holding, the prompt is wrong; saving it perpetuates the wrong prompt.
+5. **The role overlaps with an existing specialist already in the registry.**
+   Update the existing entry instead of forking.
+
+### Promotion threshold (specialist → core agent)
+
+If a saved specialist is `times_used` ≥ 5 across orchestrations AND consistently
+succeeds without modification, the PM should surface it to the human as a
+candidate for promotion to a core `agents/*.md` definition. The core roster
+grows deliberately, never automatically — promotion is a human decision.
 
 ---
 
 ## Save Process (Section 20)
+
+> **Preferred:** Use `mcp__orchestray__specialist_save` instead of raw Write/Edit calls.
+> The MCP tool acquires an advisory lock on `registry.json.lock`, writes the agent .md
+> file and updates `registry.json` atomically under one mutex, and returns the registry
+> size plus create-vs-update status. This eliminates all races in the 8-step sequence
+> below. The manual steps remain for reference and fallback only.
 
 1. Read `.orchestray/specialists/registry.json`. If the file or directory is missing,
    create `.orchestray/specialists/` directory and initialize `registry.json` with
@@ -16,7 +72,8 @@ For decision criteria (when to save, when not to save), see the main PM prompt S
    specialist in the registry.
 
    - **Reserved names (builtin agents):** `pm`, `architect`, `developer`, `refactorer`,
-     `inventor`, `reviewer`, `debugger`, `tester`, `documenter`, `security-engineer`.
+     `inventor`, `reviewer`, `debugger`, `tester`, `documenter`, `security-engineer`,
+     `release-manager`, `ux-critic`, `platform-oracle`.
    - **Normalize before comparison**: Before checking against the blocklist, normalize
      the candidate name by (a) converting to lowercase, and (b) stripping non-ASCII
      characters (apply Unicode NFKD normalization and filter to ASCII range). Then
@@ -88,9 +145,10 @@ if the specialist has already reached the threshold:
 ## Registry Check (Section 21)
 
 > **See also:** The reserved-name blocklist used in steps 2a and 4a below originates
-> from the builtin agent set defined in `tier1-orchestration.md §17`. The 10 reserved
+> from the builtin agent set defined in `tier1-orchestration.md §17`. The 13 reserved
 > names are: `pm`, `architect`, `developer`, `refactorer`, `inventor`, `reviewer`,
-> `debugger`, `tester`, `documenter`, `security-engineer`.
+> `debugger`, `tester`, `documenter`, `security-engineer`, `release-manager`,
+> `ux-critic`, `platform-oracle`.
 
 1. **Read `.orchestray/specialists/registry.json`.**
    - If the file or directory is missing: no specialists are available. Proceed to
@@ -109,14 +167,15 @@ if the specialist has already reached the threshold:
       **Reserved-name check (security — do this FIRST):** Before any other validation,
       check the `name` field from frontmatter against the reserved-name blocklist:
       `pm`, `architect`, `developer`, `refactorer`, `inventor`, `reviewer`, `debugger`,
-      `tester`, `documenter`, `security-engineer`. **Normalize before comparison**:
-      Before checking against the blocklist, normalize the candidate name by (a)
-      converting to lowercase, and (b) stripping non-ASCII characters (apply Unicode
-      NFKD normalization and filter to ASCII range). Then compare against the blocklist.
-      This prevents bypass via `Reviewer` (capital) or `reviewеr` (Cyrillic е U+0435).
-      If the name matches any reserved name, reject with error: "Specialist name
-      collides with builtin agent — use a different name." Do not register, do not
-      copy. Treat as invalid (go to step 2c).
+      `tester`, `documenter`, `security-engineer`, `release-manager`, `ux-critic`,
+      `platform-oracle`. **Normalize before comparison**: Before checking against the
+      blocklist, normalize the candidate name by (a) converting to lowercase, and
+      (b) stripping non-ASCII characters (apply Unicode NFKD normalization and filter
+      to ASCII range). Then compare against the blocklist. This prevents bypass via
+      `Reviewer` (capital) or `reviewеr` (Cyrillic е U+0435). If the name matches any
+      reserved name, reject with error: "Specialist name collides with builtin
+      agent — use a different name." Do not register, do not copy. Treat as invalid
+      (go to step 2c).
 
       **Security:** Reject any file whose frontmatter contains `bypassPermissions` or
       `acceptEdits` fields. These fields could elevate agent privileges beyond what the
@@ -154,14 +213,15 @@ if the specialist has already reached the threshold:
    a. **Reserved-name check (security — do this FIRST):** Before copying, verify the
       matched specialist's name against the reserved-name blocklist: `pm`, `architect`,
       `developer`, `refactorer`, `inventor`, `reviewer`, `debugger`, `tester`,
-      `documenter`, `security-engineer`. **Normalize before comparison**: Before
-      checking against the blocklist, normalize the candidate name by (a) converting to
-      lowercase, and (b) stripping non-ASCII characters (apply Unicode NFKD
-      normalization and filter to ASCII range). Then compare against the blocklist.
-      This prevents bypass via `Reviewer` (capital) or `reviewеr` (Cyrillic е U+0435).
-      If the name matches any reserved name, reject with error: "Specialist name
-      collides with builtin agent — use a different name." Do not register, do not
-      copy. Proceed to Section 17 normal flow instead.
+      `documenter`, `security-engineer`, `release-manager`, `ux-critic`,
+      `platform-oracle`. **Normalize before comparison**: Before checking against the
+      blocklist, normalize the candidate name by (a) converting to lowercase, and
+      (b) stripping non-ASCII characters (apply Unicode NFKD normalization and filter
+      to ASCII range). Then compare against the blocklist. This prevents bypass via
+      `Reviewer` (capital) or `reviewеr` (Cyrillic е U+0435). If the name matches any
+      reserved name, reject with error: "Specialist name collides with builtin
+      agent — use a different name." Do not register, do not copy. Proceed to
+      Section 17 normal flow instead.
 
       Copy `.orchestray/specialists/{file}` to `agents/{name}.md`.
 

@@ -24,6 +24,7 @@
  */
 
 const fs = require('node:fs');
+const path = require('node:path');
 const readline = require('node:readline');
 const crypto = require('node:crypto');
 
@@ -57,6 +58,7 @@ const historyQueryEvents = require('./tools/history_query_events');
 const historyFindSimilarTasks = require('./tools/history_find_similar_tasks');
 const kbSearch = require('./tools/kb_search');
 const kbWrite = require('./tools/kb_write');
+const specialistSave = require('./tools/specialist_save');
 const routingLookup = require('./tools/routing_lookup');
 const costBudgetReserve = require('./tools/cost_budget_reserve');
 const metricsQuery = require('./tools/metrics_query');
@@ -69,8 +71,29 @@ const orchestrationResource = require('./resources/orchestration_resource');
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'orchestray';
-// T3 C1: derive version from package.json — single source of truth.
-const SERVER_VERSION = require('../../package.json').version;
+
+/**
+ * Resolve the server version. The MCP server runs in two layouts:
+ *   - Source / dev: <repo>/bin/mcp-server/server.js — repo root has package.json.
+ *   - Installed:   ~/.claude/orchestray/bin/mcp-server/server.js — install root
+ *                  has VERSION (written by install.js) but NO package.json
+ *                  (install.js does not copy it).
+ * Prior to v2.0.21 the server only tried `../../package.json`, which crashed at
+ * startup in the installed layout — visible to users as "MCP server failed".
+ * Read VERSION first (works installed), fall back to package.json (works in
+ * source for tests + dev).
+ */
+function _resolveServerVersion() {
+  try {
+    const v = fs.readFileSync(path.join(__dirname, '..', '..', 'VERSION'), 'utf8').trim();
+    if (v) return v;
+  } catch (_e) { /* fall through */ }
+  try {
+    return require('../../package.json').version;
+  } catch (_e) { /* fall through */ }
+  return 'unknown';
+}
+const SERVER_VERSION = _resolveServerVersion();
 
 // ---------------------------------------------------------------------------
 // Startup
@@ -167,6 +190,10 @@ const TOOL_TABLE = Object.freeze({
   kb_write: {
     definition: kbWrite.definition,
     handler: kbWrite.handle,
+  },
+  specialist_save: {
+    definition: specialistSave.definition,
+    handler: specialistSave.handle,
   },
   routing_lookup: {
     definition: routingLookup.definition,

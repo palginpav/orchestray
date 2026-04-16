@@ -165,6 +165,9 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | **Debugger** | Systematic bug investigation and root cause analysis (read-only) |
 | **Tester** | Dedicated test writing, coverage analysis, and test strategy |
 | **Documenter** | Documentation creation and maintenance |
+| **Release Manager** | Owns release commits — version bump, CHANGELOG, README sweep, event-schema sync, pre-publish verification, tag prep |
+| **UX Critic** | Adversarial read-only critique of user-facing surfaces (commands, errors, statusLine, README claims) for friction, discoverability, consistency, surprise |
+| **Platform Oracle** | Authoritative answers to platform questions (Claude Code, Anthropic SDK/API, MCP) via WebFetch + cited URLs; distinguishes stable primitives from experimental/community features |
 | **Specialists** | Dynamic agents generated during orchestration; successful ones are saved to `.orchestray/specialists/` for reuse |
 
 ## Configuration
