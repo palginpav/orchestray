@@ -88,7 +88,7 @@ async function handle(input, context) {
   try {
     decayConfig = loadPatternDecayConfig(projectRoot);
   } catch (_) {
-    decayConfig = { default_half_life_days: 90, category_overrides: null };
+    decayConfig = { default_half_life_days: 90, category_overrides: {} };
   }
 
   let entries;
@@ -333,7 +333,7 @@ function _firstLine(s) {
  * @param {object} fm - Parsed frontmatter object.
  * @param {string} filepath - Absolute path to the pattern file (for mtime fallback).
  * @param {string} category - Resolved pattern category string.
- * @param {{ default_half_life_days: number, category_overrides: object|null }} decayConfig
+ * @param {{ default_half_life_days: number, category_overrides: object }} decayConfig
  * @param {number} nowMs - Current timestamp in milliseconds (Date.now()).
  * @returns {{ decayedConfidence: number, ageDays: number }}
  */

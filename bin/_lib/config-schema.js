@@ -1065,7 +1065,7 @@ function loadPatternDecayConfig(cwd) {
   }
 
   const merged = Object.assign(
-    { default_half_life_days: DEFAULT_PATTERN_DECAY.default_half_life_days, category_overrides: null },
+    { default_half_life_days: DEFAULT_PATTERN_DECAY.default_half_life_days, category_overrides: {} },
     sanitizeConfig(fromFile)
   );
 
