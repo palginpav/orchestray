@@ -63,7 +63,7 @@ These rules prevent Block A drift during an orchestration:
   your working context; they must never be spliced into the pm.md body mid-session.
   The loaded pm.md body is fixed at session start.
 
-- **Do not mutate Block A by editing `agents/pm.md` lines 1–800 mid-orchestration.**
+- **Do not mutate Block A by editing content above the `<!-- ORCHESTRAY_BLOCK_A_END -->` sentinel mid-orchestration.**
   If a release or refactor requires those lines to change, it must happen between
   orchestrations, not during one.
 
@@ -73,13 +73,17 @@ These rules prevent Block A drift during an orchestration:
 - **Block B may be appended but not modified.** Task decomposition is written once.
   Do not revise the decomposition section after agents have started executing.
 
+- **The Block A boundary is SENTINEL-based.** `cache-prefix-lock.js` and
+  `tests/pm-md-prefix-stability.test.js` both hash everything from start-of-file
+  through (and including) the `<!-- ORCHESTRAY_BLOCK_A_END -->` sentinel. The Block A boundary is checked by the `<!-- ORCHESTRAY_BLOCK_A_END -->` sentinel (currently at pm.md line ~909). Keep the sentinel close to the end of the stable Tier-0 core so the cache prefix stays small; do not move it without re-pinning the hash in the same commit.
+
 ---
 
 ## 4. Drift Detection: How `cache-prefix-lock.js` Works
 
 `bin/cache-prefix-lock.js` is a `UserPromptSubmit` hook. On each user turn:
 
-1. Reads the first 800 lines of `agents/pm.md`.
+1. Reads `agents/pm.md` from start-of-file up to and including the `<!-- ORCHESTRAY_BLOCK_A_END -->` sentinel.
 2. Computes a SHA-256 hash of that content.
 3. Compares against the persisted hash in `.orchestray/state/.block-a-hash`.
 4. **Happy path** (no drift): exits 0, emits empty `{}` — no `additionalContext`.
@@ -156,7 +160,12 @@ If `prefix_drift` events appear in analytics:
 ```
 # Compare the hashes in the event to git history
 git log --oneline agents/pm.md
-git show <commit>:agents/pm.md | head -800 | sha256sum
+# Compute the Block A hash exactly the way the hook and the test both compute it.
+# Preferred: run the stability test — it asserts pinned == computed:
+node --test tests/pm-md-prefix-stability.test.js
+
+# Ad-hoc hash-only invocation (matches the hook's `indexOf+slice` byte-for-byte):
+node -e "const fs=require('fs'),crypto=require('crypto');const c=fs.readFileSync('agents/pm.md','utf8');const s='<!-- ORCHESTRAY_BLOCK_A_END -->';const i=c.indexOf(s);console.log(crypto.createHash('sha256').update(c.slice(0,i+s.length),'utf8').digest('hex').slice(0,16));"
 ```
 
 Common causes:
@@ -188,6 +197,16 @@ node bin/install.js --pre-commit-guard
 
 This guard never overwrites a user-managed pre-commit hook. It is optional but
 recommended for teams actively developing Orchestray.
+
+### 7.4 Pre-commit Block A hash assertion
+
+Before shipping any `pm.md` edit, assert that the Block A hash still matches the
+pinned value. Check:
+
+```bash
+# Fail if the Block A hash in pm.md no longer matches the pinned value.
+node --test tests/pm-md-prefix-stability.test.js
+```
 
 ---
 

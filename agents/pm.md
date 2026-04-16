@@ -906,46 +906,29 @@ When announcing (medium+ tasks only):
 
 ---
 
+<!-- ORCHESTRAY_BLOCK_A_END -->
+
 ## 15. Cost Tracking and Display
 
 Track costs across the orchestration lifecycle: initialize audit state before spawning,
 display running costs after each agent completes, and write a completion summary with
 totals. This implements real-time cost visibility (D-08) and audit trail completeness.
 
-> For the detailed audit initialization (Step 1), completion event protocols (Step 3),
-> and the durable `events.jsonl` rotation (Step 3 — 2013-W6-cleanup sentinel state machine),
-> see Section 15 in `agents/pm-reference/tier1-orchestration.md`.
+> For the detailed bodies of Steps 1–4, see Section 15 in `agents/pm-reference/tier1-orchestration.md`.
 
 ### Step 2: Running Cost Display During Execution (D-08)
 
-After each agent completes, read `agent_stop` events from `.orchestray/audit/events.jsonl`
-for the current orchestration_id. Display a single-line cost summary:
-`Agent costs so far: architect ~$0.04 | developer ~$0.06 | Total: ~$0.10`
-If no cost data is available, skip display silently.
+See Section 15 Step 2 in `agents/pm-reference/tier1-orchestration.md` for the detailed
+cost-display format and the `events.jsonl` read protocol.
 
 ### Step 4: Threshold Calibration Signal
 
 After recording completion metrics, evaluate whether this orchestration was appropriately
-triggered. Write a threshold calibration signal to patterns:
-
-- **Over-orchestrated**: Zero re-plans, single agent did 90%+ of work, total turns < 10.
-  Signal: "threshold_too_low" — suggests raising effective threshold.
-- **Right-sized**: Multiple agents contributed meaningfully, orchestration flow was needed.
-  Signal: none.
-- **Under-orchestrated (from solo path)**: PM handled a task solo but it took >20 turns
-  or produced >5 file changes. Signal: "threshold_too_high" — suggests lowering threshold.
-
-Store signals in `.orchestray/patterns/` as category `threshold`:
-```json
-{"type": "threshold_signal", "score": N, "signal": "threshold_too_low|threshold_too_high", "task_summary": "...", "timestamp": "ISO8601"}
-```
-
-**Adaptive threshold application** (in Section 0 scoring):
-> Read `agents/pm-reference/scoring-rubrics.md` Section "Adaptive Threshold Calibration"
-> for the rules on adjusting the effective threshold based on accumulated signals.
-
-Never modify `config.json` — only adjust the PM's internal effective threshold for the
-current session based on evidence.
+triggered. Classification rules (over-orchestrated / right-sized / under-orchestrated),
+signal file schema, and adaptive-threshold application are in
+`agents/pm-reference/tier1-orchestration.md` §15.Step 4 and
+`agents/pm-reference/scoring-rubrics.md` §"Adaptive Threshold Calibration".
+Run ONLY after orchestration completion.
 
 ---
 
@@ -1019,50 +1002,17 @@ Example: "Assigning to architect (opus/max -- score 9/12)"
 
 ## 20. Specialist Save Protocol
 
-After a dynamic agent completes with `status: success` (Section 4 result processing),
-evaluate whether to save it as a persistent specialist in `.orchestray/specialists/`.
-
-### Save Criteria
-
-Save the specialist when ALL of these are true:
-
-1. The dynamic agent completed with `status: success`.
-2. The agent's specialization is genuinely distinct from core agents (architect,
-   developer, refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer)
-   AND from existing registry specialists.
-3. The task type is likely to recur in this project (not a one-off).
-4. The dynamic agent's prompt can generalize beyond the specific task -- it contains
-   reusable domain knowledge, output format, and scope boundaries.
-
-### Do NOT Save When
-
-- The task was a one-off unlikely to recur (e.g., one-time data migration with
-  hardcoded file paths).
-- An existing specialist already covers this domain. If the new agent's description
-  substantially overlaps with an existing specialist, skip saving and note which
-  existing specialist covers this domain. Update the existing specialist's description
-  if the new agent adds useful refinement.
-- The dynamic agent's prompt is too task-specific to generalize (full of literal
-  file paths, variable names, or one-time context that cannot be abstracted).
-
-### Save Process
-
-> Read `agents/pm-reference/specialist-protocol.md` for the detailed 8-step save process, soft cap warning, and promotion check procedures.
+After a dynamic agent completes with `status: success`, evaluate whether to save it as
+a persistent specialist. Save criteria, do-not-save criteria, and the 8-step save
+process are in `agents/pm-reference/specialist-protocol.md` §"Section 20 — Save".
+Evaluate ONLY when you just completed a dynamic-agent (Section 17) spawn.
 
 ## 21. Specialist Reuse Protocol
 
-Before spawning a new dynamic agent (Section 17, in tier1-orchestration.md, step 1), check the specialist registry
-for a reusable match. This check is ONLY performed when Section 17 (tier1) criteria are met and
-the PM would normally create a dynamic agent. Do NOT check on every orchestration.
-
-### Registry Check
-
-Read `.orchestray/specialists/registry.json`. If missing, no specialists available --
-proceed to Section 17 normal flow (in tier1-orchestration.md). If found, match subtask description against specialist
-names/descriptions. User-created specialists (`source: "user"`) take priority over
-auto-saved ones.
-
-> Read `agents/pm-reference/specialist-protocol.md` for the detailed 5-step registry check, file sync for user-created specialists, selection display format, staleness warning, and allowed tool names.
+Before spawning a new dynamic agent (Section 17), check the specialist registry for a
+reusable match. Registry check, matching rules, and staleness warnings are in
+`agents/pm-reference/specialist-protocol.md` §"Section 21 — Reuse". Consult ONLY when
+Section 17 criteria are met.
 
 ---
 
@@ -1101,6 +1051,9 @@ Load these reference files conditionally based on the situation:
 | `enable_replay_analysis` is true | `agents/pm-reference/replay-analysis.md` |
 | `v2017_experiments.prompt_caching === 'on'` AND about to spawn subagents | `agents/pm-reference/prompt-caching-protocol.md` |
 | `v2017_experiments.adaptive_verbosity === 'on'` AND `adaptive_verbosity.enabled === true` | `agents/pm-reference/tier1-orchestration.md` §3.Y |
+| Section 13 decomposition active (score ≥ 4) | `agents/pm-reference/pipeline-templates.md` |
+| `enable_repo_map` is true AND repo map generation/staleness check is this turn | `agents/pm-reference/repo-map-protocol.md` |
+| Orchestration has just completed AND pattern extraction running | `agents/pm-reference/pattern-extraction.md` |
 
 ### Always-Available Reference Files
 
@@ -1110,14 +1063,9 @@ These files are loaded regardless of orchestration mode when their content is ne
 - `agents/pm-reference/specialist-protocol.md` — for specialist checks (Sections 20, 21)
 - `agents/pm-reference/delegation-templates.md` — for delegation prompts (Section 3)
 - `agents/pm-reference/event-schemas.md` — for audit event formats
-- `agents/pm-reference/pipeline-templates.md` — for task archetype classification
-- `agents/pm-reference/repo-map-protocol.md` — for repository map generation
-- `agents/pm-reference/pattern-extraction.md` — for pattern extraction details
 
 ### Tier-2 Loading Discipline
 
 Load a Tier-2 file only when its declared gate condition in the table above is met. Do not pre-load. Do not speculate.
-
-<!-- ORCHESTRAY_BLOCK_A_END -->
 
 <!-- ORCHESTRAY_BLOCK_B_END -->

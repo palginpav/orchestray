@@ -28,6 +28,34 @@ The subagent has NO context from this conversation. It starts fresh.
    agent type in `.orchestray/personas/`, inject it as a `## Project Persona` section in
    the delegation prompt. Cap at 150 words. See Section 42c in adaptive-personas.md.
 
+10. **Exploration Discipline boilerplate:** Inject the `## Exploration Discipline`
+    block from `agents/pm-reference/delegation-templates.md` §"Exploration Hygiene —
+    Boilerplate" into every delegation (except trivially one-file tasks). Place
+    AFTER `## Repository Map` and BEFORE `## Context from Previous Agent`.
+
+### Exploration Hygiene — Boilerplate
+
+Include this verbatim block in every delegation prompt (unless the agent's task is
+trivially one-file). Place it AFTER the `## Repository Map` section and BEFORE the
+`## Context from Previous Agent` section.
+
+#### Template
+
+```
+## Exploration Discipline
+
+Before reading any file:
+1. If the Repository Map above answers your question, do NOT re-verify with a Read.
+2. Use Glob for structure lookups (e.g., `Glob("src/**/*.ts")`) — never Read a
+   directory.
+3. Use Grep with `output_mode: "files_with_matches"` to find candidate files, then
+   use `output_mode: "content"` with `-n` and `head_limit` on the narrow subset.
+4. When a file is > 500 lines, Read it with `offset` and `limit`. Full reads of
+   long files are the largest single source of wasted context.
+5. Reading the same file twice in one session is a signal you should have taken
+   notes the first time — re-check your prior tool results before re-reading.
+```
+
 ### Example Delegation Prompts
 
 **Good:** "Create a REST API endpoint POST /api/tasks in src/api/tasks.ts that accepts
@@ -63,8 +91,10 @@ token consumption by 25-35% while maintaining review quality.
 ## Git Diff
 {output of `git diff -- <files_changed>` showing what the developer changed}
 
-If the diff exceeds 500 lines, include only the first 500 lines and append:
-"[diff truncated -- {total_lines} total lines, showing first 500]"
+If the diff exceeds 300 lines, include a file-grouped summary instead of raw diff lines.
+For each file: one line stating the change category (added function X, modified
+error handling in Y, removed dead code in Z). Only include raw diff lines for files
+the reviewer MUST read closely (maximum 2 files, 80 lines each).
 
 ## Context
 {architect design, task requirements, or other relevant context}
@@ -79,6 +109,11 @@ modified lines and only read full files when surrounding context is needed.
 
 Use this template when spawning a sequential agent that depends on a prior agent's work:
 
+**Budget:** the entire `## Context from Previous Agent` block MUST fit in ≤ 400 tokens.
+If KB summaries + diff would exceed 400 tokens, drop the full diff and include only
+a file-grouped summary ("Modified: src/api/tasks.ts — added createTask export;
+src/models/task.ts — added Task schema"). Never include raw diff > 120 lines.
+
 ```
 [Task description for Agent B -- specific, self-contained, per Section 3 rules]
 
@@ -91,7 +126,7 @@ The {previous_agent} completed {previous_task}. Key context:
 - `.orchestray/kb/{category}/{slug-2}.md` -- {summary from index}
 
 ### Code Changes
-{git diff output -- or summary if diff exceeds 200 lines}
+{git diff output -- summarize if > 120 lines; see Budget line above}
 
 Use the KB entries and code changes above to understand the current state before
 proceeding. Do NOT re-read files covered by the KB entries -- they contain the
@@ -155,20 +190,9 @@ Use them to avoid re-exploring rejected approaches and to build on discovered in
 
 ### Trace: {source_agent} on task-{task_id} ({source_model})
 
-**Approaches Considered:**
-{approaches_considered section content}
-
-**Assumptions Made:**
-{assumptions section content}
-
-**Key Trade-Offs:**
-{trade_offs section content}
-
-**Risky Decisions:**
-{risky_decisions section content}
-
-**Discoveries:**
-{discoveries section content}
+**Rejected approaches:** {merge Approaches Considered + Risky Decisions — one line each, max 3 items}
+**Key assumptions:** {merge Assumptions Made + Trade-Offs that are load-bearing — max 3 items}
+**Carry-over insights:** {Discoveries the downstream agent should not re-derive — max 3 items}
 
 [Repeat for up to 3 relevant traces]
 ```
@@ -178,12 +202,12 @@ Use them to avoid re-exploring rejected approaches and to build on discovered in
 - `{source_agent}`: The agent type that produced the trace (architect, developer, etc.)
 - `{task_id}`: The subtask ID from the trace's YAML frontmatter
 - `{source_model}`: The model used by the source agent (sonnet, opus)
-- Section content fields: Copy directly from the trace file's markdown sections
 
 ### Rules
 
 - Only include traces that pass the relevance filter (file overlap or dependency edge).
-- Cap at 3 traces and ~1,000 words total. If exceeded, drop the least relevant trace.
+- Cap at 3 traces and ~600 words total. If exceeded, drop the least relevant trace.
+- A trace that cannot fit 3 items per bullet must be dropped, not truncated mid-bullet.
 - If no relevant traces exist, omit the entire `## Upstream Reasoning Context` section.
   Do NOT include an empty section.
 - Traces from Haiku agents should never exist (Section 4.Y skips Haiku), but if
@@ -206,6 +230,7 @@ zero tool calls, zero extra cost. Items that cannot be addressed should be noted
 - [ ] Backward compatibility constraints noted? (existing APIs, consumers, data formats to preserve)
 - [ ] Import/dependency constraints stated? (allowed libraries, no new dependencies, use existing utils)
 - [ ] Self-check instruction included? (compile, lint, test commands to run before reporting)
+- [ ] Exploration hygiene stated? (delegation says: "Use Glob for structure and Grep with `output_mode: files_with_matches` to locate candidates; Read only files you intend to act on. The Repository Map is authoritative for project layout — do not Glob the whole repo to re-discover structure.")
 
 ### Architect Checklist
 
@@ -213,6 +238,7 @@ zero tool calls, zero extra cost. Items that cannot be addressed should be noted
 - [ ] Constraints listed? (performance budgets, security requirements, compatibility targets)
 - [ ] Scope boundaries explicit? (what is in scope vs. out of scope for this design)
 - [ ] Decision format requested? (tradeoff analysis with options, pros/cons, recommendation)
+- [ ] Exploration hygiene stated? (delegation says: "Use Glob for structure and Grep with `output_mode: files_with_matches` to locate candidates; Read only files you intend to act on. The Repository Map is authoritative for project layout — do not Glob the whole repo to re-discover structure.")
 
 ### Reviewer Checklist
 
@@ -221,6 +247,7 @@ zero tool calls, zero extra cost. Items that cannot be addressed should be noted
 - [ ] Architect design reference linked if applicable? (design doc or KB entry for spec conformance)
 - [ ] Priority dimensions specified? (correctness, security, performance, maintainability -- which matter most)
 - [ ] Git diff included? (per the Reviewer Delegation: Git Diff Inclusion protocol above)
+- [ ] Exploration hygiene stated? (delegation says: "Use Glob for structure and Grep with `output_mode: files_with_matches` to locate candidates; Read only files you intend to act on. The Repository Map is authoritative for project layout — do not Glob the whole repo to re-discover structure.")
 
 ### Tester Checklist
 
@@ -228,6 +255,7 @@ zero tool calls, zero extra cost. Items that cannot be addressed should be noted
 - [ ] Edge cases listed? (boundary conditions, error cases, empty inputs the tests should cover)
 - [ ] Existing test patterns referenced? (test framework, helper utilities, fixture conventions)
 - [ ] Source files to test identified? (exact paths, not "test the new code")
+- [ ] Exploration hygiene stated? (delegation says: "Use Glob for structure and Grep with `output_mode: files_with_matches` to locate candidates; Read only files you intend to act on. The Repository Map is authoritative for project layout — do not Glob the whole repo to re-discover structure.")
 
 ### Debugger Checklist
 
@@ -235,6 +263,7 @@ zero tool calls, zero extra cost. Items that cannot be addressed should be noted
 - [ ] Reproduction steps provided? (commands, inputs, or test cases that trigger the issue)
 - [ ] Relevant file paths listed? (where the bug likely lives, recent changes)
 - [ ] Expected vs. actual behavior stated? (what should happen vs. what does happen)
+- [ ] Exploration hygiene stated? (delegation says: "Use Glob for structure and Grep with `output_mode: files_with_matches` to locate candidates; Read only files you intend to act on. The Repository Map is authoritative for project layout — do not Glob the whole repo to re-discover structure.")
 
 ### Refactorer Checklist
 
@@ -242,6 +271,7 @@ zero tool calls, zero extra cost. Items that cannot be addressed should be noted
 - [ ] Behavioral equivalence requirement stated? (output must not change, tests must still pass)
 - [ ] Existing test coverage noted? (are there tests that protect against regressions)
 - [ ] Target structure described? (desired end state -- module boundaries, naming, patterns)
+- [ ] Exploration hygiene stated? (delegation says: "Use Glob for structure and Grep with `output_mode: files_with_matches` to locate candidates; Read only files you intend to act on. The Repository Map is authoritative for project layout — do not Glob the whole repo to re-discover structure.")
 
 ### Inventor Checklist
 
@@ -249,6 +279,7 @@ zero tool calls, zero extra cost. Items that cannot be addressed should be noted
 - [ ] Constraints stated? (no external dependencies, performance targets, API surface)
 - [ ] Success criteria defined? (what makes the invention "done" -- prototype, benchmark, proof)
 - [ ] Build-vs-buy context provided? (why custom over off-the-shelf, what was considered)
+- [ ] Exploration hygiene stated? (delegation says: "Use Glob for structure and Grep with `output_mode: files_with_matches` to locate candidates; Read only files you intend to act on. The Repository Map is authoritative for project layout — do not Glob the whole repo to re-discover structure.")
 
 ### Documenter Checklist
 
@@ -256,6 +287,7 @@ zero tool calls, zero extra cost. Items that cannot be addressed should be noted
 - [ ] Target audience identified? (developers, end users, contributors, ops)
 - [ ] Source files referenced? (what code to document, what behavior to describe)
 - [ ] Existing doc conventions noted? (format, location, style of existing documentation)
+- [ ] Exploration hygiene stated? (delegation says: "Use Glob for structure and Grep with `output_mode: files_with_matches` to locate candidates; Read only files you intend to act on. The Repository Map is authoritative for project layout — do not Glob the whole repo to re-discover structure.")
 
 ### Security Engineer Checklist
 
@@ -263,6 +295,7 @@ zero tool calls, zero extra cost. Items that cannot be addressed should be noted
 - [ ] Security requirements listed? (compliance standards, auth model, data sensitivity)
 - [ ] Existing security measures noted? (current auth, encryption, input validation in place)
 - [ ] Output format specified? (threat model, vulnerability report, remediation plan)
+- [ ] Exploration hygiene stated? (delegation says: "Use Glob for structure and Grep with `output_mode: files_with_matches` to locate candidates; Read only files you intend to act on. The Repository Map is authoritative for project layout — do not Glob the whole repo to re-discover structure.")
 
 ---
 

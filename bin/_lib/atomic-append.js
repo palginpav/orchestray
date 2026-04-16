@@ -259,4 +259,76 @@ function atomicAppendJsonlIfAbsent(filePath, row, matchFn) {
   }
 }
 
-module.exports = { atomicAppendJsonl, atomicAppendJsonlIfAbsent, MAX_JSONL_READ_BYTES };
+/**
+ * Acquire the advisory lock on `lockPath`, run `fn()` synchronously, then
+ * release the lock. Returns the value returned by fn().
+ *
+ * Extracted as a shared primitive (W3 / v2.0.19) so that context-telemetry-cache.js
+ * can use the same lock strategy without duplicating the retry/stale-recovery logic.
+ *
+ * Fail-open: if the lock cannot be acquired, fn() is called anyway and a stderr
+ * warning is emitted. This matches the fail-open contract used by atomicAppendJsonl.
+ *
+ * @param {string}   lockPath - Path for the advisory lock file (e.g. "<target>.lock")
+ * @param {Function} fn       - Zero-argument synchronous function to run under the lock.
+ * @returns {*} Return value of fn().
+ */
+function _withAdvisoryLock(lockPath, fn) {
+  // Ensure parent directory exists.
+  try {
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  } catch (_e) { /* swallow */ }
+
+  let fd = null;
+  let lockErr = null;
+  for (let attempt = 0; attempt < MAX_LOCK_ATTEMPTS; attempt++) {
+    try {
+      fd = fs.openSync(lockPath, 'wx');
+      lockErr = null;
+      break;
+    } catch (err) {
+      lockErr = err;
+      if (err && err.code === 'EEXIST') {
+        try {
+          const st = fs.statSync(lockPath);
+          if (Date.now() - st.mtimeMs > 10_000) {
+            try { fs.unlinkSync(lockPath); } catch (_e) {}
+            continue;
+          }
+        } catch (_e) {
+          continue;
+        }
+        if (attempt < MAX_LOCK_ATTEMPTS - 1) {
+          sleepMs(LOCK_BACKOFF_MS);
+          continue;
+        }
+      } else {
+        break;
+      }
+    }
+  }
+
+  if (fd === null) {
+    process.stderr.write(
+      '[orchestray] _withAdvisoryLock: lock acquire failed (' +
+      ((lockErr && lockErr.code) || 'unknown') +
+      ') for ' + lockPath + '; running fn without lock\n'
+    );
+    return fn();
+  }
+
+  try {
+    return fn();
+  } finally {
+    try { fs.closeSync(fd); } catch (_e) {}
+    try {
+      fs.unlinkSync(lockPath);
+    } catch (err) {
+      if (err && err.code !== 'ENOENT') {
+        process.stderr.write('[orchestray] _withAdvisoryLock: failed to unlink lockfile: ' + err.message + '\n');
+      }
+    }
+  }
+}
+
+module.exports = { atomicAppendJsonl, atomicAppendJsonlIfAbsent, _withAdvisoryLock, MAX_JSONL_READ_BYTES };

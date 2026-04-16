@@ -1753,6 +1753,126 @@ function isExperimentActive(cfg, flagName) {
   } catch { return false; }
 }
 
+// ---------------------------------------------------------------------------
+// context_statusbar section defaults and loader (W3 / v2.0.19 Pillar B)
+//
+// context_statusbar.enabled — boolean, default true.
+//   When false, bin/statusline.js prints an empty line and exits 0.
+//   Hooks still write the cache (cheap; avoids cold-cache flicker on re-enable).
+//
+// context_statusbar.unicode — boolean, default false.
+//   When true, use Unicode block-fill bar instead of K/M numbers.
+//
+// context_statusbar.color — boolean, default false.
+//   When true, emit ANSI color codes for pressure levels.
+//
+// context_statusbar.width_cap — positive integer, default 120.
+//   Maximum rendered line width; subagent list is truncated from the right.
+//
+// context_statusbar.pressure_thresholds.warn     — integer 0-100, default 75.
+// context_statusbar.pressure_thresholds.critical — integer 0-100, default 90.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_CONTEXT_STATUSBAR = Object.freeze({
+  enabled: true,
+  unicode: false,
+  color:   false,
+  width_cap: 120,
+  pressure_thresholds: Object.freeze({ warn: 75, critical: 90 }),
+});
+
+/**
+ * Load and merge the context_statusbar config block from
+ * <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: any missing/malformed value returns DEFAULT_CONTEXT_STATUSBAR.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ enabled: boolean, unicode: boolean, color: boolean, width_cap: number, pressure_thresholds: { warn: number, critical: number } }}
+ */
+function loadContextStatusbarConfig(cwd) {
+  const def = {
+    enabled:  DEFAULT_CONTEXT_STATUSBAR.enabled,
+    unicode:  DEFAULT_CONTEXT_STATUSBAR.unicode,
+    color:    DEFAULT_CONTEXT_STATUSBAR.color,
+    width_cap: DEFAULT_CONTEXT_STATUSBAR.width_cap,
+    pressure_thresholds: Object.assign({}, DEFAULT_CONTEXT_STATUSBAR.pressure_thresholds),
+  };
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try { raw = fs.readFileSync(configPath, 'utf8'); } catch (_) { return def; }
+
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch (_) { return def; }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return def;
+
+  const fromFile = parsed.context_statusbar;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) return def;
+
+  const safe = sanitizeConfig(fromFile);
+  const merged = Object.assign({}, def, safe);
+
+  // Normalize pressure_thresholds sub-object.
+  if (safe.pressure_thresholds && typeof safe.pressure_thresholds === 'object' && !Array.isArray(safe.pressure_thresholds)) {
+    merged.pressure_thresholds = Object.assign({}, def.pressure_thresholds, sanitizeConfig(safe.pressure_thresholds));
+  } else {
+    merged.pressure_thresholds = Object.assign({}, def.pressure_thresholds);
+  }
+
+  // Validate and warn on stderr — always return merged (fail-open).
+  try {
+    const result = validateContextStatusbarConfig(merged);
+    if (!result.valid) {
+      logStderr('context_statusbar config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) { /* must not throw */ }
+
+  return merged;
+}
+
+/**
+ * Validate a context_statusbar config object.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateContextStatusbarConfig(obj) {
+  const errors = [];
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['context_statusbar config must be an object'] };
+  }
+  if ('enabled' in obj && typeof obj.enabled !== 'boolean') {
+    errors.push('context_statusbar.enabled must be a boolean');
+  }
+  if ('unicode' in obj && typeof obj.unicode !== 'boolean') {
+    errors.push('context_statusbar.unicode must be a boolean');
+  }
+  if ('color' in obj && typeof obj.color !== 'boolean') {
+    errors.push('context_statusbar.color must be a boolean');
+  }
+  if ('width_cap' in obj) {
+    if (!Number.isInteger(obj.width_cap) || obj.width_cap < 40) {
+      errors.push('context_statusbar.width_cap must be an integer >= 40');
+    }
+  }
+  if ('pressure_thresholds' in obj) {
+    const pt = obj.pressure_thresholds;
+    if (!pt || typeof pt !== 'object' || Array.isArray(pt)) {
+      errors.push('context_statusbar.pressure_thresholds must be an object');
+    } else {
+      if ('warn' in pt && (!Number.isInteger(pt.warn) || pt.warn < 0 || pt.warn > 100)) {
+        errors.push('context_statusbar.pressure_thresholds.warn must be 0-100');
+      }
+      if ('critical' in pt && (!Number.isInteger(pt.critical) || pt.critical < 0 || pt.critical > 100)) {
+        errors.push('context_statusbar.pressure_thresholds.critical must be 0-100');
+      }
+    }
+  }
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
 module.exports = {
   DEFAULT_MCP_ENFORCEMENT,
   loadMcpEnforcement,
@@ -1803,5 +1923,9 @@ module.exports = {
   DEFAULT_REDO_FLOW,
   loadRedoFlowConfig,
   validateRedoFlowConfig,
+  // W3 (v2.0.19): context statusbar config
+  DEFAULT_CONTEXT_STATUSBAR,
+  loadContextStatusbarConfig,
+  validateContextStatusbarConfig,
   logStderr,
 };

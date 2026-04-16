@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/reset-context-telemetry.js",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Agent|Explore|Task",
@@ -17,6 +28,11 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/gate-agent-spawn.js",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/collect-context-telemetry.js pre-spawn",
             "timeout": 5
           }
         ]
@@ -40,6 +56,11 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/emit-routing-outcome.js",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/collect-context-telemetry.js post-spawn",
+            "timeout": 3
           }
         ]
       },
@@ -90,6 +111,11 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/audit-event.js start",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/collect-context-telemetry.js start",
+            "timeout": 5
           }
         ]
       }
@@ -112,6 +138,11 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/collect-agent-metrics.js",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/collect-context-telemetry.js stop",
+            "timeout": 10
           }
         ]
       }

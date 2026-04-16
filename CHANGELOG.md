@@ -3,6 +3,76 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.19] - 2026-04-16
+
+### Theme: "Context status bar + six-angle context-saving bundle"
+
+Two pillars shipped together. Pillar 1 surfaces live context consumption in the Claude Code
+status line so operators can see subagent model tiers and token fill at a glance. Pillar 2
+applies six coordinated context-saving techniques to agent prompts, netting an estimated ~7k–15k fewer
+tokens per medium-complexity orchestration.
+
+### Added
+
+- **Context status bar** (`statusLine` integration) — live display of session context fill %,
+  active subagent models + effort tier, and per-subagent token count in the Claude Code status
+  line. Driven by `bin/collect-context-telemetry.js` on `PreToolUse` / `SubagentStart` /
+  `SubagentStop` / `PostToolUse` hooks; rendered by `bin/statusline.js` (< 50 ms budget).
+  New config block `context_statusbar` (toggle via `context_statusbar.enabled`, default `true`).
+  See `.orchestray/kb/artifacts/2019-design-telemetry-statusbar.md` for design rationale.
+  Diagnostic: run `echo '{}' | node bin/statusline.js --dump-stdin` to verify the
+  statusLine stdin payload shape reaching the hook (useful when the status line
+  renders blank or stale).
+- **Shared `bin/_lib/` telemetry helpers** — `transcript-usage.js` (JSONL parsing),
+  `path-containment.js` (safe path checks), `context-telemetry-cache.js` (concurrent-safe
+  subagent state cache), `models.js` (model lookup + context-window resolution).
+- **62 new telemetry tests** under `tests/telemetry/` covering all five modules (transcript
+  parsing, model resolution, cache transitions, statusline render, collector subcommands).
+  Test total: 1,478 → 1,540 (+62 tests). Ship-time tally: 1,540/1,540 after VF1 cleared the W5-inherited Block A hash failure.
+
+### Changed
+
+- **Six context-saving techniques** applied to agent prompts (an estimated ~7k–15k tokens saved per
+  medium-complexity orchestration). See `.orchestray/kb/artifacts/2019-design-context-saving.md`:
+  1. **Handoff shrinkage** — diff cap 500 → 300 lines (file-grouped), trace cap 1,000 → 600
+     words, budget prelude (≤ 400 tokens) added before Context Handoff Template
+     (`agents/pm-reference/delegation-templates.md`).
+  2. **PM prompt slimming** — `agents/pm.md` −50 lines net; Sections 20 + 21 bodies and
+     Steps 2 + 4 bodies collapsed to pointers into `tier1-orchestration.md`; three files
+     moved from Always-Available to Tier-2 conditional dispatch.
+  3. **Subagent output discipline** — new "Response Length Discipline" section in
+     `agents/pm-reference/agent-common-protocol.md` caps agent response verbosity.
+  4. **Read/Grep hygiene** — exploration-hygiene bullet added to all 9 per-agent delegation
+     checklists and the boilerplate template in `delegation-templates.md`.
+  5. **Prompt-cache preservation** — `agents/pm-reference/prompt-caching-protocol.md` §3
+     rewritten as sentinel-based Block A boundary rule; §7.4 added as a hash-based
+     pre-commit assertion.
+  6. **Context telemetry integration** — effort tier surfaced on `Agent()` calls so the
+     status bar can display it with no extra round-trips.
+- **Block A boundary relocated.** `<!-- ORCHESTRAY_BLOCK_A_END -->` sentinel moved from
+  line 1071 → line 909 in `agents/pm.md` (immediately before `## 15. Cost Tracking and
+  Display`). Block A now covers Sections 0–14 (stable Tier-0 core). **One-time cache-prefix
+  re-upload on first session after upgrade** (~15k tokens; amortised over weeks of use).
+  Pinned hash `tests/.block-a-hash-expected` updated to `eabb8286b63251af`.
+- **Section 15 ordering in `agents/pm-reference/tier1-orchestration.md`** — steps
+  reordered to chronological 1 → 2 → 3 → 4 (Step 3 previously appeared after Step 4).
+
+### Fixed
+
+- **`bin/_lib/context-telemetry-cache.js`** — removed unlocked `last_error` recording path
+  that could silently clobber a concurrent writer's successful cache write under rapid
+  SubagentStart / SubagentStop interleaving (VF1).
+- **`bin/collect-context-telemetry.js`** — hardened staging-key fallback for pre-spawn
+  events without `tool_use_id` to include `pid` plus a monotonic counter, eliminating
+  same-millisecond collisions that previously caused nondeterministic merge picks (VF2).
+- **`bin/statusline.js`** — added an explicit `[statusline] stdin exceeded limit` stderr
+  warning before the fail-open exit on stdin overrun, replacing the previous silent
+  empty-line fallback while preserving fail-open exit-code semantics (VF2).
+
+### Removed
+
+- **Step 1.5 in `agents/pm-reference/tier1-orchestration.md`** — prescribed a *PM-emitted* `agent_start` event (on top of the existing `SubagentStart` hook emission). No downstream consumer reads the PM-emitted copy, so Step 1.5 was deleted. The hook-emitted `agent_start` event (from `bin/audit-event.js` via `SubagentStart`) is unchanged and still consumed by analytics and `history_query_events.js`.
+
 ## [2.0.18] - 2026-04-16
 
 ### Theme: "Operator ergonomics + honest learning loop + rollback-scaffolding removal"

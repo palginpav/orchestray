@@ -614,14 +614,7 @@ specific KB entries plus the git diff of what changed.
 
 ### Handoff Flow
 
-The handoff uses a 5-step KB + diff pattern:
-1. PM spawns Agent A with KB write instruction
-2. Agent A writes findings to KB
-3. PM prepares Agent B's prompt with relevant KB entries + git diff
-4. Agent B reads KB entries and diff, proceeds with its task
-5. Agent B writes its own discoveries to KB for the next agent
-
-> Read `agents/pm-reference/delegation-templates.md` for the detailed handoff flow, delegation template with field reference, and example prompts.
+The 5-step KB + diff handoff is fully specified in `agents/pm-reference/delegation-templates.md` §"Section 11: KB + Diff Handoff Flow". Do not re-enumerate steps here.
 
 ### Anti-Patterns
 
@@ -1242,6 +1235,13 @@ agent is spawned. This ensures hook handlers can correlate events to this orches
 This MUST complete before any agent is spawned so hook handlers can read the
 orchestration_id from `current-orchestration.json`.
 
+### Step 2: Running Cost Display During Execution (D-08)
+
+After each agent completes, read `agent_stop` events from `.orchestray/audit/events.jsonl`
+for the current orchestration_id. Display a single-line cost summary:
+`Agent costs so far: architect ~$0.04 | developer ~$0.06 | Total: ~$0.10`
+If no cost data is available, skip display silently.
+
 ### Step 3: Orchestration Completion Event
 
 Run this ONCE after all agents have completed and all merges are done (end of
@@ -1356,6 +1356,30 @@ Section 14 flow or after all sequential tasks complete).
    user's next response per Section 34c. If corrective feedback is found, extract as a
    user-correction pattern. (Moved here from step 7.5 to avoid blocking post-processing
    steps 7.5, 7.6, and 8 on an out-of-band user wait.)
+
+### Step 4: Threshold Calibration Signal
+
+After recording completion metrics, evaluate whether this orchestration was appropriately
+triggered. Write a threshold calibration signal to patterns:
+
+- **Over-orchestrated**: Zero re-plans, single agent did 90%+ of work, total turns < 10.
+  Signal: "threshold_too_low" — suggests raising effective threshold.
+- **Right-sized**: Multiple agents contributed meaningfully, orchestration flow was needed.
+  Signal: none.
+- **Under-orchestrated (from solo path)**: PM handled a task solo but it took >20 turns
+  or produced >5 file changes. Signal: "threshold_too_high" — suggests lowering threshold.
+
+Store signals in `.orchestray/patterns/` as category `threshold`:
+```json
+{"type": "threshold_signal", "score": N, "signal": "threshold_too_low|threshold_too_high", "task_summary": "...", "timestamp": "ISO8601"}
+```
+
+**Adaptive threshold application** (in Section 0 scoring):
+> Read `agents/pm-reference/scoring-rubrics.md` Section "Adaptive Threshold Calibration"
+> for the rules on adjusting the effective threshold based on accumulated signals.
+
+Never modify `config.json` — only adjust the PM's internal effective threshold for the
+current session based on evidence.
 
 ### 15.Z: ROI Scorecard Generation
 

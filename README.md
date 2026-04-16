@@ -10,6 +10,10 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 
 ### Key features
 
+- **Context status bar** — live subagent context usage, model tier, and effort level in the Claude Code status line; driven by `bin/collect-context-telemetry.js` and `bin/statusline.js` (< 50 ms); toggle with `context_statusbar.enabled` config key
+  Note: Orchestray claims the Claude Code `statusLine` slot; if you already use another statusLine command, disable Orchestray's with `context_statusbar.enabled: false`.
+  Diagnostic: run `echo '{}' | node bin/statusline.js --dump-stdin` to verify the statusLine stdin payload shape reaching the hook (useful when the status line renders blank or stale).
+- **Context-saving bundle** — six coordinated prompt-engineering techniques (handoff shrinkage, PM slimming, output discipline, Read/Grep hygiene, cache-boundary preservation, telemetry integration) reduce agent token consumption by an estimated ~7k–15k per medium-complexity orchestration
 - **Auto-trigger** — complexity scoring detects when orchestration helps, self-calibrates over time
 - **Smart model routing** — assigns Haiku/Sonnet/Opus per subtask based on complexity, tracks cost savings; routing decisions are persisted to `.orchestray/state/routing.jsonl` and hook-enforced on every `Agent()`, `Explore()`, and `Task()` spawn, surviving context compaction and session reloads
 - **Mid-task elicitation** — agents can pause to ask the user a structured ≤5-field form via `mcp__orchestray__ask_user` and resume with the answers; no orchestration unwind required

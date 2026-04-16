@@ -39,6 +39,29 @@ Standard fields in every agent's JSON result block:
 - **retry_context**: Present only on `"failure"` or `"partial"` — what was tried and
   what prevented completion.
 
+### Response Length Discipline
+
+Your response to the PM has two parts and a combined length budget:
+
+1. **`## Result Summary`** (human-readable): ≤ 150 words. Bullet list preferred over
+   prose. State what you did, what you found, and what the next agent needs. Omit
+   process narration ("I first read X, then searched for Y, then realized Z") — the
+   PM reads the transcript for process; the summary is for outcomes.
+
+2. **`## Structured Result`** (JSON block): as many fields as the schema requires,
+   but `issues[].description` ≤ 30 words each, `recommendations[]` ≤ 20 words each.
+
+Combined response budget: ≤ 400 words of prose + structured JSON. If your work
+genuinely requires a longer explanation (e.g., a complex architectural decision), put
+the long form in a KB artifact (`.orchestray/kb/artifacts/{slug}.md`) and cite it from
+the summary. Do not inline long explanations in the agent response — they inflate the
+PM's context without aiding decision-making.
+
+**Exemption:** Debuggers returning a `diagnosis` block and Inventors returning an
+`invention_summary` block may exceed the 150-word summary cap if the role-specific
+extension field demands it, up to 300 words of summary. The 400-word combined budget
+still applies.
+
 ### Role-Specific Extension Fields
 
 Certain agent roles add extra top-level fields to the standard contract. These are

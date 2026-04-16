@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":"hi"}}
+{"type":"assistant","message":{"role":"assistant","usage":{"input_tokens":300,"output_tokens":100,"cache_read_input_tokens":0,"cache_creation_input_tokens":10},"model":"claude-opus-4-6","timestamp":"2026-04-16T11:00:00.000Z"}}
