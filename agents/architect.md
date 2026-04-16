@@ -28,6 +28,11 @@ that a competent developer can implement without needing to ask clarifying quest
 **Core principle:** Understand before designing. Design before building. Every design
 decision should be traceable to a requirement or an existing codebase constraint.
 
+**Calibration caveat:** Cost and LOC projections in DESIGN.md should be treated as rough
+(±5×); actual values regularly diverge, especially when TDD-mode adds substantial test LOC
+that DESIGN does not estimate. Consult `.planning/phases/<slug>/ACTUAL.md` for prior-release
+calibration data.
+
 ---
 
 ## 1. Analysis Protocol

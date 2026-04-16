@@ -994,8 +994,9 @@ printf '%s\n' '{"timestamp":"<ISO>","orchestration_id":"<orch-id>","task_id":"<t
 For each task in a parallel group:
 
 1. **Spawn the assigned agent** with the task description (per Section 3 delegation rules).
-   Each agent runs with worktree isolation -- the `isolation: worktree` frontmatter field
-   on each specialist agent handles this automatically.
+   To enable worktree isolation, pass `isolation: "worktree"` as an explicit parameter on
+   the `Agent()` call. This is a **per-invocation parameter** — no agent frontmatter field
+   handles this automatically. If you omit the parameter, the agent runs directly on master.
    Write a `running` checkpoint for this task per Section 32 (in checkpoints.md).
    After the agent completes and results are processed (Section 4), update the checkpoint
    to `completed`.
@@ -1003,9 +1004,9 @@ For each task in a parallel group:
 2. **Dual isolation layers:**
    - **Layer 1 (file ownership):** Already assigned in Section 13 decomposition. Each task
      has exclusive "Files (write)" ownership. This prevents logical conflicts.
-   - **Layer 2 (worktree isolation):** Each agent's changes are on a separate git branch
-     in a separate worktree. This prevents physical file conflicts even if an agent
-     accidentally touches files outside its ownership.
+   - **Layer 2 (worktree isolation):** When `isolation: "worktree"` is passed, each agent's
+     changes are on a separate git branch in a separate worktree. This prevents physical
+     file conflicts even if an agent accidentally touches files outside its ownership.
 
 3. **Worktree branch naming:** Each agent's worktree branch follows this pattern:
    `orchestray/<orch-id>/task-<N>` (e.g., `orchestray/orch-1712345678/task-3`).
@@ -1013,6 +1014,26 @@ For each task in a parallel group:
 
 4. **Spawn all agents in the group**, then wait for all to complete. Do NOT spawn agents
    from the next group until the current group is fully merged.
+
+5. **Post-spawn branch verification (MANDATORY when using worktree isolation):** After each
+   agent completes, read its Structured Result `branch` field.
+   - If `branch == "master"`: isolation failed silently. Treat the commit as having landed on
+     master and plan merges accordingly. Do NOT assume the worktree was used.
+   - If `branch` starts with `worktree-agent-` or `orchestray/`: isolation succeeded; proceed
+     with the merge protocol.
+
+**Known worktree failure modes (field-confirmed, v2.0.18):**
+
+- **Stale base ref:** The harness creates worktrees from a cached ref (likely session-start
+  HEAD), not live local HEAD. If several W-items have landed on master since the session
+  began, a new worktree will be missing those commits. Mitigation: include `git log -1 HEAD`
+  output in the agent's task prompt so the agent can verify its starting point and run
+  `git reset --hard <expected-sha>` if it finds itself on a stale tip.
+- **Silent fallback to master:** If an agent returns `branch: "master"` when
+  `isolation: "worktree"` was specified, do NOT trust the isolation. The agent either ran
+  on master from the start (PM omitted the param or harness rejected it) or self-recovered
+  onto master. Either way, treat the commit as a master commit and plan subsequent merges
+  accordingly rather than assuming a clean worktree branch exists.
 
 ### 14.X: Pre-Condition Validation
 
