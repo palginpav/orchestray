@@ -3,6 +3,21 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.1.1] - 2026-04-17
+
+**Hotfix: MCP server failed to start after a v2.1.0 install because the FTS5 SQLite migration helpers never shipped.** Reinstall to pick up the fix.
+
+### Fixed
+
+- Installer now ships `bin/_lib/migrations/` alongside the rest of `_lib/`.
+  The v2.1.0 installer only copied top-level `.js` files under `bin/_lib/`, so the
+  `migrations/001-fts5-initial.js` module added for FTS5 was missing from the
+  install target. The MCP server required it at startup via
+  `pattern-index-sqlite.js` and crashed with `MODULE_NOT_FOUND`, which Claude Code
+  surfaced as `/mcp` showing "Failed to reconnect to orchestray." Regression test
+  added (`tests/install-lib-migrations.test.js`): asserts `migrations/` ships,
+  `__tests__/` does not, and the MCP server emits its ready banner within 3s.
+
 ## [2.1.0] - 2026-04-17
 
 **Your patterns can follow you across projects now, finding the right one works better, and Orchestray can tidy up your pattern library for you.**

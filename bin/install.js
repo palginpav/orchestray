@@ -451,14 +451,14 @@ function install(targetDir) {
   }
   // Installed hook scripts `require('./_lib/...')` relative to their own directory,
   // so the _lib/ subtree must be copied alongside them or every hook will throw
-  // MODULE_NOT_FOUND on first fire.
+  // MODULE_NOT_FOUND on first fire. Runtime subdirs (e.g. migrations/) are
+  // included; test fixtures (__tests__/) are excluded via skipDir.
   const libDir = path.join(binDir, '_lib');
   if (fs.existsSync(libDir) && fs.statSync(libDir).isDirectory()) {
     const dstLibDir = path.join(targetDir, 'orchestray', 'bin', '_lib');
-    fs.mkdirSync(dstLibDir, { recursive: true });
-    for (const file of fs.readdirSync(libDir).filter(f => f.endsWith('.js'))) {
-      fs.copyFileSync(path.join(libDir, file), path.join(dstLibDir, file));
-      track(path.join('orchestray', 'bin', '_lib', file));
+    const libFiles = copyJsTree(libDir, dstLibDir, name => name === '__tests__');
+    for (const rel of libFiles) {
+      track(path.join('orchestray', 'bin', '_lib', rel));
     }
   }
   console.log(`  \x1b[32m✓\x1b[0m Installed ${binFiles.length} hook scripts`);
@@ -819,7 +819,9 @@ function mergeHooks(targetDir) {
 // subdir layout. Returns the list of destination-relative paths that were
 // written, so the caller can track them on the manifest. `.js` filter is
 // intentional — we don't want stray editor backup files or READMEs.
-function copyJsTree(src, dst) {
+// skipDir(name) — optional predicate; when it returns true for a directory
+// entry name that directory is not descended into and not copied.
+function copyJsTree(src, dst, skipDir = () => false) {
   const copied = [];
   const walk = (srcSub, dstSub, relPrefix) => {
     fs.mkdirSync(dstSub, { recursive: true });
@@ -828,6 +830,7 @@ function copyJsTree(src, dst) {
       const dstPath = path.join(dstSub, entry.name);
       const rel = relPrefix ? path.join(relPrefix, entry.name) : entry.name;
       if (entry.isDirectory()) {
+        if (skipDir(entry.name)) continue;
         walk(srcPath, dstPath, rel);
       } else if (entry.isFile() && entry.name.endsWith('.js')) {
         fs.copyFileSync(srcPath, dstPath);
