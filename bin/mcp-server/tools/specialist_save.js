@@ -172,8 +172,9 @@ async function handle(input, context) {
   // Reserved-name collision check (hard reject per specialist-protocol.md §1.5).
   if (_isReservedName(input.name)) {
     return toolError(
-      'specialist_save: "' + input.name + '" collides with a reserved core agent name ' +
-      '(' + RESERVED_AGENT_NAMES.join(', ') + '). Use a different name.'
+      'specialist_save: name "' + input.name + '" is reserved. Pick a non-colliding name ' +
+      '(e.g., "data-engineer", "perf-auditor"). ' +
+      'Reserved names (' + RESERVED_AGENT_NAMES.length + '): ' + RESERVED_AGENT_NAMES.join(', ') + '.'
     );
   }
 
@@ -251,6 +252,52 @@ async function handle(input, context) {
     );
     const isUpdate = existingIdx !== -1;
     const now = new Date().toISOString();
+
+    // ----------------------------------------------------------------
+    // 5b. Case-rename scan: before writing <name>.md, remove any existing
+    //     .md file whose name matches <name> case-insensitively but differs
+    //     in case (e.g. "Foo.md" when writing "foo.md"). This prevents stale
+    //     case-variant files from accumulating on case-sensitive filesystems.
+    //
+    //     macOS APFS inode check (R2-B-2): on case-insensitive filesystems
+    //     (APFS, HFS+), a rename() of "Foo.md" -> "foo.md" results in both
+    //     names pointing to the same physical file. If we unlink the old path
+    //     AFTER renaming the new content to the canonical path, we would delete
+    //     the just-written content. Guard: if stat(existingPath).ino ===
+    //     stat(newPath).ino, the two names are the same physical inode -- SKIP
+    //     the unlink; the rename already "moved" the name.
+    // ----------------------------------------------------------------
+    try {
+      const nameLower = input.name.toLowerCase();
+      const existing = fs.readdirSync(specialistsDir);
+      for (const entry of existing) {
+        if (!entry.endsWith('.md')) continue;
+        const stem = entry.slice(0, -3);
+        if (stem.toLowerCase() !== nameLower) continue;
+        // Same case-insensitive name but potentially different case.
+        const existingPath = path.join(specialistsDir, entry);
+        if (existingPath === agentFilePath) continue; // exact match -- no action needed
+
+        // Check if the existing path and the target path are the same inode.
+        // This happens on case-insensitive filesystems (macOS APFS) where
+        // "Foo.md" and "foo.md" are the same physical file.
+        let sameInode = false;
+        try {
+          const existingIno = fs.statSync(existingPath).ino;
+          const newIno = fs.statSync(agentFilePath).ino;
+          sameInode = (existingIno === newIno);
+        } catch (_e) {
+          // Target file not yet written, or existingPath unreadable; proceed with unlink.
+        }
+
+        if (!sameInode) {
+          try { fs.unlinkSync(existingPath); } catch (_e) { /* best-effort */ }
+        }
+        // If sameInode: both names back the same physical file -- skip unlink.
+      }
+    } catch (_e) {
+      // Case-rename scan is best-effort; never block the save.
+    }
 
     // ----------------------------------------------------------------
     // 6. Snapshot prior agent file for rollback on index-write failure.

@@ -194,6 +194,26 @@ console.log('');
 
 install(configDir);
 
+/**
+ * Read the previously-installed Orchestray version string from
+ * `<targetDir>/orchestray/VERSION`. Must be called BEFORE the new VERSION
+ * file is written — otherwise it will read the newly-written value, not the
+ * prior one (R2-B-1 fix).
+ *
+ * @param {string} targetDir  The Claude config directory (e.g. ~/.claude).
+ * @returns {string|null}     Trimmed version string, or null on any error.
+ */
+function readPreviousVersion(targetDir) {
+  try {
+    return fs.readFileSync(
+      path.join(targetDir, 'orchestray', 'VERSION'), 'utf8'
+    ).trim() || null;
+  } catch (_e) {
+    // File absent on fresh installs — not an error.
+    return null;
+  }
+}
+
 function install(targetDir) {
   // -------------------------------------------------------------------------
   // DEF-6: install footprint — verification comment
@@ -367,7 +387,11 @@ function install(targetDir) {
     track(path.join('orchestray', 'CLAUDE.md'));
   }
 
-  // 7. Write version file
+  // 7. Write version file.
+  // R2-B-1 fix: capture previous version BEFORE overwriting — readPreviousVersion
+  // reads this same file, so it must be called first or it will return the new
+  // VERSION value, making previous_version === version in the upgrade sentinel.
+  const prevVersion = readPreviousVersion(targetDir);
   fs.writeFileSync(path.join(targetDir, 'orchestray', 'VERSION'), VERSION + '\n');
   track(path.join('orchestray', 'VERSION'));
 
@@ -444,26 +468,39 @@ function install(targetDir) {
 
   console.log(`  \x1b[32m✓\x1b[0m Wrote VERSION (${VERSION})`);
 
-  // v2.0.21: drop a sentinel so the next UserPromptSubmit in any open Claude
-  // Code session can warn the user that a restart is required for new agent
-  // definitions. The installer runs at user-scope and doesn't know which
-  // projects are open, so the sentinel lives at ~/.claude/ (a path
+  // v2.0.22: drop an upgrade-pending sentinel (schema v2) so the next
+  // UserPromptSubmit in any still-open Claude Code session can warn the user
+  // that a restart is required. The installer runs at user-scope and doesn't
+  // know which projects are open, so the sentinel lives at ~/.claude/ (a path
   // post-upgrade-sweep can find regardless of project cwd). Best-effort —
   // never fail the install on sentinel-write errors.
+  // B-8 fix: mkdirSync with recursive:true guards against fresh-machine ENOENT.
   try {
     const sentinelPath = path.join(os.homedir(), '.claude', '.orchestray-upgrade-pending');
-    fs.writeFileSync(sentinelPath, JSON.stringify({
-      installed_at: new Date().toISOString(),
+    fs.mkdirSync(path.dirname(sentinelPath), { recursive: true });
+    const now = Date.now();
+    const sentinelData = {
+      schema_version: 2,
+      installed_at: new Date(now).toISOString(),
+      installed_at_ms: now,
       version: VERSION,
-    }) + '\n', 'utf8');
+    };
+    // Only include previous_version when it differs from the new version
+    // (avoids self-contradictory "was vX → now vX" on fresh installs where
+    // VERSION already happened to match, or identity non-upgrades).
+    if (prevVersion !== null && prevVersion !== VERSION) {
+      sentinelData.previous_version = prevVersion;
+    }
+    fs.writeFileSync(sentinelPath, JSON.stringify(sentinelData) + '\n', 'utf8');
   } catch (_e) { /* fail-open */ }
 
+  // U-2 fix: RESTART reminder appears BEFORE "Done!" so it is not missed.
+  console.log('');
+  console.log('  \x1b[33m!\x1b[0m  RESTART required — Claude Code caches agent definitions at session');
+  console.log('     start. Close and reopen any open session to pick up new agents.');
+  console.log('     (The /agents UI reads but does not refresh the registry.)');
   console.log('');
   console.log('  \x1b[32mDone!\x1b[0m Orchestray v' + VERSION + ' installed.');
-  console.log('');
-  console.log('  \x1b[33m!\x1b[0m  If a Claude Code session is currently open, RESTART it now.');
-  console.log('     Claude Code caches agent definitions at session start; the');
-  console.log('     /agents UI does NOT trigger a registry rescan in current versions.');
   console.log('');
   console.log('  The PM agent auto-detects complex tasks.');
   console.log('  Or run \x1b[36m/orchestray:run [task]\x1b[0m to trigger manually.');

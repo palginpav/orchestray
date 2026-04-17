@@ -22,7 +22,7 @@ Classify the task using keyword matching and task structure:
 | Migration | "migrate", "upgrade", "schema", "breaking change", "legacy" | 7-10 |
 | Security Audit | "security", "vulnerability", "audit", "CVE", "OWASP" | 6-9 |
 | Release | "release", "ship", "tag", "version bump", "publish", "cut release", "v\d+\.\d+\.\d+" | 3-7 |
-| UX Critique | "UX", "DX", "friction", "discoverability", "ergonomics", "command names", "prompt copy", "error messages" | 4-7 |
+| UX Critique | "UX", "DX", "friction", "discoverability", "ergonomics", "command names", "prompt copy", "error messages", "naming", "copy", "how does X look", "first impression" | 4-7 |
 | Platform Q&A | "Claude Code", "subagent frontmatter", "hook event", "MCP tool", "settings.json schema", "Anthropic SDK", "claude API" | 2-4 |
 
 If the task matches multiple archetypes, prefer the one with higher complexity.

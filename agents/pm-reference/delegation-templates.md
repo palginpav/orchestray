@@ -324,6 +324,7 @@ zero tool calls, zero extra cost. Items that cannot be addressed should be noted
 - [ ] Citation requirement stated? (every claim must cite a fetched URL or `file:line` of installed code; no uncited assertions)
 - [ ] Cross-reference scope? (explicitly invite or restrict reading installed code under `~/.claude/` or `node_modules/`)
 - [ ] Scope refusal reminded? (oracle returns "out of scope, route to {agent}" rather than guessing on platforms it doesn't cover)
+- [ ] WebFetch fallback path stated? (what to do if the canonical URL returns non-200)
 
 ---
 

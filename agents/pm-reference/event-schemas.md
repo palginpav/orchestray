@@ -308,7 +308,8 @@ event with the same timestamp; consumers can join on (`agent_id`, `timestamp`).
   "orchestration_id": "<current orch id>",
   "agent_id": "<subagent id from SubagentStart payload>",
   "agent_type": "<dynamic agent name>",
-  "session_id": "<parent session id>"
+  "session_id": "<parent session id>",
+  "paired_with": "agent_start"
 }
 ```
 
@@ -319,6 +320,9 @@ Field notes:
   `claude-code-guide`, or any project-defined specialist).
 - `session_id`: The parent (PM) session id, not the subagent's own session.
 - `timestamp` is shared with the paired `agent_start` event.
+- `paired_with`: Always `"agent_start"`. Emitted alongside; consumers can join
+  on `(agent_id, timestamp)` to correlate the spawn event with its corresponding
+  `agent_start` event.
 
 Note: `tool_name` and the spawn `description` are NOT in this event because
 `SubagentStart` payloads do not carry them. To recover those, join on
@@ -1563,5 +1567,153 @@ Cross-ref: emitted by `bin/post-upgrade-sweep.js`.
 - **Write-only by design.** Matches the `config_key_stripped` precedent: this event
   exists for a durable post-hoc audit trail (operators and `/orchestray:analytics`
   can query it), not for any runtime consumer. No reader is expected or required.
+
+---
+
+## Section 40: Orchestration Start Event
+
+Emitted by the PM at the beginning of Section 12 (Orchestration Initialization),
+before any agent is spawned. This event is the correlation anchor for all subsequent
+events in the orchestration — every event emitted during this orchestration references
+the same `orchestration_id`.
+
+Cross-ref: the PM also writes `current-orchestration.json` in this same step, which
+is read by hook handlers (`SubagentStart`, `SubagentStop`) to tag events with the
+`orchestration_id`.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "orchestration_start",
+  "orchestration_id": "orch-1712345678",
+  "task": "<user task summary — first 100 chars>",
+  "complexity_score": 7,
+  "complexity_level": "medium"
+}
+```
+
+Field notes:
+- `orchestration_id`: Correlation key for all events in this orchestration. Format:
+  `orch-{unix-timestamp}` (e.g., `orch-1712345678`).
+- `task`: The user's task description, truncated to 100 characters.
+- `complexity_score`: The numeric score (1-10) assigned by the PM complexity scorer.
+- `complexity_level`: Human-readable band — `"low"` (1-4), `"medium"` (5-7), or
+  `"high"` (8-10).
+
+---
+
+## Section 41: Orchestration Complete Event
+
+Emitted by the PM at the end of Section 14 (after all agents have completed and all
+merges are done). This is the closing event for the orchestration and triggers the
+archive rotation via `bin/_lib/events-rotate.js`.
+
+Cross-ref: `bin/emit-orchestration-rollup.js` reads `orchestration_complete` events
+to generate the rollup summary. `bin/state-gc.js` reads them to know which
+orchestrations are eligible for cleanup.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "orchestration_complete",
+  "orchestration_id": "orch-1712345678",
+  "total_agents": 3,
+  "total_tokens": {
+    "input": 45000,
+    "output": 12000,
+    "cache_read": 8000,
+    "cache_creation": 2000
+  },
+  "estimated_total_cost_usd": 0.234567,
+  "duration_ms": 45000,
+  "status": "success"
+}
+```
+
+Field notes:
+- `total_agents`: Count of distinct agent invocations in this orchestration (not
+  counting the PM itself).
+- `total_tokens`: Aggregated token counts across all `agent_stop` events for this
+  orchestration. `cache_read` and `cache_creation` may be `0` for older event rows
+  that did not carry cache fields.
+- `estimated_total_cost_usd`: Sum of `estimated_cost_usd` from all `agent_stop`
+  events. Does not include PM's own cost.
+- `duration_ms`: Wall-clock time from the `orchestration_start` event timestamp to
+  this event's timestamp.
+- `status`: `"success"` if all agents completed successfully, `"partial"` if some
+  failed, `"failure"` if all failed or the orchestration was aborted.
+
+---
+
+## Section 42: Replan Event
+
+Emitted by the PM in Section 16 (Adaptive Re-Planning Protocol) each time the PM
+discards the current task graph and generates a new one. The `replan_count` in
+`.orchestray/state/orchestration.md` is incremented before this event is written.
+
+Cross-ref: `replan` is in the `history_query_events` `EVENT_TYPES` enum and is
+queryable via `mcp__orchestray__history_query_events`. No `bin/` script currently
+aggregates replan counts automatically — the PM reads its own audit trail via MCP.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "replan",
+  "orchestration_id": "<current orch id>",
+  "reason": "<approach_invalidation | scope_expansion | dependency_discovery | completed_work_invalidation | design_rejection>",
+  "old_task_count": 4,
+  "new_task_count": 6,
+  "tasks_invalidated": ["task-02", "task-03"]
+}
+```
+
+Field notes:
+- `reason`: The signal that triggered re-planning. One of:
+  - `approach_invalidation` — the chosen approach was discovered to be infeasible.
+  - `scope_expansion` — new requirements emerged that expand the task scope.
+  - `dependency_discovery` — a dependency was discovered that invalidates the current
+    task graph ordering.
+  - `completed_work_invalidation` — work already completed must be redone.
+  - `design_rejection` — the reviewer rejected the design, triggering a redesign.
+- `old_task_count`: Number of tasks in the task graph before re-planning.
+- `new_task_count`: Number of tasks in the new task graph.
+- `tasks_invalidated`: Array of task IDs whose output is no longer valid. May be
+  empty if only the graph topology changed (e.g., new tasks added without invalidating
+  existing ones).
+
+---
+
+## Section 43: Dynamic Agent Cleanup Event
+
+Emitted by the PM in Section 17 step 7 (Dynamic Agent Lifecycle) after the dynamic
+agent's definition file (`agents/{name}.md`) is deleted. Paired with the
+`dynamic_agent_spawn` event that was emitted at the start of the same agent's
+invocation.
+
+Cross-ref: `bin/mcp-server/tools/history_query_events.js` `EVENT_TYPES` — add
+`"dynamic_agent_cleanup"` to enable MCP filtering for this event type.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "dynamic_agent_cleanup",
+  "orchestration_id": "<current orch id>",
+  "agent_name": "{name}",
+  "task_id": "<task id>",
+  "file_deleted": "agents/{name}.md"
+}
+```
+
+Field notes:
+- `agent_name`: The dynamic agent's name, matching the `agent_type` field on the
+  corresponding `dynamic_agent_spawn` event.
+- `task_id`: The PM's internal subtask identifier for the task this agent executed.
+- `file_deleted`: The relative path of the agent definition file that was removed.
+  Always `agents/{name}.md` for standard dynamic agents.
+
+Consumer guidance: to query the full lifecycle of a dynamic agent, join
+`dynamic_agent_spawn` and `dynamic_agent_cleanup` on `(orchestration_id, agent_name)`.
+Note that `dynamic_agent_cleanup` is not yet in the `history_query_events` EVENT_TYPES
+enum as of v2.0.22 — filter manually by `type` field until EVENT_TYPES is updated.
 
 **Schema stability:** additive only.

@@ -121,21 +121,31 @@ function typeCode(agentType) {
  * signal reaches the renderer — observation alone proves we're in the larger
  * variant, since you cannot have a prompt larger than the actual context window.
  *
- * Returns the original window if no bump applies.
+ * B-3 / R2-W4-F3: when the model is unknown (meta.short === '?'), suppress the
+ * bump and instead set `guessed: true` on the result. The renderer will prefix
+ * the denominator with '~' to signal uncertainty (e.g. "300K/~200K") rather than
+ * silently lying about the window size.
+ *
+ * Returns { window: number, guessed: boolean }.
  *
  * @param {number} window         - Currently resolved context window.
  * @param {number} observedTokens - Observed prompt fill (input + cache_*).
  * @param {string|null} modelId   - Model ID for max-window lookup.
- * @returns {number}
+ * @returns {{ window: number, guessed: boolean }}
  */
 function bumpWindowIfObservedExceeds(window, observedTokens, modelId) {
   if (observedTokens > window) {
     const meta = lookupModel(modelId);
+    if (meta.short === '?') {
+      // Unknown model: do NOT bump. Flag the denominator as guessed so the
+      // renderer can prefix it with '~' instead of showing an impossible >100%.
+      return { window, guessed: true };
+    }
     if (meta.window_1m && meta.window_1m > window) {
-      return meta.window_1m;
+      return { window: meta.window_1m, guessed: false };
     }
   }
-  return window;
+  return { window, guessed: false };
 }
 
 // ── Block renderers ───────────────────────────────────────────────────────────
@@ -161,6 +171,7 @@ function bumpWindowIfObservedExceeds(window, observedTokens, modelId) {
  * Render the parent session block.
  * Format: [ctx PCT FILL/TOTAL MODEL]
  * With pressure: [ctx PCT!  FILL/TOTAL MODEL] or [ctx PCT!! FILL/TOTAL MODEL]
+ * With guessed denominator (unknown model, exceeded window): [ctx PCT!! FILL/~TOTAL ?]
  *
  * `FILL` is context-window prompt fill (input + cache_read + cache_creation),
  * NOT total tokens transacted. See block comment above.
@@ -169,12 +180,13 @@ function bumpWindowIfObservedExceeds(window, observedTokens, modelId) {
  * @param {number} contextWindow
  * @param {{ warn: number, critical: number }} thresholds
  * @param {string|null} modelId
+ * @param {boolean} [guessed] - true when contextWindow is uncertain (unknown model)
  * @returns {string}
  */
-function renderParent(session, contextWindow, thresholds, modelId) {
+function renderParent(session, contextWindow, thresholds, modelId, guessed) {
   const promptTokens = (session && session.tokens && session.tokens.total_prompt) || 0;
   const fill   = formatTokens(promptTokens);
-  const total  = formatTokens(contextWindow);
+  const total  = (guessed ? '~' : '') + formatTokens(contextWindow);
   const p      = pct(promptTokens, contextWindow);
   const marker = pressureMarker(promptTokens, contextWindow, thresholds);
   const model  = modelShort(modelId || (session && session.model));
@@ -185,19 +197,21 @@ function renderParent(session, contextWindow, thresholds, modelId) {
 /**
  * Render one subagent block.
  * Format: [TYPE3 PCT FILL/TOTAL MODEL3 EFFORT2]
+ * With guessed denominator: [TYPE3 PCT FILL/~TOTAL ? EFFORT2]
  *
  * `FILL` is context-window prompt fill (input + cache_read + cache_creation),
  * NOT total tokens transacted. See block comment above.
  *
  * @param {object} agent
  * @param {{ warn: number, critical: number }} thresholds
+ * @param {boolean} [guessed] - true when context_window is uncertain (unknown model)
  * @returns {string}
  */
-function renderSubagent(agent, thresholds) {
+function renderSubagent(agent, thresholds, guessed) {
   const promptTokens = (agent.tokens && agent.tokens.total_prompt) || 0;
   const window = agent.context_window || 200000;
   const fill   = formatTokens(promptTokens);
-  const total  = formatTokens(window);
+  const total  = (guessed ? '~' : '') + formatTokens(window);
   const p      = pct(promptTokens, window);
   const marker = pressureMarker(promptTokens, window, thresholds);
   const model  = modelShort(agent.model);
@@ -249,8 +263,13 @@ function render(cache, payload, config) {
   // even though no `[1m]` suffix or "1M" display-name signal reached us. Bump
   // the window to the model's max so the percentage and ratio render correctly
   // instead of showing impossible >100% fill.
+  // B-3: unknown models (short === '?') are NOT bumped; instead guessed=true is
+  // returned and the denominator is rendered with a '~' prefix.
+  let parentGuessed = false;
   if (!stale && cache.session && cache.session.tokens) {
-    contextWindow = bumpWindowIfObservedExceeds(contextWindow, cache.session.tokens.total_prompt || 0, sessionModel);
+    const bumpResult = bumpWindowIfObservedExceeds(contextWindow, cache.session.tokens.total_prompt || 0, sessionModel);
+    contextWindow = bumpResult.window;
+    parentGuessed = bumpResult.guessed;
   }
 
   const thresholds = config.pressure_thresholds || { warn: 75, critical: 90 };
@@ -261,7 +280,7 @@ function render(cache, payload, config) {
   if (stale) {
     line = '[ctx (other-session)]';
   } else {
-    line = renderParent(cache.session, contextWindow, thresholds, sessionModel);
+    line = renderParent(cache.session, contextWindow, thresholds, sessionModel, parentGuessed);
   }
 
   // Subagent blocks (only when not stale and there are active subagents).
@@ -274,9 +293,11 @@ function render(cache, payload, config) {
     const parts = subagents.map((a) => {
       const observed = (a.tokens && a.tokens.total_prompt) || 0;
       const baseWin = a.context_window || 200000;
-      const bumped = bumpWindowIfObservedExceeds(baseWin, observed, a.model);
-      const rowForRender = (bumped !== baseWin) ? Object.assign({}, a, { context_window: bumped }) : a;
-      return renderSubagent(rowForRender, thresholds);
+      const bumpResult = bumpWindowIfObservedExceeds(baseWin, observed, a.model);
+      const rowForRender = (bumpResult.window !== baseWin)
+        ? Object.assign({}, a, { context_window: bumpResult.window })
+        : a;
+      return renderSubagent(rowForRender, thresholds, bumpResult.guessed);
     });
     const combined = line + ' > ' + parts.join(' ');
     line = truncate(combined, widthCap);

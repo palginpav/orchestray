@@ -29,11 +29,10 @@ const fs = require('fs');
 const path = require('path');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
-const { getRoutingFilePath, findRoutingEntry } = require('./_lib/routing-lookup');
+const { getRoutingFilePath, findRoutingEntry, readRoutingEntries } = require('./_lib/routing-lookup');
 const { loadMcpEnforcement, loadRoutingGateConfig, loadAntiPatternGateConfig, loadPatternDecayConfig } = require('./_lib/config-schema');
 const {
   REQUIRED_PRE_DECOMPOSITION_TOOLS,
-  REQUIRED_POST_DECOMPOSITION_TOOLS,
   getCheckpointFilePath,
   findCheckpointsForOrchestration,
   missingRequiredToolsFromRows,
@@ -188,29 +187,37 @@ process.stdin.on('end', () => {
         let entry = null;
         let matchedViaTaskId = false;
 
+        // v2.0.22: load currentOrchId BEFORE both match branches so it is available
+        // in the task_id path AND the description-fallback path. Previously (v2.0.21)
+        // it was declared inside the `if (spawnTaskId)` block, leaving the
+        // description-fallback unscoped — completed in v2.0.22 to close the cross-
+        // orchestration drift false-positive on first-spawn-of-orch.
+        let currentOrchId = null;
+        try {
+          currentOrchId = JSON.parse(fs.readFileSync(orchFile, 'utf8')).orchestration_id || null;
+        } catch (_e) { /* no active orch file — global fallback */ }
+
         if (spawnTaskId) {
           // Primary match: (task_id, agent_type) — description drift does not cause a miss.
-          const { readRoutingEntries } = require('./_lib/routing-lookup');
           const allEntries = readRoutingEntries(cwd);
           const allTaskMatches = allEntries.filter(e =>
             e && e.task_id === spawnTaskId && e.agent_type === agentType
           );
 
-          // v2.0.21: scope task_id matches to the current orchestration first.
-          // Without this, task_ids like "W2" / "W3" collide across orchestrations
-          // and the gate matches a stale prior-orchestration entry, falsely flagging
-          // model drift. Fall back to global matches only if the current
-          // orchestration has no matching entry.
-          let currentOrchId = null;
-          try {
-            const orchFile = path.join(cwd, '.orchestray', 'audit', 'current-orchestration.json');
-            currentOrchId = JSON.parse(fs.readFileSync(orchFile, 'utf8')).orchestration_id || null;
-          } catch (_e) { /* no active orch file — global fallback */ }
-
-          const sameOrchMatches = currentOrchId
-            ? allTaskMatches.filter(e => e.orchestration_id === currentOrchId)
-            : [];
-          const taskIdMatches = sameOrchMatches.length > 0 ? sameOrchMatches : allTaskMatches;
+          // v2.0.22 (I-1 final fix): when currentOrchId is set, use ONLY same-orch
+          // matches for drift-detection.  The v2.0.21 fallback to allTaskMatches caused
+          // false "model routing mismatch" exits on the first spawn of a new orch because
+          // a stale prior-orch entry with a different model tier was picked up.
+          // The global fallback is preserved only when currentOrchId is null (analytics/
+          // replay paths where cross-orch matching is intentional).
+          let taskIdMatches;
+          if (currentOrchId) {
+            taskIdMatches = allTaskMatches.filter(e => e.orchestration_id === currentOrchId);
+            // Empty array → falls through to !entry block → auto-seed handles it.
+          } else {
+            // No active orch (pre-decomposition probe, ad-hoc spawn) — global is correct.
+            taskIdMatches = allTaskMatches;
+          }
 
           if (taskIdMatches.length > 0) {
             // Take the most recent match (latest timestamp), mirroring findRoutingEntry behaviour.
@@ -230,19 +237,24 @@ process.stdin.on('end', () => {
                 !storedDesc.startsWith(lookupDesc + ' ') &&
                 !lookupDesc.startsWith(storedDesc + ' ')) {
               process.stderr.write(
-                '[orchestray] routing match fell back to task_id key — description drift detected ' +
-                '(task_id=' + spawnTaskId + ', agent=' + agentType + '). ' +
-                'Stored desc: ' + JSON.stringify(storedDesc) + ', ' +
-                'spawn desc: ' + JSON.stringify(lookupDesc) + '. ' +
-                'Update routing.jsonl description to match the actual Agent() call to silence.\n'
+                '[orchestray] Drift detected — proceeding (advisory only). ' +
+                'To silence: PM should write a fresh routing entry (see .orchestray/state/routing.jsonl) before re-spawning. ' +
+                '(Drift: stored desc=' + JSON.stringify(storedDesc) + ', ' +
+                'spawn desc=' + JSON.stringify(lookupDesc) + ', ' +
+                'task_id=' + JSON.stringify(spawnTaskId) + ', ' +
+                'agent=' + JSON.stringify(agentType) + ')\n'
               );
             }
           }
         }
 
         if (!entry) {
-          // Fallback: (agent_type, description) match — existing behaviour.
-          // If task_id was present but produced no match, this fallback still runs.
+          // Fallback: (agent_type, description) match.
+          // v2.0.22 (R2W1-L-2): when currentOrchId is set, scope the description match
+          // to entries from the current orchestration only — prevents stale prior-orch
+          // rows from matching by description and triggering a false model-mismatch exit-2.
+          // Same-orch description matches still work (backward compatible).
+          // When currentOrchId is null (no active orch), global unscoped match is correct.
           if (spawnTaskId) {
             process.stderr.write(
               '[orchestray] routing match fell back to description key (task_id=' + spawnTaskId +
@@ -250,7 +262,36 @@ process.stdin.on('end', () => {
               'Ensure routing.jsonl entry has matching task_id + agent_type.\n'
             );
           }
-          entry = findRoutingEntry(cwd, agentType, descRaw);
+          if (currentOrchId) {
+            // Orch-scoped description fallback: only entries from this orchestration.
+            const lookupDesc = (descRaw || '').substring(0, 80).trim();
+            if (lookupDesc) {
+              const orchEntries = readRoutingEntries(cwd).filter(e =>
+                e && e.orchestration_id === currentOrchId && e.agent_type === agentType
+              );
+              const descMatches = orchEntries.filter(e => {
+                const entryDesc = (e.description || '').trim();
+                if (!entryDesc) return false;
+                if (entryDesc === lookupDesc) return true;
+                if (entryDesc.startsWith(lookupDesc + ' ')) return true;
+                if (lookupDesc.startsWith(entryDesc + ' ')) return true;
+                return false;
+              });
+              if (descMatches.length > 0) {
+                descMatches.sort((a, b) => {
+                  const ta = a.timestamp || '';
+                  const tb = b.timestamp || '';
+                  if (tb > ta) return 1;
+                  if (tb < ta) return -1;
+                  return 0;
+                });
+                entry = descMatches[0];
+              }
+            }
+            // If still no entry: falls through to auto-seed below.
+          } else {
+            entry = findRoutingEntry(cwd, agentType, descRaw);
+          }
         }
 
         if (entry === null) {

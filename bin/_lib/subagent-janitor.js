@@ -97,4 +97,4 @@ function runJanitor(cwd, sessionId, cache) {
   });
 }
 
-module.exports = { runJanitor, STALE_MS };
+module.exports = { runJanitor };

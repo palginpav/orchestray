@@ -10,9 +10,11 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 
 ### Key features
 
+- **Upgrade restart prompt** — after `/orchestray:update`, any open Claude Code session sees a one-time stderr reminder on the next user message to restart so the refreshed agent registry takes effect; driven by a schema-v2 sentinel (`~/.claude/.orchestray-upgrade-pending`) written by install.js and consumed by `post-upgrade-sweep.js`'s 4-case state machine (TTL: 7 days)
 - **Context status bar** — live subagent context usage, model tier, and effort level in the Claude Code status line; driven by `bin/collect-context-telemetry.js` and `bin/statusline.js` (< 50 ms); toggle with `context_statusbar.enabled` config key
   Note: Orchestray claims the Claude Code `statusLine` slot; if you already use another statusLine command, disable Orchestray's with `context_statusbar.enabled: false`.
   Diagnostic: run `echo '{}' | node bin/statusline.js --dump-stdin` to verify the statusLine stdin payload shape reaching the hook (useful when the status line renders blank or stale).
+  FILL semantics: the percentage and token count in `[ctx 28% 283.3K/1M opu-4-7]` measure input-side context pressure (prompt + cache tokens) — not total tokens transacted per spawn. Output tokens leave the model and don't count against the context window, so this number will always be lower than Claude Code's per-spawn total-token counter. An unknown model shows `~TOTAL` instead of `TOTAL` to signal the denominator is a default guess.
 - **Context-saving bundle** — six coordinated prompt-engineering techniques (handoff shrinkage, PM slimming, output discipline, Read/Grep hygiene, cache-boundary preservation, telemetry integration) reduce agent token consumption by an estimated ~7k–15k per medium-complexity orchestration
 - **Auto-trigger** — complexity scoring detects when orchestration helps, self-calibrates over time
 - **Smart model routing** — assigns Haiku/Sonnet/Opus per subtask based on complexity, tracks cost savings; routing decisions are persisted to `.orchestray/state/routing.jsonl` and hook-enforced on every `Agent()`, `Explore()`, and `Task()` spawn, surviving context compaction and session reloads
@@ -36,7 +38,7 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 - **GitHub Issue integration** — orchestrate directly from GitHub issues via `gh` CLI
 - **CI/CD feedback loop** — run CI after orchestration, auto-fix failures up to N retries
 - **Shift-left security** — dedicated Security Engineer agent auto-invoked on security-sensitive tasks
-- **Pipeline templates** — 7 workflow archetypes for consistent decomposition (bug fix, feature, refactor, migration, etc.)
+- **Pipeline templates** — 10 workflow archetypes for consistent decomposition (bug fix, feature, refactor, migration, security audit, release, UX critique, platform Q&A, and more)
 - **TDD mode** — test-first orchestration: architect → tester → developer → reviewer
 - **Mid-orchestration control** — checkpoints between groups to review, modify, or abort
 - **User playbooks** — project-specific instructions injected into agent delegation prompts
@@ -166,8 +168,8 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | **Tester** | Dedicated test writing, coverage analysis, and test strategy |
 | **Documenter** | Documentation creation and maintenance |
 | **Release Manager** | Owns release commits — version bump, CHANGELOG, README sweep, event-schema sync, pre-publish verification, tag prep |
-| **UX Critic** | Adversarial read-only critique of user-facing surfaces (commands, errors, statusLine, README claims) for friction, discoverability, consistency, surprise |
-| **Platform Oracle** | Authoritative answers to platform questions (Claude Code, Anthropic SDK/API, MCP) via WebFetch + cited URLs; distinguishes stable primitives from experimental/community features |
+| **UX Critic** | Adversarial read-only critique of user-facing surfaces (commands, errors, statusLine, README) for friction, discoverability, consistency, and surprise |
+| **Platform Oracle** | Authoritative answers to Claude Code / Anthropic SDK / API / MCP questions via WebFetch + cited URLs; labels each claim with a stability tier (stable / experimental / community) |
 | **Specialists** | Dynamic agents generated during orchestration; successful ones are saved to `.orchestray/specialists/` for reuse |
 
 ## Configuration

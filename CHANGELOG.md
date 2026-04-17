@@ -3,6 +3,109 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.22] - 2026-04-16
+
+### Theme: "No more silent upgrade gaps — open sessions now prompt for restart; registry writes are race-free"
+
+If you run `/orchestray:update`, open sessions will now receive a one-time restart
+prompt on the next user message, so new agent definitions actually take effect.
+Upgrade to v2.0.22 and restart any open Claude Code sessions; the sentinel-based
+warning mechanism will confirm the restart requirement automatically. If you use
+specialist agents heavily, the registry write path is now race-free and handles
+case-variant filenames on macOS APFS.
+
+### Added
+
+- **`bin/_lib/session-detect.js`** — new shared helper that determines whether the
+  current Claude Code session started before or after the most recent Orchestray
+  install by comparing the session's transcript JSONL mtime against the sentinel's
+  `installed_at_ms`. Used by `post-upgrade-sweep.js` to distinguish pre-install
+  sessions (need restart warning) from post-install sessions (agents already loaded).
+- **`tests/regression/v2022-upgrade-sweep.test.js`** — regression suite for the
+  4-case upgrade-pending state machine (Cases A/B/C/D); covers TTL expiry, schema v1
+  cleanup, and per-session dedup.
+- **`tests/regression/v2022-gate-first-spawn.test.js`** — regression suite for the
+  gate-agent-spawn.js first-spawn fix (current-orch scoping).
+- **`tests/regression/v2022-tier1-no-inline-schemas.test.js`** — guardrail test that
+  prevents future drift between `tier1-orchestration.md` inline schemas and
+  `event-schemas.md`; asserts that no fenced JSON blocks with `type:` fields appear
+  in tier1 for the 7 swept event types.
+- **`tests/mcp-server/tools/specialist_save.test.js`** — test suite for the atomic
+  write path, case-rename scan, and reserved-name error in `specialist_save.js`.
+- **Sections 40–43 in `event-schemas.md`** — canonical schemas for
+  `orchestration_start`, `orchestration_complete`, `replan`, and
+  `dynamic_agent_cleanup` events extracted from `tier1-orchestration.md` into the
+  shared schema reference. `tier1-orchestration.md` now carries pointers instead of
+  duplicated inline JSON blocks.
+- **`tests/unit/`** — new unit test directory for module-level coverage (added
+  alongside v2.0.22 test expansion).
+
+### Fixed
+
+- **`post-upgrade-sweep.js` 4-case state machine** — the v2.0.21 implementation
+  compared sentinel mtime against session start time using a heuristic. Replaced
+  with an explicit comparison: `installed_at_ms` (written by install.js) vs
+  `sessionStartMs` from `session-detect.js` reading the transcript JSONL mtime.
+  Sessions that postdate the install are silently cleared (Case B); pre-install
+  sessions get the one-time restart warning (Case C); stale or v1-schema sentinels
+  are cleaned up silently (Case D). TTL extended from 2 h to 7 days.
+- **`install.js` sentinel schema v2** — sentinel now carries `schema_version: 2`,
+  `installed_at_ms` (millisecond epoch for precise ordering), and `previous_version`
+  (populated only when upgrading from a prior version; omitted on fresh installs).
+  `mkdirSync` with `recursive: true` guards against ENOENT on fresh-machine installs.
+  Single `Date.now()` capture for both ISO string and ms fields (AR2-B6 fix).
+- **`install.js` previous_version read-after-write** — `readPreviousVersion()` is
+  now called before `VERSION` is overwritten; previously `previous_version` always
+  equalled the new version string (R2-B-1 fix).
+- **`gate-agent-spawn.js` first-spawn routing collision** — `currentOrchId` is now
+  loaded before both the task_id and description-fallback match branches; prior
+  placement inside the `if (spawnTaskId)` block left the description-fallback path
+  unscoped, allowing stale prior-orchestration entries to trigger false
+  model-routing-mismatch exits on the first spawn of a new orchestration.
+- **`specialist_save.js` atomic-pair guard on snapshot read failure** — previously
+  a snapshot read error during a case-rename scan could leave the registry in an
+  inconsistent state; the pair write is now skipped entirely when the read fails (B-1).
+- **`specialist_save.js` case-rename scan with macOS APFS inode check** — when
+  saving a specialist under a name that differs only in case from an existing file,
+  the old file is unlinked; on APFS (case-insensitive), the inode is checked first
+  and the unlink is skipped when both names point to the same physical file,
+  preventing silent deletion of the just-written content (B-2, R2-B-2).
+- **`specialist_save.js` reserved-name error restructure** — error message now leads
+  with the problem name, offers a concrete example alternative, and moves the full
+  reserved-names list to the end; previously the list preceded any actionable text (U-4).
+- **`audit-event.js` dynamic_agent_spawn emission** — `paired_with: 'agent_start'`
+  field added to the emitted event, documenting its correlation with the SubagentStart
+  `agent_start` event.
+- **`capture-pm-turn.js` metrics kill-switch** — `logStopHookFire()` now honors the
+  `ORCHESTRAY_METRICS_DISABLED=1` environment variable; previously the kill-switch
+  suppressed agent metrics but not stop-hook fire records.
+- **`subagent-janitor.js` STALE_MS export removed** — `STALE_MS` was exported from
+  the module but never imported by any consumer; removed to prevent callers from
+  depending on an internal constant that may change (D-1).
+- **`MODEL_UNKNOWN` no longer carries `window_1m`** — unknown models now render with
+  `~denominator` context in the statusline as before; no user-visible change.
+  (A `window_1m: 1000000` default added in v2.0.21 was removed in the v2.0.22
+  clean-up pass; `statusline.js` already guards against absent `window_1m`, so
+  unrecognised models fall back to the observed-window path as before.)
+
+### Changed
+
+- **`tier1-orchestration.md` inline schemas replaced with pointers** — 7 event
+  schemas (`dynamic_agent_spawn`, `orchestration_start`, `orchestration_complete`,
+  `replan`, `dynamic_agent_cleanup`, `consequence_forecast`, and `pattern_applied`)
+  previously duplicated inline as fenced JSON blocks are now pointers to canonical
+  sections in `event-schemas.md`. The `v2022-tier1-no-inline-schemas` regression test
+  enforces this going forward.
+- **`tier1-orchestration.md` Section 13 archetype classifier** — the inline list of
+  archetype names is removed; classifier now reads the canonical table from
+  `pipeline-templates.md` as the sole authoritative source. Prevents silent drift
+  when new archetypes are added.
+- **`post-upgrade-sweep.js` upgrade-sentinel TTL** — extended from 2 hours to 7 days.
+  Sentinels from brief update windows were expiring before users returned to an open
+  session, silently missing the restart prompt.
+- **`pm.md` description field deduplicated** — Block A hash regenerated after the
+  deduplication pass; `tests/.block-a-hash-expected` updated accordingly.
+
 ## [2.0.21] - 2026-04-16
 
 ### Theme: "Three new agents + specialist registry fix + telemetry overhaul"
@@ -28,8 +131,9 @@ dead code paths, and hardens the routing gate against cross-orchestration collis
   — atomic write path for saving dynamic agent definitions to `.orchestray/specialists/`.
   Previously the PM had to write files manually; the tool validates the schema and updates
   the registry index atomically.
-- **`dynamic_agent_spawn` audit event** — auto-emitted by `bin/audit-event-writer.js` on
-  every non-canonical `agent_type` detection, so the specialist registry has a verifiable
+- **`dynamic_agent_spawn` audit event** — auto-emitted by `bin/audit-event.js` on
+  every non-canonical `agent_type` detection (via the `additionalEventsPicker` extension
+  in `bin/_lib/audit-event-writer.js`), so the specialist registry has a verifiable
   audit trail for each dynamic agent ever spawned.
 - **Shared janitor module** (`bin/_lib/subagent-janitor.js`) — extracted from
   `capture-pm-turn.js`, now called from both `capture-pm-turn.js` (Stop hook) and

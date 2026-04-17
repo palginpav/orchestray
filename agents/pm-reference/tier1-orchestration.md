@@ -734,10 +734,16 @@ adversarial-review.md) -- replace the single architect step with a dual-architec
 1. **Load playbooks**: If `.orchestray/playbooks/` exists, load matching playbooks per Section 29.
    Matched playbooks will be injected into agent delegation prompts in Section 3.
 
-1b. **Classify task archetype**: Read `agents/pm-reference/pipeline-templates.md` to match
-   the task against a standard workflow archetype (Bug Fix, New Feature, Refactor, Test
-   Improvement, Documentation, Migration, Security Audit). Use the archetype's template
-   as the starting decomposition strategy. Log: "Archetype: {name}".
+1b. **Classify task archetype**: Read `agents/pm-reference/pipeline-templates.md` and
+   use its Archetype Classification table to match the task against the canonical
+   workflow archetypes. Do NOT enumerate archetype names inline here — the canonical
+   list lives in `pipeline-templates.md` and is the sole authoritative source.
+   Use the matched archetype's template as the starting decomposition strategy.
+   Log: "Archetype: {name}".
+
+   > See `agents/pm-reference/pipeline-templates.md` §"Archetype Classification" for
+   > the complete list of archetypes, keyword triggers, and agent-flow templates.
+   > Do not duplicate or override the archetype list here.
    
    **TDD mode**: If `.orchestray/config.json` has `tdd_mode: true` AND archetype is
    "New Feature", use the TDD variant: architect -> tester -> developer -> reviewer.
@@ -1220,17 +1226,11 @@ agent is spawned. This ensures hook handlers can correlate events to this orches
    }
    ```
 
-4. **Append orchestration_start event** to `.orchestray/audit/events.jsonl`:
-   ```json
-   {
-     "timestamp": "<ISO 8601>",
-     "type": "orchestration_start",
-     "orchestration_id": "orch-1712345678",
-     "task": "<user task summary>",
-     "complexity_score": 7,
-     "complexity_level": "medium"
-   }
-   ```
+4. **Append orchestration_start event** to `.orchestray/audit/events.jsonl`.
+
+   > See `agents/pm-reference/event-schemas.md` §"Section 40: Orchestration Start Event"
+   > for the canonical schema.
+   > Do not duplicate or override these fields.
 
 This MUST complete before any agent is spawned so hook handlers can read the
 orchestration_id from `current-orchestration.json`.
@@ -1251,24 +1251,11 @@ Section 14 flow or after all sequential tasks complete).
    input/output/cache tokens and estimated_cost_usd. Calculate duration_ms. Determine
    status: success (all agents OK), partial (some failed), failure (all failed/aborted).
 
-2. **Append orchestration_complete event** to `.orchestray/audit/events.jsonl`:
-   ```json
-   {
-     "timestamp": "<ISO 8601>",
-     "type": "orchestration_complete",
-     "orchestration_id": "orch-1712345678",
-     "total_agents": 3,
-     "total_tokens": {
-       "input": 45000,
-       "output": 12000,
-       "cache_read": 8000,
-       "cache_creation": 2000
-     },
-     "estimated_total_cost_usd": 0.234567,
-     "duration_ms": 45000,
-     "status": "success"
-   }
-   ```
+2. **Append orchestration_complete event** to `.orchestray/audit/events.jsonl`.
+
+   > See `agents/pm-reference/event-schemas.md` §"Section 41: Orchestration Complete Event"
+   > for the canonical schema.
+   > Do not duplicate or override these fields.
 
 3. **Archive (durable rotation — 2013-W6-cleanup):** Run `bin/_lib/events-rotate.js`
    to atomically rotate `events.jsonl` for the current orchestration_id into
@@ -1486,18 +1473,11 @@ When a re-plan trigger is confirmed:
    with updated context including the new information. Section 13's "Re-Planning Entry
    Point" subsection provides the additional context available during re-planning.
 
-5. **Log re-plan event** to audit trail `.orchestray/audit/events.jsonl`:
-   ```json
-   {
-     "timestamp": "<ISO 8601>",
-     "type": "replan",
-     "orchestration_id": "<current orch id>",
-     "reason": "<approach_invalidation | scope_expansion | dependency_discovery | completed_work_invalidation | design_rejection>",
-     "old_task_count": 4,
-     "new_task_count": 6,
-     "tasks_invalidated": ["task-02", "task-03"]
-   }
-   ```
+5. **Log re-plan event** to audit trail `.orchestray/audit/events.jsonl`.
+
+   > See `agents/pm-reference/event-schemas.md` §"Section 42: Replan Event" for the
+   > canonical schema.
+   > Do not duplicate or override these fields.
 
 6. **Register re-plan decision in KB** at `.orchestray/kb/decisions/replan-{timestamp}.md`
    with the reason and a summary of what changed. This ensures future orchestrations
@@ -1681,37 +1661,25 @@ may be saved for future reuse instead of being discarded.
    - If `status: failure`: delete `agents/{name}.md` without saving. Never save
      failed agents.
 
-6. **Log `dynamic_agent_spawn` event** to `.orchestray/audit/events.jsonl`:
-   ```json
-   {
-     "timestamp": "<ISO 8601>",
-     "type": "dynamic_agent_spawn",
-     "orchestration_id": "<current orch id>",
-     "agent_name": "{name}",
-     "task_id": "<task id>",
-     "tools": ["Read", "Glob", "Grep", "Bash"],
-     "from_registry": false
-   }
-   ```
+6. **No PM action required.** `bin/audit-event.js` auto-emits the
+   `dynamic_agent_spawn` event from the `SubagentStart` payload. The PM
+   does not write this event manually. See `event-schemas.md` §"Dynamic
+   Agent Spawn Event" for the exact field set.
 
-7. **Log `dynamic_agent_cleanup` event** after deletion:
-   ```json
-   {
-     "timestamp": "<ISO 8601>",
-     "type": "dynamic_agent_cleanup",
-     "orchestration_id": "<current orch id>",
-     "agent_name": "{name}",
-     "task_id": "<task id>",
-     "file_deleted": "agents/{name}.md"
-   }
-   ```
+7. **Log `dynamic_agent_cleanup` event** after deletion.
 
-**Name validation:** Dynamic agent names MUST match `^[a-zA-Z0-9_-]+$`. Reject any name
-containing path separators (`/`), traversal sequences (`..`), dots, or other non-alphanumeric
-characters. If the derived name fails this check, sanitize by replacing invalid characters
-with `-` and re-validating. Additionally, specialist names must NOT be `pm`, `architect`,
-`developer`, `refactorer`, `inventor`, `reviewer`, `debugger`, `tester`, `documenter`, or
-`security-engineer` to avoid conflicts with core agent definitions.
+   > See `agents/pm-reference/event-schemas.md` §"Section 43: Dynamic Agent Cleanup Event"
+   > for the canonical schema.
+   > Do not duplicate or override these fields.
+
+**Name validation:** Dynamic agent names MUST match `^[a-zA-Z0-9_-]+$`. Reject any
+name containing path separators (`/`), traversal sequences (`..`), dots, or other
+non-alphanumeric characters. If the derived name fails this check, sanitize by
+replacing invalid characters with `-` and re-validating. Additionally, names
+collide with reserved core agent identifiers — see `specialist-protocol.md`
+§"Save Decision Criteria" step 1.5 for the canonical 13-name reserved-name
+blocklist (kept in sync with `bin/mcp-server/tools/specialist_save.js`
+`RESERVED_AGENT_NAMES`).
 
 ---
 
@@ -2584,30 +2552,11 @@ step 7.5 above).
      actually exist, or the change type does not affect the downstream file. Mark as
      wrong to calibrate future predictions.
 
-4. **Log event**: Append a `consequence_forecast` event to `.orchestray/audit/events.jsonl`
-   (see `agents/pm-reference/event-schemas.md` for the schema):
-   ```json
-   {
-     "timestamp": "<ISO 8601>",
-     "type": "consequence_forecast",
-     "orchestration_id": "<current>",
-     "predictions": [
-       {
-         "target_file": "path/to/file",
-         "category": "direct",
-         "prediction": "one-line prediction text",
-         "verified": true,
-         "outcome": "addressed"
-       }
-     ],
-     "accuracy": {
-       "total": 5,
-       "addressed": 3,
-       "missed": 1,
-       "wrong": 1
-     }
-   }
-   ```
+4. **Log event**: Append a `consequence_forecast` event to `.orchestray/audit/events.jsonl`.
+
+   > See `agents/pm-reference/event-schemas.md` §"Section 39: Consequence Forecast Event"
+   > for the canonical schema.
+   > Do not duplicate or override these fields.
 
 5. **Include accuracy summary** in the orchestration report (Section 8 final summary):
    ```

@@ -1515,8 +1515,8 @@ describe('W4 — task_id-based routing match', () => {
     assert.equal(status, 0,
       'W4: task_id+agent_type match must allow spawn even with drifted description');
     assert.ok(
-      stderr.includes('description drift') || stderr.includes('task_id'),
-      'W4: a warning about description drift or task_id match must be emitted to stderr'
+      stderr.includes('Drift detected') || stderr.includes('task_id='),
+      'W4: a warning about drift detection or task_id match must be emitted to stderr'
     );
   });
 
@@ -1538,8 +1538,8 @@ describe('W4 — task_id-based routing match', () => {
     });
 
     assert.equal(status, 0, 'W4: exact task_id+desc match must allow spawn');
-    // No description-drift warning expected when descriptions match.
-    assert.ok(!stderr.includes('description drift'),
+    // No drift warning expected when descriptions match.
+    assert.ok(!stderr.includes('Drift detected'),
       'W4: no drift warning when descriptions are identical');
   });
 
@@ -1632,8 +1632,8 @@ describe('W4 — task_id-based routing match', () => {
     assert.equal(status, 0,
       'W4b: leading TASK-ID prefix in description must activate task_id match path');
     assert.ok(
-      stderr.includes('description drift') || stderr.includes('task_id=DEV-1'),
-      'W4b: description-drift warning (or task_id=DEV-1 mention) expected; got: ' + JSON.stringify(stderr)
+      stderr.includes('Drift detected') || stderr.includes('task_id='),
+      'W4b: description-drift warning expected; got: ' + JSON.stringify(stderr)
     );
   });
 

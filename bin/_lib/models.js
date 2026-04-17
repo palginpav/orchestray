@@ -14,12 +14,12 @@ const MODELS = {
   'claude-haiku-4-5':  { short: 'hai-4-5', display: 'Haiku 4.5',  window_default: 200000 },
 };
 
-// MODEL_UNKNOWN includes window_1m so the observed-tokens bump (statusline.js
-// `bumpWindowIfObservedExceeds`) can rescue render correctness when a fresh
-// Claude model ships before this table is updated. Better to bump to 1M and
-// be wrong by ~2x for a hypothetical 500K-context model than to render an
-// impossible >100% fill that the user will assume is a bug.
-const MODEL_UNKNOWN = { short: '?', display: 'unknown', window_default: 200000, window_1m: 1000000 };
+// MODEL_UNKNOWN intentionally omits window_1m. Unknown models are detected by
+// their short name '?' and handled by bumpWindowIfObservedExceeds in statusline.js,
+// which suppresses the bump and flags the denominator as guessed (rendered with
+// a '~' prefix). This avoids silently lying about the window size for models not
+// in the table, while still rendering a usable status line.
+const MODEL_UNKNOWN = { short: '?', display: 'unknown', window_default: 200000 };
 
 /**
  * Look up model metadata by full model ID string.

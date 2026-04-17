@@ -31,6 +31,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
+const { detectSessionStartMs } = require('./_lib/session-detect');
 const {
   DEFAULT_MCP_ENFORCEMENT,
   DEFAULT_COST_BUDGET_CHECK,
@@ -50,54 +51,102 @@ const { MAX_INPUT_BYTES } = require('./_lib/constants');
 // v2.0.21: upgrade-pending warning
 // ──────────────────────────────────────────────────────────────────────────────
 
-const UPGRADE_SENTINEL_PATH = path.join(os.homedir(), '.claude', '.orchestray-upgrade-pending');
-const UPGRADE_SENTINEL_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+// Allow tests to redirect the sentinel path to an isolated location so that
+// parallel test suites don't race on the real ~/.claude/ sentinel file.
+const UPGRADE_SENTINEL_PATH = process.env.ORCHESTRAY_TEST_SENTINEL_PATH
+  || path.join(os.homedir(), '.claude', '.orchestray-upgrade-pending');
+const UPGRADE_SENTINEL_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 /**
- * Detect that `bin/install.js` ran since this session may have started, and
+ * Detect that `bin/install.js` ran since this session started and, if so,
  * emit a one-time-per-session stderr warning telling the user to restart
  * Claude Code so the agent registry (cached at session start) picks up any
- * new agent definitions. The /agents UI does NOT trigger a registry rescan
- * in current Claude Code versions — verified empirically during v2.0.21.
+ * new agent definitions.
  *
- * Strategy:
- *  1. install.js writes ~/.claude/.orchestray-upgrade-pending with metadata.
- *  2. This function is called from every UserPromptSubmit. Per-session marker
- *     under /tmp/ prevents duplicate warnings within the same session.
- *  3. Sentinel auto-cleans after UPGRADE_SENTINEL_TTL_MS to avoid a stale
- *     global sentinel haunting future sessions indefinitely.
+ * 4-case state machine (v2.0.22):
  *
- * Fail-open: any I/O error is swallowed.
+ *   Case A — no sentinel:
+ *     Return silently. Nothing pending.
+ *
+ *   Case B — sentinel < TTL AND this session postdates install
+ *             (sessionStartMs >= installed_at_ms):
+ *     This session already loaded the new agents. Silently unlink sentinel
+ *     and per-session marker.
+ *
+ *   Case C — sentinel < TTL AND this session predates install
+ *             (sessionStartMs < installed_at_ms):
+ *     Emit a one-time stderr warning. Write per-session marker LAST so a
+ *     crash mid-write doesn't suppress the warning on the next prompt.
+ *
+ *   Case D — sentinel > TTL OR malformed (no installed_at_ms or
+ *             schema_version !== 2):
+ *     Silently unlink sentinel (stale or unreadable). v1 sentinels left
+ *     over from v2.0.21 installs are handled here — they have no
+ *     schema_version field and are cleaned up silently.
+ *
+ * Fail-open: any I/O error is swallowed. Never blocks the user prompt.
  *
  * @param {string|null} sessionId - Sanitized session id from the hook payload.
+ * @param {string}      cwd       - Absolute project directory path.
  */
-function emitUpgradePendingWarning(sessionId) {
+function emitUpgradePendingWarning(sessionId, cwd) {
   try {
+    // Case A — no sentinel.
     if (!fs.existsSync(UPGRADE_SENTINEL_PATH)) return;
 
-    let data = {};
-    try { data = JSON.parse(fs.readFileSync(UPGRADE_SENTINEL_PATH, 'utf8')); } catch (_e) { /* malformed — treat as empty */ }
+    let data = null;
+    try { data = JSON.parse(fs.readFileSync(UPGRADE_SENTINEL_PATH, 'utf8')); } catch (_e) { /* fall through to Case D */ }
 
-    // Auto-cleanup if the sentinel is older than the TTL (covers the case
-    // where the user already restarted the relevant sessions and the
-    // sentinel is stale).
-    const installedMs = data.installed_at ? new Date(data.installed_at).getTime() : 0;
-    if (installedMs && (Date.now() - installedMs) > UPGRADE_SENTINEL_TTL_MS) {
+    // Case D — malformed: no data, wrong schema_version, or missing installed_at_ms.
+    if (
+      !data ||
+      typeof data !== 'object' ||
+      data.schema_version !== 2 ||
+      typeof data.installed_at_ms !== 'number'
+    ) {
       try { fs.unlinkSync(UPGRADE_SENTINEL_PATH); } catch (_e) { /* ignore */ }
       return;
     }
 
-    if (!sessionId) return;
-    const sessionMarkerPath = path.join(os.tmpdir(), 'orchestray-upgrade-warned-' + sessionId);
-    if (fs.existsSync(sessionMarkerPath)) return; // already warned this session
+    const installedAtMs = data.installed_at_ms;
+    const now = Date.now();
 
+    // Case D — TTL expired.
+    if ((now - installedAtMs) > UPGRADE_SENTINEL_TTL_MS) {
+      try { fs.unlinkSync(UPGRADE_SENTINEL_PATH); } catch (_e) { /* ignore */ }
+      return;
+    }
+
+    // sentinel < TTL and well-formed — now detect session age.
+    if (!sessionId) return;
+
+    const sessionMarkerPath = path.join(os.tmpdir(), 'orchestray-upgrade-warned-' + sessionId);
+
+    const sessionStartMs = detectSessionStartMs(sessionId, cwd);
+
+    if (sessionStartMs !== null && sessionStartMs >= installedAtMs) {
+      // Case B — this session postdates the install; no restart needed.
+      // Clean up sentinel and any stale per-session marker.
+      try { fs.unlinkSync(UPGRADE_SENTINEL_PATH); } catch (_e) { /* ignore */ }
+      try { fs.unlinkSync(sessionMarkerPath); } catch (_e) { /* ignore — may not exist */ }
+      return;
+    }
+
+    // Case C — session predates install (or session-start unknown).
+    // Per-session marker present means we already warned this session.
+    if (fs.existsSync(sessionMarkerPath)) return;
+
+    // Emit warning BEFORE writing marker so a crash mid-write doesn't
+    // suppress the warning on the next prompt (R2W5 completion-checklist #1).
+    const versionSuffix = data.version
+      ? ' to v' + data.version + (data.previous_version ? ' (was v' + data.previous_version + ')' : '')
+      : '';
     process.stderr.write(
-      '[orchestray] Upgraded to v' + (data.version || '?') +
-      ' since this session may have started. RESTART Claude Code to load any new agents — ' +
-      'the /agents UI does NOT trigger a registry rescan in current versions.\n'
+      '[orchestray] Upgraded' + versionSuffix + ' while this session was open — ' +
+      'one-time reminder. RESTART to load new agents (this message won\'t repeat).\n'
     );
 
-    try { fs.writeFileSync(sessionMarkerPath, '', 'utf8'); } catch (_e) { /* ignore */ }
+    try { fs.writeFileSync(sessionMarkerPath, '1', 'utf8'); } catch (_e) { /* ignore */ }
   } catch (_e) {
     // Best-effort warning; never block the user prompt.
   }
@@ -2155,7 +2204,7 @@ function main() {
       // fires on the first UserPromptSubmit per session, not only the first
       // ever (the lock blocks subsequent runs but the warning's own
       // per-session marker handles in-session deduplication).
-      emitUpgradePendingWarning(sessionId);
+      emitUpgradePendingWarning(sessionId, cwd);
 
       // ── Session lock: fast-path — once per session ──────────────────────────
       const lockPath = path.join(os.tmpdir(), `orchestray-sweep-${sessionId}.lock`);

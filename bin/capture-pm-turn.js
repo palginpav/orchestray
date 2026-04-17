@@ -51,6 +51,7 @@ if (process.argv.includes('--self-test')) {
  *                           no_extracted_usage, success, error.
  */
 function logStopHookFire(cwd, event, outcome) {
+  if (process.env.ORCHESTRAY_METRICS_DISABLED === '1') return;
   try {
     const auditPath = path.join(cwd, '.orchestray', 'state', 'stop-hook.jsonl');
     fs.mkdirSync(path.dirname(auditPath), { recursive: true });

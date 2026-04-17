@@ -129,6 +129,8 @@ Each bullet is one line, present-tense, references the user-visible change (not
 the internal commit). Cite commit SHAs only if the entry warrants debugging
 context.
 
+If the CHANGELOG entry already has an HTML comment placeholder (e.g., `<!-- Write a 1–3 sentence prose summary... -->`), replace it with the prose summary it describes before filling in the Added/Fixed/Changed sections.
+
 ### README Sweep Specifics (Orchestray)
 
 The user-memory `feedback_release_readme_sweep` exists because the README has

@@ -102,7 +102,7 @@ function writeAuditEvent({ type, mode, extraFieldsPicker, additionalEventsPicker
             }
           }
         } catch (_e) {
-          // Best-effort; never block on additional-event picker failure.
+          process.stderr.write('[orchestray] audit-event-writer: additionalEventsPicker threw — skipping additional events: ' + String(_e) + '\n');
         }
       }
     } catch (_e) {

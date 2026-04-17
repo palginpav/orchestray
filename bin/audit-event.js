@@ -49,6 +49,7 @@ writeAuditEvent({
       agent_id:         payload.agent_id || null,
       agent_type:       at,
       session_id:       payload.session_id || null,
+      paired_with:      'agent_start',
     }];
   },
 });
