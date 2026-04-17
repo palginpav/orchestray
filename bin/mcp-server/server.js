@@ -62,6 +62,7 @@ const specialistSave = require('./tools/specialist_save');
 const routingLookup = require('./tools/routing_lookup');
 const costBudgetReserve = require('./tools/cost_budget_reserve');
 const metricsQuery = require('./tools/metrics_query');
+const curatorTombstone = require('./tools/curator_tombstone');
 
 // Stage 2 resource handlers
 const patternResource = require('./resources/pattern_resource');
@@ -206,6 +207,10 @@ const TOOL_TABLE = Object.freeze({
   metrics_query: {
     definition: metricsQuery.definition,
     handler: metricsQuery.handle,
+  },
+  curator_tombstone: {
+    definition: curatorTombstone.definition,
+    handler: curatorTombstone.handle,
   },
 });
 

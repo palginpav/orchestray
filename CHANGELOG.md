@@ -3,6 +3,48 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.1.0] - 2026-04-17
+
+**Your patterns can follow you across projects now, finding the right one works better, and Orchestray can tidy up your pattern library for you.**
+
+### Added
+
+- **Share patterns across projects on your machine.** Off by default. Turn it on with
+  `/orchestray:config set federation.shared_dir_enabled true`, then use
+  `/orchestray:learn share <slug>` to publish a pattern. Shared patterns live at
+  `~/.orchestray/shared/` and show up in every project that has federation enabled.
+  Nothing leaves your project unless you explicitly share it — sensitivity defaults
+  to `private`.
+- **Better pattern search.** Orchestray now uses full-text search with smarter
+  ranking, so the patterns that surface for a task actually match the task. This
+  replaces the old keyword-overlap scoring. Works automatically — no config needed.
+  Adds one dependency (`better-sqlite3`); if it can't build on your machine,
+  retrieval falls back to the old scoring with a warning.
+- **AI curator for your pattern library.** Run `/orchestray:learn curate` when you
+  want Orchestray to review your patterns and tidy up: share the ones ready to cross
+  projects, merge duplicates, and retire the stale ones. You stay in control: every
+  curator action is reversible with `/orchestray:learn undo-last` or
+  `/orchestray:learn undo <id>`. The curator never touches patterns you created to
+  correct past mistakes (`user-correction` category), and never shares anything
+  marked private.
+
+### Changed
+
+- **Some commands got clearer names.** Old commands still work in v2.1.x with a
+  deprecation warning, but please update your muscle memory:
+  - `promote` → `share`
+  - `list-shared` → `list --shared`
+  - `revoke-shared` → `unshare`
+
+### Not in this release
+
+Features explicitly held back for later releases:
+
+- Cross-machine sync (v2.2) — federation is currently single-machine only.
+- Team/multi-user sharing (v2.3+) — needs its own security review first.
+- Per-pattern privacy flag (v2.2) — for now, privacy is set per-project via
+  `federation.sensitivity`.
+
 ## [2.0.23] - 2026-04-17
 
 ### Theme: "Prompt caching on by default, pattern-retrieval gate moves from silent to visible"

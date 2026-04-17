@@ -263,8 +263,105 @@ function rewriteField(filepath, fieldName, newValue) {
   return { ok: true };
 }
 
+// ---------------------------------------------------------------------------
+// writeFrontmatter (B1 v2.1.0)
+// ---------------------------------------------------------------------------
+
+/**
+ * Atomically write a complete frontmatter + body to a file.
+ *
+ * Behaviour:
+ *   - If the file already exists, the new frontmatter is written with keys in
+ *     the SAME ORDER as the existing frontmatter (preserving round-trip key order
+ *     for human-readable files). Any keys in `frontmatter` that were not in the
+ *     original are appended after the preserved keys in their original argument
+ *     order. Any keys in the original that are NOT in `frontmatter` are omitted
+ *     (i.e., writeFrontmatter fully replaces the frontmatter, it does not merge).
+ *   - If the file does not exist (or cannot be read), the frontmatter keys are
+ *     written in their argument order.
+ *   - The write is atomic: a `.tmp` sibling is written then renamed.
+ *   - The body is written as-is. If body is null/undefined, empty string is used.
+ *
+ * This function does NOT perform any validation of the frontmatter values —
+ * that is the caller's responsibility. It only handles YAML serialisation.
+ *
+ * YAML edge-case handling (delegated to the existing _serializeValue helper):
+ *   - Strings containing colons are double-quoted.
+ *   - Multi-line values are stringified via JSON.stringify (yields single-line
+ *     escaped string). Full block-scalar support is out of scope for this format.
+ *   - This matches the existing `stringify`/`rewriteField` behaviour — no
+ *     regression for consumers that were already using those paths.
+ *
+ * @param {string} filePath - Absolute path to write.
+ * @param {object} frontmatter - Key-value map of frontmatter fields.
+ * @param {string|null} body - Markdown body (after the closing ---).
+ * @returns {{ ok: true, path: string } | { ok: false, error: string }}
+ */
+function writeFrontmatter(filePath, frontmatter, body) {
+  if (typeof filePath !== 'string' || filePath.length === 0) {
+    return { ok: false, error: 'filePath must be a non-empty string' };
+  }
+  if (!frontmatter || typeof frontmatter !== 'object' || Array.isArray(frontmatter)) {
+    return { ok: false, error: 'frontmatter must be a plain object' };
+  }
+
+  const bodyStr = (body == null) ? '' : String(body);
+
+  // Attempt to load existing file to preserve key order.
+  let existingKeyOrder = [];
+  try {
+    const existingContent = fs.readFileSync(filePath, 'utf8');
+    const parsed = parse(existingContent);
+    if (parsed.hasFrontmatter) {
+      existingKeyOrder = Object.keys(parsed.frontmatter);
+    }
+  } catch (_e) {
+    // File absent or unreadable — use argument order.
+    existingKeyOrder = [];
+  }
+
+  // Build the ordered frontmatter object:
+  // 1. Existing keys that appear in the new frontmatter (preserves order).
+  // 2. New keys that did NOT appear in the existing frontmatter (appended).
+  const newKeys = Object.keys(frontmatter);
+  const ordered = {};
+  for (const k of existingKeyOrder) {
+    if (k in frontmatter) {
+      ordered[k] = frontmatter[k];
+    }
+  }
+  for (const k of newKeys) {
+    if (!(k in ordered)) {
+      ordered[k] = frontmatter[k];
+    }
+  }
+
+  const content = stringify({ frontmatter: ordered, body: bodyStr });
+
+  const tmp = filePath + '.tmp';
+  try {
+    // Ensure the parent directory exists (common when writing to a new shared dir).
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(tmp, content, 'utf8');
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch (_e) { /* swallow */ }
+    return { ok: false, error: err && err.code ? err.code : 'write_failed' };
+  }
+
+  try {
+    fs.renameSync(tmp, filePath);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch (_e) { /* swallow */ }
+    return { ok: false, error: 'rename_failed' };
+  }
+
+  return { ok: true, path: filePath };
+}
+
 module.exports = {
   parse,
   stringify,
   rewriteField,
+  // B1 (v2.1.0): full frontmatter+body write for the promote pipeline
+  writeFrontmatter,
 };

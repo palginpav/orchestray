@@ -2,7 +2,7 @@
 name: config
 description: View or modify orchestration settings
 disable-model-invocation: true
-argument-hint: [setting] [value] or empty to show all
+argument-hint: "[setting] [value] | show federation | federation disable-global | or empty to show all"
 ---
 
 # Orchestration Configuration
@@ -13,8 +13,11 @@ The user wants to view or modify orchestration settings.
 
 1. **Parse arguments**: `$ARGUMENTS`
    - If empty: Show all current settings
+   - If arguments are `show federation`: go to the **show federation** section below.
+   - If arguments are `federation disable-global`: go to the **federation disable-global** section below.
    - If one argument: Show that specific setting's current value
-   - If two arguments: Set the first to the value of the second
+   - If two or more arguments starting with `set`: treat as `set <key> <value>` (the `set` keyword is optional; `set federation.shared_dir_enabled true` and `federation.shared_dir_enabled true` are equivalent)
+   - If two arguments (no `set` prefix): Set the first to the value of the second
 
 2. **Configuration file**: Settings are stored in `.orchestray/config.json`. If it does not exist, use these defaults:
 
@@ -70,7 +73,14 @@ The user wants to view or modify orchestration settings.
     "pattern_record_application": "hook",
     "unknown_tool_policy": "block",
     "global_kill_switch": false
-  }
+  },
+  "federation.shared_dir_enabled": false,
+  "federation.sensitivity": "private",
+  "federation.shared_dir_path": "~/.orchestray/shared",
+  "curator.enabled": true,
+  "curator.self_escalation_enabled": true,
+  "curator.pm_recommendation_enabled": true,
+  "curator.tombstone_retention_runs": 3
 }
 ```
 
@@ -127,6 +137,13 @@ The user wants to view or modify orchestration settings.
 | `mcp_enforcement.pattern_record_application` | string | `"hook"` | Advisory only — not gate-enforced; controls whether `record-pattern-skip.js` emits the `pattern_record_skipped` event on PreCompact. When set to `"prompt"` or `"allow"`, suppresses the advisory event. Setting this to `"prompt"` has no effect on spawn gating (the gate only enforces `pattern_find`, `kb_search`, `history_find_similar_tasks`). |
 | `mcp_enforcement.unknown_tool_policy` | string | `"block"` | Policy for tool_name values not in the agent/skip allowlists. "block" (fail-closed, 2.0.12 default), "warn" (log and allow, 2.0.11 behaviour), "allow" (fully fail-open). |
 | `mcp_enforcement.global_kill_switch` | boolean | `false` | When true, gate-agent-spawn.js short-circuits before ALL 2.0.12 checks (MCP checkpoint verification and unknown-tool allowlist). Routing-entry checks from 2.0.11 still apply. EMERGENCY USE ONLY. |
+| `federation.shared_dir_enabled` | boolean | `false` | Enable cross-project pattern sharing on this machine. When true, patterns shared via `/orchestray:learn share` become available to all projects that also have this enabled. Off by default — opt-in per machine. |
+| `federation.sensitivity` | string | `"private"` | Controls whether this project's patterns are eligible for sharing. `"private"` (default — fail-safe) = patterns from this project are never eligible for sharing (use for NDA work, client projects, personal data). `"shareable"` = patterns may be promoted to `~/.orchestray/shared/`. Opt-in per project. |
+| `federation.shared_dir_path` | string | `"~/.orchestray/shared"` | Absolute path (tilde-expanded) for the machine-wide shared patterns directory. Change only if you need to relocate the shared dir (e.g., to a mounted volume). |
+| `curator.enabled` | boolean | `true` | Master on/off switch for `/orchestray:learn curate`. When `false`, the curate command reports "Curator is disabled" and stops immediately. |
+| `curator.self_escalation_enabled` | boolean | `true` | Allow the curator to escalate to a higher-reasoning model for borderline merge decisions. When `false`, all merges are evaluated at the curator's default model tier. |
+| `curator.pm_recommendation_enabled` | boolean | `true` | Allow the PM to surface a once-per-session recommendation to run the curator when the pattern corpus shows signs of needing hygiene. When `false`, the PM never nags about curation. |
+| `curator.tombstone_retention_runs` | integer | `3` | Number of curator runs kept in the undo window (1–10). Runs older than this are archived to `.orchestray/curator/tombstones-archive/`. Affects how far back `undo <action-id>` can reach. |
 
 **Note:** Effort routing requires Claude Code v2.1.33+. On older versions, effort settings
 are recorded in the audit trail but have no effect on agent behavior.
@@ -205,6 +222,25 @@ are recorded in the audit trail but have no effect on agent behavior.
      **Why the reason matters:** analytics consumers of the `kill_switch_activated` / `kill_switch_deactivated` events use the `reason` field to distinguish emergency rollbacks from planned tests, upgrade procedures, and debugging sessions. A missing reason is valid (backward-compatible) but less useful for post-hoc root-cause analysis. See `agents/pm-reference/event-schemas.md` "Kill Switch Activated Event" section for the consumer contract.
 
    - When setting `enable_agent_teams`, perform a two-layer enablement: update `.orchestray/config.json` AND synchronize the live `settings.json` at the repository root (the plugin's merged settings file, NOT `orchestray/settings.json` which is only a reference copy). The config flag controls PM decision logic; the env var `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` enables Claude Code's teams API. Follow the "Agent Teams settings.json sync" procedure below after updating `.orchestray/config.json`.
+   - `federation.shared_dir_enabled` must be boolean (true/false). When setting to `true`, emit the following one-time advisory **after** the normal "Updated" confirmation:
+     ```
+     Federation enabled. Patterns from all projects on this machine are now eligible to be shared to ~/.orchestray/shared/.
+
+     Note: v2.1.0 shares patterns across projects on THIS machine only. Cross-machine sync is planned for v2.2.
+     To manually sync to another machine today: /orchestray:learn export all → copy the export dir → /orchestray:learn import <path>
+
+     If any project should never share patterns (NDA work, client projects, personal data), run:
+       /orchestray:config set federation.sensitivity private
+     inside that project before running /orchestray:learn share there.
+
+     This message appears once. Run /orchestray:config show federation to review settings and detectable projects.
+     ```
+   - `federation.sensitivity` must be one of: `"private"`, `"shareable"`. Reject any other value with: "Can't set federation.sensitivity: '{value}' is not valid. Use 'private' (this project's patterns are never shared) or 'shareable' (patterns may be shared via /orchestray:learn share)."
+   - `federation.shared_dir_path` must be a non-empty string. Tilde expansion (`~/`) is supported.
+   - `curator.enabled` must be boolean (true/false).
+   - `curator.self_escalation_enabled` must be boolean (true/false).
+   - `curator.pm_recommendation_enabled` must be boolean (true/false).
+   - `curator.tombstone_retention_runs` must be an integer between 1 and 10. Reject with: "curator.tombstone_retention_runs must be an integer between 1 and 10."
    - Reject invalid values with a helpful error message
 
 4. **Output format**:
@@ -264,8 +300,16 @@ When showing settings:
 | mcp_enforcement.pattern_record_application | hook | MCP checkpoint enforcement mode for pattern_record_application (hook/prompt/allow) |
 | mcp_enforcement.unknown_tool_policy | block | Policy for unknown tool_name values (block/warn/allow) |
 | mcp_enforcement.global_kill_switch | false | When true, all 2.0.12 hook enforcement is bypassed (emergency use only) |
+| federation.shared_dir_enabled | false | Enable cross-project pattern sharing on this machine |
+| federation.sensitivity | private | Whether this project's patterns are eligible for sharing (private/shareable) |
+| federation.shared_dir_path | ~/.orchestray/shared | Machine-wide shared patterns directory |
+| curator.enabled | true | Master on/off switch for /orchestray:learn curate |
+| curator.self_escalation_enabled | true | Allow curator to escalate model for borderline merge decisions |
+| curator.pm_recommendation_enabled | true | Allow PM to surface once-per-session curator recommendation |
+| curator.tombstone_retention_runs | 3 | Number of curator runs kept in the undo window (1-10) |
 
 Use `/orchestray:config [setting] [value]` to change a setting.
+Use `/orchestray:config show federation` for federation settings and detectable projects.
 ```
 
 When setting a value:
@@ -341,3 +385,138 @@ Updated `{setting}` from `{old_value}` to `{new_value}`.
      }
    }
    ```
+
+---
+
+## show federation
+
+Display all `federation.*` config values for this project, plus a scan of detectable projects on the machine.
+
+**Invocation:** `/orchestray:config show federation`
+
+**Steps:**
+
+1. **Read federation settings** from `.orchestray/config.json` (or defaults if absent):
+   - `federation.shared_dir_enabled`
+   - `federation.sensitivity`
+   - `federation.shared_dir_path`
+
+2. **Display current federation settings:**
+   ```
+   ## Federation Settings (this project)
+
+   | Setting                        | Value                    |
+   |--------------------------------|--------------------------|
+   | federation.shared_dir_enabled  | false                    |
+   | federation.sensitivity         | private                  |
+   | federation.shared_dir_path     | ~/.orchestray/shared     |
+
+   Note: v2.1.0 shares patterns across projects on THIS machine only. Cross-machine sync is planned for v2.2.
+   ```
+
+3. **If `federation.shared_dir_enabled` is `true`**, also display a project scan advisory:
+
+   a. **Scan for detectable projects:** Look for directories containing `.orchestray/config.json` under:
+      - `$HOME` (one level deep — i.e., `$HOME/*/` only, not recursive, to avoid performance issues on large home dirs)
+      - `$HOME/projects/`, `$HOME/code/`, `$HOME/dev/`, `$HOME/work/`, `$HOME/src/` (two levels deep each, if these directories exist)
+      - The current project directory (always included)
+      - False positives are acceptable; the scan is conservative and non-exhaustive.
+
+   b. **For each detected project**, read `federation.sensitivity` from its `.orchestray/config.json`. If the file is absent or unreadable, assume `"private"` (default — fail-safe).
+
+   c. **Display the scan results:**
+      ```
+      ## Detectable Projects on This Machine
+
+      The following projects will share patterns via ~/.orchestray/shared/patterns/.
+      Set `federation.sensitivity=private` per-project to exclude a project.
+
+      | Project Path                        | sensitivity |
+      |-------------------------------------|-------------|
+      | /home/user/projects/my-app          | shareable   |
+      | /home/user/projects/client-nda      | private     |
+      | /home/user/code/personal            | shareable   |
+
+      To mark a project private:
+        cd /path/to/project && /orchestray:config set federation.sensitivity private
+      ```
+
+   d. If no projects are detected beyond the current one: "No other Orchestray projects detected under common paths. Add projects and re-run to see them here."
+
+4. **If `federation.shared_dir_enabled` is `false`**, show a brief enablement hint instead of the project scan:
+   ```
+   Federation is currently disabled. To enable cross-project sharing on this machine:
+     /orchestray:config set federation.shared_dir_enabled true
+   ```
+
+**Example:**
+```
+/orchestray:config show federation
+```
+
+---
+
+## federation disable-global
+
+Globally disable federation on this machine by setting `federation.shared_dir_enabled: false`.
+
+**WARNING — machine-wide effect:** disabling federation affects ALL Orchestray projects on
+this machine. Any project that currently reads shared patterns from `~/.orchestray/shared/`
+will stop seeing those patterns after this command runs. Use this command when you are
+handing off a machine, fixing a mis-share, or removing federation entirely.
+
+**Invocation:** `/orchestray:config federation disable-global`
+
+**Confirmation required:** Before applying any change, prompt the user to type the literal
+word `MACHINE` (uppercase, exact match — no surrounding whitespace, no other text):
+
+```
+This command disables federation for ALL Orchestray projects on this machine.
+To confirm, type MACHINE (uppercase):
+```
+
+- If the user types anything other than the exact string `MACHINE`, abort immediately:
+  ```
+  Aborted. federation disable-global was NOT applied. Current federation state unchanged.
+  ```
+- If the user types `MACHINE` exactly, proceed.
+
+**Steps on confirmed execution:**
+
+1. Read `.orchestray/config.json` in the current project directory.
+2. Set `federation.shared_dir_enabled` to `false`.
+3. Write the updated config back.
+4. Output:
+
+```
+Federation disabled globally. `~/.orchestray/shared/` data retained (run `rm -rf ~/.orchestray/shared/` to remove). Re-enable with `/orchestray:config set federation.shared_dir_enabled true`.
+```
+
+**Data retention:** this command does NOT delete `~/.orchestray/shared/` or any pattern files
+in it. The shared directory is preserved so the user can re-enable federation without losing
+previously shared patterns.
+
+**Confirmation rules (non-negotiable — W6 F10):**
+- Only the exact uppercase string `MACHINE` is accepted.
+- `machine`, `Machine`, `MACHINE ` (trailing space), `yes`, `y`, or empty string are all rejected.
+- Case-insensitive matches are rejected — the uppercase requirement signals the user has
+  understood the machine-wide scope.
+
+**Example session:**
+```
+/orchestray:config federation disable-global
+
+This command disables federation for ALL Orchestray projects on this machine.
+To confirm, type MACHINE (uppercase): machine
+
+Aborted. federation disable-global was NOT applied. Current federation state unchanged.
+```
+
+```
+/orchestray:config federation disable-global
+
+This command disables federation for ALL Orchestray projects on this machine.
+To confirm, type MACHINE (uppercase): MACHINE
+
+Federation disabled globally. `~/.orchestray/shared/` data retained (run `rm -rf ~/.orchestray/shared/` to remove). Re-enable with `/orchestray:config set federation.shared_dir_enabled true`.
+```

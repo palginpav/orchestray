@@ -194,6 +194,139 @@ console.log('');
 
 install(configDir);
 
+// =============================================================================
+// v2.1.0 UPGRADE NOTES (v2.0.x → v2.1.0 migration)
+// =============================================================================
+//
+// These notes apply to any install that is upgrading FROM a v2.0.x release.
+// New installs (no prior VERSION file) are unaffected — the defaults already
+// reflect the v2.1.0 posture.
+//
+// 1. FEDERATION (opt-in — no behavior change for existing users)
+//    `federation.shared_dir_enabled` defaults to `false` in fresh configs and
+//    is never set to `true` by the installer. Users who do not explicitly run
+//    `/orchestray:config set federation.shared_dir_enabled true` will see zero
+//    change in behavior after upgrading.
+//
+//    CROSS-PROJECT SIDE EFFECT: when `federation.shared_dir_enabled` is set to
+//    `true` in ANY project on this machine, that project reads and writes the
+//    machine-wide shared directory (`~/.orchestray/shared/` by default). ALL
+//    Orchestray projects on this machine that also have federation enabled will
+//    read patterns from that same shared directory. This is intentional — it is
+//    the federation feature — but users must understand the machine-wide scope
+//    before enabling. See `/orchestray:config show federation` for per-project
+//    visibility. Use `/orchestray:config federation disable-global` to disable
+//    federation across all projects at once.
+//
+// 2. FTS5 INDEX (lazy build — no migration required)
+//    A SQLite FTS5 index is built lazily at `.orchestray/patterns.db` on the
+//    first `pattern_find` call after upgrade. Existing `.orchestray/patterns/`
+//    markdown files remain the authoritative source of truth; the `.db` file is
+//    a derived cache and can be safely deleted at any time (it will be rebuilt
+//    on next use). If `better-sqlite3` fails to load (native build mismatch),
+//    `pattern_find` falls back to the pre-v2.1.0 Jaccard scorer automatically.
+//
+//    The `better-sqlite3` postinstall step may log a native-build warning
+//    during `npm install`. This is non-fatal — the Jaccard fallback is active
+//    until the native build succeeds.
+//
+// 3. CURATOR AGENT (opt-in — not auto-invoked)
+//    The pattern curator agent (`agents/curator.md`) ships in v2.1.0 but is
+//    never invoked automatically. Existing PM nag behavior is off by default
+//    (`curator.pm_recommendation_enabled: true`, but the nag fires at most
+//    once per session after the first curator run, not before it). Users who
+//    want curator analysis must explicitly run `/orchestray:learn curate`.
+//
+// 4. ROLLBACK GUIDANCE (v2.1.0 → v2.0.x)
+//    To roll back to v2.0.x:
+//    a. Run `npx orchestray@2.0.x --global` (or --local) to reinstall.
+//    b. `~/.orchestray/shared/` is NOT automatically removed. If you wish to
+//       fully remove the shared directory: `rm -rf ~/.orchestray/shared/`
+//       (user data only; v2.0.x will not create or read this path).
+//    c. `.orchestray/patterns.db` (FTS5 index) is ignored by v2.0.x and can
+//       be deleted safely: `rm -f .orchestray/patterns.db`
+//    d. Rollback does NOT require any config changes — federation defaults to
+//       disabled, so v2.0.x simply ignores all federation config keys.
+//
+// =============================================================================
+
+/**
+ * B1 (v2.1.0): Create shared federation directories if federation is enabled
+ * in the project config at `projectRoot/.orchestray/config.json`.
+ *
+ * Directories created (if they do not already exist):
+ *   ~/.orchestray/shared/patterns/
+ *   ~/.orchestray/shared/kb/
+ *   ~/.orchestray/shared/meta/       (tombstones + promote-log)
+ *
+ * This function:
+ *   - Only creates directories when federation.shared_dir_enabled === true.
+ *   - Is idempotent: if all dirs exist, does nothing.
+ *   - Uses mode 0o700 (user-only) per the federation security model.
+ *   - Never throws — all errors are best-effort logged to stderr.
+ *
+ * CROSS-PROJECT SIDE EFFECT: the shared directory is machine-wide. Enabling
+ * federation in ANY project causes that project's patterns (when shared) to be
+ * readable by ALL other Orchestray projects on this machine that also have
+ * federation enabled. This is intentional; see v2.1.0 upgrade notes above.
+ *
+ * @param {string} projectRoot - Absolute path to project root (contains .orchestray/).
+ */
+function _maybeCreateSharedFederationDirs(projectRoot) {
+  try {
+    const configFilePath = path.join(projectRoot, '.orchestray', 'config.json');
+    if (!fs.existsSync(configFilePath)) {
+      // No config yet — federation is disabled by default; nothing to create.
+      return;
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(fs.readFileSync(configFilePath, 'utf8'));
+    } catch (_e) {
+      return; // Malformed config — skip quietly.
+    }
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+
+    const fed = parsed.federation;
+    if (!fed || typeof fed !== 'object' || Array.isArray(fed)) return;
+    if (fed.shared_dir_enabled !== true) return;
+
+    // Resolve shared_dir_path (default ~/.orchestray/shared).
+    let sharedDirPath = (typeof fed.shared_dir_path === 'string' && fed.shared_dir_path.trim().length > 0)
+      ? fed.shared_dir_path.trim()
+      : '~/.orchestray/shared';
+
+    // Tilde expansion.
+    if (sharedDirPath === '~' || sharedDirPath.startsWith('~/') || sharedDirPath.startsWith('~\\')) {
+      sharedDirPath = path.join(os.homedir(), sharedDirPath.slice(sharedDirPath.startsWith('~\\') ? 2 : 2));
+    }
+    const sharedRoot = path.resolve(sharedDirPath);
+
+    const dirsToCreate = [
+      path.join(sharedRoot, 'patterns'),
+      path.join(sharedRoot, 'kb'),
+      path.join(sharedRoot, 'meta'),
+    ];
+
+    let anyCreated = false;
+    for (const dir of dirsToCreate) {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+        anyCreated = true;
+      }
+    }
+
+    if (anyCreated) {
+      console.log(`  \x1b[32m✓\x1b[0m Created shared federation directories at ${sharedRoot}`);
+    }
+  } catch (err) {
+    // Non-fatal — federation dirs can be created on first promote if install fails here.
+    console.log(`  \x1b[33m⚠\x1b[0m Could not create shared federation directories: ${err.message}`);
+  }
+}
+
 /**
  * Read the previously-installed Orchestray version string from
  * `<targetDir>/orchestray/VERSION`. Must be called BEFORE the new VERSION
@@ -402,6 +535,14 @@ function install(targetDir) {
   // targetDir (.claude/). Constants FRESH_INSTALL_MCP_TOOLS_ENABLED and
   // FRESH_INSTALL_COST_BUDGET_CHECK above are the single sources of truth for
   // these seeds. Per 2014-scope-proposal.md §W1 AC4(d) and §W3 AC4.
+
+  // B1 (v2.1.0): create shared federation directories if federation is enabled
+  // in the current project's config. Done BEFORE config seeding so the check
+  // also applies to existing installs that have enabled federation.
+  // Only creates dirs if they don't already exist (idempotent).
+  // Uses 0700 permissions (user-only) per the federation design.
+  _maybeCreateSharedFederationDirs(process.cwd());
+
   const orchStateDir = path.join(process.cwd(), '.orchestray');
   const freshConfigPath = path.join(orchStateDir, 'config.json');
   if (!fs.existsSync(freshConfigPath)) {
@@ -493,6 +634,17 @@ function install(targetDir) {
     }
     fs.writeFileSync(sentinelPath, JSON.stringify(sentinelData) + '\n', 'utf8');
   } catch (_e) { /* fail-open */ }
+
+  // v2.1.0: emit a one-time advisory on first install of this major feature version.
+  // Only fires when upgrading from v2.0.x (prevVersion starts with "2.0.") or on a
+  // fresh install (prevVersion === null) onto a v2.1.0 package.
+  // The message is informational and non-blocking; stderr keeps it out of pipe output.
+  if (VERSION.startsWith('2.1.') && (prevVersion === null || (prevVersion && prevVersion.startsWith('2.0.')))) {
+    process.stderr.write(
+      '\n  [orchestray] v2.1.0 ships federation + FTS5 + curator. All are opt-in.\n' +
+      '  See /orchestray:config show federation and /orchestray:learn --help for details.\n\n'
+    );
+  }
 
   // U-2 fix: RESTART reminder appears BEFORE "Done!" so it is not missed.
   console.log('');

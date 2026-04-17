@@ -18,6 +18,8 @@ const paths = require('../lib/paths');
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
 const { toolSuccess, toolError } = require('../lib/tool-result');
 const { sanitizeExcerpt } = require('../lib/excerpt');
+const { getSharedKbDir } = require('../lib/paths');
+const { writeAuditEvent, readOrchestrationId } = require('../lib/audit');
 
 const SECTIONS = ['artifacts', 'facts', 'decisions'];
 
@@ -73,47 +75,111 @@ async function handle(input, context) {
     ? SECTIONS.filter((s) => sectionFilter.has(s))
     : SECTIONS;
 
-  const candidates = [];
-
   // T3 P2: readdirSync + readFileSync per file in a tight loop. Acceptable
   // for current scale (tens to low hundreds of files). If KB grows above
   // ~500 files, add mtime-keyed in-process caching to avoid redundant I/O.
-  for (const section of sectionsToScan) {
-    const sectionDir = path.join(kbDir, section);
-    if (!fs.existsSync(sectionDir)) continue;
-    let entries;
-    try {
-      entries = fs.readdirSync(sectionDir).filter((n) => n.endsWith('.md'));
-    } catch (err) {
-      continue;
-    }
-    for (const name of entries) {
-      const slug = name.slice(0, -3);
-      const filepath = path.join(sectionDir, name);
-      let content;
+
+  /**
+   * Scan a KB directory root and collect scored candidates.
+   * Each candidate has: { slug, section, uri, excerpt, score, source }.
+   *
+   * @param {string} kbRoot - Absolute path to the kb root (contains facts/, decisions/, artifacts/).
+   * @param {string} tier - 'local' | 'shared' — used for the source field.
+   * @returns {Array}
+   */
+  function _scanKbDir(kbRoot, tier) {
+    const results = [];
+    for (const section of sectionsToScan) {
+      const sectionDir = path.join(kbRoot, section);
+      if (!fs.existsSync(sectionDir)) continue;
+      let entries;
       try {
-        content = fs.readFileSync(filepath, 'utf8');
-      } catch (err) {
+        entries = fs.readdirSync(sectionDir).filter((n) => n.endsWith('.md'));
+      } catch (_err) {
         continue;
       }
-      const title = _extractH1(content) || slug;
-      const bodyExcerpt = _firstSectionBody(content);
-      const haystack = (title + ' ' + bodyExcerpt).toLowerCase();
-      const hayTokens = _tokenize(haystack);
-      const score = _score(queryTokens, hayTokens, title, input.query);
-      if (score <= 0) continue;
-      // T3 S1: sanitize excerpt — strip markdown special sequences and cap at
-      // 80 chars to limit prompt-injection attack surface in tool output.
-      const excerpt = sanitizeExcerpt(bodyExcerpt);
-      candidates.push({
-        slug,
-        section,
-        uri: 'orchestray:kb://' + section + '/' + slug,
-        excerpt,
-        score,
-      });
+      for (const name of entries) {
+        const slug = name.slice(0, -3);
+        const filepath = path.join(sectionDir, name);
+        let content;
+        try {
+          content = fs.readFileSync(filepath, 'utf8');
+        } catch (_err) {
+          continue;
+        }
+        const title = _extractH1(content) || slug;
+        const bodyExcerpt = _firstSectionBody(content);
+        const haystack = (title + ' ' + bodyExcerpt).toLowerCase();
+        const hayTokens = _tokenize(haystack);
+        const score = _score(queryTokens, hayTokens, title, input.query);
+        if (score <= 0) continue;
+        // T3 S1: sanitize excerpt — strip markdown special sequences and cap at
+        // 80 chars to limit prompt-injection attack surface in tool output.
+        const excerpt = sanitizeExcerpt(bodyExcerpt);
+        results.push({
+          slug,
+          section,
+          uri: 'orchestray:kb://' + section + '/' + slug,
+          excerpt,
+          score,
+          source: tier,
+        });
+      }
+    }
+    return results;
+  }
+
+  // Local tier scan.
+  const localCandidates = _scanKbDir(kbDir, 'local');
+
+  // ---------------------------------------------------------------------------
+  // Two-tier lookup (B5)
+  //
+  // If federation is enabled (getSharedKbDir() returns non-null), scan the
+  // shared KB directory and merge with local results. Local wins on collision.
+  // Collision key: section + '/' + slug (matches the KB doc identifier used by
+  // the existing tool — same as the uri path segment after orchestray:kb://).
+  // ---------------------------------------------------------------------------
+
+  let candidates = localCandidates;
+  const sharedKbDir = getSharedKbDir();
+
+  if (sharedKbDir !== null && fs.existsSync(sharedKbDir)) {
+    const sharedCandidates = _scanKbDir(sharedKbDir, 'shared');
+
+    // Build a Set of local collision keys for O(1) lookup.
+    const localKeys = new Set(localCandidates.map((c) => c.section + '/' + c.slug));
+    const collidingKeys = [];
+
+    for (const sharedItem of sharedCandidates) {
+      const key = sharedItem.section + '/' + sharedItem.slug;
+      if (localKeys.has(key)) {
+        collidingKeys.push(sharedItem.slug);
+        // Local entry already present — discard shared copy.
+      } else {
+        candidates = candidates.concat([sharedItem]);
+      }
+    }
+
+    // Emit one pattern_collision_resolved event per colliding entry.
+    // Fail-open: audit failures must never block the lookup result.
+    for (const slug of collidingKeys) {
+      try {
+        writeAuditEvent({
+          timestamp: new Date().toISOString(),
+          type: 'pattern_collision_resolved',
+          orchestration_id: readOrchestrationId(),
+          slug,
+          winning_tier: 'local',
+          losing_tier: 'shared',
+          context: 'kb_search',
+        });
+      } catch (_err) {
+        // Non-fatal.
+      }
     }
   }
+  // End Two-tier lookup (B5)
 
   candidates.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;

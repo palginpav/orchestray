@@ -110,6 +110,7 @@ MUST call `mcp__orchestray__pattern_record_skip_reason` for each unapplied patte
 
 | Field | Values | Guidance |
 |-------|--------|----------|
+| `pattern_name` | The pattern's `slug` from the `pattern_find` result | MUST be provided. Omitting it writes `pattern_name: null` to the `pattern_skip_enriched` audit event, making the skip_penalty term in the curator's deprecation formula always zero. |
 | `match_quality` | `strong-match`, `weak-match`, `edge-case` | How well the pattern's context predicate matched the current task |
 | `skip_category` | See table below | The primary reason this pattern was skipped |
 
@@ -225,14 +226,18 @@ the same pattern files via last-write-wins.
 
 For each pattern noted as "applied" during Section 22b in this orchestration:
 
-1. Read the pattern file from `.orchestray/patterns/`.
-2. Update based on orchestration outcome:
+1. Call `mcp__orchestray__pattern_record_application` with `slug` (the pattern's slug),
+   `orchestration_id`, and `outcome` set to `"applied-success"` (on orchestration success)
+   or `"applied-failure"` (on failure). This atomically increments `times_applied` and
+   sets `last_applied` via the MCP tool. Do NOT manually write `times_applied` or
+   `last_applied` — the MCP tool is the single authoritative writer for those fields.
+2. Read the pattern file from `.orchestray/patterns/`.
+3. Update `confidence` based on orchestration outcome (direct frontmatter write — the MCP
+   tool does not manage `confidence`):
    - Status `"success"`: increase confidence by +0.1 (cap at 1.0)
    - Status `"partial"`: no change (+0.0)
    - Status `"failure"`: decrease confidence by -0.2 (floor at 0.0)
-3. Increment `times_applied` by 1.
-4. Set `last_applied` to current ISO 8601 timestamp.
-5. Write updated frontmatter back to the pattern file.
+4. Write the updated `confidence` value back to the pattern file (frontmatter only).
 
 ---
 

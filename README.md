@@ -19,7 +19,7 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 - **Auto-trigger** — complexity scoring detects when orchestration helps, self-calibrates over time
 - **Smart model routing** — assigns Haiku/Sonnet/Opus per subtask based on complexity, tracks cost savings; routing decisions are persisted to `.orchestray/state/routing.jsonl` and hook-enforced on every `Agent()`, `Explore()`, and `Task()` spawn, surviving context compaction and session reloads
 - **Mid-task elicitation** — agents can pause to ask the user a structured ≤5-field form via `mcp__orchestray__ask_user` and resume with the answers; no orchestration unwind required
-- **Hook-enforced MCP retrieval** — pre-decomposition `pattern_find`, `kb_search`, and `history_find_similar_tasks` calls are verified by `gate-agent-spawn.js` via a checkpoint ledger (`.orchestray/state/mcp-checkpoint.jsonl`) before the first orchestration spawn; falls back gracefully via `mcp_enforcement` config flags with no session restart required; the `mcp_enforcement` block is automatically migrated into `.orchestray/config.json` on first 2.0.13+ use; after `pattern_find` returns, the PM calls either `pattern_record_application` or `pattern_record_skip_reason` to produce an auditable signal for every outcome; as of v2.0.23, a skipped pre-spawn retrieval emits a one-time `info:` advisory to stderr (warn-mode) rather than silently passing — v2.0.24 will make this a hard block
+- **Hook-enforced MCP retrieval** — pre-decomposition `pattern_find`, `kb_search`, and `history_find_similar_tasks` calls are verified by `gate-agent-spawn.js` via a checkpoint ledger (`.orchestray/state/mcp-checkpoint.jsonl`) before the first orchestration spawn; falls back gracefully via `mcp_enforcement` config flags with no session restart required; the `mcp_enforcement` block is automatically migrated into `.orchestray/config.json` on first 2.0.13+ use; after `pattern_find` returns, the PM calls either `pattern_record_application` or `pattern_record_skip_reason` to produce an auditable signal for every outcome; a skipped pre-spawn retrieval emits a one-time `info:` advisory to stderr (warn-mode)
 - **Cache-Aware Tool Result Compaction (R14)** — a `PreToolUse:Read` hook (`bin/context-shield.js`) denies re-reads of the same `(file_path, mtime, size)` triple within a session with no `offset`/`limit` change, eliminating cache-replay token waste; re-reads with an explicit offset/limit or after on-disk changes are always allowed; disable per-session via `shield.r14_dedup_reads.enabled: false`
 - **Cache-choreographed PM prompt** — `agents/pm.md` organised into Block A (immutable prefix) / breakpoint sentinel / Block B (semi-stable) / Block C (tail); a `UserPromptSubmit` hook detects prefix drift and emits an audit event; opt-in pre-commit guard prevents accidental Block A edits
 - **Cache-hit and cost telemetry** — per-spawn and per-PM-turn metrics recorded in `agent_metrics.jsonl`; cache-hit sparklines, cost-delta vs frozen baseline, and active-experiment state visible in `/orchestray:analytics`
@@ -47,7 +47,10 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 - **Correction memory** — learns from verify-fix loops, prevents repeated mistakes
 - **Cost prediction** — estimates orchestration cost from historical data before execution
 - **Persistent specialists** — dynamic agents that prove useful get saved for reuse
-- **Pattern learning** — extracts reusable strategies from past orchestrations
+- **Pattern learning** — extracts reusable strategies from past orchestrations; patterns are project-local by default and can be shared across projects on the same machine via opt-in federation (`federation.shared_dir_enabled: true`)
+- **Cross-project pattern federation** — `~/.orchestray/shared/patterns/` as machine-local hub; opt-in, sensitivity defaults to `"private"`; share via `/orchestray:learn share`, browse with `/orchestray:learn list --shared`
+- **SQLite FTS5 retrieval** — BM25-ranked pattern lookup replaces Jaccard keyword scan; lazy index build; graceful fallback to Jaccard when native build unavailable (`better-sqlite3 ^11`, Node 22.5+ prefers `node:sqlite`)
+- **AI pattern curator** — `/orchestray:learn curate` runs promote/merge/deprecate with tombstone rollback; undo via `undo-last` or `undo <action-id>`; sacred invariants: `user-correction` patterns never auto-deprecated, `sensitivity: private` patterns never auto-promoted
 - **Team features** — shared config, shared patterns, daily/weekly cost budgets
 - **Agent Teams** — opt-in dual-mode execution for tasks needing inter-agent communication
 - **Prompt tiering** — 3-tier PM prompt architecture, significant token reduction for simple tasks
@@ -145,7 +148,7 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | `/orchestray:playbooks` | Manage project-specific playbooks |
 | `/orchestray:specialists` | Manage persistent specialist agents |
 | `/orchestray:workflows` | Manage custom YAML workflow definitions |
-| `/orchestray:learn [id]` | Extract patterns / promote to team / capture corrections |
+| `/orchestray:learn [id]` | Extract patterns, capture corrections, manage federation sharing (`share` / `unshare` / `list --shared`), curate with AI (`curate` / `undo-last` / `undo <id>`) |
 | `/orchestray:resume` | Resume interrupted orchestration |
 | `/orchestray:analytics` | Performance stats + pattern dashboard |
 | `/orchestray:patterns` | Pattern effectiveness dashboard |
@@ -170,6 +173,7 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | **Release Manager** | Owns release commits — version bump, CHANGELOG, README sweep, event-schema sync, pre-publish verification, tag prep |
 | **UX Critic** | Adversarial read-only critique of user-facing surfaces (commands, errors, statusLine, README) for friction, discoverability, consistency, and surprise |
 | **Platform Oracle** | Authoritative answers to Claude Code / Anthropic SDK / API / MCP questions via WebFetch + cited URLs; labels each claim with a stability tier (stable / experimental / community) |
+| **Curator** | AI-driven pattern curation — promotes, merges, and deprecates patterns with tombstone rollback; invoked via `/orchestray:learn curate` |
 | **Specialists** | Dynamic agents generated during orchestration; successful ones are saved to `.orchestray/specialists/` for reuse |
 
 ## Configuration
@@ -261,11 +265,20 @@ redo_flow.commit_prefix               Git commit prefix used when redo produces 
 
 pattern_decay.default_half_life_days              Default confidence half-life in days (default: 90)
 pattern_decay.category_overrides["anti-pattern"]  Half-life override for anti-pattern category (default: 180)
+
+federation.shared_dir_enabled    Enable cross-project pattern sharing (default: false)
+federation.sensitivity           Default sensitivity for new patterns: "private" | "shareable" (default: "private")
+federation.shared_dir_path       Path to machine-local shared pattern hub (default: "~/.orchestray/shared")
+
+curator.enabled                      Enable the AI pattern curator (default: true)
+curator.self_escalation_enabled      Allow curator to escalate uncertain decisions to the user (default: true)
+curator.pm_recommendation_enabled    Allow PM to recommend patterns for curation after orchestrations (default: true)
+curator.tombstone_retention_runs     Number of past curator runs to keep tombstones for (default: 3)
 ```
 
 The `mcp_enforcement` block is automatically added to `.orchestray/config.json` on the first `UserPromptSubmit` after upgrading to 2.0.13+ — no manual migration needed. On 2.0.14+, the same sweep also backfills the `mcp_server.cost_budget_check.pricing_table` block if absent. On 2.0.15+, the sweep additionally seeds the `kb_write` tool enable entry and the `pattern_record_skip_reason` / `cost_budget_check` enforcement keys for existing installs. On 2.0.16+, the sweep seeds `routing_lookup`, `cost_budget_reserve`, `pattern_deprecate`, `max_per_task` defaults (20 each), `cost_budget_enforcement`, `cost_budget_reserve.ttl_minutes`, and `routing_gate.auto_seed_on_miss`. On 2.0.17+, the sweep seeds the `v2017_experiments` block (all flags `"off"`), `adaptive_verbosity`, and `cache_choreography`. On 2.0.18+, the sweep also auto-strips the now-removed `pm_prompt_variant` and `pm_prose_strip` keys (emits a `config_key_stripped` audit event).
 
-**MCP resource schemes (2.0.16+).** The MCP server exposes four read-only resource schemes: `kb://`, `history://`, `pattern://`, and `orchestration://`. The `orchestration://` scheme provides live and historical state — `orchestray:orchestration://current` returns the active orchestration phase and task list; sub-resources expose routing decisions (`/current/routing`) and checkpoint state (`/current/checkpoints`). To browse an archived orchestration, use `orchestray:orchestration://<orch-id>`; the `list()` inventory includes the 5 most recent archived IDs. MCP tool count is 13 as of 2.0.17 (`metrics_query` added; documented in `/orchestray:analytics` skill).
+**MCP resource schemes (2.0.16+).** The MCP server exposes four read-only resource schemes: `kb://`, `history://`, `pattern://`, and `orchestration://`. The `orchestration://` scheme provides live and historical state — `orchestray:orchestration://current` returns the active orchestration phase and task list; sub-resources expose routing decisions (`/current/routing`) and checkpoint state (`/current/checkpoints`). To browse an archived orchestration, use `orchestray:orchestration://<orch-id>`; the `list()` inventory includes the 5 most recent archived IDs. MCP tool count is 15 as of 2.1.0 (`curator_tombstone` added; 14 tools as of 2.0.17).
 
 **Routing-gate match key (2.0.15+).** The routing gate matches spawns on `(task_id, agent_type)` rather than the previous three-field tuple — forgiving to description drift. If you observe gate blocks on valid `Agent()` spawns, confirm that `routing.jsonl` is written before the spawn call; the PM's orchestration prompt now enforces this as a mandatory step.
 
@@ -323,6 +336,7 @@ All orchestration state lives in `.orchestray/` (gitignored):
     archive/                      # Rotated files (50 MB threshold)
   specialists/    # Persistent specialist registry
   patterns/       # Extracted learning patterns (gitignored)
+  curator/        # Tombstone log for curator rollback (.orchestray/curator/tombstones.jsonl)
   playbooks/      # User-authored project playbooks
   config.json     # User configuration (gitignored)
   team-config.json # Team-shared configuration (version-controlled)

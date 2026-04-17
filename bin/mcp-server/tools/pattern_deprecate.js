@@ -34,6 +34,10 @@ const { writeAuditEvent } = require('../lib/audit');
 
 const DEPRECATION_REASON_ENUM = ['low-confidence', 'superseded', 'user-rejected', 'other'];
 
+// Who triggered the deprecation.  "user" = direct user command or PM;
+// "curator" = the curator agent acting autonomously (see B8 / event-schemas.md §44).
+const DEPRECATION_BY_ENUM = ['user', 'curator'];
+
 // ---------------------------------------------------------------------------
 // Input schema
 // ---------------------------------------------------------------------------
@@ -57,6 +61,15 @@ const INPUT_SCHEMA = deepFreeze({
       type: 'string',
       maxLength: 500,
       description: 'Optional free-text note. Required when reason is "other".',
+    },
+    by: {
+      type: 'string',
+      enum: DEPRECATION_BY_ENUM,
+      description:
+        'Who triggered the deprecation. "user" (default) = direct user command or PM; ' +
+        '"curator" = the curator agent acting autonomously. ' +
+        'Included in the pattern_deprecated audit event for attribution. ' +
+        'Omitting this field defaults to "user" — existing callers are unaffected.',
     },
   },
 });
@@ -209,7 +222,10 @@ async function handle(input, context) {
     );
   }
 
-  // Emit audit event
+  // Emit audit event.
+  // `by` defaults to "user" when omitted — backward-compatible with all existing
+  // callers that do not pass the field (see INPUT_SCHEMA: `by` is not in `required`).
+  const byValue = (input.by && DEPRECATION_BY_ENUM.includes(input.by)) ? input.by : 'user';
   try {
     const orchId =
       (context && context.orchestration_id) ||
@@ -221,6 +237,7 @@ async function handle(input, context) {
       pattern_name: patternName,
       reason: input.reason,
       note: input.note || null,
+      by: byValue,
     });
   } catch (_e) {
     // Audit failure must not block the response — fail-open.
@@ -232,6 +249,7 @@ async function handle(input, context) {
     deprecated_at: nowIso,
     deprecated_reason: input.reason,
     deprecated_note: (input.note && input.note.trim()) ? input.note.trim() : null,
+    by: byValue,
   });
 }
 

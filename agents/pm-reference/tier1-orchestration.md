@@ -2030,8 +2030,11 @@ After `pattern_find` returns, the PM MUST call EITHER:
 - `mcp__orchestray__pattern_record_application` one or more times (one call per
   pattern that measurably shaped the decomposition), with `slug`, `orchestration_id`,
   and `outcome: "applied"`, OR
-- `mcp__orchestray__pattern_record_skip_reason` exactly once (when no returned pattern
-  shaped the decomposition), with `orchestration_id`, a `reason` from
+- `mcp__orchestray__pattern_record_skip_reason` once per unapplied pattern (when a
+  returned pattern did NOT shape the decomposition), with `orchestration_id`,
+  `pattern_name` set to the pattern's `slug` from the `pattern_find` result (REQUIRED
+  — omitting it produces `pattern_name: null` in the audit event and breaks the
+  curator's deprecation formula), a `reason` from
   `all-irrelevant | all-low-confidence | all-stale | other`, and (when
   `reason: "other"`) a mandatory `note` explaining the decision.
 
@@ -2071,6 +2074,55 @@ Example MCP call:
   }
 }
 ```
+
+### §22b-federation — 3-Tier Pattern Merge Order (v2.1.0+)
+
+When `federation.shared_dir_enabled: true` in `.orchestray/config.json`, `pattern_find`
+performs a 3-tier lookup. The tiers are ordered by trust; lower-numbered tiers win all
+conflicts:
+
+| Tier | Location | Trust level | How populated |
+|------|----------|-------------|---------------|
+| 1 — project-local | `.orchestray/patterns/` | Trusted | Written by this project's PM or curator |
+| 2 — team-patterns/ | `.orchestray/team-patterns/` | Trusted | Git-tracked, peer-reviewed via PR (§33B). **`pattern_find` does NOT load this tier in v2.1.0** — it returns `source: "local"` or `source: "shared"` only. `source: "team"` is reserved for v2.2+. Glob `team-patterns/` separately (per the instruction above this table) and merge client-side. |
+| 3 — shared/ | `~/.orchestray/shared/patterns/` | Advisory only | Written by `/orchestray:learn share` or curator |
+
+**Shared-tier advisory framing.** When a pattern's `source` field is `"shared"`, treat
+its `Approach` section as a hypothesis worth testing in this orchestration — not as a
+rule to follow verbatim. Evaluation heuristic: "Does this Approach section make sense
+given what I know about the project-local context and the current task shape?" If the
+answer is yes, the pattern may usefully inform decomposition. If it conflicts with a
+project-local or team-patterns/ pattern that covers the same scenario, defer to the
+local context. Note the conflict in the orchestration summary so operators can decide
+whether to promote, merge, or discard the shared pattern.
+
+**Slug collision (precedence):** project-local wins over team-patterns/; team-patterns/
+wins over shared/. When a collision is resolved, emit a `pattern_collision_resolved`
+event (see event-schemas.md) with `winning_tier`, `losing_tier`, and `context:
+"pattern_find"`. The event is informational — it never blocks the lookup.
+
+**Source transparency.** When citing a retrieved pattern in a decomposition plan or
+orchestration summary, include its source tier in brackets, e.g.:
+
+- `[local] audit-fix-verify-triad-disjoint-scopes` — project-local pattern, full trust
+- `[team] team-patterns/shared-security-review` — team-patterns/ pattern, full trust
+- `[shared] decomposition-parallel-groups` — shared pattern, advisory only
+
+The bracketed label helps operators audit which patterns actually shaped an orchestration
+and from what trust tier.
+
+**Federation absent / disabled.** When `federation.shared_dir_enabled` is `false` or
+`~/.orchestray/shared/` does not exist, `pattern_find` reads only Tier 1 and Tier 2
+(unchanged from v2.0.x behavior). No `pattern_collision_resolved` events are emitted
+and no advisory framing is applied.
+
+**`pattern_record_application` on shared-tier patterns.** Calling
+`pattern_record_application` for a shared-tier pattern increments `times_applied` in
+the **local copy** of that pattern (`.orchestray/patterns/<slug>.md` if it exists, or
+a new local stub created for the purpose). The shared-tier copy at
+`~/.orchestray/shared/patterns/<slug>.md` is never mutated by an application record
+— shared patterns are read-only from the PM's perspective. B8 (curator) handles
+shared-tier write operations.
 
 ### §22b.R — Re-entry on MCP checkpoint block
 

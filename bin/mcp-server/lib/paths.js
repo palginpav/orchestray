@@ -277,6 +277,116 @@ function resolveKbFile(section, slug, root) {
   return resolved;
 }
 
+// ---------------------------------------------------------------------------
+// B1 (v2.1.0): Shared-tier path helpers for federation.
+//
+// Both helpers return null (never throw) when:
+//   - federation.shared_dir_enabled is false (the default)
+//   - the path cannot be resolved (e.g., home directory unavailable)
+//
+// Override for tests: set ORCHESTRAY_TEST_SHARED_DIR to an absolute path.
+// That value takes precedence over the config's shared_dir_path and bypasses
+// the enabled check so tests can run without a full config file.
+// ---------------------------------------------------------------------------
+
+const os = require('node:os');
+
+/**
+ * Expand a path that may start with `~/` using the OS home directory.
+ * Returns the path unchanged if it doesn't start with `~/` or `~`.
+ *
+ * @param {string} p
+ * @returns {string}
+ */
+function _expandTilde(p) {
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/') || p.startsWith('~\\')) {
+    return path.join(os.homedir(), p.slice(2));
+  }
+  return p;
+}
+
+/**
+ * Return the shared patterns directory path, or null if federation is disabled.
+ *
+ * Resolution order:
+ *   1. ORCHESTRAY_TEST_SHARED_DIR env var (absolute path) — for test isolation
+ *   2. federation.shared_dir_path from project config, expanded and appended with /patterns/
+ *
+ * Returns null if:
+ *   - No test override AND federation.shared_dir_enabled is false
+ *   - Path resolution throws unexpectedly
+ *
+ * Does NOT verify the directory exists — callers check that themselves.
+ *
+ * @returns {string|null}
+ */
+function getSharedPatternsDir() {
+  try {
+    // Test override: bypass enabled check entirely.
+    const testOverride = process.env.ORCHESTRAY_TEST_SHARED_DIR;
+    if (testOverride && testOverride.length > 0) {
+      return path.join(path.resolve(testOverride), 'patterns');
+    }
+
+    // Load federation config from the project root.
+    // We use a lazy require to avoid a circular-dependency risk at module load.
+    const { loadFederationConfig } = require('../../_lib/config-schema.js');
+    let cwd;
+    try {
+      cwd = getProjectRoot();
+    } catch (_e) {
+      // No project root found — cannot determine config; return null.
+      return null;
+    }
+    const fedCfg = loadFederationConfig(cwd);
+
+    if (!fedCfg.shared_dir_enabled) {
+      return null;
+    }
+
+    const expanded = _expandTilde(fedCfg.shared_dir_path || '~/.orchestray/shared');
+    return path.join(path.resolve(expanded), 'patterns');
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
+ * Return the shared KB directory path, or null if federation is disabled.
+ *
+ * Same resolution order and null conditions as getSharedPatternsDir().
+ * Returns the `.../kb/` subdirectory of the shared root.
+ *
+ * @returns {string|null}
+ */
+function getSharedKbDir() {
+  try {
+    const testOverride = process.env.ORCHESTRAY_TEST_SHARED_DIR;
+    if (testOverride && testOverride.length > 0) {
+      return path.join(path.resolve(testOverride), 'kb');
+    }
+
+    const { loadFederationConfig } = require('../../_lib/config-schema.js');
+    let cwd;
+    try {
+      cwd = getProjectRoot();
+    } catch (_e) {
+      return null;
+    }
+    const fedCfg = loadFederationConfig(cwd);
+
+    if (!fedCfg.shared_dir_enabled) {
+      return null;
+    }
+
+    const expanded = _expandTilde(fedCfg.shared_dir_path || '~/.orchestray/shared');
+    return path.join(path.resolve(expanded), 'kb');
+  } catch (_e) {
+    return null;
+  }
+}
+
 module.exports = {
   getPluginRoot,
   getProjectRoot,
@@ -294,4 +404,7 @@ module.exports = {
   resolveHistoryArchive,
   resolveHistoryTaskFile,
   resolveKbFile,
+  // B1 (v2.1.0): federation shared-tier path helpers
+  getSharedPatternsDir,
+  getSharedKbDir,
 };

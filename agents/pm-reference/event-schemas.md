@@ -1717,3 +1717,315 @@ Note that `dynamic_agent_cleanup` is not yet in the `history_query_events` EVENT
 enum as of v2.0.22 — filter manually by `type` field until EVENT_TYPES is updated.
 
 **Schema stability:** additive only.
+
+---
+
+## Section 44: Federation Events (v2.1.0+)
+
+These events are emitted by the federation-aware pattern lookup path, the pattern
+curator agent (B8), and the `/orchestray:learn share` CLI surface (B2).
+
+### `pattern_deprecated` — `by` field extension
+
+**Existing event** (emitted by `mcp__orchestray__pattern_deprecate`). In v2.1.0 the
+`by` field is added to distinguish user-initiated deprecation from curator-initiated
+deprecation:
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "pattern_deprecated",
+  "orchestration_id": "<current orch id, or null>",
+  "pattern_name": "<kebab-case pattern slug>",
+  "reason": "<low-confidence | superseded | user-rejected | other>",
+  "note": "<freeform prose, or null>",
+  "by": "user | curator"
+}
+```
+
+**Field notes:**
+- `by` (optional, default `"user"`): Who triggered the deprecation. `"user"` when
+  called directly via the MCP tool or `/orchestray:learn` CLI. `"curator"` when
+  called by the pattern curator agent (B8) as part of an automated curation run.
+  Pre-v2.1.0 rows that lack this field are treated as `"user"` by consumers.
+- All other fields are unchanged from the pre-v2.1.0 schema. The `by` field extension
+  is backward-compatible: consumers that do not read `by` continue to work correctly.
+
+**B8 note:** the curator emits `by: "curator"` on every deprecation it performs.
+The `pattern_deprecate` MCP tool must accept the `by` field in its input and pass it
+through to the audit event. If the tool rejects unknown input fields, curator must
+piggyback via a note prefix `"[curator]"` in the `note` field instead — see W2 F11
+resolution in the curator design.
+
+---
+
+### `pattern_collision_resolved`
+
+Emitted by `pattern_find` (B5 / `bin/mcp-server/tools/pattern_find.js`) when a slug
+collision between tiers is resolved during a multi-tier lookup. This event is
+informational — it never blocks the lookup.
+
+Emission condition: `federation.shared_dir_enabled: true` AND a slug appears in more
+than one tier.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "pattern_collision_resolved",
+  "orchestration_id": "<current orch id, or null>",
+  "slug": "<kebab-case pattern slug>",
+  "winning_tier": "local | team | shared",
+  "losing_tier": "local | team | shared",
+  "context": "pattern_find"
+}
+```
+
+**Field notes:**
+- `slug`: The pattern slug that appeared in multiple tiers.
+- `winning_tier`: The tier whose copy of the pattern was returned to the caller.
+  Precedence: `"local"` > `"team"` > `"shared"`. In v2.1.0, `pattern_find` only loads
+  Tier 1 (`"local"`) and Tier 3 (`"shared"`); `"team"` is reserved for the v2.2+ 3-tier
+  wire-in and will not appear in emitted events.
+- `losing_tier`: The tier whose copy was discarded. Same `"team"` reservation as above.
+- `context`: Always `"pattern_find"` in v2.1.0. Reserved for future contexts (e.g.,
+  a bulk collision scan command).
+- `orchestration_id`: The active orchestration at lookup time, or `null` when called
+  outside an orchestration (e.g., debug lookups).
+
+**Consumer guidance:** aggregate `pattern_collision_resolved` events by `slug` to find
+patterns that exist in multiple tiers and may benefit from a curator merge or manual
+cleanup.
+
+**Schema stability:** additive only.
+
+---
+
+### `mcp_tool_call.result_preview` — `source` field for `pattern_find` and `kb_search`
+
+Not a new event type — an extension to the `result_preview` sub-object on existing
+`mcp_tool_call` events when the tool is `pattern_find` or `kb_search`. In v2.1.0,
+each item in the returned pattern or artifact list carries a `source` field:
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "mcp_tool_call",
+  "tool": "pattern_find",
+  "result_preview": {
+    "matches": [
+      {
+        "slug": "audit-fix-verify-triad",
+        "confidence": 0.85,
+        "source": "local"
+      },
+      {
+        "slug": "decomposition-parallel-groups",
+        "confidence": 0.72,
+        "source": "local"
+      },
+      {
+        "slug": "security-review-pre-merge",
+        "confidence": 0.61,
+        "source": "shared"
+      }
+    ]
+  }
+}
+```
+
+**`source` enum values:**
+- `"local"` — pattern is from `.orchestray/patterns/` (Tier 1, project-local).
+- `"team"` — **reserved for v2.2+ 3-tier wire-in; not emitted by v2.1.0 `pattern_find`.**
+  The `team-patterns/` directory is preserved but not loaded by the MCP tool in v2.1.0.
+- `"shared"` — pattern is from `~/.orchestray/shared/patterns/` (Tier 3, user-global advisory).
+
+**Consumer guidance:** the PM MUST propagate the `source` field when citing a pattern
+in a decomposition plan or orchestration summary (see §22b-federation source transparency
+rule). Analytics consumers can group by `source` to measure shared-tier adoption.
+
+When `federation.shared_dir_enabled: false`, all returned patterns have `source: "local"`.
+In v2.1.0, `pattern_find` populates only `"local"` and `"shared"`; `source: "team"` is
+reserved for v2.2+ per the note above. The `source` field is always present in v2.1.0+
+`pattern_find` results, even when federation is disabled.
+
+**Schema stability:** additive only.
+
+---
+
+### `curator_run_complete`
+
+Emitted by the pattern curator agent (B8) at the end of each curation run, after all
+promote / merge / deprecate actions have been attempted. B8 wires the emitter; this
+section documents the schema only.
+
+**Emission:** B8 writes this event to `.orchestray/audit/events.jsonl` as its final
+action before returning its structured result. The event is skipped if the curator
+exits early due to a federation-absent gate (graceful degradation — see W2 F03
+resolution in curator design `2100c-curator-design-v2.md`).
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "curator_run_complete",
+  "orchestration_id": null,
+  "run_id": "<curator-run-{ISO8601}>",
+  "actions_applied": {
+    "promote_n": 2,
+    "merge_n": 1,
+    "deprecate_n": 3
+  },
+  "actions_skipped": {
+    "promote_n": 0,
+    "merge_n": 1,
+    "deprecate_n": 0
+  },
+  "tombstones_written_count": 3
+}
+```
+
+**Field notes:**
+- `orchestration_id`: Always `null` — the curator runs as a standalone agent outside
+  an orchestration context. `null` distinguishes curator events from PM-orchestration
+  events in analytics queries.
+- `run_id`: Stable identifier for this curator invocation. Format:
+  `curator-run-{ISO8601}` (e.g., `curator-run-2026-04-17T15:36:19Z`). Used by
+  `undo-last` to target the most recent run's tombstone batch.
+- `actions_applied.promote_n`: Count of patterns successfully promoted to the shared
+  tier during this run.
+- `actions_applied.merge_n`: Count of merge operations that completed and were
+  committed.
+- `actions_applied.deprecate_n`: Count of deprecations applied (pattern frontmatter
+  marked `deprecated: true`). Each deprecation also produces a `pattern_deprecated`
+  event with `by: "curator"`.
+- `actions_skipped.promote_n`: Count of promote candidates that were evaluated but
+  not promoted (e.g., below `times_applied` threshold, sensitivity gate blocked,
+  federation absent).
+- `actions_skipped.merge_n`: Count of merge candidates that failed the adversarial
+  re-read step (`passed: false`), were blocked by the `merged_from` guard, or were
+  otherwise skipped.
+- `actions_skipped.deprecate_n`: Count of deprecation candidates that were evaluated
+  but kept (e.g., score above absolute floor, `corpus_size < 0.8 * cap` guard).
+- `tombstones_written_count`: Total tombstone rows written to
+  `.orchestray/curator/tombstones.jsonl` across ALL action types during this run
+  (promote + merge + deprecate). For a deprecate action, each deprecated pattern
+  produces one row. For merge actions, each input pattern produces one row. For
+  promote actions, each promoted pattern produces one row.
+
+**Consumer guidance:**
+- Use `run_id` to correlate `curator_run_complete` with its associated
+  `pattern_deprecated` (by: "curator") events — filter on timestamps between the
+  curator run start and this event.
+- To find the most recent curator run: filter `events.jsonl` for
+  `type: "curator_run_complete"` and take the latest by `timestamp`.
+- Tombstones are project-local at `.orchestray/curator/tombstones.jsonl` and power
+  the `undo-last` / `undo <action-id>` rollback commands.
+
+**Schema stability:** additive only. Consumers that do not recognise this event type
+should ignore it. New fields will only be added as optional.
+
+---
+
+### `curator_run_start`
+
+Emitted by `mcp__orchestray__curator_tombstone` (action: `"start_run"`) at the very
+beginning of a curator run, before any promote/merge/deprecate actions. Corresponds to
+the `run_id` returned to the curator agent.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "curator_run_start",
+  "orchestration_id": null,
+  "orch_id": "<curator-run-{ISO8601}>",
+  "trigger": "user"
+}
+```
+
+**Field notes:**
+- `orchestration_id`: Always `null` — curator runs outside an orchestration context.
+- `orch_id`: The curator run ID. Matches the `run_id` in subsequent tombstone write events
+  and the final `curator_run_complete` event.
+- `trigger`: Always `"user"` in v2.1.0. Reserved for future auto-trigger paths.
+
+**Consumer guidance:** pair with `curator_run_complete` using `orch_id` to compute run
+duration and identify runs without a completion event (crash/abort).
+
+---
+
+### `curator_action_promoted`
+
+Emitted by `mcp__orchestray__curator_tombstone` (action: `"write"`) each time a pattern
+is successfully promoted to the shared tier. Emitted BEFORE the promote write to serve
+as a tombstone record.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "curator_action_promoted",
+  "orchestration_id": null,
+  "run_id": "<curator-run-{ISO8601}>",
+  "action_id": "<curator-{ISO8601}-a{NNN}>",
+  "action": "promote",
+  "slug": "<kebab-case pattern slug>"
+}
+```
+
+**Field notes:**
+- `run_id`: Matches the `orch_id` in the `curator_run_start` event for this run.
+- `action_id`: Unique per-action identifier. Format: `curator-{ISO8601}-a{NNN}` where
+  `NNN` is a zero-padded sequence number within the run (e.g., `a001`, `a002`). Used
+  by `/orchestray:learn undo <action-id>` for selective rollback.
+- `slug`: The pattern slug that was promoted.
+
+---
+
+### `curator_action_merged`
+
+Emitted by `mcp__orchestray__curator_tombstone` (action: `"write"`) each time a merge
+operation is committed. N input patterns are consolidated into 1 merged output.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "curator_action_merged",
+  "orchestration_id": null,
+  "run_id": "<curator-run-{ISO8601}>",
+  "action_id": "<curator-{ISO8601}-a{NNN}>",
+  "action": "merge",
+  "slug": "<lead-slug (first input pattern)>"
+}
+```
+
+**Field notes:**
+- `slug`: The lead (first) input pattern slug. The full list of merged patterns is in
+  the tombstone payload at `.orchestray/curator/tombstones.jsonl`.
+
+---
+
+### `curator_action_deprecated`
+
+Emitted by `mcp__orchestray__curator_tombstone` (action: `"write"`) each time a
+pattern is marked for deprecation by the curator. Always followed by a `pattern_deprecated`
+event with `by: "curator"` from `mcp__orchestray__pattern_deprecate`.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "curator_action_deprecated",
+  "orchestration_id": null,
+  "run_id": "<curator-run-{ISO8601}>",
+  "action_id": "<curator-{ISO8601}-a{NNN}>",
+  "action": "deprecate",
+  "slug": "<kebab-case pattern slug>"
+}
+```
+
+**Field notes:**
+- `action_id`: Same format as `curator_action_promoted`. Use this ID with
+  `/orchestray:learn undo <action-id>` to reverse the deprecation.
+- This event precedes the `pattern_deprecated` event for the same slug. Both are
+  needed for full audit coverage: `curator_action_deprecated` records the tombstone
+  write; `pattern_deprecated` records the actual deprecation tool call.
+
+**Schema stability:** all four curator action events follow the same additive-only
+stability contract as `curator_run_complete`.

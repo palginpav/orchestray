@@ -22,6 +22,12 @@ const { sanitizeExcerpt } = require('../lib/excerpt');
 const { logStderr } = require('../lib/rpc');
 const { AGENT_ROLES } = require('../lib/constants');
 const { loadPatternDecayConfig } = require('../../_lib/config-schema');
+const { searchPatterns, UNAVAILABLE: FTS5_UNAVAILABLE } = require('../../_lib/pattern-index-sqlite');
+const { getSharedPatternsDir } = require('../lib/paths');
+const { writeAuditEvent, readOrchestrationId } = require('../lib/audit');
+
+// Session flag to emit the FTS5 fallback warning at most once per process.
+let _fts5WarnedThisSession = false;
 
 const CATEGORIES = [
   'decomposition',
@@ -44,6 +50,7 @@ const INPUT_SCHEMA = {
     },
     max_results: { type: 'integer', minimum: 1, maximum: 10 },
     min_confidence: { type: 'number', minimum: 0, maximum: 1 },
+    include_deprecated: { type: 'boolean' },
   },
 };
 
@@ -104,7 +111,9 @@ async function handle(input, context) {
   // T3 C2: sort before the scoring loop so tied scores yield deterministic
   // output regardless of filesystem readdir ordering.
   const mdFiles = entries.filter((n) => n.endsWith('.md')).sort();
-  const index = [];
+
+  // Build local index with _tier: 'local' on each entry.
+  const localIndex = [];
   for (const name of mdFiles) {
     const filepath = path.join(patternsDir, name);
     let content;
@@ -120,15 +129,15 @@ async function handle(input, context) {
       continue;
     }
     const slug = name.slice(0, -3); // strip .md
-    index.push({
+    localIndex.push({
       slug,
       frontmatter: parsed.frontmatter,
       body: parsed.body,
       filepath,
+      _tier: 'local',
     });
   }
 
-  const considered = index.length;
   const taskSummary = input.task_summary;
   const agentRole = input.agent_role;
   const fileGlobs = Array.isArray(input.file_globs) ? input.file_globs : [];
@@ -136,11 +145,176 @@ async function handle(input, context) {
     ? new Set(input.categories) : null;
   const minConfidence = typeof input.min_confidence === 'number' ? input.min_confidence : 0;
   const maxResults = typeof input.max_results === 'number' ? input.max_results : 5;
+  const includeDeprecated = input.include_deprecated === true;
 
+  // ---------------------------------------------------------------------------
+  // FTS5 seam: adapter lives in bin/_lib/pattern-index-sqlite.js.
+  // No IndexBackend abstraction — see adversarial review W6 F08.
+  //
+  // Try FTS5 first. On UNAVAILABLE fall back to inline Jaccard scoring below.
+  // ---------------------------------------------------------------------------
+
+  /** @type {Map<string, number>|null} slug → normalized [0,1] relevance score */
+  let fts5ScoreBySlug = null;
+  let fts5Available = true;
+
+  try {
+    const fts5Results = searchPatterns(taskSummary, {
+      projectRoot,
+      limit: Math.max(localIndex.length, 50),
+      includeDeprecated,
+    });
+
+    if (fts5Results === FTS5_UNAVAILABLE || !Array.isArray(fts5Results)) {
+      fts5Available = false;
+    } else {
+      // BM25 scores are negative (more negative = better). Normalize to [0,1]:
+      // find the most-negative score (best match) and map to 1.0.
+      const scores = fts5Results.map((r) => r.bm25_score);
+      const minBm25 = scores.length > 0 ? Math.min(...scores) : 0;
+      const maxBm25 = scores.length > 0 ? Math.max(...scores) : 0;
+      const range = maxBm25 - minBm25; // negative range or 0
+
+      fts5ScoreBySlug = new Map();
+      for (const r of fts5Results) {
+        // Normalize: best (most negative) → 1.0, worst → 0.0.
+        // If all scores are the same (range === 0), assign 0.5.
+        const normalized = range !== 0
+          ? (maxBm25 - r.bm25_score) / Math.abs(range)
+          : 0.5;
+        fts5ScoreBySlug.set(r.slug, normalized);
+      }
+    }
+  } catch (_) {
+    fts5Available = false;
+  }
+
+  if (!fts5Available && !_fts5WarnedThisSession) {
+    _fts5WarnedThisSession = true;
+    logStderr(
+      'pattern_find: FTS5 backend unavailable; falling back to Jaccard retrieval. ' +
+      'Install native build tools or update to Node 22.5+ for FTS5.'
+    );
+    // Write a session flag to .orchestray/state/ to prevent warning spam across
+    // tool calls within the same MCP server process (the in-process boolean
+    // above already guards that; this file is belt-and-suspenders for
+    // multi-process scenarios such as running two MCP servers simultaneously).
+    try {
+      const stateDir = path.join(projectRoot, '.orchestray', 'state');
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(stateDir, 'fts5-warn-emitted.flag'),
+        new Date().toISOString(),
+        { flag: 'wx' } // 'wx' = fail silently if file already exists
+      );
+    } catch (_) {
+      // Non-fatal — the in-process boolean is the real guard.
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Two-tier lookup (B5)
+  //
+  // If federation is enabled (getSharedPatternsDir() returns non-null), scan
+  // the shared patterns directory and merge with the local index.
+  // Local wins on slug collision. Collision events are emitted per-collision.
+  //
+  // The shared tier uses Jaccard scoring (not FTS5). The shared dir layout is
+  // <sharedBase>/patterns — not <root>/.orchestray/patterns — so the FTS5
+  // backend's projectRoot convention does not apply. Jaccard is the correct
+  // fallback here; it is consistent with the existing fts5Available=false path.
+  // Local FTS5-scored entries and shared Jaccard-scored entries are merged
+  // before ranking — they all flow through the same final sort.
+  //
+  // B9 note: B9 adds curator-specific reads to pattern_find.js in Wave 3.
+  // B9's seam is the `include_deprecated` flag + the scoring/filter loop below.
+  // B9 should NOT modify the two-tier merge block (lines bounded by
+  // "Two-tier lookup (B5)" comments). The final `index` array handed to the
+  // scoring loop is the correct integration point for any per-entry B9 changes.
+  // ---------------------------------------------------------------------------
+
+  /** @type {Array<{slug, frontmatter, body, filepath, _tier}>} merged index */
+  let index = localIndex;
+
+  // Shared tier: only active when federation is enabled.
+  const sharedPatternsDir = getSharedPatternsDir();
+
+  if (sharedPatternsDir !== null) {
+    // Build shared index from disk (Jaccard path — see note above).
+    let sharedEntries;
+    try {
+      sharedEntries = fs.readdirSync(sharedPatternsDir);
+    } catch (_err) {
+      sharedEntries = null; // Shared dir absent or unreadable — skip silently.
+    }
+
+    if (sharedEntries !== null) {
+      const sharedIndex = [];
+      for (const name of sharedEntries.filter((n) => n.endsWith('.md')).sort()) {
+        const filepath = path.join(sharedPatternsDir, name);
+        let content;
+        try {
+          content = fs.readFileSync(filepath, 'utf8');
+        } catch (_err) {
+          logStderr('pattern_find(shared): read failed ' + filepath);
+          continue;
+        }
+        const parsed = frontmatter.parse(content);
+        if (!parsed.hasFrontmatter) {
+          logStderr('pattern_find(shared).parse_error: ' + name);
+          continue;
+        }
+        sharedIndex.push({
+          slug: name.slice(0, -3),
+          frontmatter: parsed.frontmatter,
+          body: parsed.body,
+          filepath,
+          _tier: 'shared',
+        });
+      }
+
+      // Merge: local wins on slug collision.
+      // Build a slug Set from local to detect collisions in O(1).
+      const localSlugs = new Set(localIndex.map((e) => e.slug));
+      const collidingSlugs = [];
+
+      for (const sharedEntry of sharedIndex) {
+        if (localSlugs.has(sharedEntry.slug)) {
+          collidingSlugs.push(sharedEntry.slug);
+          // Local entry is already in localIndex — discard shared copy.
+        } else {
+          // No local counterpart — include shared entry.
+          index = index.concat([sharedEntry]);
+        }
+      }
+
+      // Emit one pattern_collision_resolved event per colliding slug.
+      // Fail-open: event emission must never block the lookup.
+      for (const slug of collidingSlugs) {
+        try {
+          writeAuditEvent({
+            timestamp: new Date().toISOString(),
+            type: 'pattern_collision_resolved',
+            orchestration_id: readOrchestrationId(),
+            slug,
+            winning_tier: 'local',
+            losing_tier: 'shared',
+            context: 'pattern_find',
+          });
+        } catch (_err) {
+          // Non-fatal — audit failure must not block results.
+        }
+      }
+    }
+  }
+  // End Two-tier lookup (B5)
+
+  const considered = index.length;
   const scored = [];
   let filteredOut = 0;
 
   const nowMs = Date.now();
+  const taskTokens = _tokenize(taskSummary); // Pre-compute once for Jaccard path.
 
   for (const entry of index) {
     const fm = entry.frontmatter;
@@ -151,7 +325,11 @@ async function handle(input, context) {
     const description = typeof fm.description === 'string' ? fm.description : '';
 
     // D1 (v2.0.16): skip deprecated patterns so they never surface in search results.
-    if (fm.deprecated === true || fm.deprecated === 'true') { filteredOut++; continue; }
+    // include_deprecated opt-in override (B4 — for curator reads and debug).
+    if ((fm.deprecated === true || fm.deprecated === 'true') && !includeDeprecated) {
+      filteredOut++;
+      continue;
+    }
 
     // Category filter
     if (categoryFilter && !categoryFilter.has(category)) {
@@ -165,11 +343,25 @@ async function handle(input, context) {
       continue;
     }
 
-    const bodyHead = entry.body.slice(0, 200);
-    const hay = (description + ' ' + bodyHead).toLowerCase();
-    const taskTokens = _tokenize(taskSummary);
-    const hayTokens = _tokenize(hay);
-    const { ratio: overlapRatio, overlap: overlapTokens } = _jaccard(taskTokens, hayTokens);
+    let overlapRatio;
+    let overlapTokens;
+
+    // Local entries use FTS5 when available; shared entries always use Jaccard
+    // (FTS5 index covers only the local projectRoot patterns dir).
+    const entryTier = entry._tier || 'local';
+    if (fts5Available && fts5ScoreBySlug !== null && entryTier === 'local') {
+      // FTS5 path: use normalized BM25 score as the relevance signal.
+      overlapRatio = fts5ScoreBySlug.get(entry.slug) || 0;
+      overlapTokens = new Set(); // no per-token breakdown available from FTS5
+    } else {
+      // Jaccard fallback path (FTS5 unavailable, or shared-tier entry).
+      const bodyHead = entry.body.slice(0, 200);
+      const hay = (description + ' ' + bodyHead).toLowerCase();
+      const hayTokens = _tokenize(hay);
+      const result = _jaccard(taskTokens, hayTokens);
+      overlapRatio = result.ratio;
+      overlapTokens = result.overlap;
+    }
 
     let roleBonus = 0;
     if (agentRole) {
@@ -195,9 +387,12 @@ async function handle(input, context) {
     const score = confidence * (overlapRatio + roleBonus + fileBonus);
 
     const matchReasons = [];
+    if (fts5Available && entryTier === 'local') matchReasons.push('fts5');
     if (roleBonus > 0) matchReasons.push('role=' + agentRole);
-    for (const tok of Array.from(overlapTokens).slice(0, 3)) {
-      matchReasons.push('keyword:' + tok);
+    if (!(fts5Available && entryTier === 'local')) {
+      for (const tok of Array.from(overlapTokens).slice(0, 3)) {
+        matchReasons.push('keyword:' + tok);
+      }
     }
     if (fileBonus > 0) matchReasons.push('file-overlap');
 
@@ -223,6 +418,7 @@ async function handle(input, context) {
       category,
       one_line: oneLine,
       match_reasons: matchReasons,
+      source: entryTier,
       _score: score,
     });
   }

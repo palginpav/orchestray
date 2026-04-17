@@ -1873,6 +1873,289 @@ function validateContextStatusbarConfig(obj) {
   return errors.length === 0 ? { valid: true } : { valid: false, errors };
 }
 
+// ---------------------------------------------------------------------------
+// federation section defaults and loader (B1 v2.1.0)
+//
+// federation.shared_dir_enabled — boolean, default false.
+//   When false (the default), federation is entirely off: no shared tier is
+//   consulted during pattern_find or kb_search, and promote/share commands will
+//   not write to ~/.orchestray/shared/. Must be explicitly enabled by the user.
+//   Matches W3 C8 (local-only default; no cloud, no implicit sharing).
+//
+// federation.sensitivity — enum "private" | "shareable", default "private".
+//   "private"   — this project's patterns are NEVER eligible for promotion to the
+//                 shared tier, regardless of shared_dir_enabled. The user must
+//                 change this to "shareable" before any pattern from this project
+//                 can be promoted. Default is "private" per W6 F07 (threat model
+//                 demands opt-IN for sharing, not opt-OUT).
+//   "shareable" — patterns from this project may be promoted when the user explicitly
+//                 runs the promote/share command. Individual promotion is still an
+//                 explicit per-pattern action (W3 C14).
+//
+// federation.shared_dir_path — string, default "~/.orchestray/shared".
+//   Overridable for tests (see also ORCHESTRAY_TEST_SHARED_DIR env var in paths.js).
+//   Tilde expansion is performed by the paths helpers, not here.
+//
+// NOTE: curator.* keys are NOT added here — B8 owns those. This block is
+// intentionally left extensible for B8 to add curator.* as a sibling section.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_FEDERATION = Object.freeze({
+  shared_dir_enabled: false,
+  sensitivity: 'private',
+  shared_dir_path: '~/.orchestray/shared',
+});
+
+const VALID_FEDERATION_SENSITIVITY = ['private', 'shareable'];
+
+/**
+ * Load and merge the federation config section from <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing/malformed returns DEFAULT_FEDERATION so callers
+ * always get a valid object with all three keys guaranteed present.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ shared_dir_enabled: boolean, sensitivity: string, shared_dir_path: string }}
+ */
+function loadFederationConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_FEDERATION);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_FEDERATION);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_FEDERATION);
+  }
+
+  const fromFile = parsed.federation;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_FEDERATION);
+  }
+
+  const merged = Object.assign({}, DEFAULT_FEDERATION, sanitizeConfig(fromFile));
+
+  // Validate and warn — always return merged (fail-open).
+  try {
+    const result = validateFederationConfig(merged);
+    if (!result.valid) {
+      logStderr('federation config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) {
+    // Validation must never throw.
+  }
+
+  return merged;
+}
+
+/**
+ * Validate a federation config object (as returned by loadFederationConfig).
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateFederationConfig(obj) {
+  const errors = [];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['federation config must be an object'] };
+  }
+
+  if ('shared_dir_enabled' in obj && typeof obj.shared_dir_enabled !== 'boolean') {
+    errors.push(
+      'federation.shared_dir_enabled must be a boolean — got ' + JSON.stringify(obj.shared_dir_enabled)
+    );
+  }
+
+  if ('sensitivity' in obj) {
+    if (!VALID_FEDERATION_SENSITIVITY.includes(obj.sensitivity)) {
+      errors.push(
+        'federation.sensitivity must be one of: ' + VALID_FEDERATION_SENSITIVITY.join(', ') +
+        ' — got ' + JSON.stringify(obj.sensitivity)
+      );
+    }
+  }
+
+  if ('shared_dir_path' in obj) {
+    if (typeof obj.shared_dir_path !== 'string' || obj.shared_dir_path.trim().length === 0) {
+      errors.push(
+        'federation.shared_dir_path must be a non-empty string — got ' + JSON.stringify(obj.shared_dir_path)
+      );
+    }
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
+// ---------------------------------------------------------------------------
+// curator section defaults and loader (B8 v2.1.0)
+//
+// curator.enabled — boolean, default true.
+//   Master kill-switch: false prevents /orchestray:learn curate from running.
+//   Does NOT affect the tombstone store — existing tombstones remain readable.
+//
+// curator.self_escalation_enabled — boolean, default true.
+//   When true, the curator may request opus tier for borderline merge decisions
+//   (up to 3 escalations per run). Set to false to pin the curator to sonnet.
+//
+// curator.pm_recommendation_enabled — boolean, default true.
+//   When true, the PM may surface a once-per-session recommendation to run curator
+//   after observing corpus growth. Set to false to silence all PM nags.
+//
+// curator.tombstone_retention_runs — integer 1..10, default 3.
+//   Number of curator runs whose tombstones are kept in the rolling undo window.
+//   `undo-last` targets the most-recent run; `undo <action-id>` searches
+//   across all N runs. At run N+1, the oldest run is archived to
+//   .orchestray/curator/tombstones-archive/<run_id>.jsonl.
+//
+// Keys explicitly EXCLUDED (see ADR .orchestray/kb/decisions/2100b-curator-config-keys.md):
+//   - self_escalation_budget: caps are constants in the curator agent code (W2 F09)
+//   - tombstone_archive_dir: archive location is fixed (.orchestray/curator/tombstones-archive/)
+//   - max_promotes_per_run, max_merges_per_run, max_deprecates_per_run: all constants (W2 F09)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_CURATOR = Object.freeze({
+  /**
+   * Master off-switch. Set false to disable /orchestray:learn curate.
+   * @type {boolean}
+   */
+  enabled: true,
+  /**
+   * Allow curator to self-request opus tier for borderline merge decisions.
+   * Capped at 3 escalations per run regardless of this setting.
+   * @type {boolean}
+   */
+  self_escalation_enabled: true,
+  /**
+   * Allow the PM to surface a once-per-session recommendation to run curator.
+   * @type {boolean}
+   */
+  pm_recommendation_enabled: true,
+  /**
+   * Number of curator runs kept in the active tombstone rollback window.
+   * Range: 1..10. Default 3. At run N+1, oldest run is archived.
+   * @type {number}
+   */
+  tombstone_retention_runs: 3,
+});
+
+/**
+ * Load and merge the curator block from <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing/malformed returns DEFAULT_CURATOR so the
+ * curator still operates at safe defaults rather than crashing.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ enabled: boolean, self_escalation_enabled: boolean, pm_recommendation_enabled: boolean, tombstone_retention_runs: number }}
+ */
+function loadCuratorConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_CURATOR);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_CURATOR);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_CURATOR);
+  }
+
+  const fromFile = parsed.curator;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_CURATOR);
+  }
+
+  const merged = Object.assign({}, DEFAULT_CURATOR, sanitizeConfig(fromFile));
+
+  // Validate and warn — always return merged (fail-open).
+  try {
+    const result = validateCuratorConfig(merged);
+    if (!result.valid) {
+      logStderr('curator config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) {
+    // Validation must never throw.
+  }
+
+  return {
+    enabled: typeof merged.enabled === 'boolean'
+      ? merged.enabled
+      : DEFAULT_CURATOR.enabled,
+    self_escalation_enabled: typeof merged.self_escalation_enabled === 'boolean'
+      ? merged.self_escalation_enabled
+      : DEFAULT_CURATOR.self_escalation_enabled,
+    pm_recommendation_enabled: typeof merged.pm_recommendation_enabled === 'boolean'
+      ? merged.pm_recommendation_enabled
+      : DEFAULT_CURATOR.pm_recommendation_enabled,
+    tombstone_retention_runs:
+      (Number.isInteger(merged.tombstone_retention_runs) &&
+       merged.tombstone_retention_runs >= 1 &&
+       merged.tombstone_retention_runs <= 10)
+        ? merged.tombstone_retention_runs
+        : DEFAULT_CURATOR.tombstone_retention_runs,
+  };
+}
+
+/**
+ * Validate a curator config object (as returned by loadCuratorConfig).
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateCuratorConfig(obj) {
+  const errors = [];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['curator config must be an object'] };
+  }
+
+  if ('enabled' in obj && typeof obj.enabled !== 'boolean') {
+    errors.push(
+      'curator.enabled must be a boolean — got ' + JSON.stringify(obj.enabled)
+    );
+  }
+
+  if ('self_escalation_enabled' in obj && typeof obj.self_escalation_enabled !== 'boolean') {
+    errors.push(
+      'curator.self_escalation_enabled must be a boolean — got ' + JSON.stringify(obj.self_escalation_enabled)
+    );
+  }
+
+  if ('pm_recommendation_enabled' in obj && typeof obj.pm_recommendation_enabled !== 'boolean') {
+    errors.push(
+      'curator.pm_recommendation_enabled must be a boolean — got ' + JSON.stringify(obj.pm_recommendation_enabled)
+    );
+  }
+
+  if ('tombstone_retention_runs' in obj) {
+    const v = obj.tombstone_retention_runs;
+    if (!Number.isInteger(v) || v < 1 || v > 10) {
+      errors.push(
+        'curator.tombstone_retention_runs must be an integer 1..10 — got ' + JSON.stringify(v)
+      );
+    }
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
 module.exports = {
   DEFAULT_MCP_ENFORCEMENT,
   loadMcpEnforcement,
@@ -1927,5 +2210,13 @@ module.exports = {
   DEFAULT_CONTEXT_STATUSBAR,
   loadContextStatusbarConfig,
   validateContextStatusbarConfig,
+  // B1 (v2.1.0): federation shared-dir config
+  DEFAULT_FEDERATION,
+  loadFederationConfig,
+  validateFederationConfig,
+  // B8 (v2.1.0): curator config
+  DEFAULT_CURATOR,
+  loadCuratorConfig,
+  validateCuratorConfig,
   logStderr,
 };
