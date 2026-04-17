@@ -466,56 +466,74 @@ process.stdin.on('end', () => {
                     t => missingStrict.includes(t) && !missing.includes(t)
                   );
 
-                  if (phaseMismatchTools.length > 0) {
-                    // Phase-mismatch path: rows exist but recorded as wrong phase.
-                    // This is the BUG-D diagnostic — should be unreachable post-BUG-B
-                    // fix, but emitted as safety net if phase derivation breaks again.
-                    process.stderr.write(
-                      "[orchestray] mcp checkpoint gate: phase mismatch — tools called but " +
-                      "recorded as 'post-decomposition' instead of 'pre-decomposition' for: " +
-                      phaseMismatchTools.join(', ') + " in orchestration " + orchId + ". " +
-                      "Check mcp-checkpoint.jsonl phase field values. If BUG-B (2.0.13) is " +
-                      "suspected (upgraded from pre-2.0.13), see upgrade notes and run the " +
-                      "W11 migration sweep. Emergency rollback: set " +
-                      "mcp_enforcement.global_kill_switch=true.\n"
-                    );
-                  } else {
-                    // True absence path: tools were genuinely not called.
-                    process.stderr.write(
-                      "[orchestray] mcp checkpoint gate: missing MCP checkpoint for " +
-                      missing.join(', ') + " in orchestration " + orchId + ". " +
-                      "Per Section 22b, the PM must call " + missing.join(', ') +
-                      " before the first Agent() spawn. Re-run §22b for the missing " +
-                      "tool(s) — see tier1-orchestration.md §22b.R for the re-entry " +
-                      "protocol — then retry this spawn. To disable enforcement for a " +
-                      "specific tool, set mcp_enforcement.<tool> to 'prompt' in " +
-                      ".orchestray/config.json. Emergency rollback: set " +
-                      "mcp_enforcement.global_kill_switch=true.\n"
-                    );
+                  // v2.0.23 §22b warn-mode: emit advisory at most once per orchestration
+                  // (sentinel file prevents repeat warnings on subsequent spawns).
+                  // Spawn is ALWAYS allowed — no exit(2). Hard-block enforcement moves to v2.0.24.
+                  const warnSentinel = path.join(cwd, '.orchestray', 'state', '.gate-22b-warned-' + orchId);
+                  const alreadyWarned = fs.existsSync(warnSentinel);
+
+                  if (!alreadyWarned) {
+                    if (phaseMismatchTools.length > 0) {
+                      // Phase-mismatch path: rows exist but recorded as wrong phase.
+                      // This is the BUG-D diagnostic — should be unreachable post-BUG-B
+                      // fix, but emitted as safety net if phase derivation breaks again.
+                      process.stderr.write(
+                        "[orchestray v2.0.23] info: retrieval checkpoint record is inconsistent for " +
+                        phaseMismatchTools.join(', ') + " (" + orchId + ") — this orchestration " +
+                        "continues normally. This notice will not repeat for this orchestration. " +
+                        "If you see this on every orchestration, inspect " +
+                        ".orchestray/state/mcp-checkpoint.jsonl phase field values.\n"
+                      );
+                    } else {
+                      // True absence path: tools were genuinely not called.
+                      process.stderr.write(
+                        "[orchestray v2.0.23] info: pattern retrieval was skipped before this spawn " +
+                        "(" + orchId + ") — missing: " + missing.join(', ') + ". " +
+                        "This orchestration continues normally. " +
+                        "The PM agent will apply retrieval in future orchestrations. " +
+                        "This notice will not repeat for this orchestration. " +
+                        "Subsequent gate (hook-strict) may still block if pattern_record_application " +
+                        "is not called. See CHANGELOG.md for v2.0.23.\n"
+                      );
+                    }
+                    // Write sentinel so subsequent spawns in the same orch don't re-warn.
+                    try {
+                      const stateDir = path.join(cwd, '.orchestray', 'state');
+                      fs.mkdirSync(stateDir, { recursive: true });
+                      fs.writeFileSync(warnSentinel, orchId, 'utf8');
+                    } catch (_sentinelErr) {
+                      // Fail-open: if sentinel write fails, warn emission already happened.
+                      // Next spawn in the same orch will re-warn. If §22c is hook-strict, that
+                      // spawn may also be hard-blocked if pattern_record_application was not called.
+                      process.stderr.write(
+                        '[orchestray] gate-agent-spawn: failed to write §22b warn sentinel (' +
+                        (_sentinelErr && _sentinelErr.message) + '); continuing to allow\n'
+                      );
+                    }
+
+                    // Emit machine-readable audit event (observability only — not a block).
+                    // Gated by !alreadyWarned: emit at most once per orchestration to avoid
+                    // inflating analytics counts for mcp_checkpoint_missing events.
+                    try {
+                      const eventsPath = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
+                      atomicAppendJsonl(eventsPath, {
+                        timestamp: new Date().toISOString(),
+                        type: 'mcp_checkpoint_missing',
+                        orchestration_id: orchId,
+                        missing_tools: missing,
+                        phase_mismatch: phaseMismatchTools.length > 0,
+                        source: 'hook',
+                        warn_mode: true,
+                      });
+                    } catch (_emitErr) {
+                      process.stderr.write(
+                        '[orchestray] gate-agent-spawn: failed to emit mcp_checkpoint_missing event (' +
+                        (_emitErr && _emitErr.message) + '); continuing to allow\n'
+                      );
+                    }
                   }
 
-                  // 2013-W3-mcp_checkpoint_missing: emit machine-readable audit event
-                  // before blocking. Reuses `missing` and `phaseMismatchTools` computed
-                  // by W1's BUG-D diagnostic block above — do NOT re-derive. Fail-open:
-                  // if the write fails, log a warning but always proceed to exit(2).
-                  try {
-                    const eventsPath = require('path').join(cwd, '.orchestray', 'audit', 'events.jsonl');
-                    atomicAppendJsonl(eventsPath, {
-                      timestamp: new Date().toISOString(),
-                      type: 'mcp_checkpoint_missing',
-                      orchestration_id: orchId,
-                      missing_tools: missing,
-                      phase_mismatch: phaseMismatchTools.length > 0,
-                      source: 'hook',
-                    });
-                  } catch (_emitErr) {
-                    process.stderr.write(
-                      '[orchestray] gate-agent-spawn: failed to emit mcp_checkpoint_missing event (' +
-                      (_emitErr && _emitErr.message) + '); continuing to block\n'
-                    );
-                  }
-
-                  process.exit(2);
+                  // Fall through to allow the spawn (warn-mode: no exit(2)).
                 }
                 // All enforced tools present — allow.
               }

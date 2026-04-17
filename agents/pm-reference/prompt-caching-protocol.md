@@ -12,7 +12,6 @@ Defines the Block A / B / C prefix-stability discipline for `agents/pm.md`, the
 Load this file when ALL of the following are true:
 
 - `v2017_experiments.prompt_caching` equals `"on"` in `.orchestray/config.json`
-- `cache_choreography.enabled` equals `true` in `.orchestray/config.json`
 - You are about to spawn one or more subagents this turn
 
 Do NOT load this file on every turn. It is relevant only when spawning subagents while
@@ -94,7 +93,7 @@ These rules prevent Block A drift during an orchestration:
 The hook is fail-open: any exception (file missing, hash read error) exits 0
 silently rather than blocking the user prompt.
 
-The hook no-ops immediately when `cache_choreography.enabled` is `false`,
+The hook no-ops immediately when `v2017_experiments.prompt_caching` is not `"on"`,
 matching the behavior specified in §5.4 of the Phase 2 design.
 
 **Timing budget:** ≤ 3 ms per invocation. Hook timeout in `hooks/hooks.json`: 5 s.
@@ -215,18 +214,15 @@ node --test tests/pm-md-prefix-stability.test.js
 To disable the protocol without removing it:
 
 ```bash
-# Disable hook (no-ops immediately):
-/orchestray:config set cache_choreography.enabled false
-
-# Or disable the entire experiment:
+# Disable the experiment (hook no-ops immediately):
 /orchestray:config set v2017_experiments.prompt_caching off
 
 # Or use the global kill-switch:
 /orchestray:config set v2017_experiments.global_kill_switch true
 ```
 
-With `cache_choreography.enabled` false, the `cache-prefix-lock.js` hook exits 0
-immediately. The Block A / B / C layout in `agents/pm.md` remains in place but
+With `v2017_experiments.prompt_caching` not `"on"`, the `cache-prefix-lock.js` hook
+exits 0 immediately. The Block A / B / C layout in `agents/pm.md` remains in place but
 the sentinel is decorative only.
 
 ---

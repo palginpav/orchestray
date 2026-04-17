@@ -33,12 +33,12 @@ const FRESH_INSTALL_MCP_TOOLS_ENABLED = {
 };
 
 // Default v2017_experiments block for fresh installs.
-// All flags default off; __schema_version: 1. Per v2017-design.md §4.1 T4.
+// prompt_caching defaults on as of v2.0.23. Per v2017-design.md §4.1 T4.
 // (pm_prose_strip removed in v2.0.18 — FC3b cleanup)
 const FRESH_INSTALL_V2017_EXPERIMENTS = {
   __schema_version: 1,
   global_kill_switch: false,
-  prompt_caching: 'off',
+  prompt_caching: 'on',
   adaptive_verbosity: 'off',
 };
 

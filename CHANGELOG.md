@@ -3,6 +3,78 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.23] - 2026-04-17
+
+### Theme: "Prompt caching on by default, pattern-retrieval gate moves from silent to visible"
+
+Prompt caching is now enabled for all installs by default, delivering an estimated
+10–40% token reduction per orchestration (actual savings depend on orchestration
+length and cache hit rate). The pattern-retrieval gate (`pattern_find` / `kb_search`
+pre-spawn checkpoint) shifts from fail-open to warn-mode: if the PM skips retrieval
+before the first spawn, Orchestray now emits a one-time advisory to stderr rather
+than silently continuing — a visible signal before v2.0.24 makes it a hard block.
+
+### Added
+
+- **Prompt caching enabled by default** — `v2017_experiments.prompt_caching` default
+  flipped from `"off"` to `"on"` in `bin/_lib/config-schema.js` and `bin/install.js`.
+  Fresh installs now get the `cache-prefix-lock.js` Block A drift-detection hook
+  active out of the box. Existing installs with an explicit `"off"` keep that value;
+  only fresh installs receive `"on"`. Expected cost impact: ~10–40% reduction per
+  orchestration (actual depends on orchestration length and cache hit rate).
+  Emergency kill-switch: set `v2017_experiments.prompt_caching: "off"` in
+  `.orchestray/config.json` to revert on any existing install without a session
+  restart.
+- **Pattern-retrieval gate warn-mode advisory** — `bin/gate-agent-spawn.js` §22b
+  gate now emits a one-time `[orchestray v2.0.23] info:` advisory to stderr when the
+  PM spawns without first calling `pattern_find`. The advisory fires at most once per
+  orchestration (a sentinel file in `.orchestray/state/` gates re-emission). There
+  is no config path to silence this advisory in v2.0.23 — it is unconditional. The
+  spawn is never blocked (exit 0). v2.0.24 will convert this to a hard block (exit 2).
+  The §22c post-decomp gate (`pattern_record_application`) remains at `hook-strict`
+  (blocking) and is unaffected.
+- **`22b-T5` dual-gate integration test** (`tests/gate-agent-spawn.test.js`) — covers
+  the full §22b warn + §22c block two-spawn path: first spawn with no retrieval emits
+  advisory (exit 0), second spawn with routing.jsonl but no `pattern_record_application`
+  hard-blocks (exit 2); sentinel holds across both spawns.
+- **No-config default-on test** (`tests/cache-prefix-lock.test.js`) — new test asserts
+  that `.block-a-hash` is seeded when no `config.json` is present, exercising the
+  newly-reachable default-`"on"` path.
+
+### Fixed
+
+- **Warn-mode advisory wording** — advisory message prefix changed from `advisory:` to
+  `info:` for consistency with Orchestray's stderr log-level conventions. True-absence
+  path now lists the missing tools, replaces "No impact on this orchestration" with
+  "This orchestration continues normally. The PM agent will apply retrieval in future
+  orchestrations. Subsequent gate (hook-strict) may still block if
+  `pattern_record_application` is not called.", and appends "This notice will not
+  repeat for this orchestration." Phase-mismatch path message updated to "retrieval
+  checkpoint record is inconsistent" with the same per-orch cadence signal.
+- **`mcp_checkpoint_missing` audit event deduplication** — the `atomicAppendJsonl`
+  call that writes the `mcp_checkpoint_missing` event is now inside the
+  `if (!alreadyWarned)` sentinel block, so the event is emitted at most once per
+  orchestration regardless of how many spawns occur. The event carries
+  `warn_mode: true` to distinguish advisory-mode occurrences from the future
+  blocking-mode events in v2.0.24.
+- **Stale `cache_choreography.enabled` references removed** —
+  `agents/pm-reference/prompt-caching-protocol.md` §1, §4, and §8 previously
+  referenced `cache_choreography.enabled` as a secondary activation condition. That
+  key has never existed in the config schema. All three references removed; §8 rollback
+  block now correctly shows `v2017_experiments.prompt_caching: "off"` as the disable
+  mechanism; §4 prose updated to "With `v2017_experiments.prompt_caching` not `"on"`,
+  the `cache-prefix-lock.js` hook exits 0 immediately".
+- **`config-schema.js` stale default comment** — inline comment on line 1627 corrected
+  from `default "off"` to `default "on"` to match the constant on line 1637 and
+  `bin/install.js`.
+
+### Changed
+
+- **`v2017_experiments.prompt_caching` default** — `"off"` → `"on"`. Applies to
+  fresh installs only (existing installs with an explicit value are not touched by
+  `post-upgrade-sweep.js`). See "Prompt caching enabled by default" in Added above
+  for the emergency kill-switch path.
+
 ## [2.0.22] - 2026-04-16
 
 ### Theme: "No more silent upgrade gaps — open sessions now prompt for restart; registry writes are race-free"

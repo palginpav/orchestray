@@ -1624,7 +1624,7 @@ function validateAdaptiveVerbosityConfig(obj) {
 // v2017_experiments.__schema_version — literal 1; bumped when new keys are added.
 // v2017_experiments.global_kill_switch — boolean, default false.
 //   One-flip disables all v2017 experiments simultaneously (safety escape hatch).
-// v2017_experiments.prompt_caching — "off"|"on", default "off".
+// v2017_experiments.prompt_caching — "off"|"on", default "on".
 //   S1: Block A/B/C cache-hygiene layout in agents/pm.md.
 // v2017_experiments.adaptive_verbosity — "off"|"on", default "off".
 //   S4: Adaptive response-length budgets in delegation templates.
@@ -1634,7 +1634,7 @@ function validateAdaptiveVerbosityConfig(obj) {
 const DEFAULT_V2017_EXPERIMENTS = Object.freeze({
   __schema_version: 1,
   global_kill_switch: false,       // 2-state; one flip disables all v2017 experiments
-  prompt_caching: 'off',           // 2-state: "off"|"on" → S1 cache-hygiene layout
+  prompt_caching: 'on',            // 2-state: "off"|"on" → S1 cache-hygiene layout
   adaptive_verbosity: 'off',       // 2-state: "off"|"on" → S4 response-length budgets
 });
 

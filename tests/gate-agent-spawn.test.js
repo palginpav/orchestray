@@ -378,20 +378,24 @@ describe('D2 step 6 — MCP checkpoint gate', () => {
     assert.equal(stderr, '');
   });
 
-  test('D2 step 6: pattern_find present, kb_search missing → gate exits 2 naming kb_search', () => {
+  test('D2 step 6: pattern_find present, kb_search missing → warn-mode: exits 0 with advisory naming kb_search', () => {
+    // v2.0.23 §22b warn-mode: gate emits advisory but ALLOWS spawn (no exit 2).
+    // pattern_record_application also included to satisfy §22c post-decomp gate
+    // (routing.jsonl exists → second-spawn window is active).
     const dir = makeDir({ withOrch: true });
     writeRoutingFile(dir, [routingEntry()]);
     writeCheckpointRows(dir, 'orch-test-001', [
-      'pattern_find', 'history_find_similar_tasks',
-      // kb_search intentionally omitted
+      'pattern_find', 'history_find_similar_tasks', 'pattern_record_application',
+      // kb_search intentionally omitted — §22b advisory fires for it
     ]);
     const { status, stderr } = run({
       tool_name: 'Agent',
       cwd: dir,
       tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Fix auth' },
     });
-    assert.equal(status, 2, 'Missing kb_search must block spawn');
-    assert.match(stderr, /kb_search/, 'Diagnostic must name the missing tool kb_search');
+    assert.equal(status, 0, 'Warn-mode: missing kb_search must NOT block spawn (exit 0)');
+    assert.match(stderr, /kb_search/, 'Advisory must name the missing tool kb_search');
+    assert.match(stderr, /v2\.0\.23/, 'Advisory must reference v2.0.23');
   });
 
   test('D6 step 3 case A: mcp-checkpoint.jsonl absent → fail-open (exit 0)', () => {
@@ -936,6 +940,13 @@ describe('G8 — BUG-B+C regression: repeated-orchestration gate pass-through', 
     })).join('\n') + '\n';
     fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), checkpointRows);
 
+    // Satisfy §22c post-decomp gate (routing.jsonl exists → second-spawn window active).
+    fs.mkdirSync(auditDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(auditDir, 'events.jsonl'),
+      JSON.stringify({ type: 'pattern_record_skip_reason', orchestration_id: 'orch-CURRENT', timestamp: now }) + '\n'
+    );
+
     const { status, stderr } = run({
       tool_name: 'Agent',
       cwd: dir,
@@ -946,15 +957,15 @@ describe('G8 — BUG-B+C regression: repeated-orchestration gate pass-through', 
       },
     });
 
-    // Gate must block (exit 2) because pattern_find is genuinely absent
-    assert.equal(status, 2,
-      'G8-T3: gate must block when a required tool is genuinely absent');
-    // The BUG-D phase-mismatch diagnostic fires for the poisoned tools
-    assert.match(stderr, /phase mismatch/i,
-      'G8-T3: BUG-D phase-mismatch diagnostic must fire when rows exist with wrong phase');
+    // v2.0.23 §22b warn-mode: gate emits info notice but ALLOWS spawn (no exit 2).
+    assert.equal(status, 0,
+      'G8-T3: warn-mode — gate must allow spawn even when a required tool is genuinely absent');
+    // The BUG-D phase-mismatch info notice fires for the poisoned tools
+    assert.match(stderr, /inconsistent/i,
+      'G8-T3: BUG-D phase-mismatch info notice must fire when rows exist with wrong phase');
     // The message names the tools that were phase-poisoned (not pattern_find which is absent)
     assert.match(stderr, /kb_search|history_find_similar_tasks/,
-      'G8-T3: phase-mismatch diagnostic must name the poisoned tools');
+      'G8-T3: phase-mismatch info notice must name the poisoned tools');
   });
 
 });
@@ -1278,10 +1289,10 @@ describe('2013-W3: mcp_checkpoint_missing event emission', () => {
       tool_input: { model: 'sonnet' },
     });
 
-    // Gate must block
-    assert.equal(status, 2, 'W3-T1: gate must exit 2 on genuine absence');
+    // v2.0.23 §22b warn-mode: gate emits advisory but ALLOWS spawn (no exit 2).
+    assert.equal(status, 0, 'W3-T1: warn-mode — gate must exit 0 on genuine absence');
 
-    // Event must be written
+    // Event must be written (for observability; warn_mode: true)
     const events = readEvents(dir);
     const missing_ev = events.find(e => e.type === 'mcp_checkpoint_missing');
     assert.ok(missing_ev, 'W3-T1: mcp_checkpoint_missing event must be emitted to events.jsonl');
@@ -1299,6 +1310,8 @@ describe('2013-W3: mcp_checkpoint_missing event emission', () => {
       'W3-T1: source must be "hook"');
     assert.ok(typeof missing_ev.timestamp === 'string' && missing_ev.timestamp.length > 0,
       'W3-T1: timestamp must be a non-empty string');
+    assert.equal(missing_ev.warn_mode, true,
+      'W3-T1: warn_mode must be true (v2.0.23 advisory-only enforcement)');
   });
 
   test('W3-T2: phase-mismatch block (BUG-D path) emits mcp_checkpoint_missing with phase_mismatch=true', () => {
@@ -1342,13 +1355,13 @@ describe('2013-W3: mcp_checkpoint_missing event emission', () => {
       tool_input: { model: 'sonnet' },
     });
 
-    // Gate must block (pattern_find genuinely absent triggers exit 2)
-    assert.equal(status, 2, 'W3-T2: gate must exit 2 on phase-mismatch + genuine absence');
-    // BUG-D diagnostic message must fire
-    assert.match(stderr, /phase mismatch/i,
-      'W3-T2: BUG-D phase-mismatch diagnostic must appear in stderr');
+    // v2.0.23 §22b warn-mode: gate emits info notice but ALLOWS spawn (no exit 2).
+    assert.equal(status, 0, 'W3-T2: warn-mode — gate must exit 0 on phase-mismatch + genuine absence');
+    // BUG-D phase-mismatch info notice must fire
+    assert.match(stderr, /inconsistent/i,
+      'W3-T2: BUG-D phase-mismatch info notice must appear in stderr');
 
-    // Event must be written
+    // Event must be written (for observability; warn_mode: true)
     const events = readEvents(dir);
     const missing_ev = events.find(e => e.type === 'mcp_checkpoint_missing');
     assert.ok(missing_ev, 'W3-T2: mcp_checkpoint_missing event must be emitted to events.jsonl');
@@ -1363,6 +1376,370 @@ describe('2013-W3: mcp_checkpoint_missing event emission', () => {
       'W3-T2: missing_tools must include pattern_find (the genuinely absent tool)');
     assert.equal(missing_ev.source, 'hook',
       'W3-T2: source must be "hook"');
+    assert.equal(missing_ev.warn_mode, true,
+      'W3-T2: warn_mode must be true (v2.0.23 advisory-only enforcement)');
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// v2023-W3: §22b warn-mode — once-per-orchestration advisory
+// ---------------------------------------------------------------------------
+// Verifies v2.0.23 warn-mode semantics:
+//   - Gate-miss emits exactly one stderr warning and allows the spawn (exit 0)
+//   - Second spawn in the same orchestration does NOT re-emit
+//   - A new orchestration emits its own first warning
+//   - Spawn is NEVER blocked (exit 0 in all cases)
+
+describe('v2023-W3: §22b warn-mode — once-per-orchestration advisory', () => {
+
+  /** Write routing.jsonl so routing validation passes. */
+  function writeRoutingFile22b(dir, orchId) {
+    const stateDir = path.join(dir, '.orchestray', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const entry = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      orchestration_id: orchId,
+      task_id: 'task-1',
+      agent_type: 'developer',
+      description: 'Fix auth',
+      model: 'sonnet',
+      effort: 'medium',
+      complexity_score: 4,
+      score_breakdown: {},
+      decided_by: 'pm',
+      decided_at: 'decomposition',
+    });
+    fs.writeFileSync(path.join(stateDir, 'routing.jsonl'), entry + '\n');
+  }
+
+  /** Write mcp-checkpoint.jsonl with just pattern_find (kb_search absent → gate miss). */
+  function writePartialCheckpoint(dir, orchId) {
+    const stateDir = path.join(dir, '.orchestray', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const row = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      orchestration_id: orchId,
+      tool: 'pattern_find',
+      outcome: 'answered',
+      phase: 'pre-decomposition',
+      result_count: null,
+    });
+    fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), row + '\n');
+  }
+
+  /** Write a minimal config enforcing all three tools via 'hook'. */
+  function writeEnforceAllConfig(dir) {
+    const orchDir = path.join(dir, '.orchestray');
+    fs.mkdirSync(orchDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(orchDir, 'config.json'),
+      JSON.stringify({
+        mcp_enforcement: {
+          global_kill_switch: false,
+          pattern_find: 'hook',
+          kb_search: 'hook',
+          history_find_similar_tasks: 'hook',
+        },
+      })
+    );
+  }
+
+  /** Write current-orchestration.json for the given orchId. */
+  function writeOrch(dir, orchId) {
+    const auditDir = path.join(dir, '.orchestray', 'audit');
+    fs.mkdirSync(auditDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(auditDir, 'current-orchestration.json'),
+      JSON.stringify({ orchestration_id: orchId })
+    );
+  }
+
+  /**
+   * Satisfy the §22c post-decomp gate by writing a pattern_record_skip_reason event.
+   * Required when routing.jsonl is present (second-spawn window active) and the test
+   * is not explicitly testing §22c behavior.
+   */
+  function satisfyPostDecompGate(dir, orchId) {
+    const auditDir = path.join(dir, '.orchestray', 'audit');
+    fs.mkdirSync(auditDir, { recursive: true });
+    const eventsPath = path.join(auditDir, 'events.jsonl');
+    const existing = fs.existsSync(eventsPath) ? fs.readFileSync(eventsPath, 'utf8') : '';
+    fs.writeFileSync(
+      eventsPath,
+      existing + JSON.stringify({
+        type: 'pattern_record_skip_reason',
+        orchestration_id: orchId,
+        timestamp: new Date().toISOString(),
+      }) + '\n'
+    );
+  }
+
+  test('22b-T1: gate miss emits advisory and exits 0 (spawn allowed)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-22b-t1-'));
+    cleanup.push(dir);
+    const orchId = 'orch-22b-t1';
+
+    writeOrch(dir, orchId);
+    writeEnforceAllConfig(dir);
+    writeRoutingFile22b(dir, orchId);
+    writePartialCheckpoint(dir, orchId);
+    satisfyPostDecompGate(dir, orchId);
+
+    const { status, stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Fix auth' },
+    });
+
+    assert.equal(status, 0, '22b-T1: gate miss must allow spawn (exit 0)');
+    assert.match(stderr, /v2\.0\.23/, '22b-T1: info notice must reference v2.0.23');
+    assert.match(stderr, /info:/, '22b-T1: info-level notice must be present in stderr');
+  });
+
+  test('22b-T2: second spawn in same orchestration does NOT re-emit warning', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-22b-t2-'));
+    cleanup.push(dir);
+    const orchId = 'orch-22b-t2';
+
+    writeOrch(dir, orchId);
+    writeEnforceAllConfig(dir);
+    writeRoutingFile22b(dir, orchId);
+    writePartialCheckpoint(dir, orchId);
+    // Satisfy §22c post-decomp gate (routing.jsonl exists → second-spawn window active).
+    satisfyPostDecompGate(dir, orchId);
+
+    // First spawn — should emit advisory
+    const first = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Fix auth' },
+    });
+    assert.equal(first.status, 0, '22b-T2: first spawn must be allowed');
+    assert.match(first.stderr, /v2\.0\.23/, '22b-T2: first spawn must emit advisory');
+
+    // Second spawn — same orchestration, sentinel file exists → no re-warn
+    const second = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Fix auth' },
+    });
+    assert.equal(second.status, 0, '22b-T2: second spawn must also be allowed');
+    // stderr should NOT contain the v2.0.23 advisory again
+    assert.ok(
+      !second.stderr.includes('v2.0.23'),
+      '22b-T2: second spawn in same orch must NOT re-emit the v2.0.23 advisory'
+    );
+  });
+
+  test('22b-T3: new orchestration emits its own first warning', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-22b-t3-'));
+    cleanup.push(dir);
+    const orchId1 = 'orch-22b-t3-first';
+    const orchId2 = 'orch-22b-t3-second';
+
+    // Setup and run first orchestration
+    writeOrch(dir, orchId1);
+    writeEnforceAllConfig(dir);
+    writeRoutingFile22b(dir, orchId1);
+    writePartialCheckpoint(dir, orchId1);
+    // Satisfy §22c post-decomp gate (routing.jsonl exists → second-spawn window active).
+    satisfyPostDecompGate(dir, orchId1);
+
+    const first = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Fix auth' },
+    });
+    assert.equal(first.status, 0, '22b-T3: first orch spawn must be allowed');
+    assert.match(first.stderr, /v2\.0\.23/, '22b-T3: first orch must emit advisory');
+
+    // Switch to a new orchestration
+    writeOrch(dir, orchId2);
+    // Add routing and checkpoint rows for the new orch
+    const stateDir = path.join(dir, '.orchestray', 'state');
+    const existingRouting = fs.readFileSync(path.join(stateDir, 'routing.jsonl'), 'utf8');
+    const newRoutingEntry = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      orchestration_id: orchId2,
+      task_id: 'task-1',
+      agent_type: 'developer',
+      description: 'Fix auth',
+      model: 'sonnet',
+      effort: 'medium',
+      complexity_score: 4,
+      score_breakdown: {},
+      decided_by: 'pm',
+      decided_at: 'decomposition',
+    });
+    fs.writeFileSync(path.join(stateDir, 'routing.jsonl'), existingRouting + newRoutingEntry + '\n');
+
+    // Add a partial checkpoint row for the new orch
+    const existingCheckpoint = fs.readFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), 'utf8');
+    const newCheckpointRow = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      orchestration_id: orchId2,
+      tool: 'pattern_find',
+      outcome: 'answered',
+      phase: 'pre-decomposition',
+      result_count: null,
+    });
+    fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), existingCheckpoint + newCheckpointRow + '\n');
+    // Satisfy §22c for the new orch too.
+    satisfyPostDecompGate(dir, orchId2);
+
+    // Second orchestration should emit its own advisory (sentinel is per-orch-id)
+    const second = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Fix auth' },
+    });
+    assert.equal(second.status, 0, '22b-T3: second orch spawn must be allowed');
+    assert.match(second.stderr, /v2\.0\.23/, '22b-T3: second orch must emit its own advisory');
+  });
+
+  test('22b-T5: dual-gate path — §22b warns on first spawn, §22c hard-blocks on second spawn', () => {
+    // F-TEST-1: Exercises the operator-confusion scenario flagged by W3/W4.
+    // Setup: pattern_record_application: 'hook-strict' (matches DEFAULT_MCP_ENFORCEMENT).
+    // First spawn: routing.jsonl absent → §22c first-spawn carve-out skips §22c.
+    //              §22b fires (kb_search missing) → emits info notice + exits 0.
+    // Second spawn: routing.jsonl now present → §22c activates.
+    //               pattern_record_application not called → §22c exits 2.
+    //               §22b warning NOT re-emitted (sentinel holds).
+    //               mcp_checkpoint_missing event emitted EXACTLY ONCE for the orch.
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-22b-t5-'));
+    cleanup.push(dir);
+    const orchId = 'orch-22b-t5';
+
+    // Write orchestration identity
+    writeOrch(dir, orchId);
+
+    // Config: enforce all 3 pre-decomp tools + pattern_record_application: hook-strict
+    const orchDir = path.join(dir, '.orchestray');
+    fs.mkdirSync(orchDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(orchDir, 'config.json'),
+      JSON.stringify({
+        mcp_enforcement: {
+          global_kill_switch: false,
+          pattern_find: 'hook',
+          kb_search: 'hook',
+          history_find_similar_tasks: 'hook',
+          pattern_record_application: 'hook-strict',
+        },
+      })
+    );
+
+    // Partial checkpoint: pattern_find only — kb_search absent → §22b fires
+    const stateDir = path.join(dir, '.orchestray', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'mcp-checkpoint.jsonl'),
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        orchestration_id: orchId,
+        tool: 'pattern_find',
+        outcome: 'answered',
+        phase: 'pre-decomposition',
+        result_count: null,
+      }) + '\n'
+    );
+
+    // No routing.jsonl yet → first spawn window (§22c carve-out applies)
+
+    // ── First spawn ──────────────────────────────────────────────────────────
+    const first = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Decompose task' },
+    });
+
+    assert.equal(first.status, 0, '22b-T5: first spawn must be allowed (§22b is warn-only)');
+    assert.match(first.stderr, /info:/,
+      '22b-T5: first spawn must emit §22b info notice');
+    assert.match(first.stderr, /v2\.0\.23/,
+      '22b-T5: first spawn notice must reference v2.0.23');
+    assert.match(first.stderr, /will not repeat/,
+      '22b-T5: first spawn notice must include one-shot cadence signal');
+
+    // Verify mcp_checkpoint_missing event was emitted once
+    const eventsPath = path.join(dir, '.orchestray', 'audit', 'events.jsonl');
+    const eventsAfterFirst = fs.existsSync(eventsPath)
+      ? fs.readFileSync(eventsPath, 'utf8').split('\n').filter(l => l.trim()).map(l => JSON.parse(l))
+      : [];
+    const missingEventsAfterFirst = eventsAfterFirst.filter(
+      e => e.type === 'mcp_checkpoint_missing' && e.orchestration_id === orchId
+    );
+    assert.equal(missingEventsAfterFirst.length, 1,
+      '22b-T5: mcp_checkpoint_missing event must be emitted exactly once after first spawn');
+
+    // Simulate PM decomposing: write routing.jsonl → §22c activates on next spawn
+    writeRoutingFile22b(dir, orchId);
+
+    // ── Second spawn ─────────────────────────────────────────────────────────
+    // pattern_record_application NOT called → §22c must hard-block
+    const second = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Execute task' },
+    });
+
+    assert.equal(second.status, 2, '22b-T5: second spawn must be blocked by §22c (exit 2)');
+    assert.match(second.stderr, /§22c|hook-strict|pattern_record_application/,
+      '22b-T5: §22c block message must appear in stderr');
+    assert.ok(
+      !second.stderr.includes('will not repeat'),
+      '22b-T5: §22b info notice must NOT be re-emitted on second spawn (sentinel holds)'
+    );
+    assert.ok(
+      !second.stderr.includes('[orchestray v2.0.23] info:'),
+      '22b-T5: §22b info prefix must NOT appear on second spawn'
+    );
+
+    // mcp_checkpoint_missing event count must still be exactly 1 (not incremented on second spawn)
+    const eventsAfterSecond = fs.existsSync(eventsPath)
+      ? fs.readFileSync(eventsPath, 'utf8').split('\n').filter(l => l.trim()).map(l => JSON.parse(l))
+      : [];
+    const missingEventsAfterSecond = eventsAfterSecond.filter(
+      e => e.type === 'mcp_checkpoint_missing' && e.orchestration_id === orchId && e.warn_mode === true
+    );
+    assert.equal(missingEventsAfterSecond.length, 1,
+      '22b-T5: mcp_checkpoint_missing event (warn_mode:true) must not be re-emitted on second spawn');
+  });
+
+  test('22b-T4: spawn is allowed even when gate fires (no exit 2 in warn-mode)', () => {
+    // Belt-and-suspenders: explicitly verify that warn-mode never blocks.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-22b-t4-'));
+    cleanup.push(dir);
+    const orchId = 'orch-22b-t4';
+
+    writeOrch(dir, orchId);
+    writeEnforceAllConfig(dir);
+    writeRoutingFile22b(dir, orchId);
+    // Write partial checkpoint (pattern_find only — kb_search + history absent)
+    const stateDir = path.join(dir, '.orchestray', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'mcp-checkpoint.jsonl'),
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        orchestration_id: orchId,
+        tool: 'pattern_find',
+        outcome: 'answered',
+        phase: 'pre-decomposition',
+        result_count: null,
+      }) + '\n'
+    );
+    // Satisfy §22c post-decomp gate (routing.jsonl exists → second-spawn window active).
+    satisfyPostDecompGate(dir, orchId);
+
+    const { status } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Fix auth' },
+    });
+    assert.equal(status, 0, '22b-T4: warn-mode must never exit 2 regardless of missing tools');
   });
 
 });

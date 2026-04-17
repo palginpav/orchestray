@@ -150,11 +150,12 @@ describe('--self-test flag', () => {
 
 describe('prompt_caching flag off', () => {
 
-  test('exits 0 with empty {} when flag is off (default, no config)', () => {
+  test('exits 0 with empty {} when flag is explicitly off', () => {
     const tmpDir = makeTmpDir();
     try {
       writePmMd(tmpDir);
-      // No config written → default is 'off'
+      // Explicitly write flag=off config (default changed to 'on' in v2.0.23).
+      writeExperimentConfig(tmpDir, { prompt_caching: 'off' });
       const { status, stdout } = run({ cwd: tmpDir });
       assert.equal(status, 0);
       assert.deepEqual(parseOutput(stdout), {}, 'output must be empty {}');
@@ -167,6 +168,8 @@ describe('prompt_caching flag off', () => {
     const tmpDir = makeTmpDir();
     try {
       writePmMd(tmpDir);
+      // Explicitly write flag=off config (default changed to 'on' in v2.0.23).
+      writeExperimentConfig(tmpDir, { prompt_caching: 'off' });
       run({ cwd: tmpDir });
       assert.equal(readStoredHash(tmpDir), null, '.block-a-hash must not be created when flag is off');
     } finally {
@@ -178,6 +181,8 @@ describe('prompt_caching flag off', () => {
     const tmpDir = makeTmpDir();
     try {
       writePmMd(tmpDir);
+      // Explicitly write flag=off config (default changed to 'on' in v2.0.23).
+      writeExperimentConfig(tmpDir, { prompt_caching: 'off' });
       // Pre-seed a stale hash so drift would be detected if the flag were on
       const stateDir = path.join(tmpDir, '.orchestray', 'state');
       fs.mkdirSync(stateDir, { recursive: true });
@@ -185,6 +190,36 @@ describe('prompt_caching flag off', () => {
 
       run({ cwd: tmpDir });
       assert.equal(readDriftEvents(tmpDir).length, 0, 'no drift event when flag is off');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// No config.json — default 'on' path (F-TEST-2, v2.0.23)
+// ---------------------------------------------------------------------------
+
+describe('prompt_caching flag on — no config.json (falls back to default "on")', () => {
+
+  test('seeds .block-a-hash when no config.json is present (default is now "on")', () => {
+    // F-TEST-2: With no .orchestray/config.json, loadV2017ExperimentsConfig returns
+    // DEFAULT_V2017_EXPERIMENTS which has prompt_caching: 'on' since v2.0.23.
+    // The hook must seed .block-a-hash on first run (not no-op).
+    const tmpDir = makeTmpDir();
+    try {
+      writePmMd(tmpDir, 'some block-a content\n');
+      // Intentionally skip writeExperimentConfig — no config.json written
+
+      const { status } = run({ cwd: tmpDir });
+      assert.equal(status, 0, 'hook must exit 0 when no config.json is present');
+
+      const hash = readStoredHash(tmpDir);
+      assert.ok(hash !== null,
+        '.block-a-hash must be seeded when no config.json is present (default is "on")');
+      assert.ok(/^[0-9a-f]{16}$/.test(hash),
+        'seeded hash must be a 16-char lowercase hex string');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
