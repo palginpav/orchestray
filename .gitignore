@@ -1,8 +1,5 @@
 CLAUDE.md
 .planning/**/*
-!.planning/phases/
-!.planning/phases/*/
-!.planning/phases/*/ACTUAL.md
 .claude/
 node_modules/
 .orchestray/
