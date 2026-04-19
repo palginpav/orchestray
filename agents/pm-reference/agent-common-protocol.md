@@ -81,6 +81,13 @@ required only for the named role; all other agents omit them.
   `prototype_location` (string), and `novel_vs_existing` (string — one-sentence
   justification of custom over existing tools).
 
+- **`research_summary`** (researcher only): Object with `goal` (string — restated one-line
+  goal), `candidates_surveyed` (integer, 3–7), `verdict`
+  (`"recommend_existing"` | `"recommend_build_custom"` | `"no_clear_fit"` | `"inconclusive"`),
+  `top_pick` (string or null), `artifact_location` (string — path to the written artifact),
+  and `next_agent_hint` (`"architect"` | `"inventor"` | `"debugger"` | `"stop"`).
+  `files_changed` is always `[]` for researcher.
+
 - **`refactoring_summary`** (refactorer only): Object with `goal` (string),
   `steps_completed` (number), `steps_planned` (number), and `verification`
   (object with `tests_before`, `tests_after` — each `{pass, fail, skip}` — and

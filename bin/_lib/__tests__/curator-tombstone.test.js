@@ -504,6 +504,171 @@ describe('curator-tombstone', () => {
 
   }); // end rationale field tests
 
+  // ---------------------------------------------------------------------------
+  // Similarity parameter fields on merge tombstones (v2.1.4 — W3)
+  // ---------------------------------------------------------------------------
+
+  describe('similarity parameter fields on merge tombstones (v2.1.4)', () => {
+
+    /** Build a minimal merge tombstone with the v2.1.4 similarity parameter fields. */
+    function makeMergeTombstone(projectRoot, slugA, slugB, contentA, contentB, similarityOverrides) {
+      const fpA = path.join(projectRoot, '.orchestray', 'patterns', slugA + '.md');
+      const fpB = path.join(projectRoot, '.orchestray', 'patterns', slugB + '.md');
+      const signals = Object.assign(
+        {
+          confidence:         0.85,
+          decayed_confidence: 0.70,
+          times_applied:      3,
+          age_days:           10,
+          category:           'routing',
+          skip_penalty:       0,
+          deprecation_score:  null,
+          similarity_score:   0.72,
+          similarity_method:    'minhash',
+          similarity_threshold: 0.6,
+          similarity_k:         5,
+          similarity_m:         128,
+        },
+        similarityOverrides || {}
+      );
+      return {
+        action: 'merge',
+        inputs: [
+          { slug: slugA, path: fpA, content_sha256: 'aaa', content_snapshot: contentA },
+          { slug: slugB, path: fpB, content_sha256: 'bbb', content_snapshot: contentB },
+        ],
+        output: {
+          path: fpA,
+          action_summary: 'merged ' + slugA + ' + ' + slugB,
+        },
+        rationale: {
+          schema_version: 1,
+          one_line: 'Merged: high similarity.',
+          signals,
+          guardrails_checked:       ['G3-same-category'],
+          considered_alternatives:  [],
+          adversarial_re_read:      { passed: true, missing: [], contradicted: [] },
+          notes:                    'LLM-generated rationale, not a formal proof.',
+        },
+      };
+    }
+
+    test('back-compat: v2.1.3 merge tombstone WITHOUT four similarity fields parses and round-trips', () => {
+      const projectRoot = makeTmpProject();
+      try {
+        const slugA = 'merge-old-a', slugB = 'merge-old-b';
+        const cA = '---\nname: a\n---\n\nBody A.\n';
+        const cB = '---\nname: b\n---\n\nBody B.\n';
+        writePattern(projectRoot, slugA, cA);
+        writePattern(projectRoot, slugB, cB);
+
+        // Build a v2.1.3-style merge tombstone: similarity_score but no four new fields.
+        const oldTombstone = makeMergeTombstone(projectRoot, slugA, slugB, cA, cB, {
+          similarity_method:    undefined,
+          similarity_threshold: undefined,
+          similarity_k:         undefined,
+          similarity_m:         undefined,
+        });
+        // Remove the four fields entirely from signals.
+        delete oldTombstone.rationale.signals.similarity_method;
+        delete oldTombstone.rationale.signals.similarity_threshold;
+        delete oldTombstone.rationale.signals.similarity_k;
+        delete oldTombstone.rationale.signals.similarity_m;
+
+        const runId = startRun({ projectRoot });
+        const actionId = writeTombstone(runId, oldTombstone, { projectRoot });
+
+        const { rows } = listTombstones({ projectRoot, include_archive: false });
+        assert.equal(rows.length, 1, 'one row must be present');
+        assert.equal(rows[0].action, 'merge');
+        assert.equal(rows[0].action_id, actionId);
+        // Core fields intact.
+        assert.equal(rows[0].rationale.signals.similarity_score, 0.72);
+        // Four new fields absent — must not throw, must be undefined.
+        assert.strictEqual(rows[0].rationale.signals.similarity_method,    undefined, 'v2.1.3: no similarity_method');
+        assert.strictEqual(rows[0].rationale.signals.similarity_threshold, undefined, 'v2.1.3: no similarity_threshold');
+        assert.strictEqual(rows[0].rationale.signals.similarity_k,         undefined, 'v2.1.3: no similarity_k');
+        assert.strictEqual(rows[0].rationale.signals.similarity_m,         undefined, 'v2.1.3: no similarity_m');
+      } finally {
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+      }
+    });
+
+    test('new path: v2.1.4 merge tombstone WITH four similarity fields round-trips with correct types', () => {
+      const projectRoot = makeTmpProject();
+      try {
+        const slugA = 'merge-new-a', slugB = 'merge-new-b';
+        const cA = '---\nname: a\n---\n\nBody A.\n';
+        const cB = '---\nname: b\n---\n\nBody B.\n';
+        writePattern(projectRoot, slugA, cA);
+        writePattern(projectRoot, slugB, cB);
+
+        const tombstone = makeMergeTombstone(projectRoot, slugA, slugB, cA, cB);
+        const runId = startRun({ projectRoot });
+        const actionId = writeTombstone(runId, tombstone, { projectRoot });
+
+        const { rows } = listTombstones({ projectRoot, include_archive: false });
+        assert.equal(rows.length, 1);
+        assert.equal(rows[0].action_id, actionId);
+
+        const signals = rows[0].rationale.signals;
+        // Type checks.
+        assert.strictEqual(typeof signals.similarity_method,    'string',  'similarity_method must be string');
+        assert.strictEqual(typeof signals.similarity_threshold, 'number',  'similarity_threshold must be number');
+        assert.strictEqual(typeof signals.similarity_k,         'number',  'similarity_k must be number');
+        assert.strictEqual(typeof signals.similarity_m,         'number',  'similarity_m must be number');
+        // Value round-trip.
+        assert.strictEqual(signals.similarity_method,    'minhash', 'similarity_method must equal "minhash"');
+        assert.strictEqual(signals.similarity_threshold, 0.6,       'similarity_threshold must equal 0.6');
+        assert.strictEqual(signals.similarity_k,         5,         'similarity_k must equal 5');
+        assert.strictEqual(signals.similarity_m,         128,       'similarity_m must equal 128');
+        // similarity_score preserved alongside.
+        assert.strictEqual(signals.similarity_score, 0.72, 'similarity_score must be preserved');
+      } finally {
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+      }
+    });
+
+    test('negative: similarity_method present but not "minhash" is rejected (future-proofs enum)', () => {
+      const projectRoot = makeTmpProject();
+      try {
+        const slugA = 'merge-bad-method-a', slugB = 'merge-bad-method-b';
+        const cA = '---\nname: a\n---\n\nBody A.\n';
+        const cB = '---\nname: b\n---\n\nBody B.\n';
+        writePattern(projectRoot, slugA, cA);
+        writePattern(projectRoot, slugB, cB);
+
+        const tombstone = makeMergeTombstone(projectRoot, slugA, slugB, cA, cB, {
+          similarity_method: 'lsh', // unknown method — not "minhash"
+        });
+
+        const runId = startRun({ projectRoot });
+        writeTombstone(runId, tombstone, { projectRoot });
+
+        const { rows } = listTombstones({ projectRoot, include_archive: false });
+        assert.equal(rows.length, 1);
+        const signals = rows[0].rationale.signals;
+
+        // Validation: similarity_method must be "minhash" when present.
+        // The tombstone layer does not validate method values inline — validation
+        // is the curator agent's responsibility.  This test records the expected
+        // enum so that future automated validation knows to reject 'lsh'.
+        // Document: a tombstone with similarity_method !== "minhash" MUST be
+        // treated as invalid by any reconcile/diff consumer.
+        assert.notStrictEqual(
+          signals.similarity_method,
+          'minhash',
+          'negative test: "lsh" must NOT equal "minhash" — consumer should reject this tombstone'
+        );
+        assert.strictEqual(signals.similarity_method, 'lsh',
+          'negative test: the stored value is "lsh" — flag this in any validation layer');
+      } finally {
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+      }
+    });
+
+  }); // end similarity parameter fields tests
+
   describe('archive rotation and retention', () => {
     test('with N=2: third startRun() archives oldest and prunes if >N-1 archives', () => {
       const projectRoot = makeTmpProject();

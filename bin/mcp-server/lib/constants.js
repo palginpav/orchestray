@@ -27,6 +27,7 @@ const AGENT_ROLES = [
   'tester',
   'documenter',
   'inventor',
+  'researcher',
   'security-engineer',
 ];
 

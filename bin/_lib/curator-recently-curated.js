@@ -7,13 +7,15 @@
  * Design: v2.1.3 Bundle CI (H4), see
  *   .orchestray/kb/decisions/v213-bundle-CI-design.md §4 + §5
  *
- * The stamp is FIVE flat dotted-prefix keys appended to existing frontmatter:
+ * The stamp is SIX flat dotted-prefix keys appended to existing frontmatter:
  *
- *   recently_curated_at        ISO 8601 UTC timestamp
- *   recently_curated_action    "promote" | "merge" | "deprecate" | "unshare"
- *   recently_curated_action_id full action_id from the tombstone
- *   recently_curated_run_id    curator run orch_id
- *   recently_curated_why       first line of rationale.one_line, ≤120 chars
+ *   recently_curated_at           ISO 8601 UTC timestamp
+ *   recently_curated_action       "promote" | "merge" | "deprecate" | "unshare" | "evaluated"
+ *   recently_curated_action_id    full action_id from the tombstone (or run_id for "evaluated")
+ *   recently_curated_run_id       curator run orch_id
+ *   recently_curated_why          first line of rationale.one_line, ≤120 chars
+ *   recently_curated_body_sha256  SHA-256 hex of the body (frontmatter-stripped) at stamp time
+ *                                 H6 (v2.1.4): used by curate --diff incremental-mode dirty-set
  *
  * The flat-YAML parser (bin/mcp-server/lib/frontmatter.js) does NOT support
  * nested objects — these keys MUST be flat scalars.
@@ -39,6 +41,7 @@ const STAMP_KEYS = [
   'recently_curated_action_id',
   'recently_curated_run_id',
   'recently_curated_why',
+  'recently_curated_body_sha256',   // H6 (v2.1.4): incremental-mode hash
 ];
 
 const MAX_WHY_LENGTH = 120;
@@ -78,18 +81,19 @@ function normaliseWhy(raw) {
 // ---------------------------------------------------------------------------
 
 /**
- * Write (or overwrite) the 5-key `recently_curated_*` stamp on a pattern file.
+ * Write (or overwrite) the 6-key `recently_curated_*` stamp on a pattern file.
  *
  * Internally calls stripRecentlyCurated first to enforce REPLACE semantics
  * (§4.4): only the most-recent curator touch is preserved.
  *
  * @param {string} absPath
  * @param {{
- *   at:        string,   // ISO 8601 UTC
- *   action:    "promote"|"merge"|"deprecate"|"unshare",
- *   action_id: string,
- *   run_id:    string,
- *   why:       string,   // will be normalised to ≤120 chars, first line
+ *   at:          string,   // ISO 8601 UTC
+ *   action:      "promote"|"merge"|"deprecate"|"unshare"|"evaluated",
+ *   action_id:   string,
+ *   run_id:      string,
+ *   why:         string,   // will be normalised to ≤120 chars, first line
+ *   body_sha256: string,   // H6 (v2.1.4): SHA-256 hex of the body at stamp time
  * }} stamp
  * @returns {{ ok: true } | { ok: false, error: string }}
  */
@@ -123,12 +127,13 @@ function writeStamp(absPath, stamp) {
       delete newFm[k];
     }
 
-    // Step 4: append the 5 stamp keys (after all existing fields).
-    newFm.recently_curated_at        = String(stamp.at || '');
-    newFm.recently_curated_action    = String(stamp.action || '');
-    newFm.recently_curated_action_id = String(stamp.action_id || '');
-    newFm.recently_curated_run_id    = String(stamp.run_id || '');
-    newFm.recently_curated_why       = normaliseWhy(stamp.why || '');
+    // Step 4: append the 6 stamp keys (after all existing fields).
+    newFm.recently_curated_at           = String(stamp.at || '');
+    newFm.recently_curated_action       = String(stamp.action || '');
+    newFm.recently_curated_action_id    = String(stamp.action_id || '');
+    newFm.recently_curated_run_id       = String(stamp.run_id || '');
+    newFm.recently_curated_why          = normaliseWhy(stamp.why || '');
+    newFm.recently_curated_body_sha256  = String(stamp.body_sha256 || '');
 
     // Step 5: stringify and write atomically.
     const next = fm.stringify({ frontmatter: newFm, body: parsed.body });
@@ -153,11 +158,12 @@ function writeStamp(absPath, stamp) {
  *
  * @param {string} absPath
  * @returns {{
- *   at:        string,
- *   action:    string,
- *   action_id: string,
- *   run_id:    string,
- *   why:       string,
+ *   at:          string,
+ *   action:      string,
+ *   action_id:   string,
+ *   run_id:      string,
+ *   why:         string,
+ *   body_sha256: string|null,  // H6 (v2.1.4): null on pre-v2.1.4 stamps
  * } | null}
  */
 function readStamp(absPath) {
@@ -172,11 +178,12 @@ function readStamp(absPath) {
     if (!f.recently_curated_at && !f.recently_curated_action_id) return null;
 
     return {
-      at:        f.recently_curated_at        != null ? String(f.recently_curated_at)        : null,
-      action:    f.recently_curated_action    != null ? String(f.recently_curated_action)    : null,
-      action_id: f.recently_curated_action_id != null ? String(f.recently_curated_action_id) : null,
-      run_id:    f.recently_curated_run_id    != null ? String(f.recently_curated_run_id)    : null,
-      why:       f.recently_curated_why       != null ? String(f.recently_curated_why)       : null,
+      at:          f.recently_curated_at          != null ? String(f.recently_curated_at)          : null,
+      action:      f.recently_curated_action      != null ? String(f.recently_curated_action)      : null,
+      action_id:   f.recently_curated_action_id   != null ? String(f.recently_curated_action_id)   : null,
+      run_id:      f.recently_curated_run_id      != null ? String(f.recently_curated_run_id)      : null,
+      why:         f.recently_curated_why         != null ? String(f.recently_curated_why)         : null,
+      body_sha256: f.recently_curated_body_sha256 != null ? String(f.recently_curated_body_sha256) : null,
     };
   } catch (_) {
     return null;
@@ -243,8 +250,17 @@ function stripRecentlyCurated(absPath) {
  *   unshare   → SKIP (no local stamp)
  *   rolled-back rows → SKIP
  *
+ * H6 (v2.1.4) extensions:
+ *   - body_sha256 is now computed and written on every stamp.
+ *   - If options.evaluatedSlugs is provided, patterns in that list that were NOT
+ *     already stamped by a tombstone action receive an action: "evaluated" stamp.
+ *     This ensures the next --diff run sees them as clean (not stamp-absent).
+ *
  * @param {string} runId
- * @param {{ projectRoot?: string }} [options]
+ * @param {{
+ *   projectRoot?:    string,
+ *   evaluatedSlugs?: string[],  // H6: slugs the curator evaluated but did not act on
+ * }} [options]
  * @returns {{ stamped: string[], skipped: string[], failed: Array<{action_id: string, slug: string, error: string}> }}
  */
 function applyStampsForRun(runId, options) {
@@ -271,6 +287,13 @@ function applyStampsForRun(runId, options) {
     recordDegradation = null;
   }
 
+  let computeBodyHash;
+  try {
+    computeBodyHash = require('./curator-diff.js').computeBodyHash;
+  } catch (_) {
+    computeBodyHash = null;
+  }
+
   const projectRoot = (options && options.projectRoot) || process.cwd();
   const patternsDir = path.join(projectRoot, '.orchestray', 'patterns');
 
@@ -281,6 +304,9 @@ function applyStampsForRun(runId, options) {
   } catch (err) {
     return { stamped, skipped, failed };
   }
+
+  // Track which slugs were stamped by tombstone actions (for the evaluated-slug pass).
+  const tombstoneSlugs = new Set();
 
   for (const t of rows) {
     const actionId = t.action_id || '?';
@@ -312,17 +338,27 @@ function applyStampsForRun(runId, options) {
 
     const absPath = path.join(patternsDir, slug + '.md');
 
+    // Compute body hash for this pattern file (H6).
+    let bodyHash = '';
+    if (computeBodyHash) {
+      try {
+        bodyHash = computeBodyHash(absPath) || '';
+      } catch (_) {}
+    }
+
     const stamp = {
-      at:        t.ts || new Date().toISOString(),
-      action:    t.action,
-      action_id: actionId,
-      run_id:    runId,
-      why:       (t.rationale && t.rationale.one_line) || t.output && t.output.action_summary || '',
+      at:          t.ts || new Date().toISOString(),
+      action:      t.action,
+      action_id:   actionId,
+      run_id:      runId,
+      why:         (t.rationale && t.rationale.one_line) || t.output && t.output.action_summary || '',
+      body_sha256: bodyHash,
     };
 
     const result = writeStamp(absPath, stamp);
     if (result.ok) {
       stamped.push(actionId);
+      tombstoneSlugs.add(slug);
     } else {
       failed.push({ action_id: actionId, slug, error: result.error });
       if (recordDegradation) {
@@ -330,6 +366,55 @@ function applyStampsForRun(runId, options) {
           recordDegradation({
             kind:        'curator_stamp_apply_failed',
             detail:      { action_id: actionId, slug, error: result.error, run_id: runId },
+            projectRoot,
+          });
+        } catch (_) {}
+      }
+    }
+  }
+
+  // H6: second pass — stamp evaluated-but-no-op patterns with action: "evaluated".
+  // These are patterns the curator reasoned over but did not promote / merge / deprecate.
+  // Writing this stamp prevents the next --diff run from seeing them as stamp-absent.
+  const evaluatedSlugs = options && Array.isArray(options.evaluatedSlugs)
+    ? options.evaluatedSlugs
+    : [];
+
+  for (const slug of evaluatedSlugs) {
+    if (tombstoneSlugs.has(slug)) {
+      // Already stamped by a tombstone action — skip the evaluated stamp.
+      skipped.push('evaluated:' + slug);
+      continue;
+    }
+
+    const absPath = path.join(patternsDir, slug + '.md');
+
+    let bodyHash = '';
+    if (computeBodyHash) {
+      try {
+        bodyHash = computeBodyHash(absPath) || '';
+      } catch (_) {}
+    }
+
+    const stamp = {
+      at:          new Date().toISOString(),
+      action:      'evaluated',
+      action_id:   runId,   // No tombstone action_id for evaluated; use run_id.
+      run_id:      runId,
+      why:         'no-op',
+      body_sha256: bodyHash,
+    };
+
+    const evalResult = writeStamp(absPath, stamp);
+    if (evalResult.ok) {
+      stamped.push('evaluated:' + slug);
+    } else {
+      failed.push({ action_id: 'evaluated:' + slug, slug, error: evalResult.error });
+      if (recordDegradation) {
+        try {
+          recordDegradation({
+            kind:        'curator_stamp_apply_failed',
+            detail:      { action_id: 'evaluated:' + slug, slug, error: evalResult.error, run_id: runId },
             projectRoot,
           });
         } catch (_) {}

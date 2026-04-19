@@ -23,7 +23,7 @@ const writeAuditEvent = require('./_lib/audit-event-writer');
 // Includes the 13 Orchestray cores plus Claude Code built-in agent types we do
 // NOT consider "dynamic" (they are platform primitives, not user inventions).
 const CANONICAL_AGENTS = new Set([
-  'pm', 'architect', 'developer', 'refactorer', 'inventor', 'reviewer',
+  'pm', 'architect', 'developer', 'refactorer', 'inventor', 'researcher', 'reviewer',
   'debugger', 'tester', 'documenter', 'security-engineer',
   'release-manager', 'ux-critic', 'platform-oracle',
   'Explore', 'Plan', 'general-purpose', 'Task',

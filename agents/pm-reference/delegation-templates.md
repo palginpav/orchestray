@@ -281,6 +281,22 @@ zero tool calls, zero extra cost. Items that cannot be addressed should be noted
 - [ ] Build-vs-buy context provided? (why custom over off-the-shelf, what was considered)
 - [ ] Exploration hygiene stated? (delegation says: "Use Glob for structure and Grep with `output_mode: files_with_matches` to locate candidates; Read only files you intend to act on. The Repository Map is authoritative for project layout — do not Glob the whole repo to re-discover structure.")
 
+### Researcher Checklist
+
+- [ ] Goal stated as one-sentence technology-free problem? (not "find libraries", but
+      "survey approaches for <problem X> under <constraints Y>")
+- [ ] Hard constraints listed? (non-negotiables — e.g., language, runtime, license)
+- [ ] Soft constraints listed? (desirable tradeables)
+- [ ] Non-goals stated? (scope boundaries for the survey)
+- [ ] Known-not-wanted approaches listed? (prevents surveying dead options)
+- [ ] Decision deadline / downstream-agent expectation stated? (architect next, inventor
+      next, or user-decides)
+- [ ] Scope guard reaffirmed? ("Do NOT search our codebase as primary activity — that is
+      Explore's job. Do NOT produce a design doc — that is Architect's job. Do NOT
+      prototype — that is Inventor's job.")
+- [ ] Exploration hygiene stated? (house-standard boilerplate from §"Exploration
+      Hygiene — Boilerplate")
+
 ### Documenter Checklist
 
 - [ ] Documentation type specified? (README, API reference, changelog, ADR, inline docs)

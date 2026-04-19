@@ -475,6 +475,17 @@ after the fact.
   row's `jaccard` field when the merge originated from a shortlist pair. For merges
   where the shortlist was absent (fallback path), set the score to the LLM's own
   similarity self-estimate (0–1) as before.
+  **v2.1.4+: additionally MUST populate the four similarity parameter fields**
+  so future diff/reconcile logic can reproduce results:
+  ```
+  "similarity_method":    "minhash",
+  "similarity_threshold": 0.6,
+  "similarity_k":         5,
+  "similarity_m":         128
+  ```
+  These values are fixed constants in v2.1.4. Always emit all four alongside
+  `similarity_score` on every merge tombstone, whether from the H3 shortlist
+  path or the fallback path.
 
 - **deprecate**: all promote signals PLUS `deprecation_score` (the numeric value
   of the formula in §4.3). `considered_alternatives` should list any close-call
@@ -841,3 +852,76 @@ validation post-merge. In a future wave, B9 may extend this to pass
 `include_deprecated: true` to surface deprecated patterns for curator's own reads.
 Until that flag exists, the curator reads deprecated patterns directly via `Read`/`Glob`
 (the filter is in `pattern_find`, not in the file system).
+
+---
+
+## Incremental Mode (--diff)
+
+### When this section applies
+
+The SKILL dispatcher passes a `dirtySetPath` in your context **only** when the user
+invoked `/orchestray:learn curate --diff`. When `dirtySetPath` is absent (standard
+`curate` without `--diff`), ignore this section entirely and evaluate the full corpus
+as usual.
+
+### What dirtySetPath contains
+
+Read the JSON file at `dirtySetPath`. It has this shape:
+
+```json
+{
+  "mode":        "diff",
+  "run_id":      "<runId>",
+  "dirty":       ["slug-a", "slug-b", ...],
+  "corpus_size": 42,
+  "breakdown":   { "stamp_absent": 3, "body_hash_drift": 2, "stale_stamp": 1, "rollback_touched": 1, "merge_lineage": 0 },
+  "forced_full": false
+}
+```
+
+`dirty` is the pre-computed set of slug names (without `.md` extension) that the
+SKILL layer determined need re-evaluation. **`forced_full: true` means the dirty-set
+filter was bypassed** — treat the run as a full sweep in that case (evaluate all
+patterns normally).
+
+### Decision-scoping rules
+
+When `dirtySetPath` is present and `forced_full: false`:
+
+- **Promote candidates:** evaluate only slugs in `dirty`. Do NOT evaluate clean slugs
+  for promotion — they have not changed and were already assessed.
+
+- **Merge candidates:** use the H3 shortlist as usual, but the SKILL has already
+  filtered it to pairs where at least one side is dirty. Evaluate only those pairs.
+  If at least ONE side of a pair is dirty, evaluate normally (the clean side may still
+  be a valid merge partner).
+
+- **Deprecate candidates:** evaluate only slugs in `dirty`.
+
+- **Adversarial federation read for promote:** you STILL READ the full shared tier
+  for collision detection before any promote, regardless of dirty-set filtering.
+  The dirty-set filter is local-only.
+
+### `evaluated_slugs` — required in structured result
+
+Include an `evaluated_slugs: string[]` field in your structured result JSON. This
+MUST contain the complete list of slug names you reasoned over this run (dirty set
+only in `--diff` mode; all slugs in full-sweep mode). The SKILL dispatcher uses this
+list to write `action: "evaluated"` stamps for patterns you assessed but did not act
+on, preventing them from appearing as dirty on the next `--diff` run.
+
+If you evaluated 7 dirty patterns and took action on 2 (promote + deprecate), your
+`evaluated_slugs` should contain all 7 slugs. The stamp-apply step will write
+tombstone-driven stamps for the 2 acted-upon patterns and `evaluated` stamps for
+the remaining 5.
+
+### Zero-dirty short-circuit (handled by SKILL before spawn)
+
+If the dirty set is empty (`dirty: []`), the SKILL exits before spawning you — you
+will not be invoked at all. This is the happy-path steady-state for a mature, stable
+corpus. No action needed on your part.
+
+### Fallback: absent or empty dirtySetPath
+
+If `dirtySetPath` cannot be read or is malformed, treat the run as a full sweep
+(evaluate all patterns). Never throw — fail-open is the contract.

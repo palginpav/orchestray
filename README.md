@@ -50,12 +50,13 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 - **Pattern learning** — extracts reusable strategies from past orchestrations; patterns are project-local by default and can be shared across projects on the same machine via opt-in federation (`federation.shared_dir_enabled: true`)
 - **Cross-project pattern federation** — `~/.orchestray/shared/patterns/` as machine-local hub; opt-in, sensitivity defaults to `"private"`; share via `/orchestray:learn share`, browse with `/orchestray:learn list --shared`
 - **SQLite FTS5 retrieval** — BM25-ranked pattern lookup replaces Jaccard keyword scan; lazy index build; graceful fallback to Jaccard when native build unavailable (`better-sqlite3 ^11`, Node 22.5+ prefers `node:sqlite`)
-- **AI pattern curator** — `/orchestray:learn curate` runs promote/merge/deprecate with tombstone rollback; undo via `undo-last` or `undo <action-id>`; sacred invariants: `user-correction` patterns never auto-deprecated, `sensitivity: private` patterns never auto-promoted; every action records a `rationale` field for audit; `/orchestray:learn explain <action-id>` shows the curator's reasoning
+- **AI pattern curator** — `/orchestray:learn curate` runs promote/merge/deprecate with tombstone rollback; undo via `undo-last` or `undo <action-id>`; sacred invariants: `user-correction` patterns never auto-deprecated, `sensitivity: private` patterns never auto-promoted; every action records a `rationale` field for audit; `/orchestray:learn explain <action-id>` shows the curator's reasoning; `curate --diff` opt-in incremental mode pre-filters patterns on five signals (stamp-absent, body-hash drift, stale-stamp, rollback-touched, merge-lineage-dirty) — only the dirty subset reaches the curator agent
 - **Pattern health score** — `/orchestray:patterns` dashboard shows a per-pattern health score (`decayed_confidence × usage_boost × freshness_factor × (1-skip_penalty)`) with tiers healthy ≥ 0.60 / stale 0.40–0.59 / needs-attention < 0.40; a `### Needs attention` section surfaces patterns worth curating
 - **Federation tier badges** — `pattern_find` results carry `[local]` / `[shared]` / `[shared, own]` badges in delegation prompts and the `pattern://` resource banner; `promoted_from` and `promoted_is_own` fields make the trust tier auditable in every orchestration; `share --preview` shows the sanitized diff before committing a share
 - **Retrieval match reasons** — `pattern_find` now returns per-term match reasons (`"fts5:term=audit (in context, approach)"`) instead of a flat `"fts5"` label; the keyword fallback path emits `"fallback: keyword"` explicitly
 - **Degraded-mode journal** — silent fallbacks (FTS5 unavailable, flat config keys, curator reconcile flags, hook-merge no-ops, and more) are recorded to `.orchestray/state/degraded.jsonl` (1 MB × 3-gen rotation); `/orchestray:status` surfaces a one-liner when the journal is non-empty; run `/orchestray:doctor` for full diagnostics; run `/orchestray:doctor --deep` to verify all installed file hashes against the manifest
 - **Intelligence bundle (v2.1.3)** — shadow scorer seam runs alternate retrieval ranking side-by-side with baseline (no live ranking change; telemetry in `.orchestray/state/scorer-shadow.jsonl`); MinHash+Jaccard duplicate pre-filter cuts curator attention from O(N²) to O(N+k); `recently_curated_*` frontmatter stamps close the audit loop between curator actions and touched patterns; manifest v2 with per-file SHA-256 hashes enables install-integrity verification via `/orchestray:doctor --deep`
+- **Researcher + curate --diff bundle (v2.1.4)** — new Researcher agent surveys external approaches before Architect/Inventor is spawned, returning a decision-ready shortlist; merge tombstones now carry MinHash similarity parameters (`similarity_method`, `similarity_threshold`, `similarity_k`, `similarity_m`) for reproducible pre-filter replay; `curate --diff` opt-in incremental mode (enable with `curator.diff_enabled: true`) cuts curator cost on stable pattern libraries; self-healing forced-full sweep every 10th run
 - **Team features** — shared config, shared patterns, daily/weekly cost budgets
 - **Agent Teams** — opt-in dual-mode execution for tasks needing inter-agent communication
 - **Prompt tiering** — 3-tier PM prompt architecture, significant token reduction for simple tasks
@@ -155,7 +156,7 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | `/orchestray:workflows` | Manage custom YAML workflow definitions |
 | `/orchestray:federation status` | Show federation enabled/disabled/partial state, shared-dir contents, FTS5 status, and origin attribution |
 | `/orchestray:doctor` | Run 8 health probes (migrations, MCP tools, config keys, FTS5, ABI, degraded journal); emits `doctor-result-code: 0/1/2`; add `--deep` for full install-integrity manifest verification |
-| `/orchestray:learn [id]` | Extract patterns, capture corrections, manage federation sharing (`share` / `unshare` / `list --shared`), curate with AI (`curate` / `undo-last` / `undo <id>`); `explain <action-id>` shows curator rationale; `share --preview` diffs without writing |
+| `/orchestray:learn [id]` | Extract patterns, capture corrections, manage federation sharing (`share` / `unshare` / `list --shared`), curate with AI (`curate` / `curate --diff` / `undo-last` / `undo <id>`); `explain <action-id>` shows curator rationale; `share --preview` diffs without writing |
 | `/orchestray:resume` | Resume interrupted orchestration |
 | `/orchestray:analytics` | Performance stats + pattern dashboard |
 | `/orchestray:patterns` | Pattern effectiveness dashboard |
@@ -173,6 +174,7 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | **Refactorer** | Systematic code transformation without behavior change |
 | **Reviewer** | Read-only review across 7 dimensions: correctness, quality, security, performance, docs, operability, API compatibility |
 | **Security Engineer** | Shift-left security — design threat review and implementation audit (read-only) |
+| **Researcher** | Read-only, web-enabled survey of existing external approaches; returns a decision-ready shortlist for PM to route to Architect or Inventor |
 | **Inventor** | First-principles creation of novel tools, DSLs, and custom solutions with working prototypes |
 | **Debugger** | Systematic bug investigation and root cause analysis (read-only) |
 | **Tester** | Dedicated test writing, coverage analysis, and test strategy |
@@ -281,6 +283,9 @@ curator.enabled                      Enable the AI pattern curator (default: tru
 curator.self_escalation_enabled      Allow curator to escalate uncertain decisions to the user (default: true)
 curator.pm_recommendation_enabled    Allow PM to recommend patterns for curation after orchestrations (default: true)
 curator.tombstone_retention_runs     Number of past curator runs to keep tombstones for (default: 3)
+curator.diff_enabled                 Enable curate --diff incremental mode (default: false — opt-in)
+curator.diff_cutoff_days             Stale-stamp threshold for --diff dirty-set: patterns last curated
+                                     more than this many days ago are treated as dirty (default: 30)
 ```
 
 The `mcp_enforcement` block is automatically added to `.orchestray/config.json` on the first `UserPromptSubmit` after upgrading to 2.0.13+ — no manual migration needed. On 2.0.14+, the same sweep also backfills the `mcp_server.cost_budget_check.pricing_table` block if absent. On 2.0.15+, the sweep additionally seeds the `kb_write` tool enable entry and the `pattern_record_skip_reason` / `cost_budget_check` enforcement keys for existing installs. On 2.0.16+, the sweep seeds `routing_lookup`, `cost_budget_reserve`, `pattern_deprecate`, `max_per_task` defaults (20 each), `cost_budget_enforcement`, `cost_budget_reserve.ttl_minutes`, and `routing_gate.auto_seed_on_miss`. On 2.0.17+, the sweep seeds the `v2017_experiments` block (all flags `"off"`), `adaptive_verbosity`, and `cache_choreography`. On 2.0.18+, the sweep also auto-strips the now-removed `pm_prompt_variant` and `pm_prose_strip` keys (emits a `config_key_stripped` audit event).

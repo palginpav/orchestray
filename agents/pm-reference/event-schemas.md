@@ -2247,6 +2247,9 @@ the full schema). All follow the same `{ schema, timestamp, kind, severity, deta
 | `shadow_scorer_failed` | warn | A shadow scorer threw an exception; baseline scoring was unaffected |
 | `curator_duplicate_detect_failed` | warn | MinHash pre-filter threw; curator fell back to all-pairs |
 | `curator_stamp_apply_failed` | warn | `curator-apply-stamps.js` failed to write stamps for one or more patterns |
+| `curator_diff_cursor_corrupt` | warn | `curate --diff`: stamp present but `body_sha256` missing/malformed; pattern treated as stamp-absent |
+| `curator_diff_hash_compute_failed` | warn | `curate --diff`: could not read/hash pattern body; pattern treated as dirty |
+| `curator_diff_forced_full_triggered` | info | `curate --diff`: self-healing forced a full sweep (run counter % 10 === 0) |
 
 **`detail` fields for `install_integrity_drift`:**
 ```json
@@ -2257,3 +2260,48 @@ the full schema). All follow the same `{ schema, timestamp, kind, severity, deta
   "actual_hash": "<sha256-hex of current file>"
 }
 ```
+
+---
+
+### `curator_diff_rollup` event (v2.1.4)
+
+Emitted to `.orchestray/audit/events.jsonl` at the end of each `curate --diff` run
+(after the `curator_run_complete` event). Absent on full-sweep `curate` runs.
+
+The `dirty_size / corpus_size` ratio is the incremental efficiency proxy — if it
+trends below 0.3 over several runs, `--diff` is meaningfully cheaper than full sweep.
+
+```json
+{
+  "timestamp":     "<ISO-8601-Z>",
+  "type":          "curator_diff_rollup",
+  "run_id":        "<curator-<ISO-8601-with-seconds-Z>>",
+  "mode":          "diff",
+  "corpus_size":   42,
+  "dirty_size":    7,
+  "dirty_breakdown": {
+    "stamp_absent":     3,
+    "body_hash_drift":  2,
+    "stale_stamp":      1,
+    "rollback_touched": 1,
+    "merge_lineage":    0
+  },
+  "actions_applied": {
+    "promote_n":    1,
+    "merge_n":      0,
+    "deprecate_n":  1
+  },
+  "skipped_clean":    35,
+  "forced_full_sweep": false
+}
+```
+
+**Field semantics:**
+- `run_id`: matches `curator_run_complete.run_id` for cross-event joins.
+- `corpus_size`: total `.orchestray/patterns/*.md` count at time of dirty-set computation.
+- `dirty_size`: number of patterns in the dirty set (equal to corpus_size on first run or forced-full).
+- `dirty_breakdown`: per-signal dirty counts; sum equals `dirty_size` (or approximately, if a pattern
+  matched multiple signals — only the first-matching signal is counted).
+- `actions_applied`: counts from the curator agent's structured result (promote/merge/deprecate taken).
+- `skipped_clean`: `corpus_size - dirty_size` — patterns the curator never saw because their stamp was fresh.
+- `forced_full_sweep`: true when the self-healing full-sweep cadence triggered (every 10th `--diff` run).

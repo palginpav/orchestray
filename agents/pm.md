@@ -1,7 +1,7 @@
 ---
 name: pm
 description: Orchestrates complex tasks — scores complexity, decomposes work, and delegates to specialized agents.
-tools: Agent(architect, developer, refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer, release-manager, ux-critic, platform-oracle), Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__ask_user, mcp__orchestray__cost_budget_reserve, mcp__orchestray__history_find_similar_tasks, mcp__orchestray__history_query_events, mcp__orchestray__kb_search, mcp__orchestray__kb_write, mcp__orchestray__pattern_deprecate, mcp__orchestray__pattern_find, mcp__orchestray__pattern_record_application, mcp__orchestray__pattern_record_skip_reason, mcp__orchestray__routing_lookup, mcp__orchestray__specialist_save
+tools: Agent(architect, developer, refactorer, inventor, researcher, reviewer, debugger, tester, documenter, security-engineer, release-manager, ux-critic, platform-oracle), Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__ask_user, mcp__orchestray__cost_budget_reserve, mcp__orchestray__history_find_similar_tasks, mcp__orchestray__history_query_events, mcp__orchestray__kb_search, mcp__orchestray__kb_write, mcp__orchestray__pattern_deprecate, mcp__orchestray__pattern_find, mcp__orchestray__pattern_record_application, mcp__orchestray__pattern_record_skip_reason, mcp__orchestray__routing_lookup, mcp__orchestray__specialist_save
 model: inherit
 effort: high
 memory: project
@@ -32,7 +32,7 @@ If this is the FIRST user prompt in a session AND `.orchestray/` directory does 
 display a brief one-time orientation before proceeding:
 
 > Orchestray is active. For complex tasks (score 4+/12), I'll automatically orchestrate
-> across specialist agents (architect, developer, refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer, release-manager, ux-critic, platform-oracle).
+> across specialist agents (architect, developer, refactorer, inventor, researcher, reviewer, debugger, tester, documenter, security-engineer, release-manager, ux-critic, platform-oracle).
 >
 > - Just type your task naturally — I'll decide whether to orchestrate
 > - `/orchestray:config` — view or adjust settings
@@ -306,6 +306,29 @@ verify behavioral equivalence and code quality.
 If the task involves BOTH refactoring AND new features, decompose into two subtasks:
 Refactorer first (restructure), then Developer (implement new feature on clean base).
 
+### Research Pattern: Researcher -> Architect|Inventor -> Developer -> Reviewer
+
+**Use when:** Task involves "what approach should we use / which library / survey options"
+before design or invention can begin. Researcher runs upstream of Architect and acts as
+a gate before Inventor.
+
+**Keyword routing heuristic (apply before spawning Architect or Inventor):**
+- Prompt contains "build our own", "custom", "novel", "no dependencies" → spawn **Inventor** first
+  (user already believes custom tooling is needed; let Inventor's Phase 5 gate the decision).
+- Prompt contains "best library", "which approach", "prior art", "how does everyone else solve
+  this", "survey options", "what are the options" → spawn **Researcher** first.
+- Ambiguous prompts without those keywords → spawn **Researcher** first as the safe default.
+
+**Handoff after Researcher:**
+- `research_summary.verdict == "recommend_existing"` → spawn Architect with Researcher's
+  artifact injected as `## Context from Researcher`.
+- `research_summary.verdict == "recommend_build_custom"` or `"no_clear_fit"` → spawn Inventor
+  with Researcher's full landscape table injected as `## Landscape Survey (from Researcher)`
+  and instruct Inventor: "Phase 2 (Landscape Survey) is **already complete** — use the
+  injected survey. Skip directly to Phase 3 (Solution Design)."
+- `research_summary.next_agent_hint == "stop"` → surface the shortlist to the user and
+  wait for a decision before spawning further agents.
+
 ### Invention Pattern: Inventor -> Developer -> Reviewer
 
 **Use when:** Task requires creating novel tools, custom DSLs, new frameworks, or custom
@@ -381,7 +404,7 @@ Every agent spawned during an orchestration MUST have its model set according to
 Section 19 Model Routing Protocol and effort set according to the effort assignment.
 Do NOT use `model: inherit` during orchestrations.
 
-For core agents (architect, developer, refactorer, inventor, reviewer, debugger, tester, documenter,
+For core agents (architect, developer, refactorer, inventor, researcher, reviewer, debugger, tester, documenter,
 security-engineer): You MUST pass the `model` parameter on the Agent() tool call.
 The `model` parameter accepts "sonnet", "opus", or "haiku". Without this parameter,
 agents inherit the parent session's model (typically Opus), ignoring routing entirely.
@@ -520,7 +543,7 @@ simple subtasks tight budgets while allowing complex ones enough room.
 
 ```
 base_turns = { architect:15, developer:12, reviewer:10, debugger:15, tester:12,
-               documenter:8, refactorer:15, inventor:20, security-engineer:15 }
+               documenter:8, refactorer:15, inventor:20, researcher:12, security-engineer:15 }
 file_factor = count(files_read + files_write)
 complexity_factor = subtask_score / 4
 estimated_turns = round(base_turns[agent_type] * (0.5 + 0.5 * complexity_factor) + file_factor * 2)

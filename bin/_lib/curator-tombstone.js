@@ -52,14 +52,15 @@
  *       "category":           "<string>",
  *       "skip_penalty":       <number>,       // promote / deprecate
  *       "deprecation_score":  <number|null>,  // deprecate only
- *       "similarity_score":   <number|null>   // merge only (populated by curator
- *                                              //   agent when H3 pre-filter found
- *                                              //   the pair; v2.1.3 ships the
- *                                              //   detector but curator population
- *                                              //   is completed in v2.1.4.)
- *       // Future v2.1.4+: similarity_method ("minhash"), similarity_threshold,
- *       // similarity_k, similarity_m — populated once curator.md is extended
- *       // to emit them on every merge tombstone.
+ *       "similarity_score":   <number|null>,  // merge only (Jaccard hat from H3 shortlist
+ *                                              //   or LLM self-estimate on fallback path)
+ *       // v2.1.4+: four similarity parameters recorded on every merge tombstone so
+ *       // that future diff/reconcile logic can reproduce results.  Absent on v2.1.3
+ *       // tombstones — consumers MUST treat all four fields as possibly-absent.
+ *       "similarity_method":    <string|null>, // "minhash" (only valid value in v2.1.4)
+ *       "similarity_threshold": <number|null>, // Jaccard threshold used (0.6)
+ *       "similarity_k":         <number|null>, // shingle size (5)
+ *       "similarity_m":         <number|null>  // MinHash permutations (128)
  *     },
  *     "guardrails_checked":        ["G3-...", ...],   // guardrail IDs checked
  *     "considered_alternatives":   ["..."],           // rejected alternatives (≤5)
@@ -80,6 +81,8 @@
  *                 age_days, category, skip_penalty. No deprecation_score,
  *                 similarity_score, or adversarial_re_read.
  *     merge:      all promote signals + similarity_score.
+ *                 v2.1.4+: also similarity_method, similarity_threshold, similarity_k,
+ *                 similarity_m (absent on v2.1.3 tombstones — additive, not required).
  *                 adversarial_re_read MUST be present and MUST report passed: true.
  *     deprecate:  all promote signals + deprecation_score.
  *                 considered_alternatives lists close-call patterns not deprecated.

@@ -53,9 +53,12 @@ const KINDS = [
   'install_integrity_drift',         // v2.1.3 Bundle II: per-file hash drift detected at MCP boot
   'manifest_v1_legacy',              // v2.1.3 Bundle II: old v1 manifest (no files_hashes)
   'install_integrity_verify_slow',   // v2.1.3 Bundle II: verify took >2s (performance signal)
-  'curator_duplicate_detect_failed', // v2.1.3 Bundle CI: H3 pre-filter threw; curator fell back to all-pairs
-  'curator_stamp_apply_failed',      // v2.1.3 Bundle CI: H4 post-run stamp apply failed for one pattern
-  'shadow_scorer_failed',            // v2.1.3 Bundle RS: shadow scorer load/run error
+  'curator_duplicate_detect_failed',  // v2.1.3 Bundle CI: H3 pre-filter threw; curator fell back to all-pairs
+  'curator_stamp_apply_failed',       // v2.1.3 Bundle CI: H4 post-run stamp apply failed for one pattern
+  'shadow_scorer_failed',             // v2.1.3 Bundle RS: shadow scorer load/run error
+  'curator_diff_cursor_corrupt',      // v2.1.4 H6: --diff stamp present but missing/malformed body_sha256; treated as stamp-absent
+  'curator_diff_hash_compute_failed', // v2.1.4 H6: could not compute SHA-256 of pattern body; treated as dirty
+  'curator_diff_forced_full_triggered', // v2.1.4 H6: self-healing forced full sweep (run_count % 10 === 0)
   'unknown_kind',
 ];
 

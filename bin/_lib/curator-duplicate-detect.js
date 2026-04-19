@@ -36,12 +36,18 @@ const path = require('node:path');
 // Constants (must match the curator.md §4.2 and §1 design spec)
 // ---------------------------------------------------------------------------
 
-const K                = 5;     // shingle character length
-const M                = 128;   // MinHash permutation count
+const SIMILARITY_METHOD  = 'minhash'; // algorithm identifier — recorded in merge tombstones
+const SIMILARITY_K       = 5;         // shingle character length
+const SIMILARITY_M       = 128;       // MinHash permutation count
+const SIMILARITY_THRESHOLD = 0.6;     // Jaccard threshold, inclusive lower bound
+
+// Internal aliases kept for readability within this file.
+const K                = SIMILARITY_K;
+const M                = SIMILARITY_M;
 // NOTE: MinHash stdev ≈ 1/√M = 1/√128 ≈ 8.8%. Pairs near threshold may be
 // missed; LLM adversarial re-read (curator §4.2 step 2b) backstops. See
 // design doc v213-bundle-CI-design.md §1.1.
-const JACCARD_THRESHOLD = 0.6;  // inclusive lower bound for shortlist inclusion
+const JACCARD_THRESHOLD = SIMILARITY_THRESHOLD;  // inclusive lower bound for shortlist inclusion
 const MIN_SHINGLE_COUNT = 8;    // minimum distinct shingles to be included
 
 // Mersenne prime used in the multiplicative hash family.
@@ -411,6 +417,12 @@ module.exports = {
   buildShortlist,
   buildShortlistForDispatch,
   writeFallbackShortlist,
+  // Similarity parameter constants — imported by curator-tombstone.js to stamp
+  // merge tombstones with the parameters used by the H3 pre-filter (v2.1.4+).
+  SIMILARITY_METHOD,
+  SIMILARITY_K,
+  SIMILARITY_M,
+  SIMILARITY_THRESHOLD,
   // Exported for tests.
   _internal: {
     fnv1a32,

@@ -2067,10 +2067,22 @@ function validateFederationConfig(obj) {
 //   across all N runs. At run N+1, the oldest run is archived to
 //   .orchestray/curator/tombstones-archive/<run_id>.jsonl.
 //
+// curator.diff_enabled — boolean, default false.
+//   Master toggle for the `--diff` flag. Opt-in for v2.1.4; set true to enable
+//   incremental mode. If false, `curate --diff` is rejected with an actionable message.
+//   Promotion to default-on is deferred to v2.2 pending telemetry review.
+//
+// curator.diff_cutoff_days — integer 1..365, default 30.
+//   Patterns whose stamp is older than this many days are re-evaluated even if
+//   the body hash is unchanged (stale-stamp signal). Default 30 (PM arbitration:
+//   design default was 45, PM overrode to 30 for v2.1.4).
+//
 // Keys explicitly EXCLUDED (see ADR .orchestray/kb/decisions/2100b-curator-config-keys.md):
 //   - self_escalation_budget: caps are constants in the curator agent code (W2 F09)
 //   - tombstone_archive_dir: archive location is fixed (.orchestray/curator/tombstones-archive/)
 //   - max_promotes_per_run, max_merges_per_run, max_deprecates_per_run: all constants (W2 F09)
+//   - diff_forced_full_sweep_every: hardcoded at 10 for v2.1.4; promote to config in v2.1.5+ if
+//     telemetry justifies (see bin/_lib/curator-diff.js FORCED_FULL_SWEEP_EVERY).
 // ---------------------------------------------------------------------------
 
 const DEFAULT_CURATOR = Object.freeze({
@@ -2096,6 +2108,19 @@ const DEFAULT_CURATOR = Object.freeze({
    * @type {number}
    */
   tombstone_retention_runs: 3,
+  /**
+   * Enable the `curate --diff` incremental mode (H6, v2.1.4).
+   * Opt-in only for v2.1.4. When false, the --diff flag is rejected.
+   * @type {boolean}
+   */
+  diff_enabled: false,
+  /**
+   * Stamp-age threshold (in days) for the stale-stamp dirty signal in --diff mode.
+   * Patterns stamped more than this many days ago are re-evaluated even if body is unchanged.
+   * Range: 1..365. Default 30.
+   * @type {number}
+   */
+  diff_cutoff_days: 30,
 });
 
 /**
@@ -2105,7 +2130,7 @@ const DEFAULT_CURATOR = Object.freeze({
  * curator still operates at safe defaults rather than crashing.
  *
  * @param {string} cwd - Project root directory (absolute path).
- * @returns {{ enabled: boolean, self_escalation_enabled: boolean, pm_recommendation_enabled: boolean, tombstone_retention_runs: number }}
+ * @returns {{ enabled: boolean, self_escalation_enabled: boolean, pm_recommendation_enabled: boolean, tombstone_retention_runs: number, diff_enabled: boolean, diff_cutoff_days: number }}
  */
 function loadCuratorConfig(cwd) {
   const configPath = path.join(cwd, '.orchestray', 'config.json');
@@ -2138,6 +2163,8 @@ function loadCuratorConfig(cwd) {
       'curator.self_escalation_enabled',
       'curator.pm_recommendation_enabled',
       'curator.tombstone_retention_runs',
+      'curator.diff_enabled',
+      'curator.diff_cutoff_days',
     ];
     const hasFlatKeys = flatKeys.some(k => k in parsed);
     if (!hasFlatKeys) {
@@ -2165,6 +2192,8 @@ function loadCuratorConfig(cwd) {
     if ('curator.self_escalation_enabled'   in parsed) flatObj.self_escalation_enabled   = parsed['curator.self_escalation_enabled'];
     if ('curator.pm_recommendation_enabled' in parsed) flatObj.pm_recommendation_enabled = parsed['curator.pm_recommendation_enabled'];
     if ('curator.tombstone_retention_runs'  in parsed) flatObj.tombstone_retention_runs  = parsed['curator.tombstone_retention_runs'];
+    if ('curator.diff_enabled'              in parsed) flatObj.diff_enabled              = parsed['curator.diff_enabled'];
+    if ('curator.diff_cutoff_days'          in parsed) flatObj.diff_cutoff_days          = parsed['curator.diff_cutoff_days'];
     fromFile = sanitizeConfig(flatObj);
   }
 
@@ -2196,6 +2225,15 @@ function loadCuratorConfig(cwd) {
        merged.tombstone_retention_runs <= 10)
         ? merged.tombstone_retention_runs
         : DEFAULT_CURATOR.tombstone_retention_runs,
+    diff_enabled: typeof merged.diff_enabled === 'boolean'
+      ? merged.diff_enabled
+      : DEFAULT_CURATOR.diff_enabled,
+    diff_cutoff_days:
+      (Number.isInteger(merged.diff_cutoff_days) &&
+       merged.diff_cutoff_days >= 1 &&
+       merged.diff_cutoff_days <= 365)
+        ? merged.diff_cutoff_days
+        : DEFAULT_CURATOR.diff_cutoff_days,
   };
 }
 
@@ -2235,6 +2273,21 @@ function validateCuratorConfig(obj) {
     if (!Number.isInteger(v) || v < 1 || v > 10) {
       errors.push(
         'curator.tombstone_retention_runs must be an integer 1..10 — got ' + JSON.stringify(v)
+      );
+    }
+  }
+
+  if ('diff_enabled' in obj && typeof obj.diff_enabled !== 'boolean') {
+    errors.push(
+      'curator.diff_enabled must be a boolean — got ' + JSON.stringify(obj.diff_enabled)
+    );
+  }
+
+  if ('diff_cutoff_days' in obj) {
+    const v = obj.diff_cutoff_days;
+    if (!Number.isInteger(v) || v < 1 || v > 365) {
+      errors.push(
+        'curator.diff_cutoff_days must be an integer 1..365 — got ' + JSON.stringify(v)
       );
     }
   }

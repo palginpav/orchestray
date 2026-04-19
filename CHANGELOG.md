@@ -5,6 +5,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.1.4] - 2026-04-19
+
+**Researcher core agent, tombstone similarity fields, and `curate --diff` incremental mode.** A new read-only, web-enabled Researcher agent fills the gap between Architect (internal design) and Inventor (novel tools) by surveying existing external approaches before either is spawned. Tombstone merge records now carry the four MinHash constants reserved in v2.1.3, making pre-filter parameters reproducible. `curate --diff` ships as opt-in incremental curation — a dirty-set engine pre-filters patterns on five signals and cuts curator attention on stable libraries to near-zero; every 10th run forces a full sweep for self-healing.
+
+### Added
+
+- **Researcher core agent.** `agents/researcher.md` (337 LOC) — read-only, web-enabled agent that surveys existing external approaches for a stated goal and returns a decision-ready shortlist. Fills the gap between Architect (designs internal integration) and Inventor (builds novel tools from first principles); runs before either when outside-world knowledge is needed. PM routing: "best library / which approach / prior art" → Researcher; ambiguous → Researcher as safe default; "build our own / custom / novel / no deps" → Inventor. Mandatory handoff: if Researcher returns `verdict: recommend_build_custom` or `no_clear_fit`, PM injects the landscape table into the Inventor delegation so Inventor skips its Phase 2 landscape survey.
+- **`research_summary` structured-result extension.** `agents/pm-reference/agent-common-protocol.md` gains the `research_summary` output field for Researcher results. `agents/pm-reference/delegation-templates.md` gains a Researcher Checklist section.
+- **`curate --diff` incremental mode (H6).** Opt-in (`curator.diff_enabled: false` by default). On `/orchestray:learn curate --diff`, `bin/_lib/curator-diff.js` (~435 LOC) pre-filters patterns via five signals: stamp-absent, body-hash drift, stale-stamp (older than `curator.diff_cutoff_days`, default 30 days), rolled-back-action touched, and merge-lineage-dirty. Patterns outside the dirty set are skipped; curator agent only sees the dirty subset.
+- **Forced-full self-healing cadence.** Every 10th `--diff` run is a forced full sweep regardless of stamp freshness, preventing silent stamp rot from accumulating. The `curator_diff_rollup` event's `forced_full_sweep` boolean signals when this fires.
+- **Sixth stamp key `recently_curated_body_sha256`.** Added to `bin/_lib/curator-recently-curated.js`; stripped on federation share alongside the existing 5 stamp keys. Enables body-hash drift detection on subsequent `--diff` runs.
+- **Two new config keys.** `curator.diff_enabled` (default `false` — opt-in) and `curator.diff_cutoff_days` (default `30`) added to `bin/_lib/config-schema.js`.
+- **Three new degraded-journal KINDs.** `curator_diff_cursor_corrupt` (stamp present but `body_sha256` missing/malformed), `curator_diff_hash_compute_failed` (could not read/hash pattern body), `curator_diff_forced_full_triggered` (self-healing forced full sweep). All follow the v2.1.2 journal conventions.
+- **`curator_diff_rollup` event.** Emitted to `events.jsonl` at end of each `curate --diff` run (after `curator_run_complete`). Carries `corpus_size`, `dirty_size`, `dirty_breakdown` (per-signal counts), `actions_applied`, `skipped_clean`, and `forced_full_sweep`. Schema documented in `agents/pm-reference/event-schemas.md §curator_diff_rollup`.
+- **Fifth stamp action value `"evaluated"`.** Recorded in `recently_curated_action` for patterns the curator reviewed but took no action on during a `--diff` run.
+
+### Changed
+
+- **Tombstone similarity fields now populated.** `bin/_lib/curator-tombstone.js` fills the four fields reserved in v2.1.3 (`similarity_method`, `similarity_threshold`, `similarity_k`, `similarity_m`) on every merge tombstone, citing the MinHash constants exported from `bin/_lib/curator-duplicate-detect.js`. v2.1.3 tombstones without these fields remain valid and undoable.
+- **Curator prompt gains `## Incremental Mode (--diff)` section.** Explains dirty-set scoping so the curator agent knows it is operating on a subset and should not treat absent patterns as candidates for deprecation.
+- **`npm test` glob expanded.** The `test` script in `package.json` now includes `bin/_lib/__tests__/*.test.js`, pulling 300 previously-uncovered tests into `npm test`. All passing (7 pre-existing failures in `tests/pattern-find-decay.test.js` unchanged).
+
+### Not in this release
+
+- **`curator_diff_dirty_set_empty` degraded-journal KIND** not yet registered; zero-dirty runs currently reuse `curator_diff_forced_full_triggered`. To be added in v2.1.5.
+- **`v214-curate-diff-design.md` design doc** still lists `diff_cutoff_days: 45`; implementation landed at 30 (PM arbitration). Doc correction deferred to v2.1.5.
+
 ## [2.1.3] - 2026-04-19
 
 **Intelligence — shadow scorers, duplicate pre-filter, recently_curated stamps, and install-integrity manifest + `/orchestray:doctor --deep`.** Three bundles ship together: a pluggable shadow-scorer seam that runs alternate ranking functions side-by-side with the baseline (without ever changing what `pattern_find` returns), a MinHash+Jaccard duplicate pre-filter that cuts curator attention cost from O(N²) to O(N+k), and a manifest-v2 installer that records per-file SHA-256 hashes so `/orchestray:doctor --deep` can verify install integrity at any time. A fourth addition — post-hoc `recently_curated_*` frontmatter stamps — closes the loop between curator actions and the patterns they touch, and federation's `share` command strips the stamps before writing to the shared tier so they never escape the project.

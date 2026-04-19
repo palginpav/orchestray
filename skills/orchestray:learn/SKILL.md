@@ -2,7 +2,7 @@
 name: learn
 description: Extract learning patterns from a completed orchestration
 disable-model-invocation: true
-argument-hint: "[orchestration-id] | share <slug> | unshare <slug> | list [--shared|--all] | curate [--dry-run] | undo-last | undo <action-id> | explain <action-id>"
+argument-hint: "[orchestration-id] | share <slug> | unshare <slug> | list [--shared|--all] | curate [--dry-run] [--diff] | undo-last | undo <action-id> | explain <action-id>"
 ---
 
 # Pattern Extraction
@@ -502,6 +502,10 @@ federation is enabled).
 - `--apply <proposals-file>` — apply a previously-written proposals file. Re-hashes
   current pattern content and skips any action whose input pattern has changed since
   proposal generation (uses `content_sha256` from the proposals file for staleness check).
+- `--diff` — incremental mode (H6, v2.1.4). Computes a dirty set of patterns whose
+  content has changed, never been curated, or aged past `curator.diff_cutoff_days` since
+  their last stamp. The curator agent evaluates the dirty set only. Without this flag,
+  the full-sweep behavior is unchanged. Requires `curator.diff_enabled: true` in config.
 - `--only promote` — restrict this run to promote actions only.
 - `--only merge` — restrict this run to merge actions only.
 - `--only deprecate` — restrict this run to deprecate actions only.
@@ -515,6 +519,9 @@ federation is enabled).
 
 1. **Check config gate:** Read `.orchestray/config.json`. If `curator.enabled` is
    `false`: report "Curator is disabled. Enable with `/orchestray:config set curator.enabled true`." Stop.
+
+   If `--diff` and `--apply` are both set: report
+   `"--diff is incompatible with --apply; --apply replays a dry-run proposal, --diff re-computes from current state."` Stop.
 
 2. **Check corpus:** Glob `.orchestray/patterns/*.md`. If none found: report
    "No patterns to curate. Run `/orchestray:learn [orchestration-id]` to extract patterns first."
@@ -547,6 +554,79 @@ federation is enabled).
     writes an empty shortlist with `"method": "fallback-all-pairs"` and the
     curator proceeds with legacy all-pairs clustering — no curate run is blocked.
 
+3c. **H6 `--diff` dirty-set filter (only if `--diff` flag is set).**
+
+    First, check `curator.diff_enabled` in `.orchestray/config.json`. If `false`:
+    report `"--diff is disabled. Re-enable with /orchestray:config set curator.diff_enabled true, or run without --diff."` Stop.
+
+    ```javascript
+    const path = require('path');
+    const os   = require('os');
+    const { computeDirtySet, incrementRunCounter } = require('./bin/_lib/curator-diff.js');
+    const { recordDegradation } = require('./bin/_lib/degraded-journal.js');
+
+    const cfg = loadCuratorConfig(projectRoot);
+    // TODO(v2.1.5): promote FORCED_FULL_SWEEP_EVERY to curator.diff_forced_full_every if telemetry justifies
+    const FORCED_FULL_SWEEP_EVERY = 10;
+    const runCounterPath = path.join(os.homedir(), '.orchestray', 'state', 'curator-diff-run-counter.json');
+
+    // computeDirtySet internally calls incrementRunCounter and checks the forced-full cadence.
+    const dirty = computeDirtySet({
+      patternsDir:          path.join(projectRoot, '.orchestray', 'patterns'),
+      cutoffDays:           cfg.diff_cutoff_days,
+      runCounterPath,
+      activeTombstonesPath: path.join(projectRoot, '.orchestray', 'curator', 'tombstones.jsonl'),
+    });
+
+    // Surface forced-full info (journal already written by computeDirtySet).
+    if (dirty.forced_full) {
+      // Already recorded to degraded-journal; note in run output.
+    }
+
+    // Filter the H3 shortlist to pairs where at least one side is dirty.
+    const dirtySlugs = new Set(dirty.dirty.map(p => path.basename(p, '.md')));
+    const shortlistData = readShortlist(shortlistPath);  // already read from step 3b
+    const filteredPairs = (shortlistData.shortlist || []).filter(
+      ({ a, b }) => dirtySlugs.has(a) || dirtySlugs.has(b)
+    );
+    writeDirtySetShortlist(shortlistPath, filteredPairs, runId);
+
+    // Handle the zero-dirty case (happy path — nothing to curate).
+    if (dirty.dirty.length === 0) {
+      const maxStampAt = _maxStampAt(dirty.clean);
+      report `"Curate --diff: 0 patterns changed since last curate. No action. (Last curate: ${maxStampAt})"`;
+      // Journal the zero-dirty observation as an info event (healthy signal for doctor).
+      // Using curator_diff_forced_full_triggered with severity:info as the closest available
+      // info-kind; a dedicated curator_diff_dirty_set_empty kind is deferred to v2.1.5.
+      recordDegradation({
+        kind:     'curator_diff_forced_full_triggered',
+        severity: 'info',
+        detail:   { corpus_size: dirty.corpus_size, dirty_size: 0, dedup_key: 'curator_diff_empty|' + runId },
+      });
+      process.exit(0);  // Skip curator spawn entirely — no run_id tombstone needed.
+    }
+
+    // Report.
+    if (dirty.dirty.length === dirty.corpus_size) {
+      report `"Curate --diff: ${dirty.dirty.length} patterns dirty / ${dirty.corpus_size} total (first run — all patterns evaluated)."`;
+    } else {
+      report `"Curate --diff: ${dirty.dirty.length} patterns dirty / ${dirty.corpus_size} total. Evaluating subset only."`;
+    }
+
+    // Write the dirty-set context file for the curator agent (§4.6 of agents/curator.md).
+    const dirtySetPath = path.join(projectRoot, '.orchestray', 'curator', `diff-set-${runId}.json`);
+    fs.writeFileSync(dirtySetPath, JSON.stringify({
+      mode:        'diff',
+      run_id:      runId,
+      dirty:       dirty.dirty.map(p => path.basename(p, '.md')),
+      corpus_size: dirty.corpus_size,
+      breakdown:   dirty.breakdown,
+      forced_full: dirty.forced_full,
+    }), 'utf8');
+    ```
+
+    Pass `dirtySetPath` to the curator agent in step 4 below.
+
 4. **Spawn the curator agent** using the `Agent()` mechanism (same as other slash
    commands). Pass the following context to the curator agent's system prompt:
    - `runId` (from step 3)
@@ -554,6 +634,7 @@ federation is enabled).
    - `--only` constraint (if set)
    - Project root path
    - Path to active tombstones file
+   - `dirtySetPath` (from step 3c, if `--diff` was set)
 
    The curator agent's decision logic (promote / merge / deprecate criteria, safety
    invariants, adversarial re-read for merges, federation-absent graceful degradation,
@@ -574,12 +655,50 @@ federation is enabled).
     <error>. Run `/orchestray:learn list-tombstones` and verify actions manually."
 
 4c. **H4 stamp-apply** (skip for dry-run): after reconciliation, run:
+
+    For full-sweep runs (no `--diff`):
     ```
     node bin/curator-apply-stamps.js <runId> [projectRoot]
     ```
+
+    For `--diff` runs, also pass the curator's `evaluated_slugs` list from its structured result:
+    ```
+    node bin/curator-apply-stamps.js <runId> [projectRoot] --evaluated-slugs <JSON-array-of-slugs>
+    ```
+    The `evaluated_slugs` are all slugs the curator agent reasoned over (from its structured result).
+    Patterns in that list that had no tombstone action receive an `action: "evaluated"` stamp so the
+    next `--diff` run sees them as clean.
+
     This applies `recently_curated_*` frontmatter stamps to patterns touched by the run.
     Failures are non-fatal and journaled to `.orchestray/state/degraded.jsonl`.
     Include in the final report: "Stamps: N applied, M skipped, K failed."
+
+    For `--diff` runs, after stamp-apply, emit the `curator_diff_rollup` event to
+    `.orchestray/audit/events.jsonl`:
+    ```json
+    {
+      "timestamp":     "<ISO-8601-Z>",
+      "type":          "curator_diff_rollup",
+      "run_id":        "<runId>",
+      "mode":          "diff",
+      "corpus_size":   <dirty.corpus_size>,
+      "dirty_size":    <dirty.dirty.length>,
+      "dirty_breakdown": {
+        "stamp_absent":     <dirty.breakdown.stamp_absent>,
+        "body_hash_drift":  <dirty.breakdown.body_hash_drift>,
+        "stale_stamp":      <dirty.breakdown.stale_stamp>,
+        "rollback_touched": <dirty.breakdown.rollback_touched>,
+        "merge_lineage":    <dirty.breakdown.merge_lineage>
+      },
+      "actions_applied": {
+        "promote_n":    <from curator structured result>,
+        "merge_n":      <from curator structured result>,
+        "deprecate_n":  <from curator structured result>
+      },
+      "skipped_clean":    <dirty.clean.length>,
+      "forced_full_sweep": <dirty.forced_full>
+    }
+    ```
 
 5. **Print summary** from the curator agent's structured result. Required format:
    ```
@@ -613,6 +732,9 @@ federation is enabled).
 /orchestray:learn curate --only merge
 /orchestray:learn curate --only promote,deprecate
 /orchestray:learn curate --apply .orchestray/curator/proposals-2026-04-17T143500Z.md
+/orchestray:learn curate --diff
+/orchestray:learn curate --diff --dry-run
+/orchestray:learn curate --diff --only promote
 ```
 
 **Example output (auto-apply, success):**
