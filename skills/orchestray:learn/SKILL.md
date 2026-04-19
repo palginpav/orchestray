@@ -566,14 +566,13 @@ federation is enabled).
     const { recordDegradation } = require('./bin/_lib/degraded-journal.js');
 
     const cfg = loadCuratorConfig(projectRoot);
-    // TODO(v2.1.5): promote FORCED_FULL_SWEEP_EVERY to curator.diff_forced_full_every if telemetry justifies
-    const FORCED_FULL_SWEEP_EVERY = 10;
     const runCounterPath = path.join(os.homedir(), '.orchestray', 'state', 'curator-diff-run-counter.json');
 
     // computeDirtySet internally calls incrementRunCounter and checks the forced-full cadence.
     const dirty = computeDirtySet({
       patternsDir:          path.join(projectRoot, '.orchestray', 'patterns'),
       cutoffDays:           cfg.diff_cutoff_days,
+      forcedFullEvery:      cfg.diff_forced_full_every,
       runCounterPath,
       activeTombstonesPath: path.join(projectRoot, '.orchestray', 'curator', 'tombstones.jsonl'),
     });
@@ -595,13 +594,11 @@ federation is enabled).
     if (dirty.dirty.length === 0) {
       const maxStampAt = _maxStampAt(dirty.clean);
       report `"Curate --diff: 0 patterns changed since last curate. No action. (Last curate: ${maxStampAt})"`;
-      // Journal the zero-dirty observation as an info event (healthy signal for doctor).
-      // Using curator_diff_forced_full_triggered with severity:info as the closest available
-      // info-kind; a dedicated curator_diff_dirty_set_empty kind is deferred to v2.1.5.
+      // Journal the zero-dirty event as an info signal for /orchestray:doctor.
       recordDegradation({
-        kind:     'curator_diff_forced_full_triggered',
+        kind:     'curator_diff_dirty_set_empty',
         severity: 'info',
-        detail:   { corpus_size: dirty.corpus_size, dirty_size: 0, dedup_key: 'curator_diff_empty|' + runId },
+        detail:   { corpus_size: dirty.corpus_size, run_id: runId, dedup_key: 'curator_diff_dirty_set_empty|' + runId },
       });
       process.exit(0);  // Skip curator spawn entirely — no run_id tombstone needed.
     }

@@ -3,7 +3,37 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [2.1.5] - 2026-04-19
+
+Quality and correctness pass for the `curate --diff` incremental mode that shipped in v2.1.4, plus a real-bug fix for a misleading health warning that every v2.1.4 install was journaling on boot. One new config knob. No breaking changes.
+
+### Added
+
+- **Efficiency panel in `/orchestray:patterns`.** After you run `/orchestray:learn curate --diff` a few times, the patterns dashboard now shows a new section that tells you whether the incremental mode is actually saving curator work — per-run corpus and dirty ratios, action counts, and (once at least three `--diff` runs have accumulated) an overall GOOD / OK / LOW efficiency tag. If you have never run `--diff`, the panel shows a one-line hint pointing at the command.
+- **New config key `curator.diff_forced_full_every` in `.orchestray/config.json`.** `curate --diff` always runs a full sweep every Nth invocation as a self-healing safety net. `N` was hardcoded at 10 in v2.1.4; you can now tune it (integer 1..1000, default 10). Raise it if you run `--diff` very frequently and want fewer forced full sweeps; lower it if you want tighter staleness protection.
+
+### Changed
+
+- **`curate --diff` "nothing to do" now reports honestly.** When the dirty set is empty (every pattern has been curated recently and nothing has changed), the zero-work case now journals a distinct event instead of pretending a forced-full sweep fired. This was a v2.1.4 workaround — the dedicated signal did not exist yet. `/orchestray:doctor` analysis of forced-full events becomes unambiguous: it only shows up when a real forced sweep happened.
+
+### Fixed
+
+- **Phantom "install integrity drift" warning on every boot.** v2.1.4 installs journaled a fake health warning at every MCP server boot claiming 169 plugin files were missing and 2 had drifted. None of it was real — the integrity check was looking in the wrong directory. The warning is gone. Tests have been added to catch this class of regression if the install layout ever shifts again. No user action needed; the next `/orchestray:doctor --deep` run on a v2.1.5 install will report clean.
+- **`curate --diff` design-doc corrections.** The internal design doc in the knowledge base had two drift issues: the default for `curator.diff_cutoff_days` was documented as `45` but shipped at `30`, and a degraded-journal signal was listed under its draft name `curator_diff_stamp_corrupt` instead of the shipped name `curator_diff_cursor_corrupt`. Both fixed — operators reading the design to understand the signals they see in `degraded.jsonl` will no longer chase phantom names. An inline code comment that mentioned "cursor" terminology has also been clarified (there is no cursor file; "cursor" refers to the body-hash field inside each pattern's stamp).
+- **`curator_diff_forced_full_triggered` event-schema description.** The table entry in `event-schemas.md` still said the trigger was a hardcoded `% 10 === 0`. Now that the cadence is configurable via `curator.diff_forced_full_every`, the description reflects the variable-N formulation.
+
+### Under the hood (quality)
+
+These do not change what you see, but keep the project healthy:
+
+- **Test-isolation hardening.** Six test files were silently environment-dependent — they exercised pattern lookup without opting out of the real `~/.orchestray/shared/` federation directory, so their pass/fail could drift based on what was in your personal shared tier. A new global test-setup hook now opts every test file out of the real shared directory, and a guard test fails loudly if the wiring is ever removed. This caught one real pre-existing test failure during v2.1.5 work and hardens all future tests.
+- **Release-checklist correctness.** The release-manager agent's pre-publish checklist used to name `manifest.json` as the Claude Code plugin manifest file. The actual file is `.claude-plugin/plugin.json` — as a result, v2.1.4 shipped with that file one version behind `package.json` (a parity test was the only thing that caught it). The checklist now names the correct path and adds an explicit parity check as a hard block before commit. CHANGELOG style guidance in the agent now also requires user-readable prose — this entry is the first written under that rule.
+
+### Not in this release
+
+- **Config validation for per-task MCP limits (`max_per_task` keys).** Still a backlog item, targeted for v2.1.6 with its own small fix spec. Non-blocking — the default per-task limits continue to work correctly; this would only matter if you are overriding them in `.orchestray/config.json`.
+- **Schema validation via `zod`.** Adding stricter validation for MCP enforcement config requires introducing a new runtime dependency. Patch releases do not add runtime dependencies; revisit in v2.2 if the dependency policy is relaxed.
+- **Cross-machine federation sync, per-pattern privacy flag, team-scope federation.** Carried over from the v2.1.3 and v2.1.4 roadmap — these are v2.2 / v2.3 features. v2.1.x continues to share patterns across projects on a single machine only.
 
 ## [2.1.4] - 2026-04-19
 
@@ -26,11 +56,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - **Tombstone similarity fields now populated.** `bin/_lib/curator-tombstone.js` fills the four fields reserved in v2.1.3 (`similarity_method`, `similarity_threshold`, `similarity_k`, `similarity_m`) on every merge tombstone, citing the MinHash constants exported from `bin/_lib/curator-duplicate-detect.js`. v2.1.3 tombstones without these fields remain valid and undoable.
 - **Curator prompt gains `## Incremental Mode (--diff)` section.** Explains dirty-set scoping so the curator agent knows it is operating on a subset and should not treat absent patterns as candidates for deprecation.
 - **`npm test` glob expanded.** The `test` script in `package.json` now includes `bin/_lib/__tests__/*.test.js`, pulling 300 previously-uncovered tests into `npm test`. All passing (7 pre-existing failures in `tests/pattern-find-decay.test.js` unchanged).
-
-### Not in this release
-
-- **`curator_diff_dirty_set_empty` degraded-journal KIND** not yet registered; zero-dirty runs currently reuse `curator_diff_forced_full_triggered`. To be added in v2.1.5.
-- **`v214-curate-diff-design.md` design doc** still lists `diff_cutoff_days: 45`; implementation landed at 30 (PM arbitration). Doc correction deferred to v2.1.5.
 
 ## [2.1.3] - 2026-04-19
 

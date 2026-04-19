@@ -656,6 +656,7 @@ function main() {
     const pluginRoot = paths.getPluginRoot();
     verifyManifestOnBoot({
       rootDir:     pluginRoot,
+      fileRootDir: path.dirname(pluginRoot),
       projectRoot: process.cwd(),
     });
     // Return value intentionally ignored — journal has the record.

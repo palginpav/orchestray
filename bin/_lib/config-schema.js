@@ -2081,8 +2081,7 @@ function validateFederationConfig(obj) {
 //   - self_escalation_budget: caps are constants in the curator agent code (W2 F09)
 //   - tombstone_archive_dir: archive location is fixed (.orchestray/curator/tombstones-archive/)
 //   - max_promotes_per_run, max_merges_per_run, max_deprecates_per_run: all constants (W2 F09)
-//   - diff_forced_full_sweep_every: hardcoded at 10 for v2.1.4; promote to config in v2.1.5+ if
-//     telemetry justifies (see bin/_lib/curator-diff.js FORCED_FULL_SWEEP_EVERY).
+//   - (diff_forced_full_every promoted to config in v2.1.5 — see DEFAULT_CURATOR below)
 // ---------------------------------------------------------------------------
 
 const DEFAULT_CURATOR = Object.freeze({
@@ -2121,6 +2120,13 @@ const DEFAULT_CURATOR = Object.freeze({
    * @type {number}
    */
   diff_cutoff_days: 30,
+  /**
+   * Cadence for the self-healing forced-full sweep in --diff mode.
+   * Every Nth --diff run evaluates the entire corpus regardless of dirty-set signals.
+   * Range: 1..1000. Default 10.
+   * @type {number}
+   */
+  diff_forced_full_every: 10,
 });
 
 /**
@@ -2130,7 +2136,7 @@ const DEFAULT_CURATOR = Object.freeze({
  * curator still operates at safe defaults rather than crashing.
  *
  * @param {string} cwd - Project root directory (absolute path).
- * @returns {{ enabled: boolean, self_escalation_enabled: boolean, pm_recommendation_enabled: boolean, tombstone_retention_runs: number, diff_enabled: boolean, diff_cutoff_days: number }}
+ * @returns {{ enabled: boolean, self_escalation_enabled: boolean, pm_recommendation_enabled: boolean, tombstone_retention_runs: number, diff_enabled: boolean, diff_cutoff_days: number, diff_forced_full_every: number }}
  */
 function loadCuratorConfig(cwd) {
   const configPath = path.join(cwd, '.orchestray', 'config.json');
@@ -2165,6 +2171,7 @@ function loadCuratorConfig(cwd) {
       'curator.tombstone_retention_runs',
       'curator.diff_enabled',
       'curator.diff_cutoff_days',
+      'curator.diff_forced_full_every',
     ];
     const hasFlatKeys = flatKeys.some(k => k in parsed);
     if (!hasFlatKeys) {
@@ -2194,6 +2201,7 @@ function loadCuratorConfig(cwd) {
     if ('curator.tombstone_retention_runs'  in parsed) flatObj.tombstone_retention_runs  = parsed['curator.tombstone_retention_runs'];
     if ('curator.diff_enabled'              in parsed) flatObj.diff_enabled              = parsed['curator.diff_enabled'];
     if ('curator.diff_cutoff_days'          in parsed) flatObj.diff_cutoff_days          = parsed['curator.diff_cutoff_days'];
+    if ('curator.diff_forced_full_every'    in parsed) flatObj.diff_forced_full_every    = parsed['curator.diff_forced_full_every'];
     fromFile = sanitizeConfig(flatObj);
   }
 
@@ -2234,6 +2242,12 @@ function loadCuratorConfig(cwd) {
        merged.diff_cutoff_days <= 365)
         ? merged.diff_cutoff_days
         : DEFAULT_CURATOR.diff_cutoff_days,
+    diff_forced_full_every:
+      (Number.isInteger(merged.diff_forced_full_every) &&
+       merged.diff_forced_full_every >= 1 &&
+       merged.diff_forced_full_every <= 1000)
+        ? merged.diff_forced_full_every
+        : DEFAULT_CURATOR.diff_forced_full_every,
   };
 }
 
@@ -2288,6 +2302,15 @@ function validateCuratorConfig(obj) {
     if (!Number.isInteger(v) || v < 1 || v > 365) {
       errors.push(
         'curator.diff_cutoff_days must be an integer 1..365 — got ' + JSON.stringify(v)
+      );
+    }
+  }
+
+  if ('diff_forced_full_every' in obj) {
+    const v = obj.diff_forced_full_every;
+    if (!Number.isInteger(v) || v < 1 || v > 1000) {
+      errors.push(
+        'curator.diff_forced_full_every must be an integer 1..1000 — got ' + JSON.stringify(v)
       );
     }
   }

@@ -193,7 +193,15 @@ function verifyManifest(rootDir, manifest) {
  * Boot-time convenience wrapper. Reads manifest.json from rootDir, verifies,
  * journals any non-ok result. Never throws. Return value is informational.
  *
- * @param {{ rootDir: string, projectRoot?: string }} opts
+ * @param {{
+ *   rootDir:      string,           // Where manifest.json and VERSION live (pluginRoot).
+ *   fileRootDir?: string,           // Where tracked files live (targetDir = parent of pluginRoot).
+ *                                   // When omitted, falls back to rootDir — preserving backward
+ *                                   // compatibility for test fixtures that co-locate all files.
+ *                                   // In production the two directories differ: manifest lives at
+ *                                   // ~/.claude/orchestray/ while tracked files live at ~/.claude/.
+ *   projectRoot?: string,
+ * }} opts
  * @returns {object}  Same shape as verifyManifest, plus { journaled: boolean, kind: string|null }
  */
 function verifyManifestOnBoot(opts) {
@@ -205,6 +213,7 @@ function verifyManifestOnBoot(opts) {
 
   try {
     const rootDir     = (opts && opts.rootDir)     || '';
+    const fileRootDir = (opts && opts.fileRootDir) || rootDir;
     const projectRoot = (opts && opts.projectRoot) || process.cwd();
 
     // Read the server version for dedup keys.
@@ -238,8 +247,10 @@ function verifyManifestOnBoot(opts) {
       return result;
     }
 
-    // Verify.
-    const result = verifyManifest(rootDir, manifest);
+    // Verify. fileRootDir is the root where tracked files live (may differ from
+    // rootDir when the manifest lives inside a plugin subdirectory, e.g. production
+    // layout: manifest at ~/.claude/orchestray/, files at ~/.claude/).
+    const result = verifyManifest(fileRootDir, manifest);
 
     const elapsedMs = Date.now() - startMs;
 

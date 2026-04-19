@@ -457,6 +457,55 @@ describe('computeDirtySet', () => {
     assert.equal(result.dirty.length, 1);
     assert.equal(result.breakdown.rollback_touched, 1);
   });
+
+  test('16. overridden forcedFullEvery=5 triggers forced-full at run 5', () => {
+    const tmp  = newTmp();
+    const { patternsDir, curatorDir, stateDir } = mkProject(tmp);
+    const counterPath = path.join(stateDir, 'curator-diff-run-counter.json');
+    // Pre-set counter to 4; next increment (5) triggers forced-full when every=5.
+    fs.writeFileSync(counterPath, JSON.stringify({ run_count: 4 }), 'utf8');
+
+    const body   = 'body\n';
+    const recent = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString();
+    writePattern(patternsDir, 'pat-a', body, { at: recent, action: 'promote', body_sha256: 'AUTO' });
+
+    const result = computeDirtySet({
+      patternsDir,
+      cutoffDays:           30,
+      forcedFullEvery:      5,
+      runCounterPath:       counterPath,
+      activeTombstonesPath: path.join(curatorDir, 'tombstones.jsonl'),
+    });
+
+    assert.equal(result.forced_full, true, 'should be forced full at run 5 when every=5');
+    assert.equal(result.dirty.length, result.corpus_size);
+    const counterAfter = JSON.parse(fs.readFileSync(counterPath, 'utf8'));
+    assert.equal(counterAfter.run_count, 5);
+  });
+
+  test('17. forcedFullEvery=5: run 4 is NOT forced full', () => {
+    const tmp  = newTmp();
+    const { patternsDir, curatorDir, stateDir } = mkProject(tmp);
+    const counterPath = path.join(stateDir, 'curator-diff-run-counter.json');
+    // Pre-set counter to 3; next increment (4) should NOT trigger forced-full when every=5.
+    fs.writeFileSync(counterPath, JSON.stringify({ run_count: 3 }), 'utf8');
+
+    const body   = 'body\n';
+    const recent = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString();
+    writePattern(patternsDir, 'pat-a', body, { at: recent, action: 'promote', body_sha256: 'AUTO' });
+
+    const result = computeDirtySet({
+      patternsDir,
+      cutoffDays:           30,
+      forcedFullEvery:      5,
+      runCounterPath:       counterPath,
+      activeTombstonesPath: path.join(curatorDir, 'tombstones.jsonl'),
+    });
+
+    assert.equal(result.forced_full, false, 'run 4 should not be forced full when every=5');
+    const counterAfter = JSON.parse(fs.readFileSync(counterPath, 'utf8'));
+    assert.equal(counterAfter.run_count, 4);
+  });
 });
 
 // ---------------------------------------------------------------------------

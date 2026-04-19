@@ -292,7 +292,7 @@ function _journalHashFailed(absPath) {
 // computeDirtySet
 // ---------------------------------------------------------------------------
 
-// TODO(v2.1.5): promote to curator.diff_forced_full_every if telemetry justifies
+// Fallback default when config value is absent or not passed (backwards compat).
 const FORCED_FULL_SWEEP_EVERY = 10;
 
 /**
@@ -305,6 +305,7 @@ const FORCED_FULL_SWEEP_EVERY = 10;
  *   forceFull?:           boolean,   — override: treat all patterns as dirty
  *   activeTombstonesPath: string,    — absolute path to tombstones.jsonl
  *   now?:                 Date,      — override for tests; defaults to new Date()
+ *   forcedFullEvery?:     number,    — curator.diff_forced_full_every (default: 10 constant)
  * }} opts
  * @returns {{
  *   dirty:        string[],    — absolute paths of dirty patterns
@@ -328,6 +329,7 @@ function computeDirtySet(opts) {
     activeTombstonesPath,
     forceFull: forcedFull = false,
     now: nowOverride,
+    forcedFullEvery,
   } = opts;
 
   const now = nowOverride || new Date();
@@ -364,7 +366,10 @@ function computeDirtySet(opts) {
     os.homedir(), '.orchestray', 'state', 'curator-diff-run-counter.json'
   );
   const runCount  = incrementRunCounter(runCounterPath);
-  const isForcedFull = forcedFull || (runCount % FORCED_FULL_SWEEP_EVERY === 0);
+  const sweepEvery = (Number.isInteger(forcedFullEvery) && forcedFullEvery >= 1)
+    ? forcedFullEvery
+    : FORCED_FULL_SWEEP_EVERY;
+  const isForcedFull = forcedFull || (runCount % sweepEvery === 0);
 
   if (isForcedFull) {
     try {

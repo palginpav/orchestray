@@ -61,9 +61,10 @@ The user wants to see the pattern learning dashboard showing what the system has
    - `replan`: count per orchestration
    - `pattern_pruned`: extract `name`, `confidence`, `times_applied`, orchestration ID, timestamp
    - `pattern_skip_enriched`: collect into a Map keyed by `pattern_name` (used for health score skip penalty)
+   - `curator_diff_rollup`: collect all into an array (used for Section 4 — Curate --diff Efficiency)
 
 4. **Route by argument**:
-   - If a pattern name was provided: go to step 12 (single pattern detail view).
+   - If a pattern name was provided: go to step 13 (single pattern detail view).
    - If `team` was specified: filter loaded patterns to team scope only, then continue to step 5.
    - If no arguments: continue to step 5 with all patterns.
 
@@ -155,7 +156,41 @@ The user wants to see the pattern learning dashboard showing what the system has
 
    Sort by date descending (most recent first). Show last 20 orchestrations maximum.
 
-8. **Section 4 -- Confidence Trajectory**: Show how each pattern's confidence has changed.
+8. **Section 4 — Curate `--diff` Efficiency**: Surface efficiency telemetry for incremental curation runs.
+
+   Use the `curator_diff_rollup` events collected in step 3.
+
+   If no `curator_diff_rollup` events are present:
+   ```
+   ### Section 4 — Curate --diff Efficiency
+
+   No `curate --diff` runs yet. Run `/orchestray:learn curate --diff` to start collecting efficiency telemetry.
+   ```
+
+   Otherwise, for each event (sort by `timestamp` ascending), display a row:
+   - **Run ID**: first 8 chars of `run_id` (e.g. `curator-`)
+   - **Corpus / Dirty**: `{corpus_size} / {dirty_size}` and ratio as `({pct}%)` where `pct = (dirty_size / corpus_size * 100).toFixed(1)` (show `0.0%` when `corpus_size === 0`)
+   - **Actions**: `promote: {promote_n}, merge: {merge_n}, deprecate: {deprecate_n}` from `actions_applied`
+   - **Full sweep**: `yes` if `forced_full_sweep === true`, `no` otherwise
+
+   ```
+   ### Section 4 — Curate --diff Efficiency
+
+   | Run ID   | Corpus / Dirty (%) | Actions                           | Full sweep |
+   |----------|--------------------|-----------------------------------|------------|
+   | {run_id} | {corpus} / {dirty} ({pct}%) | promote: {N}, merge: {N}, deprecate: {N} | {yes/no} |
+   ```
+
+   Show at most the last 20 runs (most recent last).
+
+   If there are 3 or more runs, compute the average `dirty_size / corpus_size` ratio across all runs and append a trend line:
+   - avg < 0.30 → `[GOOD] Average dirty ratio {avg_pct}% — --diff is saving significant curator work.`
+   - avg 0.30–0.60 → `[OK] Average dirty ratio {avg_pct}% — --diff is providing moderate savings.`
+   - avg > 0.60 → `[LOW] Average dirty ratio {avg_pct}% — most patterns are dirty each run; --diff savings are limited.`
+
+   Skip `corpus_size === 0` runs when computing the average ratio.
+
+9. **Section 5 -- Confidence Trajectory**: Show how each pattern's confidence has changed.
 
    Determine initial confidence by category convention:
    - decomposition, routing, specialization: 0.50
@@ -181,7 +216,7 @@ The user wants to see the pattern learning dashboard showing what the system has
 
    Format initial, current, and change to 2 decimal places. Prefix change with + or -.
 
-9. **Section 5 -- Estimated Impact**: Show estimated savings from pattern applications.
+10. **Section 6 -- Estimated Impact**: Show estimated savings from pattern applications.
 
    Calculation:
    - **Corrections preventing re-occurrence**: Count `pattern_applied` events where category is `correction` or `user-correction`, AND no `verify_fix_attempt` event occurred for the same agent in the same orchestration. Each prevented round estimated at ~$0.15.
@@ -206,7 +241,7 @@ The user wants to see the pattern learning dashboard showing what the system has
    orchestrations. Run `/orchestray:learn` to extract patterns from past orchestrations.
    ```
 
-10. **Section 6 -- Pruning History**: Show patterns removed by the pruning system.
+11. **Section 7 -- Pruning History**: Show patterns removed by the pruning system.
 
     Search event history for `pattern_pruned` events.
 
@@ -228,7 +263,7 @@ The user wants to see the pattern learning dashboard showing what the system has
     Total pruned: {N} patterns removed to maintain the 50-pattern cap.
     ```
 
-11. **Section 7 -- Actionable Recommendations**: Generate heuristic-based suggestions.
+12. **Section 8 -- Actionable Recommendations**: Generate heuristic-based suggestions.
 
     Check these conditions and display matching recommendations:
 
@@ -250,7 +285,7 @@ The user wants to see the pattern learning dashboard showing what the system has
     No specific recommendations at this time. The pattern library is healthy.
     ```
 
-12. **Single Pattern Detail View** (when a pattern name was provided in arguments):
+13. **Single Pattern Detail View** (when a pattern name was provided in arguments):
 
     Find the pattern file matching the provided name (match against the `name` frontmatter field, case-insensitive). If not found, show "Pattern '{name}' not found. Run `/orchestray:patterns` to see all available patterns." and stop.
 
@@ -297,14 +332,14 @@ The user wants to see the pattern learning dashboard showing what the system has
 
     If no events, show: "No application events recorded for this pattern."
 
-12b. **Section 8 — Retrieval Shadow Scorer Agreement**: shown after Section 7.
+13b. **Section 9 — Retrieval Shadow Scorer Agreement**: shown after Section 8.
 
     Read `.orchestray/state/scorer-shadow.jsonl` (and `.orchestray/state/scorer-shadow.1.jsonl`,
     `.2.jsonl` if they exist). If the file does not exist, or `retrieval.shadow_scorers` is empty
     in `.orchestray/config.json` (or the config file is absent), show:
 
     ```
-    ### Section 8 — Retrieval Shadow Scorer Agreement
+    ### Section 9 — Retrieval Shadow Scorer Agreement
 
     Shadow scorers not enabled. See `retrieval.shadow_scorers` in `.orchestray/config.json`.
     Example: {"retrieval": {"shadow_scorers": ["skip-down", "local-success"]}}
@@ -326,7 +361,7 @@ The user wants to see the pattern learning dashboard showing what the system has
     Display format:
 
     ```
-    ### Section 8 — Retrieval Shadow Scorer Agreement
+    ### Section 9 — Retrieval Shadow Scorer Agreement
 
     Last {N} pattern_find calls ({date_range}, {scorer_count} scorer(s) enabled).
 
@@ -347,7 +382,7 @@ The user wants to see the pattern learning dashboard showing what the system has
     and show "—". Format `kendall_tau` to 2 decimal places. If fewer than 5 rows exist,
     note "(insufficient data for reliable aggregation)".
 
-13. **Edge cases**:
+14. **Edge cases**:
     - If `.orchestray/history/` does not exist or is empty: skip all event-based sections, show pattern metadata only with notes that no history is available.
     - If `.orchestray/team-patterns/` does not exist: treat team pattern count as 0.
     - If `team` filter is specified but no team patterns exist: show "No team patterns found. Promote local patterns with `/orchestray:learn promote <name>`." and stop.

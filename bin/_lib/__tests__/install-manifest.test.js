@@ -581,3 +581,97 @@ describe('boot-never-throws', () => {
     assert.strictEqual(typeof result, 'object');
   });
 });
+
+// ---------------------------------------------------------------------------
+// boot-split-root-layout  (regression: v2.1.4 false-positive 169 missing)
+// ---------------------------------------------------------------------------
+//
+// Production layout:
+//   <tmp>/parent/
+//     agents/pm.md            <- tracked file, key "agents/pm.md"
+//     skills/foo/bar.md       <- tracked file, key "skills/foo/bar.md"
+//     orchestray/             <- pluginRoot (rootDir)
+//       manifest.json
+//       VERSION
+//       bin/baz.js            <- tracked file, key "orchestray/bin/baz.js"
+//
+// The manifest keys are relative to parent/ (targetDir = fileRootDir).
+// The manifest.json itself lives inside orchestray/ (pluginRoot = rootDir).
+// When fileRootDir is provided, verify must use it; when omitted, the bug
+// reproduces (missing_count > 0).
+
+describe('boot-split-root-layout', () => {
+  test('fileRootDir resolves tracked files from parent dir: ok:true, zero missing/drifted', () => {
+    const parentDir    = makeTmp();
+    const pluginRoot   = path.join(parentDir, 'orchestray');
+    const projDir      = makeTmp();
+    fs.mkdirSync(path.join(projDir, '.orchestray', 'state'), { recursive: true });
+
+    // Seed tracked files relative to parentDir.
+    seedFiles(parentDir, {
+      'agents/pm.md':         '# PM\n',
+      'skills/foo/bar.md':    '# Skill\n',
+      'orchestray/bin/baz.js': '"use strict";\n',
+    });
+
+    const mod = freshModule();
+
+    // Compute manifest with parentDir as root (mirrors install.js behaviour).
+    const tracked = ['agents/pm.md', 'skills/foo/bar.md', 'orchestray/bin/baz.js'];
+    const hashResult = mod.computeManifest(parentDir, tracked);
+    const manifest   = wrapManifest(hashResult.files_hashes);
+
+    // Write manifest.json and VERSION inside pluginRoot (orchestray/).
+    fs.mkdirSync(pluginRoot, { recursive: true });
+    fs.writeFileSync(path.join(pluginRoot, 'manifest.json'), JSON.stringify(manifest), 'utf8');
+    fs.writeFileSync(path.join(pluginRoot, 'VERSION'),       '2.1.4\n', 'utf8');
+
+    // Call with split-root: rootDir = pluginRoot, fileRootDir = parentDir.
+    const result = mod.verifyManifestOnBoot({
+      rootDir:     pluginRoot,
+      fileRootDir: parentDir,
+      projectRoot: projDir,
+    });
+
+    assert.strictEqual(result.ok,            true,  'ok should be true for clean split-root layout');
+    assert.strictEqual(result.missing.length, 0,    'no missing files');
+    assert.strictEqual(result.drifted.length, 0,    'no drifted files');
+    assert.strictEqual(result.supported,      true);
+  });
+
+  test('without fileRootDir, bug reproduces: missing_count > 0 (fix is load-bearing)', () => {
+    const parentDir  = makeTmp();
+    const pluginRoot = path.join(parentDir, 'orchestray');
+    const projDir    = makeTmp();
+    fs.mkdirSync(path.join(projDir, '.orchestray', 'state'), { recursive: true });
+
+    // Same fixture as above.
+    seedFiles(parentDir, {
+      'agents/pm.md':          '# PM\n',
+      'skills/foo/bar.md':     '# Skill\n',
+      'orchestray/bin/baz.js': '"use strict";\n',
+    });
+
+    const mod = freshModule();
+
+    const tracked    = ['agents/pm.md', 'skills/foo/bar.md', 'orchestray/bin/baz.js'];
+    const hashResult = mod.computeManifest(parentDir, tracked);
+    const manifest   = wrapManifest(hashResult.files_hashes);
+
+    fs.mkdirSync(pluginRoot, { recursive: true });
+    fs.writeFileSync(path.join(pluginRoot, 'manifest.json'), JSON.stringify(manifest), 'utf8');
+    fs.writeFileSync(path.join(pluginRoot, 'VERSION'),       '2.1.4\n', 'utf8');
+
+    // Call WITHOUT fileRootDir — this is the pre-fix behaviour.
+    const result = mod.verifyManifestOnBoot({
+      rootDir:     pluginRoot,
+      projectRoot: projDir,
+    });
+
+    // The bug: files are looked up inside pluginRoot instead of parentDir.
+    assert.ok(
+      result.missing.length > 0,
+      'without fileRootDir the pre-fix bug causes false missing entries'
+    );
+  });
+});

@@ -286,6 +286,9 @@ curator.tombstone_retention_runs     Number of past curator runs to keep tombsto
 curator.diff_enabled                 Enable curate --diff incremental mode (default: false — opt-in)
 curator.diff_cutoff_days             Stale-stamp threshold for --diff dirty-set: patterns last curated
                                      more than this many days ago are treated as dirty (default: 30)
+curator.diff_forced_full_every       Forced-full-sweep cadence for --diff: every Nth run evaluates the
+                                     entire corpus regardless of dirty-set signals (integer 1..1000,
+                                     default: 10)
 ```
 
 The `mcp_enforcement` block is automatically added to `.orchestray/config.json` on the first `UserPromptSubmit` after upgrading to 2.0.13+ — no manual migration needed. On 2.0.14+, the same sweep also backfills the `mcp_server.cost_budget_check.pricing_table` block if absent. On 2.0.15+, the sweep additionally seeds the `kb_write` tool enable entry and the `pattern_record_skip_reason` / `cost_budget_check` enforcement keys for existing installs. On 2.0.16+, the sweep seeds `routing_lookup`, `cost_budget_reserve`, `pattern_deprecate`, `max_per_task` defaults (20 each), `cost_budget_enforcement`, `cost_budget_reserve.ttl_minutes`, and `routing_gate.auto_seed_on_miss`. On 2.0.17+, the sweep seeds the `v2017_experiments` block (all flags `"off"`), `adaptive_verbosity`, and `cache_choreography`. On 2.0.18+, the sweep also auto-strips the now-removed `pm_prompt_variant` and `pm_prose_strip` keys (emits a `config_key_stripped` audit event).

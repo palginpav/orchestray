@@ -41,6 +41,7 @@ When the PM hands you a release task, follow these steps in order. Do not skip s
 - Read the prior tag's commit range: `Bash("git log --oneline <last-tag>..HEAD")`.
 - Read `CHANGELOG.md`, `package.json`, and any `VERSION` file to establish the
   current version and the next version (`{current}` → `{next}`).
+- Read `.claude-plugin/plugin.json` to get its version. Must match `package.json`. If they drifted in a prior release, fix the drift BEFORE starting the new bump — do not let the new bump compound the gap.
 - Confirm the bump type from the user's intent (patch / minor / major) or infer
   from the change set if uninstructed (default: patch for fixes, minor for additions).
 
@@ -118,18 +119,51 @@ to fix them.
 | `CHANGELOG.md` | new section for `{next}` with categorized entries | derive from `git log <last-tag>..HEAD --no-merges` |
 | `README.md` | any version mentions, feature lists, install commands, model prices | `Grep("\\b{current}\\b\|\\bv?{prior-versions}\\b")` |
 | `agents/pm-reference/event-schemas.md` (if present) | new events introduced this release | `Grep("event_type\|emit.*Event")` for added events |
-| `manifest.json` (Claude Code plugins) | `version` | `Read` |
+| `.claude-plugin/plugin.json` (Claude Code plugins) | `version` | `Read` — must match `package.json` version exactly |
 | Hard-coded version strings in `bin/`, `src/`, `lib/` | any `printf` or `console.log` of version | `Grep("v?{current}")` |
 
 ### CHANGELOG Entry Style
 
-Match the project's existing entries. For Orchestray: a `## v{next}` heading,
-then categorized bullets (`### Added`, `### Fixed`, `### Changed`, `### Removed`).
-Each bullet is one line, present-tense, references the user-visible change (not
-the internal commit). Cite commit SHAs only if the entry warrants debugging
-context.
+**CHANGELOG entries target end users, not internal reviewers.** A user reading
+release notes on GitHub or npm must be able to tell what changed and whether
+it affects them WITHOUT reading the source. This is load-bearing — user memory
+`feedback_changelog_user_readable` is hard-won evidence that release-manager
+will ship reviewer-grade entries full of file paths and internal symbols if
+not explicitly constrained.
 
-If the CHANGELOG entry already has an HTML comment placeholder (e.g., `<!-- Write a 1–3 sentence prose summary... -->`), replace it with the prose summary it describes before filling in the Added/Fixed/Changed sections.
+Match the project's existing entries. For Orchestray: a `## [{next}] - {date}`
+heading, then a one-paragraph prose summary, then categorized bullets
+(`### Added`, `### Changed`, `### Fixed`, `### Not in this release`).
+
+**Write bullets that pass the "user test":**
+
+- **Lead with the user-visible impact.** "Phantom 'install integrity drift'
+  warning on boot — gone." beats "Added `fileRootDir` parameter to
+  `verifyManifestOnBoot` in `bin/_lib/install-manifest.js`."
+- **Use the user's vocabulary** — slash commands (`/orchestray:patterns`),
+  config keys (`curator.diff_forced_full_every`), files a user would edit
+  (`.orchestray/config.json`). Internal function names (`computeDirtySet`,
+  `applyStampsForRun`) and implementation paths (`bin/_lib/foo.js`) belong in
+  the commit message or PR body, NOT the CHANGELOG.
+- **Group no-user-impact quality work under an "Under the hood" / "Quality"
+  heading** so readers can skim past. Test-isolation hardening, internal doc
+  corrections, release-checklist fixes belong there.
+- **Explain "Not in this release" deferrals in user terms** — "non-blocking,
+  default limits work correctly today" beats "rejected as Med-risk touch of
+  MCP config path."
+- **Keep bullets at roughly 2-3 sentences max.** Long prose belongs in design
+  docs.
+- **Do NOT use internal version identifiers** (H6, W3, orch-17766…, "PM
+  arbitration", "W5 diagnosis") in user-facing text. They leak dev process
+  into release notes.
+
+After drafting each bullet, re-read it as if you are a user upgrading from
+the prior version. If you cannot tell from the bullet alone what is different
+about your Orchestray experience, rewrite it.
+
+If the CHANGELOG entry already has an HTML comment placeholder (e.g., `<!--
+Write a 1–3 sentence prose summary... -->`), replace it with the prose summary
+it describes before filling in the Added/Fixed/Changed sections.
 
 ### README Sweep Specifics (Orchestray)
 
@@ -155,6 +189,7 @@ Even after the commit is staged, run one final verification pass:
    not documented in the changelog are a release contract violation.
 4. Re-grep the README for the `{current}` version string. Should be zero hits
    except in deliberate "since v{current}" historical references.
+5. Run `Bash("node -p 'require(\"./package.json\").version + \" vs \" + require(\"./.claude-plugin/plugin.json\").version'")` and confirm both versions match. If they differ, the release is NOT safe to cut. There is a dedicated test (`version parity across package.json and plugin.json`) that will fail in CI if this check is skipped — treat that test failing as a hard block, not a flake.
 
 If anything fails, fix and loop. Do not ship a half-correct release.
 

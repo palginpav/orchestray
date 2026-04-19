@@ -2249,7 +2249,8 @@ the full schema). All follow the same `{ schema, timestamp, kind, severity, deta
 | `curator_stamp_apply_failed` | warn | `curator-apply-stamps.js` failed to write stamps for one or more patterns |
 | `curator_diff_cursor_corrupt` | warn | `curate --diff`: stamp present but `body_sha256` missing/malformed; pattern treated as stamp-absent |
 | `curator_diff_hash_compute_failed` | warn | `curate --diff`: could not read/hash pattern body; pattern treated as dirty |
-| `curator_diff_forced_full_triggered` | info | `curate --diff`: self-healing forced a full sweep (run counter % 10 === 0) |
+| `curator_diff_forced_full_triggered` | info | `curate --diff`: self-healing forced a full sweep (run counter % N === 0 where N = `curator.diff_forced_full_every`, default 10) |
+| `curator_diff_dirty_set_empty` | info | `curate --diff`: entire corpus is clean; no patterns dirty, no curator spawn |
 
 **`detail` fields for `install_integrity_drift`:**
 ```json

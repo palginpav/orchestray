@@ -1,6 +1,6 @@
 {
   "name": "orchestray",
-  "version": "2.1.4",
+  "version": "2.1.5",
   "description": "Multi-agent orchestration plugin for Claude Code",
   "bin": {
     "orchestray": "bin/install.js"
@@ -21,7 +21,7 @@
     "better-sqlite3": "^11"
   },
   "scripts": {
-    "test": "node --test tests/*.test.js tests/hooks/*.test.js tests/mcp-server/*.test.js tests/mcp-server/lib/*.test.js tests/mcp-server/tools/*.test.js tests/mcp-server/resources/*.test.js tests/mcp-server/elicit/*.test.js tests/regression/*.test.js tests/telemetry/*.test.js tests/unit/*.test.js bin/_lib/__tests__/*.test.js",
+    "test": "node --require ./tests/helpers/setup.js --test tests/*.test.js tests/helpers/*.test.js tests/hooks/*.test.js tests/mcp-server/*.test.js tests/mcp-server/lib/*.test.js tests/mcp-server/tools/*.test.js tests/mcp-server/resources/*.test.js tests/mcp-server/elicit/*.test.js tests/regression/*.test.js tests/telemetry/*.test.js tests/unit/*.test.js bin/_lib/__tests__/*.test.js",
     "postinstall": "node -e \"try { require('better-sqlite3') } catch (e) { console.warn('better-sqlite3 not available; FTS5 will be unavailable. Ensure build tools are present or use Node 22.5+'); }\""
   },
   "keywords": [

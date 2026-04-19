@@ -47,6 +47,7 @@ describe('W1 — records correct schema and shape', () => {
     'shared_dir_create_failed',
     'curator_reconcile_flagged',
     'config_load_failed',
+    'curator_diff_dirty_set_empty',
   ];
 
   for (const kind of KINDS) {

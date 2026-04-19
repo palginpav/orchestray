@@ -335,3 +335,60 @@ for (const section of SECTIONS) {
     });
   });
 }
+
+describe('curator config — diff_forced_full_every', () => {
+  beforeEach(() => {
+    _flatDeprecationWarned.clear();
+  });
+
+  test('defaults to 10 when absent from config', () => {
+    const dir = makeTmpProject({ curator: { enabled: true } });
+    try {
+      const cfg = loadCuratorConfig(dir);
+      assert.equal(cfg.diff_forced_full_every, 10);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('round-trips a valid value (25)', () => {
+    const dir = makeTmpProject({ curator: { diff_forced_full_every: 25 } });
+    try {
+      const cfg = loadCuratorConfig(dir);
+      assert.equal(cfg.diff_forced_full_every, 25);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('out-of-range value (0) falls back to default 10', () => {
+    const dir = makeTmpProject({ curator: { diff_forced_full_every: 0 } });
+    try {
+      const cfg = loadCuratorConfig(dir);
+      assert.equal(cfg.diff_forced_full_every, 10, 'out-of-range 0 should fall back to default');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('out-of-range value (1001) falls back to default 10', () => {
+    const dir = makeTmpProject({ curator: { diff_forced_full_every: 1001 } });
+    try {
+      const cfg = loadCuratorConfig(dir);
+      assert.equal(cfg.diff_forced_full_every, 10, 'out-of-range 1001 should fall back to default');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('flat-key curator.diff_forced_full_every round-trips', () => {
+    _flatDeprecationWarned.clear();
+    const dir = makeTmpProject({ 'curator.diff_forced_full_every': 7 });
+    try {
+      const cfg = loadCuratorConfig(dir);
+      assert.equal(cfg.diff_forced_full_every, 7);
+    } finally {
+      cleanup(dir);
+    }
+  });
+});

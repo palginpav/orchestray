@@ -56,9 +56,10 @@ const KINDS = [
   'curator_duplicate_detect_failed',  // v2.1.3 Bundle CI: H3 pre-filter threw; curator fell back to all-pairs
   'curator_stamp_apply_failed',       // v2.1.3 Bundle CI: H4 post-run stamp apply failed for one pattern
   'shadow_scorer_failed',             // v2.1.3 Bundle RS: shadow scorer load/run error
-  'curator_diff_cursor_corrupt',      // v2.1.4 H6: --diff stamp present but missing/malformed body_sha256; treated as stamp-absent
+  'curator_diff_cursor_corrupt',      // v2.1.4 H6: --diff stamp present but missing/malformed body_sha256 (the "cursor" is the body-hash field inside the stamp; no cursor file exists per design §2); treated as stamp-absent
   'curator_diff_hash_compute_failed', // v2.1.4 H6: could not compute SHA-256 of pattern body; treated as dirty
   'curator_diff_forced_full_triggered', // v2.1.4 H6: self-healing forced full sweep (run_count % 10 === 0)
+  'curator_diff_dirty_set_empty',        // v2.1.5 H6: zero-dirty short-circuit; entire corpus is clean, no curator spawn
   'unknown_kind',
 ];
 

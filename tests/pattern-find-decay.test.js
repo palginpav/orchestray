@@ -13,13 +13,29 @@
  * in config → global default (90 days).
  */
 
-const { test, describe } = require('node:test');
+const { test, describe, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 
 const { handle } = require('../bin/mcp-server/tools/pattern_find.js');
+
+// Disable shared-tier federation for all decay tests.
+// getSharedPatternsDir() reads ORCHESTRAY_TEST_SHARED_DIR and bypasses the
+// enabled check. Pointing it at a nonexistent path ensures the readdirSync
+// in handle() gets ENOENT and skips the shared tier entirely.
+let _prevSharedDir;
+before(() => {
+	_prevSharedDir = process.env.ORCHESTRAY_TEST_SHARED_DIR;
+	process.env.ORCHESTRAY_TEST_SHARED_DIR = path.join(
+		os.tmpdir(), 'orchestray-decay-no-shared-' + process.pid
+	);
+});
+after(() => {
+	if (_prevSharedDir === undefined) delete process.env.ORCHESTRAY_TEST_SHARED_DIR;
+	else process.env.ORCHESTRAY_TEST_SHARED_DIR = _prevSharedDir;
+});
 
 // ---------------------------------------------------------------------------
 // Fixtures
