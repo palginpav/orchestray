@@ -509,6 +509,32 @@ async function handle(input, context) {
     return rest;
   });
 
+  // === RS v2.1.3: shadow scorer seam ===
+  // Fire-and-forget. No await. Any throw inside is caught by the harness.
+  // `top` is fully materialised before this call; the harness receives `scored`
+  // (pre-slice, includes _score) read-only. Baseline wins architecturally:
+  // the shadow call has no return value and cannot affect `top`.
+  // At config defaults (shadow_scorers: []) this is a no-op after one config read.
+  try {
+    const { maybeRunShadowScorers } = require('../../_lib/scorer-shadow');
+    maybeRunShadowScorers({
+      query:        taskSummary,
+      baselineScored: scored,        // Full scored[] (not sliced). Harness reads slugs + _score.
+      candidates:   index,           // Same array baseline looped over.
+      inputContext: {
+        projectRoot,
+        agentRole,
+        fileGlobs,
+        nowMs,
+      },
+      maxResults,                    // For top-K window clamping.
+    });
+  } catch (_e) {
+    // Belt-and-braces: the harness itself fails open. This catch handles the
+    // (extremely unlikely) case of the module failing to load.
+  }
+  // === END shadow scorer seam ===
+
   return toolSuccess({
     matches: top,
     considered,

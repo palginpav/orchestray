@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 
 const { recordDegradation } = require('./_lib/degraded-journal');
+const { computeManifest }  = require('./_lib/install-manifest');
 
 const VERSION = require('../package.json').version;
 const REPO = 'https://github.com/palginpav/orchestray';
@@ -603,8 +604,28 @@ function install(targetDir) {
     }
   }
 
-  // 8. Write manifest for clean uninstall
+  // 8. Write manifest for clean uninstall.
+  // Compute per-file SHA-256 hashes for all tracked files (manifest schema v2).
+  // Excluded from hashing: manifest.json itself (cannot self-hash).
+  // The EXCLUDED_FROM_HASH set is the forward-compat hook for paths that should
+  // not be hashed (e.g., user-mutable settings). Currently empty — all
+  // trackedFiles are hashed.
+  const EXCLUDED_FROM_HASH = new Set([]);
+  const hashableFiles = trackedFiles.filter(p => !EXCLUDED_FROM_HASH.has(p));
+
+  let hashResult;
+  try {
+    hashResult = computeManifest(targetDir, hashableFiles);
+  } catch (err) {
+    console.error(
+      `\n  \x1b[31m✗\x1b[0m Install integrity hash failed: ${err.message}\n` +
+      `    This indicates a partial or corrupted copy. Re-run the installer.\n`
+    );
+    process.exit(1);
+  }
+
   const manifest = {
+    manifest_schema: 2,
     version: VERSION,
     installedAt: new Date().toISOString(),
     scope: flags.local ? 'local' : 'global',
@@ -613,7 +634,10 @@ function install(targetDir) {
     skills: skillDirs,
     hooks: binFiles,
     mcpServers: mcpServerNames,
-    files: trackedFiles, // DEF-5: per-file manifest for precise uninstall
+    files: trackedFiles, // DEF-5: per-file manifest for precise uninstall (array preserved for v1 compat)
+    files_hashes:       hashResult.files_hashes,
+    hash_algorithm:     hashResult.hash_algorithm,
+    hash_normalization: hashResult.hash_normalization,
   };
   fs.writeFileSync(
     path.join(targetDir, 'orchestray', 'manifest.json'),

@@ -575,6 +575,14 @@ async function promotePattern(slug, options = {}) {
   delete sharedFrontmatter.created_from;
   delete sharedFrontmatter.last_applied;
   delete sharedFrontmatter.times_applied;
+  // H4 (v2.1.3): strip recently_curated_* stamp keys — these are project-local
+  // run IDs and timestamps; leaking them to the shared tier would pollute
+  // cross-project federation data.
+  delete sharedFrontmatter.recently_curated_at;
+  delete sharedFrontmatter.recently_curated_action;
+  delete sharedFrontmatter.recently_curated_action_id;
+  delete sharedFrontmatter.recently_curated_run_id;
+  delete sharedFrontmatter.recently_curated_why;
 
   // -------------------------------------------------------------------------
   // Stage 5: Prompt-injection defense (W6 F11)

@@ -52,7 +52,14 @@
  *       "category":           "<string>",
  *       "skip_penalty":       <number>,       // promote / deprecate
  *       "deprecation_score":  <number|null>,  // deprecate only
- *       "similarity_score":   <number|null>   // merge only
+ *       "similarity_score":   <number|null>   // merge only (populated by curator
+ *                                              //   agent when H3 pre-filter found
+ *                                              //   the pair; v2.1.3 ships the
+ *                                              //   detector but curator population
+ *                                              //   is completed in v2.1.4.)
+ *       // Future v2.1.4+: similarity_method ("minhash"), similarity_threshold,
+ *       // similarity_k, similarity_m — populated once curator.md is extended
+ *       // to emit them on every merge tombstone.
  *     },
  *     "guardrails_checked":        ["G3-...", ...],   // guardrail IDs checked
  *     "considered_alternatives":   ["..."],           // rejected alternatives (≤5)
@@ -220,10 +227,25 @@ function appendJsonlAtomic(filePath, row) {
  * Reverse a single tombstone action by restoring the file content snapshot(s).
  * Tolerates tombstones whose output has already been removed (idempotent).
  *
+ * Post-restore, unconditionally calls stripRecentlyCurated() on each restored
+ * path (H4 v2.1.3). The snapshot is pre-action content; the stamp was written
+ * post-snapshot. Restoring the snapshot already erases the stamp for merge/deprecate.
+ * For promote, the snapshot may not contain the stamp (only the stamp was written),
+ * so the explicit strip is belt-and-suspenders for that case.
+ *
  * @param {object} tombstone - A single tombstone row.
  */
 function applyRollback(tombstone) {
   if (!tombstone || !Array.isArray(tombstone.inputs)) return;
+
+  // Lazy-require to avoid circular deps; safe because this module is loaded
+  // after curator-recently-curated.js during normal operation.
+  let stripRecentlyCurated;
+  try {
+    stripRecentlyCurated = require('./curator-recently-curated.js').stripRecentlyCurated;
+  } catch (_) {
+    stripRecentlyCurated = null;
+  }
 
   for (const input of tombstone.inputs) {
     if (!input.path || input.content_snapshot === undefined) continue;
@@ -253,6 +275,15 @@ function applyRollback(tombstone) {
         );
       } catch (_) {}
       try { fs.unlinkSync(tmp); } catch (_) {}
+      continue; // skip strip if restore failed
+    }
+
+    // H4: strip recently_curated_* stamp from the restored file (belt-and-suspenders).
+    // Rationale: snapshot is pre-action content; stamp was written post-snapshot.
+    // Restoring naturally removes the stamp for merge/deprecate; for promote the
+    // local file only received the stamp (no body change), so explicit strip needed.
+    if (stripRecentlyCurated) {
+      try { stripRecentlyCurated(absPath); } catch (_) { /* best-effort */ }
     }
   }
 }

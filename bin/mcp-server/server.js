@@ -48,6 +48,7 @@ const {
 const { handleAskUser } = require('./elicit/ask_user');
 const { toolError } = require('./lib/tool-result');
 const { recordDegradation } = require('../_lib/degraded-journal');
+const { verifyManifestOnBoot } = require('../_lib/install-manifest');
 
 // Stage 2 tool handlers
 const patternDeprecate = require('./tools/pattern_deprecate');
@@ -645,6 +646,22 @@ function main() {
   }
 
   const config = loadConfig();
+
+  // Fail-open install-integrity verify (non-fatal; runs inline before the
+  // ready banner). Drift (if any) is journaled to .orchestray/state/degraded.jsonl
+  // and surfaced via /orchestray:doctor --deep. The outer try/catch is
+  // belt-and-suspenders: verifyManifestOnBoot itself must never throw, but a
+  // bug in it must not kill the MCP server.
+  try {
+    const pluginRoot = paths.getPluginRoot();
+    verifyManifestOnBoot({
+      rootDir:     pluginRoot,
+      projectRoot: process.cwd(),
+    });
+    // Return value intentionally ignored — journal has the record.
+  } catch (_e) {
+    // MUST NEVER THROW. Defensive swallow.
+  }
 
   const rl = readline.createInterface({
     input: process.stdin,

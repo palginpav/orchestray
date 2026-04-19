@@ -5,6 +5,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.1.3] - 2026-04-19
+
+**Intelligence — shadow scorers, duplicate pre-filter, recently_curated stamps, and install-integrity manifest + `/orchestray:doctor --deep`.** Three bundles ship together: a pluggable shadow-scorer seam that runs alternate ranking functions side-by-side with the baseline (without ever changing what `pattern_find` returns), a MinHash+Jaccard duplicate pre-filter that cuts curator attention cost from O(N²) to O(N+k), and a manifest-v2 installer that records per-file SHA-256 hashes so `/orchestray:doctor --deep` can verify install integrity at any time. A fourth addition — post-hoc `recently_curated_*` frontmatter stamps — closes the loop between curator actions and the patterns they touch, and federation's `share` command strips the stamps before writing to the shared tier so they never escape the project.
+
+### Added
+
+- **Shadow scorer seam — Bundle RS.** `bin/_lib/scorer-shadow.js` adds a pluggable rank-comparison seam to `pattern_find`. After the baseline result set is materialized and sliced, shadow scorers receive a clone of the candidates, re-rank them independently, and emit agreement telemetry (Kendall tau-b, top-K overlap, displacement) to `.orchestray/state/scorer-shadow.jsonl` (1 MB × 3-gen rotation). Shadow runs are fire-and-forget via `setImmediate`; the return value is never captured and cannot reach the MCP response. Baseline scoring is byte-identical to v2.1.2 at default config.
+- **Skip-signal down-ranking scorer — Bundle RS.** `bin/_lib/scorer-skip-down.js` computes a Laplace-smoothed penalty from `contextual-mismatch` and `superseded` skip events. Ships shadow-only in v2.1.3; activate by adding `"skip-down"` to `retrieval.shadow_scorers` (default: `[]`).
+- **Local success-rate boost scorer — Bundle RS.** `bin/_lib/scorer-local-success.js` applies a positive personalization boost from `pattern_record_application` events. Ships shadow-only in v2.1.3; activate by adding `"local-success"` to `retrieval.shadow_scorers`.
+- **Shadow scorer dashboard — Bundle RS.** `/orchestray:patterns` gains a new Section 8 that aggregates `.orchestray/state/scorer-shadow.jsonl` telemetry: per-scorer tau-b distribution, mean displacement, and top-K overlap rate.
+- **MinHash+Jaccard duplicate pre-filter — Bundle CI.** `bin/_lib/curator-duplicate-detect.js` detects near-duplicate pattern pairs (k=5 shingles, m=128 permutations, Jaccard threshold=0.6) before curator attention, reducing O(N²) comparisons to O(N+k). On detector failure the curator falls back to all-pairs with a `curator_duplicate_detect_failed` degraded-journal entry.
+- **`recently_curated_*` frontmatter stamps — Bundle CI.** After every curator run the SKILL dispatcher calls `bin/curator-apply-stamps.js <runId>` to write 5 dotted-prefix keys (`recently_curated_at`, `recently_curated_action`, `recently_curated_action_id`, `recently_curated_run_id`, `recently_curated_why`) into each touched pattern's frontmatter. Stamps use REPLACE semantics on re-stamp. `curator undo` strips all 5 keys on rollback. `share` strips all 5 keys before the shared-tier write so stamps never leak to federation peers.
+- **Manifest v2 with per-file hashes — Bundle II.** `bin/_lib/install-manifest.js` now writes `manifest_schema: 2` and a `files_hashes: { "<rel/path>": "<sha256>" }` map into `manifest.json` at install time. Additive — v1 consumers keep working. On MCP server boot, `verifyManifestOnBoot` checks hashes fail-open: drift is journaled as `install_integrity_drift` and boot continues; no exception is ever thrown.
+- **`/orchestray:doctor --deep` flag — Bundle II.** The existing doctor skill gains an opt-in `--deep` flag that runs full manifest verification against `files_hashes`. Without `--deep`, v2.1.2 behavior is unchanged (8 probes, fast). With `--deep`, a ninth probe verifies every file hash and reports any drifted paths.
+- **6 new degraded-journal KINDS.** `install_integrity_drift`, `manifest_v1_legacy`, `install_integrity_verify_slow`, `shadow_scorer_failed`, `curator_duplicate_detect_failed`, `curator_stamp_apply_failed`. All follow the v2.1.2 journal conventions (1-KB line cap, never throws).
+
+### Changed
+
+- **`retrieval.scorer_variant` config key.** Enum-locked to `"baseline"` in v2.1.3. The seam accepts alternate values but the resolver does not activate any non-baseline scorer via this key yet. Use `retrieval.shadow_scorers` to add shadow scorers without changing the live ranking path.
+
+### Not in this release
+
+Items held for v2.2+ after shadow telemetry has real data:
+
+- **`curate --diff` incremental mode (H6, v2.2)** — changed-since-last-run cursor; needs H1 + rationale stable in the wild first.
+- **Structured query expansion / synonym tables (H7, v2.2)** — benefits compound once shadow eval (H1) is in place.
+- **Cross-machine federation sync (H8, v2.2)** — single-machine only; needs its own design doc.
+- **Per-pattern privacy flag (H9, v2.2)** — `federation.sensitivity` remains per-project for now.
+- **Team / multi-user federation (H10, v2.3+)** — blocked on security review.
+
+v2.1.4 candidates (once shadow scorers accumulate real telemetry): promote `skip-down` or `local-success` from shadow to live ranking; wire `similarity_method`/`threshold`/`k`/`m` into merge tombstones.
+
 ## [2.1.2] - 2026-04-19
 
 **Observability — you can now see federation tier, curator reasoning, retrieval matches, and silent fallbacks.** Four bundles ship together: federation tier badges on every pattern retrieval, curator `rationale` and `explain` for auditing curation decisions, per-term `match_reasons` so you know why a pattern surfaced, and a degraded-mode journal plus `/orchestray:doctor` to surface silent fallbacks before they cause confusion.

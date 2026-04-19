@@ -204,11 +204,19 @@ candidate's frontmatter. A pattern whose frontmatter contains `merged_from:` **c
 be a merge candidate** in this run. This blocks compounding merge loops. Re-merging
 a previously-merged pattern requires an explicit user request (future subcommand).
 
-**Candidate detection.** Read all patterns in the tier. Cluster semantically similar
-patterns using LLM reasoning (read-all-then-cluster). Patterns that share a core
-approach, apply to the same situation, and would give the same decomposition guidance
-are merge candidates. FTS5 keyword matching is not sufficient for this; semantic
-judgment is required.
+**Candidate detection.** Before clustering, read the deterministic similarity
+shortlist at `.orchestray/curator/similarity-<runId>.json` (written by the SKILL
+dispatcher before your spawn). Its `shortlist[]` array lists every pair whose
+MinHash Jaccard ≥ 0.6 — these are the ONLY pairs worth evaluating as merge
+candidates. If the file is absent, empty, or contains
+`"method": "fallback-all-pairs"`, revert to the legacy read-all-then-cluster
+approach over the full corpus.
+
+For every shortlisted pair, apply the same-category, `merged_from:`, and adversarial
+re-read constraints from below. Record the `jaccard` value in
+`rationale.signals.similarity_score` on any resulting merge tombstone. Patterns NOT
+in the shortlist are assumed non-duplicate — do not spend attention re-reading them
+pairwise. A cluster of size 1 is not a merge, as before.
 
 **Constraints:**
 - Same-category-only. Cross-category merges are unconditionally forbidden.
@@ -463,6 +471,10 @@ after the fact.
   `adversarial_re_read` MUST be present and MUST report `passed: true`. A
   `passed: false` re-read blocks the merge before any tombstone is written — no
   rationale needed for actions not taken.
+  For merge actions, `similarity_score` MUST be populated from the H3 shortlist
+  row's `jaccard` field when the merge originated from a shortlist pair. For merges
+  where the shortlist was absent (fallback path), set the score to the LLM's own
+  similarity self-estimate (0–1) as before.
 
 - **deprecate**: all promote signals PLUS `deprecation_score` (the numeric value
   of the formula in §4.3). `considered_alternatives` should list any close-call

@@ -2242,6 +2242,253 @@ function validateCuratorConfig(obj) {
   return errors.length === 0 ? { valid: true } : { valid: false, errors };
 }
 
+// ---------------------------------------------------------------------------
+// retrieval section defaults and loader (RS v2.1.3)
+//
+// retrieval.scorer_variant — enum "baseline", default "baseline".
+//   v2.1.3 ships only "baseline"; other values warn + coerce back to baseline.
+//   Future releases will open the enum when shadow telemetry is reviewed.
+//
+// retrieval.shadow_scorers — array of strings, default [].
+//   Names of scorers to run alongside the primary in shadow mode.
+//   Shadow scorers emit telemetry only and NEVER affect pattern_find output.
+//   Valid names (v2.1.3): "skip-down", "local-success".
+//
+// retrieval.top_k — integer 1..50, default 10.
+//   Window size for rank-agreement telemetry (Kendall tau, displacement).
+//
+// retrieval.jsonl_max_bytes — integer 65536..10485760, default 1MB.
+//   Size cap for scorer-shadow.jsonl before rotation.
+//
+// retrieval.jsonl_max_generations — integer 1..10, default 3.
+//   Number of rotated JSONL generations to keep.
+//
+// retrieval.global_kill_switch — boolean, default false.
+//   Emergency no-op: when true, all shadow work is silently skipped regardless
+//   of shadow_scorers. Does not require session restart.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_RETRIEVAL = Object.freeze({
+  /**
+   * Authoritative scorer for pattern_find ranking.
+   * v2.1.3: only "baseline" is valid. Other values coerce to "baseline".
+   * @type {string}
+   */
+  scorer_variant: 'baseline',
+
+  /**
+   * Shadow scorers to run fire-and-forget alongside the baseline.
+   * Default is empty — no shadow work unless explicitly opted in.
+   * @type {string[]}
+   */
+  shadow_scorers: [],
+
+  /**
+   * Top-K window for Kendall tau / overlap / displacement telemetry.
+   * @type {number}
+   */
+  top_k: 10,
+
+  /**
+   * JSONL telemetry file size cap in bytes.
+   * @type {number}
+   */
+  jsonl_max_bytes: 1 * 1024 * 1024,
+
+  /**
+   * Number of rotated JSONL generations to retain.
+   * @type {number}
+   */
+  jsonl_max_generations: 3,
+
+  /**
+   * Emergency kill switch: true → shadow seam is a pure no-op.
+   * @type {boolean}
+   */
+  global_kill_switch: false,
+});
+
+const _VALID_SHADOW_SCORER_NAMES = ['skip-down', 'local-success'];
+
+/**
+ * Load and merge the retrieval block from <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing/malformed returns DEFAULT_RETRIEVAL so that
+ * pattern_find continues to work without any shadow overhead.
+ *
+ * Stateless: re-reads config.json on every call (matches existing loaders).
+ * Hot-path note: when shadow_scorers is empty (the default), maybeRunShadowScorers
+ * returns synchronously after this call — cost is one fs.readFileSync + JSON.parse,
+ * cached by the OS page cache.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {object} Merged retrieval config with all keys guaranteed present.
+ */
+function loadRetrievalConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_RETRIEVAL, { shadow_scorers: [] });
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_RETRIEVAL, { shadow_scorers: [] });
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_RETRIEVAL, { shadow_scorers: [] });
+  }
+
+  const fromFile = parsed.retrieval;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_RETRIEVAL, { shadow_scorers: [] });
+  }
+
+  const safe   = sanitizeConfig(fromFile);
+  const merged = Object.assign({}, DEFAULT_RETRIEVAL, safe);
+
+  // Post-merge validation and coercions.
+  const result = validateRetrievalConfig(merged);
+  if (!result.valid) {
+    logStderr('retrieval config warnings: ' + result.errors.join('; '));
+  }
+
+  // scorer_variant: enforce "baseline" in v2.1.3.
+  if (merged.scorer_variant !== 'baseline') {
+    logStderr(
+      'retrieval.scorer_variant "' + merged.scorer_variant +
+      '" not supported in v2.1.3; coercing to "baseline"'
+    );
+    merged.scorer_variant = 'baseline';
+  }
+
+  // shadow_scorers: dedup and drop unknown names.
+  if (!Array.isArray(merged.shadow_scorers)) {
+    merged.shadow_scorers = [];
+  } else {
+    const seen = new Set();
+    const valid = [];
+    for (const name of merged.shadow_scorers) {
+      if (typeof name !== 'string') continue;
+      if (seen.has(name)) continue;
+      seen.add(name);
+      if (_VALID_SHADOW_SCORER_NAMES.includes(name)) {
+        valid.push(name);
+      } else {
+        try {
+          recordDegradation({
+            kind: 'shadow_scorer_failed',
+            severity: 'warn',
+            detail: {
+              scorer_name: name,
+              error:       'unknown scorer name in retrieval.shadow_scorers',
+              dedup_key:   'shadow_scorer_failed_' + name,
+            },
+          });
+        } catch (_) { /* swallow */ }
+      }
+    }
+    merged.shadow_scorers = valid;
+  }
+
+  // Clamp top_k.
+  if (!Number.isInteger(merged.top_k) || merged.top_k < 1)  merged.top_k = DEFAULT_RETRIEVAL.top_k;
+  if (merged.top_k > 50) merged.top_k = 50;
+
+  // Clamp jsonl_max_bytes.
+  const MIN_BYTES = 64 * 1024;
+  const MAX_BYTES = 10 * 1024 * 1024;
+  if (!Number.isInteger(merged.jsonl_max_bytes) || merged.jsonl_max_bytes < MIN_BYTES) {
+    merged.jsonl_max_bytes = DEFAULT_RETRIEVAL.jsonl_max_bytes;
+  }
+  if (merged.jsonl_max_bytes > MAX_BYTES) merged.jsonl_max_bytes = MAX_BYTES;
+
+  // Clamp jsonl_max_generations.
+  if (!Number.isInteger(merged.jsonl_max_generations) || merged.jsonl_max_generations < 1) {
+    merged.jsonl_max_generations = DEFAULT_RETRIEVAL.jsonl_max_generations;
+  }
+  if (merged.jsonl_max_generations > 10) merged.jsonl_max_generations = 10;
+
+  // global_kill_switch: coerce to boolean.
+  if (typeof merged.global_kill_switch !== 'boolean') {
+    merged.global_kill_switch = DEFAULT_RETRIEVAL.global_kill_switch;
+  }
+
+  return merged;
+}
+
+/**
+ * Validate a retrieval config object.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateRetrievalConfig(obj) {
+  const errors = [];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['retrieval config must be an object'] };
+  }
+
+  if ('scorer_variant' in obj && obj.scorer_variant !== 'baseline') {
+    errors.push(
+      'retrieval.scorer_variant must be "baseline" in v2.1.3 — got ' +
+      JSON.stringify(obj.scorer_variant)
+    );
+  }
+
+  if ('shadow_scorers' in obj) {
+    if (!Array.isArray(obj.shadow_scorers)) {
+      errors.push('retrieval.shadow_scorers must be an array');
+    } else {
+      for (const name of obj.shadow_scorers) {
+        if (typeof name !== 'string') {
+          errors.push('retrieval.shadow_scorers entries must be strings');
+          break;
+        }
+        if (!_VALID_SHADOW_SCORER_NAMES.includes(name)) {
+          errors.push(
+            'retrieval.shadow_scorers: unknown scorer "' + name +
+            '"; valid names: ' + _VALID_SHADOW_SCORER_NAMES.join(', ')
+          );
+        }
+      }
+    }
+  }
+
+  if ('top_k' in obj) {
+    const v = obj.top_k;
+    if (!Number.isInteger(v) || v < 1 || v > 50) {
+      errors.push('retrieval.top_k must be an integer 1..50 — got ' + JSON.stringify(v));
+    }
+  }
+
+  if ('jsonl_max_bytes' in obj) {
+    const v = obj.jsonl_max_bytes;
+    if (!Number.isInteger(v) || v < 64 * 1024 || v > 10 * 1024 * 1024) {
+      errors.push('retrieval.jsonl_max_bytes must be an integer 65536..10485760 — got ' + JSON.stringify(v));
+    }
+  }
+
+  if ('jsonl_max_generations' in obj) {
+    const v = obj.jsonl_max_generations;
+    if (!Number.isInteger(v) || v < 1 || v > 10) {
+      errors.push('retrieval.jsonl_max_generations must be an integer 1..10 — got ' + JSON.stringify(v));
+    }
+  }
+
+  if ('global_kill_switch' in obj && typeof obj.global_kill_switch !== 'boolean') {
+    errors.push('retrieval.global_kill_switch must be a boolean — got ' + JSON.stringify(obj.global_kill_switch));
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
 module.exports = {
   DEFAULT_MCP_ENFORCEMENT,
   loadMcpEnforcement,
@@ -2304,6 +2551,10 @@ module.exports = {
   DEFAULT_CURATOR,
   loadCuratorConfig,
   validateCuratorConfig,
+  // RS (v2.1.3): retrieval shadow scorer config
+  DEFAULT_RETRIEVAL,
+  loadRetrievalConfig,
+  validateRetrievalConfig,
   logStderr,
   // Exposed for test teardown only — clear between test runs to reset per-process guard.
   _flatDeprecationWarned,

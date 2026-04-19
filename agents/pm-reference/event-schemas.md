@@ -2120,3 +2120,140 @@ The field is optional — old tombstones without it continue to work.
 
 `rationale.confidence` is the curator's self-assessed confidence (0.0–1.0).
 `rationale.text` is the full reasoning used by `/orchestray:learn explain <action-id>`.
+
+---
+
+## v2.1.3 additions
+
+### Shadow scorer JSONL (`.orchestray/state/scorer-shadow.jsonl`)
+
+Written by `bin/_lib/scorer-shadow.js` via `setImmediate` after each `pattern_find`
+call when at least one shadow scorer is active. One JSON object per line; 1 MB ×
+3-generation rotation. Writes are fire-and-forget — a write failure is swallowed
+silently and a `shadow_scorer_failed` degraded-journal entry is appended instead.
+
+```json
+{
+  "schema": 1,
+  "timestamp": "<ISO 8601>",
+  "scorer": "<scorer-name, e.g. 'skip-down' | 'local-success'>",
+  "query": "<query string, truncated to 120 chars>",
+  "baseline_top_k": ["<slug1>", "<slug2>", "..."],
+  "shadow_top_k": ["<slug1>", "<slug2>", "..."],
+  "kendall_tau_b": 0.85,
+  "top_k_overlap": 0.9,
+  "displacement": [0, 1, 0, -1, 0]
+}
+```
+
+**Field notes:**
+- `scorer`: Short name of the shadow scorer that produced this row (value from `retrieval.shadow_scorers`).
+- `baseline_top_k` / `shadow_top_k`: Slugs of the top-K results in baseline and shadow rank order respectively. K matches the `pattern_find` call's `limit` parameter.
+- `kendall_tau_b`: Kendall tau-b rank correlation between baseline and shadow. Range: −1.0 to 1.0. `null` when the intersection is fewer than 2 slugs or all pairs are tied.
+- `top_k_overlap`: Proportion of slugs appearing in both top-K lists. Range: 0.0 to 1.0.
+- `displacement`: Per-item rank delta `(shadow_rank − baseline_rank)` for slugs that appear in both lists, in baseline rank order. Absent items produce no entry.
+
+**Schema stability:** schema version 1. Additive-only for v2.1.x.
+
+---
+
+### Install manifest v2 (`manifest.json`)
+
+`bin/_lib/install-manifest.js` writes a `manifest.json` alongside the installed files.
+v2 extends v1 with per-file SHA-256 hashes.
+
+```json
+{
+  "manifest_schema": 2,
+  "version": "2.1.3",
+  "timestamp": "<ISO 8601>",
+  "install_type": "global | local",
+  "files": ["<rel/path1>", "<rel/path2>"],
+  "files_hashes": {
+    "<rel/path1>": "<sha256-hex>",
+    "<rel/path2>": "<sha256-hex>"
+  }
+}
+```
+
+**Field notes:**
+- `manifest_schema`: `2` for v2 manifests; `1` (or absent) for v1 manifests written by v2.1.2 and earlier.
+- `files_hashes`: Map from relative file path (relative to plugin root) to lowercase SHA-256 hex digest. Computed at install time. Used by `/orchestray:doctor --deep` and `verifyManifestOnBoot` for drift detection.
+- v1 consumers that only read `files` and `version` continue to work — `files_hashes` is additive.
+
+**Boot-time verification:** `verifyManifestOnBoot` in `install-manifest.js` runs on MCP server startup. On hash mismatch it appends one `install_integrity_drift` degraded-journal entry per drifted file and continues boot. Never throws. Without `--deep`, `/orchestray:doctor` does not re-run verification; use `--deep` for an on-demand full check.
+
+---
+
+### `recently_curated_*` frontmatter stamp (pattern files, v2.1.3)
+
+After each curator run, `bin/curator-apply-stamps.js <runId>` writes 5 flat dotted-prefix
+keys into each pattern file touched by that run. Written to the frontmatter block
+(between `---` delimiters). Uses REPLACE semantics: a re-stamp of the same pattern
+overwrites all 5 keys.
+
+```yaml
+recently_curated_at: "2026-04-19T15:36:19Z"
+recently_curated_action: "promote | merge | deprecate | unshare"
+recently_curated_action_id: "curator-2026-04-19T15:36:19Z-a001"
+recently_curated_run_id: "curator-run-2026-04-19T15:36:19Z"
+recently_curated_why: "<truncated curator rationale, max 120 chars>"
+```
+
+**Strip semantics:**
+- `curator undo` (via `applyRollback` in `curator-tombstone.js`) strips all 5 keys on rollback, restoring the pattern to its pre-stamp state.
+- `/orchestray:learn share` (via `shared-promote.js`) strips all 5 keys before writing to the shared tier. Stamps are project-local metadata and must never appear in federation peers.
+
+**Consumer guidance:** treat `recently_curated_*` as advisory display metadata. Do not use `recently_curated_action_id` as a primary key — use the tombstones file for authoritative rollback state.
+
+---
+
+### Tombstone `rationale.similarity_score` field (v2.1.3)
+
+Merge tombstones may now carry a `similarity_score` field inside `rationale` to record
+the MinHash+Jaccard similarity between the merged patterns. This is the only `similarity_*`
+field populated by the curator agent in v2.1.3. The fields `similarity_method`,
+`similarity_threshold`, `similarity_k`, and `similarity_m` are reserved in the schema
+comment (`curator-tombstone.js`) for a v2.1.4 wire-in when the duplicate pre-filter
+is promoted to the main curator flow.
+
+```json
+{
+  "rationale": {
+    "schema_version": 1,
+    "text": "<curator's full reasoning>",
+    "confidence": 0.85,
+    "similarity_score": 0.72
+  }
+}
+```
+
+**Field notes:**
+- `similarity_score`: Jaccard similarity between the two merged patterns as computed by `curator-duplicate-detect.js`. Range: 0.0–1.0. Present only on merge tombstones where the duplicate pre-filter flagged the pair; `null` or absent otherwise.
+- `similarity_method`, `similarity_threshold`, `similarity_k`, `similarity_m`: Reserved; not populated in v2.1.3.
+
+---
+
+### Degraded-journal `kind` additions (v2.1.3)
+
+Six new `kind` values added to the degraded-journal enum (see v2.1.2 section above for
+the full schema). All follow the same `{ schema, timestamp, kind, severity, detail }` shape.
+
+| kind | severity | When written |
+|---|---|---|
+| `install_integrity_drift` | warn | `verifyManifestOnBoot` detected a file hash mismatch at MCP boot |
+| `manifest_v1_legacy` | info | Boot-time verify skipped because manifest on disk is v1 (no `files_hashes`) |
+| `install_integrity_verify_slow` | info | Manifest verification took longer than 500 ms |
+| `shadow_scorer_failed` | warn | A shadow scorer threw an exception; baseline scoring was unaffected |
+| `curator_duplicate_detect_failed` | warn | MinHash pre-filter threw; curator fell back to all-pairs |
+| `curator_stamp_apply_failed` | warn | `curator-apply-stamps.js` failed to write stamps for one or more patterns |
+
+**`detail` fields for `install_integrity_drift`:**
+```json
+{
+  "dedup_key": "install_integrity_drift:<rel/path>",
+  "path": "<rel/path>",
+  "expected_hash": "<sha256-hex from manifest>",
+  "actual_hash": "<sha256-hex of current file>"
+}
+```

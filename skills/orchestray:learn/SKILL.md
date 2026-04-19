@@ -523,6 +523,30 @@ federation is enabled).
 3. **Start a tombstone run:** Call `mcp__orchestray__curator_tombstone({ "action": "start_run" })` to
    archive any prior tombstone run beyond the retention window and obtain a `run_id`.
 
+3b. **H3 pre-filter (v2.1.3):** Before spawning the curator agent, run the MinHash
+    duplicate pre-filter to build a similarity shortlist:
+
+    ```javascript
+    const { buildShortlistForDispatch, writeFallbackShortlist } = require('./bin/_lib/curator-duplicate-detect.js');
+    const { recordDegradation } = require('./bin/_lib/degraded-journal.js');
+    const shortlistPath = `.orchestray/curator/similarity-${runId}.json`;
+    const patternsDir   = `.orchestray/patterns`;
+    try {
+      buildShortlistForDispatch({ patternsDir, outputPath: shortlistPath, runId });
+    } catch (err) {
+      writeFallbackShortlist(shortlistPath, runId);
+      recordDegradation({
+        kind:   'curator_duplicate_detect_failed',
+        detail: { error: String(err && err.message), run_id: runId },
+      });
+    }
+    ```
+
+    Pass `shortlistPath` into the curator agent's context so it knows which file
+    to read (see `agents/curator.md` §4.2). If the pre-filter fails, the fallback
+    writes an empty shortlist with `"method": "fallback-all-pairs"` and the
+    curator proceeds with legacy all-pairs clustering — no curate run is blocked.
+
 4. **Spawn the curator agent** using the `Agent()` mechanism (same as other slash
    commands). Pass the following context to the curator agent's system prompt:
    - `runId` (from step 3)
@@ -548,6 +572,14 @@ federation is enabled).
     ```
     If reconciliation itself errors, surface: "Warning: post-run reconciliation failed:
     <error>. Run `/orchestray:learn list-tombstones` and verify actions manually."
+
+4c. **H4 stamp-apply** (skip for dry-run): after reconciliation, run:
+    ```
+    node bin/curator-apply-stamps.js <runId> [projectRoot]
+    ```
+    This applies `recently_curated_*` frontmatter stamps to patterns touched by the run.
+    Failures are non-fatal and journaled to `.orchestray/state/degraded.jsonl`.
+    Include in the final report: "Stamps: N applied, M skipped, K failed."
 
 5. **Print summary** from the curator agent's structured result. Required format:
    ```
@@ -631,7 +663,10 @@ most-recent run (by `orch_id`), restores every affected pattern file from its
 
 4. Rewrite `tombstones.jsonl` with the updated rows (atomic write).
 
-5. Report: "Reverted {N} actions from run {run-id}."
+5. Report: "Reverted {N} actions from run {run-id}. Cleared `recently_curated`
+   stamps from {M} files." (M = total count of `inputs[]` entries across all
+   rolled-back rows; the stamp strip is handled automatically by `applyRollback()`
+   inside the tombstone library — no extra step needed here.)
 
 **Example:**
 ```

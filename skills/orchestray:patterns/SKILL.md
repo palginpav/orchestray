@@ -297,6 +297,56 @@ The user wants to see the pattern learning dashboard showing what the system has
 
     If no events, show: "No application events recorded for this pattern."
 
+12b. **Section 8 — Retrieval Shadow Scorer Agreement**: shown after Section 7.
+
+    Read `.orchestray/state/scorer-shadow.jsonl` (and `.orchestray/state/scorer-shadow.1.jsonl`,
+    `.2.jsonl` if they exist). If the file does not exist, or `retrieval.shadow_scorers` is empty
+    in `.orchestray/config.json` (or the config file is absent), show:
+
+    ```
+    ### Section 8 — Retrieval Shadow Scorer Agreement
+
+    Shadow scorers not enabled. See `retrieval.shadow_scorers` in `.orchestray/config.json`.
+    Example: {"retrieval": {"shadow_scorers": ["skip-down", "local-success"]}}
+    ```
+
+    Otherwise parse up to the last 500 rows (newest-first). For each unique `scorer_name`
+    in those rows, compute aggregate statistics:
+    - **Calls**: count of rows for this scorer.
+    - **Mean τ**: mean of `kendall_tau` values (skip null entries).
+    - **Median τ**: median of non-null `kendall_tau` values.
+    - **Top-K overlap (mean)**: mean of `top_k_overlap` / `k` expressed as "X.X/{k}".
+    - **Displacement (median)**: median of `displacement.median` values across rows where
+      `displacement` is not null.
+
+    Also collect per-slug displacement history: for each slug appearing in `baseline_top_k`
+    or `shadow_top_k`, track `rank_shadow - rank_baseline` across rows (use index in the
+    respective array as rank). Compute per-slug average displacement (signed, not abs).
+
+    Display format:
+
+    ```
+    ### Section 8 — Retrieval Shadow Scorer Agreement
+
+    Last {N} pattern_find calls ({date_range}, {scorer_count} scorer(s) enabled).
+
+    | Scorer         | Calls | Mean τ | Median τ | Top-K overlap (mean) | Displacement (median) |
+    |----------------|-------|--------|----------|----------------------|-----------------------|
+    | {scorer_name}  |  {N}  |  {tau} |   {tau}  |         {X.X}/{k}    |                  {d}  |
+
+    Top patterns displaced by shadow (rank_shadow - rank_baseline, avg across calls):
+      {scorer_name}:
+        - {slug}: {avg_disp:+.1f} avg (reasons: {top_reason_from_shadow_reasons_by_slug})
+        - ...  (show top 5 by absolute avg displacement)
+
+    Shadow scorers never affect live rankings. To promote a scorer to primary,
+    review these displacements and run /orchestray:issue to propose Bundle RS promotion.
+    ```
+
+    If `displacement` is null for all rows of a scorer, omit the displacement column value
+    and show "—". Format `kendall_tau` to 2 decimal places. If fewer than 5 rows exist,
+    note "(insufficient data for reliable aggregation)".
+
 13. **Edge cases**:
     - If `.orchestray/history/` does not exist or is empty: skip all event-based sections, show pattern metadata only with notes that no history is available.
     - If `.orchestray/team-patterns/` does not exist: treat team pattern count as 0.

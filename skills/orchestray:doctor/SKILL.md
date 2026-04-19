@@ -2,7 +2,7 @@
 name: doctor
 description: Run a battery of health probes for the Orchestray plugin and print a one-screen summary
 disable-model-invocation: true
-argument-hint: "[--verbose|-v]"
+argument-hint: "[--verbose|-v] [--deep]"
 ---
 
 # Orchestray Doctor
@@ -11,6 +11,10 @@ Run 8 probes against the current Orchestray installation and print a structured 
 If `$ARGUMENTS` contains `--verbose` or `-v`, emit a `## Detail` section after the summary.
 
 ## Setup
+
+If `$ARGUMENTS` contains `--deep`, set `DEEP=true`. The deep probe (P9) runs after P8
+and adds per-file install-integrity verification. Without `--deep`, P9 is skipped and
+behavior is identical to v2.1.2.
 
 Resolve the **plugin root** and **project root** as follows:
 
@@ -193,9 +197,73 @@ formatted as:
 
 ---
 
+---
+
+### P9: Install-integrity deep verify (only when `--deep`)
+
+Skip this probe entirely when `DEEP` is not set.
+
+Run the following Bash one-liner from any directory:
+
+```bash
+node -e "
+  const { verifyManifest } = require('$PLUGIN_ROOT/bin/_lib/install-manifest');
+  const fs = require('fs');
+  const path = require('path');
+  const manifestPath = path.join('$PLUGIN_ROOT', 'manifest.json');
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch (e) {
+    process.stdout.write(JSON.stringify({ err: 'manifest_unreadable', msg: e.message }));
+    process.exit(0);
+  }
+  const result = verifyManifest('$PLUGIN_ROOT', manifest);
+  process.stdout.write(JSON.stringify(result));
+"
+```
+
+Parse the stdout JSON. Let `total = drifted.length + missing.length + errors.length`.
+
+Output lines:
+
+- **Error present** (`err` key in output):
+  Line: `[FAIL]  manifest unreadable: {msg} — reinstall via npx orchestray@latest`
+- **`supported: false`** (legacy v1 manifest or absent `files_hashes`):
+  Line: `[WARN]  install integrity: legacy v1 manifest (no hashes) — reinstall to enable deep verify`
+- **`ok: true`**:
+  Line: `[OK]    install integrity verified ({Object.keys(manifest.files_hashes).length} files)`
+- **`ok: false, total <= 3`** (small drift — list all):
+  Line: `[FAIL]  install integrity drift ({total} file(s)): {comma-joined paths of drifted+missing+errors}`
+- **`ok: false, total > 3`** (large drift — truncate):
+  Line: `[FAIL]  install integrity drift ({total} file(s)): {first 3 paths}, +{total-3} more`
+
+In `--verbose --deep` mode, the `## Detail` section gains an `## Install Integrity` sub-section:
+
+```
+drifted:
+  {path}
+    expected: {expected}
+    actual:   {actual}
+  ...
+missing:
+  {path}
+  ...
+errors:
+  {path} ({code})
+  ...
+```
+
+If a category is empty, write `  (none)` beneath its heading.
+Truncate to at most 20 entries per category; append `({N} more — see journal)` if exceeded.
+
+P9 FAIL increments `N_fail`. P9 WARN increments `N_warn`.
+
+---
+
 ## Output format
 
-After running all 8 probes, print:
+After running all probes (8 without `--deep`, 9 with `--deep`), print:
 
 ```
 Orchestray v{VERSION} — health check
@@ -208,10 +276,13 @@ Orchestray v{VERSION} — health check
 {P6 line}
 {P7 line}
 {P8 line}
+{P9 line — only when --deep}
 
 {N_total} probes, {N_warn} warning(s), {N_fail} failure(s).{suffix}
 doctor-result-code: {code}
 ```
+
+`N_total` is 8 without `--deep`, 9 with `--deep`.
 
 Where:
 - `{suffix}` is ` Run with --verbose for details.` when `N_warn + N_fail > 0` and
@@ -224,9 +295,9 @@ Where:
 If `N_fail > 0`, add a `Next steps:` block enumerating copy-pasteable remediation
 commands for each failing probe (use the remediations listed in the probe specs above).
 
-Example all-green output:
+Example all-green output (without `--deep`):
 ```
-Orchestray v2.1.2 — health check
+Orchestray v2.1.3 — health check
 ──────────────────────────────────
 [OK]    migrations present (1/1)
 [OK]    MCP responding (pattern_find roundtrip OK)
@@ -235,9 +306,27 @@ Orchestray v2.1.2 — health check
 [OK]    FTS5 backend loaded (node:sqlite or better-sqlite3)
 [OK]    better-sqlite3 (not in use; node:sqlite active)
 [OK]    degraded journal clean (0 entries in last 24h)
-[OK]    plugin install coherent (v2.1.2, 158 files tracked)
+[OK]    plugin install coherent (v2.1.3, 162 files tracked)
 
 8 probes, 0 warning(s), 0 failure(s).
+doctor-result-code: 0
+```
+
+Example all-green output (with `--deep`):
+```
+Orchestray v2.1.3 — health check
+──────────────────────────────────
+[OK]    migrations present (1/1)
+[OK]    MCP responding (pattern_find roundtrip OK)
+[OK]    config keys resolve (no legacy flat keys)
+[OK]    shared dir (federation disabled; skipped)
+[OK]    FTS5 backend loaded (node:sqlite or better-sqlite3)
+[OK]    better-sqlite3 (not in use; node:sqlite active)
+[OK]    degraded journal clean (0 entries in last 24h)
+[OK]    plugin install coherent (v2.1.3, 162 files tracked)
+[OK]    install integrity verified (162 files)
+
+9 probes, 0 warning(s), 0 failure(s).
 doctor-result-code: 0
 ```
 
