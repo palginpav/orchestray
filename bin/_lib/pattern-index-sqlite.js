@@ -25,6 +25,7 @@ const path = require('node:path');
 
 const frontmatter = require('../mcp-server/lib/frontmatter');
 const migration001 = require('./migrations/001-fts5-initial');
+const { recordDegradation } = require('./degraded-journal');
 
 // ---------------------------------------------------------------------------
 // SQLite backend detection
@@ -71,6 +72,15 @@ function _openDb(dbPath) {
     // Native build failed or package not installed.
   }
 
+  recordDegradation({
+    kind: 'fts5_backend_unavailable',
+    severity: 'warn',
+    detail: {
+      reason: 'neither node:sqlite nor better-sqlite3 loaded',
+      node_version: process.versions.node,
+      dedup_key: 'fts5_backend_unavailable',
+    },
+  });
   throw new Error('No SQLite runtime available');
 }
 
@@ -251,19 +261,126 @@ function _buildIndex(db, patternsDir) {
 }
 
 // ---------------------------------------------------------------------------
+// Per-term match extraction (Idea 4 — v2.1.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Unique sentinel strings used as highlight markers. Chosen to be highly
+ * unlikely to appear in real pattern text, and safe for string splitting.
+ */
+const _HL_START = '\x02MATCH\x02';
+const _HL_END   = '\x03MATCH\x03';
+
+/**
+ * Extract per-term, per-section hit information for a set of matched slugs
+ * using FTS5's `highlight()` function.
+ *
+ * Returns a Map<slug, TermHit[]>. Each TermHit describes one (term, section)
+ * pair where the query matched. Duplicate (term, section) pairs are de-duped.
+ *
+ * Falls back to an empty Map on any error so callers can always proceed.
+ *
+ * Design notes:
+ *   - We run a single SELECT that returns highlight() for the three content
+ *     columns (context=col 2, approach=col 3, evidence=col 4) for all matched
+ *     slugs at once (filtered by `slug IN (...)` inside a MATCH query).
+ *   - The highlighted text has matched tokens wrapped in _HL_START / _HL_END.
+ *     We split on those markers to collect the matched tokens per column.
+ *   - Column indices for highlight() are 0-based over ALL columns including
+ *     UNINDEXED ones: slug=0, category=1, context=2, approach=3, evidence=4.
+ *     UNINDEXED columns are passed through unchanged (highlight is a no-op).
+ *
+ * @param {object}   db        - Open database handle.
+ * @param {string}   safeQuery - Already-sanitized FTS5 query string.
+ * @param {string[]} slugs     - Slugs to retrieve hit data for.
+ * @returns {Map<string, TermHit[]>}
+ */
+function _extractMatchTerms(db, safeQuery, slugs) {
+  const result = new Map();
+  if (!slugs || slugs.length === 0) return result;
+
+  try {
+    // Build a query that returns highlight() for each content column.
+    // We filter to only the slugs we care about by re-issuing the same MATCH
+    // (FTS5 can't filter on UNINDEXED slug directly in a WHERE clause without
+    // a rowid scan; using a subquery would also work but this is simpler and
+    // the result set is already small).
+    const stmt = db.prepare(
+      'SELECT slug, ' +
+      'highlight(patterns_fts, 2, ?, ?) AS hl_context, ' +
+      'highlight(patterns_fts, 3, ?, ?) AS hl_approach, ' +
+      'highlight(patterns_fts, 4, ?, ?) AS hl_evidence ' +
+      'FROM patterns_fts WHERE patterns_fts MATCH ?'
+    );
+
+    const rows = stmt.all(
+      _HL_START, _HL_END,
+      _HL_START, _HL_END,
+      _HL_START, _HL_END,
+      safeQuery
+    );
+
+    const slugSet = new Set(slugs);
+    for (const row of rows) {
+      if (!slugSet.has(row.slug)) continue;
+
+      const hits = [];
+      const seenKey = new Set(); // de-dupe (term, section) pairs
+
+      for (const [colText, section] of [
+        [row.hl_context,  'context'],
+        [row.hl_approach, 'approach'],
+        [row.hl_evidence, 'evidence'],
+      ]) {
+        if (typeof colText !== 'string') continue;
+        // Split on markers; every odd segment (1, 3, 5, …) is a highlighted token.
+        const parts = colText.split(_HL_START);
+        for (let i = 1; i < parts.length; i++) {
+          const endIdx = parts[i].indexOf(_HL_END);
+          if (endIdx === -1) continue;
+          const token = parts[i].slice(0, endIdx).toLowerCase().trim();
+          if (!token) continue;
+          const key = token + '|' + section;
+          if (!seenKey.has(key)) {
+            seenKey.add(key);
+            hits.push({ term: token, section });
+          }
+        }
+      }
+
+      result.set(row.slug, hits);
+    }
+  } catch (_) {
+    // highlight() may behave differently on very old SQLite builds.
+    // Fail-open: return empty map; callers fall back gracefully.
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+/**
+ * A per-term, per-section hit produced by _extractMatchTerms.
+ *
+ * @typedef {object} TermHit
+ * @property {string} term    - The matched query term (lowercased).
+ * @property {string} section - Section where the term matched: 'context', 'approach', or 'evidence'.
+ */
 
 /**
  * Result shape returned by searchPatterns.
  *
  * @typedef {object} PatternMatch
- * @property {string} slug        - Pattern slug (filename without .md).
- * @property {string} category    - Pattern category from frontmatter.
- * @property {number} bm25_score  - Raw BM25 score (lower = better match).
- * @property {object} frontmatter - Parsed frontmatter fields.
- * @property {string} body        - Pattern body text.
- * @property {string} filepath    - Absolute path to the .md file.
+ * @property {string}    slug        - Pattern slug (filename without .md).
+ * @property {string}    category    - Pattern category from frontmatter.
+ * @property {number}    bm25_score  - Raw BM25 score (lower = better match).
+ * @property {object}    frontmatter - Parsed frontmatter fields.
+ * @property {string}    body        - Pattern body text.
+ * @property {string}    filepath    - Absolute path to the .md file.
+ * @property {TermHit[]} match_terms - Per-term/per-section hit details (may be empty on error).
  */
 
 /**
@@ -364,6 +481,12 @@ function searchPatterns(query, opts) {
     return [];
   }
 
+  // Extract per-term, per-section match information using highlight().
+  // Do this before hydrating from disk so we have a single extra round-trip
+  // against the FTS index (already in memory) rather than per-file I/O.
+  const slugList = rows.map((r) => r.slug);
+  const matchTermsBySlug = _extractMatchTerms(db, safeQuery, slugList);
+
   // Hydrate each row with frontmatter + body from disk.
   const results = [];
   for (const row of rows) {
@@ -391,6 +514,7 @@ function searchPatterns(query, opts) {
       frontmatter: fm,
       body: parsed.body || '',
       filepath,
+      match_terms: matchTermsBySlug.get(row.slug) || [],
     });
   }
 

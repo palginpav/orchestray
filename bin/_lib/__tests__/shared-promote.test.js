@@ -29,7 +29,7 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 
-const { promotePattern } = require('../shared-promote.js');
+const { promotePattern, _projectHash } = require('../shared-promote.js');
 
 // ---------------------------------------------------------------------------
 // Test infrastructure helpers
@@ -1338,6 +1338,121 @@ describe('Stage 1 edge cases (read / parse)', () => {
     } finally {
       cleanup(projectDir, sharedDir);
     }
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// preview mode (v2.1.2 Bundle F Item 3)
+// ---------------------------------------------------------------------------
+
+describe('preview mode', () => {
+
+  test('(a) preview returns ok: true with full PreviewReport when sanitization succeeds', async () => {
+    const { projectDir, sharedDir } = makeTmpProject({ sensitivity: 'shareable' });
+    try {
+      const body = `## Context\nUseful context.\n\n## Approach\nDo this thing.\n`;
+      writePattern(projectDir, 'preview-clean', {
+        body,
+        frontmatter: { created_from: 'orch-123', last_applied: '2026-01-01', times_applied: 3 },
+      });
+      const result = await runPromote('preview-clean', projectDir, sharedDir, { preview: true });
+
+      assert.equal(result.ok, true, 'preview should return ok: true');
+      assert.equal(result.destPath, '<not-written>', 'destPath must signal no write');
+      assert.ok(result.preview, 'preview field must be present');
+
+      const rpt = result.preview;
+      assert.equal(rpt.slug, 'preview-clean');
+      assert.equal(rpt.sensitivity_blocks_actual_share, false);
+      assert.equal(rpt.blocking_stage, null);
+
+      // Frontmatter diff
+      assert.ok(rpt.frontmatter.removed.includes('created_from'), 'created_from should be in removed');
+      assert.ok(rpt.frontmatter.removed.includes('last_applied'), 'last_applied should be in removed');
+      assert.ok(rpt.frontmatter.removed.includes('times_applied'), 'times_applied should be in removed');
+      assert.equal(rpt.frontmatter.added.origin, 'shared');
+      assert.ok(rpt.frontmatter.added.promoted_from, 'promoted_from should be added');
+      assert.ok(rpt.frontmatter.added.promoted_at, 'promoted_at should be added');
+
+      // Body
+      assert.ok(typeof rpt.body.size_bytes === 'number' && rpt.body.size_bytes > 0);
+      assert.equal(rpt.body.size_limit_bytes, 8192);
+
+      // Secrets
+      assert.equal(rpt.secrets_scan.clean, true);
+    } finally {
+      cleanup(projectDir, sharedDir);
+    }
+  });
+
+  test('(b) preview bypasses sensitivity gate when sensitivity is private', async () => {
+    const { projectDir, sharedDir } = makeTmpProject({ sensitivity: 'private' });
+    try {
+      writePattern(projectDir, 'preview-private', { body: 'Context.\n\nApproach.\n' });
+      const result = await runPromote('preview-private', projectDir, sharedDir, { preview: true });
+
+      assert.equal(result.ok, true, 'preview should succeed even with private sensitivity');
+      assert.equal(result.preview.sensitivity_blocks_actual_share, true,
+        'sensitivity_blocks_actual_share must be true');
+      assert.equal(result.preview.blocking_stage, null,
+        'sensitivity gate should not set blocking_stage in preview');
+    } finally {
+      cleanup(projectDir, sharedDir);
+    }
+  });
+
+  test('(c) preview surfaces blocking stage when secret detected', async () => {
+    const { projectDir, sharedDir } = makeTmpProject({ sensitivity: 'shareable' });
+    try {
+      const antKey = 'sk-ant-api03-secret-key-value-here';
+      writePattern(projectDir, 'preview-secret', {
+        body: `## Context\nContext.\n\n## Evidence\nKey: ${antKey}\n`,
+      });
+      const result = await runPromote('preview-secret', projectDir, sharedDir, { preview: true });
+
+      assert.equal(result.ok, true, 'preview returns ok: true even on blocking stage');
+      assert.equal(result.preview.blocking_stage, 'secret-scan',
+        'blocking_stage must identify the failed stage');
+      assert.ok(result.preview.blocking_reason, 'blocking_reason must be set');
+      assert.equal(result.preview.secrets_scan.clean, false);
+    } finally {
+      cleanup(projectDir, sharedDir);
+    }
+  });
+
+  test('(d) preview does NOT write to disk', async () => {
+    const { projectDir, sharedDir } = makeTmpProject({ sensitivity: 'shareable' });
+    try {
+      writePattern(projectDir, 'preview-no-write', { body: 'Context.\n\nApproach.\n' });
+      const result = await runPromote('preview-no-write', projectDir, sharedDir, { preview: true });
+
+      assert.equal(result.ok, true);
+      const destPath = path.join(sharedDir, 'patterns', 'preview-no-write.md');
+      assert.equal(fs.existsSync(destPath), false, 'preview must not write the pattern file');
+    } finally {
+      cleanup(projectDir, sharedDir);
+    }
+  });
+
+  test('(e) preview does NOT append to promote-log.jsonl', async () => {
+    const { projectDir, sharedDir } = makeTmpProject({ sensitivity: 'shareable' });
+    try {
+      writePattern(projectDir, 'preview-no-log', { body: 'Context.\n\nApproach.\n' });
+      const logPath = path.join(sharedDir, 'meta', 'promote-log.jsonl');
+      await runPromote('preview-no-log', projectDir, sharedDir, { preview: true });
+
+      assert.equal(fs.existsSync(logPath), false, 'promote-log.jsonl must not exist after preview');
+    } finally {
+      cleanup(projectDir, sharedDir);
+    }
+  });
+
+  test('_projectHash is exported and stable for the same input', () => {
+    const h1 = _projectHash('/some/project/path');
+    const h2 = _projectHash('/some/project/path');
+    assert.equal(h1, h2, '_projectHash must be deterministic');
+    assert.match(h1, /^[0-9a-f]{8}$/, '_projectHash must return 8 hex chars');
   });
 
 });

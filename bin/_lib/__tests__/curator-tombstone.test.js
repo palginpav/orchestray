@@ -395,6 +395,115 @@ describe('curator-tombstone', () => {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // Rationale field tests (v2.1.2 — Item #2)
+  // ---------------------------------------------------------------------------
+
+  describe('rationale field (v2.1.2)', () => {
+
+    test('writeTombstone preserves rationale field in round-trip', () => {
+      const projectRoot = makeTmpProject();
+      try {
+        const slug    = 'pattern-with-rationale';
+        const content = '---\nname: test\n---\n\nBody.\n';
+        writePattern(projectRoot, slug, content);
+
+        const rationale = {
+          schema_version: 1,
+          one_line: 'Deprecated — 67d unused + 3 contextual-mismatch skips, score 2.3 > 2.0 floor.',
+          signals: {
+            confidence:         0.90,
+            decayed_confidence: 0.42,
+            times_applied:      0,
+            age_days:           67,
+            category:           'routing',
+            skip_penalty:       6.0,
+            deprecation_score:  2.30,
+            similarity_score:   null,
+          },
+          guardrails_checked:       ['G1-user-correction-exempt', 'G13-min-3-per-category'],
+          considered_alternatives:  ['merge with routing-prefer-haiku (rejected: approach contradicts on model tier)'],
+          adversarial_re_read:      null,
+          notes:                    'LLM-generated rationale, not a formal proof.',
+        };
+
+        const tombstone = Object.assign(makeTombstone(projectRoot, slug, content), { rationale });
+        const runId    = startRun({ projectRoot });
+        writeTombstone(runId, tombstone, { projectRoot });
+
+        const { rows } = listTombstones({ projectRoot, include_archive: false });
+        assert.equal(rows.length, 1);
+        assert.deepEqual(rows[0].rationale, rationale, 'rationale must be preserved exactly');
+      } finally {
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+      }
+    });
+
+    test('undoLast preserves rationale on the rolled-back row', () => {
+      const projectRoot = makeTmpProject();
+      try {
+        const slug    = 'pattern-rationale-undo';
+        const content = '---\nname: test\n---\n\nBody.\n';
+        const patternFP = writePattern(projectRoot, slug, content);
+
+        const rationale = {
+          schema_version: 1,
+          one_line: 'Promoted: decayed_conf 0.74 above 0.65 floor.',
+          signals: { confidence: 0.82, decayed_confidence: 0.74, times_applied: 4, age_days: 23, category: 'routing', skip_penalty: 0 },
+          guardrails_checked: ['G3-same-category'],
+          considered_alternatives: [],
+          adversarial_re_read: null,
+          notes: 'LLM-generated rationale, not a formal proof.',
+        };
+
+        const tombstone = Object.assign(makeTombstone(projectRoot, slug, content), { rationale });
+        const runId = startRun({ projectRoot });
+        writeTombstone(runId, tombstone, { projectRoot });
+
+        // Simulate action having occurred.
+        fs.writeFileSync(patternFP, '---\ndeprecated: true\n---\n\nChanged.\n');
+
+        undoLast({ projectRoot });
+
+        const { rows } = listTombstones({ projectRoot, include_archive: false });
+        assert.equal(rows.length, 1);
+        assert.ok(rows[0].rolled_back_at, 'row must be marked rolled back');
+        assert.deepEqual(rows[0].rationale, rationale, 'rationale must survive undo-last');
+      } finally {
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+      }
+    });
+
+    test('backward compat: tombstone without rationale is readable without error', () => {
+      const projectRoot = makeTmpProject();
+      try {
+        const slug    = 'old-tombstone-no-rationale';
+        const content = '---\nname: test\n---\n\nBody.\n';
+        writePattern(projectRoot, slug, content);
+
+        // Write tombstone WITHOUT rationale (simulating a pre-v2.1.2 tombstone).
+        const tombstone = makeTombstone(projectRoot, slug, content);
+        // Explicitly ensure no rationale key is present.
+        delete tombstone.rationale;
+        assert.strictEqual(tombstone.rationale, undefined, 'test setup: tombstone must have no rationale');
+
+        const runId = startRun({ projectRoot });
+        writeTombstone(runId, tombstone, { projectRoot });
+
+        const { rows } = listTombstones({ projectRoot, include_archive: false });
+        assert.equal(rows.length, 1, 'one row must be returned');
+        assert.strictEqual(rows[0].rationale, undefined, 'rationale must be undefined for old tombstones');
+        // Core fields must still be present.
+        assert.ok(rows[0].action_id, 'action_id must be present');
+        assert.ok(rows[0].orch_id, 'orch_id must be present');
+        assert.equal(rows[0].action, 'deprecate');
+      } finally {
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+      }
+    });
+
+  }); // end rationale field tests
+
   describe('archive rotation and retention', () => {
     test('with N=2: third startRun() archives oldest and prunes if >N-1 archives', () => {
       const projectRoot = makeTmpProject();

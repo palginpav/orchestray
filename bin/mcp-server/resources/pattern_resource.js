@@ -139,9 +139,22 @@ async function read(uri, context, parsed) {
   const filepath = paths.resolvePatternFile(segments[0], _root(context));
 
   const text = fs.readFileSync(filepath, 'utf8');
+  // Item 1 (v2.1.2): prepend a provenance banner when the pattern was promoted
+  // from the shared tier. The banner is computed from frontmatter so it works
+  // even when this resource is fetched directly (not via pattern_find).
+  const parsedFm = frontmatter.parse(text);
+  let outputText = text;
+  if (parsedFm.hasFrontmatter && parsedFm.frontmatter.origin === 'shared') {
+    const promotedFrom = parsedFm.frontmatter.promoted_from || 'unknown';
+    const promotedAt = parsedFm.frontmatter.promoted_at
+      ? String(parsedFm.frontmatter.promoted_at).slice(0, 10)
+      : 'unknown';
+    const banner = `> Source: shared tier (from project ${promotedFrom}, promoted ${promotedAt}).\n\n`;
+    outputText = banner + text;
+  }
   return {
     contents: [
-      { uri, mimeType: 'text/markdown', text },
+      { uri, mimeType: 'text/markdown', text: outputText },
     ],
   };
 }

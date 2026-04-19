@@ -53,13 +53,14 @@ The user wants to see the pattern learning dashboard showing what the system has
    orchestration.
    ```
 
-3. **Load event history**: Glob `.orchestray/history/*/events.jsonl`. For each file, parse each line as JSON. Normalize event type: `const eventType = event.type || event.event;`. Collect events by type:
+3. **Load event history**: Glob `.orchestray/history/*/events.jsonl`. Also glob `.orchestray/audit/events.jsonl`. For each file, parse each line as JSON. Normalize event type: `const eventType = event.type || event.event;`. Collect events by type:
    - `pattern_applied`: extract `pattern`, `agent`, `confidence`, `category`
    - `orchestration_start`: extract orchestration ID (from directory name), timestamp
    - `orchestration_complete`: extract `status`, `total_cost_usd`
    - `verify_fix_attempt`: count per orchestration and agent
    - `replan`: count per orchestration
    - `pattern_pruned`: extract `name`, `confidence`, `times_applied`, orchestration ID, timestamp
+   - `pattern_skip_enriched`: collect into a Map keyed by `pattern_name` (used for health score skip penalty)
 
 4. **Route by argument**:
    - If a pattern name was provided: go to step 12 (single pattern detail view).
@@ -83,18 +84,49 @@ The user wants to see the pattern learning dashboard showing what the system has
    Patterns applied: {total_applied} times across {orchestration_count} orchestrations
    ```
 
-6. **Section 2 -- Pattern Inventory**: Show all patterns in a table sorted by `decayed_confidence` descending, then by `times_applied` descending.
+6. **Section 2 -- Pattern Inventory**: Compute health scores using `bin/_lib/pattern-health.js`.
+   Call `annotatePatterns(patterns, skipEvents, now)` with the patterns from step 2 and
+   the `pattern_skip_enriched` events from step 3. Sort by `health desc`, then `times_applied desc`.
 
    ```
    ### Pattern Inventory
 
-   | Pattern | Category | Confidence | Decayed | Age (days) | Applied | Last Applied | Source | Scope |
-   |---------|----------|------------|---------|------------|---------|--------------|--------|-------|
-   | {name} | {category} | {confidence} | {decayed_confidence} | {age_days} | {times_applied} | {last_applied or "never"} | {source} | {scope} |
+   | Pattern | Health | Category | Confidence | Decayed | Age (days) | Applied | Last Applied | Source | Scope |
+   |---------|--------|----------|------------|---------|------------|---------|--------------|--------|-------|
+   | {name} | {health or "[stale] health"} | {category} | {confidence} | {decayed_confidence} | {age_days} | {times_applied} | {last_applied or "never"} | {source} | {scope} |
    ```
+
+   Health display rules:
+   - Format `health` to 2 decimal places.
+   - If `health_tier === 'stale'`: prefix the value with `[stale] ` (e.g., `[stale] 0.52`).
+   - If `health_tier === 'needs-attention'`: omit from this table (listed in Section 2b below).
+   - Footnote: "Health combines decayed_confidence, times_applied, age, and contextual-mismatch skip events. For the formula, see `bin/_lib/pattern-health.js`. Tiers: ≥0.60 healthy, 0.40-0.59 stale, <0.40 needs attention."
+
+   If ALL skip events have `pattern_name: null` (pre-A2 state), add footnote: "Skip penalty suppressed — per-slug skip attribution unavailable (A2 plumbing not yet deployed)."
 
    Format `confidence` and `decayed_confidence` to 2 decimal places. Format `last_applied` as YYYY-MM-DD if present, otherwise "never".
    When `decayed_confidence` is less than 50% of `confidence` (i.e. `decayed_confidence < confidence * 0.5`), mark the decayed value with a `*` suffix and show a footnote: `* Decayed to <50% of raw confidence — pattern has not been applied in more than one half-life.`
+
+6b. **Section 2b -- Needs Attention**: Shown immediately after Section 2.
+
+   If at least one pattern has `health_tier === 'needs-attention'`:
+   ```
+   ### Needs Attention (health < 0.40)
+
+   | Pattern | Health | Why |
+   |---------|--------|-----|
+   | {name} | {health} | {health_reason} |
+
+   To investigate: /orchestray:patterns <slug>
+   To curate: /orchestray:learn curate --dry-run
+   ```
+
+   If zero patterns are in this tier:
+   ```
+   ### Needs Attention
+
+   No patterns below 0.40 health. Library is in good shape.
+   ```
 
 7. **Section 3 -- Application History**: Show per-orchestration pattern usage from event data.
 
@@ -224,12 +256,18 @@ The user wants to see the pattern learning dashboard showing what the system has
 
     Read the full pattern file content. Search event history for `pattern_applied` events matching this pattern name.
 
+    Compute the health score for this pattern using `computeHealth` from
+    `bin/_lib/pattern-health.js`, passing the pattern's data and any
+    `pattern_skip_enriched` events for its slug from step 3.
+
     Display:
     ```
     ## Pattern Detail: {name}
 
     **Category:** {category}
     **Confidence:** {confidence} (raw) / {decayed_confidence} (decayed, age {age_days} days)
+    **Health:** {health} ({health_tier})
+    **Why:**   {health_reason}
     **Times Applied:** {times_applied}
     **Created From:** {source}
     **Scope:** {scope}

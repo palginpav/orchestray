@@ -2,14 +2,14 @@
 name: learn
 description: Extract learning patterns from a completed orchestration
 disable-model-invocation: true
-argument-hint: "[orchestration-id] | share <slug> | unshare <slug> | list [--shared|--all] | curate [--dry-run] | undo-last | undo <action-id>"
+argument-hint: "[orchestration-id] | share <slug> | unshare <slug> | list [--shared|--all] | curate [--dry-run] | undo-last | undo <action-id> | explain <action-id>"
 ---
 
 # Pattern Extraction
 
 > **Scope note:** v2.1.0 shares patterns across projects on THIS machine only. Cross-machine
 > sync is planned for v2.2. To manually sync to another machine today:
-> `/orchestray:learn export all` → copy the export dir → `/orchestray:learn import <path>`
+> `/orchestray:learn export all` → copy the export dir → `/orchestray:learn import <path>`. To inspect federation state (enabled/disabled, shared tier contents, collisions): `/orchestray:federation status`.
 
 The user wants to extract reusable patterns from a completed orchestration.
 
@@ -29,6 +29,7 @@ The user wants to extract reusable patterns from a completed orchestration.
    - If the first argument is `curate`: go to the **curate** command below.
    - If the first argument is `undo-last`: go to the **undo-last** command below.
    - If the first argument is `undo`: go to the **undo** command below.
+   - If the first argument is `explain`: go to the **explain** command below.
    - If the first argument is `clear-tombstones`: go to the **clear-tombstones** command below.
    - If the first argument is `list-tombstones`: go to the **list-tombstones** command below.
    - If an orchestration ID is provided (e.g., `orch-1712345678`): use it directly as `{orch-id}`.
@@ -145,30 +146,77 @@ All patterns (15 total: 12 local, 3 shared):
 
 ---
 
-### share <slug> [--dry-run] | share --all [--category <cat>]
+### share <slug> [--dry-run] [--preview] | share --all [--category <cat>]
 
 Publish a local pattern (or all eligible local patterns) to the shared tier at `~/.orchestray/shared/patterns/`.
 
 **Arguments:**
 - `<slug>` — slug of the local pattern to share (e.g., `anti-pattern-escape-hatches`).
-- `--dry-run` — preview the sanitized output and any rejections without writing.
+- `--dry-run` — run all sanitization stages and report pass/fail without writing. Non-zero exit on any failure. Useful for CI gates and batch pre-checks.
+- `--preview` — run all sanitization stages and print a human-readable before/after diff without writing. Always exits zero (sensitivity gate bypassed). Use for interactive "what will leave my project?" checks.
 - `--all` — batch mode: share all eligible local patterns.
 - `--category <cat>` — with `--all`, limit to patterns in the given category (e.g., `--category decomposition`).
 - `--force` — overwrite an existing shared pattern with the same slug without prompting.
 
+**`--dry-run` vs `--preview`:**
+
+| Flag | Exit | Output | Use when |
+|------|------|--------|----------|
+| `--dry-run` | non-zero on any sanitization failure | pass/fail line only, parseable by scripts | CI gate, batch pre-check with `share --all --dry-run` |
+| `--preview` | always zero (sensitivity-gate bypassed) | human-readable before/after diff | Interactive first-time share; "what will leave my project?" check |
+
 **Prerequisites:**
 1. `federation.shared_dir_enabled` must be `true` in `.orchestray/config.json`. If not: "Can't share: federation is not enabled. Enable it with `/orchestray:config set federation.shared_dir_enabled true`."
-2. `federation.sensitivity` for this project must be `"shareable"`. If not: "Can't share '<slug>': this project's sensitivity is 'private'. To allow sharing from this project: `/orchestray:config set federation.sensitivity shareable`" (Keep it 'private' for NDA work, client projects, or personal data.)
+2. `federation.sensitivity` for this project must be `"shareable"`. If not: "Can't share '<slug>': this project's sensitivity is 'private'. To allow sharing from this project: `/orchestray:config set federation.sensitivity shareable`" (Keep it 'private' for NDA work, client projects, or personal data.) **Note: `--preview` bypasses this check** — you can preview at any sensitivity level.
 
 **Single-pattern share steps:**
 
 1. Check `.orchestray/patterns/<slug>.md` exists. If not: "Can't share '<slug>': pattern not found locally. Available patterns: {list from glob .orchestray/patterns/*.md}" 
 
-2. Run the sanitization pipeline (`bin/_lib/shared-promote.js`):
+2. Run the sanitization pipeline (`bin/_lib/shared-promote.js`, passing `{ preview: true }` when `--preview` is set):
    - Stage 3 — secret scan. On failure (default `block` mode): "Can't share '<slug>': potential <kind> on line <N> (<section> section). Remove it before sharing, or suppress with `<!-- secret-scan: allow -->` on the same line." For high-entropy hex: "Can't share '<slug>': high-entropy hex string on line <N> (<section> section) — looks like a key or hash. If it's a known false positive (e.g., a commit SHA), add `<!-- secret-scan: allow -->` on the same line and re-run."
    - Stage 6 — size check. On failure: "Can't share '<slug>': pattern body is {X} KB (limit: 8 KB, overage: {Y} KB). To fix: trim the body (remove project-specific examples), or split into multiple patterns. Note: the Evidence section (if present) is stripped before sharing and does not count against the limit."
    - Other stage failures use the same shape: "Can't share '<slug>': {specific reason}. {recovery action}."
    - If `--dry-run`: print the sanitized pattern diff and any issues found, then stop without writing.
+
+2a. **If `--preview`:** render the `PreviewReport` returned by `promotePattern(slug, { preview: true, cwd })` in this format:
+
+```
+Preview of shared-tier output for '<slug>':
+
+Sensitivity gate: <PASS (shareable) | BLOCKED (private) — but preview is read-only and proceeds anyway>
+
+<If blocking_stage is set>
+*** WOULD BE BLOCKED BY STAGE: <blocking_stage> ***
+    Reason: <blocking_reason>
+    Recovery: remove the issue and re-run, or see the reason above.
+
+(No further sanitized output — preview halts at the first blocking stage.)
+<End if blocking_stage>
+
+<If no blocking_stage>
+Frontmatter changes:
+  removed:  <removed fields, comma-separated, or "(none)">
+  added:
+    origin:         shared
+    promoted_at:    <value>
+    promoted_from:  <value>
+
+Body changes (<N> lines<, M sections stripped>):
+  line <N>:  "<before>"  ->  "<after>"   (<reason>)
+  ...
+  <if more_changes > 0>... and <more_changes> more (run share --dry-run for full list)
+
+Size after sanitization: <X> KB / 8 KB limit   (<PASS|FAIL>)
+
+Secrets scan: <clean (no matches) | BLOCKED: <note>>
+
+To commit:  /orchestray:learn share <slug>
+To abort:   (no action needed — nothing was written)
+<End if no blocking_stage>
+```
+
+Stop here without writing anything.
 
 3. Check for slug collision in `~/.orchestray/shared/patterns/`:
    - If a same-slug file exists and `--force` is not set: "Can't share '<slug>': a shared pattern with this slug already exists (promoted on {date}). Options: (a) rename your local file and re-share: `mv .orchestray/patterns/<slug>.md .orchestray/patterns/<new-slug>.md` then `/orchestray:learn share <new-slug>`; (b) overwrite the shared copy (your local copy is unchanged): `/orchestray:learn share <slug> --force`."
@@ -208,6 +256,7 @@ Publish a local pattern (or all eligible local patterns) to the shared tier at `
 **Example:**
 ```
 /orchestray:learn share anti-pattern-escape-hatches
+/orchestray:learn share anti-pattern-escape-hatches --preview
 /orchestray:learn share anti-pattern-escape-hatches --dry-run
 /orchestray:learn share --all
 /orchestray:learn share --all --category decomposition
@@ -234,7 +283,13 @@ Remove a pattern from the shared tier. Your local copy is preserved.
    ```
    If user answers anything other than `y` or `yes` (case-insensitive): "Cancelled."
 
-3. Call `mcp__orchestray__curator_tombstone` to write a tombstone before deleting. This makes the `unshare` reversible via `undo <action-id>` (or `undo-last` if it is the most recent curator action):
+3. Note: a `start_run` call is required before writing the tombstone — call `mcp__orchestray__curator_tombstone({ "action": "start_run" })` first and save the returned `run_id`.
+
+4. Delete `~/.orchestray/shared/patterns/<slug>.md`.
+
+5. Call `mcp__orchestray__curator_tombstone` to write a tombstone AFTER the delete
+   succeeds (W1 ordering: action first, tombstone second). This makes the `unshare`
+   reversible via `undo <action-id>`:
    ```json
    mcp__orchestray__curator_tombstone({
      "action": "write",
@@ -242,11 +297,8 @@ Remove a pattern from the shared tier. Your local copy is preserved.
      "tombstone": "{\"action\": \"unshare\", \"inputs\": [{\"slug\": \"<slug>\", \"path\": \"~/.orchestray/shared/patterns/<slug>.md\", \"content_snapshot\": \"<full file content>\"}], \"output\": {\"path\": \"deleted\", \"action_summary\": \"User unshared <slug>\"}}"
    })
    ```
-   Note: a `start_run` call is required before writing the tombstone — call `mcp__orchestray__curator_tombstone({ "action": "start_run" })` first and save the returned `run_id`.
 
-4. Delete `~/.orchestray/shared/patterns/<slug>.md`.
-
-5. Report: "Unshared '<slug>' — your local copy is still at `.orchestray/patterns/<slug>.md`. Re-run `/orchestray:learn share <slug>` to publish again. To undo: `/orchestray:learn undo-last`."
+6. Report: "Unshared '<slug>' — your local copy is still at `.orchestray/patterns/<slug>.md`. Re-run `/orchestray:learn share <slug>` to publish again. To undo: `/orchestray:learn undo-last`."
 
 **Example:**
 ```
@@ -433,7 +485,7 @@ reversible via `undo-last` or `undo <action-id>`.
 |-------|-------------|
 | Curation | `curate [--dry-run] [--only ...]`, `curate --apply <proposals-file>` |
 | Sharing | `share`, `unshare`, `list` (see B2 sections above) |
-| Recovery | `undo-last`, `undo <action-id>` |
+| Recovery | `undo-last`, `undo <action-id>`, `explain <action-id>` |
 | Maintenance | `clear-tombstones` |
 
 ---
@@ -483,6 +535,19 @@ federation is enabled).
    invariants, adversarial re-read for merges, federation-absent graceful degradation,
    etc.) lives entirely in `agents/curator.md`. This CLI layer does NOT implement
    curation logic; it provides infrastructure and dispatches to the agent.
+
+4b. **Post-run reconciliation** (W1 atomicity fix — skip for dry-run): after the
+    curator agent returns, call `require('./bin/_lib/curator-reconcile').reconcile({ projectRoot })` (Node.js).
+    This detects tombstones whose file operations were not applied (truncated agent turn)
+    and auto-repairs promote and unshare mismatches. Merge and deprecate mismatches are
+    flagged for user review. If any items were repaired or flagged, append to the summary:
+    ```
+    Reconciliation: repaired N, flagged M.
+      [REPAIRED] <slug> — <detail>
+      [FLAGGED]  <slug> — <detail>  (manual action required)
+    ```
+    If reconciliation itself errors, surface: "Warning: post-run reconciliation failed:
+    <error>. Run `/orchestray:learn list-tombstones` and verify actions manually."
 
 5. **Print summary** from the curator agent's structured result. Required format:
    ```
@@ -611,6 +676,8 @@ tombstone row.
 4. Mark the tombstone row `rolled_back_at: <now>`, `rolled_back_by: "undo"`.
 
 5. Report: "Reverted action {action-id} ({action-type} of {slug})."
+   If the tombstone has a `rationale` field, append one line:
+   "This action's rationale: {rationale.one_line} (run `/orchestray:learn explain <action-id>` for full detail)."
 
 **Example:**
 ```
@@ -618,6 +685,157 @@ tombstone row.
 ```
 ```
 Reverted action curator-20260417T153000Z-a002 (deprecate of routing-prefer-opus-for-architecture).
+This action's rationale: Deprecated — 67d unused + 3 contextual-mismatch skips, score 2.3 > 2.0 floor. (run `/orchestray:learn explain curator-20260417T153000Z-a002` for full detail)
+```
+
+---
+
+### explain <action-id>
+
+Show the full structured rationale for a curator action.
+
+**Arguments:**
+- `<action-id>` — the action ID to explain (e.g., `curator-20260417T153000Z-a003`).
+  To list available action IDs: `/orchestray:learn list-tombstones`.
+
+**Steps:**
+
+1. Parse `<action-id>` from `$ARGUMENTS` (word after `explain`). If absent or blank:
+   report `Usage: /orchestray:learn explain <action-id>. To list action IDs: /orchestray:learn list-tombstones.`
+   Stop.
+
+2. Call `mcp__orchestray__curator_tombstone({ "action": "list" })`. Search the returned
+   `rows` for the row where `action_id === <action-id>`. If not found:
+   report `Action '<action-id>' not found in the last N curator runs (N = curator.tombstone_retention_runs).
+Archives older than the retention window are pruned; see .orchestray/curator/tombstones-archive/ for any manually-preserved files.`
+   Stop.
+
+3. If `row.rationale` is present (v2.1.2+ tombstone): render the full structured output:
+   ```
+   Action: {action_id}
+   Type:   {action}
+   Status: {if rolled_back_at: "rolled back at <rolled_back_at> by <rolled_back_by>" else "applied (not rolled back)"}
+   When:   {ts}
+   Pattern: {inputs[0].slug}
+
+   Summary:
+     {rationale.one_line}
+
+   Signals:
+     confidence            {rationale.signals.confidence}
+     decayed_confidence    {rationale.signals.decayed_confidence}
+     times_applied         {rationale.signals.times_applied}
+     age_days              {rationale.signals.age_days}
+     category              {rationale.signals.category}
+     {if rationale.signals.deprecation_score != null: "deprecation_score     {rationale.signals.deprecation_score}"}
+     {if rationale.signals.skip_penalty != null: "skip_penalty          {rationale.signals.skip_penalty}"}
+     {if rationale.signals.similarity_score != null: "similarity_score      {rationale.signals.similarity_score}"}
+
+   Guardrails checked:
+     {for each entry in rationale.guardrails_checked: "  - {entry}"}
+     {if empty: "  (none recorded)"}
+
+   Considered alternatives:
+     {for each entry in rationale.considered_alternatives: "  - {entry}"}
+     {if empty: "  (none)"}
+
+   Adversarial re-read: {if rationale.adversarial_re_read: "passed={passed}, missing={missing}, contradicted={contradicted}" else "n/a ({action} action)"}
+
+   Notes:
+     {rationale.notes or "(none)"}
+
+   ---
+   To reverse: /orchestray:learn undo {action_id}
+   ```
+
+4. If `row.rationale` is absent (pre-v2.1.2 tombstone): render the fallback output:
+   ```
+   Action: {action_id}
+   Type:   {action}
+   Status: {if rolled_back_at: "rolled back at <rolled_back_at> by <rolled_back_by>" else "applied (not rolled back)"}
+   When:   {ts}
+   Pattern: {inputs[0].slug}
+
+   Summary (from action_summary):
+     {output.action_summary}
+
+   No structured rationale available — this action was recorded before v2.1.2.
+   For future actions, rationale will include signals, considered alternatives,
+   and guardrail checks.
+
+   ---
+   To reverse: /orchestray:learn undo {action_id}
+   ```
+
+5. If `row.rolled_back_at` is set, the Status line already shows the rolled-back info
+   (rendered in steps 3 or 4 above). No additional step required.
+
+**Error cases:**
+
+| Input | Output |
+|-------|--------|
+| `explain` with no arg | `Usage: /orchestray:learn explain <action-id>. To list action IDs: /orchestray:learn list-tombstones.` |
+| `explain <id>` where id not found | `Action '<id>' not found in the last N curator runs (N = curator.tombstone_retention_runs). Archives older than the retention window are pruned; see .orchestray/curator/tombstones-archive/ for any manually-preserved files.` |
+
+**Example (full rationale):**
+```
+/orchestray:learn explain curator-20260417T153000Z-a003
+```
+```
+Action: curator-20260417T153000Z-a003
+Type:   deprecate
+Status: applied (not rolled back)
+When:   2026-04-17T15:30:04.231Z
+Pattern: routing-prefer-opus-for-architecture
+
+Summary:
+  Deprecated — 67d unused + 3 contextual-mismatch skips, score 2.3 > 2.0 floor.
+
+Signals:
+  confidence            0.90
+  decayed_confidence    0.42
+  times_applied         0
+  age_days              67
+  category              routing
+  deprecation_score     2.30
+  skip_penalty          6.00
+
+Guardrails checked:
+  - G1-user-correction-exempt (n/a, category is routing)
+  - G13-min-3-per-category (routing retained 5 patterns after action)
+
+Considered alternatives:
+  - Merge with routing-prefer-haiku (rejected: approach contradicts on model tier)
+
+Adversarial re-read: n/a (deprecate action)
+
+Notes:
+  LLM-generated rationale, not a formal proof.
+
+---
+To reverse: /orchestray:learn undo curator-20260417T153000Z-a003
+```
+
+**Example (fallback — old tombstone):**
+```
+/orchestray:learn explain curator-20260410T080000Z-a001
+```
+```
+Action: curator-20260410T080000Z-a001
+Type:   promote
+Status: applied (not rolled back)
+When:   2026-04-10T08:00:12.415Z
+Pattern: anti-pattern-escape-hatches
+
+Summary (from action_summary):
+  Promoted to shared tier.
+
+No structured rationale available — this action was recorded before v2.1.2.
+For future actions, rationale will include signals, considered alternatives,
+and guardrail checks.
+
+---
+To reverse: /orchestray:learn undo curator-20260410T080000Z-a001
 ```
 
 ---

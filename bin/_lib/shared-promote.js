@@ -360,18 +360,119 @@ function _appendPromoteLog(logPath, entry) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Build a PreviewReport by comparing pre- and post-sanitization state.
+ *
+ * @param {object} params
+ * @param {string} params.slug
+ * @param {object} params.originalFm   — parsed frontmatter before sanitization
+ * @param {object} params.promotedFm   — frontmatter after sanitization + metadata injection
+ * @param {string} params.originalBody — body before sanitization
+ * @param {string} params.sanitizedBody — body after all sanitization stages
+ * @param {object} params.secretResult — result from _secretScan on raw content
+ * @param {boolean} params.sensitivityBlocks — true if sensitivity gate would block a real share
+ * @param {string|null} params.blockingStage — stage name if a non-sensitivity stage would fail
+ * @param {string|null} params.blockingReason — human-readable reason for blockingStage
+ * @returns {object} PreviewReport
+ */
+function _buildPreviewReport(params) {
+  const {
+    slug,
+    originalFm,
+    promotedFm,
+    originalBody,
+    sanitizedBody,
+    secretResult,
+    sensitivityBlocks,
+    blockingStage,
+    blockingReason,
+  } = params;
+
+  // Frontmatter diff: fields removed (project-local metadata).
+  const removedFields = ['created_from', 'last_applied', 'times_applied'].filter(
+    (f) => f in originalFm,
+  );
+  const addedFields = {};
+  for (const f of ['origin', 'promoted_at', 'promoted_from']) {
+    if (promotedFm[f] !== undefined) addedFields[f] = String(promotedFm[f]);
+  }
+
+  // Body line-level diff (up to 20 entries).
+  const originalLines = originalBody.split('\n');
+  const sanitizedLines = sanitizedBody.split('\n');
+  const lineChanges = [];
+  const maxLineChanges = 20;
+
+  // Compare line by line to find mutations from path-strip and header-downgrade.
+  for (let i = 0; i < Math.max(originalLines.length, sanitizedLines.length); i++) {
+    const before = originalLines[i] || '';
+    const after = sanitizedLines[i] !== undefined ? sanitizedLines[i] : '';
+    if (before !== after) {
+      let reason = 'path-strip';
+      if (/^\(header:/.test(after)) reason = 'header-downgrade';
+      lineChanges.push({ line: i + 1, before, after, reason });
+      if (lineChanges.length >= maxLineChanges) break;
+    }
+  }
+
+  const totalChangedLines = originalLines.filter((l, i) => l !== sanitizedLines[i]).length;
+  const moreChanges = totalChangedLines > maxLineChanges
+    ? totalChangedLines - maxLineChanges
+    : 0;
+
+  // Report a size delta when path/header sanitization shrank the body meaningfully.
+  // We do NOT strip whole sections here; this is purely a body-shrink signal.
+  const sectionsStripped = [];
+  if (sanitizedBody.length < originalBody.length) {
+    // Report the delta only when the path/header stage caused large changes.
+    const delta = originalBody.length - sanitizedBody.length;
+    if (delta > 200) {
+      sectionsStripped.push(`~${(delta / 1024).toFixed(1)} KB stripped by path/header sanitization`);
+    }
+  }
+
+  const sizeBytes = Buffer.byteLength(sanitizedBody, 'utf8');
+  const secretsScan = secretResult.ok
+    ? { clean: true, note: 'No secrets detected.' }
+    : { clean: false, note: secretResult.error };
+
+  return {
+    slug,
+    sensitivity_blocks_actual_share: sensitivityBlocks,
+    blocking_stage: blockingStage || null,
+    blocking_reason: blockingReason || null,
+    frontmatter: { removed: removedFields, added: addedFields },
+    body: {
+      line_changes: lineChanges,
+      more_changes: moreChanges,
+      sections_stripped: sectionsStripped,
+      size_bytes: sizeBytes,
+      size_limit_bytes: 8192,
+    },
+    secrets_scan: secretsScan,
+    sanitization_stages_run: ['path-strip', 'header-downgrade', 'schema-validate', 'size-check'],
+  };
+}
+
+/**
  * Run the 7-stage sanitization pipeline and write the sanitized pattern to
  * ~/.orchestray/shared/patterns/{slug}.md.
  *
  * @param {string} slug    - Pattern slug (filename without .md).
  * @param {object} options
- * @param {boolean} [options.dryRun=false] - If true, run all stages but do NOT write.
- * @param {string}  [options.cwd]          - Override project root (for tests).
- * @returns {Promise<{ ok: true, destPath: string, dryRun: boolean, sanitizedBody: string }
- *                  | { ok: false, error: string, stage: string }>}
+ * @param {boolean} [options.dryRun=false]  - If true, run all stages but do NOT write.
+ * @param {boolean} [options.preview=false] - If true, run all stages, do NOT write,
+ *                                            and return a {@link PreviewReport} under
+ *                                            `preview` with destPath `'<not-written>'`.
+ * @param {string}  [options.cwd]           - Override project root (for tests).
+ * @returns {Promise<
+ *   { ok: true, destPath: string, dryRun: boolean, sanitizedBody: string }
+ *   | { ok: true, preview: object, destPath: '<not-written>' }
+ *   | { ok: false, error: string, stage: string }
+ * >}
  */
 async function promotePattern(slug, options = {}) {
   const dryRun = Boolean(options.dryRun);
+  const preview = Boolean(options.preview);
 
   // -------------------------------------------------------------------------
   // Stage 1: Read source pattern
@@ -416,10 +517,13 @@ async function promotePattern(slug, options = {}) {
 
   // -------------------------------------------------------------------------
   // Stage 2: Sensitivity gate
+  // Preview bypasses the hard-fail so users can see what WOULD be shared before
+  // flipping sensitivity to shareable. sensitivityBlocks is recorded in the report.
   // -------------------------------------------------------------------------
   const { loadFederationConfig } = _getConfigSchema();
   const fedCfg = loadFederationConfig(cwd);
-  if (fedCfg.sensitivity !== 'shareable') {
+  const sensitivityBlocks = fedCfg.sensitivity !== 'shareable';
+  if (sensitivityBlocks && !preview) {
     return {
       ok: false,
       error:
@@ -434,7 +538,30 @@ async function promotePattern(slug, options = {}) {
   // -------------------------------------------------------------------------
   const secretResult = _secretScan(rawContent, slug);
   if (!secretResult.ok) {
-    return { ok: false, error: secretResult.error, stage: 'secret-scan' };
+    if (!preview) {
+      return { ok: false, error: secretResult.error, stage: 'secret-scan' };
+    }
+    // In preview mode: report the blocking stage, return ok: true with partial report.
+    const promotedFmPartial = Object.assign({}, frontmatter, {
+      origin: 'shared',
+      promoted_at: new Date().toISOString(),
+      promoted_from: _projectHash(cwd),
+    });
+    return {
+      ok: true,
+      preview: _buildPreviewReport({
+        slug,
+        originalFm: frontmatter,
+        promotedFm: promotedFmPartial,
+        originalBody: body,
+        sanitizedBody: body,
+        secretResult,
+        sensitivityBlocks,
+        blockingStage: 'secret-scan',
+        blockingReason: secretResult.error,
+      }),
+      destPath: '<not-written>',
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -459,7 +586,30 @@ async function promotePattern(slug, options = {}) {
   // -------------------------------------------------------------------------
   const sizeResult = _checkSize(sanitizedBody, slug);
   if (!sizeResult.ok) {
-    return { ok: false, error: sizeResult.error, stage: 'size-cap' };
+    if (!preview) {
+      return { ok: false, error: sizeResult.error, stage: 'size-cap' };
+    }
+    // Preview: report the blocking stage.
+    const promotedFmPartial = Object.assign({}, sharedFrontmatter, {
+      origin: 'shared',
+      promoted_at: new Date().toISOString(),
+      promoted_from: _projectHash(cwd),
+    });
+    return {
+      ok: true,
+      preview: _buildPreviewReport({
+        slug,
+        originalFm: frontmatter,
+        promotedFm: promotedFmPartial,
+        originalBody: body,
+        sanitizedBody,
+        secretResult,
+        sensitivityBlocks,
+        blockingStage: 'size-cap',
+        blockingReason: sizeResult.error,
+      }),
+      destPath: '<not-written>',
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -467,7 +617,30 @@ async function promotePattern(slug, options = {}) {
   // -------------------------------------------------------------------------
   const fmResult = _validateFrontmatter(sharedFrontmatter, slug);
   if (!fmResult.ok) {
-    return { ok: false, error: fmResult.error, stage: 'schema-validate' };
+    if (!preview) {
+      return { ok: false, error: fmResult.error, stage: 'schema-validate' };
+    }
+    // Preview: report the blocking stage.
+    const promotedFmPartial = Object.assign({}, sharedFrontmatter, {
+      origin: 'shared',
+      promoted_at: new Date().toISOString(),
+      promoted_from: _projectHash(cwd),
+    });
+    return {
+      ok: true,
+      preview: _buildPreviewReport({
+        slug,
+        originalFm: frontmatter,
+        promotedFm: promotedFmPartial,
+        originalBody: body,
+        sanitizedBody,
+        secretResult,
+        sensitivityBlocks,
+        blockingStage: 'schema-validate',
+        blockingReason: fmResult.error,
+      }),
+      destPath: '<not-written>',
+    };
   }
 
   // Add shared-tier metadata fields to the promoted frontmatter.
@@ -480,8 +653,28 @@ async function promotePattern(slug, options = {}) {
   });
 
   // -------------------------------------------------------------------------
-  // Write: atomic tmp+rename (skip if dry run)
+  // Write: atomic tmp+rename (skip if dry run or preview)
   // -------------------------------------------------------------------------
+  // Preview mode: all sanitization stages ran, nothing will be written.
+  // Return the full PreviewReport so the user sees the exact diff.
+  if (preview) {
+    return {
+      ok: true,
+      preview: _buildPreviewReport({
+        slug,
+        originalFm: frontmatter,
+        promotedFm,
+        originalBody: body,
+        sanitizedBody,
+        secretResult,
+        sensitivityBlocks,
+        blockingStage: null,
+        blockingReason: null,
+      }),
+      destPath: '<not-written>',
+    };
+  }
+
   // Resolve destination path via the paths helper (respects test override and config).
   const sharedPatternsDir = process.env.ORCHESTRAY_TEST_SHARED_DIR
     ? require('node:path').join(process.env.ORCHESTRAY_TEST_SHARED_DIR, 'patterns')
@@ -547,7 +740,7 @@ function _projectHash(projectRoot) {
   return h.toString(16).padStart(8, '0');
 }
 
-module.exports = { promotePattern };
+module.exports = { promotePattern, _projectHash };
 
 // ---------------------------------------------------------------------------
 // Smoke test (run directly: node bin/_lib/shared-promote.js)

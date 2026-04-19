@@ -5,6 +5,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const { recordDegradation } = require('./_lib/degraded-journal');
+
 const VERSION = require('../package.json').version;
 const REPO = 'https://github.com/palginpav/orchestray';
 
@@ -324,6 +326,17 @@ function _maybeCreateSharedFederationDirs(projectRoot) {
   } catch (err) {
     // Non-fatal — federation dirs can be created on first promote if install fails here.
     console.log(`  \x1b[33m⚠\x1b[0m Could not create shared federation directories: ${err.message}`);
+    recordDegradation({
+      kind: 'shared_dir_create_failed',
+      severity: 'warn',
+      projectRoot,
+      detail: {
+        path: null,
+        error_code: (err && err.code) || null,
+        error_message: (err && err.message) ? String(err.message).slice(0, 200) : 'unknown',
+        dedup_key: 'shared_dir_create_failed',
+      },
+    });
   }
 }
 
@@ -786,7 +799,20 @@ function mergeHooks(targetDir) {
           return !name || !installedBasenames.has(name);
         });
 
-        if (newHooks.length === 0) continue;
+        if (newHooks.length === 0) {
+          recordDegradation({
+            kind: 'hook_merge_noop',
+            severity: 'info',
+            projectRoot: process.cwd(),
+            detail: {
+              event,
+              matcher: entryMatcher || null,
+              reason: 'all hooks already installed by prior version',
+              dedup_key: 'hook_merge_noop|' + event + '|' + (entryMatcher || ''),
+            },
+          });
+          continue;
+        }
 
         // Append to an existing entry with matching matcher when one exists;
         // otherwise push a new entry. Two hook blocks with the same script

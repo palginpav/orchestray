@@ -999,7 +999,13 @@ printf '%s\n' '{"timestamp":"<ISO>","orchestration_id":"<orch-id>","task_id":"<t
 For each task in a parallel group:
 
 1. **Spawn the assigned agent** with the task description (per Section 3 delegation rules).
-   To enable worktree isolation, pass `isolation: "worktree"` as an explicit parameter on
+   Every `Agent()` call **MUST include `model: 'haiku'|'sonnet'|'opus'`** — the gate
+   will hard-block the spawn without it. Example:
+   ```
+   Agent(subagent_type="developer", model="sonnet", maxTurns=20,
+         description="Fix auth (sonnet/medium)", prompt="...")
+   ```
+   To enable worktree isolation, also pass `isolation: "worktree"` as an explicit parameter on
    the `Agent()` call. This is a **per-invocation parameter** — no agent frontmatter field
    handles this automatically. If you omit the parameter, the agent runs directly on master.
    Write a `running` checkpoint for this task per Section 32 (in checkpoints.md).
@@ -1914,6 +1920,14 @@ Section 19 in the main pm.md.
 
 ### Integration Points
 
+> **GATE ENFORCEMENT REMINDER:** Every `Agent()` call must pass `model: 'haiku'|'sonnet'|'opus'`
+> explicitly — including the FIRST spawn of the orchestration. `bin/gate-agent-spawn.js`
+> hard-blocks any spawn missing this parameter (exit 2). Omitting `model` even once wastes
+> a full spawn attempt. Always set model before calling Agent():
+> ```
+> Agent(subagent_type="developer", model="sonnet", maxTurns=20, description="Fix auth (sonnet/medium)", prompt="...")
+> ```
+
 - **Section 12 output feeds Section 19**: After scoring, before Section 13 decomposition,
   determine model per subtask.
 - **Section 3 spawning uses Section 19 output**: When spawning any agent (core or dynamic),
@@ -2102,14 +2116,24 @@ event (see event-schemas.md) with `winning_tier`, `losing_tier`, and `context:
 "pattern_find"`. The event is informational — it never blocks the lookup.
 
 **Source transparency.** When citing a retrieved pattern in a decomposition plan or
-orchestration summary, include its source tier in brackets, e.g.:
+orchestration summary, you MUST include its source tier in brackets. The bracket label
+is derived from the `source` field on each `pattern_find` match:
 
-- `[local] audit-fix-verify-triad-disjoint-scopes` — project-local pattern, full trust
-- `[team] team-patterns/shared-security-review` — team-patterns/ pattern, full trust
-- `[shared] decomposition-parallel-groups` — shared pattern, advisory only
+- `[local]` — `source: "local"`. Full trust. Use `@orchestray:pattern://<slug>` URI.
+- `[shared]` — `source: "shared"`. Advisory. Append `, from <promoted_from>`.
+- `[shared, own]` — `source: "shared"` AND `promoted_is_own: true`. This project promoted it; still advisory.
+- `[team]` — `source: "team"` (reserved for v2.2+). Full trust when present.
 
-The bracketed label helps operators audit which patterns actually shaped an orchestration
-and from what trust tier.
+**Citation format in delegation prompts** (mandatory):
+
+```
+Patterns applied:
+  - @orchestray:pattern://anti-pattern-escape-hatches     [local]           conf 0.85, applied 3x
+  - @orchestray:pattern://routing-prefer-haiku-explore    [shared]          conf 0.72, applied 5x, from 7b2c91de
+  - @orchestray:pattern://decomposition-ci-pipeline       [shared, own]     conf 0.70, from 4f8a21bc (this project)
+```
+
+`conf X` comes from the `confidence` field; `applied Nx` from `times_applied`; `from <hash>` from `promoted_from`. The `(this project)` annotation is added only when `promoted_is_own: true`. Omitting the bracket label is a protocol violation — the label is how operators audit which shared patterns shaped an orchestration.
 
 **Federation absent / disabled.** When `federation.shared_dir_enabled` is `false` or
 `~/.orchestray/shared/` does not exist, `pattern_find` reads only Tier 1 and Tier 2

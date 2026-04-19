@@ -932,6 +932,16 @@ Run ONLY after orchestration completion.
 
 ## 19. Model Routing Protocol
 
+> **CRITICAL — GATE WILL BLOCK WITHOUT THIS:** Every `Agent()` call MUST include
+> `model: 'haiku'`, `model: 'sonnet'`, or `model: 'opus'` explicitly. This applies
+> to the FIRST spawn in an orchestration and every subsequent one. Omitting `model`
+> causes `bin/gate-agent-spawn.js` to exit 2 and the spawn is aborted. There is no
+> retry path — you must re-spawn with `model` set. The model parameter is NOT
+> optional, not inherited from frontmatter, and not filled in by default.
+>
+> **Correct:** `Agent(subagent_type="developer", model="sonnet", maxTurns=20, description="...", prompt="...")`
+> **Wrong:**   `Agent(subagent_type="developer", maxTurns=20, description="...", prompt="...")`
+
 > **Durable state:** as of 2.0.11, routing decisions computed by this protocol MUST be persisted to `.orchestray/state/routing.jsonl` via the helper in `bin/_lib/routing-lookup.js`. The `PreToolUse:Agent` hook enforces this. Do not rely on memory — write the decision and re-read it per spawn.
 
 After Section 12 produces a complexity score for each subtask, apply this routing protocol

@@ -47,6 +47,7 @@ const {
 } = require('./lib/rpc');
 const { handleAskUser } = require('./elicit/ask_user');
 const { toolError } = require('./lib/tool-result');
+const { recordDegradation } = require('../_lib/degraded-journal');
 
 // Stage 2 tool handlers
 const patternDeprecate = require('./tools/pattern_deprecate');
@@ -113,6 +114,15 @@ function loadConfig() {
     if (parsed && typeof parsed === 'object') return parsed;
   } catch (err) {
     logStderr('config load failed: ' + (err && err.message) + ' (using defaults)');
+    recordDegradation({
+      kind: 'config_load_failed',
+      severity: 'warn',
+      detail: {
+        error_message: err && err.message ? String(err.message).slice(0, 200) : 'unknown',
+        config_path: paths.getConfigPath(),
+        dedup_key: 'config_load_failed',
+      },
+    });
   }
   return {};
 }

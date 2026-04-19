@@ -25,9 +25,12 @@ const { loadPatternDecayConfig } = require('../../_lib/config-schema');
 const { searchPatterns, UNAVAILABLE: FTS5_UNAVAILABLE } = require('../../_lib/pattern-index-sqlite');
 const { getSharedPatternsDir } = require('../lib/paths');
 const { writeAuditEvent, readOrchestrationId } = require('../lib/audit');
+const { _projectHash } = require('../../_lib/shared-promote');
 
 // Session flag to emit the FTS5 fallback warning at most once per process.
 let _fts5WarnedThisSession = false;
+
+const { recordDegradation } = require('../../_lib/degraded-journal');
 
 const CATEGORIES = [
   'decomposition',
@@ -157,9 +160,11 @@ async function handle(input, context) {
   /** @type {Map<string, number>|null} slug → normalized [0,1] relevance score */
   let fts5ScoreBySlug = null;
   let fts5Available = true;
+  /** @type {Array|null} Raw results from searchPatterns (carries match_terms). */
+  let fts5Results = null;
 
   try {
-    const fts5Results = searchPatterns(taskSummary, {
+    fts5Results = searchPatterns(taskSummary, {
       projectRoot,
       limit: Math.max(localIndex.length, 50),
       includeDeprecated,
@@ -167,6 +172,7 @@ async function handle(input, context) {
 
     if (fts5Results === FTS5_UNAVAILABLE || !Array.isArray(fts5Results)) {
       fts5Available = false;
+      fts5Results = null;
     } else {
       // BM25 scores are negative (more negative = better). Normalize to [0,1]:
       // find the most-negative score (best match) and map to 1.0.
@@ -187,6 +193,7 @@ async function handle(input, context) {
     }
   } catch (_) {
     fts5Available = false;
+    fts5Results = null;
   }
 
   if (!fts5Available && !_fts5WarnedThisSession) {
@@ -195,6 +202,16 @@ async function handle(input, context) {
       'pattern_find: FTS5 backend unavailable; falling back to Jaccard retrieval. ' +
       'Install native build tools or update to Node 22.5+ for FTS5.'
     );
+    recordDegradation({
+      kind: 'fts5_fallback',
+      severity: 'warn',
+      projectRoot,
+      detail: {
+        reason: 'FTS5 backend returned UNAVAILABLE',
+        shared_tier: false,
+        dedup_key: 'fts5_fallback',
+      },
+    });
     // Write a session flag to .orchestray/state/ to prevent warning spam across
     // tool calls within the same MCP server process (the in-process boolean
     // above already guards that; this file is belt-and-suspenders for
@@ -316,6 +333,18 @@ async function handle(input, context) {
   const nowMs = Date.now();
   const taskTokens = _tokenize(taskSummary); // Pre-compute once for Jaccard path.
 
+  // Build a slug → match_terms lookup from fts5Results for O(1) access in the
+  // scoring loop (avoids O(N*M) Array.find per entry).
+  /** @type {Map<string, import('../../_lib/pattern-index-sqlite').TermHit[]>} */
+  const fts5TermsBySlug = new Map();
+  if (fts5Results !== null) {
+    for (const r of fts5Results) {
+      if (Array.isArray(r.match_terms)) {
+        fts5TermsBySlug.set(r.slug, r.match_terms);
+      }
+    }
+  }
+
   for (const entry of index) {
     const fm = entry.frontmatter;
     const confidence = _numericConfidence(fm.confidence);
@@ -387,9 +416,38 @@ async function handle(input, context) {
     const score = confidence * (overlapRatio + roleBonus + fileBonus);
 
     const matchReasons = [];
-    if (fts5Available && entryTier === 'local') matchReasons.push('fts5');
+    if (fts5Available && entryTier === 'local') {
+      // Build per-term reasons from the FTS5 highlight() data attached by
+      // searchPatterns() (Idea 4 — v2.1.2). Each TermHit carries {term, section}.
+      // Group by term so we can emit "fts5:term=X (in context, approach)" when
+      // the same term hit multiple sections.
+      const termHits = fts5TermsBySlug.get(entry.slug) || [];
+
+      if (termHits.length > 0) {
+        // Group hits by term, collect unique sections.
+        const termSections = new Map();
+        for (const { term, section } of termHits) {
+          if (!termSections.has(term)) termSections.set(term, []);
+          const secs = termSections.get(term);
+          if (!secs.includes(section)) secs.push(section);
+        }
+        for (const [term, sections] of termSections) {
+          matchReasons.push('fts5:term=' + term + ' (in ' + sections.join(', ') + ')');
+        }
+      } else {
+        // highlight() returned no hits (e.g., very old SQLite without highlight
+        // support, or the match was on a section not covered by highlight).
+        // Fall back to a generic fts5 reason so the caller still knows FTS5 ran.
+        matchReasons.push('fts5');
+      }
+    }
     if (roleBonus > 0) matchReasons.push('role=' + agentRole);
     if (!(fts5Available && entryTier === 'local')) {
+      // Jaccard / fallback path: emit "fallback: keyword" to signal that FTS5
+      // was unavailable or this is a shared-tier entry, plus the top overlap tokens.
+      if (!fts5Available) {
+        matchReasons.push('fallback: keyword');
+      }
       for (const tok of Array.from(overlapTokens).slice(0, 3)) {
         matchReasons.push('keyword:' + tok);
       }
@@ -408,7 +466,12 @@ async function handle(input, context) {
       confidence, fm, entry.filepath, category, decayConfig, nowMs
     );
 
-    scored.push({
+    // Populate provenance fields for shared-tier matches so the PM can render
+    // [shared] vs [shared, own] bracket labels without LLM string comparisons.
+    // promoted_from is copied verbatim from frontmatter (8-hex, already present
+    // on shared patterns promoted by shared-promote.js).
+    // promoted_is_own is true iff this project promoted the pattern.
+    const matchEntry = {
       slug: entry.slug,
       uri: 'orchestray:pattern://' + entry.slug,
       confidence,
@@ -420,7 +483,15 @@ async function handle(input, context) {
       match_reasons: matchReasons,
       source: entryTier,
       _score: score,
-    });
+    };
+    if (entryTier === 'shared') {
+      const promotedFrom = typeof fm.promoted_from === 'string' ? fm.promoted_from : undefined;
+      if (promotedFrom !== undefined) {
+        matchEntry.promoted_from = promotedFrom;
+        matchEntry.promoted_is_own = promotedFrom === _projectHash(projectRoot);
+      }
+    }
+    scored.push(matchEntry);
   }
 
   // Sort: score desc, tiebreak times_applied desc, confidence desc, slug asc.

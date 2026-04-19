@@ -2029,3 +2029,94 @@ event with `by: "curator"` from `mcp__orchestray__pattern_deprecate`.
 
 **Schema stability:** all four curator action events follow the same additive-only
 stability contract as `curator_run_complete`.
+
+---
+
+## v2.1.2 additions
+
+### Degraded-mode journal (`.orchestray/state/degraded.jsonl`)
+
+Written by `bin/_lib/degraded-journal.js`. One JSON object per line; file rotated at
+1 MB with 3-generation retention. Never throws — write failures return
+`{ appended: false }` silently.
+
+```json
+{
+  "schema": 1,
+  "timestamp": "<ISO 8601>",
+  "kind": "<kind>",
+  "severity": "info | warn | error",
+  "detail": {}
+}
+```
+
+**`kind` enum** (all introduced in v2.1.2):
+
+| kind | severity | When written |
+|---|---|---|
+| `fts5_fallback` | info | FTS5 query fell back to keyword scan |
+| `fts5_backend_unavailable` | warn | better-sqlite3 failed to load at MCP boot |
+| `flat_federation_keys_accepted` | info | Flat `federation.*` config keys detected on disk |
+| `flat_curator_keys_accepted` | info | Flat `curator.*` config keys detected on disk |
+| `shared_dir_create_failed` | warn | Could not create `~/.orchestray/shared/` at install |
+| `curator_reconcile_flagged` | warn | Post-curate reconcile found an action requiring user review |
+| `config_load_failed` | error | Config file parse or read failed |
+| `hook_merge_noop` | info | A hook event already fully installed; no new entries merged |
+
+**`detail` fields vary by kind.** All include at least `dedup_key` (string) for
+deduplication by consumers.
+
+---
+
+### `doctor-result-code` sentinel (stdout)
+
+`/orchestray:doctor` always emits a bare sentinel as its final stdout line:
+
+```
+doctor-result-code: <code>
+```
+
+Where `<code>` is:
+- `0` — all 8 probes healthy
+- `1` — one or more probes returned warnings, none returned errors
+- `2` — one or more probes returned errors
+
+Consumers (scripts, CI integrations) may parse this line to gate on doctor exit status.
+
+---
+
+### `pattern://` resource tier banner (v2.1.2)
+
+The `pattern://` MCP resource body now opens with a tier banner line:
+
+```
+[Tier: local | shared | shared (this project)]
+```
+
+followed by the pattern body as before. The banner is present only when the pattern
+originates from Tier 2 (federation-shared). Tier 1 (local-only) patterns omit the
+banner for backward compatibility.
+
+---
+
+### Tombstone `rationale` field (v2.1.2, curator actions)
+
+Each tombstone written by the curator agent may now include a `rationale` object.
+The field is optional — old tombstones without it continue to work.
+
+```json
+{
+  "action_id": "curator-2026-04-19T...-a001",
+  "action": "promote | merge | deprecate | unshare",
+  "slug": "<pattern-slug>",
+  "action_summary": "<one-line summary>",
+  "rationale": {
+    "schema_version": 1,
+    "text": "<curator's full reasoning>",
+    "confidence": 0.0
+  }
+}
+```
+
+`rationale.confidence` is the curator's self-assessed confidence (0.0–1.0).
+`rationale.text` is the full reasoning used by `/orchestray:learn explain <action-id>`.

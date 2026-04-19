@@ -11,6 +11,13 @@ The user wants to see the current state of orchestration. Check the following an
 
 ## Status Check Protocol
 
+0. **Check degraded journal**: Read the last ≤20 lines of `.orchestray/state/degraded.jsonl`
+   (if present). If any entry has a `ts` value within the last 24 hours, emit a one-liner
+   **above** the rest of the status report:
+   `> [degraded] {N} silent fallback(s) in last 24h — run /orchestray:doctor for details`
+   where N is the count of entries newer than 24 h. Skip this step silently if the file
+   is absent or unreadable.
+
 1. **Check for active orchestration**: Read `.orchestray/current-task.json` if it exists.
    - If it exists: Report the task description, status, agents spawned, agents completed, and any pending work.
    - If it does not exist: Report "No active orchestration."

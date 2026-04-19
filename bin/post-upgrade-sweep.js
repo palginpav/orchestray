@@ -46,6 +46,7 @@ const {
 } = require('./_lib/config-schema');
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
+const { recordDegradation } = require('./_lib/degraded-journal');
 
 // ──────────────────────────────────────────────────────────────────────────────
 // v2.0.21: upgrade-pending warning
@@ -145,6 +146,17 @@ function emitUpgradePendingWarning(sessionId, cwd) {
       '[orchestray] Upgraded' + versionSuffix + ' while this session was open — ' +
       'one-time reminder. RESTART to load new agents (this message won\'t repeat).\n'
     );
+    recordDegradation({
+      kind: 'agent_registry_stale',
+      severity: 'warn',
+      detail: {
+        installed_at: data.installed_at,
+        session_started: sessionStartMs ? new Date(sessionStartMs).toISOString() : null,
+        version: data.version || null,
+        previous_version: data.previous_version || null,
+        dedup_key: 'agent_registry_stale|' + (sessionId || 'unknown'),
+      },
+    });
 
     try { fs.writeFileSync(sessionMarkerPath, '1', 'utf8'); } catch (_e) { /* ignore */ }
   } catch (_e) {

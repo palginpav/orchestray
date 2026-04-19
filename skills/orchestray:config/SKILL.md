@@ -74,15 +74,30 @@ The user wants to view or modify orchestration settings.
     "unknown_tool_policy": "block",
     "global_kill_switch": false
   },
-  "federation.shared_dir_enabled": false,
-  "federation.sensitivity": "private",
-  "federation.shared_dir_path": "~/.orchestray/shared",
-  "curator.enabled": true,
-  "curator.self_escalation_enabled": true,
-  "curator.pm_recommendation_enabled": true,
-  "curator.tombstone_retention_runs": 3
+  "federation": {
+    "shared_dir_enabled": false,
+    "sensitivity": "private",
+    "shared_dir_path": "~/.orchestray/shared"
+  },
+  "curator": {
+    "enabled": true,
+    "self_escalation_enabled": true,
+    "pm_recommendation_enabled": true,
+    "tombstone_retention_runs": 3
+  }
 }
 ```
+
+**Writing nested sections:** For any key under `federation.*` or `curator.*`, write
+the value into the nested object form in `.orchestray/config.json`. That is:
+`/orchestray:config set federation.shared_dir_enabled true` must produce
+`"federation": {"shared_dir_enabled": true, ...}` in the config file — NOT a top-level
+`"federation.shared_dir_enabled": true` key. When writing, read the existing
+`"federation"` or `"curator"` object first (or start from defaults), merge the
+updated key into it, and write the whole section back as a nested object. Remove any
+surviving flat dotted top-level keys for the same section (e.g., delete
+`"federation.shared_dir_enabled"` if present as a top-level key after migrating it
+to nested).
 
 ### Available Settings
 

@@ -3,6 +3,129 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+## [2.1.2] - 2026-04-19
+
+**Observability — you can now see federation tier, curator reasoning, retrieval matches, and silent fallbacks.** Four bundles ship together: federation tier badges on every pattern retrieval, curator `rationale` and `explain` for auditing curation decisions, per-term `match_reasons` so you know why a pattern surfaced, and a degraded-mode journal plus `/orchestray:doctor` to surface silent fallbacks before they cause confusion.
+
+### Added
+
+- **Federation tier badge in retrieval (Bundle F).** `pattern_find` matches now carry
+  `promoted_from` and `promoted_is_own` fields. The PM's delegation prompt displays a
+  bracketed badge (`[local]`, `[shared]`, or `[shared, own]`) next to each cited pattern,
+  making the trust tier visible in every orchestration audit trail. The `pattern://` MCP
+  resource banner also shows the tier. Citation format in `tier1-orchestration.md` §22b
+  and `delegation-templates.md` tightened to require the badge — omitting it is now a
+  protocol violation.
+- **`/orchestray:federation status` skill (Bundle F).** Zero new JS — reads config and
+  filesystem. Reports enabled/disabled/partial states, shared-dir contents, FTS5
+  availability, and origin attribution for shared patterns. Run it when federation
+  behaves unexpectedly.
+- **`share --preview` flag on `/orchestray:learn share` (Bundle F).** Returns a
+  sanitized before/after diff without writing anything. Useful for reviewing what
+  path-stripping and header-downgrading will do to a pattern before committing the share.
+- **Per-action `rationale` field in curator tombstones (Bundle C).** Every curator
+  action now records the curator's full reasoning in the tombstone (`rationale.text`,
+  `rationale.confidence`, `rationale.schema_version: 1`). Additive — old tombstones
+  without `rationale` continue to work for undo, explain, and reconcile.
+- **`/orchestray:learn explain <action-id>` subcommand (Bundle C).** Shows the curator's
+  reasoning for a past action, pulled from the tombstone `rationale` field. Falls back
+  gracefully to `action_summary` for pre-v2.1.2 tombstones without rationale.
+- **Pattern health score in `/orchestray:patterns` (Bundle C).** Each pattern now shows
+  a computed health score: `clamp(decayed_confidence × usage_boost × freshness_factor ×
+  (1 - skip_penalty), 0, 1)`. Tiers: healthy ≥ 0.60 / stale 0.40–0.59 / needs-attention
+  < 0.40. A new `### Needs attention` section surfaces patterns below 0.40 so stale or
+  frequently-skipped patterns are easy to find and curate.
+- **Per-term `match_reasons` via FTS5 `matchinfo()` / `highlight()` (Bundle R).**
+  `pattern_find` results now include fine-grained match reasons like
+  `"fts5:term=audit (in context, approach)"` instead of the flat `"fts5"` string.
+  The keyword fallback path emits `"fallback: keyword"` explicitly. `match_reasons`
+  stays `string[]` — no consumer breakage.
+- **Degraded-mode journal at `.orchestray/state/degraded.jsonl` (Bundle D).** Versioned
+  JSONL, 1 MB × 3-generation rotation, 1024-byte per-line cap, never throws. Nine
+  silent-fallback sites are now instrumented: `fts5_fallback`, `fts5_backend_unavailable`,
+  `flat_federation_keys_accepted`, `flat_curator_keys_accepted`, `shared_dir_create_failed`,
+  `curator_reconcile_flagged`, `config_load_failed`, `hook_merge_noop`. Check
+  `.orchestray/state/degraded.jsonl` whenever something is silently degraded.
+- **`/orchestray:doctor` skill (Bundle D).** Runs 8 probes: migrations present, MCP
+  tools/list, config keys, shared-dir writable, FTS5 loaded, better-sqlite3 ABI,
+  journal tail, manifest/VERSION coherence. Emits a `doctor-result-code: 0|1|2` sentinel
+  line on the last output line (0 = healthy, 1 = warnings, 2 = errors). Run it after
+  upgrade or when the MCP server misbehaves.
+- **`/orchestray:status` step 0 journal summary (Bundle D).** When
+  `.orchestray/state/degraded.jsonl` is non-empty, `/orchestray:status` now surfaces a
+  one-liner (e.g., "2 degraded events since last restart — run /orchestray:doctor") so
+  silent fallbacks are visible without polling the journal directly.
+
+### Changed
+
+- **Citation format tightened (Bundle F).** The `[shared]` citation line in
+  `tier1-orchestration.md` §22b now includes `applied Nx` to match the format mandated
+  by `delegation-templates.md`. Operators relying on pattern-audit log parsing should
+  expect `applied Nx` in all three tier variants (`[local]`, `[shared]`, `[shared, own]`).
+
+### Fixed
+
+- **Curator phantom-success (W1):** If an agent turn was truncated between the tombstone
+  write and the actual file operation, the tombstone claimed success but the shared-tier
+  file (for a promote) or the delete (for an unshare) never happened. `undo` became a
+  silent no-op because rolling back a promote only restores the local source file, not
+  the missing shared-tier destination. Two complementary fixes applied:
+
+  **Option A (reordering):** `agents/curator.md` §5 now instructs the agent to execute
+  the destructive file operation first, then write the tombstone in a try/finally. This
+  eliminates the phantom-success row — if the action didn't happen, no tombstone is
+  written. The failure mode inverts to "untracked success" (action happened, tombstone
+  write crashed), which is detectable and safe to re-curate.
+
+  **Option B (post-run reconciliation):** New `bin/_lib/curator-reconcile.js` module.
+  After every `curate` run (non-dry-run), the `skills/orchestray:learn/SKILL.md` curate
+  block calls `reconcile({ projectRoot, runId })`. For each tombstone in the most-recent
+  run, reconciliation checks filesystem reality against what the tombstone claims:
+    - `promote` — shared-tier file absent → auto-repaired (content_snapshot copied).
+    - `unshare` — shared-tier file still present → auto-repaired (file deleted).
+    - `merge`   — output file absent → flagged for user review (cannot auto-synthesise).
+    - `deprecate` — file present without `deprecated: true` → flagged for user review.
+  Already-rolled-back tombstones are skipped. Happy-path users see nothing different;
+  a truncated run now surfaces a "Reconciliation: repaired N, flagged M" line in the
+  summary instead of silently leaving state inconsistent.
+
+  `skills/orchestray:learn/SKILL.md` unshare block updated to match the new ordering
+  (delete first, tombstone second).
+
+- **Silent regression (v2.1.0):** `federation.*` and `curator.*` config settings set via
+  `/orchestray:config set` were silently ignored — the loaders read nested-object form
+  while the documented default config and set command wrote flat dotted keys. Federation
+  never activated and curator setting changes never persisted for any user who used the
+  documented path. Loaders now accept both forms (nested wins on collision); set command
+  now writes nested form; SKILL.md defaults block updated to canonical nested shape.
+  Existing on-disk flat configs continue to work immediately — no migration step needed.
+  A one-time deprecation warning is printed to stderr per process when flat keys are
+  detected to guide organic migration.
+- **First-spawn missing-model tax:** On almost every orchestration the PM's first `Agent()`
+  call omitted the `model` parameter, causing `gate-agent-spawn.js` to block the spawn
+  (exit 2) and forcing a re-spawn. Strengthened the model-required reminder in Section 19
+  of `agents/pm.md` and `agents/pm-reference/tier1-orchestration.md` with explicit callout
+  boxes and code examples at the delegation-template site so the model field is never
+  omitted on first spawn.
+
+### Not in this release
+
+- **Retrieval shadow scorer (v2.1.3, H1)** — pluggable rank-comparison seam; needs
+  `match_reasons` (this release) stable in the wild first.
+- **Skip-signal down-ranking + local success-rate boost (v2.1.3, H2)** — ride H1 shadow
+  mode before replacing baseline scoring.
+- **Curator duplicate pre-filter / MinHash (v2.1.3, H3)** — similarity score wants to
+  land inside the `rationale` field (this release) before adding the pre-filter step.
+- **`recently_curated:` annotation (v2.1.3, H4)** — links to rationale; natural next step.
+- **`/orchestray:doctor --deep` install-integrity checksums (v2.1.3/v2.2, H5)** — basic
+  doctor lands here; deep checksum manifest is a separate design decision.
+- **Cross-machine federation sync (v2.2, H8)** — federation is still single-machine only.
+- **Per-pattern privacy flag (v2.2, H9)** — privacy remains per-project via
+  `federation.sensitivity` for now.
+- **Team / multi-user federation (v2.3+, H10)** — needs its own security review first.
+
 ## [2.1.1] - 2026-04-17
 
 **Hotfix: MCP server failed to start after a v2.1.0 install because the FTS5 SQLite migration helpers never shipped.** Reinstall to pick up the fix.

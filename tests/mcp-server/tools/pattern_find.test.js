@@ -479,3 +479,132 @@ describe('pattern_find behavior', () => {
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// promoted_from / promoted_is_own enrichment (v2.1.2 Bundle F Item 1)
+// ---------------------------------------------------------------------------
+
+describe('promoted_from / promoted_is_own enrichment', () => {
+  const { _projectHash } = require('../../../bin/_lib/shared-promote.js');
+
+  function makeSharedDir() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestray-pf-shared-test-'));
+    fs.mkdirSync(path.join(dir, 'patterns'), { recursive: true });
+    return dir;
+  }
+
+  function writeSharedPattern(sharedDir, slug, frontmatter, body) {
+    const fmLines = Object.entries(frontmatter)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join('\n');
+    const content = '---\n' + fmLines + '\n---\n\n' + (body || '## Context\nShared context.\n');
+    fs.writeFileSync(path.join(sharedDir, 'patterns', slug + '.md'), content);
+  }
+
+  function withSharedDir(sharedDir, fn) {
+    const prev = process.env.ORCHESTRAY_TEST_SHARED_DIR;
+    process.env.ORCHESTRAY_TEST_SHARED_DIR = sharedDir;
+    try {
+      return fn();
+    } finally {
+      if (prev === undefined) delete process.env.ORCHESTRAY_TEST_SHARED_DIR;
+      else process.env.ORCHESTRAY_TEST_SHARED_DIR = prev;
+    }
+  }
+
+  test('(a) shared entry with promoted_from in frontmatter surfaces the field on the match', async () => {
+    const tmp = makeTmpProject();
+    const sharedDir = makeSharedDir();
+    try {
+      const otherHash = 'abcd1234';
+      writeSharedPattern(sharedDir, 'shared-with-origin', {
+        name: 'shared-with-origin',
+        category: 'decomposition',
+        confidence: 0.75,
+        description: 'shared pattern for promoted_from test',
+        origin: 'shared',
+        promoted_from: otherHash,
+        promoted_at: '2026-04-01T00:00:00.000Z',
+      });
+      const result = await withSharedDir(sharedDir, () =>
+        withCwd(tmp, () =>
+          handle(
+            validInput({ task_summary: 'shared pattern for promoted_from test' }),
+            makeContext(tmp)
+          )
+        )
+      );
+      assert.equal(result.isError, false);
+      const match = result.structuredContent.matches.find((m) => m.slug === 'shared-with-origin');
+      assert.ok(match, 'shared match must appear in results');
+      assert.equal(match.source, 'shared');
+      assert.equal(match.promoted_from, otherHash, 'promoted_from must be copied from frontmatter');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      fs.rmSync(sharedDir, { recursive: true, force: true });
+    }
+  });
+
+  test('(b) promoted_is_own is true when promoted_from equals this project hash', async () => {
+    const tmp = makeTmpProject();
+    const sharedDir = makeSharedDir();
+    try {
+      const ownHash = _projectHash(tmp);
+      writeSharedPattern(sharedDir, 'shared-own-pattern', {
+        name: 'shared-own-pattern',
+        category: 'routing',
+        confidence: 0.80,
+        description: 'pattern promoted by this test project',
+        origin: 'shared',
+        promoted_from: ownHash,
+        promoted_at: '2026-04-02T00:00:00.000Z',
+      });
+      const result = await withSharedDir(sharedDir, () =>
+        withCwd(tmp, () =>
+          handle(
+            validInput({ task_summary: 'pattern promoted by this test project' }),
+            makeContext(tmp)
+          )
+        )
+      );
+      assert.equal(result.isError, false);
+      const match = result.structuredContent.matches.find((m) => m.slug === 'shared-own-pattern');
+      assert.ok(match, 'shared own match must appear in results');
+      assert.equal(match.promoted_is_own, true, 'promoted_is_own must be true when hash matches');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      fs.rmSync(sharedDir, { recursive: true, force: true });
+    }
+  });
+
+  test('(c) local-tier matches have neither promoted_from nor promoted_is_own', async () => {
+    const tmp = makeTmpProject();
+    const sharedDir = makeSharedDir();
+    try {
+      writePattern(tmp, 'local-no-provenance', {
+        name: 'local-no-provenance',
+        category: 'decomposition',
+        confidence: 0.70,
+        description: 'local only pattern no provenance',
+      });
+      const result = await withSharedDir(sharedDir, () =>
+        withCwd(tmp, () =>
+          handle(
+            validInput({ task_summary: 'local only pattern no provenance' }),
+            makeContext(tmp)
+          )
+        )
+      );
+      assert.equal(result.isError, false);
+      const match = result.structuredContent.matches.find((m) => m.slug === 'local-no-provenance');
+      assert.ok(match, 'local match must appear');
+      assert.equal(match.source, 'local');
+      assert.equal(match.promoted_from, undefined, 'local match must not have promoted_from');
+      assert.equal(match.promoted_is_own, undefined, 'local match must not have promoted_is_own');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      fs.rmSync(sharedDir, { recursive: true, force: true });
+    }
+  });
+
+});

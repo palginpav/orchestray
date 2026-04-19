@@ -191,7 +191,11 @@ untouched.
 **Output of a promote action:**
 - New file at `~/.orchestray/shared/patterns/<slug>.md` (sanitized copy).
 - Local file left in place, unchanged.
-- Tombstone row written before the copy (see Section 5).
+- Tombstone row written AFTER the copy succeeds (see Section 5, W1 ordering).
+- Before calling `curator_tombstone`, assemble a `rationale` object per §5.x.
+  For promote, `signals` MUST include `confidence`, `decayed_confidence`,
+  `times_applied`, `age_days`, `category`, and `skip_penalty` (0 if suppressed
+  per §4.3).
 
 ### 4.2 Merge (N patterns → 1)
 
@@ -249,11 +253,16 @@ judgment is required.
      "Merge of [slugs] skipped — adversarial re-read found N missing/contradicted
      rules. Review manually."
    - If `passed == true`: proceed to step 3.
+   - Record the adversarial re-read result in `rationale.adversarial_re_read`
+     (`{ passed, missing, contradicted }`). This field is REQUIRED for merge
+     rationale. If `passed: false`, do not write the tombstone — no rationale
+     needed for actions not taken.
    - This step costs 2–3k additional tokens per merge (bounded within `maxTurns: 15`).
 
-3. Write tombstone rows for all N input patterns (full content snapshots).
-4. Write the merged pattern file.
-5. Delete the non-lead original files from their tier.
+3. Write the merged pattern file.
+4. Delete the non-lead original files from their tier.
+5. Write tombstone rows for all N input patterns (full content snapshots) AFTER
+   steps 3–4 succeed (W1 ordering: action first, tombstone second).
 
 ### 4.3 Deprecate (mark low-value patterns)
 
@@ -294,6 +303,11 @@ term entirely. The formula reduces to:
 Surface: "skip_penalty suppressed: per-slug skip attribution not yet populated
 (A2 plumbing fix required)."
 
+Record the numeric `deprecation_score` in `rationale.signals.deprecation_score`.
+If `skip_penalty` was suppressed (§4.3 suppression rule), set
+`signals.skip_penalty: 0` AND include a note in `rationale.notes`:
+'skip_penalty suppressed (per-slug attribution unavailable)'.
+
 **Deprecation threshold — explicit lower bound:**
 
 - **If `corpus_size < 0.8 × cap` (fewer than 40 patterns for a 50-cap project):**
@@ -315,13 +329,41 @@ auto-deprecated. Skip them silently; do not surface them as candidates.
 
 ## 5. Tombstone Protocol
 
-Every destructive action requires a tombstone row **before** the action is committed.
+Every destructive action requires a tombstone row recorded alongside it.
 The tombstone file is the sole source of truth for rollback.
 
 **You do NOT write tombstone rows directly via the `Write` tool.** All tombstone
 operations go through `mcp__orchestray__curator_tombstone`. That tool handles
 atomic `tmp + rename` writes, keep-last-N retention rotation, and lock management.
 You are responsible only for supplying the correct payload.
+
+### Atomicity ordering (W1 fix — action first, tombstone second)
+
+> **CRITICAL ordering:** Perform the destructive file operation FIRST, then
+> write the tombstone row in a try/finally block. This is the opposite of the
+> pre-W1 ordering ("tombstone before action") and eliminates the phantom-success
+> failure mode where a tombstone claims success but the file operation was never
+> applied (truncated agent turn).
+>
+> Failure modes under the new ordering:
+> - Action succeeds, tombstone write fails → untracked state change. The run
+>   summary will show the action without an action_id. The user can still see
+>   the effect on disk. The post-run reconciliation pass (`curator-reconcile.js`)
+>   will report the untracked row. Safe to re-curate.
+> - Action fails → no tombstone written, no effect. Same behaviour as before.
+>
+> The old failure mode (tombstone written, action not applied) is eliminated.
+
+**Per-action protocol (must follow this order):**
+
+1. Capture `content_snapshot` from the pattern file (read immediately before acting).
+2. **Execute the destructive action** (file copy / merge write / file delete).
+3. Whether the action succeeded or failed, call `mcp__orchestray__curator_tombstone`
+   in a try/finally: write the tombstone if the action succeeded; skip it if the
+   action failed (no point recording a no-op).
+4. If the tombstone write fails after a successful action, log the error to stderr
+   and continue — the action already happened, so blocking here would leave state
+   inconsistent. The reconciliation pass will detect and surface the gap.
 
 ### Run lifecycle
 
@@ -337,7 +379,7 @@ Save the returned `run_id`. Every subsequent tombstone write for this run requir
 The tool also acquires the `run.lock` to prevent concurrent curator runs — do not
 proceed if this call returns an error.
 
-**Before each destructive action**, call:
+**After each destructive action** (on success only), call:
 
 ```
 mcp__orchestray__curator_tombstone({
@@ -348,8 +390,8 @@ mcp__orchestray__curator_tombstone({
 ```
 
 Save the returned `action_id`. The tool returns an error if the tombstone payload is
-invalid. If this call fails, **do not execute the action** — the tombstone is a
-prerequisite, not a side effect (G8).
+invalid. If this call fails after a successful action, log to stderr and continue
+(see atomicity ordering above). If the action itself failed, do not write a tombstone.
 
 ### Tombstone payload schema
 
@@ -357,7 +399,7 @@ The `tombstone` field must be a JSON-serialised object with this shape:
 
 ```json
 {
-  "action": "promote | merge | deprecate",
+  "action": "promote | merge | deprecate | unshare",
   "inputs": [
     {
       "slug": "<kebab-case pattern slug>",
@@ -379,6 +421,60 @@ Key field constraints:
 - For merges: `inputs` contains all N source patterns (N ≥ 2).
 - The tool automatically sets `orch_id`, `action_id`, `ts`, `user_rollback_command`,
   `rolled_back_at`, and `rolled_back_by`.
+
+### 5.x Rationale field (optional, v2.1.2+)
+
+When writing a tombstone via `mcp__orchestray__curator_tombstone` `action: write`,
+you MUST include a `rationale` object inside the `tombstone` payload. This
+structured record captures the signals and reasoning that led to the action
+so that `undo` and `explain` can surface *why* the decision was made weeks
+after the fact.
+
+**Rationale schema:**
+
+```json
+{
+  "schema_version": 1,
+  "one_line": "<one short sentence — same substance as action_summary>",
+  "signals": {
+    "confidence":         0.82,
+    "decayed_confidence": 0.74,
+    "times_applied":      4,
+    "age_days":           23,
+    "category":           "routing",
+    "skip_penalty":       0.0,
+    "deprecation_score":  null,
+    "similarity_score":   null
+  },
+  "guardrails_checked":        ["G3-same-category", "G19-merged-from"],
+  "considered_alternatives":   ["merge with routing-prefer-haiku (rejected: approach contradicts on model tier)"],
+  "adversarial_re_read":       { "passed": true, "missing": [], "contradicted": [] },
+  "notes":                     "LLM-generated rationale, not a formal proof."
+}
+```
+
+**Per-action required fields:**
+
+- **promote**: `signals` MUST include `confidence`, `decayed_confidence`,
+  `times_applied`, `age_days`, `category`, and `skip_penalty` (0 if suppressed
+  per §4.3). No `deprecation_score`, no `similarity_score`, no `adversarial_re_read`.
+
+- **merge**: all promote signals PLUS `similarity_score` (LLM self-estimate, 0-1).
+  `adversarial_re_read` MUST be present and MUST report `passed: true`. A
+  `passed: false` re-read blocks the merge before any tombstone is written — no
+  rationale needed for actions not taken.
+
+- **deprecate**: all promote signals PLUS `deprecation_score` (the numeric value
+  of the formula in §4.3). `considered_alternatives` should list any close-call
+  patterns considered but not deprecated.
+
+- **unshare**: rationale optional. If present, `one_line` alone is sufficient.
+
+**Size budget:** ≤ 4 KB per action (soft advisory). If exceeded, truncate
+`considered_alternatives` first, then `notes`.
+
+**Do not** copy the full Approach section into `rationale` — keep each prose
+field to one short sentence.
 
 ### Retention
 
@@ -463,8 +559,12 @@ justify an exception.
 - **G7.** Sanitization gate (`bin/_lib/shared-promote.js`) MUST run before any promote
   commits bytes to the shared tier. Gate failure = skip. If federation is absent, no
   gate needed because no promote executes.
-- **G8.** Tombstone row with full content snapshot MUST be written before any
-  destructive action. If tombstone write fails, abort the action.
+- **G8.** Destructive action MUST be attempted first; tombstone row MUST be written
+  immediately after on success (try/finally). If the action itself fails, do not
+  write a tombstone — there is nothing to undo. If the tombstone write fails after
+  a successful action, log and continue; the post-run reconciliation pass will detect
+  the gap. (W1 fix: old rule was "tombstone before action"; new rule inverts the order
+  to eliminate phantom-success rows.)
 - **G9.** Merged pattern must pass frontmatter schema validation (local-tier schema).
   If schema validation fails, do not write the merged output; preserve all inputs.
 - **G9b.** Merged pattern must pass adversarial re-read (`passed: true`). If the
@@ -515,15 +615,22 @@ After completing all actions, emit a structured run summary to stdout.
 ```
 Curator run complete: N actions taken, M skipped.
 
-  [PROMOTE]   <slug>   -> shared tier
-  [MERGE]     <slug-a> + <slug-b> -> <lead-slug>
+  [PROMOTE]   <slug>   -> shared tier    (action_id: <action_id>)
+              why: <rationale.one_line>
+  [MERGE]     <slug-a> + <slug-b> -> <lead-slug>   (action_id: <action_id>)
               (confidence X.XX [weighted-mean × 0.95], inherits Y applications)
-  [DEPRECATE] <slug>   (low-value: score X.X)
+              why: <rationale.one_line>
+  [DEPRECATE] <slug>   (low-value: score X.X)   (action_id: <action_id>)
+              why: <rationale.one_line>
   [SKIP]      <slug>   (<reason>)
 
 Undo this run:  /orchestray:learn undo-last
 Prior runs in rollback window: <orch_id-1>, <orch_id-2>
 ```
+
+The `why:` line prints `rationale.one_line`. The same content is also structured
+inside the tombstone's `rationale` field for later retrieval via
+`/orchestray:learn explain <action-id>`.
 
 ### Federation-absent promote block
 
@@ -618,8 +725,9 @@ You operate in **single-pass mode** within `maxTurns: 15`:
 
 - **Turn 1:** Read all patterns + telemetry + skip events + tombstones. Produce the
   full proposal batch (promotes, merges, deprecates) in one pass.
-- **Turns 2–13:** Apply actions one at a time. Write tombstone → execute action →
-  emit event. For merges: adversarial re-read is one sub-turn before write.
+- **Turns 2–13:** Apply actions one at a time. Execute action → write tombstone →
+  emit event (W1 ordering: action first). For merges: adversarial re-read is one
+  sub-turn before the write.
 - **Turn 14:** Write `curator_run_complete` event.
 - **Turn 15:** Emit final structured run summary (stdout).
 

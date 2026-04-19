@@ -16,6 +16,16 @@
 const fs = require('fs');
 const path = require('path');
 
+const { recordDegradation } = require('./degraded-journal');
+
+/**
+ * Per-process guard: tracks which sections have already emitted the flat-key
+ * deprecation warning to stderr. Using a Set ensures the warning fires at most
+ * once per section per process invocation (avoids log spam across MCP calls).
+ * @type {Set<string>}
+ */
+const _flatDeprecationWarned = new Set();
+
 /**
  * Write a prefixed diagnostic line to stderr (mirrors logStderr in mcp-server/lib/rpc.js
  * but lives here so _lib modules stay independent of the mcp-server subtree).
@@ -1937,9 +1947,39 @@ function loadFederationConfig(cwd) {
     return Object.assign({}, DEFAULT_FEDERATION);
   }
 
-  const fromFile = parsed.federation;
+  let fromFile = parsed.federation;
+
+  // Flat-key fallback (legacy compat): if the nested object is absent or non-object,
+  // attempt to reconstruct it from top-level dotted keys written by older skill versions.
+  // Nested form wins when both are present (no merge — flat keys are fully ignored).
   if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
-    return Object.assign({}, DEFAULT_FEDERATION);
+    const flatKeys = ['federation.shared_dir_enabled', 'federation.sensitivity', 'federation.shared_dir_path'];
+    const hasFlatKeys = flatKeys.some(k => k in parsed);
+    if (!hasFlatKeys) {
+      return Object.assign({}, DEFAULT_FEDERATION);
+    }
+    // Emit one deprecation warning per process (guard with module-level Set).
+    if (!_flatDeprecationWarned.has('federation')) {
+      _flatDeprecationWarned.add('federation');
+      logStderr(
+        'config: federation.* keys found as flat top-level dotted strings.\n' +
+        '  Nested form preferred: {"federation": {...}}.\n' +
+        '  Run: /orchestray:config set federation.shared_dir_enabled <value> to migrate.'
+      );
+      recordDegradation({
+        kind: 'flat_federation_keys_accepted',
+        severity: 'warn',
+        detail: {
+          keys: Object.keys(parsed).filter(k => k.startsWith('federation.')),
+          dedup_key: 'flat_federation_keys_accepted',
+        },
+      });
+    }
+    const flatObj = {};
+    if ('federation.shared_dir_enabled' in parsed) flatObj.shared_dir_enabled = parsed['federation.shared_dir_enabled'];
+    if ('federation.sensitivity'         in parsed) flatObj.sensitivity         = parsed['federation.sensitivity'];
+    if ('federation.shared_dir_path'     in parsed) flatObj.shared_dir_path     = parsed['federation.shared_dir_path'];
+    fromFile = sanitizeConfig(flatObj);
   }
 
   const merged = Object.assign({}, DEFAULT_FEDERATION, sanitizeConfig(fromFile));
@@ -1954,7 +1994,17 @@ function loadFederationConfig(cwd) {
     // Validation must never throw.
   }
 
-  return merged;
+  return {
+    shared_dir_enabled: typeof merged.shared_dir_enabled === 'boolean'
+      ? merged.shared_dir_enabled
+      : DEFAULT_FEDERATION.shared_dir_enabled,
+    sensitivity: VALID_FEDERATION_SENSITIVITY.includes(merged.sensitivity)
+      ? merged.sensitivity
+      : DEFAULT_FEDERATION.sensitivity,
+    shared_dir_path: typeof merged.shared_dir_path === 'string' && merged.shared_dir_path.trim()
+      ? merged.shared_dir_path
+      : DEFAULT_FEDERATION.shared_dir_path,
+  };
 }
 
 /**
@@ -2077,9 +2127,45 @@ function loadCuratorConfig(cwd) {
     return Object.assign({}, DEFAULT_CURATOR);
   }
 
-  const fromFile = parsed.curator;
+  let fromFile = parsed.curator;
+
+  // Flat-key fallback (legacy compat): if the nested object is absent or non-object,
+  // attempt to reconstruct it from top-level dotted keys written by older skill versions.
+  // Nested form wins when both are present (no merge — flat keys are fully ignored).
   if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
-    return Object.assign({}, DEFAULT_CURATOR);
+    const flatKeys = [
+      'curator.enabled',
+      'curator.self_escalation_enabled',
+      'curator.pm_recommendation_enabled',
+      'curator.tombstone_retention_runs',
+    ];
+    const hasFlatKeys = flatKeys.some(k => k in parsed);
+    if (!hasFlatKeys) {
+      return Object.assign({}, DEFAULT_CURATOR);
+    }
+    // Emit one deprecation warning per process.
+    if (!_flatDeprecationWarned.has('curator')) {
+      _flatDeprecationWarned.add('curator');
+      logStderr(
+        'config: curator.* keys found as flat top-level dotted strings.\n' +
+        '  Nested form preferred: {"curator": {...}}.\n' +
+        '  Run: /orchestray:config set curator.enabled <value> to migrate.'
+      );
+      recordDegradation({
+        kind: 'flat_curator_keys_accepted',
+        severity: 'warn',
+        detail: {
+          keys: Object.keys(parsed).filter(k => k.startsWith('curator.')),
+          dedup_key: 'flat_curator_keys_accepted',
+        },
+      });
+    }
+    const flatObj = {};
+    if ('curator.enabled'                   in parsed) flatObj.enabled                   = parsed['curator.enabled'];
+    if ('curator.self_escalation_enabled'   in parsed) flatObj.self_escalation_enabled   = parsed['curator.self_escalation_enabled'];
+    if ('curator.pm_recommendation_enabled' in parsed) flatObj.pm_recommendation_enabled = parsed['curator.pm_recommendation_enabled'];
+    if ('curator.tombstone_retention_runs'  in parsed) flatObj.tombstone_retention_runs  = parsed['curator.tombstone_retention_runs'];
+    fromFile = sanitizeConfig(flatObj);
   }
 
   const merged = Object.assign({}, DEFAULT_CURATOR, sanitizeConfig(fromFile));
@@ -2219,4 +2305,6 @@ module.exports = {
   loadCuratorConfig,
   validateCuratorConfig,
   logStderr,
+  // Exposed for test teardown only — clear between test runs to reset per-process guard.
+  _flatDeprecationWarned,
 };

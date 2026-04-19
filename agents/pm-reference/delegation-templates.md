@@ -467,6 +467,42 @@ report this in your result rather than silently violating the invariant.
 
 ---
 
+## Pattern Citations
+
+When `pattern_find` returns matches to inject into a delegation prompt, cite them in this
+exact format immediately after any `## Architectural Constraints` block (or after the task
+description if no invariants are present).
+
+### Template
+
+```
+## Patterns Applied
+
+  - @orchestray:pattern://<slug>     [<label>]     conf <X>, applied <N>x
+  - @orchestray:pattern://<slug>     [shared]      conf <X>, applied <N>x, from <promoted_from>
+  - @orchestray:pattern://<slug>     [shared, own] conf <X>, applied <N>x, from <promoted_from> (this project)
+```
+
+### Label derivation
+
+| `source` field | `promoted_is_own` | Label |
+|---|---|---|
+| `"local"` | n/a | `[local]` |
+| `"shared"` | `false` or absent | `[shared]` |
+| `"shared"` | `true` | `[shared, own]` |
+
+### Rules
+
+- Include the bracket label for every pattern citation. Omitting it is a protocol violation.
+- For `[shared]` and `[shared, own]`: append `, from <promoted_from>` after the applied count.
+  Add `(this project)` suffix only when `promoted_is_own: true`.
+- `conf X` = `confidence` field value from the match object (e.g., `0.85`).
+- `applied Nx` = `times_applied` field value (e.g., `3x`). Use `0x` when field is absent.
+- Omit the entire `## Patterns Applied` section if `pattern_find` returns zero matches.
+  Do NOT include an empty section.
+
+---
+
 ## Visual Review Screenshot Injection
 
 When `enable_visual_review` is true and Section 4.V discovers screenshots, inject this

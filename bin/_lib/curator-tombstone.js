@@ -21,7 +21,7 @@
  *   "ts":                   "<ISO8601>",
  *   "orch_id":              "curator-<ISO-seconds-Z>",       // unique per run
  *   "action_id":            "<orch_id>-a<NN>",              // unique per action
- *   "action":               "promote" | "merge" | "deprecate",
+ *   "action":               "promote" | "merge" | "deprecate" | "unshare",
  *   "inputs": [
  *     {
  *       "slug":             "<pattern-slug>",
@@ -36,8 +36,47 @@
  *   },
  *   "user_rollback_command": "/orchestray:learn undo <action_id>",
  *   "rolled_back_at":        null | "<ISO8601>",
- *   "rolled_back_by":        null | "undo-last" | "undo" | "clear-tombstones"
+ *   "rolled_back_by":        null | "undo-last" | "undo" | "clear-tombstones",
+ *
+ *   // Optional — v2.1.2+. Old tombstones without this field remain valid.
+ *   // Consumers MUST treat this as possibly-absent and fall back to
+ *   // output.action_summary for the human-readable summary when missing.
+ *   "rationale": {
+ *     "schema_version": 1,
+ *     "one_line": "<short prose — same substance as action_summary>",
+ *     "signals": {
+ *       "confidence":         <number 0-1>,
+ *       "decayed_confidence": <number 0-1>,
+ *       "times_applied":      <integer>,
+ *       "age_days":           <integer>,
+ *       "category":           "<string>",
+ *       "skip_penalty":       <number>,       // promote / deprecate
+ *       "deprecation_score":  <number|null>,  // deprecate only
+ *       "similarity_score":   <number|null>   // merge only
+ *     },
+ *     "guardrails_checked":        ["G3-...", ...],   // guardrail IDs checked
+ *     "considered_alternatives":   ["..."],           // rejected alternatives (≤5)
+ *     "adversarial_re_read":       { "passed": true, "missing": [], "contradicted": [] }, // merge only
+ *     "notes":                     "<LLM-generated rationale, not a formal proof.>"
+ *   }
  * }
+ *
+ * rationale rules (v2.1.2)
+ * -------------------------
+ * - rationale is OPTIONAL. All consumers must tolerate its absence.
+ * - schema_version starts at 1. Readers encountering schema_version > 1 fields
+ *   they do not recognise MUST ignore them (forward-compat).
+ * - Size budget: ≤ 4 KB per action (soft advisory). If exceeded, truncate
+ *   considered_alternatives first, then notes.
+ * - Per-action shape:
+ *     promote:    signals include confidence, decayed_confidence, times_applied,
+ *                 age_days, category, skip_penalty. No deprecation_score,
+ *                 similarity_score, or adversarial_re_read.
+ *     merge:      all promote signals + similarity_score.
+ *                 adversarial_re_read MUST be present and MUST report passed: true.
+ *     deprecate:  all promote signals + deprecation_score.
+ *                 considered_alternatives lists close-call patterns not deprecated.
+ *     unshare:    rationale optional; if present, one_line alone is sufficient.
  *
  * Archive policy
  * --------------
@@ -345,9 +384,8 @@ function startRun(options) {
 /**
  * Write a single tombstone row for an in-progress curator run.
  *
- * Must be called BEFORE the corresponding action is committed. If the process
- * crashes between writeTombstone and the action, undoLast will attempt rollback
- * and gracefully skip actions that were never applied.
+ * Must be called AFTER the corresponding action succeeds (W1 ordering).
+ * If the action failed, do not call writeTombstone — there is nothing to undo.
  *
  * @param {string} runId - Run ID from startRun().
  * @param {object} tombstone - Tombstone data (must include at least `action`, `inputs[]`, `slug`).
