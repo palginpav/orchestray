@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "proposals": [
+    {
+      "slug": "parallel-developer-reviewer-small-tasks",
+      "category": "decomposition",
+      "tip_type": "strategy",
+      "title": "Parallel developer+reviewer shortens small tasks",
+      "context_md": "Applies when complexity_score < 5 and phase is implementation or refactor.",
+      "approach_md": "Two agent_start events (developer, reviewer) within the same timestamp bucket. Both agent_stop outcome: success with turns_used 8 and 5. orchestration_complete outcome: success, zero replan_triggered. total_cost_usd 0.03, duration_ms 35000.",
+      "evidence_refs": ["orch-test-001"],
+      "source_event_ids": ["orch-test-001"],
+      "proposed_confidence": 0.55
+    }
+  ],
+  "skipped": [],
+  "budget_used": {
+    "input_tokens": 120,
+    "output_tokens": 80,
+    "elapsed_ms": 1200
+  }
+}

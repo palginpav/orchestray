@@ -342,6 +342,81 @@ function _maybeCreateSharedFederationDirs(projectRoot) {
 }
 
 /**
+ * SB2 fix: Idempotently merge the ## Compact Instructions section from the
+ * package CLAUDE.md into the user's project-level CLAUDE.md.
+ *
+ * Idempotency marker: `**Authoritative post-compact recovery source:**`
+ * If that string already appears in the user's CLAUDE.md, this is a no-op.
+ *
+ * Cases handled:
+ *   (a) No user CLAUDE.md → create one containing only the section.
+ *   (b) User CLAUDE.md without the marker → append the section.
+ *   (c) User CLAUDE.md already has the marker → do nothing.
+ *
+ * @param {string} pkgClaudeMdPath  Absolute path to the package's CLAUDE.md.
+ * @param {string} projectRoot      The user's project root (process.cwd()).
+ */
+function _mergeCompactInstructionsIntoCLAUDEmd(pkgClaudeMdPath, projectRoot) {
+  const IDEMPOTENCY_MARKER = '**Authoritative post-compact recovery source:**';
+
+  try {
+    // Read the source section from the package CLAUDE.md.
+    if (!fs.existsSync(pkgClaudeMdPath)) {
+      // Package CLAUDE.md absent (edge case during development). Nothing to merge.
+      return;
+    }
+    const pkgContent = fs.readFileSync(pkgClaudeMdPath, 'utf8');
+
+    // Extract the ## Compact Instructions section.
+    const sectionMatch = pkgContent.match(
+      /(## Compact Instructions[\s\S]*?)(?=\n## |\n<!-- |$)/
+    );
+    if (!sectionMatch) {
+      // Section not found in package CLAUDE.md; skip silently.
+      return;
+    }
+    const sectionText = sectionMatch[1].trimEnd();
+
+    const userClaudeMdPath = path.join(projectRoot, 'CLAUDE.md');
+    const exists = fs.existsSync(userClaudeMdPath);
+
+    if (!exists) {
+      // Case (a): create a minimal CLAUDE.md with just this section.
+      fs.writeFileSync(userClaudeMdPath, sectionText + '\n', { encoding: 'utf8' });
+      console.log('  \x1b[32m✓\x1b[0m Created CLAUDE.md with ## Compact Instructions section');
+      return;
+    }
+
+    const existing = fs.readFileSync(userClaudeMdPath, 'utf8');
+
+    if (existing.includes(IDEMPOTENCY_MARKER)) {
+      // Case (c): already present — no-op.
+      return;
+    }
+
+    if (existing.includes('## Compact Instructions')) {
+      // Section header exists but missing the load-bearing paragraph.
+      // Append the full section after the existing file to avoid partial merges.
+      // The duplicate header is harmless; it will be deduplicated by readers.
+      const appended = existing.trimEnd() + '\n\n' + sectionText + '\n';
+      fs.writeFileSync(userClaudeMdPath, appended, { encoding: 'utf8' });
+      console.log('  \x1b[32m✓\x1b[0m Updated CLAUDE.md ## Compact Instructions with resilience paragraph');
+    } else {
+      // Case (b): section entirely absent — append.
+      const appended = existing.trimEnd() + '\n\n' + sectionText + '\n';
+      fs.writeFileSync(userClaudeMdPath, appended, { encoding: 'utf8' });
+      console.log('  \x1b[32m✓\x1b[0m Appended ## Compact Instructions to CLAUDE.md');
+    }
+  } catch (err) {
+    // Non-fatal: log a warning but do not abort the install.
+    console.log(
+      '  \x1b[33m⚠\x1b[0m Could not merge ## Compact Instructions into CLAUDE.md: ' +
+      String(err && err.message || err).slice(0, 200)
+    );
+  }
+}
+
+/**
  * Read the previously-installed Orchestray version string from
  * `<targetDir>/orchestray/VERSION`. Must be called BEFORE the new VERSION
  * file is written — otherwise it will read the newly-written value, not the
@@ -533,6 +608,14 @@ function install(targetDir) {
     fs.copyFileSync(claudeMdSrc, path.join(targetDir, 'orchestray', 'CLAUDE.md'));
     track(path.join('orchestray', 'CLAUDE.md'));
   }
+
+  // 6a. SB2: Merge the load-bearing ## Compact Instructions section from the
+  // package CLAUDE.md into the user's project-level CLAUDE.md (process.cwd()/CLAUDE.md).
+  // This is idempotent: skipped if the marker string is already present.
+  // If no CLAUDE.md exists it is created with only this section.
+  // CLAUDE.md is gitignored in this repo so it would never reach fresh installs
+  // via npm — this step ensures the compaction-preserve paragraph is always present.
+  _mergeCompactInstructionsIntoCLAUDEmd(claudeMdSrc, process.cwd());
 
   // 7. Write version file.
   // R2-B-1 fix: capture previous version BEFORE overwriting — readPreviousVersion

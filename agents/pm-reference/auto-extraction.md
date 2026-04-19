@@ -289,6 +289,10 @@ PROTECTED_FIELDS.
   `{ "proposals": [], "skipped": [{ "event_batch_id": "unknown", "reason": "input_too_large" }] }`
   and stop.
 
+## §11.5 — KB reference sweep: two-signal bare-slug rule
+
+The `kb-refs-sweep` scan (`bin/kb-refs-sweep.js`) uses a two-signal rule (K4) to detect bare-slug references. A bare-slug reference is flagged only when **both** signals fire: (1) a prefix phrase appears on the current or previous line (`see also`, `ref`, `refers to`, `linked`, `cf.`, `compare`) OR the slug appears inside a markdown link target, AND (2) the slug sits in a structural context — a list item (lines starting with `- `, `* `, `+ `, or `<digits>.`), a table cell (line contains `|`), or a link target/title. General prose where a slug-shaped word happens to appear is not flagged. To suppress a known false positive, add the slug to `.orchestray/kb/slug-ignore.txt` (one slug per line, `#` comments allowed) or to `auto_learning.kb_refs_sweep.ignore_slugs` in `.orchestray/config.json` (string array, max 100 entries). Both lists are merged at scan time; the per-project file is the recommended escape hatch for teams.
+
 ## §12 — Failure modes & fail-quiet
 
 - **Malformed input** (not a JSON array, missing meta fields, non-object entries):
@@ -299,3 +303,75 @@ PROTECTED_FIELDS.
 
 Any response not parseable as JSON matching §3 is a hard failure; the caller
 emits `pattern_extraction_skipped` and writes zero files. No retries.
+
+---
+
+## §13 — Haiku backend (v2.1.7)
+
+### Invocation contract
+
+The extractor runs as a hook subprocess owned by `bin/post-orchestration-extract.js`.
+**The PM does NOT spawn the extractor directly** — it is wired into the existing
+`PreCompact` hook chain and fires automatically after compaction. The PM must never
+call the extractor, interrupt it, or respond to it.
+
+| Transport option | Mechanism | Status |
+|---|---|---|
+| **A1 — `claude --agent pattern-extractor -p <payload>`** | CLI subprocess (`spawnSync`) | **Active (K3 decision)** |
+| A2 — Anthropic SDK direct | `@anthropic-ai/sdk` API call | Rejected — violates CLAUDE.md stack guidance |
+| A3 — In-session `Agent()` tool | Subagent from PM turn | Rejected — unavailable from hook subprocess |
+
+### Model and effort
+
+- **Model:** `haiku` (configured in `agents/pattern-extractor.md` frontmatter)
+- **Effort:** `low`
+- **Tools:** none (read-only; writes are done by the hook after validation)
+- **Memory:** not set — extractors must be stateless
+
+### Token budget
+
+- Soft cap: 12,000 output tokens (stated in the extractor's system prompt)
+- Hard cap: `max_output_bytes` (default 65,536 bytes ≈ 16K tokens worst-case)
+- On hard cap breach: subprocess killed, zero proposals written, degraded KIND
+  `auto_extract_backend_oversize` journalled
+
+### Config keys (under `auto_learning.extract_on_complete`)
+
+| Key | Type | Default | Range | Description |
+|---|---|---|---|---|
+| `backend` | string | `"haiku-cli"` | `haiku-cli`, `stub` | Transport selection (`haiku-sdk` is recognized for backward compatibility but falls back to `haiku-cli` with an `auto_extract_backend_unsupported_value` journal entry) |
+| `timeout_ms` | integer | `60000` | 5000–300000 | SIGTERM threshold |
+| `max_output_bytes` | integer | `65536` | 1024–1048576 | Hard stdout cap |
+
+Setting `backend: "stub"` or `ORCHESTRAY_AUTO_EXTRACT_BACKEND=stub` restores the
+v2.1.6 no-op behaviour. Useful during troubleshooting or if the `claude` CLI binary
+is unavailable on the hook runner's PATH.
+
+### What the PM does when extraction fires
+
+The `auto_extract_staged` audit event (emitted at the end of every extraction run,
+success or failure) includes `proposals_count` (number of proposals written to
+`.orchestray/proposed-patterns/`). The PM MUST NOT act on this automatically.
+
+When `proposals_count > 0`:
+- Human reviews proposed patterns via `/orchestray:learn list --proposed`
+- Human accepts or rejects each proposal via `/orchestray:learn accept <slug>` /
+  `/orchestray:learn reject <slug>`
+- The PM does NOT auto-accept, auto-apply, or modify proposed patterns
+
+The extraction pipeline is advisory only. The PM's role is to log the
+`auto_extract_staged` observation in its cost-tracking output (§4) when seen,
+so the operator is aware proposals are pending review.
+
+### Safety chain (unchanged in v2.1.7)
+
+```
+events.jsonl
+    ↓  Layer A (quarantineEvents) — strips free-text, prompt content, rationale
+    ↓  K7 filter — excludes resilience-dossier.json and compact-signal.lock events
+    ↓  Haiku extractor subprocess (pattern-extractor.md)
+    ↓  Parser (extractor-output-parser.js) — validates ExtractorOutput schema
+    ↓  Layer B (validateProposal) — injection-marker heuristics, protected fields
+    ↓  .orchestray/proposed-patterns/<slug>.md
+    ↓  Layer C — human review via /orchestray:learn
+```

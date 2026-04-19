@@ -7,8 +7,9 @@ argument-hint: "[--verbose|-v] [--deep]"
 
 # Orchestray Doctor
 
-Run 8 probes against the current Orchestray installation and print a structured health report.
-If `$ARGUMENTS` contains `--verbose` or `-v`, emit a `## Detail` section after the summary.
+Run 9 probes (10 with `--deep`) against the current Orchestray installation and print a
+structured health report. If `$ARGUMENTS` contains `--verbose` or `-v`, emit a
+`## Detail` section after the summary.
 
 ## Setup
 
@@ -199,7 +200,35 @@ formatted as:
 
 ---
 
-### P9: Install-integrity deep verify (only when `--deep`)
+### P9: Resilience dossier + re-hydration hook (v2.1.7 Bundle D)
+
+Check `$PROJECT_ROOT/.orchestray/state/resilience-dossier.json` and the
+UserPromptSubmit injection hook presence in `$PLUGIN_ROOT/hooks/hooks.json`.
+
+Steps:
+1. Read `$PROJECT_ROOT/.orchestray/config.json`. If `resilience.enabled === false` or
+   `resilience.kill_switch === true`, or env var `ORCHESTRAY_RESILIENCE_DISABLED=1` is set:
+   status=OK.
+   Line: `[OK]    resilience dossier (disabled by config/env; skipped)`
+2. Parse `$PLUGIN_ROOT/hooks/hooks.json` and check that `UserPromptSubmit` has an entry
+   whose command ends in `inject-resilience-dossier.js`. If missing: status=FAIL.
+   Line: `[FAIL]  resilience injector hook not registered — run /orchestray:update`
+3. Stat `$PROJECT_ROOT/.orchestray/state/resilience-dossier.json`:
+   - File absent AND no `orchestration.md` present: status=OK.
+     Line: `[OK]    resilience dossier (no active orchestration; skipped)`
+   - File absent AND `orchestration.md` has `status: in_progress`: status=FAIL.
+     Line: `[FAIL]  resilience dossier missing for live orchestration — PM is flying blind`
+   - File exists but mtime > 60 min ago AND orchestration `status: in_progress`: status=WARN.
+     Line: `[WARN]  resilience dossier is {mins}m stale — recent PM Stop hook may have failed`
+   - File exists and recent (≤ 60 min OR `status: completed`): status=OK.
+     Line: `[OK]    resilience dossier fresh ({bytes}B, written {age}s ago)`
+4. If the `degraded.jsonl` tail (last 24 h) contains ≥ 3 entries with kind matching
+   `/^dossier_|^compact_signal_/`: downgrade the above status to WARN.
+   Line: `[WARN]  resilience dossier: {N} degraded-journal entries in last 24h — run --verbose`
+
+---
+
+### P10: Install-integrity deep verify (only when `--deep`)
 
 Skip this probe entirely when `DEEP` is not set.
 
@@ -257,13 +286,13 @@ errors:
 If a category is empty, write `  (none)` beneath its heading.
 Truncate to at most 20 entries per category; append `({N} more — see journal)` if exceeded.
 
-P9 FAIL increments `N_fail`. P9 WARN increments `N_warn`.
+P10 FAIL increments `N_fail`. P10 WARN increments `N_warn`.
 
 ---
 
 ## Output format
 
-After running all probes (8 without `--deep`, 9 with `--deep`), print:
+After running all probes (9 without `--deep`, 10 with `--deep`), print:
 
 ```
 Orchestray v{VERSION} — health check
@@ -276,13 +305,14 @@ Orchestray v{VERSION} — health check
 {P6 line}
 {P7 line}
 {P8 line}
-{P9 line — only when --deep}
+{P9 line}
+{P10 line — only when --deep}
 
 {N_total} probes, {N_warn} warning(s), {N_fail} failure(s).{suffix}
 doctor-result-code: {code}
 ```
 
-`N_total` is 8 without `--deep`, 9 with `--deep`.
+`N_total` is 9 without `--deep`, 10 with `--deep`.
 
 Where:
 - `{suffix}` is ` Run with --verbose for details.` when `N_warn + N_fail > 0` and

@@ -483,6 +483,68 @@ If `orchestration.md` is corrupted but task files exist: scan task frontmatter, 
 
 ---
 
+## 7.R Resilience Dossier — Field Reference (v2.1.7 Bundle D)
+
+After auto-compaction or a `claude --resume`, `bin/inject-resilience-dossier.js` wraps
+`.orchestray/state/resilience-dossier.json` in an `<orchestray-resilience-dossier>` fence
+and returns it as `additionalContext` on the first (up to `max_inject_turns` = 3) post-compact
+UserPromptSubmit. Section 7.C in `agents/pm.md` tells the PM to treat the fence as ground
+truth. This section documents what every field means so the PM can interpret it without
+re-reading disk unless necessary.
+
+**Tier:** `critical` fields are always present. `expanded` fields may be dropped to stay
+under the 12 KB cap; `deferred` fields are the first to go. `truncation_flags` records
+what was dropped. The schema version is `2`; `parseDossier` accepts both v1 (pre-patch
+compat shim that silently drops `ingested_counter`) and v2 (canonical).
+
+| Field | Type | Tier | Meaning |
+|---|---|---|---|
+| `schema_version` | int | critical | Must be `1` or `2`. v1 is accepted via a compat shim that silently drops `ingested_counter`. v2 is canonical. Any other value → dossier is treated as corrupt. |
+| `written_at` | ISO-8601 string | critical | UTC timestamp of this snapshot. Staleness guard compares against now. |
+| `orchestration_id` | string \| null | critical | Identity key — PM re-binds to the right run. `null` only during cold start. |
+| `phase` | enum | critical | `assessment` \| `decomposition` \| `delegation` \| `implementation` \| `review` \| `complete`. Tells PM where Section 13 / 14 / 18 flow is. |
+| `status` | enum | critical | `in_progress` \| `completed` \| `failed` \| `interrupted`. Injector suppresses when `completed`. |
+| `complexity_score` | int 0-12 | critical | Whether Tier 1 should stay loaded (score ≥ 4). |
+| `current_group_id` | string \| null | critical | Which parallel wave is live — prevents re-dispatching earlier waves. |
+| `pending_task_ids` | string[] | critical | Worklist. Capped at 20; overflow signalled in `truncation_flags`. |
+| `completed_task_ids` | string[] | critical | Done set. NEVER re-delegate these. Capped at 40 most recent. |
+| `cost_so_far_usd` | number \| null | critical | Drives Section 15 cost-budget gate. |
+| `cost_budget_remaining_usd` | number \| null | critical | Same; `null` when no budget is configured. |
+| `last_compact_detected_at` | ISO-8601 \| null | critical | Set by `mark-compact-signal.js`; informs "reconcile first" posture. |
+| `ingested_counter` | int | removed in schema v2 | Always `0` in schema v1 dossier snapshots (vestigial field). Removed in schema v2. The live injection counter lives in `compact-signal.lock` (field: `ingested_count`). The injector handles suppression automatically — PM does not need to check this field. |
+| `delegation_pattern` | string | expanded | `sequential` \| `parallel` \| `selective` — recovers Section 2 decision. |
+| `failed_task_ids` | string[] | expanded | Verify-fix loop (§18) anchor. |
+| `task_ref_uris` | string[] | expanded | One MCP URI per task id: `orchestray:orchestration://current/tasks/<id>`. PM dereferences on demand for full task body. |
+| `kb_paths_cited` | string[] | expanded | KB paths the run has cited in the last ~50 events. Re-inject into relevant specialist prompts without re-searching. |
+| `mcp_checkpoints_outstanding` | array | expanded | `{tool, task_id, created_at}` for checkpoints not yet consumed. Without this, PM re-hits the gate-agent-spawn enforcement. |
+| `retry_counter` | object | expanded | `{task_id → int}`. §18 anti-thrashing gate depends on this. |
+| `replan_count` | int | expanded | §16 re-plan budget. |
+| `compact_trigger` | enum \| null | expanded | `manual` \| `auto` \| `null`. Manual = user-steered focus; dossier should yield to user intent. |
+| `routing_lookup_keys` | string[] | deferred | Tail of `routing.jsonl` subtask ids — avoids re-running §19 routing for in-flight tasks. |
+| `planning_inputs` | object \| null | deferred | `{release_plan_path?, phase_slug?}` — active-phase design artefact on re-entry. |
+| `drift_sentinel_invariants` | string[] | deferred | Last 5 entries of `state/drift-invariants.jsonl`. §4.D trace anchor. |
+| `truncation_flags` | string[] | internal | Serializer markers: `deferred_dropped`, `expanded_dropped`, `critical_overflow`, or field-specific like `completed_task_ids:truncated`. |
+
+### Interpreting `truncation_flags`
+
+- `[]` — dossier is intact; no size pressure.
+- `["deferred_dropped"]` — routing keys / planning_inputs / drift invariants were zeroed.
+  Functional impact: PM will re-run §19 routing on next spawn (one-time cost) and may
+  re-read the active DESIGN.md (small cost).
+- `["deferred_dropped", "expanded_dropped"]` — only critical scalars survived. PM MUST read
+  `orchestray:orchestration://current` MCP resource before decomposition or verify-fix.
+- `["critical_overflow", ...]` — the critical-only dossier still exceeded 12 KB. This is a
+  *bug signal* — the pending/completed lists were so large the dossier could not fit. PM
+  should announce the anomaly and call `/orchestray:doctor` before continuing.
+
+### When the dossier conflicts with the compaction summary
+
+The dossier wins. Every time. Reason: the summary is a best-effort heuristic produced by
+Claude Code; the dossier is a deterministic atomic snapshot of `.orchestray/state/`
+written after every PM turn boundary. If the fields disagree, the summary is stale.
+
+---
+
 ## 10. Knowledge Base Protocol
 
 When orchestrating, maintain the shared knowledge base in `.orchestray/kb/`. The KB

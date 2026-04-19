@@ -165,6 +165,54 @@ function emitUpgradePendingWarning(sessionId, cwd) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// v2.1.7 Bundle D: one-time resilience-live notice
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Emit a one-time stderr notice that resilience shipped LIVE by default in
+ * v2.1.7 and point operators at the kill-switch env var + config key.
+ *
+ * Dedup sentinel lives in `.orchestray/state/.resilience-live-noticed-2017`
+ * so the message fires exactly once per upgraded install. Additionally
+ * dedup-keyed per-session via `/tmp/orchestray-resilience-notice-<session>`
+ * so that if the sweep runs multiple times in-session (shouldn't, but
+ * defense in depth) the user only sees it once.
+ *
+ * Fresh installs (which already have the `resilience` config block) get the
+ * sentinel seeded by `install.js` and see no notice — the behavior is only
+ * surprising on an upgrade from v2.1.6, hence the one-time reminder.
+ *
+ * Fail-open: any I/O error is swallowed silently.
+ *
+ * @param {string} cwd       - Absolute project directory path.
+ * @param {string|null} sessionId - Sanitized session id from hook payload.
+ */
+function emitResilienceLiveNotice(cwd, sessionId) {
+  try {
+    const stateDir = path.join(cwd, '.orchestray', 'state');
+    const sentinelPath = path.join(stateDir, '.resilience-live-noticed-2017');
+    if (existsSilent(sentinelPath)) return;
+
+    // Per-session dedup.
+    const sid = sessionId ? String(sessionId).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 64) : 'unknown';
+    const sessionMarker = path.join(os.tmpdir(), 'orchestray-resilience-notice-' + sid);
+    if (existsSilent(sessionMarker)) return;
+
+    process.stderr.write(
+      '[orchestray] v2.1.7: compaction-resilience dossier is LIVE by default. ' +
+      'After auto-compact, the PM re-hydrates from .orchestray/state/resilience-dossier.json. ' +
+      'Disable with ORCHESTRAY_RESILIENCE_DISABLED=1 or resilience.enabled:false in .orchestray/config.json.\n'
+    );
+
+    // Best-effort: write the sentinel so future sessions skip the notice.
+    touchSilent(sentinelPath, stateDir);
+    try { fs.writeFileSync(sessionMarker, '1', 'utf8'); } catch (_e) { /* ignore */ }
+  } catch (_e) {
+    // Fail-open.
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // W8 helper: additive config.json migration (2013-W8-config-migration)
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -2217,6 +2265,13 @@ function main() {
       // ever (the lock blocks subsequent runs but the warning's own
       // per-session marker handles in-session deduplication).
       emitUpgradePendingWarning(sessionId, cwd);
+
+      // v2.1.7 Bundle D: one-time notice that resilience is live by default.
+      // Emitted once per upgraded install (sentinel file in state dir).
+      // No-op on fresh installs — install.js creates the sentinel pre-emptively
+      // so fresh users don't see the notice. Kill-switch reminder is valuable
+      // either way, but only surprising on an upgrade.
+      emitResilienceLiveNotice(cwd, sessionId);
 
       // ── Session lock: fast-path — once per session ──────────────────────────
       const lockPath = path.join(os.tmpdir(), `orchestray-sweep-${sessionId}.lock`);

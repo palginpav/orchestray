@@ -3,6 +3,55 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.1.7] - 2026-04-19
+
+When you run a long orchestration and Claude Code compacts its context mid-flight, Orchestray now writes a resilience dossier to disk before compaction happens, then re-injects a concise summary of orchestration state on your next message — so the PM picks up where it left off instead of starting blind. This is on by default. Everything else in this release is quality and hardening: the Haiku extraction backend that was stubbed in v2.1.6 is now wired and live, the KB bare-slug detector gets a two-signal algorithm that eliminates false positives, and the `max_per_task` MCP config keys that have been a backlog item since v2.1.5 are now fully schema-validated.
+
+### What's new
+
+- **Compaction resilience — on by default.** Before context compaction fires, Orchestray serializes a dossier of the active orchestration (phase, task list, group assignments, routing lookups, cost summary) to `.orchestray/state/resilience-dossier.json`. On your next message after compaction, the PM receives this snapshot as additional context and can resume without asking you to re-explain the task. A `/orchestray:doctor` probe (P9) now checks that the resilience surface is healthy. To opt out, set `resilience.enabled: false` in `.orchestray/config.json` or `ORCHESTRAY_RESILIENCE_DISABLED=1` in the environment. Note: `/clear` is a deliberate user reset and is never treated as compaction — clearing the context does not trigger re-injection.
+
+- **Live Haiku extraction backend.** The auto-extraction pipeline introduced in v2.1.6 now makes a real Haiku model call via the `pattern-extractor` agent. Previously the backend was a stub; proposals could be queued but never populated. With the live backend enabled (`auto_learning.extract_on_complete.enabled: true`), completed orchestrations are analysed and proposals land in `.orchestray/proposed-patterns/` for your review. The kill switch, circuit breaker, input quarantine, and output-validation layers from v2.1.6 all apply unchanged.
+
+- **Improved bare-slug detection in KB reference sweep.** The KB sweep's bare-slug detector now requires two independent signals before flagging a reference (a prefix phrase such as `see also:` or a markdown link context, plus a structural context such as a list item or table cell). The previous single-regex approach produced 33 false positives on English words like "pattern" and "checks"; the new approach surfaces 62 true-positive unregistered link references with zero false positives on the same corpus. Existing ignore-list entries remain honoured.
+
+- **`max_per_task` MCP config keys are now validated.** The schema-validation TODO that has existed since v2.1.5 is retired. `loadMcpServerConfig` and `validateMcpServerConfig` enforce integer ranges (1–1000) for `ask_user`, `kb_write`, and `pattern_record_application` per-task caps. Out-of-range values fall back to the default and write a `mcp_server_max_per_task_out_of_range` degraded-journal entry; unrecognised tool names are passed through and write `mcp_server_max_per_task_unknown_tool`.
+
+### Safety
+
+- **Fence-escape guard on the resilience dossier.** Before the dossier is injected into your session context, the serializer scans for the closing fence marker that wraps the injected block. If a project file happened to contain that exact text and ended up in the dossier, it could break the fence boundary and leak dossier content outside the intended block. The guard detects this at serialization time: it clears the affected fields, adds a `fence_collision_cleared` flag, and emits a `rehydration_skipped_fence_collision` audit event. The injector also runs a defense-in-depth check on the raw dossier file at injection time. The dossier is never injected if any fence-escape path is triggered. Cyrillic and other Unicode lookalike characters do not bypass the check (NFKC normalization is applied before scanning).
+
+- **Parse-failure journal no longer logs raw dossier bytes.** Previously, when a dossier file failed to parse, the first 100 raw bytes were written to the degraded journal. Those bytes could contain orchestration state that should not appear in logs. The journal entry now records a safe fingerprint (file length, first byte hex, SHA-256 prefix) with no recoverable content.
+
+- **K7 path-exclusion check hardened against traversal.** The K7 filter that excludes resilience-dossier paths from auto-extraction input now uses canonical path resolution (`path.normalize` + `path.resolve`) and explicitly rejects `..` components after normalization, preventing crafted event paths from escaping the exclusion zone.
+
+### Defaults
+
+| Key | Default | Notes |
+|-----|---------|-------|
+| `resilience.enabled` | `true` | Live by default — resilience is active on fresh installs |
+| `resilience.shadow_mode` | `false` | Not shadow by default — full injection on detected compaction |
+| `resilience.inject_max_bytes` | `12288` | Max bytes injected into context (range 512–32768) |
+| `resilience.max_inject_turns` | `3` | Max injection attempts per compaction event before suppression |
+| `resilience.kill_switch` | `false` | Set `true` to disable resilience without touching `enabled` |
+
+### Operator notes
+
+- **Resilience is live by default.** Set `resilience.enabled: false` or `ORCHESTRAY_RESILIENCE_DISABLED=1` to opt out entirely. No restart needed — the config loader checks before each injection.
+- **`/clear` is a clean reset.** Running `/clear` in Claude Code is recognized as a deliberate user reset (`source: "clear"`) and does not trigger dossier injection on the next message. Only `SessionStart` events with `source: "compact"` or `source: "resume"` activate re-injection.
+- **Upgrading from v2.1.6.** The `bin/install.js` upgrade path now merges the required `## Compact Instructions` section into your project-level `CLAUDE.md` if it is absent. This section tells Claude Code's auto-compaction to preserve orchestration state markers. The merge is idempotent — if the section already exists, nothing changes.
+- **Haiku extraction backend requires an active circuit breaker budget.** The rolling 24-hour cap (`auto_learning.safety.circuit_breaker.max_extractions_per_24h`, default 10) applies to the live backend as it did to the stub. Each orchestration counts as one attempt regardless of proposal count.
+- **`max_per_task` validation is backward-compatible.** `readMaxPerTask(config, toolName)` remains the existing two-argument call signature; the new `(config, toolName, cwd)` form opts into validated loading. No config migration needed.
+
+### Hardening (zero-deferral patch)
+
+Pre-ship adversarial audit closed all previously-deferred items: path-field sanitiser now emits a `dossier_field_sanitised` journal entry when an adversarial path value is dropped, bounded fd-based file reads replace the stat-then-read pattern at all seven reader sites eliminating the TOCTOU race window, and a documentation sweep corrected stale references to `haiku-sdk`, the dossier schema version, and fence-scan NFKC coverage. All five items that earlier appeared in "Not in this release" (SEC-04, SEC-06, SEC-07, D3, and `haiku-sdk`/F4) are now included in this release.
+
+### Not in this release
+
+- **Auto-application of curator suggestions and auto-approval of proposed patterns.** Human-gated; not planned for v2.1.x.
+- **Schema validation via `zod`, cross-machine federation sync, per-pattern privacy flag, team-scope federation.** Carried over to v2.2+.
+
 ## [2.1.6] - 2026-04-19
 
 Orchestray can now learn from your orchestrations automatically, not just when you remember to run `/orchestray:learn`. Every feature in this release ships turned off by default and behind a single kill switch. Nothing applies to your project without you reviewing it first.

@@ -1,0 +1,61 @@
+[
+  {
+    "type": "orchestration_start",
+    "orchestration_id": "orch-test-001",
+    "timestamp": "2026-04-19T10:00:00.000Z",
+    "complexity_score": 4,
+    "phase": "refactor"
+  },
+  {
+    "type": "agent_start",
+    "orchestration_id": "orch-test-001",
+    "timestamp": "2026-04-19T10:00:05.000Z",
+    "agent_type": "developer",
+    "model_used": "sonnet",
+    "task_id": "t-001",
+    "phase": "refactor"
+  },
+  {
+    "type": "agent_start",
+    "orchestration_id": "orch-test-001",
+    "timestamp": "2026-04-19T10:00:05.100Z",
+    "agent_type": "reviewer",
+    "model_used": "sonnet",
+    "task_id": "t-002",
+    "phase": "refactor"
+  },
+  {
+    "type": "agent_stop",
+    "orchestration_id": "orch-test-001",
+    "timestamp": "2026-04-19T10:00:30.000Z",
+    "agent_type": "developer",
+    "model_used": "sonnet",
+    "duration_ms": 25000,
+    "turns_used": 8,
+    "input_tokens": 3000,
+    "output_tokens": 1500,
+    "cache_read_tokens": 0,
+    "outcome": "success"
+  },
+  {
+    "type": "agent_stop",
+    "orchestration_id": "orch-test-001",
+    "timestamp": "2026-04-19T10:00:32.000Z",
+    "agent_type": "reviewer",
+    "model_used": "sonnet",
+    "duration_ms": 27000,
+    "turns_used": 5,
+    "input_tokens": 2000,
+    "output_tokens": 800,
+    "cache_read_tokens": 0,
+    "outcome": "success"
+  },
+  {
+    "type": "orchestration_complete",
+    "orchestration_id": "orch-test-001",
+    "timestamp": "2026-04-19T10:00:35.000Z",
+    "outcome": "success",
+    "duration_ms": 35000,
+    "total_cost_usd": 0.03
+  }
+]

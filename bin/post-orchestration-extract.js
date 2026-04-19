@@ -38,15 +38,18 @@ const path = require('node:path');
 const os   = require('node:os');
 
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
-const { resolveSafeCwd }            = require('./_lib/resolve-project-cwd');
+const { resolveSafeCwd }              = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
-const { quarantineEvents }          = require('./_lib/event-quarantine');
-const { validateProposal }          = require('./_lib/proposal-validator');
-const { checkAndIncrement }         = require('./_lib/learning-circuit-breaker');
-const { recordDegradation }         = require('./_lib/degraded-journal');
-const { loadAutoLearningConfig }    = require('./_lib/config-schema');
-const { EXTRACTION_BREAKER_SCOPE }  = require('./_lib/auto-learning-scopes');
-const { MAX_INPUT_BYTES }           = require('./_lib/constants');
+const { quarantineEvents }            = require('./_lib/event-quarantine');
+const { validateProposal }            = require('./_lib/proposal-validator');
+const { checkAndIncrement }           = require('./_lib/learning-circuit-breaker');
+const { recordDegradation }           = require('./_lib/degraded-journal');
+const { loadAutoLearningConfig }      = require('./_lib/config-schema');
+const { EXTRACTION_BREAKER_SCOPE }    = require('./_lib/auto-learning-scopes');
+const { MAX_INPUT_BYTES }             = require('./_lib/constants');
+// v2.1.7 Bundle A: live Haiku backend
+const { runExtractor }          = require('./_lib/haiku-extractor-transport');
+const { parseExtractorOutput }  = require('./_lib/extractor-output-parser');
 
 // ---------------------------------------------------------------------------
 // Category allowlist — auto-extraction may only propose from this subset.
@@ -108,23 +111,79 @@ function _emitEvent(eventsPath, event) {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Extraction backend abstraction
+// K7 — Resilience path exclusion filter
 //
-// In production (hook context) ORCHESTRAY_AUTO_EXTRACT_BACKEND is unset (or
-// 'stub'), so this returns { proposals: [], skipped: [{ reason: 'backend_not_configured' }] }.
-//
-// Tests set ORCHESTRAY_AUTO_EXTRACT_BACKEND='test' and inject a mock via
-// setExtractorBackend() below.
-//
-// W7 will replace the stub branch with an actual Claude subagent invocation.
+// The Haiku extractor MUST NOT see the resilience dossier or the compact-signal
+// lock. Filter them from quarantined events before passing to the backend.
 // ---------------------------------------------------------------------------
 
-/** @type {Function|null} */
+/** Paths that must never reach the extractor (K7 from v2.1.7 arbitration). */
+const K7_EXCLUDED_PATHS = [
+  '.orchestray/state/resilience-dossier.json',
+  '.orchestray/state/compact-signal.lock',
+];
+
+/**
+ * Return true if an event references a K7-excluded path in any of its common
+ * path fields. Checked after quarantine (Layer A), as defense-in-depth.
+ *
+ * SEC-03: uses canonicalised path comparison (path.normalize + path.resolve)
+ * rather than bare String.includes to resist traversal variants, Windows-style
+ * separators, and case-mangled paths. Paths containing '..' after normalisation
+ * are also rejected unconditionally.
+ *
+ * @param {object} ev
+ * @param {string} [projectRoot] - Absolute project root for path.resolve (defaults to cwd).
+ * @returns {boolean}
+ */
+function _isK7Excluded(ev, projectRoot) {
+  const root = projectRoot || process.cwd();
+  // Pre-compute canonical absolute forms of the K7 exclusion list.
+  const excludedCanonical = K7_EXCLUDED_PATHS.map(
+    (p) => path.resolve(root, path.normalize(p))
+  );
+
+  function _checkCandidate(candidate) {
+    if (typeof candidate !== 'string') return false;
+    // Reject traversal attempts detected after normalisation.
+    const normalised = path.normalize(candidate);
+    if (normalised.includes('..')) return false; // traversal attempt — block
+    const canonical = path.resolve(root, normalised);
+    for (const excl of excludedCanonical) {
+      // Match exact path OR any descendant (startsWith + separator guard).
+      if (canonical === excl || canonical.startsWith(excl + path.sep)) return true;
+    }
+    return false;
+  }
+
+  for (const field of ['source_path', 'path']) {
+    if (_checkCandidate(ev[field])) return true;
+  }
+  if (ev.detail && typeof ev.detail === 'object') {
+    const dp = ev.detail.path || ev.detail.source_path;
+    if (_checkCandidate(dp)) return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Extraction backend abstraction — v2.1.7 live Haiku CLI transport
+//
+// Short-circuit cases (checked in order):
+//   1. ORCHESTRAY_AUTO_EXTRACT_BACKEND=test (test injection — existing suite compat)
+//   2. ORCHESTRAY_AUTO_EXTRACT_BACKEND=stub (env var stub — regression regression path)
+//   3. extractConfig.backend === 'stub' (config — operator opt-out)
+//
+// In all other cases, the real backend runs via haiku-extractor-transport.js.
+// ---------------------------------------------------------------------------
+
+/** @type {Function|null} Test-injected backend (legacy compat for v2.1.6 test suite). */
 let _testBackend = null;
 
 /**
  * Set a test-only backend for spawnExtractor. Call with null to reset.
  * Only takes effect when ORCHESTRAY_AUTO_EXTRACT_BACKEND === 'test'.
+ * Preserved for backward compatibility with v2.1.6 test suite.
  *
  * @param {Function|null} backend - (prompt, events, meta) => { proposals, skipped }
  */
@@ -133,39 +192,133 @@ function setExtractorBackend(backend) {
 }
 
 /**
- * Spawn the extractor backend with the given quarantined events and meta.
+ * Invoke the extraction backend, parse its output, and return a flat result.
  *
- * In v2.1.6, this is a stub: always returns { proposals: [], skipped: [...] }
- * unless ORCHESTRAY_AUTO_EXTRACT_BACKEND === 'test' with a registered backend.
- *
- * @param {object} opts
- * @param {string} opts.prompt   - The system prompt (auto-extraction.md contents)
- * @param {object[]} opts.events - Quarantined event array
- * @param {object} opts.meta     - orchestration_meta object
- * @returns {{ proposals: object[], skipped: object[] }}
+ * @param {object}   opts
+ * @param {object[]} opts.events          - K7-filtered quarantined events
+ * @param {object}   opts.extractConfig   - Validated extract_on_complete config block
+ * @param {string}   opts.projectRoot     - Project root for degraded-journal writes
+ * @returns {{ proposals: object[], skipped: object[], backendElapsedMs: number }}
  */
-function spawnExtractor({ prompt, events, meta }) {
-  const backend = process.env.ORCHESTRAY_AUTO_EXTRACT_BACKEND;
+function spawnExtractor({ events, extractConfig, projectRoot }) {
+  const backendEnvOverride = process.env.ORCHESTRAY_AUTO_EXTRACT_BACKEND;
 
-  if (backend === 'test' && typeof _testBackend === 'function') {
-    // Test-injected backend — deterministic, no LLM call.
+  // Test injection path (ORCHESTRAY_AUTO_EXTRACT_BACKEND=test) — v2.1.6 suite compat.
+  // The test backend receives (prompt, events, meta) and returns { proposals, skipped }
+  // in the v2.1.6 proposal shape, which goes directly through Layer B.
+  if (backendEnvOverride === 'test' && typeof _testBackend === 'function') {
     try {
-      return _testBackend(prompt, events, meta);
+      const result = _testBackend('', events, {});
+      return {
+        proposals:        Array.isArray(result.proposals) ? result.proposals : [],
+        skipped:          Array.isArray(result.skipped)   ? result.skipped   : [],
+        backendElapsedMs: 0,
+      };
     } catch (err) {
       return {
-        proposals: [],
-        skipped: [{ event_batch_id: 'unknown', reason: 'backend_error', detail: err && err.message ? err.message.slice(0, 80) : 'unknown' }],
+        proposals:        [],
+        skipped:          [{ reason: 'backend_error', detail: err && err.message ? err.message.slice(0, 80) : 'unknown' }],
+        backendElapsedMs: 0,
       };
     }
   }
 
-  // Default stub: backend not yet configured.
-  // W7 replaces this with: execFileSync('claude', ['--agent', 'haiku', '--system', prompt,
-  //   '--input', JSON.stringify({ events, orchestration_meta: meta })], { encoding: 'utf8' })
-  // and parses the JSON output.
+  // Stub short-circuit: env-var override (test regression path) or config says stub.
+  const isStub = backendEnvOverride === 'stub' || extractConfig.backend === 'stub';
+
+  if (isStub) {
+    return {
+      proposals:        [],
+      skipped:          [{ event_batch_id: 'unknown', reason: 'backend_not_configured' }],
+      backendElapsedMs: 0,
+    };
+  }
+
+  // ── Live Haiku CLI backend (A1 transport) ──────────────────────────────────
+  // Apply K7 filter before handing to transport.
+  const k7Filtered = events.filter(ev => !_isK7Excluded(ev));
+
+  const timeoutMs      = extractConfig.timeout_ms       || 60_000;
+  const maxOutputBytes = extractConfig.max_output_bytes  || 65_536;
+
+  const transportResult = runExtractor({
+    quarantinedEvents: k7Filtered,
+    timeoutMs,
+    maxOutputBytes,
+  });
+
+  const { stdout, stderr, code, timedOut, oversize, elapsedMs } = transportResult;
+
+  // ── Timeout ────────────────────────────────────────────────────────────────
+  if (timedOut) {
+    recordDegradation({
+      kind: 'auto_extract_backend_timeout',
+      severity: 'warn',
+      detail: { timeout_ms: timeoutMs, killed_at: elapsedMs },
+      projectRoot,
+    });
+    return {
+      proposals:        [],
+      skipped:          [{ reason: 'backend_timeout' }],
+      backendElapsedMs: elapsedMs,
+    };
+  }
+
+  // ── Oversize ───────────────────────────────────────────────────────────────
+  if (oversize) {
+    recordDegradation({
+      kind: 'auto_extract_backend_oversize',
+      severity: 'warn',
+      detail: { bytes_received: maxOutputBytes + 1 },
+      projectRoot,
+    });
+    return {
+      proposals:        [],
+      skipped:          [{ reason: 'backend_oversize' }],
+      backendElapsedMs: elapsedMs,
+    };
+  }
+
+  // ── Non-zero exit code ─────────────────────────────────────────────────────
+  if (code !== null && code !== 0) {
+    recordDegradation({
+      kind: 'auto_extract_backend_exit_nonzero',
+      severity: 'error',
+      detail: { exit_code: code, stderr_head: stderr.slice(0, 200) },
+      projectRoot,
+    });
+    return {
+      proposals:        [],
+      skipped:          [{ reason: 'backend_exit_nonzero', detail: { exit_code: code } }],
+      backendElapsedMs: elapsedMs,
+    };
+  }
+
+  // ── Parse output ───────────────────────────────────────────────────────────
+  const { proposals, parseErrors } = parseExtractorOutput(stdout);
+
+  if (parseErrors.length > 0 && proposals.length === 0) {
+    // Structural parse failure — all proposals dropped.
+    recordDegradation({
+      kind: 'auto_extract_parse_failed',
+      severity: 'warn',
+      detail: {
+        first_200_bytes: stdout.slice(0, 200),
+        backend:         extractConfig.backend || 'haiku-cli',
+      },
+      projectRoot,
+    });
+    return {
+      proposals:        [],
+      skipped:          [{ reason: 'parse_failed' }],
+      backendElapsedMs: elapsedMs,
+    };
+  }
+
   return {
-    proposals: [],
-    skipped: [{ event_batch_id: 'unknown', reason: 'backend_not_configured' }],
+    proposals,
+    skipped:          [],
+    backendElapsedMs: elapsedMs,
   };
 }
 
@@ -489,13 +642,14 @@ function runExtraction({ projectRoot, eventsPath, orchFilePath }) {
   }
 
   // ── Step 6: Spawn extractor backend ───────────────────────────────────────
-  // In v2.1.6 this is a stub; see spawnExtractor() for the W7 replacement plan.
+  // v2.1.7 Bundle A: live Haiku CLI transport. Stub path preserved via
+  // ORCHESTRAY_AUTO_EXTRACT_BACKEND=stub env var or extractConfig.backend === 'stub'.
   let extractorResult;
   try {
     extractorResult = spawnExtractor({
-      prompt: '', // W7 will populate from auto-extraction.md
-      events: kept,
-      meta:   orchMeta,
+      events:        kept,
+      extractConfig,
+      projectRoot,
     });
   } catch (err) {
     recordDegradation({
@@ -504,10 +658,11 @@ function runExtraction({ projectRoot, eventsPath, orchFilePath }) {
       detail: { reason: 'extractor_threw', error: err && err.message ? err.message.slice(0, 80) : 'unknown' },
       projectRoot,
     });
-    extractorResult = { proposals: [], skipped: [] };
+    extractorResult = { proposals: [], skipped: [], backendElapsedMs: 0 };
   }
 
   const proposals = Array.isArray(extractorResult.proposals) ? extractorResult.proposals : [];
+  const backendElapsedMs = extractorResult.backendElapsedMs || 0;
 
   // ── Step 7: Validate each proposal ─────────────────────────────────────────
   const proposedPatternsDir = path.join(projectRoot, '.orchestray', 'proposed-patterns');
@@ -594,6 +749,7 @@ function runExtraction({ projectRoot, eventsPath, orchFilePath }) {
   }
 
   // ── Step 9: Emit auto_extract_staged (UX-01 signal for PM §22f / W7) ───────
+  // v2.1.7: backend_elapsed_ms field added (event-schemas.md §auto-extract-staged).
   _emitEvent(auditFile, {
     timestamp: new Date().toISOString(),
     type: 'auto_extract_staged',
@@ -601,6 +757,7 @@ function runExtraction({ projectRoot, eventsPath, orchFilePath }) {
     orchestration_id: orchId,
     proposal_count: writtenCount,
     shadow: shadowMode,
+    backend_elapsed_ms: backendElapsedMs,
   });
 
   return { proposals_written: writtenCount, shadow: shadowMode };
@@ -614,7 +771,8 @@ function runExtraction({ projectRoot, eventsPath, orchFilePath }) {
 module.exports = {
   runExtraction,
   spawnExtractor,
-  setExtractorBackend,
+  setExtractorBackend,    // v2.1.6 compat — existing test suite uses this
+  _isK7Excluded,
   _buildOrchestrationMeta,
   _buildProposalContent,
   AUTO_EXTRACT_CATEGORY_ALLOWLIST,

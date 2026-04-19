@@ -423,3 +423,81 @@ describe('T8 — bad params fail-open', () => {
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// T9 — validated-value round-trip via loadMcpServerConfig (Bundle C, v2.1.7)
+// ---------------------------------------------------------------------------
+
+const { loadMcpServerConfig } = require('../../../bin/_lib/config-schema.js');
+
+describe('T9 — readMaxPerTask uses validated shape from loadMcpServerConfig', () => {
+
+  function makeTmpProjectWithConfig(configObj) {
+    const dir = makeTmpProject();
+    fs.mkdirSync(path.join(dir, '.orchestray'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, '.orchestray', 'config.json'),
+      JSON.stringify(configObj),
+      'utf8'
+    );
+    return dir;
+  }
+
+  test('readMaxPerTask with cwd returns validated value (25) for ask_user', () => {
+    const tmp = makeTmpProjectWithConfig({
+      mcp_server: { max_per_task: { ask_user: 25 } },
+    });
+    try {
+      const v = readMaxPerTask(null, 'ask_user', tmp);
+      assert.equal(v, 25, 'should return validated value 25');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('readMaxPerTask with cwd returns null for tool with no configured limit', () => {
+    const tmp = makeTmpProjectWithConfig({
+      mcp_server: { max_per_task: { ask_user: 10 } },
+    });
+    try {
+      // kb_write has a default (20) but the validator returns it; check unlimited
+      // case by using a tool not in defaults and not in config.
+      const v = readMaxPerTask(null, 'nonexistent_tool', tmp);
+      assert.equal(v, null, 'tool absent from validated shape returns null (unlimited)');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('readMaxPerTask without cwd falls back to raw config direct-read', () => {
+    const tmp = makeTmpProject();
+    try {
+      const config = makeConfig({ ask_user: 7 });
+      const v = readMaxPerTask(config, 'ask_user');
+      assert.equal(v, 7, 'direct-read fallback should return 7');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('checkLimit enforces validated value; budget exceeded at validated limit', () => {
+    const tmp = makeTmpProjectWithConfig({
+      mcp_server: { max_per_task: { ask_user: 2 } },
+    });
+    try {
+      const params = makeParams({ tool_name: 'ask_user' });
+      // Use raw config matching the validated shape so checkLimit applies the limit.
+      const config = makeConfig({ ask_user: 2 });
+
+      recordSuccess(params, tmp, config);
+      recordSuccess(params, tmp, config);
+
+      const result = checkLimit(params, tmp, config);
+      assert.equal(result.exceeded, true, 'should be exceeded at validated limit of 2');
+      assert.equal(result.maxAllowed, 2);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+});

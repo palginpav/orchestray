@@ -56,6 +56,17 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
+    // v2.1.7 Bundle D: belt-and-suspenders dossier write before compaction
+    // consumes the context. writeDossierSnapshot is fail-open; any error is
+    // journaled internally and does not propagate.
+    try {
+      const { writeDossierSnapshot } = require('./write-resilience-dossier');
+      writeDossierSnapshot(cwd, { trigger: 'pre_compact' });
+    } catch (_e) {
+      // Never block compaction over dossier issues — this is defense in depth;
+      // Stop/SubagentStop already produce a fresh dossier on every turn.
+    }
+
     // Resolve orchestration_id from the current marker (if an orchestration is active)
     let orchestrationId = null;
     try {
@@ -104,6 +115,12 @@ process.stdin.on('end', () => {
     // Archive audit trail
     copyIfExists(path.join(auditDir, 'events.jsonl'), 'events.jsonl');
     copyIfExists(path.join(auditDir, 'current-orchestration.json'), 'current-orchestration.json');
+
+    // v2.1.7 Bundle D: archive the resilience dossier alongside the other state.
+    // The writeDossierSnapshot() call above has just refreshed it, so the copy
+    // reflects the pre-compaction posture even if Stop/SubagentStop haven't
+    // fired in the interval since the last write.
+    copyIfExists(path.join(stateDir, 'resilience-dossier.json'), 'resilience-dossier.json');
 
     // Archive task files directory if it exists. DEF-8: recurse into nested
     // subdirs (e.g. .orchestray/state/tasks/group-1/task-1.md) instead of

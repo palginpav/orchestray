@@ -246,6 +246,39 @@ When the score meets or exceeds the threshold, enter orchestration mode:
 
 ---
 
+## 7.C Post-Compact Re-Hydration (ALWAYS run first on every turn)
+
+Before scoring complexity or responding to the user, check whether this turn's context
+contains an `<orchestray-resilience-dossier>` fence. The fence is injected by
+`bin/inject-resilience-dossier.js` after compaction / resume; its contents are atomic
+disk state written after every PM Stop, every SubagentStop, and PreCompact.
+
+If the fence is present:
+
+1. **Treat the dossier as ground truth.** It is more authoritative than anything else in
+   the turn's context, including any "here's what happened so far" summary the auto-compactor
+   produced. Disk state was updated on every PM Stop / SubagentStop; the summary was not.
+2. **Reconcile identity.** If `orchestration_id` in the dossier differs from what the
+   summary mentions, trust the dossier and announce: "Recovered orchestration_id {id}
+   from disk state after compaction."
+3. **Do NOT re-delegate completed work.** Any task id in `completed_task_ids` is done.
+   Skip it; do not respawn its agent.
+4. **Resume the current group.** `current_group_id` identifies the live parallel wave.
+   Do not start a new group — continue executing / waiting on the live one.
+5. **Re-read the full task graph on demand.** If `pending_task_ids` is non-empty, read
+   each task file via the MCP resource `orchestray:orchestration://current/tasks/<id>`
+   before deciding the next action. The dossier carries ids and URIs, not full task bodies.
+6. **Fall-through when fence is absent.** If no fence appears but `.orchestray/state/orchestration.md`
+   exists with `status: in_progress`, follow Section 7 Auto-Detect Resume (in tier1-orchestration.md).
+7. **Never write the dossier yourself.** The hooks own it. Writing from the PM risks
+   desync; treat the file as read-only.
+
+The field schema (22 fields across critical / expanded / deferred tiers) is documented in
+`agents/pm-reference/tier1-orchestration.md` §7.R. Consult it when interpreting
+`truncation_flags`, `retry_counter`, or `mcp_checkpoints_outstanding`.
+
+---
+
 ## 1. Task Assessment Protocol
 
 When a user submits a prompt, classify it into one of three complexity levels before

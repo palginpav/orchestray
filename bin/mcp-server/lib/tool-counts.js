@@ -54,20 +54,47 @@ const MAX_COUNTS_READ = 1 * 1024 * 1024; // 1 MB
 // Config helper
 // ---------------------------------------------------------------------------
 
+// Lazy-required to avoid circular-dependency risks at module load time.
+let _loadMcpServerConfig = null;
+function _getLoader() {
+  if (!_loadMcpServerConfig) {
+    _loadMcpServerConfig = require('../../_lib/config-schema').loadMcpServerConfig;
+  }
+  return _loadMcpServerConfig;
+}
+
 /**
  * Read the max_per_task value for a given tool from the loaded server config.
  *
- * Supported shapes (mirrors isToolEnabled pattern from server.js):
- *   config.mcp_server.max_per_task.<tool_name>  — integer or null
+ * Preferred shape: config is a raw server config object that contains a
+ * `_max_per_task_validated` key (set by callers that pre-loaded via
+ * loadMcpServerConfig).  Falls back to reading config.mcp_server.max_per_task
+ * directly for callers that pass a raw config object (backwards compat).
  *
  * Returns null (unlimited) when the key is absent or malformed.
  *
  * @param {object|null} config     - The loaded server config (or null)
  * @param {string}      toolName   - The tool name to look up
+ * @param {string}      [cwd]      - Project root; if supplied, uses loadMcpServerConfig
+ *                                   for the validated shape instead of raw config.
  * @returns {number|null}
  */
-function readMaxPerTask(config, toolName) {
+function readMaxPerTask(config, toolName, cwd) {
   try {
+    // Path 1: caller supplies cwd → use the validated loader (preferred).
+    if (cwd && typeof cwd === 'string') {
+      try {
+        const loader = _getLoader();
+        const validated = loader(cwd);
+        const v = validated[toolName];
+        if (typeof v === 'number' && Number.isInteger(v) && v > 0) return v;
+        return null;
+      } catch (_) {
+        // Fall through to direct-read path on any loader error.
+      }
+    }
+
+    // Path 2: direct-read fallback for callers passing a raw config object.
     if (!config || !config.mcp_server) return null;
     const mpt = config.mcp_server.max_per_task;
     if (!mpt || typeof mpt !== 'object' || Array.isArray(mpt)) return null;

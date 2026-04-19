@@ -869,16 +869,16 @@ const DEFAULT_EFFORT_MULTIPLIERS = Object.freeze({
 });
 
 // ---------------------------------------------------------------------------
-// max_per_task defaults (W6 v2.0.16)
+// max_per_task defaults and loader (W6 v2.0.16; schema-surfaced v2.1.7 C)
 //
-// Per-task call limits for rate-limited MCP tools. These are enforced by
+// Per-task call limits for rate-limited MCP tools. Enforced by
 // bin/mcp-server/lib/tool-counts.js when both orchestration_id and task_id
 // are supplied in a tool call.
 //
-// Values (OQ4): ask_user: 20, kb_write: 20, pattern_record_application: 20.
-// TODO(backlog): surface max_per_task in the schema loader so it can be
-// validated and documented via loadMcpServerConfig; for now tool-counts.js
-// reads from mcp_server.max_per_task.<tool> directly.
+// Shape: mcp_server.max_per_task.<tool_name> — integer 1..1000 per tool.
+// Known tools (defaults): ask_user: 20, kb_write: 20, pattern_record_application: 20.
+// Unknown tool keys: passed through unchanged + one dedup journal entry per boot (K5).
+// Out-of-range or non-integer values: fall back to default + journal entry.
 // ---------------------------------------------------------------------------
 
 const DEFAULT_MAX_PER_TASK = Object.freeze({
@@ -886,6 +886,133 @@ const DEFAULT_MAX_PER_TASK = Object.freeze({
   kb_write: 20,
   pattern_record_application: 20,
 });
+
+// Known tool names that have defaults — used for range-checking vs. pass-through.
+const KNOWN_MAX_PER_TASK_TOOLS = Object.freeze(Object.keys(DEFAULT_MAX_PER_TASK));
+
+/**
+ * Load and validate the mcp_server.max_per_task config block.
+ *
+ * Fail-open contract: missing/malformed values fall back to DEFAULT_MAX_PER_TASK.
+ * Unknown tool keys are passed through unchanged (K5 — forward-compat operators).
+ * Out-of-range or non-integer values fall back to defaults + journal one entry per boot.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ ask_user: number, kb_write: number, pattern_record_application: number }}
+ */
+function loadMcpServerConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_MAX_PER_TASK);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_MAX_PER_TASK);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_MAX_PER_TASK);
+  }
+
+  const mcpServer = parsed.mcp_server;
+  if (!mcpServer || typeof mcpServer !== 'object' || Array.isArray(mcpServer)) {
+    return Object.assign({}, DEFAULT_MAX_PER_TASK);
+  }
+
+  const fromFile = mcpServer.max_per_task;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_MAX_PER_TASK);
+  }
+
+  // Start with defaults; overlay validated/passed-through values.
+  const result = Object.assign({}, DEFAULT_MAX_PER_TASK);
+
+  for (const [toolName, rawVal] of Object.entries(fromFile)) {
+    const isKnown = KNOWN_MAX_PER_TASK_TOOLS.includes(toolName);
+
+    if (isKnown) {
+      // Range-check known tools: integer 1..1000.
+      if (Number.isInteger(rawVal) && rawVal >= 1 && rawVal <= 1000) {
+        result[toolName] = rawVal;
+      } else {
+        // Out-of-range or non-integer: keep default, journal once per boot.
+        recordDegradation({
+          kind:     'mcp_server_max_per_task_out_of_range',
+          severity: 'warn',
+          detail:   {
+            tool:      toolName,
+            value:     rawVal,
+            default:   DEFAULT_MAX_PER_TASK[toolName],
+            dedup_key: 'mcp_server_max_per_task_out_of_range|' + toolName,
+          },
+          projectRoot: cwd,
+        });
+      }
+    } else {
+      // Unknown tool: pass through, journal once per boot (K5).
+      result[toolName] = rawVal;
+      recordDegradation({
+        kind:     'mcp_server_max_per_task_unknown_tool',
+        severity: 'warn',
+        detail:   {
+          tool:      toolName,
+          value:     rawVal,
+          dedup_key: 'mcp_server_max_per_task_unknown_tool|' + toolName,
+        },
+        projectRoot: cwd,
+      });
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Validate a mcp_server.max_per_task config object without loading from disk.
+ * Returns { valid: true } or { valid: false, errors: string[] }.
+ *
+ * Only validates known tool keys (unknown keys are advisory pass-throughs, not errors).
+ *
+ * @param {{ max_per_task?: object }} cfg
+ * @returns {{ valid: boolean, errors?: string[] }}
+ */
+function validateMcpServerConfig(cfg) {
+  const errors = [];
+
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
+    errors.push('validateMcpServerConfig: argument must be a plain object');
+    return { valid: false, errors };
+  }
+
+  const mpt = cfg.max_per_task;
+  if (mpt === undefined || mpt === null) {
+    return { valid: true };
+  }
+
+  if (typeof mpt !== 'object' || Array.isArray(mpt)) {
+    errors.push('mcp_server.max_per_task must be a plain object');
+    return { valid: false, errors };
+  }
+
+  for (const toolName of KNOWN_MAX_PER_TASK_TOOLS) {
+    if (!(toolName in mpt)) continue;
+    const v = mpt[toolName];
+    if (!Number.isInteger(v) || v < 1 || v > 1000) {
+      errors.push(
+        'mcp_server.max_per_task.' + toolName + ' must be an integer 1..1000 — got ' +
+        JSON.stringify(v)
+      );
+    }
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
 
 // ---------------------------------------------------------------------------
 // cache_choreography section defaults and loader (T12 v2.0.17)
@@ -2583,6 +2710,7 @@ function validateRetrievalConfig(obj) {
 //   roi_aggregator.lookback_days                     int    30      clamp [1,365]
 //   kb_refs_sweep.enabled                            bool   false
 //   kb_refs_sweep.min_days_between_runs              int    7       clamp [1,90]
+//   kb_refs_sweep.ignore_slugs                       string[] []    max 100 entries; each /^[a-z][a-z0-9-]{3,40}$/
 //   safety.circuit_breaker.max_extractions_per_24h   int    10      clamp [1,100]
 //   safety.circuit_breaker.cooldown_minutes_on_trip  int    60      clamp [5,1440]
 //
@@ -2599,6 +2727,10 @@ const DEFAULT_AUTO_LEARNING = Object.freeze({
     shadow_mode: false,
     proposals_per_orchestration: 3,
     proposals_per_24h: 10,
+    // v2.1.7 Bundle A: live Haiku backend config
+    backend:          'haiku-cli', // 'haiku-cli' | 'stub' (haiku-sdk removed in v2.1.7 zero-deferral per K3)
+    timeout_ms:        60_000,     // SIGTERM threshold; clamp [5_000, 300_000]
+    max_output_bytes:  65_536,     // hard stdout cap; clamp [1024, 1_048_576]
   }),
   roi_aggregator: Object.freeze({
     enabled: false,
@@ -2608,6 +2740,7 @@ const DEFAULT_AUTO_LEARNING = Object.freeze({
   kb_refs_sweep: Object.freeze({
     enabled: false,
     min_days_between_runs: 7,
+    ignore_slugs: Object.freeze([]),
   }),
   safety: Object.freeze({
     circuit_breaker: Object.freeze({
@@ -2648,9 +2781,9 @@ function _clampInt(v, min, max, defaultVal) {
  * @param {string} cwd - Project root directory (absolute path).
  * @returns {{
  *   global_kill_switch: boolean,
- *   extract_on_complete: { enabled: boolean, shadow_mode: boolean, proposals_per_orchestration: number, proposals_per_24h: number },
+ *   extract_on_complete: { enabled: boolean, shadow_mode: boolean, proposals_per_orchestration: number, proposals_per_24h: number, backend: string, timeout_ms: number, max_output_bytes: number },
  *   roi_aggregator: { enabled: boolean, min_days_between_runs: number, lookback_days: number },
- *   kb_refs_sweep: { enabled: boolean, min_days_between_runs: number },
+ *   kb_refs_sweep: { enabled: boolean, min_days_between_runs: number, ignore_slugs: string[] },
  *   safety: { circuit_breaker: { max_extractions_per_24h: number, cooldown_minutes_on_trip: number } }
  * }}
  */
@@ -2719,7 +2852,10 @@ function _buildAutoLearningAllOff(killSwitch) {
       enabled: false,
       shadow_mode: false,
       proposals_per_orchestration: DEFAULT_AUTO_LEARNING.extract_on_complete.proposals_per_orchestration,
-      proposals_per_24h: DEFAULT_AUTO_LEARNING.extract_on_complete.proposals_per_24h,
+      proposals_per_24h:           DEFAULT_AUTO_LEARNING.extract_on_complete.proposals_per_24h,
+      backend:                     DEFAULT_AUTO_LEARNING.extract_on_complete.backend,
+      timeout_ms:                  DEFAULT_AUTO_LEARNING.extract_on_complete.timeout_ms,
+      max_output_bytes:            DEFAULT_AUTO_LEARNING.extract_on_complete.max_output_bytes,
     },
     roi_aggregator: {
       enabled: false,
@@ -2729,6 +2865,7 @@ function _buildAutoLearningAllOff(killSwitch) {
     kb_refs_sweep: {
       enabled: false,
       min_days_between_runs: DEFAULT_AUTO_LEARNING.kb_refs_sweep.min_days_between_runs,
+      ignore_slugs: [],
     },
     safety: {
       circuit_breaker: {
@@ -2782,11 +2919,46 @@ function _parseAutoLearningBlock(fromFile, cwd) {
     shadowMode = eocSrc.shadow;
   }
 
+  // v2.1.7 Bundle A: backend field ('haiku-cli' | 'stub').
+  // F4 (zero-deferral): 'haiku-sdk' removed from VALID_BACKENDS per K3 arbitration.
+  // The SDK transport path is explicitly not implemented in v2.1.x; if a user sets
+  // backend: 'haiku-sdk', we journal a warning and fall back to 'haiku-cli' rather
+  // than silently aliasing. This gives operators a clear diagnostic signal.
+  const VALID_BACKENDS = new Set(['haiku-cli', 'stub']);
+  let backend = DEFAULT_AUTO_LEARNING.extract_on_complete.backend;
+  if ('backend' in eocSrc) {
+    if (eocSrc.backend === 'haiku-sdk') {
+      // Loud fallback: journal a degradation so operators know their config is wrong.
+      try {
+        recordDegradation({
+          kind: 'auto_extract_backend_unsupported_value',
+          severity: 'warn',
+          projectRoot: cwd,
+          detail: {
+            provided: eocSrc.backend,
+            fallback: 'haiku-cli',
+            reason: 'haiku-sdk transport not implemented in v2.1.x (K3 arbitration); use haiku-cli',
+          },
+        });
+      } catch (_) { /* fail-open */ }
+      backend = 'haiku-cli';
+    } else if (!VALID_BACKENDS.has(eocSrc.backend)) {
+      _recordAutoLearningMalformed(cwd, 'extract_on_complete.backend_invalid_value');
+      return _buildAutoLearningAllOff(false);
+    } else {
+      backend = eocSrc.backend;
+    }
+  }
+
   const eoc = {
     enabled:                    ('enabled' in eocSrc) ? eocSrc.enabled : DEFAULT_AUTO_LEARNING.extract_on_complete.enabled,
     shadow_mode:                shadowMode,
     proposals_per_orchestration: _clampInt(eocSrc.proposals_per_orchestration, 1, 10, DEFAULT_AUTO_LEARNING.extract_on_complete.proposals_per_orchestration),
     proposals_per_24h:           _clampInt(eocSrc.proposals_per_24h,           1, 50, DEFAULT_AUTO_LEARNING.extract_on_complete.proposals_per_24h),
+    // v2.1.7 Bundle A fields
+    backend,
+    timeout_ms:       _clampInt(eocSrc.timeout_ms,       5_000, 300_000, DEFAULT_AUTO_LEARNING.extract_on_complete.timeout_ms),
+    max_output_bytes: _clampInt(eocSrc.max_output_bytes, 1024,  1_048_576, DEFAULT_AUTO_LEARNING.extract_on_complete.max_output_bytes),
   };
 
   // roi_aggregator sub-block
@@ -2815,9 +2987,44 @@ function _parseAutoLearningBlock(fromFile, cwd) {
     return _buildAutoLearningAllOff(false);
   }
 
+  // ignore_slugs: array of slug strings (max 100; each must match /^[a-z][a-z0-9-]{3,40}$/).
+  // Invalid entries are dropped with a non-blocking warning (flat_*_keys_accepted precedent).
+  const SLUG_SHAPE = /^[a-z][a-z0-9-]{3,40}$/;
+  const MAX_IGNORE_SLUGS = 100;
+  let ignoreSlugs = [];
+  if ('ignore_slugs' in kbSrc) {
+    if (!Array.isArray(kbSrc.ignore_slugs)) {
+      // Non-array value: emit non-blocking warning and use default.
+      try {
+        recordDegradation({
+          kind: 'auto_learning_config_malformed',
+          severity: 'warn',
+          detail: { reason: 'kb_refs_sweep.ignore_slugs_wrong_type' },
+          projectRoot: cwd,
+        });
+      } catch (_) { /* fail-open */ }
+    } else {
+      const rawSlugs = kbSrc.ignore_slugs.slice(0, MAX_IGNORE_SLUGS);
+      const badSlugs = rawSlugs.filter((s) => typeof s !== 'string' || !SLUG_SHAPE.test(s));
+      if (badSlugs.length > 0) {
+        // Non-blocking: warn but continue with valid entries only.
+        try {
+          recordDegradation({
+            kind: 'auto_learning_config_malformed',
+            severity: 'warn',
+            detail: { reason: 'kb_refs_sweep.ignore_slugs_invalid_entries', invalid: badSlugs.slice(0, 10) },
+            projectRoot: cwd,
+          });
+        } catch (_) { /* fail-open */ }
+      }
+      ignoreSlugs = rawSlugs.filter((s) => typeof s === 'string' && SLUG_SHAPE.test(s));
+    }
+  }
+
   const kbRefs = {
     enabled:              ('enabled' in kbSrc) ? kbSrc.enabled : DEFAULT_AUTO_LEARNING.kb_refs_sweep.enabled,
     min_days_between_runs: _clampInt(kbSrc.min_days_between_runs, 1, 90, DEFAULT_AUTO_LEARNING.kb_refs_sweep.min_days_between_runs),
+    ignore_slugs: ignoreSlugs,
   };
 
   // safety.circuit_breaker sub-block
@@ -2862,6 +3069,130 @@ function _recordAutoLearningMalformed(cwd, detail) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// resilience section defaults and loader (v2.1.7 Bundle D)
+//
+// K1 (arbitration, BINDING): resilience ships LIVE by default —
+//   enabled=true, shadow_mode=false on every fresh install. Source:
+//   .orchestray/kb/decisions/v217-arbitration.md.
+//
+// The write-resilience-dossier.js Stop/SubagentStop hooks and the
+// inject-resilience-dossier.js UserPromptSubmit hook honor the following
+// kill-switches, in order of precedence:
+//
+//   1. ORCHESTRAY_RESILIENCE_DISABLED=1   env var, unconditional
+//   2. resilience.kill_switch: true        hard-off, independent of enabled
+//   3. resilience.enabled: false           soft-off
+//   4. resilience.shadow_mode: true        dossier still written, NOT injected
+// ---------------------------------------------------------------------------
+
+const DEFAULT_RESILIENCE = Object.freeze({
+  enabled: true,            // K1: LIVE by default
+  shadow_mode: false,       // K1: NOT shadow by default
+  inject_max_bytes: 12288,  // 12 KB hard cap on additionalContext payload (W3 §B2)
+  max_inject_turns: 3,      // W3 §A3: post-compact turns that receive dossier
+  kill_switch: false,       // config hard-off, independent of enabled
+});
+
+/**
+ * Load the `resilience` config block with fail-open semantics. Missing /
+ * malformed / wrong-type falls through to DEFAULT_RESILIENCE.
+ *
+ * Env var `ORCHESTRAY_RESILIENCE_DISABLED=1` forces `enabled:false,
+ * kill_switch:true` regardless of disk state — mirrors the
+ * `ORCHESTRAY_AUTO_LEARNING_KILL_SWITCH` precedent.
+ *
+ * @param {string} cwd - Absolute project root.
+ * @returns {{
+ *   enabled: boolean,
+ *   shadow_mode: boolean,
+ *   inject_max_bytes: number,
+ *   max_inject_turns: number,
+ *   kill_switch: boolean,
+ * }}
+ */
+function loadResilienceConfig(cwd) {
+  if (process.env.ORCHESTRAY_RESILIENCE_DISABLED === '1') {
+    return Object.assign({}, DEFAULT_RESILIENCE, { enabled: false, kill_switch: true });
+  }
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_RESILIENCE);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_RESILIENCE);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_RESILIENCE);
+  }
+
+  const fromFile = parsed.resilience;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_RESILIENCE);
+  }
+
+  const safe = sanitizeConfig(fromFile);
+  const merged = Object.assign({}, DEFAULT_RESILIENCE);
+
+  if (typeof safe.enabled === 'boolean')      merged.enabled = safe.enabled;
+  if (typeof safe.shadow_mode === 'boolean')  merged.shadow_mode = safe.shadow_mode;
+  if (typeof safe.kill_switch === 'boolean')  merged.kill_switch = safe.kill_switch;
+
+  if (Number.isInteger(safe.inject_max_bytes)) {
+    merged.inject_max_bytes = Math.max(512, Math.min(32 * 1024, safe.inject_max_bytes));
+  }
+  if (Number.isInteger(safe.max_inject_turns)) {
+    merged.max_inject_turns = Math.max(1, Math.min(10, safe.max_inject_turns));
+  }
+
+  return merged;
+}
+
+/**
+ * Validate a resilience block (for post-upgrade-sweep / config-repair paths).
+ * Range-checks numerics per W3 §F3. Returns the list of problem strings.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateResilienceConfig(obj) {
+  const errors = [];
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['resilience must be an object'] };
+  }
+  if ('enabled' in obj && typeof obj.enabled !== 'boolean') {
+    errors.push('resilience.enabled must be a boolean');
+  }
+  if ('shadow_mode' in obj && typeof obj.shadow_mode !== 'boolean') {
+    errors.push('resilience.shadow_mode must be a boolean');
+  }
+  if ('kill_switch' in obj && typeof obj.kill_switch !== 'boolean') {
+    errors.push('resilience.kill_switch must be a boolean');
+  }
+  if ('inject_max_bytes' in obj) {
+    if (!Number.isInteger(obj.inject_max_bytes) ||
+        obj.inject_max_bytes < 512 || obj.inject_max_bytes > 32768) {
+      errors.push('resilience.inject_max_bytes must be an integer in [512, 32768]');
+    }
+  }
+  if ('max_inject_turns' in obj) {
+    if (!Number.isInteger(obj.max_inject_turns) ||
+        obj.max_inject_turns < 1 || obj.max_inject_turns > 10) {
+      errors.push('resilience.max_inject_turns must be an integer in [1, 10]');
+    }
+  }
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
 module.exports = {
   DEFAULT_MCP_ENFORCEMENT,
   loadMcpEnforcement,
@@ -2877,6 +3208,9 @@ module.exports = {
   validateCostBudgetEnforcementConfig,
   DEFAULT_EFFORT_MULTIPLIERS,
   DEFAULT_MAX_PER_TASK,
+  // C (v2.1.7): max_per_task schema loader + validator
+  loadMcpServerConfig,
+  validateMcpServerConfig,
   // D7 (v2.0.16): routing_gate auto-seed on miss
   DEFAULT_ROUTING_GATE,
   loadRoutingGateConfig,
@@ -2934,4 +3268,8 @@ module.exports = {
   // W7 (v2.1.6): auto_learning config block
   DEFAULT_AUTO_LEARNING,
   loadAutoLearningConfig,
+  // D (v2.1.7): resilience config block
+  DEFAULT_RESILIENCE,
+  loadResilienceConfig,
+  validateResilienceConfig,
 };

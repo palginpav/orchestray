@@ -227,8 +227,12 @@ test('bare slug: missing slug produces a finding', async () => {
     entries: [{ slug: 'known-good-slug', type: 'artifact' }],
   });
 
+  // K4 two-signal rule: bare slug is flagged only when BOTH (a) a prefix phrase
+  // appears on the current or previous line AND (b) the slug is in a structural
+  // context (list item, table cell, or link target). Use a list-item with a prefix
+  // to satisfy both signals.
   writeKbFile(dir, 'artifacts', 'test.md',
-    `---\nslug: test\n---\n\nSee also: missing-xyz-thing for context.\n`);
+    `---\nslug: test\n---\n\n- See also: missing-xyz-thing\n`);
 
   const result = await runKbRefsSweep({ cwd: dir });
   assert.equal(result.status, 'complete');
@@ -520,12 +524,14 @@ test('_scanFile: returns empty findings for file with no refs', () => {
 test('_scanFile: detects all three ref types in one file', () => {
   const tmp = path.join(os.tmpdir(), `scan-test-${Date.now()}.md`);
   try {
+    // K4 two-signal rule: use a list item with a prefix phrase to satisfy both
+    // signals required for bare-slug detection.
     fs.writeFileSync(
       tmp,
-      `---\nslug: s\n---\n\n@orchestray:kb://missing-kb\n@orchestray:pattern://missing-pat\nSee also: missing-bare-ref\n`,
+      `---\nslug: s\n---\n\n@orchestray:kb://missing-kb\n@orchestray:pattern://missing-pat\n- See also: missing-bare-ref\n`,
       'utf8'
     );
-    const { findings } = _scanFile(tmp, new Set(), new Set(), os.tmpdir());
+    const { findings } = _scanFile(tmp, new Set(), new Set(), os.tmpdir(), []);
     const types = findings.map((f) => f.reference_type);
     assert.ok(types.includes('kb_ref'), 'should detect kb_ref');
     assert.ok(types.includes('pattern_ref'), 'should detect pattern_ref');

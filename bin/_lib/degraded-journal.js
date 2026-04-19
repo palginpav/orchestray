@@ -76,6 +76,27 @@ const KINDS = [
   'pattern_roi_suggestion_write_error',  // v2.1.6 C5: failed to write calibration-suggestion .md
   'pattern_roi_uncaught_error',          // v2.1.6 C5: unexpected top-level error in roi aggregator
   'auto_learning_config_malformed',      // v2.1.6 W7: auto_learning config block malformed; all-off defaults used
+  'mcp_server_max_per_task_out_of_range', // v2.1.7 C: max_per_task tool value out of range (1..1000); fell back to default
+  'mcp_server_max_per_task_unknown_tool', // v2.1.7 C: max_per_task config key names an unrecognized MCP tool; passed through
+  // v2.1.7 Bundle A: Haiku extraction backend degradation kinds
+  'auto_extract_parse_failed',           // v2.1.7 A: extractor output was not valid ExtractorOutput JSON
+  'auto_extract_backend_timeout',        // v2.1.7 A: extractor subprocess exceeded timeout_ms; SIGTERM sent
+  'auto_extract_backend_exit_nonzero',   // v2.1.7 A: extractor subprocess exited with non-zero code
+  'auto_extract_backend_oversize',       // v2.1.7 A: extractor stdout exceeded max_output_bytes
+  // v2.1.7 Bundle D: resilience dossier + re-hydration (compaction survival)
+  'dossier_write_failed',        // v2.1.7 D: write-resilience-dossier.js could not atomically write the dossier
+  'dossier_inject_failed',       // v2.1.7 D: inject-resilience-dossier.js could not read/inject the dossier
+  'dossier_corrupt',             // v2.1.7 D: parseDossier rejected the file (schema mismatch / JSON error / missing critical)
+  'dossier_stale',               // v2.1.7 D: inject skipped because status=completed or dossier too old
+  'compact_signal_stuck',        // v2.1.7 D: compact-signal.lock write / parse / cleanup failure
+  'dossier_oversize_truncated',  // v2.1.7 D: serializer dropped deferred/expanded tiers to stay ≤ 12 KB
+  'dossier_fence_collision',     // v2.1.7 SEC-01: dossier field contains fence substring; injection skipped to prevent prompt-injection
+  // v2.1.7 zero-deferral patch — SEC-04/SEC-05
+  'file_too_large',              // SEC-04: file exceeded per-reader size cap; read skipped, fail-open
+  'file_read_failed',            // SEC-04: fd-based read failed with an unexpected errno; caller fails open
+  'dossier_field_sanitised',     // SEC-05: dossier path-shaped field contained invalid content; field nulled
+  // v2.1.7 zero-deferral patch — F4 / SEC-07
+  'auto_extract_backend_unsupported_value', // F4: backend='haiku-sdk' is reserved/not implemented; fell back to haiku-cli
   'unknown_kind',
 ];
 
@@ -182,7 +203,7 @@ function _capLine(rec) {
  *
  * @param {{
  *   kind: string,
- *   severity?: 'warn'|'info',
+ *   severity?: 'error'|'warn'|'info',
  *   detail?: object,
  *   projectRoot?: string,
  * }} event
@@ -194,7 +215,10 @@ function recordDegradation(event) {
 
     const projectRoot = event.projectRoot || process.cwd();
     const kind        = String(event.kind);
-    const severity    = event.severity === 'info' ? 'info' : 'warn';
+    // v2.1.7: accept 'error' severity for backend-failure kinds (e.g. non-zero exit code)
+    const severity    = event.severity === 'info' ? 'info'
+      : event.severity === 'error' ? 'error'
+      : 'warn';
     const detail      = event.detail && typeof event.detail === 'object'
       ? Object.assign({}, event.detail)
       : {};

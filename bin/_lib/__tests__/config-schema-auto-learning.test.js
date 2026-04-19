@@ -388,6 +388,83 @@ describe('CHG-01 shadow alias', () => {
 });
 
 // ---------------------------------------------------------------------------
+// F4 (zero-deferral): haiku-sdk backend → loud fallback to haiku-cli
+// ---------------------------------------------------------------------------
+
+describe('F4 — haiku-sdk backend rejected loudly (K3 arbitration)', () => {
+  function readJournalF4() {
+    const p = path.join(tmpDir, '.orchestray', 'state', 'degraded.jsonl');
+    if (!fs.existsSync(p)) return [];
+    return fs.readFileSync(p, 'utf8').split('\n').filter(Boolean).map(JSON.parse);
+  }
+
+  test('backend: "haiku-sdk" falls back to "haiku-cli" and journals auto_extract_backend_unsupported_value', () => {
+    writeConfig({
+      extract_on_complete: { enabled: true, backend: 'haiku-sdk' },
+    });
+
+    const cfg = loadAutoLearningConfig(tmpDir);
+
+    assert.equal(cfg.extract_on_complete.backend, 'haiku-cli',
+      'haiku-sdk must fall back to haiku-cli');
+
+    const journal = readJournalF4();
+    assert.ok(
+      journal.some((e) => e.kind === 'auto_extract_backend_unsupported_value'),
+      'must journal auto_extract_backend_unsupported_value'
+    );
+  });
+
+  test('backend: "haiku-cli" is accepted without journal entry', () => {
+    writeConfig({
+      extract_on_complete: { enabled: true, backend: 'haiku-cli' },
+    });
+
+    const cfg = loadAutoLearningConfig(tmpDir);
+
+    assert.equal(cfg.extract_on_complete.backend, 'haiku-cli');
+    const journal = readJournalF4();
+    assert.ok(
+      !journal.some((e) => e.kind === 'auto_extract_backend_unsupported_value'),
+      'haiku-cli must NOT journal the unsupported-value entry'
+    );
+  });
+
+  test('backend: "stub" is accepted without journal entry', () => {
+    writeConfig({
+      extract_on_complete: { enabled: true, backend: 'stub' },
+    });
+
+    const cfg = loadAutoLearningConfig(tmpDir);
+
+    assert.equal(cfg.extract_on_complete.backend, 'stub');
+    const journal = readJournalF4();
+    assert.ok(
+      !journal.some((e) => e.kind === 'auto_extract_backend_unsupported_value'),
+      '"stub" must NOT journal the unsupported-value entry'
+    );
+  });
+
+  test('backend: "completely-unknown" still triggers the invalid-value all-off fallback', () => {
+    writeConfig({
+      extract_on_complete: { enabled: true, backend: 'completely-unknown' },
+    });
+
+    const cfg = loadAutoLearningConfig(tmpDir);
+
+    // Completely unknown values (not haiku-sdk) trigger auto_learning_config_malformed
+    // and return all-off defaults.
+    assert.equal(cfg.extract_on_complete.enabled, false,
+      'unknown backend must trigger all-off defaults');
+    const journal = readJournalF4();
+    assert.ok(
+      journal.some((e) => e.kind === 'auto_learning_config_malformed'),
+      'unknown backend must journal auto_learning_config_malformed'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Shipped config.json all-off assertion
 // ---------------------------------------------------------------------------
 

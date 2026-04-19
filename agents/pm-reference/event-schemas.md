@@ -2896,3 +2896,185 @@ schema). All follow the same `{ schema, timestamp, kind, severity, detail }` sha
 | `kb_refs_sweep_file_read_error` | warn | `kb-refs-sweep.js` could not read a KB or patterns file |
 | `kb_refs_sweep_malformed_frontmatter` | info | A scanned file has unparseable frontmatter; file is still scanned for refs |
 | `pattern_roi_snapshot_write_error` | warn | `pattern-roi-aggregate.js` could not write `roi-snapshot.json` |
+
+---
+
+### Auto-extract backend events (v2.1.7 Bundle A)
+
+#### `auto_extract_staged` — field addition
+
+The existing `auto_extract_staged` event gains one new field in v2.1.7:
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "auto_extract_staged",
+  "schema_version": 1,
+  "orchestration_id": "<current orch id>",
+  "proposal_count": 2,
+  "shadow": false,
+  "backend_elapsed_ms": 4200
+}
+```
+
+**`backend_elapsed_ms`** (new in v2.1.7): wall-clock milliseconds from subprocess spawn
+to exit, as measured by `haiku-extractor-transport.js`. Zero for the stub backend.
+Useful for doctor probes and performance monitoring of the Haiku CLI invocation.
+
+#### Degraded-journal `kind` additions (v2.1.7 Bundle A)
+
+| kind | severity | detail fields | When written |
+|---|---|---|---|
+| `auto_extract_parse_failed` | warn | `first_200_bytes`, `backend` | Extractor stdout was not valid `ExtractorOutput` JSON, had wrong `schema_version`, or had missing/invalid required fields |
+| `auto_extract_backend_timeout` | warn | `timeout_ms`, `killed_at` | Subprocess did not exit within `timeout_ms`; SIGTERM sent |
+| `auto_extract_backend_exit_nonzero` | error | `exit_code`, `stderr_head` | Subprocess exited with a non-zero exit code |
+| `auto_extract_backend_oversize` | warn | `bytes_received` | Subprocess stdout exceeded `max_output_bytes`; output discarded |
+
+All four kinds follow the standard degraded-journal shape and appear in
+`.orchestray/state/degraded.jsonl`. They are readable via `/orchestray:doctor`.
+
+On any of these conditions:
+- Zero proposals are written to `.orchestray/proposed-patterns/`
+- The `auto_extract_staged` event still fires with `proposal_count: 0`
+- The circuit breaker still increments (prevents runaway on persistently-failing backend)
+- The hook still exits 0 (fail-open discipline)
+
+---
+
+### MCP enforcement — `max_per_task` shape (v2.1.7)
+
+The `mcp_server.max_per_task` config block is now validated by `loadMcpServerConfig` in
+`bin/_lib/config-schema.js`. The validated shape is `{ ask_user, kb_write, pattern_record_application, ...<unknown-tool pass-throughs> }`, where each known tool value is an integer in the range 1..1000 (defaults all 20). `tool-counts.js` reads the validated shape when `cwd` is supplied; falls back to direct `config.mcp_server.max_per_task` read for raw-config callers. Two new degraded-journal KINDs are used by this path:
+
+| kind | severity | When written |
+|---|---|---|
+| `mcp_server_max_per_task_out_of_range` | warn | A known tool's configured value is outside 1..1000 or non-integer; value falls back to the default (20). One entry per tool per boot, dedup-keyed on `mcp_server_max_per_task_out_of_range\|<tool>`. |
+| `mcp_server_max_per_task_unknown_tool` | warn | A config key names an MCP tool the loader does not recognize; value is passed through unchanged (K5). One entry per tool per boot, dedup-keyed on `mcp_server_max_per_task_unknown_tool\|<tool>`. |
+
+---
+
+## Resilience Dossier — Events (v2.1.7 Bundle D)
+
+Emitted by the three new hooks implementing compaction-resilience dossier writes and
+post-compact re-hydration: `bin/write-resilience-dossier.js`,
+`bin/mark-compact-signal.js`, and `bin/inject-resilience-dossier.js`. All land in
+`.orchestray/audit/events.jsonl` via `atomicAppendJsonl`.
+
+### `compaction_detected`
+
+Emitted by `bin/mark-compact-signal.js` when `SessionStart` fires with
+`source:"compact"` or `source:"resume"`. Per K2 arbitration, `source:"clear"` is
+intentionally NOT emitted — `/clear` is a deliberate user reset, so no lock is dropped
+and no event is recorded.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "compaction_detected",
+  "source": "compact" | "resume",
+  "trigger": "manual" | "auto" | null,
+  "orchestration_id": "<id | null>"
+}
+```
+
+### `dossier_written`
+
+Emitted by `bin/write-resilience-dossier.js` on every successful atomic write of
+`.orchestray/state/resilience-dossier.json`, whether invoked directly as a Stop /
+SubagentStop hook or via `writeDossierSnapshot()` from `pre-compact-archive.js`.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "dossier_written",
+  "orchestration_id": "<id | null>",
+  "size_bytes": <int>,
+  "phase": "<phase or null>",
+  "status": "<status or null>",
+  "pending_count": <int>,
+  "completed_count": <int>,
+  "truncation_flags": ["<flag>", ...],
+  "trigger": "stop" | "subagent_stop" | "pre_compact" | "unknown"
+}
+```
+
+### `dossier_injected`
+
+Emitted by `bin/inject-resilience-dossier.js` when a post-compact UserPromptSubmit
+successfully injects the dossier as `additionalContext`. Not emitted in shadow mode;
+not emitted when the lock is absent or counter is exhausted.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "dossier_injected",
+  "orchestration_id": "<id | null>",
+  "written_at": "<ISO 8601 | null>",
+  "ingested_counter_before": <int>,
+  "ingested_counter_after": <int>,
+  "bytes_injected": <int>,
+  "source_lock": "compact" | "resume" | null,
+  "truncated": <boolean>
+}
+```
+
+`truncated: true` means the fenced payload exceeded `resilience.inject_max_bytes` and the
+advisory fallback (scalars + MCP URI pointer) was injected instead of the full dossier.
+
+### `rehydration_skipped_clean`
+
+Emitted by `bin/inject-resilience-dossier.js` each time injection is suppressed for a
+benign reason. Used by `/orchestray:doctor` to distinguish healthy quiet-periods from
+failures.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "rehydration_skipped_clean",
+  "reason": "no-lock" | "counter_exhausted" | "no-dossier" | "completed" |
+            "shadow_mode" | "kill-switch",
+  "orchestration_id": "<id | null>",
+  "counter": <int, only with counter_exhausted>,
+  "max": <int, only with counter_exhausted>,
+  "lock_source": "<compact|resume|null>",
+  "bytes_would_inject": <int, only with shadow_mode>
+}
+```
+
+### Degraded-journal `kind` additions (v2.1.7 Bundle D)
+
+| kind | severity | When written |
+|---|---|---|
+| `dossier_write_failed` | warn | Atomic write of `resilience-dossier.json` failed (ENOSPC, EACCES, path-collision). Dedup-keyed per `orchestration_id\|err_code`. |
+| `dossier_inject_failed` | warn | Injector could not read/parse/emit the dossier (fs error or oversize truncation). |
+| `dossier_corrupt` | warn | `parseDossier` rejected the file: JSON parse error, `schema_version` mismatch, or missing critical fields. |
+| `dossier_stale` | info | Dossier present but `status == "completed"` — injector suppressed the injection. |
+| `compact_signal_stuck` | warn | `compact-signal.lock` could not be written, parsed, or cleaned up. |
+| `dossier_fence_collision` | warn | Injector detected a fence-escape in the raw dossier file at injection time (defense-in-depth check after `parseDossier`). Injection is aborted; `rehydration_skipped_fence_collision` is emitted to events.jsonl. |
+
+### `rehydration_skipped_fence_collision` (v2.1.7 patch round)
+
+Emitted by `bin/inject-resilience-dossier.js` to `events.jsonl` when the defense-in-depth fence-collision check fires at injection time. The dossier is not injected; the degraded journal also receives a `dossier_fence_collision` entry.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "rehydration_skipped_fence_collision",
+  "orchestration_id": "<id | null>",
+  "reason": "fence_collision"
+}
+```
+
+Field notes:
+- Emitted only on the defense-in-depth path (injector-side check). The serializer-side check at `serializeDossier` time emits `fence_collision_cleared` in `truncation_flags` on the dossier, not a separate event.
+- Consumers that see this event should investigate whether a project file contains the Orchestray context-fence marker strings verbatim.
+| `dossier_oversize_truncated` | warn | Serializer had to drop deferred and/or expanded tiers to stay ≤ 12 KB. |
+
+### Degraded-journal `kind` additions (v2.1.7 zero-deferral patch — SEC-04/SEC-05/F4)
+
+| kind | severity | When written |
+|---|---|---|
+| `file_too_large` | warn | A file exceeded its per-site read cap; the reader returned an empty-equivalent value and the caller fails open. Emitted by `kb-refs-sweep.js` (index.json > 10 MiB, slug-ignore.txt > 1 MiB) and `write-resilience-dossier.js` (marker > 256 KiB, mcp-checkpoint.jsonl > 256 KiB, routing.jsonl > 4 MiB, drift-invariants.jsonl > 256 KiB). |
+| `file_read_failed` | warn | An fd-based read failed with an unexpected errno (not a size-cap breach); the caller fails open. Emitted by the same sites as `file_too_large` when the OS returns an error other than a size overflow. |
+| `dossier_field_sanitised` | warn | A path-like dossier field failed SEC-05 sanitisation (NUL byte, path-traversal segment, oversize, or ASCII control character); the field was replaced with null and dossier serialisation continues. |
+| `auto_extract_backend_unsupported_value` | warn | Config specified `backend: 'haiku-sdk'` (reserved, not implemented in v2.1.x); the pipeline fell back to `haiku-cli`. |
