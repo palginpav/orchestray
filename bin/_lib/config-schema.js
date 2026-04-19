@@ -2565,6 +2565,303 @@ function validateRetrievalConfig(obj) {
   return errors.length === 0 ? { valid: true } : { valid: false, errors };
 }
 
+// ---------------------------------------------------------------------------
+// auto_learning section defaults and loader (W7 v2.1.6)
+//
+// All features default OFF. The global_kill_switch is the single master gate.
+// Env var ORCHESTRAY_AUTO_LEARNING_KILL_SWITCH=1 overrides config (checked before
+// config parse so even a malformed config block can be killed).
+//
+// Key table (from design §4):
+//   global_kill_switch                               bool   false
+//   extract_on_complete.enabled                      bool   false   (MUST stay false — opt-in)
+//   extract_on_complete.shadow_mode                  bool   false
+//   extract_on_complete.proposals_per_orchestration  int    3       clamp [1,10]
+//   extract_on_complete.proposals_per_24h            int    10      clamp [1,50]
+//   roi_aggregator.enabled                           bool   false
+//   roi_aggregator.min_days_between_runs             int    1       clamp [1,90]
+//   roi_aggregator.lookback_days                     int    30      clamp [1,365]
+//   kb_refs_sweep.enabled                            bool   false
+//   kb_refs_sweep.min_days_between_runs              int    7       clamp [1,90]
+//   safety.circuit_breaker.max_extractions_per_24h   int    10      clamp [1,100]
+//   safety.circuit_breaker.cooldown_minutes_on_trip  int    60      clamp [5,1440]
+//
+// Caller responsibility for kill-switch cascade:
+//   If loadAutoLearningConfig returns global_kill_switch === true, callers MUST
+//   treat all sub-feature enabled flags as false regardless of their stored value.
+//   The loader does NOT mutate sub-feature flags — it only surfaces the kill switch.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_AUTO_LEARNING = Object.freeze({
+  global_kill_switch: false,
+  extract_on_complete: Object.freeze({
+    enabled: false,
+    shadow_mode: false,
+    proposals_per_orchestration: 3,
+    proposals_per_24h: 10,
+  }),
+  roi_aggregator: Object.freeze({
+    enabled: false,
+    min_days_between_runs: 1,
+    lookback_days: 30,
+  }),
+  kb_refs_sweep: Object.freeze({
+    enabled: false,
+    min_days_between_runs: 7,
+  }),
+  safety: Object.freeze({
+    circuit_breaker: Object.freeze({
+      max_extractions_per_24h: 10,
+      cooldown_minutes_on_trip: 60,
+    }),
+  }),
+});
+
+/**
+ * Clamp an integer to [min, max]. Returns the default value if the input is not
+ * a finite integer.
+ *
+ * @param {unknown} v
+ * @param {number} min
+ * @param {number} max
+ * @param {number} defaultVal
+ * @returns {number}
+ */
+function _clampInt(v, min, max, defaultVal) {
+  if (!Number.isInteger(v)) return defaultVal;
+  return Math.max(min, Math.min(max, v));
+}
+
+/**
+ * Load and validate the auto_learning config block from
+ * <cwd>/.orchestray/config.json.
+ *
+ * Fail-closed contract (diverges from other loaders):
+ *   - Missing block → return all-off defaults; no degraded-journal entry (valid initial state).
+ *   - Malformed block (type mismatches, non-object) → return all-off defaults AND emit a
+ *     degraded-journal entry with kind 'auto_learning_config_malformed'.
+ *
+ * Env-var kill switch:
+ *   ORCHESTRAY_AUTO_LEARNING_KILL_SWITCH=1 → returns global_kill_switch:true regardless of
+ *   config file content. Checked BEFORE config parse so even a malformed file can be killed.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{
+ *   global_kill_switch: boolean,
+ *   extract_on_complete: { enabled: boolean, shadow_mode: boolean, proposals_per_orchestration: number, proposals_per_24h: number },
+ *   roi_aggregator: { enabled: boolean, min_days_between_runs: number, lookback_days: number },
+ *   kb_refs_sweep: { enabled: boolean, min_days_between_runs: number },
+ *   safety: { circuit_breaker: { max_extractions_per_24h: number, cooldown_minutes_on_trip: number } }
+ * }}
+ */
+function loadAutoLearningConfig(cwd) {
+  // Env-var kill switch takes unconditional precedence — check BEFORE anything else.
+  if (process.env.ORCHESTRAY_AUTO_LEARNING_KILL_SWITCH === '1') {
+    return _buildAutoLearningAllOff(true);
+  }
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    // File missing or unreadable — all-off defaults, no journal entry.
+    return _buildAutoLearningAllOff(false);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    // Malformed JSON — all-off defaults + journal.
+    _recordAutoLearningMalformed(cwd, 'json_parse_error');
+    return _buildAutoLearningAllOff(false);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    _recordAutoLearningMalformed(cwd, 'config_not_object');
+    return _buildAutoLearningAllOff(false);
+  }
+
+  const fromFile = parsed.auto_learning;
+
+  // Missing block → all-off defaults (valid initial state, no journal entry).
+  if (fromFile === undefined || fromFile === null) {
+    return _buildAutoLearningAllOff(false);
+  }
+
+  // Block present but wrong type → malformed.
+  if (typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    _recordAutoLearningMalformed(cwd, 'block_wrong_type');
+    return _buildAutoLearningAllOff(false);
+  }
+
+  // Parse and validate each sub-section. Any non-recoverable type error on a bool
+  // key returns all-off + journal. Integer keys are clamped (recover gracefully).
+  try {
+    return _parseAutoLearningBlock(fromFile, cwd);
+  } catch (_) {
+    _recordAutoLearningMalformed(cwd, 'parse_threw');
+    return _buildAutoLearningAllOff(false);
+  }
+}
+
+/**
+ * Build the all-off defaults shape, optionally with global_kill_switch forced on.
+ *
+ * @param {boolean} killSwitch
+ * @returns {object}
+ */
+function _buildAutoLearningAllOff(killSwitch) {
+  return {
+    global_kill_switch: killSwitch,
+    extract_on_complete: {
+      enabled: false,
+      shadow_mode: false,
+      proposals_per_orchestration: DEFAULT_AUTO_LEARNING.extract_on_complete.proposals_per_orchestration,
+      proposals_per_24h: DEFAULT_AUTO_LEARNING.extract_on_complete.proposals_per_24h,
+    },
+    roi_aggregator: {
+      enabled: false,
+      min_days_between_runs: DEFAULT_AUTO_LEARNING.roi_aggregator.min_days_between_runs,
+      lookback_days: DEFAULT_AUTO_LEARNING.roi_aggregator.lookback_days,
+    },
+    kb_refs_sweep: {
+      enabled: false,
+      min_days_between_runs: DEFAULT_AUTO_LEARNING.kb_refs_sweep.min_days_between_runs,
+    },
+    safety: {
+      circuit_breaker: {
+        max_extractions_per_24h: DEFAULT_AUTO_LEARNING.safety.circuit_breaker.max_extractions_per_24h,
+        cooldown_minutes_on_trip: DEFAULT_AUTO_LEARNING.safety.circuit_breaker.cooldown_minutes_on_trip,
+      },
+    },
+  };
+}
+
+/**
+ * Parse a validated (non-null, non-array object) auto_learning block from config.
+ * Returns all-off defaults for any bool key with a non-boolean value, emitting a
+ * degraded-journal entry.
+ *
+ * @param {object} fromFile
+ * @param {string} cwd
+ * @returns {object}
+ */
+function _parseAutoLearningBlock(fromFile, cwd) {
+  // global_kill_switch
+  let globalKill = DEFAULT_AUTO_LEARNING.global_kill_switch;
+  if ('global_kill_switch' in fromFile) {
+    if (typeof fromFile.global_kill_switch !== 'boolean') {
+      _recordAutoLearningMalformed(cwd, 'global_kill_switch_wrong_type');
+      return _buildAutoLearningAllOff(false);
+    }
+    globalKill = fromFile.global_kill_switch;
+  }
+
+  // extract_on_complete sub-block
+  const eocSrc = (fromFile.extract_on_complete && typeof fromFile.extract_on_complete === 'object' && !Array.isArray(fromFile.extract_on_complete))
+    ? fromFile.extract_on_complete
+    : {};
+
+  if ('enabled' in eocSrc && typeof eocSrc.enabled !== 'boolean') {
+    _recordAutoLearningMalformed(cwd, 'extract_on_complete.enabled_wrong_type');
+    return _buildAutoLearningAllOff(false);
+  }
+  if ('shadow_mode' in eocSrc && typeof eocSrc.shadow_mode !== 'boolean') {
+    _recordAutoLearningMalformed(cwd, 'extract_on_complete.shadow_mode_wrong_type');
+    return _buildAutoLearningAllOff(false);
+  }
+
+  // CHG-01 backward compat: `shadow` (legacy alias) falls back if `shadow_mode` absent.
+  // `shadow_mode` takes precedence over `shadow`.
+  let shadowMode = DEFAULT_AUTO_LEARNING.extract_on_complete.shadow_mode;
+  if ('shadow_mode' in eocSrc) {
+    shadowMode = eocSrc.shadow_mode;
+  } else if ('shadow' in eocSrc && typeof eocSrc.shadow === 'boolean') {
+    shadowMode = eocSrc.shadow;
+  }
+
+  const eoc = {
+    enabled:                    ('enabled' in eocSrc) ? eocSrc.enabled : DEFAULT_AUTO_LEARNING.extract_on_complete.enabled,
+    shadow_mode:                shadowMode,
+    proposals_per_orchestration: _clampInt(eocSrc.proposals_per_orchestration, 1, 10, DEFAULT_AUTO_LEARNING.extract_on_complete.proposals_per_orchestration),
+    proposals_per_24h:           _clampInt(eocSrc.proposals_per_24h,           1, 50, DEFAULT_AUTO_LEARNING.extract_on_complete.proposals_per_24h),
+  };
+
+  // roi_aggregator sub-block
+  const roiSrc = (fromFile.roi_aggregator && typeof fromFile.roi_aggregator === 'object' && !Array.isArray(fromFile.roi_aggregator))
+    ? fromFile.roi_aggregator
+    : {};
+
+  if ('enabled' in roiSrc && typeof roiSrc.enabled !== 'boolean') {
+    _recordAutoLearningMalformed(cwd, 'roi_aggregator.enabled_wrong_type');
+    return _buildAutoLearningAllOff(false);
+  }
+
+  const roi = {
+    enabled:              ('enabled' in roiSrc) ? roiSrc.enabled : DEFAULT_AUTO_LEARNING.roi_aggregator.enabled,
+    min_days_between_runs: _clampInt(roiSrc.min_days_between_runs, 1, 90,  DEFAULT_AUTO_LEARNING.roi_aggregator.min_days_between_runs),
+    lookback_days:         _clampInt(roiSrc.lookback_days,         1, 365, DEFAULT_AUTO_LEARNING.roi_aggregator.lookback_days),
+  };
+
+  // kb_refs_sweep sub-block
+  const kbSrc = (fromFile.kb_refs_sweep && typeof fromFile.kb_refs_sweep === 'object' && !Array.isArray(fromFile.kb_refs_sweep))
+    ? fromFile.kb_refs_sweep
+    : {};
+
+  if ('enabled' in kbSrc && typeof kbSrc.enabled !== 'boolean') {
+    _recordAutoLearningMalformed(cwd, 'kb_refs_sweep.enabled_wrong_type');
+    return _buildAutoLearningAllOff(false);
+  }
+
+  const kbRefs = {
+    enabled:              ('enabled' in kbSrc) ? kbSrc.enabled : DEFAULT_AUTO_LEARNING.kb_refs_sweep.enabled,
+    min_days_between_runs: _clampInt(kbSrc.min_days_between_runs, 1, 90, DEFAULT_AUTO_LEARNING.kb_refs_sweep.min_days_between_runs),
+  };
+
+  // safety.circuit_breaker sub-block
+  const safetySrc = (fromFile.safety && typeof fromFile.safety === 'object' && !Array.isArray(fromFile.safety))
+    ? fromFile.safety
+    : {};
+  const cbSrc = (safetySrc.circuit_breaker && typeof safetySrc.circuit_breaker === 'object' && !Array.isArray(safetySrc.circuit_breaker))
+    ? safetySrc.circuit_breaker
+    : {};
+
+  const cb = {
+    max_extractions_per_24h:  _clampInt(cbSrc.max_extractions_per_24h,  1,   100,  DEFAULT_AUTO_LEARNING.safety.circuit_breaker.max_extractions_per_24h),
+    cooldown_minutes_on_trip: _clampInt(cbSrc.cooldown_minutes_on_trip, 5,  1440, DEFAULT_AUTO_LEARNING.safety.circuit_breaker.cooldown_minutes_on_trip),
+  };
+
+  return {
+    global_kill_switch: globalKill,
+    extract_on_complete: eoc,
+    roi_aggregator: roi,
+    kb_refs_sweep: kbRefs,
+    safety: { circuit_breaker: cb },
+  };
+}
+
+/**
+ * Emit a degraded-journal entry for a malformed auto_learning block.
+ * Fail-open: never throws.
+ *
+ * @param {string} cwd
+ * @param {string} detail
+ */
+function _recordAutoLearningMalformed(cwd, detail) {
+  try {
+    recordDegradation({
+      kind: 'auto_learning_config_malformed',
+      severity: 'warn',
+      detail: { reason: detail },
+      projectRoot: cwd,
+    });
+  } catch (_) {
+    // Fail-open.
+  }
+}
+
 module.exports = {
   DEFAULT_MCP_ENFORCEMENT,
   loadMcpEnforcement,
@@ -2634,4 +2931,7 @@ module.exports = {
   logStderr,
   // Exposed for test teardown only — clear between test runs to reset per-process guard.
   _flatDeprecationWarned,
+  // W7 (v2.1.6): auto_learning config block
+  DEFAULT_AUTO_LEARNING,
+  loadAutoLearningConfig,
 };

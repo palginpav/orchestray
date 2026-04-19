@@ -77,3 +77,28 @@ Note: The "Current (Detailed)" and "Agent Runs" sections are only shown when the
 `current-task.json` if the state directory is not present.
 
 5. If `.orchestray/` directory does not exist at all, report: "Orchestray has not been used yet in this project. Use `/orchestray:run [task]` to start your first orchestration."
+
+6. **Auto-learning status block**: Append the auto-learning status block by running
+   `node bin/learn-commands/status-render.js` from the project root.
+
+   The block output looks like:
+
+   ```
+   ### Auto-Learning Status
+
+   Kill switch: OFF
+   Circuit breaker: OK
+   Proposals staged: 0
+   Kill-switch env var: ORCHESTRAY_AUTO_LEARNING_KILL_SWITCH — not set
+   ```
+
+   Possible states:
+   - `Kill switch: ON —  all auto-learning disabled (env: ORCHESTRAY_AUTO_LEARNING_KILL_SWITCH=1)` — env var kill switch active.
+   - `Kill switch: ON —  all auto-learning disabled (config)` — `global_kill_switch: true` in config.
+   - `Kill switch: OFF` — kill switch not active (individual features may still be enabled or disabled separately).
+   - `Circuit breaker: TRIPPED — run /orchestray:config repair to reset` — extraction was stopped.
+
+   If N > 0 proposals staged, the block also shows:
+   `Review N staged proposal(s): /orchestray:learn list --proposed`
+
+   If the helper script is unavailable (e.g., on an older install), skip this step silently.

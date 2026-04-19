@@ -25,12 +25,15 @@
  *                for audit events) — flag for user review.
  *   - unshare:   shared-tier file must be absent. If still present, auto-remove.
  *
- * Repair policy (deterministic, safe-to-retry)
- * ---------------------------------------------
- *   promote   → auto-repair: re-run the file copy from content_snapshot to destPath.
+ * Repair policy (deterministic, safe-to-retry; v2.1.6)
+ * -----------------------------------------------------
+ *   promote   → flag only (F-03/v2.1.6): auto-repair is disabled. Recovery via
+ *               /orchestray:learn share <slug>.
  *   merge     → flag only: synthesising a merge body requires LLM reasoning.
  *   deprecate → flag only: needs MCP tool to emit the right audit events.
- *   unshare   → auto-repair: re-delete the shared-tier file.
+ *   unshare   → auto-repair when schema_version ≥ 2; flag only when
+ *               schema_version < 2 (W2-04 gate). Recovery via
+ *               /orchestray:learn unshare <slug>.
  *
  * Usage
  * -----
@@ -59,6 +62,62 @@ const {
 
 const { getSharedPatternsDir } = require('../mcp-server/lib/paths.js');
 const { recordDegradation } = require('./degraded-journal');
+const { atomicAppendJsonl } = require('./atomic-append');
+
+// ---------------------------------------------------------------------------
+// Audit event emitters for promote/unshare flagged paths (F-03/F-10 + W2-04 fix)
+// ---------------------------------------------------------------------------
+
+/**
+ * Emit a curator_reconcile_promote_flagged event (fail-open).
+ *
+ * @param {string}  projectRoot
+ * @param {string}  tombstoneId
+ * @param {'auto_repair_disabled'|'schema_version_pre_v216'} reason
+ * @param {string}  [slug]
+ */
+function _emitPromoteFlagged(projectRoot, tombstoneId, reason, slug) {
+  try {
+    const auditDir = path.join(projectRoot, '.orchestray', 'audit');
+    fs.mkdirSync(auditDir, { recursive: true });
+    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), {
+      timestamp: new Date().toISOString(),
+      type: 'curator_reconcile_promote_flagged',
+      schema_version: 1,
+      tombstone_id: tombstoneId || 'unknown',
+      reason,
+      recovery_command: '/orchestray:learn share ' + (slug || '<slug>'),
+    });
+  } catch (_e) {
+    // Fail-open.
+  }
+}
+
+/**
+ * Emit a curator_reconcile_unshare_flagged event (fail-open).
+ * W1b (W2-04): mirrors _emitPromoteFlagged for the unshare path.
+ *
+ * @param {string} projectRoot
+ * @param {string} tombstoneId
+ * @param {'schema_version_pre_v216'} reason
+ * @param {string} [slug]
+ */
+function _emitUnshareFlagged(projectRoot, tombstoneId, reason, slug) {
+  try {
+    const auditDir = path.join(projectRoot, '.orchestray', 'audit');
+    fs.mkdirSync(auditDir, { recursive: true });
+    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), {
+      timestamp: new Date().toISOString(),
+      type: 'curator_reconcile_unshare_flagged',
+      schema_version: 1,
+      tombstone_id: tombstoneId || 'unknown',
+      reason,
+      recovery_command: '/orchestray:learn unshare ' + (slug || '<slug>'),
+    });
+  } catch (_e) {
+    // Fail-open.
+  }
+}
 
 // ---------------------------------------------------------------------------
 // File content helpers
@@ -175,33 +234,33 @@ function _verifyOne(tombstone, opts) {
     }
 
     // File is absent — this is the phantom-success case.
-    // Repair: copy content_snapshot to destPath.
-    const snapshot = tombstone.inputs[0].content_snapshot;
-    if (!snapshot) {
+    // -----------------------------------------------------------------------
+    // v2.1.6 schema_version gate (F-03/F-10 fix — PROMOTE ONLY):
+    // Promote tombstones without schema_version or with schema_version < 2 are
+    // never auto-repaired — flag them for human review.
+    // The gate applies only to the absent-file (potential auto-repair) path,
+    // not to the file-present (ok) or skipped paths.
+    // New tombstones written by v2.1.6 carry schema_version: 2.
+    // -----------------------------------------------------------------------
+    const schemaVersion = tombstone.schema_version == null ? 0 : Number(tombstone.schema_version);
+    const tombstoneId = tombstone.run_id || tombstone.id || 'unknown';
+    if (isNaN(schemaVersion) || schemaVersion < 2) {
+      _emitPromoteFlagged(projectRoot, tombstoneId, 'schema_version_pre_v216', slug);
       return {
         status: 'flagged',
-        detail:
-          'promote mismatch: shared-tier file absent and tombstone has no content_snapshot — ' +
-          'manual recovery required (re-run /orchestray:learn share ' + slug + ')',
+        detail: 'schema_version_pre_v216 — manual review required (tombstone predates v2.1.6 validation)',
         tombstone,
       };
     }
 
-    try {
-      _writeAtomic(destPath, snapshot);
-    } catch (err) {
-      return {
-        status: 'flagged',
-        detail: 'promote mismatch: auto-repair write failed: ' + (err && err.message),
-        tombstone,
-      };
-    }
-
+    // F-03 fix: promote auto-repair is now flag-only regardless of schema_version.
+    // No _writeAtomic call here. Manual recovery required.
+    _emitPromoteFlagged(projectRoot, tombstoneId, 'auto_repair_disabled', slug);
     return {
-      status: 'repaired',
+      status: 'flagged',
       detail:
-        'promote mismatch: shared-tier file was absent; restored from content_snapshot to ' +
-        destPath,
+        'promote mismatch: shared-tier file absent; auto-repair disabled for promote — ' +
+        'manual recovery required (re-run /orchestray:learn share ' + slug + ')',
       tombstone,
     };
   }
@@ -217,6 +276,24 @@ function _verifyOne(tombstone, opts) {
     const slug = tombstone.inputs && tombstone.inputs[0] && tombstone.inputs[0].slug;
     if (!slug) {
       return { status: 'flagged', detail: 'tombstone missing slug in inputs[0]', tombstone };
+    }
+
+    // -----------------------------------------------------------------------
+    // v2.1.6 schema_version gate for unshare (W2-04 fix):
+    // Unshare tombstones without schema_version or with schema_version < 2 are
+    // never auto-deleted — a forged/resurrected pre-v2.1.6 tombstone would
+    // otherwise force deletion of any shared-tier slug it names (DoS-adjacent).
+    // Flag for human review instead.
+    // -----------------------------------------------------------------------
+    const unshareSchemaVersion = tombstone.schema_version == null ? 0 : Number(tombstone.schema_version);
+    const tombstoneId = tombstone.run_id || tombstone.id || 'unknown';
+    if (isNaN(unshareSchemaVersion) || unshareSchemaVersion < 2) {
+      _emitUnshareFlagged(projectRoot, tombstoneId, 'schema_version_pre_v216', slug);
+      return {
+        status: 'flagged',
+        detail: 'schema_version_pre_v216 — unshare auto-delete refused for pre-v2.1.6 tombstone; manual review required',
+        tombstone,
+      };
     }
 
     const destPath = path.join(sharedDir, slug + '.md');

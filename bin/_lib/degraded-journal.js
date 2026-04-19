@@ -60,6 +60,22 @@ const KINDS = [
   'curator_diff_hash_compute_failed', // v2.1.4 H6: could not compute SHA-256 of pattern body; treated as dirty
   'curator_diff_forced_full_triggered', // v2.1.4 H6: self-healing forced full sweep (run_count % 10 === 0)
   'curator_diff_dirty_set_empty',        // v2.1.5 H6: zero-dirty short-circuit; entire corpus is clean, no curator spawn
+  'kb_refs_sweep_file_read_error',       // v2.1.6 W6: could not read a file during kb-refs-sweep
+  'kb_refs_sweep_malformed_frontmatter', // v2.1.6 W6: KB/pattern file missing frontmatter delimiters
+  'kb_refs_sweep_write_error',           // v2.1.6 W6: failed to write sweep artefact
+  'kb_refs_sweep_snapshot_error',        // v2.1.6 W6: failed to write sweep snapshot JSON
+  'kb_refs_sweep_init_error',            // v2.1.6 W6: init error (cwd resolution failed)
+  'kb_refs_sweep_uncaught',              // v2.1.6 W6: unexpected top-level error in sweep
+  'kb_refs_sweep_file_oversize',         // v2.1.6 C5: .md file exceeded per-file read cap; scan skipped
+  'shared_promote_local_collision',      // v2.1.6 C5: shared-promote local collision (same slug, different body)
+  'pattern_roi_events_file_oversize',    // v2.1.6 C5: events.jsonl file exceeded per-file read cap; skipped
+  'pattern_roi_events_file_read_error',  // v2.1.6 C5: failed to read an events.jsonl file
+  'pattern_roi_malformed_jsonl_line',    // v2.1.6 C5: malformed JSONL line in events.jsonl; skipped
+  'pattern_roi_corrupt_pattern_frontmatter', // v2.1.6 C5: pattern .md missing or unparseable frontmatter
+  'pattern_roi_snapshot_write_error',    // v2.1.6 C5: failed to write roi-snapshot.json
+  'pattern_roi_suggestion_write_error',  // v2.1.6 C5: failed to write calibration-suggestion .md
+  'pattern_roi_uncaught_error',          // v2.1.6 C5: unexpected top-level error in roi aggregator
+  'auto_learning_config_malformed',      // v2.1.6 W7: auto_learning config block malformed; all-off defaults used
   'unknown_kind',
 ];
 

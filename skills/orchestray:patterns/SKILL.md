@@ -382,6 +382,20 @@ The user wants to see the pattern learning dashboard showing what the system has
     and show "—". Format `kendall_tau` to 2 decimal places. If fewer than 5 rows exist,
     note "(insufficient data for reliable aggregation)".
 
+15. **Auto-learning banner**: After all sections above, append the auto-learning status
+    banner by running `node bin/learn-commands/patterns-render.js` from the project root.
+
+    The banner output is additive — it follows the existing dashboard without modifying
+    any existing section. It looks like:
+
+    ```
+    ---
+    Auto-learning: ON (off) · Circuit breaker: OK · Proposals staged: 0 · Pending calibration suggestions: 0
+    ---
+    ```
+
+    If the helper script is unavailable (e.g., on an older install), skip this step silently.
+
 14. **Edge cases**:
     - If `.orchestray/history/` does not exist or is empty: skip all event-based sections, show pattern metadata only with notes that no history is available.
     - If `.orchestray/team-patterns/` does not exist: treat team pattern count as 0.

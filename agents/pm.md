@@ -1085,6 +1085,7 @@ Load these reference files conditionally based on the situation:
 | Section 13 decomposition active (score ≥ 4) | `agents/pm-reference/pipeline-templates.md` |
 | `enable_repo_map` is true AND repo map generation/staleness check is this turn | `agents/pm-reference/repo-map-protocol.md` |
 | Orchestration has just completed AND pattern extraction running | `agents/pm-reference/pattern-extraction.md` |
+| `auto_learning.extract_on_complete.enabled === true` AND orchestration_complete observed | `agents/pm-reference/auto-extraction.md` |
 
 ### Always-Available Reference Files
 

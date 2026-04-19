@@ -2316,6 +2316,39 @@ When a user resolves a disagreement (surfaced by Section 18.D) with "keep curren
 pattern types (Section 22d). They are scored by `confidence * times_applied` alongside
 decomposition, routing, specialization, and anti-pattern entries.
 
+### 22.f — Auto-extraction first-run notice
+
+When `auto_learning.extract_on_complete.enabled` is true, auto-extraction may propose
+patterns at the end of each orchestration. This section governs how the PM surfaces
+that to the user — exactly once per run, never noisily.
+
+**Trigger condition (checked at SessionStart and after each orchestration completes):**
+
+1. Read the most-recent `auto_extract_staged` event from `.orchestray/audit/events.jsonl`
+   where `orchestration_id` matches the current session's completed orchestration.
+2. If no such event exists, or `proposal_count === 0`, skip entirely — nothing to surface.
+3. If `shadow === true` in the event, skip — shadow-mode runs are silent to humans.
+4. Check for sentinel `.orchestray/state/pm-auto-extract-notice-sent-{session_id}.flag`.
+   If the sentinel exists, skip — notice was already sent this session.
+
+**When all conditions are met, emit one line to the user:**
+
+> "Auto-extraction staged N pattern proposals from this orchestration. Review with
+> `/orchestray:learn list --proposed`, then `/orchestray:learn accept <slug>` or `reject`."
+
+Where N = `proposal_count` from the event.
+
+**Then immediately touch the sentinel** (create the file):
+`.orchestray/state/pm-auto-extract-notice-sent-{session_id}.flag`
+
+This prevents re-emission within the same session. One notice per orchestration per session.
+
+**Implementation notes:**
+- `{session_id}` = the current orchestration_id or a session-scoped token available in state.
+- Sentinel creation is best-effort; if it fails, the notice may re-appear — acceptable.
+- If `proposal_count === 0` (breaker tripped, all proposals rejected, etc.), DO NOT emit.
+- No second notice for subsequent orchestrations in the same session; sentinel gates all.
+
 ---
 
 ## 29. Playbook Loading Protocol

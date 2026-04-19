@@ -2,7 +2,7 @@
 name: config
 description: View or modify orchestration settings
 disable-model-invocation: true
-argument-hint: "[setting] [value] | show federation | federation disable-global | or empty to show all"
+argument-hint: "[setting] [value] | show federation | federation disable-global | repair | or empty to show all"
 ---
 
 # Orchestration Configuration
@@ -15,6 +15,7 @@ The user wants to view or modify orchestration settings.
    - If empty: Show all current settings
    - If arguments are `show federation`: go to the **show federation** section below.
    - If arguments are `federation disable-global`: go to the **federation disable-global** section below.
+   - If the first argument is `repair`: go to the **repair** section below.
    - If one argument: Show that specific setting's current value
    - If two or more arguments starting with `set`: treat as `set <key> <value>` (the `set` keyword is optional; `set federation.shared_dir_enabled true` and `federation.shared_dir_enabled true` are equivalent)
    - If two arguments (no `set` prefix): Set the first to the value of the second
@@ -534,4 +535,68 @@ This command disables federation for ALL Orchestray projects on this machine.
 To confirm, type MACHINE (uppercase): MACHINE
 
 Federation disabled globally. `~/.orchestray/shared/` data retained (run `rm -rf ~/.orchestray/shared/` to remove). Re-enable with `/orchestray:config set federation.shared_dir_enabled true`.
+```
+
+---
+
+## repair
+
+Reinitialise a missing or corrupt `auto_learning` block in `.orchestray/config.json`
+with default-off values. All other config keys are preserved unchanged.
+
+A timestamped backup of the existing config is created before any rewrite, so this
+operation is safe to run even on a partially-written config file.
+
+**When to use:** The circuit-breaker TRIPPED banner in `/orchestray:status` shows
+`Circuit breaker: TRIPPED — run /orchestray:config repair to reset`. This means
+the `auto_learning` block is missing or has become corrupt. Running repair restores
+the block to its defaults (all features disabled, kill switch off) so the circuit
+breaker can be manually inspected or cleared with a fresh state.
+
+**Invocation:** `/orchestray:config repair`
+
+**Optional flag:** `/orchestray:config repair --dry-run` — shows what would happen
+without writing any files.
+
+**Steps:**
+
+1. **Run the repair helper:**
+   ```
+   node bin/_lib/config-repair.js --project-root="$ORCHESTRAY_PROJECT_ROOT"
+   ```
+   The helper reads `ORCHESTRAY_PROJECT_ROOT` or defaults to `process.cwd()`. If the
+   `$ORCHESTRAY_PROJECT_ROOT` variable is not available in this skill context, omit the
+   flag and the helper will resolve the project root from `process.cwd()`.
+
+   For a dry run: append `--dry-run` to the command above.
+
+2. **Interpret the output:**
+   - `[config-repair] No repair needed — auto_learning block is valid.` → Config is
+     already correct. Report this to the user and suggest they check the circuit-breaker
+     sentinel files in `.orchestray/state/` if the TRIPPED banner persists.
+   - `[config-repair] Applied repair to <path> (reason: missing|malformed). Backup: <backup-path>` →
+     Repair was applied. Report the backup path so the user can verify the change.
+   - `[config-repair] DRY RUN — would repair|no-op auto_learning block (reason: ...)` →
+     Dry-run completed. Report what would happen if the flag were omitted.
+   - Any error written to stderr → Report the error verbatim. The config file was NOT
+     modified.
+
+3. **Post-repair guidance:** After a successful repair, remind the user:
+   - The `auto_learning` block is now reset to default-off values. If you had custom
+     values (e.g., `extract_on_complete.enabled: true`), re-apply them with
+     `/orchestray:config set auto_learning.extract_on_complete.enabled true`.
+   - The circuit-breaker sentinel files are NOT cleared by repair. If the TRIPPED banner
+     persists after repair, the sentinel file remains. A future `/orchestray:doctor` run
+     can provide further guidance.
+
+**Example output:**
+```
+/orchestray:config repair
+
+[config-repair] Applied repair to /path/to/.orchestray/config.json (reason: missing). Backup: /path/to/.orchestray/config.json.bak-1714500000000
+
+auto_learning block reinitialised with default-off values. Backup saved at:
+  .orchestray/config.json.bak-1714500000000
+
+If you had custom auto_learning settings, re-apply them now with /orchestray:config set.
 ```

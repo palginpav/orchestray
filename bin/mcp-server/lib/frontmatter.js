@@ -14,10 +14,17 @@
  *   key: null              last_applied: null
  *   key: "quoted"          description: "A string with: colons"
  *   key: 'single-quoted'
+ *   key: [a, b, c]        layer_b_markers: [marker1, marker2]  (inline array)
  *
- * NOT supported: arrays, nested objects, multi-line scalars, anchors, tags.
+ * NOT supported: nested objects, multi-line scalars, anchors, tags.
  * Unknown types are preserved as strings so round-trip rewrites don't
  * destroy data.
+ *
+ * v2.1.6 additions (W4):
+ *   Optional proposed-pattern fields: tip_type, proposed, proposed_at,
+ *   proposed_from, schema_version, layer_b_markers. All are optional and
+ *   never required for existing patterns/*.md files.
+ *   layer_b_markers uses inline YAML array syntax: [item1, item2].
  *
  * Exports:
  *   parse(content)                    -> { frontmatter, body, hasFrontmatter }
@@ -112,10 +119,26 @@ function _parseValue(raw) {
   // Booleans (case-sensitive — matches Stage 2 plan §6)
   if (raw === 'true') return true;
   if (raw === 'false') return false;
+  // Inline array: [item1, item2, ...] — used by layer_b_markers (v2.1.6 W4)
+  // Tolerant: elements may be quoted or unquoted scalars. Nested arrays are
+  // not supported — they are preserved as strings.
+  if (raw.startsWith('[') && raw.endsWith(']')) {
+    return _parseInlineArray(raw);
+  }
   // Quoted strings — strip the matching pair.
   if (raw.length >= 2) {
     if (raw.startsWith('"') && raw.endsWith('"')) {
-      return raw.slice(1, -1).replace(/\\"/g, '"');
+      // B4-05: decode all JSON string escape sequences so that values written
+      // via JSON.stringify (e.g. multi-line approach/description fields) round-
+      // trip correctly. The inner slice is a valid JSON string literal so
+      // JSON.parse is the authoritative decoder.
+      try {
+        return JSON.parse(raw);
+      } catch (_) {
+        // Malformed JSON literal — fall back to simple unquoting so existing
+        // behaviour for simple values is preserved.
+        return raw.slice(1, -1).replace(/\\"/g, '"');
+      }
     }
     if (raw.startsWith("'") && raw.endsWith("'")) {
       return raw.slice(1, -1);
@@ -132,6 +155,53 @@ function _parseValue(raw) {
   }
   // Fallback: treat as string (preserve unknown scalars verbatim).
   return raw;
+}
+
+/**
+ * Parse an inline YAML array literal of the form `[item1, item2, ...]`.
+ * Supports unquoted strings and single/double-quoted strings as elements.
+ * Empty array `[]` returns [].
+ * Returns an array of strings (or the original raw string on parse failure).
+ *
+ * @param {string} raw  - The raw string including leading `[` and trailing `]`.
+ * @returns {string[]|string}
+ */
+function _parseInlineArray(raw) {
+  const inner = raw.slice(1, -1).trim();
+  if (inner.length === 0) return [];
+
+  const items = [];
+  let i = 0;
+  while (i < inner.length) {
+    // Skip leading whitespace / commas.
+    if (inner[i] === ',' || inner[i] === ' ' || inner[i] === '\t') {
+      i++;
+      continue;
+    }
+    // Quoted element.
+    if (inner[i] === '"' || inner[i] === "'") {
+      const quote = inner[i];
+      i++;
+      let val = '';
+      while (i < inner.length && inner[i] !== quote) {
+        if (inner[i] === '\\' && i + 1 < inner.length) {
+          i++; // skip backslash
+          val += inner[i];
+        } else {
+          val += inner[i];
+        }
+        i++;
+      }
+      i++; // consume closing quote
+      items.push(val);
+    } else {
+      // Unquoted element — read until comma or end.
+      const start = i;
+      while (i < inner.length && inner[i] !== ',') i++;
+      items.push(inner.slice(start, i).trim());
+    }
+  }
+  return items;
 }
 
 // ---------------------------------------------------------------------------
@@ -166,6 +236,23 @@ function _serializeValue(v) {
   if (v === null) return 'null';
   if (typeof v === 'boolean') return v ? 'true' : 'false';
   if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+  if (Array.isArray(v)) {
+    // Serialize as inline YAML array: [item1, item2, ...]
+    // Each element is serialized with the scalar rules (no nested arrays).
+    const elems = v.map((el) => {
+      if (el === null) return 'null';
+      if (typeof el === 'boolean') return el ? 'true' : 'false';
+      if (typeof el === 'number' && Number.isFinite(el)) return String(el);
+      const s = String(el);
+      // Quote if the element contains commas, brackets, or quotes.
+      if (s === '' || s.includes(',') || s.includes('[') || s.includes(']') ||
+          s.includes('"') || s.includes("'") || s !== s.trim()) {
+        return JSON.stringify(s);
+      }
+      return s;
+    });
+    return '[' + elems.join(', ') + ']';
+  }
   if (typeof v === 'string') {
     // Only quote if needed: empty, leading/trailing whitespace, contains
     // a leading `#`, or would otherwise be reinterpreted on round-trip.
@@ -173,6 +260,10 @@ function _serializeValue(v) {
     if (v !== v.trim()) return JSON.stringify(v);
     if (v === 'true' || v === 'false' || v === 'null' || v === '~') return JSON.stringify(v);
     if (/^-?\d+(\.\d+)?$/.test(v)) return JSON.stringify(v);
+    // B4-05: strings containing newlines, carriage returns, tabs, or backslashes
+    // must be JSON-quoted so they occupy exactly one YAML line and round-trip
+    // correctly through _parseValue's JSON.parse branch.
+    if (/[\n\r\t\\]/.test(v)) return JSON.stringify(v);
     return v;
   }
   // Fallback: toString.

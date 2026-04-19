@@ -37,6 +37,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const crypto = require('node:crypto');
 
 // Lazy requires to avoid circular dependencies at module load time.
 // Both modules are stable; lazy loading is safe here.
@@ -651,6 +652,15 @@ async function promotePattern(slug, options = {}) {
     };
   }
 
+  // -------------------------------------------------------------------------
+  // W6 (v2.1.6): Local collision pre-check — warn-only, does NOT block promote.
+  // Run after all sanitization stages so we compare the final promoted body.
+  // Skip in preview/dryRun since nothing is being written to shared tier.
+  // -------------------------------------------------------------------------
+  if (!preview && !dryRun) {
+    _localCollisionCheck(slug, sanitizedBody, cwd);
+  }
+
   // Add shared-tier metadata fields to the promoted frontmatter.
   const promotedFm = Object.assign({}, sharedFrontmatter, {
     origin: 'shared',
@@ -729,6 +739,142 @@ async function promotePattern(slug, options = {}) {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// W6 (v2.1.6): Local collision pre-check
+//
+// Before writing to ~/.orchestray/shared/patterns/<slug>.md, check whether
+// .orchestray/patterns/<slug>.md already exists in the current project AND
+// has DIFFERENT content (different normalized body hash) from the content
+// being promoted.
+//
+// Non-blocking: emits a warning console + degraded journal + audit event,
+// then returns so the caller can continue promoting.
+//
+// Cases that produce NO warning:
+//   - Local file does not exist (no collision possible).
+//   - Local file body hash == promoted body hash (identical content).
+//   - Local file has frontmatter field `deprecated: true` (expected override).
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute a SHA-256 of the normalized body string (trimmed + LF-normalised).
+ * @param {string} body
+ * @returns {string} hex digest
+ */
+function _bodyHash(body) {
+  const normalized = (body || '').replace(/\r\n/g, '\n').trim();
+  return crypto.createHash('sha256').update(normalized, 'utf8').digest('hex');
+}
+
+/**
+ * Check for a local pattern collision:
+ *   If slug already exists in the shared tier (~/.orchestray/shared/patterns/<slug>.md),
+ *   compare its body hash against the body of the local project file
+ *   (.orchestray/patterns/<slug>.md). If they differ, the local project has a
+ *   diverged copy that would be overwritten by this promotion — warn the user.
+ *
+ * Also checks the inverse: if the local file's body differs from the sanitized
+ * body being written (i.e., sanitization would change the content the user has
+ * locally), warn so users know what changed.
+ *
+ * Warn-only: never throws, never returns an error that blocks the caller.
+ *
+ * @param {string} slug           - The pattern slug being promoted.
+ * @param {string} promotedBody   - The sanitized body being written to shared tier.
+ * @param {string} cwd            - Project root.
+ * @returns {void}
+ */
+function _localCollisionCheck(slug, promotedBody, cwd) {
+  try {
+    // Resolve shared dir (respects test override).
+    const sharedPatternsDir = process.env.ORCHESTRAY_TEST_SHARED_DIR
+      ? path.join(process.env.ORCHESTRAY_TEST_SHARED_DIR, 'patterns')
+      : path.join(os.homedir(), '.orchestray', 'shared', 'patterns');
+
+    const sharedPath = path.join(sharedPatternsDir, slug + '.md');
+
+    // Only check if a shared version already exists.
+    let sharedContent;
+    try {
+      sharedContent = fs.readFileSync(sharedPath, 'utf8');
+    } catch (_e) {
+      // No existing shared file — no collision possible.
+      return;
+    }
+
+    // Parse local file frontmatter to check deprecated flag.
+    const localPath = path.join(cwd, '.orchestray', 'patterns', slug + '.md');
+    let localContent;
+    try {
+      localContent = fs.readFileSync(localPath, 'utf8');
+    } catch (_e) {
+      // Local file unreadable — no collision comparison possible.
+      return;
+    }
+
+    const { parse: parseFm } = _getFrontmatter();
+    const localParsed = parseFm(localContent);
+    if (localParsed.hasFrontmatter && localParsed.frontmatter && localParsed.frontmatter.deprecated === true) {
+      // Expected override — no warning.
+      return;
+    }
+
+    // Compare the body of the existing shared file against the body being promoted.
+    // If they differ, the shared version would be overwritten with different content.
+    const sharedParsed = parseFm(sharedContent);
+    const sharedBody = sharedParsed.hasFrontmatter ? sharedParsed.body : sharedContent;
+
+    const sharedHash   = _bodyHash(sharedBody);
+    const promotedHash = _bodyHash(promotedBody);
+
+    if (sharedHash === promotedHash) {
+      // Promoted body matches existing shared body — no effective change, no warning.
+      return;
+    }
+
+    // Different content — emit warn.
+    const msg =
+      `[shared-promote] local collision: slug '${slug}' already exists in the shared tier ` +
+      `with different content than the body being promoted. ` +
+      `Review your local copy before promoting. Promotion continues.`;
+    process.stderr.write(msg + '\n');
+
+    // Degraded journal.
+    try {
+      const { recordDegradation } = require('./degraded-journal');
+      recordDegradation({
+        kind: 'shared_promote_local_collision',
+        severity: 'warn',
+        detail: {
+          slug,
+          shared_hash: sharedHash.slice(0, 8),
+          promoted_hash: promotedHash.slice(0, 8),
+          dedup_key: 'local-collision|' + slug,
+        },
+        projectRoot: cwd,
+      });
+    } catch (_e) { /* swallow */ }
+
+    // Audit event.
+    try {
+      const { atomicAppendJsonl } = require('./atomic-append');
+      const auditDir = path.join(cwd, '.orchestray', 'audit');
+      fs.mkdirSync(auditDir, { recursive: true });
+      atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), {
+        timestamp: new Date().toISOString(),
+        type: 'pattern_collision_local_warn',
+        schema_version: 1,
+        slug,
+        local_hash: sharedHash.slice(0, 8),
+        promoted_hash: promotedHash.slice(0, 8),
+      });
+    } catch (_e) { /* swallow */ }
+
+  } catch (_e) {
+    // Outer guard: collision check failure must never break the promote pipeline.
+  }
+}
+
 /**
  * Produce an 8-character opaque identifier derived from the project root path.
  * This is NOT a cryptographic hash — just a stable identifier so the same
@@ -748,7 +894,7 @@ function _projectHash(projectRoot) {
   return h.toString(16).padStart(8, '0');
 }
 
-module.exports = { promotePattern, _projectHash };
+module.exports = { promotePattern, _projectHash, _localCollisionCheck, _bodyHash };
 
 // ---------------------------------------------------------------------------
 // Smoke test (run directly: node bin/_lib/shared-promote.js)

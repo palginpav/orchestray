@@ -2,7 +2,7 @@
 name: learn
 description: Extract learning patterns from a completed orchestration
 disable-model-invocation: true
-argument-hint: "[orchestration-id] | share <slug> | unshare <slug> | list [--shared|--all] | curate [--dry-run] [--diff] | undo-last | undo <action-id> | explain <action-id>"
+argument-hint: "[orchestration-id] | share <slug> | unshare <slug> | list [--shared|--all|--proposed] | accept <slug> | reject <slug> | curate [--dry-run] [--diff] | undo-last | undo <action-id> | explain <action-id>"
 ---
 
 # Pattern Extraction
@@ -32,6 +32,8 @@ The user wants to extract reusable patterns from a completed orchestration.
    - If the first argument is `explain`: go to the **explain** command below.
    - If the first argument is `clear-tombstones`: go to the **clear-tombstones** command below.
    - If the first argument is `list-tombstones`: go to the **list-tombstones** command below.
+   - If the first argument is `accept`: go to the **accept** command below.
+   - If the first argument is `reject`: go to the **reject** command below.
    - If an orchestration ID is provided (e.g., `orch-1712345678`): use it directly as `{orch-id}`.
    - If empty: find the most recent orchestration by listing directories in `.orchestray/history/`, sorting by name (which contains a timestamp), and picking the last one. Report: "Using most recent orchestration: {orch-id}"
 
@@ -95,20 +97,22 @@ The user wants to extract reusable patterns from a completed orchestration.
 
 8. **Report:** "{N} pattern(s) extracted from orchestration {orch-id}." If patterns were pruned, also report: "Pruned {M} low-value patterns to stay within the 50-pattern cap."
 
-### list [--shared|--all]
+### list [--shared|--all|--proposed]
 
 List patterns. Default (no flag): lists local patterns only.
 
 **Arguments:**
 - `--shared` — list shared-tier patterns from `~/.orchestray/shared/patterns/` only.
 - `--all` — list both local and shared patterns; adds a `source` column.
+- `--proposed` — list staged proposed patterns in `.orchestray/proposed-patterns/` (does NOT list the `rejected/` subdirectory). See the **list --proposed** section below.
 
-**Steps:**
+**Steps (default / --shared / --all):**
 
 1. **Determine scope** from flags:
    - No flag or unrecognized flag: local only (`.orchestray/patterns/*.md`).
    - `--shared`: shared only (`~/.orchestray/shared/patterns/*.md`). If the shared dir is absent or `federation.shared_dir_enabled` is false in `.orchestray/config.json`, report: "Can't list shared patterns: federation is not enabled. Enable it with `/orchestray:config set federation.shared_dir_enabled true`."
    - `--all`: both tiers.
+   - `--proposed`: go to **list --proposed** below.
 
 2. **Read pattern files**: For each `.md` file in scope, parse frontmatter to extract `name`, `category`, `confidence`, `times_applied`. If frontmatter is missing or unparseable for a file, skip it and note "1 file skipped (invalid frontmatter)".
 
@@ -117,6 +121,11 @@ List patterns. Default (no flag): lists local patterns only.
    - `--all`: `| slug | category | confidence | times_applied | source |` where source is `local` or `shared`.
    - Sort by `category` then `slug` (alphabetical).
    - If no patterns found: "No patterns found. Run `/orchestray:learn [orchestration-id]` to extract patterns."
+
+4. **Proposed-patterns footer (UX-01):** After the table (or the "no patterns" message), count `.orchestray/proposed-patterns/*.md` files (excluding the `rejected/` subdirectory). If the count N > 0, append:
+   ```
+   N proposal(s) staged — /orchestray:learn list --proposed
+   ```
 
 **Example (no flag):**
 ```
@@ -129,6 +138,8 @@ Local patterns (12):
 | anti-pattern-escape-hatches   | anti-pattern  | 0.85       | 3             |
 | routing-prefer-haiku          | routing       | 0.72       | 5             |
 ...
+
+2 proposal(s) staged — /orchestray:learn list --proposed
 ```
 
 **Example (--all):**
@@ -142,6 +153,161 @@ All patterns (15 total: 12 local, 3 shared):
 | anti-pattern-escape-hatches   | anti-pattern  | 0.85       | 3             | local  |
 | routing-prefer-haiku          | routing       | 0.72       | 5             | shared |
 ...
+```
+
+---
+
+### list --proposed
+
+List staged proposed patterns in `.orchestray/proposed-patterns/` (non-recursive — the `rejected/` subdirectory is excluded).
+
+**Steps:**
+
+1. **Glob** `.orchestray/proposed-patterns/*.md`. Exclude any file whose path contains `/rejected/`.
+
+2. **If no proposals staged:**
+   ```
+   No proposals staged.
+
+   Auto-extraction runs after orchestrations complete when enabled in config.
+   To enable: set `auto_learning.extract_on_complete.enabled: true` in `.orchestray/config.json`.
+   Auto-extraction starts in shadow mode by default — no files are written until you also set
+   `auto_learning.extract_on_complete.shadow_mode: false`.
+   To learn more: /orchestray:config
+   ```
+   Stop here.
+
+3. **For each file**, parse frontmatter and extract: `slug`, `tip_type` (or `—` if absent), `proposed_at` (or `—`), `proposed_from` (or `—`), `confidence` (2 decimal places, or `—` if absent).
+
+4. **Display as table**, sorted by `proposed_at` ascending (oldest first). For `proposed_at`, display both a relative age (e.g. `2h ago`, `3d ago`, `12d ago`) and the ISO timestamp, or just the relative age if space is constrained. Use the current time for age calculation.
+   ```
+   Proposed patterns (N):
+   | slug                                    | tip_type     | confidence | proposed_at               | age      | proposed_from      |
+   |-----------------------------------------|--------------|------------|---------------------------|----------|--------------------|
+   | recovery-verify-fix-cross-cutting-abc   | recovery     | 0.72       | 2026-04-19T10:00:00.000Z  | 2h ago   | orch-abc123        |
+   | strategy-parallel-file-exclusive-def    | strategy     | 0.65       | 2026-04-19T10:01:00.000Z  | 2h ago   | orch-def456        |
+   ```
+
+5. **Footer hint:**
+   ```
+   To accept: /orchestray:learn accept <slug>
+   To reject: /orchestray:learn reject <slug>
+   To disable auto-extraction: set auto_learning.global_kill_switch: true in .orchestray/config.json
+     or export ORCHESTRAY_AUTO_LEARNING_KILL_SWITCH=1.
+   Batch review: /orchestray:learn curate
+   ```
+
+**Example:**
+```
+/orchestray:learn list --proposed
+```
+
+---
+
+### accept <slug>
+
+Promote a staged proposal to the active pattern corpus.
+
+> **Contrast with `curate`:** `accept` promotes a single proposal without spawning an agent — it is a direct human-authorized move. `curate` invokes the curator agent for batch corpus hygiene (promote, merge, deprecate) and handles shared-tier patterns.
+
+**Arguments:**
+- `<slug>` — slug of the proposed pattern to accept (must match a file in `.orchestray/proposed-patterns/<slug>.md`).
+
+**Steps:**
+
+1. **Read** `.orchestray/proposed-patterns/<slug>.md`. If not found:
+   ```
+   Proposal '<slug>' not found. Staged proposals: <list from glob .orchestray/proposed-patterns/*.md, excluding rejected/>
+   ```
+   Stop.
+
+2. **Layer-B marker warning (§6.3):** Check the `layer_b_markers` frontmatter field. If it is a non-empty array, print a warning banner BEFORE the body:
+   ```
+   WARNING: this proposal contains text resembling instruction injection markers.
+   Matched: [<marker1>, <marker2>]. Review the body carefully before accepting.
+   ```
+
+3. **Display full proposal body** (frontmatter + body text) to stdout so the user can review it.
+
+4. **Layer C re-validation (LOAD-BEARING — do not skip):** Call `validateProposal()` from `bin/_lib/proposal-validator.js` on the frontmatter fields. If validation fails:
+   ```
+   Proposal '<slug>' failed Layer C validation and cannot be accepted:
+     - field: <field>, rule: <rule>
+     ...
+   Fix the proposal or reject it with /orchestray:learn reject <slug>.
+   ```
+   Stop here (do not prompt for confirmation).
+
+5. **Confirm:** Prompt the user:
+   ```
+   Accept '<slug>'? Re-type the slug to confirm: 
+   ```
+   If the response does not match the slug exactly, or is blank:
+   ```
+   Aborted — slug mismatch.
+   ```
+   Stop.
+
+6. **Move:** Atomically rename `.orchestray/proposed-patterns/<slug>.md` → `.orchestray/patterns/<slug>.md`.
+   - Strip these frontmatter fields on move: `proposed`, `proposed_at`, `proposed_from`, `layer_b_markers`.
+   - Add `times_applied: 0` and `last_applied: null` if not already set.
+   - Set `created_from` to `proposed_from` value if `created_from` is absent.
+
+7. **On file-system error:** Roll back (remove destination if partially written), print the error, and exit with a non-zero indication. Do not leave the corpus in a partial state.
+
+8. **Emit audit event** `pattern_proposal_accepted` with `{ slug, orchestration_id: proposed_from, layer_b_marker_count }`.
+
+9. **Report:**
+   ```
+   Accepted '<slug>' — moved to .orchestray/patterns/<slug>.md.
+   ```
+
+**Example:**
+```
+/orchestray:learn accept recovery-verify-fix-cross-cutting-abc123
+```
+
+---
+
+### reject <slug>
+
+Soft-delete a staged proposal (moves to `rejected/` subfolder; recoverable).
+
+For bulk rejection of many proposals at once, use `/orchestray:learn curate` — proposals
+that fail curation are deprecated without requiring individual `reject` invocations.
+
+**Arguments:**
+- `<slug>` — slug of the proposed pattern to reject.
+
+**Steps:**
+
+1. **Read** `.orchestray/proposed-patterns/<slug>.md`. If not found:
+   ```
+   Proposal '<slug>' not found. Staged proposals: <list from glob>
+   ```
+   Stop.
+
+2. **Prompt for reason:**
+   ```
+   Brief reason for rejection (≤80 chars, or press Enter to skip): 
+   ```
+   If blank or whitespace only, use `no_reason_given`.
+
+3. **Move** to `.orchestray/proposed-patterns/rejected/<slug>.md` (create the `rejected/` dir if missing). Add to frontmatter:
+   - `rejected_at`: current ISO 8601 timestamp.
+   - `rejected_reason`: the reason string.
+
+4. **Emit audit event** `pattern_proposal_rejected` with `{ slug, reason }`.
+
+5. **Report:**
+   ```
+   Rejected '<slug>' — moved to .orchestray/proposed-patterns/rejected/<slug>.md.
+   To undo: move the file back to .orchestray/proposed-patterns/ and remove rejected_at / rejected_reason from its frontmatter.
+   ```
+
+**Example:**
+```
+/orchestray:learn reject strategy-parallel-file-exclusive-def456
 ```
 
 ---

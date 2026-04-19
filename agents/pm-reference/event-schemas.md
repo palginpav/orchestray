@@ -2306,3 +2306,593 @@ trends below 0.3 over several runs, `--diff` is meaningfully cheaper than full s
 - `actions_applied`: counts from the curator agent's structured result (promote/merge/deprecate taken).
 - `skipped_clean`: `corpus_size - dirty_size` — patterns the curator never saw because their stamp was fresh.
 - `forced_full_sweep`: true when the self-healing full-sweep cadence triggered (every 10th `--diff` run).
+
+---
+
+## v2.1.6 additions — Self-learning foundations
+
+All events in this section are written via `atomicAppendJsonl` to
+`.orchestray/audit/events.jsonl`. All use `schema_version: 1` unless noted. Fail-open:
+write failures are swallowed silently. Schema stability: additive only.
+
+---
+
+### `auto_extract_skipped`
+
+Emitted by `bin/post-orchestration-extract.js` (PreCompact hook) whenever the
+auto-extraction pipeline exits before attempting any extraction. One event per run.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "auto_extract_skipped",
+  "schema_version": 1,
+  "reason": "<reason enum — see below>",
+  "orchestration_id": "<current orch id, or absent>",
+  "size_bytes": 10485761,
+  "max_bytes": 10485760,
+  "kept_count": 501
+}
+```
+
+**`reason` enum values:**
+
+| reason | When emitted |
+|---|---|
+| `kill_switch_env` | `ORCHESTRAY_AUTO_LEARNING_KILL_SWITCH=1` is set |
+| `kill_switch_config` | `auto_learning.global_kill_switch: true` in config |
+| `feature_disabled` | `auto_learning.extract_on_complete.enabled` is not `true` |
+| `circuit_breaker_tripped` | Rolling 24h extraction cap exceeded |
+| `input_too_large` | Scoped event list exceeds 500 events after quarantine |
+| `events_file_too_large` | `events.jsonl` exceeds the size cap before parsing (10 MiB default) |
+| `backend_not_configured` | No extraction backend wired (stub returns this in v2.1.6) |
+
+**Optional fields:** `size_bytes` and `max_bytes` appear only with `events_file_too_large`.
+`kept_count` appears only with `input_too_large`. `orchestration_id` is absent for runs
+that exit before the orchestration ID is read.
+
+---
+
+### `auto_extract_quarantine_skipped`
+
+Emitted by `bin/post-orchestration-extract.js` once per distinct quarantine drop reason
+after the Layer A pre-processor processes the scoped event stream.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "auto_extract_quarantine_skipped",
+  "schema_version": 1,
+  "orchestration_id": "<current orch id>",
+  "reason": "<drop reason, e.g. 'unknown_type' or 'secret_pattern_match'>",
+  "count": 3
+}
+```
+
+**Field notes:**
+- `reason`: One of the quarantine drop reasons from `event-quarantine.js` — `unknown_type`
+  (event type not in the §6.1 allowlist), `secret_pattern_match` (retained fields matched
+  a secret-pattern regex), or other values added by future quarantine rules. The value is
+  truncated to 64 characters and non-printable characters are replaced with `?`.
+- `count`: Total events dropped for this reason across the scoped event stream.
+
+---
+
+### `auto_extract_staged`
+
+Emitted by `bin/post-orchestration-extract.js` once per run, after all proposals are
+processed. This is the UX signal consumed by PM Tier-1 §22f to notify the user that
+proposals are waiting.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "auto_extract_staged",
+  "schema_version": 1,
+  "orchestration_id": "<current orch id>",
+  "proposal_count": 2,
+  "shadow": false
+}
+```
+
+**Field notes:**
+- `proposal_count`: Number of proposals written to `.orchestray/proposed-patterns/`
+  (or, in shadow mode, the number that would have been written).
+- `shadow`: `true` when `auto_learning.extract_on_complete.shadow_mode` is enabled — no
+  files were written, only the event trail.
+
+**PM §22f behaviour:** when `proposal_count > 0` and `shadow` is `false`, PM emits a
+one-line user-facing notice at next session start (once per session, suppressed for
+subsequent `auto_extract_staged` events in the same session). Shadow-mode events produce
+no user-visible notice.
+
+---
+
+### `pattern_proposed`
+
+Emitted by `bin/post-orchestration-extract.js` once per proposal that passes validation
+and the per-orchestration cap.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "pattern_proposed",
+  "schema_version": 1,
+  "orchestration_id": "<current orch id>",
+  "slug": "<kebab-case proposal slug>",
+  "shadow": false
+}
+```
+
+**Field notes:**
+- `slug`: The proposal's `name` field — the file stem under `.orchestray/proposed-patterns/`.
+- `shadow`: Mirrors `auto_extract_staged.shadow`. When `true`, no file was written.
+
+---
+
+### `pattern_extraction_skipped`
+
+Emitted by `bin/post-orchestration-extract.js` once per proposal that was processed but
+not staged. Multiple per run are normal.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "pattern_extraction_skipped",
+  "schema_version": 1,
+  "orchestration_id": "<current orch id>",
+  "reason": "<reason enum — see below>",
+  "detail": "<field names involved, or absent>",
+  "slug": "<slug, or absent>"
+}
+```
+
+**`reason` enum values:**
+
+| reason | When emitted |
+|---|---|
+| `malformed_jsonl_line` | A line in `events.jsonl` could not be parsed as JSON |
+| `validator_rejected` | Layer B schema or injection-marker validation failed |
+| `category_restricted_to_auto` | Proposal category (`anti-pattern`, `user-correction`) not permitted for auto-extraction |
+| `slug_collision` | A file with the same slug already exists in `proposed-patterns/` or `patterns/` |
+| `per_orchestration_cap` | Per-run proposal cap (`proposals_per_orchestration`, default 3) reached |
+
+**Optional fields:** `detail` is present only for `validator_rejected` and contains the
+comma-separated field names that failed (never the rejected values, per F-07). `slug` is
+present only for `slug_collision`.
+
+---
+
+### `pattern_proposal_accepted`
+
+Emitted by `bin/_lib/proposed-patterns.js` when `/orchestray:learn accept <slug>` moves
+a proposal to the active pattern set.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "pattern_proposal_accepted",
+  "slug": "<kebab-case slug>",
+  "orchestration_id": "<proposed_from value, or 'unknown'>",
+  "layer_b_marker_count": 0
+}
+```
+
+**Field notes:**
+- `orchestration_id`: Set from the proposal's `proposed_from` frontmatter field — the
+  orchestration that generated the proposal. `"unknown"` if absent.
+- `layer_b_marker_count`: Number of Layer B injection-marker patterns that matched the
+  proposal body during Layer C re-validation. A non-zero value means the accept step
+  showed the user a warning banner; the accept succeeded despite the markers (user chose
+  to proceed).
+
+---
+
+### `pattern_proposal_rejected`
+
+Emitted by `bin/_lib/proposed-patterns.js` when `/orchestray:learn reject <slug>` soft-deletes
+a proposal to `.orchestray/proposed-patterns/rejected/`.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "pattern_proposal_rejected",
+  "slug": "<kebab-case slug>",
+  "reason": "<operator-supplied reason, or 'no_reason_given'>"
+}
+```
+
+**Field notes:**
+- `reason`: Operator-supplied string from the reject subcommand, truncated to 80 characters.
+  Defaults to `"no_reason_given"` when no reason was provided.
+
+---
+
+### `pattern_proposal_metr_strip`
+
+Emitted by `bin/_lib/proposed-patterns.js` during `acceptProposed` when the Layer C
+validator finds protected fields (METR-invariant fields such as `times_applied`,
+`trigger_actions`, `deprecated`, `confidence`, `merged_from`) in the proposal's
+frontmatter. The accept operation continues after stripping.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "pattern_proposal_metr_strip",
+  "slug": "<kebab-case slug>",
+  "stripped_fields": ["times_applied", "trigger_actions"]
+}
+```
+
+**Field notes:**
+- `stripped_fields`: Array of protected field names that were removed before the proposal
+  was written to the active patterns directory.
+- The presence of this event indicates a proposal file was crafted to include protected
+  fields — either by a bug in the extractor or as a reward-hacking attempt.
+
+---
+
+### `breaker_lock_contended`
+
+Emitted by `bin/_lib/learning-circuit-breaker.js` when the lock probe detects that the
+circuit-breaker lock file is unavailable before the read-modify-write attempt. The
+circuit breaker returns `{ allowed: false }` (fail-closed) when this fires.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "breaker_lock_contended",
+  "schema_version": 1,
+  "scope": "auto_extract",
+  "mechanism": "lock_probe_failed",
+  "wait_ms": 500
+}
+```
+
+**Field notes:**
+- `scope`: The circuit-breaker scope string — always `"auto_extract"` for the
+  auto-extraction path.
+- `mechanism`: Always `"lock_probe_failed"` in v2.1.6. The W1c patch replaced an earlier
+  stderr-interception approach; this field records which detection mechanism fired.
+- `wait_ms`: The `maxWaitMs` value passed to the lock probe (default 500 ms).
+
+---
+
+### `curator_reconcile_promote_flagged`
+
+Emitted by `bin/_lib/curator-reconcile.js` when the post-curate reconcile step finds a
+`promote` tombstone whose corresponding shared-tier file is absent, but cannot auto-repair
+it (either because auto-repair is disabled for the promote path in v2.1.6, or because the
+tombstone's `schema_version` is less than 2).
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "curator_reconcile_promote_flagged",
+  "schema_version": 1,
+  "tombstone_id": "<curator-{ISO8601}-a{NNN}>",
+  "reason": "auto_repair_disabled | schema_version_pre_v216",
+  "recovery_command": "/orchestray:learn share <slug>"
+}
+```
+
+**Field notes:**
+- `tombstone_id`: The `action_id` from the tombstone record.
+- `reason`: `auto_repair_disabled` — promote auto-repair is flag-only in v2.1.6;
+  `schema_version_pre_v216` — tombstone was written before v2.1.6 and lacks the
+  required `schema_version: 2` field.
+- `recovery_command`: Suggested command to manually complete the promote. Operators
+  should run this to repair the drift.
+
+---
+
+### `curator_reconcile_unshare_flagged`
+
+Emitted by `bin/_lib/curator-reconcile.js` (W2-04 fix) when the post-curate reconcile
+step finds an `unshare` tombstone whose shared-tier file still exists, but the tombstone
+lacks `schema_version: 2` and auto-deletion is blocked.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "curator_reconcile_unshare_flagged",
+  "schema_version": 1,
+  "tombstone_id": "<curator-{ISO8601}-a{NNN}>",
+  "reason": "schema_version_pre_v216",
+  "recovery_command": "/orchestray:learn unshare <slug>"
+}
+```
+
+**Field notes:** Identical shape to `curator_reconcile_promote_flagged`. The
+`reason` for unshare is always `schema_version_pre_v216` in v2.1.6 — the unshare
+path was gated in the W2-04 security fix.
+
+---
+
+### `pattern_roi_snapshot`
+
+Emitted by `bin/pattern-roi-aggregate.js` once per successful run, after computing ROI
+scores for all active patterns.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "pattern_roi_snapshot",
+  "schema_version": 1,
+  "window_days": 30,
+  "patterns_scanned": 12,
+  "artefact_path": ".orchestray/patterns/roi-snapshot.json",
+  "top_roi": ["pattern-a", "pattern-b"],
+  "bottom_roi": ["pattern-c", "pattern-d"]
+}
+```
+
+**Field notes:**
+- `window_days`: The lookback window used for cost and application event aggregation.
+  Configurable via `auto_learning.roi_aggregator.lookback_days` (default 30).
+- `patterns_scanned`: Number of active (non-deprecated, non-proposed) patterns included
+  in the ROI computation.
+- `artefact_path`: Relative path to the machine-readable ROI snapshot. `null` when
+  `--dry-run` was passed.
+- `top_roi` / `bottom_roi`: Slugs of the top-5 and bottom-5 patterns by ROI score.
+
+---
+
+### `pattern_roi_skipped`
+
+Emitted by `bin/pattern-roi-aggregate.js` when the aggregator exits before computing
+any ROI scores.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "pattern_roi_skipped",
+  "schema_version": 1,
+  "reason": "<reason enum — see below>",
+  "orchestration_id": "unknown"
+}
+```
+
+**`reason` enum values:**
+
+| reason | When emitted |
+|---|---|
+| `kill_switch` | `auto_learning.global_kill_switch: true` or env var set |
+| `feature_disabled` | `auto_learning.roi_aggregator.enabled` is not `true` |
+| `throttled` | Last run was fewer than `min_days_between_runs` ago |
+| `no_patterns` | `.orchestray/patterns/` is absent or empty |
+| `no_events` | No relevant events found within the lookback window |
+| `error` | Uncaught exception; detail in degraded journal |
+
+---
+
+### `calibration_suggestion_emitted`
+
+Emitted by `bin/pattern-roi-aggregate.js` when at least one calibration suggestion is
+written to `.orchestray/kb/artifacts/`.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "calibration_suggestion_emitted",
+  "schema_version": 1,
+  "artefact_path": "kb/artifacts/calibration-suggestion-20260419-1530.md",
+  "window_days": 30,
+  "suggestion_count": 2
+}
+```
+
+**Field notes:**
+- `artefact_path`: Relative path to the suggestion file. The file carries
+  `status: suggestion` and `enforced: false` in its frontmatter — never acted on
+  automatically.
+- `suggestion_count`: Number of individual suggestions written to the file.
+- Not emitted when the aggregator runs but finds no anomalies (the suggestion file is
+  only written when there is something to suggest).
+
+---
+
+### `kb_refs_sweep_complete`
+
+Emitted by `bin/kb-refs-sweep.js` once per successful sweep, after the report is written.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "kb_refs_sweep_complete",
+  "schema_version": 1,
+  "files_scanned": 34,
+  "broken_kb_refs": 0,
+  "broken_pattern_refs": 1,
+  "broken_bare_refs": 2,
+  "artefact_path": ".orchestray/kb/artifacts/kb-sweep-20260419-1530.md"
+}
+```
+
+**Field notes:**
+- `files_scanned`: Total `.md` files scanned across KB and patterns directories.
+- `broken_kb_refs`: Count of broken `@orchestray:kb://` references.
+- `broken_pattern_refs`: Count of broken `@orchestray:pattern://` references.
+- `broken_bare_refs`: Count of broken bare-slug references (conservative strategy —
+  higher false-positive risk; inspect the report before acting).
+- `artefact_path`: Relative path to the human-readable sweep report.
+
+---
+
+### `kb_refs_sweep_skipped`
+
+Emitted by `bin/kb-refs-sweep.js` when the sweep exits before scanning any files.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "kb_refs_sweep_skipped",
+  "schema_version": 1,
+  "reason": "<reason enum — see below>"
+}
+```
+
+**`reason` enum values:**
+
+| reason | When emitted |
+|---|---|
+| `kill_switch` | `auto_learning.global_kill_switch: true` or env var set |
+| `feature_disabled` | `auto_learning.kb_refs_sweep.enabled` is not `true` |
+| `no_kb` | `.orchestray/kb/` directory not found |
+| `no_index` | `.orchestray/kb/index.json` not found (needed for slug verification) |
+| `throttled` | Last sweep was fewer than `min_days_between_runs` ago (default 7 days) |
+| `error` | Uncaught exception; detail in degraded journal |
+
+---
+
+### `pattern_collision_local_warn`
+
+Emitted by `bin/_lib/shared-promote.js` when a pattern being promoted to the shared
+tier has the same slug as an existing shared-tier file with different content. The
+promote operation continues — this is a warning, not a block.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "pattern_collision_local_warn",
+  "schema_version": 1,
+  "slug": "<kebab-case pattern slug>",
+  "local_hash": "<first 8 chars of SHA-256 of existing shared file>",
+  "promoted_hash": "<first 8 chars of SHA-256 of the new content>"
+}
+```
+
+**Field notes:**
+- `local_hash` / `promoted_hash`: 8-character opaque hash prefixes for identifying which
+  version is which. Not full hashes — intended for visual comparison only.
+- This event fires during `/orchestray:learn share` when the slug already exists in
+  `~/.orchestray/shared/patterns/` with different body content.
+
+---
+
+### `config_repair_applied`
+
+Emitted by `bin/_lib/config-repair.js` when `/orchestray:config repair` reinitialises
+a missing or malformed `auto_learning` block.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "config_repair_applied",
+  "detail": {
+    "path": ".orchestray/config.json",
+    "backup": ".orchestray/config.json.bak-1713532800000",
+    "reason": "missing | malformed"
+  }
+}
+```
+
+**Field notes:**
+- `detail.path`: Absolute path to the config file that was repaired.
+- `detail.backup`: Absolute path to the backup file created before overwriting. The
+  backup uses a millisecond timestamp to avoid collisions.
+- `detail.reason`: `"missing"` when the `auto_learning` key was absent from config;
+  `"malformed"` when the key was present but failed type validation.
+
+---
+
+### `config_repair_noop`
+
+Emitted by `bin/_lib/config-repair.js` when `/orchestray:config repair` determines
+the `auto_learning` block is already valid and no repair is needed.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "config_repair_noop",
+  "detail": {
+    "path": ".orchestray/config.json",
+    "reason": "valid"
+  }
+}
+```
+
+**Field notes:**
+- `detail.reason`: Always `"valid"` for a no-op — the block was present and well-formed.
+- No backup is created and no config file is written for a no-op.
+
+---
+
+### `learning_circuit_tripped`
+
+Emitted by `bin/_lib/learning-circuit-breaker.js` (`checkAndIncrement`) when the rolling
+extraction counter reaches the configured cap, encounters a corrupt counter file, or hits
+an internal error. Written inside the locked section (or on the corrupt/error path).
+Fail-open: emission failures are silently swallowed.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "learning_circuit_tripped",
+  "schema_version": 1,
+  "orchestration_id": "<current orch id, or 'unknown'>",
+  "scope": "auto_extract",
+  "reason": "quota_exceeded",
+  "count": 10,
+  "max": 10
+}
+```
+
+**`reason` enum values:**
+
+| reason | When emitted |
+|---|---|
+| `quota_exceeded` | `state.count >= max` — rolling window cap reached |
+| `counter_corrupt` | Counter file exists but cannot be parsed (F-04 fix) |
+| `internal_error` | Unexpected exception during the locked section; `detail` field carries truncated message |
+
+**Optional fields:** `count` and `max` appear with `quota_exceeded`. `detail` (string,
+max 80 chars) appears with `internal_error`. `orchestration_id` is `'unknown'` when the
+orchestration state file cannot be read.
+
+**Consumer:** `/orchestray:status` surfaces the tripped state via the sentinel file
+(`.orchestray/state/learning-breaker-{scope}.tripped`); this event provides the
+corresponding audit trail entry.
+
+---
+
+### `learning_circuit_reset`
+
+Emitted by `bin/_lib/learning-circuit-breaker.js` (`reset`) when the circuit breaker for
+a scope is explicitly cleared — deleting both the counter file and the trip sentinel.
+Triggered by `/orchestray:config repair`. Fail-open: emission failures are silently
+swallowed.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "learning_circuit_reset",
+  "schema_version": 1,
+  "orchestration_id": "<current orch id, or 'unknown'>",
+  "scope": "auto_extract"
+}
+```
+
+**Field notes:**
+- `scope`: The circuit-breaker scope that was reset — matches the scope used in the
+  preceding `learning_circuit_tripped` event.
+- `orchestration_id`: Best-effort read from the current orchestration state file;
+  `'unknown'` if unavailable.
+- No `reason` field — a reset is always user-initiated via repair and has no sub-cases.
+
+**Consumer:** Operators monitoring for recovery after a circuit trip should look for this
+event following a `learning_circuit_tripped` in the same session.
+
+---
+
+### Degraded-journal `kind` additions (v2.1.6)
+
+New `kind` values added to the degraded-journal enum (see v2.1.2 section for the full
+schema). All follow the same `{ schema, timestamp, kind, severity, detail }` shape.
+
+| kind | severity | When written |
+|---|---|---|
+| `auto_learning_config_malformed` | warn | `auto_learning` config block failed type validation; all-off defaults used |
+| `kb_refs_sweep_file_read_error` | warn | `kb-refs-sweep.js` could not read a KB or patterns file |
+| `kb_refs_sweep_malformed_frontmatter` | info | A scanned file has unparseable frontmatter; file is still scanned for refs |
+| `pattern_roi_snapshot_write_error` | warn | `pattern-roi-aggregate.js` could not write `roi-snapshot.json` |

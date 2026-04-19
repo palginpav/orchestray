@@ -54,6 +54,7 @@ const INPUT_SCHEMA = {
     max_results: { type: 'integer', minimum: 1, maximum: 10 },
     min_confidence: { type: 'number', minimum: 0, maximum: 1 },
     include_deprecated: { type: 'boolean' },
+    include_proposed: { type: 'boolean' },
   },
 };
 
@@ -149,6 +150,44 @@ async function handle(input, context) {
   const minConfidence = typeof input.min_confidence === 'number' ? input.min_confidence : 0;
   const maxResults = typeof input.max_results === 'number' ? input.max_results : 5;
   const includeDeprecated = input.include_deprecated === true;
+  // W4 (v2.1.6 F-05): proposed patterns are excluded by default.
+  // Set include_proposed: true to include them (e.g. for /orchestray:learn list --proposed).
+  const includeProposed = input.include_proposed === true;
+
+  // W4: when include_proposed is true, also scan .orchestray/proposed-patterns/.
+  // These entries get _tier: 'local' so scoring works, but their filepath lets
+  // the filter loop identify and tag them as proposed.
+  if (includeProposed) {
+    const proposedDir = path.join(projectRoot, '.orchestray', 'proposed-patterns');
+    let proposedEntries;
+    try {
+      proposedEntries = fs.readdirSync(proposedDir);
+    } catch (_) {
+      proposedEntries = [];
+    }
+    for (const name of proposedEntries.filter((n) => n.endsWith('.md')).sort()) {
+      const filepath = path.join(proposedDir, name);
+      let content;
+      try {
+        content = fs.readFileSync(filepath, 'utf8');
+      } catch (_) {
+        continue;
+      }
+      const parsed = frontmatter.parse(content);
+      if (!parsed.hasFrontmatter) continue;
+      const slug = name.slice(0, -3);
+      // Only include if not already in localIndex (no slug collision).
+      if (!localIndex.some((e) => e.slug === slug)) {
+        localIndex.push({
+          slug,
+          frontmatter: parsed.frontmatter,
+          body: parsed.body,
+          filepath,
+          _tier: 'local',
+        });
+      }
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // FTS5 seam: adapter lives in bin/_lib/pattern-index-sqlite.js.
@@ -360,6 +399,16 @@ async function handle(input, context) {
       continue;
     }
 
+    // W4 (v2.1.6 F-05): exclude proposed patterns from default results.
+    // Defense-in-depth: filter by both path and frontmatter flag so FTS5
+    // accidentally indexing a proposed file is caught here too.
+    const isProposed = fm.proposed === true ||
+      entry.filepath.replace(/\\/g, '/').includes('/.orchestray/proposed-patterns/');
+    if (isProposed && !includeProposed) {
+      filteredOut++;
+      continue;
+    }
+
     // Category filter
     if (categoryFilter && !categoryFilter.has(category)) {
       filteredOut++;
@@ -377,13 +426,17 @@ async function handle(input, context) {
 
     // Local entries use FTS5 when available; shared entries always use Jaccard
     // (FTS5 index covers only the local projectRoot patterns dir).
+    // W4: proposed entries are NEVER indexed by FTS5 (F-05 design). Always
+    // use Jaccard for proposed entries so they score on their body/description text.
     const entryTier = entry._tier || 'local';
-    if (fts5Available && fts5ScoreBySlug !== null && entryTier === 'local') {
+    const usesFts5 = fts5Available && fts5ScoreBySlug !== null &&
+                     entryTier === 'local' && !isProposed;
+    if (usesFts5) {
       // FTS5 path: use normalized BM25 score as the relevance signal.
       overlapRatio = fts5ScoreBySlug.get(entry.slug) || 0;
       overlapTokens = new Set(); // no per-token breakdown available from FTS5
     } else {
-      // Jaccard fallback path (FTS5 unavailable, or shared-tier entry).
+      // Jaccard fallback path (FTS5 unavailable, shared-tier entry, or proposed entry).
       const bodyHead = entry.body.slice(0, 200);
       const hay = (description + ' ' + bodyHead).toLowerCase();
       const hayTokens = _tokenize(hay);
@@ -416,7 +469,7 @@ async function handle(input, context) {
     const score = confidence * (overlapRatio + roleBonus + fileBonus);
 
     const matchReasons = [];
-    if (fts5Available && entryTier === 'local') {
+    if (usesFts5) {
       // Build per-term reasons from the FTS5 highlight() data attached by
       // searchPatterns() (Idea 4 — v2.1.2). Each TermHit carries {term, section}.
       // Group by term so we can emit "fts5:term=X (in context, approach)" when
@@ -442,7 +495,7 @@ async function handle(input, context) {
       }
     }
     if (roleBonus > 0) matchReasons.push('role=' + agentRole);
-    if (!(fts5Available && entryTier === 'local')) {
+    if (!usesFts5) {
       // Jaccard / fallback path: emit "fallback: keyword" to signal that FTS5
       // was unavailable or this is a shared-tier entry, plus the top overlap tokens.
       if (!fts5Available) {
@@ -471,9 +524,15 @@ async function handle(input, context) {
     // promoted_from is copied verbatim from frontmatter (8-hex, already present
     // on shared patterns promoted by shared-promote.js).
     // promoted_is_own is true iff this project promoted the pattern.
+    //
+    // W4 (v2.1.6): proposed entries are marked with proposed: true in the result
+    // and their uri uses the proposed-pattern namespace so callers can distinguish
+    // them from active patterns.
     const matchEntry = {
       slug: entry.slug,
-      uri: 'orchestray:pattern://' + entry.slug,
+      uri: isProposed
+        ? 'orchestray:proposed-pattern://' + entry.slug
+        : 'orchestray:pattern://' + entry.slug,
       confidence,
       decayed_confidence: decayedConfidence,
       age_days: ageDays,
@@ -490,6 +549,10 @@ async function handle(input, context) {
         matchEntry.promoted_from = promotedFrom;
         matchEntry.promoted_is_own = promotedFrom === _projectHash(projectRoot);
       }
+    }
+    // W4: tag proposed entries when include_proposed is true so callers know.
+    if (isProposed) {
+      matchEntry.proposed = true;
     }
     scored.push(matchEntry);
   }

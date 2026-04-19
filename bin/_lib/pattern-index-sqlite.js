@@ -234,6 +234,14 @@ function _buildIndex(db, patternsDir) {
 
   for (const name of entries.filter((n) => n.endsWith('.md')).sort()) {
     const filepath = path.join(patternsDir, name);
+
+    // W4 (v2.1.6 F-05): guard — never index files under proposed-patterns/.
+    // _buildIndex is called with the active patterns dir, but belt-and-suspenders:
+    // reject any filepath that contains the proposed-patterns segment.
+    if (filepath.replace(/\\/g, '/').includes('/.orchestray/proposed-patterns/')) {
+      continue;
+    }
+
     let content;
     try {
       content = fs.readFileSync(filepath, 'utf8');
@@ -242,6 +250,9 @@ function _buildIndex(db, patternsDir) {
     }
     const parsed = frontmatter.parse(content);
     if (!parsed.hasFrontmatter) continue;
+
+    // Secondary guard: skip files with proposed: true (defense-in-depth).
+    if (parsed.frontmatter.proposed === true) continue;
 
     const slug = name.slice(0, -3);
     const fm = parsed.frontmatter;

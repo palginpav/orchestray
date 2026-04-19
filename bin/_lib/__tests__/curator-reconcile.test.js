@@ -87,11 +87,15 @@ function makeMergeTombstone(projectRoot, outputSlug, inputSlugs, snapshot) {
   };
 }
 
-/** Build an unshare tombstone object. */
+/** Build an unshare tombstone object.
+ *  W1b (W2-04): schema_version:2 is required for unshare auto-delete to proceed.
+ *  Tombstones without schema_version are flagged (DoS-adjacent prevention).
+ */
 function makeUnshareTombstone(sharedRoot, slug, snapshot) {
   const fp = path.join(sharedRoot, 'patterns', slug + '.md');
   return {
     action: 'unshare',
+    schema_version: 2,
     inputs: [{ slug, path: fp, content_sha256: 'abc123', content_snapshot: snapshot }],
     output: { path: 'deleted', action_summary: 'user unshared ' + slug },
   };
@@ -128,12 +132,13 @@ describe('_isDeprecated()', () => {
 // ---------------------------------------------------------------------------
 
 describe('reconcile() — promote', () => {
-  test('CORE: phantom-success detected and auto-repaired when shared-tier file absent', () => {
-    // This test simulates the exact incident:
-    //   1. Curator writes tombstone (claims promote succeeded)
-    //   2. Agent turn truncates — file copy never happens
-    //   3. reconcile() detects the missing shared-tier file
-    //   4. reconcile() copies content_snapshot to the dest path (auto-repair)
+  test('CORE: phantom-success detected and flagged when shared-tier file absent (v2.1.6 F-03 — promote is flag-only)', () => {
+    // v2.1.6 F-03 fix: promote auto-repair is now flag-only.
+    // Tombstones without schema_version (pre-v2.1.6) are rejected by the
+    // schema_version gate; tombstones with schema_version≥2 hit the flag-only
+    // policy. Either way, no auto-repair writes to the shared tier.
+    //
+    // Updated: old expectation was repaired.length=1; new expectation is flagged.length=1.
 
     const projectRoot = makeTmpProject();
     const sharedRoot  = makeTmpShared();
@@ -155,16 +160,15 @@ describe('reconcile() — promote', () => {
       const destPath = path.join(sharedRoot, 'patterns', slug + '.md');
       assert.strictEqual(fs.existsSync(destPath), false, 'shared-tier file must be absent before reconcile');
 
-      // Step 3: reconcile() detects the phantom-success and repairs it.
+      // Step 3: reconcile() detects the phantom-success — now flags instead of auto-repairs.
       const report = reconcile({ projectRoot, runId, sharedDir: path.join(sharedRoot, 'patterns') });
 
-      assert.strictEqual(report.repaired.length, 1, 'exactly one repair expected');
-      assert.strictEqual(report.flagged.length,  0, 'no flags expected');
-      assert.ok(report.repaired[0].detail.includes('promote mismatch'), 'detail must mention promote mismatch');
+      // v2.1.6: promote is flag-only (F-03 fix). Tombstone without schema_version ≥ 2 is flagged.
+      assert.ok(report.flagged.length >= 1, 'expected at least one flagged item (promote flag-only)');
+      assert.strictEqual(report.repaired.length, 0, 'no auto-repair must occur for promote (F-03)');
 
-      // The shared-tier file must now exist with the correct content.
-      assert.strictEqual(fs.existsSync(destPath), true, 'shared-tier file must exist after reconcile');
-      assert.strictEqual(fs.readFileSync(destPath, 'utf8'), snapshot, 'shared-tier file content must match snapshot');
+      // The shared-tier file must NOT have been written.
+      assert.strictEqual(fs.existsSync(destPath), false, 'shared-tier file must NOT be created (auto-repair disabled)');
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
       fs.rmSync(sharedRoot,  { recursive: true, force: true });
@@ -451,8 +455,10 @@ describe('reconcile() — unshare', () => {
 describe('reconcile() — rationale as opaque field', () => {
   test('rationale-bearing tombstone reconciles identically to one without rationale', () => {
     // A promote tombstone with rationale should behave identically to one without.
-    // When shared-tier file is absent → repaired. When present → ok.
-    // Rationale must not alter reconcile behavior.
+    // When shared-tier file is absent → flagged (v2.1.6 F-03: promote is flag-only).
+    // When present → ok.  Rationale must not alter reconcile behavior.
+    //
+    // Updated from v2.1.4: old expectation was repaired; new expectation is flagged (F-03).
 
     const projectRoot  = makeTmpProject();
     const sharedRoot   = makeTmpShared();
@@ -482,16 +488,13 @@ describe('reconcile() — rationale as opaque field', () => {
       writeTombstone(runIdWith, tombstoneWithRationale, { projectRoot });
 
       const reportWith = reconcile({ projectRoot, runId: runIdWith, sharedDir: path.join(sharedRoot, 'patterns') });
-      assert.strictEqual(reportWith.repaired.length, 1, 'rationale-bearing tombstone must be repaired');
-      assert.strictEqual(reportWith.flagged.length,  0);
-      assert.ok(reportWith.repaired[0].detail.includes('promote mismatch'));
+      // v2.1.6 F-03: promote is flag-only; tombstone without schema_version ≥ 2 is flagged.
+      assert.ok(reportWith.flagged.length >= 1, 'rationale-bearing tombstone must be flagged (flag-only policy)');
+      assert.strictEqual(reportWith.repaired.length, 0, 'no auto-repair for promote (F-03)');
 
-      // Now verify that shared file is present (repaired above).
+      // Shared-tier file must NOT have been created.
       const destPath = path.join(sharedRoot, 'patterns', slug + '.md');
-      assert.strictEqual(fs.existsSync(destPath), true, 'file must be repaired regardless of rationale');
-
-      // Clean up the repaired file before next check.
-      fs.unlinkSync(destPath);
+      assert.strictEqual(fs.existsSync(destPath), false, 'file must NOT be auto-created (promote flag-only)');
 
       // Tombstone WITHOUT rationale — same slug, same behavior expected.
       const tombstoneWithout = makePromoteTombstone(projectRoot, sharedRoot, slug, snapshot);
@@ -499,11 +502,12 @@ describe('reconcile() — rationale as opaque field', () => {
       writeTombstone(runIdWithout, tombstoneWithout, { projectRoot });
 
       const reportWithout = reconcile({ projectRoot, runId: runIdWithout, sharedDir: path.join(sharedRoot, 'patterns') });
-      assert.strictEqual(reportWithout.repaired.length, 1, 'tombstone without rationale must also be repaired');
-      assert.strictEqual(reportWithout.flagged.length,  0);
+      // Both tombstones have the same (flagged) behavior — rationale is opaque to reconcile.
+      assert.ok(reportWithout.flagged.length >= 1, 'tombstone without rationale must also be flagged');
+      assert.strictEqual(reportWithout.repaired.length, 0);
 
       // Both reports have the same structure — rationale is opaque to reconcile.
-      assert.strictEqual(reportWith.repaired.length, reportWithout.repaired.length, 'behavior must be identical');
+      assert.strictEqual(reportWith.flagged.length, reportWithout.flagged.length, 'behavior must be identical');
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
       fs.rmSync(sharedRoot,  { recursive: true, force: true });
@@ -568,6 +572,8 @@ describe('reconcile() — edge cases', () => {
   });
 
   test('reconciles most-recent run when runId is not specified', () => {
+    // Updated (v2.1.6 F-03): promote is flag-only. Phantom promote is flagged, not repaired.
+
     const projectRoot = makeTmpProject();
     const sharedRoot  = makeTmpShared();
 
@@ -591,14 +597,19 @@ describe('reconcile() — edge cases', () => {
       const report = reconcile({ projectRoot, sharedDir: path.join(sharedRoot, 'patterns') });
 
       assert.strictEqual(report.runId, runId2, 'should target most-recent run');
-      assert.strictEqual(report.repaired.length, 1, 'phantom promote in run2 should be repaired');
+      // v2.1.6 F-03: phantom promote is flagged (not repaired).
+      assert.ok(report.flagged.length >= 1, 'phantom promote in run2 should be flagged (flag-only policy)');
+      assert.strictEqual(report.repaired.length, 0, 'no auto-repair for promote');
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
       fs.rmSync(sharedRoot,  { recursive: true, force: true });
     }
   });
 
-  test('mixed run: one promote repaired + one deprecate flagged', () => {
+  test('mixed run: one promote flagged + one deprecate flagged (v2.1.6 F-03)', () => {
+    // Updated (v2.1.6 F-03): promote is now flag-only (not repaired).
+    // Both promote and deprecate mismatch result in flagged items.
+
     const projectRoot = makeTmpProject();
     const sharedRoot  = makeTmpShared();
 
@@ -619,8 +630,9 @@ describe('reconcile() — edge cases', () => {
 
       const report = reconcile({ projectRoot, runId, sharedDir: path.join(sharedRoot, 'patterns') });
 
-      assert.strictEqual(report.repaired.length, 1, 'promote must be auto-repaired');
-      assert.strictEqual(report.flagged.length,  1, 'deprecate must be flagged');
+      // v2.1.6 F-03: promote is flag-only (was repaired in v2.1.4).
+      assert.strictEqual(report.repaired.length, 0, 'no auto-repair for promote (F-03)');
+      assert.strictEqual(report.flagged.length,  2, 'both promote and deprecate mismatch must be flagged');
       assert.strictEqual(report.checked, 2);
       assert.strictEqual(report.ok, false, 'ok must be false when flagged items exist');
     } finally {

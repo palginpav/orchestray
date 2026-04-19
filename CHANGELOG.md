@@ -3,6 +3,50 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.1.6] - 2026-04-19
+
+Orchestray can now learn from your orchestrations automatically, not just when you remember to run `/orchestray:learn`. Every feature in this release ships turned off by default and behind a single kill switch. Nothing applies to your project without you reviewing it first.
+
+### What's new
+
+- **Auto-extraction of patterns after orchestrations (opt-in, default off)** — when you enable `auto_learning.extract_on_complete.enabled: true`, Orchestray analyses each completed orchestration and stages pattern proposals in `.orchestray/proposed-patterns/` for your review. Nothing lands in your active pattern set automatically. Your first time? Set `shadow_mode: true` as well — you get the event trail and proposal count notification but no files are written.
+- **Review workflow for staged proposals** — new subcommands on `/orchestray:learn`: `list --proposed` shows what has been staged, `accept <slug>` runs a full re-validation and shows you the body before moving anything to your active patterns, `reject <slug>` soft-deletes to a `rejected/` subfolder. The `accept` step warns you if the proposal contains unusual instruction-like content before you confirm.
+- **Pattern ROI and calibration suggestions (opt-in, default off)** — enable `auto_learning.roi_aggregator.enabled: true` for a daily read-only scan that correlates your pattern applications with orchestration cost. Suggestions land in `.orchestray/kb/artifacts/` as advisory documents marked "SUGGESTED — NOT APPLIED"; they are never acted on automatically. `/orchestray:patterns` and `/orchestray:status` show a pending-count banner when suggestions are waiting.
+- **KB reference sweep (opt-in, default off)** — enable `auto_learning.kb_refs_sweep.enabled: true` for a weekly dry-run scan that finds broken `@orchestray:kb://`, `@orchestray:pattern://`, and cross-reference links across your KB and patterns. The scan writes a report and never edits anything.
+- **Updated observability surfaces** — `/orchestray:patterns` and `/orchestray:status` now show auto-learning state, kill-switch source, pending proposal count, and circuit-breaker status in a summary banner.
+- **Single kill switch** — set `auto_learning.global_kill_switch: true` in `.orchestray/config.json`, or set the environment variable `ORCHESTRAY_AUTO_LEARNING_KILL_SWITCH=1`, to disable the entire auto-learning bundle instantly. No restart needed; the config loader checks it before any sub-feature runs.
+- **Config repair** — `/orchestray:config repair` reinitialises a missing or malformed `auto_learning` block in your config without touching any other key.
+
+### Safety
+
+Three layers stand between an orchestration's raw audit events and your active pattern set:
+
+- **Input quarantine** strips free-text and rationale fields from audit events before any model sees them, then drops events whose retained fields match known secret patterns (API keys, tokens, connection strings).
+- **Output validation** rejects any proposal that contains instruction-like phrases, including variants that use lookalike characters from Cyrillic, Greek, fullwidth, and other scripts. Protected fields (`confidence`, `trigger_actions`, `deprecated`, `times_applied`, and others) can never be set by an auto-extracted proposal.
+- **Human review** — you. Every proposal waits in `.orchestray/proposed-patterns/` until you run `/orchestray:learn accept <slug>` or `/orchestray:learn reject <slug>`. The accept step re-runs validation on the full file and shows a warning if any instruction-like content survived.
+
+Additional safeguards: a concurrency-safe circuit breaker caps extraction attempts to 10 per 24 hours with a cross-process lock. Shadow mode still counts against the cap (the model cost is real). Curator reconcile's promote and unshare auto-repair paths now refuse to act on tombstones written before v2.1.6, and flag them for human recovery instead.
+
+### Defaults (everything opt-in)
+
+| Key | Default |
+|-----|---------|
+| `auto_learning.global_kill_switch` | `false` |
+| `auto_learning.extract_on_complete.enabled` | `false` |
+| `auto_learning.extract_on_complete.shadow_mode` | `false` |
+| `auto_learning.roi_aggregator.enabled` | `false` |
+| `auto_learning.kb_refs_sweep.enabled` | `false` |
+
+No flag defaults to `true`. You must opt in to each feature explicitly.
+
+### Operator notes
+
+- `/orchestray:config repair` is safe to run at any time; if your `auto_learning` block is already valid, it is a no-op.
+- The pattern-collision check in `share` now emits a warning when a slug you are promoting already exists in the shared tier with different content, before proceeding.
+- Known residual: the bare-slug reference detector in the KB sweep uses a conservative regex that requires an explicit prefix ("see also", "ref", "refers to", "linked") before a slug. Sentences matching this pattern in normal prose can produce false positives — inspect the sweep report before acting on bare-slug findings.
+- The Haiku extraction backend ships as a stub in this release. All pipeline plumbing (gates, quarantine, validation, file writing, audit events) is fully wired and tested; the live model call is a follow-on opt-in. Proposals in `proposed-patterns/` will appear once the backend is wired in a subsequent update.
+- Auto-application of curator suggestions and auto-approval of proposed patterns remain human-gated and are not planned for v2.1.x.
+
 ## [2.1.5] - 2026-04-19
 
 Quality and correctness pass for the `curate --diff` incremental mode that shipped in v2.1.4, plus a real-bug fix for a misleading health warning that every v2.1.4 install was journaling on boot. One new config knob. No breaking changes.

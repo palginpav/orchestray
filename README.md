@@ -47,7 +47,7 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 - **Correction memory** — learns from verify-fix loops, prevents repeated mistakes
 - **Cost prediction** — estimates orchestration cost from historical data before execution
 - **Persistent specialists** — dynamic agents that prove useful get saved for reuse
-- **Pattern learning** — extracts reusable strategies from past orchestrations; patterns are project-local by default and can be shared across projects on the same machine via opt-in federation (`federation.shared_dir_enabled: true`)
+- **Pattern learning** — extracts reusable strategies from past orchestrations via `/orchestray:learn`, or automatically after each orchestration when `auto_learning.extract_on_complete.enabled: true` (opt-in, default off); patterns are project-local by default and can be shared across projects on the same machine via opt-in federation (`federation.shared_dir_enabled: true`)
 - **Cross-project pattern federation** — `~/.orchestray/shared/patterns/` as machine-local hub; opt-in, sensitivity defaults to `"private"`; share via `/orchestray:learn share`, browse with `/orchestray:learn list --shared`
 - **SQLite FTS5 retrieval** — BM25-ranked pattern lookup replaces Jaccard keyword scan; lazy index build; graceful fallback to Jaccard when native build unavailable (`better-sqlite3 ^11`, Node 22.5+ prefers `node:sqlite`)
 - **AI pattern curator** — `/orchestray:learn curate` runs promote/merge/deprecate with tombstone rollback; undo via `undo-last` or `undo <action-id>`; sacred invariants: `user-correction` patterns never auto-deprecated, `sensitivity: private` patterns never auto-promoted; every action records a `rationale` field for audit; `/orchestray:learn explain <action-id>` shows the curator's reasoning; `curate --diff` opt-in incremental mode pre-filters patterns on five signals (stamp-absent, body-hash drift, stale-stamp, rollback-touched, merge-lineage-dirty) — only the dirty subset reaches the curator agent
@@ -57,6 +57,7 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 - **Degraded-mode journal** — silent fallbacks (FTS5 unavailable, flat config keys, curator reconcile flags, hook-merge no-ops, and more) are recorded to `.orchestray/state/degraded.jsonl` (1 MB × 3-gen rotation); `/orchestray:status` surfaces a one-liner when the journal is non-empty; run `/orchestray:doctor` for full diagnostics; run `/orchestray:doctor --deep` to verify all installed file hashes against the manifest
 - **Intelligence bundle (v2.1.3)** — shadow scorer seam runs alternate retrieval ranking side-by-side with baseline (no live ranking change; telemetry in `.orchestray/state/scorer-shadow.jsonl`); MinHash+Jaccard duplicate pre-filter cuts curator attention from O(N²) to O(N+k); `recently_curated_*` frontmatter stamps close the audit loop between curator actions and touched patterns; manifest v2 with per-file SHA-256 hashes enables install-integrity verification via `/orchestray:doctor --deep`
 - **Researcher + curate --diff bundle (v2.1.4)** — new Researcher agent surveys external approaches before Architect/Inventor is spawned, returning a decision-ready shortlist; merge tombstones now carry MinHash similarity parameters (`similarity_method`, `similarity_threshold`, `similarity_k`, `similarity_m`) for reproducible pre-filter replay; `curate --diff` opt-in incremental mode (enable with `curator.diff_enabled: true`) cuts curator cost on stable pattern libraries; self-healing forced-full sweep every 10th run
+- **Self-learning foundations (v2.1.6)** — Orchestray can stage pattern proposals automatically after each completed orchestration, instead of waiting for a manual `/orchestray:learn` run. All auto-learning features are off by default and gated behind a single kill switch (`auto_learning.global_kill_switch: true` in config, or `ORCHESTRAY_AUTO_LEARNING_KILL_SWITCH=1` in environment). Enable extraction with `auto_learning.extract_on_complete.enabled: true`; proposals land in `.orchestray/proposed-patterns/` for your review — nothing applies without `/orchestray:learn accept <slug>`. Run `/orchestray:learn list --proposed` to see what is staged.
 - **Team features** — shared config, shared patterns, daily/weekly cost budgets
 - **Agent Teams** — opt-in dual-mode execution for tasks needing inter-agent communication
 - **Prompt tiering** — 3-tier PM prompt architecture, significant token reduction for simple tasks
@@ -156,7 +157,7 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | `/orchestray:workflows` | Manage custom YAML workflow definitions |
 | `/orchestray:federation status` | Show federation enabled/disabled/partial state, shared-dir contents, FTS5 status, and origin attribution |
 | `/orchestray:doctor` | Run 8 health probes (migrations, MCP tools, config keys, FTS5, ABI, degraded journal); emits `doctor-result-code: 0/1/2`; add `--deep` for full install-integrity manifest verification |
-| `/orchestray:learn [id]` | Extract patterns, capture corrections, manage federation sharing (`share` / `unshare` / `list --shared`), curate with AI (`curate` / `curate --diff` / `undo-last` / `undo <id>`); `explain <action-id>` shows curator rationale; `share --preview` diffs without writing |
+| `/orchestray:learn [id]` | Extract patterns, capture corrections, manage federation sharing (`share` / `unshare` / `list --shared`), curate with AI (`curate` / `curate --diff` / `undo-last` / `undo <id>`); `explain <action-id>` shows curator rationale; `share --preview` diffs without writing; review auto-extracted proposals with `list --proposed` / `accept <slug>` / `reject <slug>` |
 | `/orchestray:resume` | Resume interrupted orchestration |
 | `/orchestray:analytics` | Performance stats + pattern dashboard |
 | `/orchestray:patterns` | Pattern effectiveness dashboard |
@@ -289,6 +290,20 @@ curator.diff_cutoff_days             Stale-stamp threshold for --diff dirty-set:
 curator.diff_forced_full_every       Forced-full-sweep cadence for --diff: every Nth run evaluates the
                                      entire corpus regardless of dirty-set signals (integer 1..1000,
                                      default: 10)
+
+auto_learning.global_kill_switch             Disable the entire auto-learning bundle immediately (default: false);
+                                             also controlled by the ORCHESTRAY_AUTO_LEARNING_KILL_SWITCH=1 env var
+auto_learning.extract_on_complete.enabled    Auto-stage pattern proposals after each orchestration (default: false — opt-in)
+auto_learning.extract_on_complete.shadow_mode  Count proposals and emit events but write no files (default: false)
+auto_learning.extract_on_complete.proposals_per_orchestration  Cap per orchestration (default: 3, range: 1–10)
+auto_learning.extract_on_complete.proposals_per_24h            Rolling 24-hour cap across all orchestrations (default: 10, range: 1–50)
+auto_learning.roi_aggregator.enabled         Daily read-only ROI scan and calibration suggestions (default: false — opt-in)
+auto_learning.roi_aggregator.min_days_between_runs  Minimum days between ROI scans (default: 1, range: 1–90)
+auto_learning.roi_aggregator.lookback_days   Events window for ROI computation (default: 30, range: 1–365)
+auto_learning.kb_refs_sweep.enabled          Weekly dry-run broken-reference scan of KB and patterns (default: false — opt-in)
+auto_learning.kb_refs_sweep.min_days_between_runs  Minimum days between sweeps (default: 7, range: 1–90)
+auto_learning.safety.circuit_breaker.max_extractions_per_24h    Rolling cap on extraction attempts (default: 10, range: 1–100)
+auto_learning.safety.circuit_breaker.cooldown_minutes_on_trip   Minutes before a tripped breaker can be reset (default: 60, range: 5–1440)
 ```
 
 The `mcp_enforcement` block is automatically added to `.orchestray/config.json` on the first `UserPromptSubmit` after upgrading to 2.0.13+ — no manual migration needed. On 2.0.14+, the same sweep also backfills the `mcp_server.cost_budget_check.pricing_table` block if absent. On 2.0.15+, the sweep additionally seeds the `kb_write` tool enable entry and the `pattern_record_skip_reason` / `cost_budget_check` enforcement keys for existing installs. On 2.0.16+, the sweep seeds `routing_lookup`, `cost_budget_reserve`, `pattern_deprecate`, `max_per_task` defaults (20 each), `cost_budget_enforcement`, `cost_budget_reserve.ttl_minutes`, and `routing_gate.auto_seed_on_miss`. On 2.0.17+, the sweep seeds the `v2017_experiments` block (all flags `"off"`), `adaptive_verbosity`, and `cache_choreography`. On 2.0.18+, the sweep also auto-strips the now-removed `pm_prompt_variant` and `pm_prose_strip` keys (emits a `config_key_stripped` audit event).
@@ -353,6 +368,7 @@ All orchestration state lives in `.orchestray/` (gitignored):
     archive/                      # Rotated files (50 MB threshold)
   specialists/    # Persistent specialist registry
   patterns/       # Extracted learning patterns (gitignored)
+  proposed-patterns/  # Auto-extracted proposals awaiting review (gitignored; v2.1.6+)
   curator/        # Tombstone log for curator rollback (.orchestray/curator/tombstones.jsonl)
   playbooks/      # User-authored project playbooks
   config.json     # User configuration (gitignored)

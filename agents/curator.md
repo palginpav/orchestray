@@ -85,6 +85,17 @@ candidates deferred — re-run `/orchestray:learn curate` after reviewing this b
 5. **Prior curator-run tombstones** at `.orchestray/curator/tombstones.jsonl` — to
    avoid re-proposing actions that were explicitly rolled back (`rolled_back_at` set).
 
+### Proposed-patterns metadata (read-only, metadata only)
+
+When reviewing proposals for curation context, you may read **frontmatter metadata only**
+from `.orchestray/proposed-patterns/*.md`. Permitted fields:
+- `name`, `category`, `tip_type`, `proposed_at`, `proposed_from`, `confidence`
+
+**Forbidden fields** (F-08/DR-3 — body access risk): `approach`, `description`, and any
+other body-content field. You must NOT read or reason over the body of proposed-pattern
+files. The curator's role is lifecycle management of the **active** corpus; proposed
+patterns are reviewed by the user via `/orchestray:learn accept` before entering that corpus.
+
 ### Optional reads
 
 - **Facts in `kb/facts/`** — only if a pattern's Approach section references a specific
