@@ -67,6 +67,38 @@ process.stdin.on('end', () => {
         process.stderr.write('[orchestray] validate-task-completion: audit write failed: ' + auditErr.message + '\n');
       }
 
+      // I-12 rollback path: if PRE_DONE_ENFORCEMENT=warn, downgrade hard block
+      // to a warning-only exit(0) so a mis-wired deployment doesn't lock up teams.
+      if (process.env.PRE_DONE_ENFORCEMENT === 'warn') {
+        process.stderr.write(
+          '[orchestray] validate-task-completion: WARN (PRE_DONE_ENFORCEMENT=warn): ' +
+          'missing task_id or task_subject — would block in enforcement mode\n'
+        );
+        // Emit a warn-mode audit event so operators have a trace
+        try {
+          // Resolve orchestration ID again (the inner try scope above may have set it locally)
+          let warnOrchId = 'unknown';
+          try {
+            const orchFile = getCurrentOrchestrationFile(cwd);
+            const orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
+            if (orchData.orchestration_id) warnOrchId = orchData.orchestration_id;
+          } catch (_e) { /* best-effort */ }
+          const warnEvent = {
+            timestamp: new Date().toISOString(),
+            type: 'task_validation_warn',
+            enforcement_mode: 'warn',
+            orchestration_id: warnOrchId,
+            reason: !event.task_id && !event.task_subject
+              ? 'missing task_id and task_subject'
+              : (!event.task_id ? 'missing task_id' : 'missing task_subject'),
+            payload_keys: Object.keys(event),
+          };
+          atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), warnEvent);
+        } catch (_warnAuditErr) { /* fail-open */ }
+        process.stdout.write(JSON.stringify({ continue: true }));
+        process.exit(0);
+      }
+
       process.stderr.write(
         'Task completion rejected: missing task_id or task_subject. ' +
         'Ensure task has proper identification before marking complete.'
