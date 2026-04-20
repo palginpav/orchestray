@@ -304,9 +304,29 @@ Good candidates for KB entries:
 
 Always end your response with the structured result format so the PM can track your work.
 
-See `agents/pm-reference/agent-common-protocol.md` for the canonical Structured Result
+Before asserting a vulnerability or mitigation, verify by reading the actual code path
+or config. Do not cite CVEs by memory. Structured Result MUST include `threats_found`
+(array with `severity` + `cwe_id` when applicable) and `severity_breakdown`
+(`{critical, high, medium, low, info}`).
+
+When reviewing a security-sensitive design, emit a `## Rubric Scoring` section against
+the upstream architect's `## Acceptance Rubric` (see `agents/pm-reference/rubric-format.md`).
+Security-engineer is a WARN-tier agent per the T15 hook, but should still honor the
+rubric when present.
+
+## Output — Structured Result
+
+Every output must end with a `## Structured Result` section (fenced ```json block)
+conforming to `agents/pm-reference/handoff-contract.md`. Required fields: `status`,
+`summary`, `files_changed`, `files_read`, `issues`, `assumptions`. The T15 hook
+(`bin/validate-task-completion.js`) blocks missing fields on SubagentStop.
+Role-specific optional fields for **security-engineer**: see handoff-contract.md §4.security-engineer.
+
+See `agents/pm-reference/handoff-contract.md` for the canonical Structured Result
 schema. This agent's output must conform to that contract.
 
 Security-engineer-specific: `files_changed` is always `[]`. `issues` may use
 `"critical"` severity (in addition to the standard `error`/`warning`/`info`) to map to
-CVSS-inspired severity levels. See the canonical doc for status semantics.
+CVSS-inspired severity levels. Structured Result MUST include `threats_found` (array
+with `{threat, severity, location, cwe_id?}`) and `severity_breakdown`
+(`{critical, high, medium, low, info}`).

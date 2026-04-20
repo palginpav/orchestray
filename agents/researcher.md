@@ -214,7 +214,12 @@ known-not-wanted items pre-excluded with reasons.>
 
 ### 4.2 Structured Result
 
-See `agents/pm-reference/agent-common-protocol.md` for the canonical schema.
+See `agents/pm-reference/handoff-contract.md` for the canonical schema.
+
+Every cited fact must trace to a specific URL or file. Before citing 'X library does Y',
+verify via WebFetch or the project's installed code. Do not paraphrase from training
+memory without a fresh citation. Structured Result MUST include `sources_cited` array
+(≥ 3 for most research tasks).
 
 `files_changed` is always `[]` — writing the artifact does not count as a source-code
 change (same convention as reviewer and debugger).
@@ -226,7 +231,8 @@ change (same convention as reviewer and debugger).
   "files_changed": [],
   "files_read": ["<files actually read, e.g. package.json>"],
   "issues": [],
-  "recommendations": [],
+  "assumptions": [],
+  "sources_cited": ["<URL 1>", "<URL 2>", "<URL 3>"],
   "research_summary": {
     "goal": "<restated one-line goal>",
     "candidates_surveyed": "<integer, 3-7>",
@@ -241,6 +247,14 @@ change (same convention as reviewer and debugger).
 `status` semantics: `"success"` = artifact written, verdict clear, ≥ 3 cited candidates;
 `"partial"` = artifact written but incomplete (WebFetch failures, < 3 candidates, vague
 constraints); `"failure"` = out of scope or no artifact produced.
+
+## Output — Structured Result
+
+Every output must end with a `## Structured Result` section (fenced ```json block)
+conforming to `agents/pm-reference/handoff-contract.md`. Required fields: `status`,
+`summary`, `files_changed`, `files_read`, `issues`, `assumptions`. The T15 hook
+(`bin/validate-task-completion.js`) blocks missing fields on SubagentStop.
+Role-specific optional fields for **researcher**: see handoff-contract.md §4.researcher.
 
 ---
 
