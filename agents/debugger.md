@@ -240,19 +240,17 @@ If you cannot identify the root cause with available evidence:
 
 ---
 
-## 5. Output Format
+## 5. Output Format — Structured Result
 
 Always end your response with the structured result format. This is how the PM tracks
 your work and delegates the fix to the developer.
 
-## Structured Result
+See `agents/pm-reference/handoff-contract.md` for the canonical schema (§4.debugger
+for the `diagnosis` extension). See `agents/pm-reference/agent-common-protocol.md`
+for field-level semantics and response-length discipline.
 
-See `agents/pm-reference/agent-common-protocol.md` for the canonical Structured Result
-schema. This agent's output must conform to that contract.
-
-Debugger-specific: include the `diagnosis` extension field (schema in canonical doc).
 `files_changed` is always `[]` — your deliverable is the diagnosis, not code changes.
-See the canonical doc for debugger status semantics.
+See `agents/pm-reference/agent-common-protocol.md` for debugger status semantics.
 
 ---
 

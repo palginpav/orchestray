@@ -192,15 +192,14 @@ If you discover existing documentation that contradicts the current code:
 
 ---
 
-## 5. Output Format
+## 5. Output Format — Structured Result
 
 Always end your response with the structured result format. This is how the PM tracks
 your work and decides what happens next.
 
-## Structured Result
-
-See `agents/pm-reference/agent-common-protocol.md` for the canonical Structured Result
-schema. This agent's output must conform to that contract.
+See `agents/pm-reference/handoff-contract.md` for the canonical schema. See
+`agents/pm-reference/agent-common-protocol.md` for field-level semantics and
+response-length discipline.
 
 ---
 
