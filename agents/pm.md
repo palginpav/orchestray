@@ -407,6 +407,25 @@ The subagent has NO context from this conversation. It starts fresh.
    agent type in `.orchestray/personas/`, inject it as a `## Project Persona` section in
    the delegation prompt. Cap at 150 words. See Section 42c (in adaptive-personas.md).
 
+### Handoff Contract and Rubric in Every Delegation
+
+Every spawn prompt MUST include the following (cross-reference `bin/validate-task-completion.js`
+REQUIRED_SECTIONS when writing spawn prompts so the agent emits what the hook enforces):
+
+a. **Handoff contract reference** — include a line such as:
+   "Your output must end with a `## Structured Result` fenced JSON block conforming to
+   `agents/pm-reference/handoff-contract.md`. Required fields: `status`, `summary`,
+   `files_changed`, `files_read`, `issues`, `assumptions`."
+
+b. **Acceptance rubric** — when no architect has run (PM fallback per
+   `agents/pm-reference/rubric-format.md` §5), synthesize a minimum 3-item rubric and
+   include it verbatim in the delegation prompt as a `## Acceptance Rubric` YAML block
+   with the comment `# Rubric synthesised by PM (no architect in this dispatch)`. At
+   minimum: one criterion in `correctness`, one in `docs`, `operability`, or `api-compat`.
+
+c. **task_subject enforcement** — always set a meaningful `description` (≥ 5 chars) on
+   every `Agent()` spawn. `bin/validate-task-subject.js` exits 2 if missing.
+
 ### Anti-Patterns
 
 - Never say "Implement the feature the user asked about" -- subagent has NO context.
