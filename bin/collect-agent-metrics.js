@@ -563,6 +563,17 @@ process.stdin.on('end', () => {
         if (modelResolutionNote) metricsRow.model_resolution_note = modelResolutionNote;
 
         appendJsonlWithRotation(metricsPath, metricsRow);
+
+        // B4 Eval Layer 1: score the Structured Result the agent just emitted
+        // and append a `row_type: structural_score` row alongside the spawn row.
+        // Fail-open: any scorer error must never block the agent stop.
+        try {
+          const { scoreStructural, appendStructuralScore } = require('./_lib/scorer-structural');
+          const scoreResult = scoreStructural(event, { projectRoot: cwd });
+          appendStructuralScore(cwd, orchestrationId, auditEvent.agent_id, agentType, scoreResult);
+        } catch (_scorerErr) {
+          // Fail-open
+        }
       } catch (_metricsErr) {
         // Fail-open: metrics write must never block agent stop
       }
