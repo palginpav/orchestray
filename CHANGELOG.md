@@ -3,6 +3,44 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.1.9] - 2026-04-20
+
+v2.1.9 ships across five areas: auto-learning now triggers automatically when an orchestration finishes (not only on manual `/orchestray:learn`); every agent now enforces a common Structured Result schema before it can stop; three new specialists round out the shipped library; the installer wires all five specialists so they are callable by name from a fresh install; and a set of hardening fixes eliminates a curator log storm, a pattern-seen-set crash path, and an agent-registry race that was inflating stderr noise.
+
+### Added
+
+- **Auto-learning fires on orchestration completion.** When `auto_learning.extract_on_complete.enabled: true`, the Stop hook now triggers pattern extraction as soon as an orchestration finishes — not only when context compacts. The Haiku extraction backend's output parser now accepts fenced JSON blocks (previously rejected them), and the default extraction timeout is 180 s so long orchestrations don't time out mid-extraction. The ROI aggregator and KB-refs sweep also run on `SessionStart` so their cadence is decoupled from active orchestration. `auto_extract_staged` events now carry a `stop_hook_triggered` field.
+
+- **Three new shipped specialists.** The installer now includes three additional specialist templates alongside Translator and UI/UX Designer:
+  - **database-migration** (opus/high) — plans zero-downtime schema migrations for Prisma, Knex, Flyway, Liquibase, Alembic, Rails, TypeORM, sqlx, and goose. Emits staged migrations (nullable add → backfill → constraint add), monitoring checkpoints, and rollback triggers.
+  - **api-contract-designer** (sonnet/high) — designs REST/GraphQL/gRPC contracts using OpenAPI 3.1 or AsyncAPI 3, with versioning discipline, JSON Schema evolution, and backward-compat impact analysis.
+  - **error-message-writer** (sonnet/medium) — polishes user-facing error messages and CLI output for clarity, tone, and actionability without touching error codes or i18n keys.
+  All five specialists are now symlinked (or copied on Windows) into `~/.claude/agents/` by the installer and callable via `Agent(subagent_type=…)`.
+
+- **Universal Structured Result schema (T15 quality gate).** Every core agent and specialist now emits a common set of base fields (`status`, `summary`, `files_changed`, `files_read`, `issues`, `assumptions`). A new `SubagentStop` / `TaskCompleted` hook validates these fields before an agent can stop — hard-blocking for architect, developer, reviewer, and release-manager; warn-only for others. Set `PRE_DONE_ENFORCEMENT=warn` to downgrade all blocks to warnings without restarting. Reference schema is in `agents/pm-reference/agent-common-protocol.md`; handoff contract spec in `agents/pm-reference/handoff-contract.md`.
+
+- **Architect Acceptance Rubric.** Architect-produced designs now include an explicit Acceptance Rubric listing testable criteria. Downstream agents (developer, reviewer) score themselves against the rubric with mandatory evidence. Reference: `agents/pm-reference/rubric-format.md`.
+
+- **Structural quality score in analytics.** Each agent spawn now records a `structural_score` field in `.orchestray/metrics/agent_metrics.jsonl` — a deterministic 0.0–1.0 score measuring Structured Result well-formedness. Surfaces in `/orchestray:analytics` rollups. No additional model cost.
+
+- **`task_subject` check on every Agent() spawn.** The `PreToolUse[Agent]` gate now verifies that every spawn carries a meaningful description or `task_subject:` line. Spawns without one are blocked with an actionable error message.
+
+- **Reviewer-scope warning.** When a reviewer agent is delegated without an explicit file list, the `PreToolUse` gate emits a `reviewer_scope_warn` advisory to stderr and events.jsonl. The review proceeds but the event surfaces in `/orchestray:analytics` so scope drift is visible.
+
+- **Release-phase no-deferral enforcement.** In release-phase orchestrations, phrases like "deferred to next release", "TODO later", or "will fix in vX" in agent output cause `SubagentStop` to block with exit 2. Set `PRE_DONE_ENFORCEMENT=warn` to downgrade to warning.
+
+### Fixed
+
+- **Curator log storm eliminated.** A corrupt cursor in `curate --diff` mode was emitting a `curator_cursor_reset` event on every turn — up to hundreds per session. The reset now fires at most once per session (one-signal-per-session gate). The cursor is restored to full-diff mode on the first detection and stays there. `agent_registry_stale` log spam (~90% reduction) addressed in the same bundle.
+
+- **Pattern-seen-set crash paths closed.** The CiteCache seen-set now handles two previously crashing paths: files exceeding 10 MB are tail-truncated to ~5 MB before parse (emits `pattern_seen_set_oversize`), and any read or parse error triggers a fail-open recovery that emits `pattern_seen_set_recovered` and re-emits full pattern bodies for the rest of the orchestration. Neither condition blocks the orchestration.
+
+### Under the hood
+
+- New Tier-2 reference file `agents/pm-reference/handoff-contract.md` — canonical Structured Result schema and per-agent extension tables.
+- New `agents/pm-reference/rubric-format.md` — Acceptance Rubric format for architect designs.
+- Event schema additions: `task_subject_missing`, `reviewer_scope_warn`, `no_deferral_block`, `pre_done_checklist_failed`, `pre_done_checklist_warn`, `task_completion_warn`, `curator_cursor_reset`, `pattern_seen_set_recovered`, `pattern_seen_set_oversize`. See `agents/pm-reference/event-schemas.md` §v2.1.9.
+
 ## [2.1.8] - 2026-04-20
 
 v2.1.8 ships four bundles: the first spawn of every orchestration session no longer fails on a missing model parameter; Opus 4.7 cost estimates are now accurate rather than running ~35% low; two specialist templates (Translator and UI/UX Designer) now ship with the plugin so they are available from a fresh install; and four context-compression mechanisms reduce per-orchestration input tokens for long-running orchestrations.

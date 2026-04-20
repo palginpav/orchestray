@@ -3155,3 +3155,194 @@ from scratch as if no match existed. Visible in `/orchestray:doctor` output.
 **Operator action:** if this entry appears frequently for an archetype you want to
 re-enable, remove its ID from the `blacklist` array in `.orchestray/config.json`.
 | `auto_extract_backend_unsupported_value` | warn | Config specified `backend: 'haiku-sdk'` (reserved, not implemented in v2.1.x); the pipeline fell back to `haiku-cli`. |
+
+---
+
+## Section 23: v2.1.9 Quality Gate Events
+
+### `task_subject_missing`
+
+Emitted by `bin/validate-task-subject.js` (wired as `PreToolUse[Agent]`) when an
+`Agent()`, `Task()`, or `Explore()` spawn carries no meaningful description or
+`task_subject:` line. The spawn is blocked (exit 2).
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "task_subject_missing",
+  "hook": "validate-task-subject",
+  "orchestration_id": "<current orch id | null>",
+  "subagent_type": "<subagent_type from tool_input, or null>",
+  "reason": "<human-readable explanation of why validation failed>",
+  "session_id": "<session id | null>",
+  "payload_keys": ["<sorted list of keys present in tool_input>"]
+}
+```
+
+Field notes:
+- `subagent_type`: The `subagent_type` value the caller passed to `Agent()`, if any.
+- `reason`: One of: "no description provided", "description too short (< 5 chars)",
+  "description is whitespace-only", "no task_subject: line in prompt".
+- `payload_keys`: Sorted list of keys present in `tool_input` — useful for diagnosing
+  which fields the caller actually sent.
+
+---
+
+### `reviewer_scope_warn`
+
+Emitted by `bin/validate-reviewer-scope.js` (wired as `PreToolUse[Agent]`) when a
+reviewer agent is spawned without an explicit file list. Advisory only — the spawn
+is not blocked (exit 0).
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "reviewer_scope_warn",
+  "hook": "validate-reviewer-scope",
+  "orchestration_id": "<current orch id | null>",
+  "subagent_type": "<subagent_type from tool_input, or null>",
+  "session_id": "<session id | null>"
+}
+```
+
+Field notes:
+- Surfaces in `/orchestray:analytics` so reviewers delegated without file lists are
+  visible across orchestrations.
+- A reviewer spawn without a file list reviews all files changed in the session —
+  this is valid but can be noisy on large orchestrations. The warning encourages
+  the PM to pass an explicit `files_changed` list on subsequent spawns.
+
+---
+
+### `no_deferral_block`
+
+Emitted by `bin/validate-no-deferral.js` (wired as `SubagentStop` in release phase)
+when an agent's output contains a deferral phrase ("deferred to next release",
+"TODO later", "will fix in vX", "for now", "punt", etc.). The stop is blocked (exit 2).
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "no_deferral_block",
+  "hook": "validate-no-deferral",
+  "orchestration_id": "<current orch id | null>",
+  "matched_phrase": "<the exact deferral phrase that triggered the block>",
+  "context_snippet": "<up to 200 chars surrounding the matched phrase>",
+  "session_id": "<session id | null>"
+}
+```
+
+Field notes:
+- `matched_phrase`: The literal phrase that matched the deferral pattern. Useful for
+  distinguishing intentional "for now" clauses from accidental ones.
+- `context_snippet`: The surrounding text (up to 200 chars) so operators can judge
+  whether the phrase is genuinely deferral language.
+- Rollback: set `PRE_DONE_ENFORCEMENT=warn` to downgrade to a warning (exit 0).
+
+---
+
+### `pre_done_checklist_failed`
+
+Emitted by `bin/validate-task-completion.js` (wired as `SubagentStop` / `TaskCompleted`)
+when a hard-tier agent (architect, developer, reviewer, release-manager) stops without
+a valid Structured Result. The stop is blocked (exit 2) unless `PRE_DONE_ENFORCEMENT=warn`.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "pre_done_checklist_failed",
+  "hook": "validate-task-completion",
+  "orchestration_id": "<current orch id | null>",
+  "agent_role": "<architect|developer|reviewer|release-manager>",
+  "tier": "hard",
+  "missing_sections": ["<section name>", "..."],
+  "session_id": "<session id | null>"
+}
+```
+
+Field notes:
+- `agent_role`: The agent role inferred from the SubagentStop/TaskCompleted payload.
+- `missing_sections`: Which required Structured Result fields were absent or malformed.
+  Canonical set: `status`, `summary`, `files_changed`, `files_read`, `issues`, `assumptions`.
+- `tier`: Always `"hard"` on this event type. Warn-tier agents emit `task_completion_warn`.
+
+---
+
+### `pre_done_checklist_warn`
+
+Emitted by `bin/validate-task-completion.js` alongside `pre_done_checklist_failed` when
+`PRE_DONE_ENFORCEMENT=warn` is set, downgrading the block to a warning. Spawn proceeds.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "pre_done_checklist_warn",
+  "hook": "validate-task-completion",
+  "orchestration_id": "<current orch id | null>",
+  "agent_role": "<agent role>",
+  "enforcement_mode": "warn",
+  "missing_sections": ["<section name>", "..."],
+  "session_id": "<session id | null>"
+}
+```
+
+Field notes:
+- `enforcement_mode`: Always `"warn"` on this event — records that the hard-tier block
+  was downgraded by the env var.
+- This event appears alongside `pre_done_checklist_failed` (both are emitted when
+  `PRE_DONE_ENFORCEMENT=warn`). Consumers should treat the pair as a single "soft block".
+
+---
+
+### `task_completion_warn`
+
+Emitted by `bin/validate-task-completion.js` when a warn-tier agent stops without a
+valid Structured Result. Advisory only — the stop is not blocked.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "task_completion_warn",
+  "hook": "validate-task-completion",
+  "orchestration_id": "<current orch id | null>",
+  "agent_role": "<agent role>",
+  "tier": "warn",
+  "missing_sections": ["<section name>", "..."],
+  "session_id": "<session id | null>"
+}
+```
+
+Field notes:
+- `tier`: Always `"warn"` on this event type. Hard-tier agents emit `pre_done_checklist_failed`.
+
+---
+
+### `task_validation_failed`
+
+Emitted by `bin/validate-task-completion.js` when a `TaskCompleted` event (Agent Teams)
+is missing `task_id` or `task_subject`. The task is blocked (exit 2).
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "task_validation_failed",
+  "hook": "validate-task-completion",
+  "orchestration_id": "<current orch id | null>",
+  "reason": "missing task_id and task_subject | missing task_id | missing task_subject",
+  "payload_keys": ["<sorted list of keys in the TaskCompleted payload>"]
+}
+```
+
+Field notes:
+- Distinct from `pre_done_checklist_failed` — this event fires on missing Agent Teams
+  task identity fields, not on Structured Result schema violations.
+
+---
+
+### Degraded-journal `kind` additions (v2.1.9)
+
+| kind | emitter | severity | condition |
+|---|---|---|---|
+| `curator_cursor_reset` | `bin/_lib/curator-diff.js` | warn | Curator detected a corrupt or stale diff-cursor in `curate --diff` mode and reset to full-diff. Gated to one event per session via a dedup key; subsequent detections in the same session are suppressed. |
+| `pattern_seen_set_recovered` | `bin/_lib/pattern-seen-set.js` | warn | CiteCache seen-set read or parse failed; fail-open recovery applied — full pattern bodies emitted for the remainder of the orchestration. |
+| `pattern_seen_set_oversize` | `bin/_lib/pattern-seen-set.js` | warn | Seen-set file exceeded the 10 MB cap; file was tail-truncated to ~5 MB before parse. Orchestration continues with the truncated set. |

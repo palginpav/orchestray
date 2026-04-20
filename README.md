@@ -58,7 +58,8 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 - **Intelligence bundle (v2.1.3)** — shadow scorer seam runs alternate retrieval ranking side-by-side with baseline (no live ranking change; telemetry in `.orchestray/state/scorer-shadow.jsonl`); MinHash+Jaccard duplicate pre-filter cuts curator attention from O(N²) to O(N+k); `recently_curated_*` frontmatter stamps close the audit loop between curator actions and touched patterns; manifest v2 with per-file SHA-256 hashes enables install-integrity verification via `/orchestray:doctor --deep`
 - **Researcher + curate --diff bundle (v2.1.4)** — new Researcher agent surveys external approaches before Architect/Inventor is spawned, returning a decision-ready shortlist; merge tombstones now carry MinHash similarity parameters (`similarity_method`, `similarity_threshold`, `similarity_k`, `similarity_m`) for reproducible pre-filter replay; `curate --diff` opt-in incremental mode (enable with `curator.diff_enabled: true`) cuts curator cost on stable pattern libraries; self-healing forced-full sweep every 10th run
 - **Compaction resilience (v2.1.7, on by default)** — when Claude Code compacts context mid-orchestration, Orchestray now writes a dossier of active orchestration state to disk before compaction and re-injects a summary on your next message, so the PM resumes without losing task context. Disable with `resilience.enabled: false` or `ORCHESTRAY_RESILIENCE_DISABLED=1`. Running `/clear` is recognized as a deliberate reset and does not trigger re-injection. A `/orchestray:doctor` probe (P9) checks the resilience surface is healthy.
-- **First-spawn UX fix + Opus 4.7 cost calibration + xhigh adoption + shipped specialists + context compression (v2.1.8)** — four shipped bundles. (a) The first `Agent()` spawn of every session during an orchestration no longer fails for a missing `model` parameter — a pre-spawn reminder preempts the failure and the gate now tells you the exact model to re-spawn with if one still slips through. (b) `/orchestray:status` cost estimates for Opus-routed agents were running ~35% low because Opus 4.7 uses a new tokenizer that consumes more tokens for the same text; we recalibrated the cost model so new orchestrations show accurate numbers (historical rollups stay at the old value). (c) Architect and Inventor agents now default to Claude Code's new `xhigh` effort level (introduced in Claude Code 2.1.111) — Anthropic's recommended default for Opus 4.7. On older Claude Code, `xhigh` silently runs as `high`, so nothing breaks. (d) Two specialist templates now ship with every Orchestray install: Translator (i18n/l10n tasks — detects framework, extracts strings, produces locale-correct translations with ICU awareness) and UI/UX Designer (premium UI generation — shadcn/ui + Tailwind v4 + WCAG 2.2 AA). Both activate automatically when the PM detects matching keywords. Project-local specialists at `.orchestray/specialists/` override shipped ones with the same name. (e) Four context-compression mechanisms (CiteCache, SpecSketch, RepoMapDelta, ArchetypeCache advisory) reduce repeated input tokens across long orchestrations; gated by `context_compression_v218.enabled` (default on), each with individual on/off controls. See CHANGELOG for details.
+- **Agent quality gates + five shipped specialists + auto-learning wiring + hardening (v2.1.9)** — every agent now validates a common Structured Result schema (`status`, `summary`, `files_changed`, `files_read`, `issues`, `assumptions`) before it can stop — architect, developer, reviewer, and release-manager are hard-blocked; other agents warn. Three new specialists (database-migration, api-contract-designer, error-message-writer) join the previously shipped Translator and UI/UX Designer; all five are installed into `~/.claude/agents/` and callable by name. Auto-learning now triggers on orchestration completion (not only on context compaction); the Haiku extraction backend accepts fenced JSON output and uses a 180 s timeout. A curator log storm (hundreds of `curator_cursor_reset` events per session), a pattern-seen-set crash on oversized files, and an agent-registry stale-race (90% of prior log noise) are all fixed. See CHANGELOG for details.
+- **First-spawn UX fix + Opus 4.7 cost calibration + xhigh adoption + shipped specialists + context compression (v2.1.8)** — four shipped bundles. (a) The first `Agent()` spawn of every session during an orchestration no longer fails for a missing `model` parameter — a pre-spawn reminder preempts the failure and the gate now tells you the exact model to re-spawn with if one still slips through. (b) `/orchestray:status` cost estimates for Opus-routed agents were running ~35% low because Opus 4.7 uses a new tokenizer that consumes more tokens for the same text; we recalibrated the cost model so new orchestrations show accurate numbers (historical rollups stay at the old value). (c) Architect and Inventor agents now default to Claude Code's new `xhigh` effort level (introduced in Claude Code 2.1.111) — Anthropic's recommended default for Opus 4.7. On older Claude Code, `xhigh` silently runs as `high`, so nothing breaks. (d) Two specialist templates now ship with every Orchestray install: Translator and UI/UX Designer. Both activate automatically when the PM detects matching keywords; project-local specialists at `.orchestray/specialists/` override shipped ones. (e) Four context-compression mechanisms (CiteCache, SpecSketch, RepoMapDelta, ArchetypeCache advisory) reduce repeated input tokens across long orchestrations; gated by `context_compression_v218.enabled` (default on), each with individual on/off controls. See CHANGELOG for details.
 - **Self-learning foundations (v2.1.6)** — Orchestray can stage pattern proposals automatically after each completed orchestration, instead of waiting for a manual `/orchestray:learn` run. All auto-learning features are off by default and gated behind a single kill switch (`auto_learning.global_kill_switch: true` in config, or `ORCHESTRAY_AUTO_LEARNING_KILL_SWITCH=1` in environment). Enable extraction with `auto_learning.extract_on_complete.enabled: true`; proposals land in `.orchestray/proposed-patterns/` for your review — nothing applies without `/orchestray:learn accept <slug>`. Run `/orchestray:learn list --proposed` to see what is staged. The Haiku extraction backend that was stubbed in v2.1.6 is now live in v2.1.7.
 - **Team features** — shared config, shared patterns, daily/weekly cost budgets
 - **Agent Teams** — opt-in dual-mode execution for tasks needing inter-agent communication
@@ -186,12 +187,25 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | **UX Critic** | Adversarial read-only critique of user-facing surfaces (commands, errors, statusLine, README) for friction, discoverability, consistency, and surprise |
 | **Platform Oracle** | Authoritative answers to Claude Code / Anthropic SDK / API / MCP questions via WebFetch + cited URLs; labels each claim with a stability tier (stable / experimental / community) |
 | **Curator** | AI-driven pattern curation — promotes, merges, and deprecates patterns with tombstone rollback; invoked via `/orchestray:learn curate` |
-| **Specialists** | Plugin-shipped templates at `specialists/` (translator, ui-ux-designer); project-local overrides saved to `.orchestray/specialists/` by the PM when dynamic agents succeed |
+| **Specialists** | Plugin-shipped templates at `specialists/` (translator, ui-ux-designer, database-migration, api-contract-designer, error-message-writer); project-local overrides saved to `.orchestray/specialists/` by the PM when dynamic agents succeed |
 
-### Specialists shipped in v2.1.9 (preview)
+### Shipped specialists (v2.1.9)
 
-Three additional specialists are being finalized for v2.1.9. The installer wires
-them in and the PM routes to them automatically on matching prompts:
+Five specialist templates ship with every Orchestray install and are callable
+via `Agent(subagent_type=…)` or triggered automatically by the PM on matching
+keywords. The installer symlinks them into `~/.claude/agents/` (copies on Windows).
+
+- **translator** — makes apps multi-lingual: detects your i18n framework
+  (i18next, FormatJS, Lingui, gettext, Flutter intl, iOS, Android, and more),
+  extracts untranslated strings, produces locale-correct translations with ICU
+  MessageFormat awareness. Default model: sonnet. Project-local override:
+  `.orchestray/specialists/translator.md`.
+
+- **ui-ux-designer** — premium UI generation anchored to shadcn/ui + Radix +
+  Tailwind v4, W3C DTCG design tokens, and WCAG 2.2 AA accessibility. Works
+  from design tokens, screenshots (Claude vision), or plain text descriptions.
+  Default model: sonnet. Project-local override:
+  `.orchestray/specialists/ui-ux-designer.md`.
 
 - **database-migration** — plans zero-downtime schema migrations. Detects the
   migration framework (Prisma, Knex, Flyway, Liquibase, Alembic, Rails,
@@ -215,8 +229,7 @@ them in and the PM routes to them automatically on matching prompts:
   "CLI help", "validation feedback", "form errors", "user-facing copy",
   "error tone".
 
-Run `npm run lint:specialists` in a clone of the repo to validate frontmatter
-on any new specialist you author.
+Run `npm run lint:specialists` to validate frontmatter on any specialist you author.
 
 ## Configuration
 
