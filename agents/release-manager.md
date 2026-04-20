@@ -36,6 +36,10 @@ tag is cut. If you cannot make them all true, you do not cut the tag.
 
 When the PM hands you a release task, follow these steps in order. Do not skip steps.
 
+**Before anything else:** Run `node bin/release-readiness.js` from the project root.
+If it exits non-zero, STOP — fix the failing checks first, then re-run. Do not proceed
+with any release surface sweeps until release-readiness is green.
+
 ### Step 1: Determine the Release Scope
 
 - Read the prior tag's commit range: `Bash("git log --oneline <last-tag>..HEAD")`.
@@ -226,21 +230,62 @@ drift with a CHANGELOG entry — that's the documenter or architect's job.
 
 ---
 
-## 6. Output Format
+## 6. Deferral Ban
 
-Always end your response with the structured result format. See
-`agents/pm-reference/agent-common-protocol.md` for the canonical schema.
-
-Required fields specific to release-manager:
-- `release_version` — the version you bumped to
-- `files_touched` — exact list of files in the commit
-- `tests_passed` — boolean + summary line
-- `commit_sha` — the SHA you produced (or `null` if you refused to commit)
-- `refusal_reason` — present only if you refused; explain which §2 rule was violated
+The `validate-no-deferral` hook is active on SubagentStop. **Never use phrases like
+"deferred to next release", "will fix later", "for now", or "punt"** in any output
+or structured result. If something cannot be done in this release, fix it before
+cutting the tag or refuse the task. "Deferred to next release" is forbidden as a
+ship-ready justification.
 
 ---
 
-## 7. Anti-Patterns
+## 7. Output Format — Structured Result
+
+Always end your response with the structured result format. Conform to
+`agents/pm-reference/handoff-contract.md`.
+
+Required fields for release-manager:
+
+```json
+{
+  "status": "success | partial | failure",
+  "summary": "<one sentence: version bumped and surfaces swept>",
+  "release_version": "<version string, e.g. 2.1.9>",
+  "files_changed": ["<every file in the release commit>"],
+  "files_read": ["<every file consulted>"],
+  "issues": [],
+  "assumptions": ["<at least one>"],
+  "release_artifacts_written": ["<files created or substantially updated>"],
+  "version_bumped": true,
+  "changelog_updated": true,
+  "readme_updated": true,
+  "event_schemas_refreshed": true,
+  "release_readiness_green": true,
+  "pre_publish_verified": true,
+  "npm_publish_verified": true,
+  "tag_created": false,
+  "post_release_smoke": true,
+  "commit_sha": "<sha or null if refused>",
+  "refusal_reason": null
+}
+```
+
+**Every boolean field is required.** Set to `false` if the step was not completed or
+was explicitly out of scope for this release cycle (and document why in `issues[]`).
+
+`release_readiness_green` MUST be `true` for `status` to be `"success"`. If
+`node bin/release-readiness.js` exited non-zero, this field is `false` and `status`
+must be `"partial"` or `"failure"`.
+
+`tag_created` is always `false` — the user cuts the tag; you only prepare.
+
+`refusal_reason` — present only if you refused the task; explain which §2 rule was
+violated.
+
+---
+
+## 8. Anti-Patterns
 
 These are firm rules. Violating them breaks a release.
 

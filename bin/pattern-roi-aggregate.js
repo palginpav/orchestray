@@ -385,6 +385,54 @@ function loadEvents(projectRoot, windowStart) {
 // ROI computation
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Structural score loader
+// ---------------------------------------------------------------------------
+
+/**
+ * Load per-orchestration structural_score averages from agent_metrics.jsonl.
+ * Returns a Map of orchestration_id → avg structural_score (or null if missing).
+ *
+ * Only considers rows with row_type === 'structural_score'. Returns empty Map if
+ * the file is absent or cannot be read (field is new; backfilling is not a goal).
+ *
+ * @param {string} projectRoot
+ * @returns {Map<string, number>}
+ */
+function loadStructuralScores(projectRoot) {
+  const result = new Map();
+  try {
+    const metricsPath = path.join(projectRoot, '.orchestray', 'metrics', 'agent_metrics.jsonl');
+    if (!fs.existsSync(metricsPath)) return result;
+    const stat = fs.statSync(metricsPath);
+    if (stat.size > 10 * 1024 * 1024) return result; // cap at 10 MiB
+    const content = fs.readFileSync(metricsPath, 'utf8');
+    // orchId → { sum, count }
+    const acc = new Map();
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const row = JSON.parse(trimmed);
+        if (row.row_type !== 'structural_score') continue;
+        const oid = row.orchestration_id;
+        const s   = row.structural_score;
+        if (!oid || typeof s !== 'number') continue;
+        const entry = acc.get(oid) || { sum: 0, count: 0 };
+        entry.sum   += s;
+        entry.count += 1;
+        acc.set(oid, entry);
+      } catch (_e) { /* skip malformed */ }
+    }
+    for (const [oid, { sum, count }] of acc) {
+      result.set(oid, parseFloat((sum / count).toFixed(4)));
+    }
+  } catch (_e) {
+    // fail-open: structural_score is a new field
+  }
+  return result;
+}
+
 /**
  * Compute per-pattern ROI metrics from the loaded events.
  *
@@ -485,6 +533,9 @@ function computeRoi(patterns, events, now) {
       delta_cost:            deltaCost !== null ? parseFloat(deltaCost.toFixed(4)) : null,
       roi_score:             parseFloat(roi.toFixed(4)),
       high_roi_flag:         roi >= HIGH_ROI_THRESHOLD,
+      // structural_score: avg across all agent spawns in orchestrations where
+      // this pattern was applied (null when no structural_score rows exist yet).
+      structural_score:      null, // populated below after structural scores are loaded
     });
   }
 
@@ -624,20 +675,22 @@ function writeCalibrationSuggestion(projectRoot, roiRecords, snapshotMeta, now) 
   // Top-5 table
   lines.push('## Top 5 Patterns by ROI');
   lines.push('');
-  lines.push('| Slug | ROI Score | App Rate | Decayed Conf | Applied (recent) | Skipped (recent) |');
-  lines.push('|------|-----------|----------|--------------|-----------------|-----------------|');
+  lines.push('| Slug | ROI Score | App Rate | Decayed Conf | Applied (recent) | Skipped (recent) | Structural Score |');
+  lines.push('|------|-----------|----------|--------------|-----------------|-----------------|-----------------|');
   for (const r of top5) {
-    lines.push(`| ${r.slug} | ${r.roi_score.toFixed(3)} | ${r.app_rate.toFixed(2)} | ${r.decayed_confidence.toFixed(2)} | ${r.times_applied_recent} | ${r.times_skipped_recent} |`);
+    const ss = r.structural_score !== null ? r.structural_score.toFixed(3) : 'n/a';
+    lines.push(`| ${r.slug} | ${r.roi_score.toFixed(3)} | ${r.app_rate.toFixed(2)} | ${r.decayed_confidence.toFixed(2)} | ${r.times_applied_recent} | ${r.times_skipped_recent} | ${ss} |`);
   }
   lines.push('');
 
   // Bottom-5 table
   lines.push('## Bottom 5 Patterns by ROI');
   lines.push('');
-  lines.push('| Slug | ROI Score | App Rate | Decayed Conf | Applied (recent) | Skipped (recent) |');
-  lines.push('|------|-----------|----------|--------------|-----------------|-----------------|');
+  lines.push('| Slug | ROI Score | App Rate | Decayed Conf | Applied (recent) | Skipped (recent) | Structural Score |');
+  lines.push('|------|-----------|----------|--------------|-----------------|-----------------|-----------------|');
   for (const r of bottom5) {
-    lines.push(`| ${r.slug} | ${r.roi_score.toFixed(3)} | ${r.app_rate.toFixed(2)} | ${r.decayed_confidence.toFixed(2)} | ${r.times_applied_recent} | ${r.times_skipped_recent} |`);
+    const ss = r.structural_score !== null ? r.structural_score.toFixed(3) : 'n/a';
+    lines.push(`| ${r.slug} | ${r.roi_score.toFixed(3)} | ${r.app_rate.toFixed(2)} | ${r.decayed_confidence.toFixed(2)} | ${r.times_applied_recent} | ${r.times_skipped_recent} | ${ss} |`);
   }
   lines.push('');
 
@@ -830,6 +883,25 @@ function main(opts) {
   // Compute ROI
   const roiRecords = computeRoi(patterns, events, now);
 
+  // Populate structural_score per pattern from agent_metrics.jsonl
+  // structural_score rows are keyed by orchestration_id, not pattern slug.
+  // We attach the avg structural_score of orchestrations where this pattern was applied.
+  const structuralByOrch = loadStructuralScores(projectRoot);
+  for (const rec of roiRecords) {
+    const applied = (events || []).filter(
+      (ev) => ev.type === 'pattern_record_application' &&
+               (ev.slug === rec.slug || ev.pattern_name === rec.slug)
+    );
+    const orchIds = new Set(applied.map((ev) => ev.orchestration_id).filter(Boolean));
+    const scores  = [];
+    for (const oid of orchIds) {
+      if (structuralByOrch.has(oid)) scores.push(structuralByOrch.get(oid));
+    }
+    rec.structural_score = scores.length > 0
+      ? parseFloat((scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(4))
+      : null;
+  }
+
   // Build snapshot
   const sortedByRoi = [...roiRecords].sort((a, b) => b.roi_score - a.roi_score);
   const top5Slugs   = sortedByRoi.slice(0, 5).map(r => r.slug);
@@ -959,6 +1031,7 @@ module.exports = {
     loadPatterns,
     loadEvents,
     computeRoi,
+    loadStructuralScores,
     writeSnapshot,
     writeCalibrationSuggestion,
     readLastRun,

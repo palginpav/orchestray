@@ -102,7 +102,7 @@ These are optional, additive extensions. Emit what applies; omit the rest.
 
 ### security-engineer
 - `threats_found` — array of `{threat: string, severity: string, location: string}`
-- `severity_breakdown` — object `{critical: N, high: N, medium: N, low: N}`
+- `severity_breakdown` — object `{critical: N, high: N, medium: N, low: N, info: N}`
 
 ### platform-oracle
 - `claims` — array of `{text: string, stability_tier: "stable" | "experimental" | "community", source_url: string}`

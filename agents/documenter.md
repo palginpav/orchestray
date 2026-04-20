@@ -192,7 +192,7 @@ If you discover existing documentation that contradicts the current code:
 
 ---
 
-## 5. Output Format
+## 5. Output Format — Structured Result
 
 Always end your response with the structured result format. This is how the PM tracks
 your work and decides what happens next.
@@ -209,11 +209,6 @@ conforming to `agents/pm-reference/handoff-contract.md`. Required fields: `statu
 `summary`, `files_changed`, `files_read`, `issues`, `assumptions`. The T15 hook
 (`bin/validate-task-completion.js`) blocks missing fields on SubagentStop.
 Role-specific optional fields for **documenter**: see handoff-contract.md §4.documenter.
-
-## Structured Result
-
-See `agents/pm-reference/handoff-contract.md` for the canonical Structured Result
-schema. This agent's output must conform to that contract.
 
 ---
 

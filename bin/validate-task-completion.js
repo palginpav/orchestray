@@ -329,6 +329,27 @@ function main() {
         emitAuditEvent(cwd, auditRecord);
 
         if (isHard) {
+          // I-12 rollback path: PRE_DONE_ENFORCEMENT=warn downgrades hard-tier
+          // block to warn-only exit(0). Design-spec §5 I-12 rollback plan.
+          if (process.env.PRE_DONE_ENFORCEMENT === 'warn') {
+            emitAuditEvent(cwd, {
+              timestamp: new Date().toISOString(),
+              type: 'pre_done_checklist_warn',
+              hook: 'validate-task-completion',
+              orchestration_id: resolveOrchestrationId(cwd),
+              agent_role: agentRole,
+              enforcement_mode: 'warn',
+              missing_sections: check.missing,
+              session_id: event.session_id || null,
+            });
+            process.stderr.write(
+              '[orchestray] validate-task-completion: WARN (PRE_DONE_ENFORCEMENT=warn): ' +
+              agentRole + ' missing ' + check.missing.join(', ') +
+              ' — would block in enforcement mode.\n'
+            );
+            process.stdout.write(JSON.stringify({ continue: true }));
+            process.exit(0);
+          }
           process.stderr.write(
             'Pre-done checklist failed for ' + agentRole + ': Structured Result is missing ' +
             'required section(s): ' + check.missing.join(', ') + '.\n' +

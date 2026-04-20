@@ -2,11 +2,11 @@
 'use strict';
 
 /**
- * Tests for the v2.1.9 T15 pre-done checklist addition to
- * bin/validate-task-completion.js (Bundle B1 / I-12).
+ * Tests for the v2.1.9 T15 pre-done checklist + I-12 kill-switch in
+ * bin/validate-task-completion.js (Bundle B1).
  *
- * Legacy Agent-Teams path (task_id/task_subject) is covered by existing
- * tests; this file focuses on the structured-result checklist.
+ * Covers: legacy Agent-Teams gate, T15 checklist (hard + warn tiers),
+ * SubagentStop routing, PRE_DONE_ENFORCEMENT=warn kill-switch.
  */
 
 const { test, describe } = require('node:test');
@@ -223,6 +223,70 @@ describe('validate-task-completion — integration (T15)', () => {
       hook_event_name: 'PostToolUse',
       subagent_type: 'developer',
     });
+    assert.equal(r.status, 0);
+    fs.rmSync(r.tmp, { recursive: true, force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// I-12 rollback: PRE_DONE_ENFORCEMENT=warn env-var kill-switch (downgrades
+// T15 hard-tier block to warn-only exit 0 so a mis-wired deployment does not
+// lock up orchestrations). Design-spec §5 I-12 rollback plan.
+// ---------------------------------------------------------------------------
+
+function runHookWithEnv(payload, env) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vtc-env-'));
+  const res = spawnSync('node', [HOOK], {
+    input: JSON.stringify(payload),
+    cwd: tmp,
+    encoding: 'utf8',
+    timeout: 10_000,
+    env: Object.assign({}, process.env, env || {}),
+  });
+  return { ...res, tmp };
+}
+
+describe('validate-task-completion — PRE_DONE_ENFORCEMENT kill-switch', () => {
+  const invalidPayload = {
+    hook_event_name: 'SubagentStop',
+    subagent_type: 'developer',
+    output: '## Structured Result\n```json\n{"status":"success"}\n```\n',
+  };
+
+  test('default (no env var): hard-tier block exits 2', () => {
+    const r = runHookWithEnv(invalidPayload, { PRE_DONE_ENFORCEMENT: undefined });
+    assert.equal(r.status, 2);
+    fs.rmSync(r.tmp, { recursive: true, force: true });
+  });
+
+  test('PRE_DONE_ENFORCEMENT=warn downgrades hard block to exit 0', () => {
+    const r = runHookWithEnv(invalidPayload, { PRE_DONE_ENFORCEMENT: 'warn' });
+    assert.equal(r.status, 0, 'warn mode must not block');
+    assert.match(r.stderr, /PRE_DONE_ENFORCEMENT=warn/);
+    const auditPath = path.join(r.tmp, '.orchestray', 'audit', 'events.jsonl');
+    if (fs.existsSync(auditPath)) {
+      const content = fs.readFileSync(auditPath, 'utf8');
+      assert.match(content, /pre_done_checklist_warn/);
+      assert.match(content, /"enforcement_mode":"warn"/);
+    }
+    fs.rmSync(r.tmp, { recursive: true, force: true });
+  });
+
+  test('non-warn env values keep hard block', () => {
+    const r = runHookWithEnv(invalidPayload, { PRE_DONE_ENFORCEMENT: 'enforce' });
+    assert.equal(r.status, 2);
+    fs.rmSync(r.tmp, { recursive: true, force: true });
+  });
+
+  test('PRE_DONE_ENFORCEMENT=warn still lets valid payloads pass', () => {
+    const validPayload = {
+      hook_event_name: 'SubagentStop',
+      subagent_type: 'developer',
+      output: '## Structured Result\n```json\n' + JSON.stringify({
+        status: 'success', summary: 'ok', files_changed: [], files_read: [], issues: [], assumptions: [],
+      }) + '\n```\n',
+    };
+    const r = runHookWithEnv(validPayload, { PRE_DONE_ENFORCEMENT: 'warn' });
     assert.equal(r.status, 0);
     fs.rmSync(r.tmp, { recursive: true, force: true });
   });
