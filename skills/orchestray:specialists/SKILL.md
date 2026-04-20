@@ -17,7 +17,7 @@ The user wants to manage persistent specialist agents.
    - If starts with "remove": Delete named specialist with confirmation
    - If starts with "edit": Allow user to modify named specialist
 
-2. **Registry file**: `.orchestray/specialists/registry.json`. If the directory or file does not exist, report: "No specialist registry found. Specialists are created automatically during orchestration when dynamic agents succeed, or you can place custom .md files in `.orchestray/specialists/`."
+2. **Registry file**: `.orchestray/specialists/registry.json`. If the directory or file does not exist, report: "No specialist registry found. Orchestray ships built-in specialist templates (at `<plugin-root>/specialists/`) and creates project-local ones at `.orchestray/specialists/` when dynamic agents succeed. You can also place custom .md files directly in `.orchestray/specialists/`."
 
 ### List Operation
 
@@ -36,7 +36,7 @@ Then show usage hints:
 - `remove {name}` -- Remove a specialist
 - `edit {name}` -- Edit a specialist
 
-If the `specialists` array is empty, show: "No specialists registered yet. Specialists are created automatically when the PM saves a successful dynamic agent during orchestration, or you can place custom .md files directly in `.orchestray/specialists/`."
+If the `specialists` array is empty, show: "No project-local specialists registered yet. Note: Orchestray ships built-in specialist templates (translator, ui-ux-designer) at `<plugin-root>/specialists/` — these are available to the PM automatically. Project-local specialists are created when the PM saves a successful dynamic agent, or you can place custom .md files directly in `.orchestray/specialists/`."
 
 ### View Operation
 

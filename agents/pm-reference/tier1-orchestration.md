@@ -310,7 +310,11 @@ When the invocation prompt contains the text "PREVIEW MODE", the PM MUST:
    ```
    Cost formula: `estimate = base_cost(size) × model_multiplier`
    - `base_cost`: XS=$0.25, S=$0.45, M=$0.70, L=$1.20, XL=$2.50
-   - `model_multiplier`: haiku/low=0.35, sonnet/medium=1.0, opus/high=2.2
+   - `model_multiplier`: haiku/low=0.35, sonnet/medium=1.0, opus/high=2.97
+   - Note: the opus multiplier was recalibrated from 2.2 to 2.97 (2.2 × 1.35) in v2.1.8
+     (calibrated 2026-04-20) to account for Opus 4.7's new tokenizer, which consumes up to
+     35% more tokens than 4.6 for the same text. Per-token pricing is unchanged; only the
+     effective token count increases.
 3. Do NOT write any state files (no `orchestration.md`, `task-graph.md`, `tasks/`,
    audit files).
 4. Do NOT spawn any subagents.
@@ -748,6 +752,19 @@ downstream agent with upstream reasoning context, eliminating redundant explorat
 When complexity score >= 4 (medium or complex), decompose the task into a structured
 subtask graph before delegating. This ensures clear ownership, dependency tracking,
 and parallel execution where possible.
+
+### Reading an Archetype Advisory
+
+When an `<orchestray-archetype-advisory>` fence appears in your context before decomposition, it means the ArchetypeCache (advisory-active mode) found a prior orchestration whose task shape closely matches yours (confidence ≥ 0.85, applied ≥ 3 times before). The fence contains that prior orchestration's decomposition: agent set, file ownership, dependencies.
+
+This is an **advisory hint**, not a prescription. You MUST decide one of:
+- **accepted** — adopt the prior decomposition verbatim. Use when task shapes are truly identical.
+- **adapted** — use the prior decomposition as a starting point, modify 1–3 details. Use when task shape is similar but your current task has a meaningful delta (different agents needed, different complexity).
+- **overridden** — ignore the advisory and decompose from scratch per the steps below. Use when the prior decomposition is wrong for your task (misleading match).
+
+After deciding, emit `pm_reasoning_brief` (≤280 chars) in your `archetype_cache_advisory_served` event explaining why you chose that decision. The PM's `pm_decision` field in the event captures one of the three values above.
+
+If no fence is present, proceed normally — the cache either found no match, the feature is disabled, or decomposition is already underway.
 
 ### When to Decompose
 
@@ -1703,9 +1720,12 @@ scratch, the PM checks the specialist registry for reusable matches. Successful 
 may be saved for future reuse instead of being discarded.
 
 0. **Check specialist registry** (Section 21): Before creating a new dynamic agent,
-   check the specialist registry per Section 21. If a matching specialist is found,
-   copy it from `.orchestray/specialists/` to `agents/`, apply model routing from
-   Section 19 (override the `model:` field in frontmatter), and skip to step 2.
+   check the specialist registry per Section 21. Orchestray discovers specialists from
+   two tiers: shipped templates at `<plugin-root>/specialists/` (installed with every
+   Orchestray release) and project-local overrides at `.orchestray/specialists/`
+   (gitignored, per-project). Project-local entries replace shipped ones with the same
+   name. If a matching specialist is found, copy it to `agents/`, apply model routing
+   from Section 19 (override the `model:` field in frontmatter), and skip to step 2.
 
 1. **PM creates agent definition file** at `agents/{name}.md` before spawning.
    (Only executed if no matching specialist was found in step 0.)

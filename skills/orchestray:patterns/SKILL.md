@@ -396,6 +396,47 @@ The user wants to see the pattern learning dashboard showing what the system has
 
     If the helper script is unavailable (e.g., on an older install), skip this step silently.
 
+16. **Section 10 — Archetype cache (advisory)**: Display archetype cache statistics.
+
+    Call `getDashboardStats()` from `bin/_lib/archetype-cache.js` by running:
+    ```
+    node -e "const ac = require('./bin/_lib/archetype-cache'); console.log(JSON.stringify(ac.getDashboardStats()));"
+    ```
+    from the project root. Parse the resulting JSON.
+
+    If `advisories_served === 0`:
+    ```
+    ## Archetype cache (advisory)
+
+    No archetype advisory events recorded yet. The cache will begin serving
+    advisories once archetypes accumulate >= 3 successful applications.
+    ```
+
+    Otherwise:
+    ```
+    ## Archetype cache (advisory)
+
+    - **Hit rate:** {advisories_served} / {decompositions_attempted} = {hit_rate_pct}%
+    - **Override rate:** {overridden} / {advisories_served} = {override_rate_pct}%
+    - **Adaptation rate:** {adapted} / {advisories_served} = {adaptation_rate_pct}%
+    - **Top-5 most-applied archetypes:**
+      1. {archetype_id} — {prior_applications_count} applications
+      2. ...
+    ```
+
+    If `override_rate_pct > 50`, append:
+    ```
+    [WARN] Override rate > 50% — this cache may be noisy. Consider adding
+    high-override archetypes to the blacklist via:
+    .orchestray/config.json: context_compression_v218.archetype_cache.blacklist
+    ```
+
+    If `context_compression_v218.archetype_cache.enabled` is false in config (or
+    `context_compression_v218.enabled` is false), replace section body with:
+    ```
+    Archetype cache is disabled (context_compression_v218.archetype_cache.enabled: false).
+    ```
+
 14. **Edge cases**:
     - If `.orchestray/history/` does not exist or is empty: skip all event-based sections, show pattern metadata only with notes that no history is available.
     - If `.orchestray/team-patterns/` does not exist: treat team pattern count as 0.

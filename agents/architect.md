@@ -7,7 +7,7 @@ description: Analyzes requirements and designs implementation approach.
   developer agent implements.
 tools: Read, Glob, Grep, Bash, Write, mcp__orchestray__ask_user, mcp__orchestray__pattern_find, mcp__orchestray__kb_search
 model: inherit
-effort: high
+effort: xhigh # default: xhigh (Opus 4.7 recommended default per Anthropic). max available via explicit override.
 memory: project
 maxTurns: 105
 color: blue

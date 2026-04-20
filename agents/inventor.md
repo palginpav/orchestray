@@ -7,7 +7,7 @@ description: First-principles creation specialist -- designs and prototypes nove
   than an existing one.
 tools: Read, Glob, Grep, Bash, Write, Edit
 model: inherit
-effort: high
+effort: xhigh # default: xhigh (Opus 4.7 recommended default per Anthropic). max available via explicit override.
 memory: project
 maxTurns: 125
 color: gold

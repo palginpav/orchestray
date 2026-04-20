@@ -107,12 +107,52 @@ modified lines and only read full files when surrounding context is needed.
 
 ## Section 11: Context Handoff Template
 
-Use this template when spawning a sequential agent that depends on a prior agent's work:
+Use this template when spawning a sequential agent that depends on a prior agent's work.
+
+**SpecSketch (v2.1.8):** When `context_compression_v218.spec_sketch` is true (default),
+use the YAML skeleton template below instead of the prose template for developer,
+reviewer, tester, refactorer, and security-engineer downstream agents. For architect,
+inventor, and debugger downstream agents (which benefit from rationale prose), use the
+prose fallback template. `bin/_lib/spec-sketch.js` generates the skeleton; fall back to
+prose if it returns `{ fallback: true }`.
 
 **Budget:** the entire `## Context from Previous Agent` block MUST fit in ≤ 400 tokens.
-If KB summaries + diff would exceed 400 tokens, drop the full diff and include only
-a file-grouped summary ("Modified: src/api/tasks.ts — added createTask export;
-src/models/task.ts — added Task schema"). Never include raw diff > 120 lines.
+SpecSketch skeleton median is ~140 tokens. Prose fallback: drop raw diff if needed and
+include only a file-grouped summary.
+
+### SpecSketch Template (YAML skeleton — default for most agents)
+
+```yaml
+## Previous: {agent_type} on task-{id}
+files:
+  src/api/tasks.ts:
+    added_exports: [createTask, updateTask]
+    modified_functions: [validateInput@L42]
+    lines_delta: +58 -4
+  src/models/task.ts:
+    added_exports: [TaskSchema]
+    added_types: [Task, TaskInput]
+    lines_delta: +23 -0
+contracts_met: [file_exists, diff_only_in, file_exports(tasksRouter)]
+kb_refs: [decisions/api-validation-strategy]
+rationale: |     # OPTIONAL — architect/inventor/debugger only, ≤ 60 tokens
+  Chose zod over joi because zod integrates with the existing TypeScript types.
+```
+
+**Per-agent rule (what handoff content to include):**
+
+| Downstream agent | Handoff content |
+|---|---|
+| developer (after architect) | SpecSketch + KB slug refs; `rationale` field populated ≤ 60 tokens |
+| developer (after developer/debugger) | SpecSketch; no rationale |
+| reviewer | SpecSketch + **raw git diff always** (line-level evidence required) |
+| tester | SpecSketch scoped to `files_changed` that are tested |
+| refactorer | SpecSketch + raw git diff (refactor needs to see the full shape) |
+| architect (chained) | Prose template + `rationale` full 60 tokens |
+| inventor | Prose template |
+| debugger | Prose template |
+
+### Prose Fallback Template (architect/inventor/debugger, or when SpecSketch fails)
 
 ```
 [Task description for Agent B -- specific, self-contained, per Section 3 rules]
@@ -485,18 +525,45 @@ report this in your result rather than silently violating the invariant.
 
 ## Pattern Citations
 
-When `pattern_find` returns matches to inject into a delegation prompt, cite them in this
-exact format immediately after any `## Architectural Constraints` block (or after the task
-description if no invariants are present).
+**Pattern-body elision on repeat citation (CiteCache, v2.1.8).** When
+`context_compression_v218.cite_cache` is true (default), within a single orchestration
+the **first** delegation that cites a pattern receives the full body. **Subsequent**
+delegations citing the same pattern receive a cached marker instead.
 
-### Template
+Use `bin/_lib/pattern-citation-render.js` to render citations. It handles the full-body
+vs. cached rendering and records the seen-set via `bin/_lib/pattern-seen-set.js`.
+
+**Reviewer exception:** reviewer delegations ALWAYS include full pattern bodies regardless
+of cache state. This is enforced in `renderCitation()` (agentType === 'reviewer' bypasses
+the cache check). A reviewer receiving a `[CACHED]` cite is a bug — see agent-common-protocol.md.
+
+**Config:** `context_compression_v218.cite_cache: true` (default). Set `false` to disable
+(every delegation gets full bodies).
+
+**Seen-set cleared:** on `orchestration_complete` (hook: `collect-agent-metrics.js` calls
+`clearForOrch(orchId)` from `pattern-seen-set.js`).
+
+### Full-body rendering (first cite or reviewer)
 
 ```
 ## Patterns Applied
 
-  - @orchestray:pattern://<slug>     [<label>]     conf <X>, applied <N>x
-  - @orchestray:pattern://<slug>     [shared]      conf <X>, applied <N>x, from <promoted_from>
-  - @orchestray:pattern://<slug>     [shared, own] conf <X>, applied <N>x, from <promoted_from> (this project)
+- @orchestray:pattern://<slug>     [local]     conf 0.85, applied 3x
+
+<full pattern body here>
+
+- @orchestray:pattern://<slug>     [shared]    conf 0.72, applied 7x, from my-other-project
+
+<full pattern body here>
+```
+
+### Cached rendering (subsequent cite, non-reviewer)
+
+```
+## Patterns Applied
+
+- @orchestray:pattern://<slug>     [local]     conf 0.85, applied 3x
+  [CACHED — loaded by developer, hash a1b2c3]
 ```
 
 ### Label derivation
@@ -516,6 +583,57 @@ description if no invariants are present).
 - `applied Nx` = `times_applied` field value (e.g., `3x`). Use `0x` when field is absent.
 - Omit the entire `## Patterns Applied` section if `pattern_find` returns zero matches.
   Do NOT include an empty section.
+
+---
+
+## Repo-map handoff (RepoMapDelta, v2.1.8)
+
+When `context_compression_v218.repo_map_delta` is true (default), inject the full
+filtered repo map only into the **first** agent delegation of an orchestration.
+Subsequent agents receive a pointer block with a hash and per-agent filter hints.
+
+Use `bin/_lib/repo-map-delta.js` `injectRepoMap()` to generate the correct block.
+
+Track `repo_map_injected_in_orch` state via the delta utility's own state file
+(`.orchestray/state/repo-map-delta-state.jsonl`) — no change to the main orchestration
+state file required.
+
+**Config:** `context_compression_v218.repo_map_delta: true` (default). Set `false` to
+restore pre-v2.1.8 behavior (every agent gets full map injected).
+
+**Fail-open:** if the state file cannot be read or written, fall back to full map injection.
+Record a `repo_map_delta_first_emit_failed` degraded entry in degraded.jsonl.
+
+### First agent — full filtered map
+
+```
+## Repository Map
+
+{full filtered repo-map content — same algorithm as current, trimmed to relevant rows}
+```
+
+The map is also written to `.orchestray/kb/facts/repo-map.md` and its sha256 hash is
+recorded in `.orchestray/state/repo-map-delta-state.jsonl` for subsequent pointer blocks.
+
+### Subsequent agents — pointer block
+
+```
+## Repository Map (unchanged this orchestration)
+
+The repo map was injected fully into the first agent. It is at
+`.orchestray/kb/facts/repo-map.md` (hash `a1b2c3d4`, unchanged since orch start).
+Read it only if you need structural knowledge beyond the per-agent hints below.
+
+### Relevant rows for your task
+- src/api/tasks.ts
+- tests/tasks.test.ts
+- agents/developer.md
+```
+
+The `### Relevant rows for your task` section lists 3–5 rows most relevant to the
+agent's `files_write`/`files_read` — same filtering algorithm as current repo-map
+injection, trimmed to the top rows. This preserves per-agent relevance even in pointer
+mode so an expensive later model does not need to Read the full map for 90% of tasks.
 
 ---
 

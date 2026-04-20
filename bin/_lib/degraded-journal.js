@@ -97,6 +97,19 @@ const KINDS = [
   'dossier_field_sanitised',     // SEC-05: dossier path-shaped field contained invalid content; field nulled
   // v2.1.7 zero-deferral patch — F4 / SEC-07
   'auto_extract_backend_unsupported_value', // F4: backend='haiku-sdk' is reserved/not implemented; fell back to haiku-cli
+  // v2.1.8 Bundle CTX: CiteCache degraded kinds
+  'pattern_seen_set_write_failed',  // CiteCache: disk write error; PM falls back to emitting full bodies
+  'pattern_seen_set_corrupt',       // CiteCache: JSONL parse error on read; PM emits full bodies for remainder of orch
+  // v2.1.8 Bundle CTX: SpecSketch degraded kinds
+  'spec_sketch_parse_failed',       // SpecSketch: symbol parser errored on unfamiliar language; PM renders prose fallback
+  'spec_sketch_budget_exceeded',    // SpecSketch: skeleton exceeded 400 tokens; truncated to top files + trailer
+  // v2.1.8 Bundle CTX: RepoMapDelta degraded kinds
+  'repo_map_delta_first_emit_failed',    // RepoMapDelta: first-emission write failed; PM falls back to full injection
+  'repo_map_delta_first_agent_unknown',  // RepoMapDelta: PM state corrupt/racey; first-agent unknown; falls back to full injection
+  // v2.1.8 Bundle CTX: ArchetypeCache degraded kinds
+  'archetype_cache_blacklisted',         // ArchetypeCache: match found but archetype_id in blacklist; advisory suppressed
+  'archetype_cache_signature_failed',    // ArchetypeCache: computeSignature() returned empty string; advisory skipped
+  'archetype_cache_hint_write_failed',   // ArchetypeCache: recordAdvisoryServed() disk write failed; advisory event not persisted
   'unknown_kind',
 ];
 

@@ -83,21 +83,37 @@ After model routing determines the model for each subtask, assign the effort lev
 | sonnet | medium |
 | opus | high |
 
+### Per-Model Effort Availability
+
+| Effort | Haiku | Sonnet 4.6 | Opus 4.6 | Opus 4.7 |
+|--------|-------|-----------|---------|---------|
+| low | ✓ | ✓ | ✓ | ✓ |
+| medium | ✓ | ✓ | ✓ | ✓ |
+| high | ✓ | ✓ | ✓ | ✓ |
+| xhigh | — (coerces to high) | — (coerces to high) | — (coerces to high) | ✓ |
+| max | — (coerces to high) | ✓ | ✓ | ✓ |
+
+`xhigh` was introduced in Claude Code v2.1.111 (2026-04-16) as the recommended default for Opus 4.7 on most coding and agentic tasks. If you specify `xhigh` on a model that does not support it, Claude Code silently falls back to the highest supported level at or below the one requested — no error is raised and nothing breaks.
+
 ### Override Criteria
 
 Evaluate each subtask for reasoning depth. Override the default effort when:
 
 - **Upgrade sonnet to high**: Security-sensitive logic, complex algorithm implementation,
   multi-file refactoring with subtle dependencies
-- **Upgrade opus to max**: Novel system design with no precedent in the codebase,
-  cross-cutting refactors touching 10+ files, tasks where failure has high blast radius
-  (data migration, auth changes, schema changes)
+- **Upgrade opus to xhigh**: Novel system design, cross-cutting architecture, agentic tasks
+  where reasoning depth matters. `xhigh` is the Opus 4.7 recommended default; it coerces
+  safely to `high` on Opus 4.6. Use xhigh as the standard upgrade path, not max.
+- **Upgrade opus to max**: Tasks that combine very high complexity AND very high stakes
+  (e.g., security threat modeling with cross-cutting risks, novel system design where failure
+  has a catastrophic blast radius). Anthropic guidance: max is prone to overthinking — test
+  before adopting broadly. Max is an explicit escalation path, not a default.
 - **Downgrade sonnet to low**: Pure boilerplate/scaffold generation, simple file
   rename/move operations, straightforward config file updates
 
 **Agent-specific effort overrides (for dynamic agents only):**
-- Inventor dynamic tasks: always high or max
-- Security audit dynamic tasks: always high
+- Inventor dynamic tasks: always xhigh (or max for exceptional escalation)
+- Security audit dynamic tasks: always high or xhigh
 - Simple scaffold/template tasks: low regardless of model
 
 ### Anti-Patterns
@@ -105,8 +121,9 @@ Evaluate each subtask for reasoning depth. Override the default effort when:
 | Combination | Why It Is Wasteful | Do Instead |
 |-------------|-------------------|------------|
 | Haiku + high | Haiku's ceiling is low regardless of effort | Use Sonnet instead |
-| Haiku + max | max is Opus 4.6 exclusive | Use Sonnet/medium or Opus/high |
+| Haiku + max | max coerces to high on Haiku — you pay Haiku price, get Haiku ceiling | Use Sonnet/medium or Opus/high |
 | Opus + low | Pays Opus price for minimal reasoning | Use Sonnet/low or Haiku/low |
+| Opus 4.7 + max (default) | max prone to overthinking per Anthropic; xhigh is recommended default | Use xhigh; reserve max for explicit escalation |
 
 ### Effort Escalation
 

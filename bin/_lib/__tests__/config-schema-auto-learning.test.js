@@ -468,17 +468,38 @@ describe('F4 — haiku-sdk backend rejected loudly (K3 arbitration)', () => {
 // Shipped config.json all-off assertion
 // ---------------------------------------------------------------------------
 
-describe('shipped .orchestray/config.json has all auto_learning features OFF', () => {
-  test('loading the actual project config yields extract_on_complete.enabled:false and shadow_mode:false', () => {
-    // Use the real project root (not the tmpDir).
-    const projectRoot = path.resolve(__dirname, '../../../');
-    const cfg = loadAutoLearningConfig(projectRoot);
+describe('shipped auto_learning defaults are all OFF', () => {
+  // This test asserts the SHIPPED defaults (what every new install starts with),
+  // not the developer's runtime .orchestray/config.json — which an operator may
+  // have toggled on locally without breaking the ship-default invariant.
+  //
+  // The canonical shipped defaults live in the `DEFAULT_AUTO_LEARNING` constant
+  // in bin/_lib/config-schema.js. A user on a fresh install gets exactly this
+  // shape before any opt-in edit. We assert against it directly, plus a second
+  // assertion that `loadAutoLearningConfig` with no config.json falls back to
+  // these defaults (covering the install-time code path).
 
-    assert.equal(cfg.extract_on_complete.enabled, false,
-      'extract_on_complete.enabled MUST be false in shipped config');
-    assert.equal(cfg.extract_on_complete.shadow_mode, false,
-      'extract_on_complete.shadow_mode MUST be false in shipped config');
-    assert.equal(cfg.global_kill_switch, false,
-      'global_kill_switch must be false (kill switch off by default)');
+  test('DEFAULT_AUTO_LEARNING constant has every sub-feature OFF', () => {
+    assert.equal(DEFAULT_AUTO_LEARNING.extract_on_complete.enabled, false,
+      'extract_on_complete.enabled MUST default to false');
+    assert.equal(DEFAULT_AUTO_LEARNING.extract_on_complete.shadow_mode, false,
+      'extract_on_complete.shadow_mode MUST default to false');
+    assert.equal(DEFAULT_AUTO_LEARNING.roi_aggregator.enabled, false,
+      'roi_aggregator.enabled MUST default to false');
+    assert.equal(DEFAULT_AUTO_LEARNING.kb_refs_sweep.enabled, false,
+      'kb_refs_sweep.enabled MUST default to false');
+    assert.equal(DEFAULT_AUTO_LEARNING.global_kill_switch, false,
+      'global_kill_switch MUST default to false (kill-switch off by default)');
+  });
+
+  test('fresh install (no config.json) materialises the all-OFF defaults via loadAutoLearningConfig', () => {
+    // tmpDir is an empty directory — no .orchestray/config.json present.
+    // The loader must fall back to DEFAULT_AUTO_LEARNING.
+    const cfg = loadAutoLearningConfig(tmpDir);
+    assert.equal(cfg.extract_on_complete.enabled, false);
+    assert.equal(cfg.extract_on_complete.shadow_mode, false);
+    assert.equal(cfg.roi_aggregator.enabled, false);
+    assert.equal(cfg.kb_refs_sweep.enabled, false);
+    assert.equal(cfg.global_kill_switch, false);
   });
 });

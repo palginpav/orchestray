@@ -578,6 +578,14 @@ process.stdin.on('end', () => {
             _hasOrchestrationComplete(eventsPath, orchestrationId)) {
           const { emitRollup } = require('./emit-orchestration-rollup');
           emitRollup(cwd, orchestrationId);
+
+          // CiteCache: clear pattern-seen-set for this orchestration on completion.
+          try {
+            const { clearForOrch } = require('./_lib/pattern-seen-set');
+            clearForOrch(orchestrationId, cwd);
+          } catch (_clearErr) {
+            // Fail-open: cleanup must never block orchestration completion.
+          }
         }
       } catch (_rollupErr) {
         // Fail-open: rollup trigger must never block agent stop

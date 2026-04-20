@@ -3077,4 +3077,81 @@ Field notes:
 | `file_too_large` | warn | A file exceeded its per-site read cap; the reader returned an empty-equivalent value and the caller fails open. Emitted by `kb-refs-sweep.js` (index.json > 10 MiB, slug-ignore.txt > 1 MiB) and `write-resilience-dossier.js` (marker > 256 KiB, mcp-checkpoint.jsonl > 256 KiB, routing.jsonl > 4 MiB, drift-invariants.jsonl > 256 KiB). |
 | `file_read_failed` | warn | An fd-based read failed with an unexpected errno (not a size-cap breach); the caller fails open. Emitted by the same sites as `file_too_large` when the OS returns an error other than a size overflow. |
 | `dossier_field_sanitised` | warn | A path-like dossier field failed SEC-05 sanitisation (NUL byte, path-traversal segment, oversize, or ASCII control character); the field was replaced with null and dossier serialisation continues. |
+
+### Degraded-journal `kind` additions (v2.1.8 Bundle CTX)
+
+| kind | emitter | severity | condition | PM fallback action |
+|---|---|---|---|---|
+| `pattern_seen_set_write_failed` | `bin/_lib/pattern-seen-set.js` `recordSeen()` | warn | Disk write error (ENOSPC, EACCES, lock timeout) when appending a seen-set row | Treat as not-seen; emit full pattern body for this delegation. No orchestration block. |
+| `pattern_seen_set_corrupt` | `bin/_lib/pattern-seen-set.js` `_readRows()` | warn | JSONL parse error or file oversize (>2 MB) on seen-set read | Treat file as empty; emit full bodies for remainder of orchestration. |
+| `spec_sketch_parse_failed` | `bin/_lib/spec-sketch.js` `generateSketch()` | warn | Symbol parser threw or diff parsing failed (unfamiliar language structure) | Fall back to prose handoff template. Downstream agent receives full prose context. |
+| `spec_sketch_budget_exceeded` | `bin/_lib/spec-sketch.js` `generateSketch()` | warn | Rendered skeleton exceeded ~400 tokens (1600 chars); file list truncated to top N | Truncated skeleton emitted with `... {N} more file(s) not listed` trailer appended. |
+| `repo_map_delta_first_emit_failed` | `bin/_lib/repo-map-delta.js` `_emitFirstFull()` | warn | First-emission file write or state-record failed | Fall back to full filtered repo-map injection for this delegation. |
+| `repo_map_delta_first_agent_unknown` | `bin/_lib/repo-map-delta.js` `injectRepoMap()` | warn | State row exists for this orch_id but `first_agent` field is missing/null (post-compact race or corrupt row) | Fall back to full filtered repo-map injection so downstream agent is not under-informed. |
+| `archetype_cache_blacklisted` | `bin/_lib/archetype-cache.js` `recordBlacklisted()` | info | Cache match found but archetype_id appears in the operator blacklist; advisory suppressed | No advisory fence injected; orchestration proceeds with normal PM decomposition. |
+| `archetype_cache_signature_failed` | `bin/inject-archetype-advisory.js` `handleUserPromptSubmit()` | warn | `computeSignature()` returned empty string (all four components collapsed to empty) | Advisory skipped; orchestration proceeds normally. |
+| `archetype_cache_hint_write_failed` | `bin/_lib/archetype-cache.js` `recordAdvisoryServed()` | warn | `atomicAppendJsonl` write to events.jsonl failed for the advisory_served event | Advisory was served to PM but event not persisted; ROI stats will under-count this serve. |
+
+---
+
+## Section 22: ArchetypeCache Events (v2.1.8)
+
+### archetype_cache_advisory_served
+
+Emitted by the PM (via `bin/_lib/archetype-cache.js recordAdvisoryServed()`) after the PM
+reads an `<orchestray-archetype-advisory>` fence and decides how to use it.
+
+```jsonc
+{
+  "timestamp": "<ISO 8601>",
+  "type": "archetype_cache_advisory_served",
+  "orchestration_id": "<current orch id>",
+  "archetype_id": "<12-hex signature>",
+  "archetype_name": "<human-readable label, optional>",
+  "confidence": 0.91,
+  "task_shape_hash": "<12-hex signature>",
+  "prior_applications_count": 4,
+  "pm_decision": "accepted | adapted | overridden",
+  "pm_reasoning_brief": "<≤280 chars explaining the decision>"
+}
+```
+
+Field notes:
+- `archetype_id` and `task_shape_hash` are both the 12-hex signature string. They are
+  the same value when the advisory is a direct signature match.
+- `pm_decision` MUST be one of the three literal strings: `accepted`, `adapted`,
+  `overridden`. Any other value is a protocol error.
+- `pm_reasoning_brief` is the PM's ≤280-char explanation of its decision. Required —
+  the PM MUST emit this field. Populated from the PM's `pm_reasoning_brief` field in
+  its event emission.
+- `confidence` is the Weighted-Jaccard score computed at lookup time (0.0–1.0).
+- `prior_applications_count` is the count of successful prior applications at the time
+  the advisory was served.
+
+**When to emit:** the PM emits this event AFTER deciding accepted/adapted/overridden
+in Section 13, as part of the archetype advisory protocol. The hook
+`inject-archetype-advisory.js` injects the fence; the PM emits the event.
+
+---
+
+### archetype_cache_blacklisted (degraded-journal entry)
+
+Written to `.orchestray/state/degraded.jsonl` (NOT to events.jsonl) when a cache match
+is found but the archetype_id appears in
+`context_compression_v218.archetype_cache.blacklist`.
+
+```jsonc
+{
+  "timestamp": "<ISO 8601>",
+  "kind": "archetype_cache_blacklisted",
+  "severity": "info",
+  "archetype_id": "<12-hex signature>"
+}
+```
+
+This is an informational-only degraded entry. No advisory is served. The PM decomposes
+from scratch as if no match existed. Visible in `/orchestray:doctor` output.
+
+**Operator action:** if this entry appears frequently for an archetype you want to
+re-enable, remove its ID from the `blacklist` array in `.orchestray/config.json`.
 | `auto_extract_backend_unsupported_value` | warn | Config specified `backend: 'haiku-sdk'` (reserved, not implemented in v2.1.x); the pipeline fell back to `haiku-cli`. |

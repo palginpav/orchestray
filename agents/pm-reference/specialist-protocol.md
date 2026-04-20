@@ -95,7 +95,9 @@ grows deliberately, never automatically — promotion is a human decision.
    patterns, KB protocol references, and scope boundaries.
 
 4. Write the generalized agent definition to `.orchestray/specialists/{name}.md`
-   using the same YAML frontmatter + markdown body format as Section 17 definitions.
+   (project tier — gitignored, per-project) using the same YAML frontmatter + markdown
+   body format as Section 17 definitions. Do NOT write to `<plugin-root>/specialists/`;
+   that is the shipped tier and is overwritten on `/orchestray:update`.
 
 5. Add a registry entry to `registry.json`:
    ```json
@@ -150,9 +152,42 @@ if the specialist has already reached the threshold:
 > `debugger`, `tester`, `documenter`, `security-engineer`, `release-manager`,
 > `ux-critic`, `platform-oracle`.
 
+### Registry Check: Dual-Tier Discovery
+
+The PM discovers specialist templates from TWO tiers, in this order:
+
+1. **Shipped tier** — read-only plugin-shipped templates at `<plugin-root>/specialists/`.
+   These ship with every Orchestray install. Examples at time of v2.1.8: `translator`,
+   `ui-ux-designer`. Users cannot edit these in-place (edits would be overwritten on
+   `/orchestray:update`). To customize, write a project-local override (tier 2 below).
+
+2. **Project tier** — user-authored per-project specialists at `.orchestray/specialists/`
+   (gitignored runtime state; survives orchestrations but does not travel with the repo).
+   Created by `/orchestray:specialists save`, or promoted from dynamic agents per
+   Section 17 lifecycle.
+
+**Collision rule:** if a project-tier `<name>.md` exists with the same `name:` frontmatter
+field as a shipped-tier `<name>.md`, the project tier **replaces** the shipped tier for
+that orchestration. No merging. The PM announces the override in its user-visible
+decomposition line: `Using specialist: {name} (project override).`
+
+**Scan semantics:**
+- PM reads `<plugin-root>/specialists/*.md` first.
+- Then reads `.orchestray/specialists/*.md` second.
+- Merges by `name:` frontmatter; project-tier entries win ties.
+- Validates each result against the Section 21 file-sync validation gate (required
+  frontmatter, tools allowlist, etc.). Invalid entries are skipped with a warning.
+
+**Fail-open:** if `<plugin-root>/specialists/` is unresolvable (plugin layout changed,
+path permission denied), the PM proceeds with project-tier only. If project-tier is
+absent, it proceeds with shipped-tier only. Either tier missing is not an error; both
+missing means no specialists available (which is the pre-v2.1.8 behavior).
+
 1. **Read `.orchestray/specialists/registry.json`.**
-   - If the file or directory is missing: no specialists are available. Proceed to
-     Section 17 normal flow (create a new dynamic agent from scratch).
+   - If the file or directory is missing: no project-tier specialists are available.
+     Shipped-tier specialists discovered above are still usable. Proceed with those,
+     or proceed to Section 17 normal flow (create a new dynamic agent from scratch) if
+     shipped-tier also has no match.
 
 2. **File sync for user-created specialists:** Scan `.orchestray/specialists/` for
    `.md` files that are NOT present in `registry.json`. For each unregistered file:
@@ -223,7 +258,9 @@ if the specialist has already reached the threshold:
       agent — use a different name." Do not register, do not copy. Proceed to
       Section 17 normal flow instead.
 
-      Copy `.orchestray/specialists/{file}` to `agents/{name}.md`.
+      Copy the specialist file to `agents/{name}.md`. Source path depends on tier:
+      - Project-tier match: copy from `.orchestray/specialists/{file}`
+      - Shipped-tier match (no project-tier override): copy from `<plugin-root>/specialists/{file}`
 
    b. Apply model routing from Section 19: read the specialist's frontmatter, override
       the `model:` field with the routed model for this subtask's complexity score.

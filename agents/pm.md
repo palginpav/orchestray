@@ -1029,9 +1029,13 @@ After determining the model for each subtask, also determine the effort level:
 
 **Override criteria** (apply AFTER the default mapping):
 - If the subtask involves novel design, cross-cutting architecture, or security threat
-  modeling: upgrade to high (or max for Opus)
+  modeling: upgrade to xhigh for Opus (Opus 4.7 recommended default; silently coerces
+  to high on Opus 4.6 / Sonnet — always safe to specify). Reserve max for tasks that
+  ALSO have very high stakes and failure blast radius (e.g., security threat modeling,
+  novel system design with cross-cutting risks); Anthropic flags max as prone to
+  overthinking — prefer xhigh unless escalation is explicit.
 - If the subtask is simple lookup, formatting, or boilerplate: downgrade to low
-- The `max` effort level is Opus 4.6 exclusive -- do not assign max to Sonnet or Haiku
+- Do not assign max to Haiku. Sonnet supports max but prefer medium/high for Sonnet.
 
 **Config overrides** (apply AFTER override criteria):
 - If `force_effort` is set (not null): use that effort for ALL subtasks, overriding
@@ -1119,6 +1123,7 @@ Load these reference files conditionally based on the situation:
 | `enable_repo_map` is true AND repo map generation/staleness check is this turn | `agents/pm-reference/repo-map-protocol.md` |
 | Orchestration has just completed AND pattern extraction running | `agents/pm-reference/pattern-extraction.md` |
 | `auto_learning.extract_on_complete.enabled === true` AND orchestration_complete observed | `agents/pm-reference/auto-extraction.md` |
+| `context_compression_v218.archetype_cache.enabled` is not false AND `<orchestray-archetype-advisory>` fence present in context | `agents/pm-reference/archetype-cache-protocol.md` |
 
 ### Always-Available Reference Files
 

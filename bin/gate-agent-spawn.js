@@ -136,28 +136,91 @@ process.stdin.on('end', () => {
     const model = toolInput.model;
 
     if (model === undefined || model === null || model === '') {
-      process.stderr.write(
+      // Fix B (v2.1.8): look up the routed model from routing.jsonl so the PM
+      // gets a concrete re-spawn hint instead of a generic "set explicitly" nudge.
+      let missingModelMsg =
         "[orchestray] Agent() call missing required 'model' parameter. " +
-        "Per Section 19, every orchestration spawn must route to haiku/sonnet/opus. " +
-        "Re-spawn with model set explicitly.\n"
-      );
+        "Per Section 19, every orchestration spawn must route to haiku/sonnet/opus.";
+      try {
+        const agentTypeForHint = (event.tool_input || {}).subagent_type || '';
+        const descRawForHint = (event.tool_input || {}).description ||
+          ((event.tool_input || {}).prompt && (event.tool_input || {}).prompt.substring(0, 80)) || '';
+        let spawnTaskIdForHint = (event.tool_input || {}).task_id || null;
+        if (!spawnTaskIdForHint && typeof descRawForHint === 'string') {
+          const hintMatch = descRawForHint.match(/^([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)\s/);
+          if (hintMatch) spawnTaskIdForHint = hintMatch[1];
+        }
+        const routingFileForHint = getRoutingFilePath(cwd);
+        if (spawnTaskIdForHint && fs.existsSync(routingFileForHint)) {
+          let currentOrchIdForHint = null;
+          try {
+            currentOrchIdForHint = JSON.parse(fs.readFileSync(orchFile, 'utf8')).orchestration_id || null;
+          } catch (_e) { /* fall through */ }
+          const allEntriesForHint = readRoutingEntries(cwd);
+          const matchesForHint = allEntriesForHint.filter(e =>
+            e && e.task_id === spawnTaskIdForHint && e.agent_type === agentTypeForHint &&
+            (!currentOrchIdForHint || e.orchestration_id === currentOrchIdForHint)
+          );
+          if (matchesForHint.length > 0) {
+            matchesForHint.sort((a, b) => ((b.timestamp || '') > (a.timestamp || '') ? 1 : -1));
+            const routedModel = matchesForHint[0].model;
+            if (routedModel) {
+              missingModelMsg +=
+                ' Routing entry says model="' + routedModel + '" for task ' +
+                spawnTaskIdForHint + '/' + agentTypeForHint +
+                '. Re-spawn with model="' + routedModel + '".';
+            } else {
+              missingModelMsg += ' Re-spawn with model set explicitly.';
+            }
+          } else {
+            missingModelMsg += ' Re-spawn with model set explicitly.';
+          }
+        } else {
+          missingModelMsg += ' Re-spawn with model set explicitly.';
+        }
+      } catch (_hintErr) {
+        // Fail-open: lookup errored — append generic suffix and continue to deny
+        missingModelMsg += ' Re-spawn with model set explicitly.';
+      }
+      process.stderr.write(missingModelMsg + '\n');
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: missingModelMsg,
+        },
+      }));
       process.exit(2);
     }
 
     if (model === 'inherit') {
-      process.stderr.write(
+      const inheritMsg =
         "[orchestray] Agent() model=\"inherit\" is forbidden during orchestrations. " +
-        "Route to haiku/sonnet/opus per Section 19.\n"
-      );
+        "Route to haiku/sonnet/opus per Section 19.";
+      process.stderr.write(inheritMsg + '\n');
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: inheritMsg,
+        },
+      }));
       process.exit(2);
     }
 
     if (!isValidModel(model)) {
-      process.stderr.write(
+      const invalidModelMsg =
         "[orchestray] Agent() model=\"" + model + "\" is not a recognized routing tier. " +
         "Must contain haiku, sonnet, or opus (full model IDs accepted, e.g. claude-sonnet-4-6). " +
-        "Route to haiku/sonnet/opus per Section 19.\n"
-      );
+        "Route to haiku/sonnet/opus per Section 19.";
+      process.stderr.write(invalidModelMsg + '\n');
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: invalidModelMsg,
+        },
+      }));
       process.exit(2);
     }
 

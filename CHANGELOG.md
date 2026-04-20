@@ -3,6 +3,45 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.1.8] - 2026-04-20
+
+v2.1.8 ships four bundles: the first spawn of every orchestration session no longer fails on a missing model parameter; Opus 4.7 cost estimates are now accurate rather than running ~35% low; two specialist templates (Translator and UI/UX Designer) now ship with the plugin so they are available from a fresh install; and four context-compression mechanisms reduce per-orchestration input tokens for long-running orchestrations.
+
+### Bundle UX — First-spawn model routing is now seamless
+
+Previously, the very first `Agent()` spawn of every session during an orchestration would fail because the PM forgot to pass the required `model` parameter — the gate blocked the spawn, and the PM retried successfully. It was a one-time friction per session, but it was persistent.
+
+v2.1.8 closes it two ways. A new pre-spawn reminder runs before the first spawn and reminds the PM exactly what model to pass for each task in the current orchestration, eliminating the failure at the source. If a spawn still reaches the gate without a model, the gate now reads your routing ledger and tells the PM the exact model to re-spawn with — so the retry is mechanical instead of requiring the PM to look it up.
+
+### Bundle TOK — Opus 4.7 tokenizer calibration and xhigh effort level
+
+Your `/orchestray:status` cost estimates were running approximately 35% low for any agent routed to Opus. Opus 4.7 uses a new tokenizer that consumes more tokens than the previous model for the same text — the per-token price didn't change, but the same prompt now costs more. We recalibrated the Opus multiplier in the cost model so new orchestrations will show accurate estimates. Historical rollups were not recalculated; they stay at the old value.
+
+Claude Code 2.1.111 (released 2026-04-16) introduced a new effort level, `xhigh`, as the recommended default for Opus 4.7 on most coding and agentic tasks — sitting between `high` and `max`. v2.1.8 adopts it: Architect and Inventor agents now default to `xhigh` instead of `high`, aligning with Anthropic's own guidance that `max` can encourage overthinking. If you're on an older Claude Code, `xhigh` silently runs as `high` — nothing breaks, you just don't get the new level. `max` remains available as an explicit escalation path for the rare case that genuinely warrants it.
+
+### Bundle S — Specialist templates now ship with the plugin
+
+Two specialist templates are now included in every Orchestray install (at `specialists/` in the plugin root):
+
+- **Translator** — makes apps multi-lingual: detects your i18n framework (i18next, FormatJS, Lingui, gettext, Flutter intl, iOS, Android, and more), extracts untranslated strings, produces locale-correct translations with ICU MessageFormat awareness, and runs five mandatory correctness checks (placeholder parity, CLDR plural-form count, length-ratio, RTL markers, source-language leak). No external API keys — Claude is the translation engine. Activates automatically when your task mentions translate, i18n, localize, locale, xliff, or similar keywords.
+
+- **UI/UX Designer** — premium UI generation anchored to the shadcn/ui + Radix + Tailwind v4 stack, W3C DTCG 2025.10 design tokens, WCAG 2.2 AA accessibility (enforced via eslint-plugin-jsx-a11y + @axe-core/react), 4pt spacing grid, and sub-300ms motion budgets. Works from pasted design tokens, screenshots (Claude vision), or plain text descriptions. No external design-tool calls. Activates on keywords like premium UI, design system, design tokens, shadcn, WCAG, UX polish.
+
+Both use Sonnet by default. The PM selects them automatically based on task keywords; you can also request them explicitly in your prompt.
+
+**Overrides:** if you create a project-local specialist at `.orchestray/specialists/translator.md` or `.orchestray/specialists/ui-ux-designer.md`, that file replaces the shipped template for that project. Project-local specialists are gitignored and do not travel with the repo. Shipped templates update on `/orchestray:update`.
+
+### Bundle CTX — Four context-compression mechanisms for long orchestrations
+
+Token pressure accumulates across long orchestrations as pattern bodies, repo maps, and handoff specs are re-injected into each agent delegation. v2.1.8 introduces four opt-in mechanisms gated by `context_compression_v218.enabled` (default on) that cut repeated input without losing context fidelity.
+
+- **CiteCache** — the second and subsequent times a pattern is injected into an orchestration, only its slug and a short hash are sent rather than the full body. The first injection always goes in full so the agent has the complete text once; repeats are elisions. If you see a cited pattern that you need to expand, it is always available in the knowledge base.
+- **SpecSketch** — handoff skeletons between agents are now a compact YAML summary (file list, key symbols, changed signatures) instead of full prose when the handoff is structure-only. Agents that need design rationale (architect, inventor, debugger) still receive a `rationale:` field. If the YAML parse fails or the rendered skeleton is too large, the system falls back to full prose automatically.
+- **RepoMapDelta** — after the first agent in an orchestration receives a full filtered repo map, subsequent agents receive only the delta since the last injection. The first-agent injection is always full so the PM and first agent have complete context; the rest get a compact pointer summary.
+- **ArchetypeCache (advisory)** — when the current task matches a previously successful orchestration archetype (by Weighted-Jaccard signature), the PM receives an advisory fence with the prior decomposition plan as a starting hint. The PM decides whether to accept, adapt, or override it and records its reasoning in the `archetype_cache_advisory_served` audit event. This is advisory-only: the PM always has final say on decomposition. You can blacklist specific archetypes via `context_compression_v218.archetype_cache.blacklist` or disable the feature entirely with `context_compression_v218.archetype_cache.enabled: false`.
+
+All four mechanisms have individual on/off config keys under `context_compression_v218`. Any mechanism that encounters an error (parse failure, disk write error) falls back gracefully and records a degraded-journal entry — nothing blocks the orchestration.
+
 ## [2.1.7] - 2026-04-19
 
 When you run a long orchestration and Claude Code compacts its context mid-flight, Orchestray now writes a resilience dossier to disk before compaction happens, then re-injects a concise summary of orchestration state on your next message — so the PM picks up where it left off instead of starting blind. This is on by default. Everything else in this release is quality and hardening: the Haiku extraction backend that was stubbed in v2.1.6 is now wired and live, the KB bare-slug detector gets a two-signal algorithm that eliminates false positives, and the `max_per_task` MCP config keys that have been a backlog item since v2.1.5 are now fully schema-validated.

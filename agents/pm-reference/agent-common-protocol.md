@@ -155,6 +155,34 @@ JSON Structured Result (which the PM reads from the agent's response). Both are
 required for W-items. The Structured Result goes in the agent's response body; the
 Handoff block goes in the git commit message.
 
+## Pattern Citation Cache Interpretation (CiteCache, v2.1.8)
+
+When a delegation prompt contains a `[CACHED]` pattern citation marker, it means
+the full pattern body was delivered to an upstream agent earlier in this orchestration.
+The format is:
+
+```
+- @orchestray:pattern://<slug>     [<label>]     conf <X>, applied <N>x
+  [CACHED — loaded by {first_agent}, hash {h6}]
+```
+
+**Interpretation rules:**
+
+1. If the slug + one-line description give you enough context for your task, proceed
+   without fetching the full body. The hash is provided for integrity verification only.
+
+2. If you need the full pattern body, fetch it via `@orchestray:pattern://<slug>`.
+
+3. **Reviewer agents:** if you see a `[CACHED]` citation in a reviewer delegation,
+   this is a bug — the reviewer MUST always receive full pattern bodies regardless of
+   cache state. Report it as `issues[]` severity=info and fetch the full body via the
+   pattern URI before proceeding with your review.
+
+4. A `[CACHED]` citation does not mean the pattern is inapplicable — it means token
+   cost was saved by not re-sending the body you (or an upstream agent) already have.
+
+---
+
 ## Anti-Pattern Advisory (W12 LL3)
 
 When a spawned agent receives an `[Anti-pattern advisory]` marker at the start of its

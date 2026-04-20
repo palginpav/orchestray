@@ -205,6 +205,23 @@ process.stdin.on('end', () => {
     try { fs.chmodSync(auditDir, 0o700); } catch (_e) { /* best-effort hardening; chmod may fail on exotic filesystems */ }
     atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), routingEvent);
 
+    // Fix A (v2.1.8): write spawn-accepted sentinel so remind-model-before-spawn.js
+    // knows a spawn has completed in this orchestration and stops reminding.
+    // Idempotent: skip if already exists (EEXIST on wx). Fail-open on any other error.
+    if (orchestrationId !== 'unknown') {
+      try {
+        const spawnAcceptedDir = path.join(cwd, '.orchestray', 'state', 'spawn-accepted');
+        const spawnAcceptedPath = path.join(spawnAcceptedDir, orchestrationId);
+        if (!fs.existsSync(spawnAcceptedPath)) {
+          fs.mkdirSync(spawnAcceptedDir, { recursive: true });
+          fs.writeFileSync(spawnAcceptedPath, '', { flag: 'wx' });
+        }
+      } catch (_sentinelErr) {
+        // EEXIST on wx = already written by a concurrent call; any other error is non-fatal (fail-open).
+        process.stderr.write('[orchestray] emit-routing-outcome: spawn-accepted sentinel write failed (' + (_sentinelErr && _sentinelErr.message) + '); continuing\n');
+      }
+    }
+
     // LL6: attempt to emit a merged routing_decision event.
     // SubagentStop fires before PostToolUse:Agent, so collect-agent-metrics.js
     // has already written the stop-side data to routing-pending.jsonl. Pop the
