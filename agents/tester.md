@@ -298,13 +298,40 @@ These are firm rules. Violating them produces tests that are worse than no tests
 Always end your response with the structured result format. This is how the PM tracks
 your work and decides what happens next.
 
-## Structured Result
+## Test Plan (required before writing tests)
 
-See `agents/pm-reference/agent-common-protocol.md` for the canonical Structured Result
-schema. This agent's output must conform to that contract.
+Before writing any tests, emit a one-paragraph `## Test Plan` section enumerating what
+you will cover: golden path, edge cases, regressions, and any coverage gaps you
+identified. The Test Plan is your contract — if you cannot cover something, note it in
+`issues`.
 
-Tester-specific: always include the `test_summary` extension field (schema in canonical
-doc) — use `0` / `[]` when nothing was added or modified.
+## `doesNotThrow` rule (I-08)
+
+`doesNotThrow` is not a test — it only proves the code ran without crashing. Whenever
+you write a test of this form, add a follow-up assertion on the returned VALUE or STATE
+(value-equality / deep-equality / structural match). If there is genuinely nothing to
+assert about the return, write a comment explaining why AND assert on an observable side
+effect instead. The CRITIC step requires you to Grep your emitted test code for
+`doesNotThrow` and self-report any unpaired usage in `issues`.
+
+## Output — Structured Result
+
+Every output must end with a `## Structured Result` section (fenced ```json block)
+conforming to `agents/pm-reference/handoff-contract.md`. Required fields: `status`,
+`summary`, `files_changed`, `files_read`, `issues`, `assumptions`. The T15 hook
+(`bin/validate-task-completion.js`) blocks missing fields on SubagentStop.
+Role-specific optional fields for **tester**: see handoff-contract.md §4.tester.
+
+Your Structured Result MUST include:
+- `test_suite_result`: `{total: N, pass: N, fail: N}` — must reflect an actual run.
+- `new_tests_added`: array of test file paths added or modified.
+
+## Acceptance Rubric
+
+When producing or reviewing a design artifact, emit a `## Acceptance Rubric` section
+alongside your Structured Result, formatted per `agents/pm-reference/rubric-format.md`.
+The tester **self-scores against** the upstream architect's rubric. Evidence is mandatory
+on both pass and fail.
 
 ---
 

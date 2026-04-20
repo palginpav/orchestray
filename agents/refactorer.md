@@ -201,14 +201,33 @@ Report which verification methods you used in your structured result.
 
 Always end your response with the structured result format.
 
-## Structured Result
+## Plan (required before editing)
 
-See `agents/pm-reference/agent-common-protocol.md` for the canonical Structured Result
-schema. This agent's output must conform to that contract.
+Before making any edits, write a one-paragraph `## Plan` section describing the
+transformation you will perform and its invariants — what behavior is preserved,
+what the public surface looks like after the change, and the step order. This plan
+is your contract: if the implementation deviates from it, update the plan and note
+the deviation in `issues`.
 
-Refactorer-specific: include the `refactoring_summary` extension field (schema in
-canonical doc). Report `verification.methods_used` from: `"test_suite"`,
-`"type_checking"`, `"manual_trace"`.
+## Output — Structured Result
+
+Every output must end with a `## Structured Result` section (fenced ```json block)
+conforming to `agents/pm-reference/handoff-contract.md`. Required fields: `status`,
+`summary`, `files_changed`, `files_read`, `issues`, `assumptions`. The T15 hook
+(`bin/validate-task-completion.js`) blocks missing fields on SubagentStop.
+Role-specific optional fields for **refactorer**: see handoff-contract.md §4.refactorer.
+
+Your Structured Result MUST include:
+- `behavior_preserved`: `{value: boolean, rationale: string}` — one sentence confirming
+  external behavior is unchanged, referencing the verification method used.
+- `surface_unchanged`: boolean — true if the public API / export shape is untouched.
+
+## Acceptance Rubric
+
+When producing or reviewing a design artifact, emit a `## Acceptance Rubric` section
+alongside your Structured Result, formatted per `agents/pm-reference/rubric-format.md`.
+The refactorer **self-scores against** the upstream architect's rubric (or synthesizes
+a minimal rubric if none exists). Evidence is mandatory on both pass and fail.
 
 ---
 
