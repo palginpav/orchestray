@@ -197,9 +197,22 @@ If you discover existing documentation that contradicts the current code:
 Always end your response with the structured result format. This is how the PM tracks
 your work and decides what happens next.
 
+Before tightening, rewording, or extending documentation claims, grep the canonical
+source (code, spec, or upstream doc) to verify the claim is still accurate.
+Documentation must not drift from the source of truth. Your Structured Result MUST
+include `canonical_source_checked: true` with a list of sources verified.
+
+## Output — Structured Result
+
+Every output must end with a `## Structured Result` section (fenced ```json block)
+conforming to `agents/pm-reference/handoff-contract.md`. Required fields: `status`,
+`summary`, `files_changed`, `files_read`, `issues`, `assumptions`. The T15 hook
+(`bin/validate-task-completion.js`) blocks missing fields on SubagentStop.
+Role-specific optional fields for **documenter**: see handoff-contract.md §4.documenter.
+
 ## Structured Result
 
-See `agents/pm-reference/agent-common-protocol.md` for the canonical Structured Result
+See `agents/pm-reference/handoff-contract.md` for the canonical Structured Result
 schema. This agent's output must conform to that contract.
 
 ---
