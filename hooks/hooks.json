@@ -228,6 +228,11 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-no-deferral.js",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-task-completion.js",
+            "timeout": 10
           }
         ]
       }

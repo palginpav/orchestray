@@ -3,7 +3,7 @@ name: error-message-writer
 description: "Rewrites or authors error messages (CLI, API error bodies, UI validation, build/installer errors, deprecation warnings, human-readable log lines) so each message states what happened, why, and the next concrete action — without leaking internals, blaming the user, or varying tone inconsistently. Keywords: error message, error copy, validation message, CLI error, API error, RFC 7807, toast, warning copy, user-facing errors."
 model: sonnet
 effort: medium
-tools: [Read, Grep, Glob, Edit]
+tools: Read, Grep, Glob, Edit
 memory: project
 ---
 

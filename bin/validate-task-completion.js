@@ -60,7 +60,10 @@ const WARN_TIER = new Set([
   'platform-oracle',
 ]);
 
-const REQUIRED_SECTIONS = ['status', 'summary', 'files_changed', 'files_read', 'issues'];
+// Per v2.1.9 design-spec §5 I-12 item (c): `assumptions` is required even when
+// empty — the section must appear in every Structured Result so downstream
+// consumers can distinguish "no assumptions made" from "assumptions omitted".
+const REQUIRED_SECTIONS = ['status', 'summary', 'files_changed', 'files_read', 'issues', 'assumptions'];
 
 /**
  * Try several strategies to extract a Structured Result JSON object from the
@@ -243,11 +246,16 @@ function main() {
       process.exit(0);
     }
 
-    // If wired to a non-TaskCompleted event, pass through.
-    if (event.hook_event_name && event.hook_event_name !== 'TaskCompleted') {
+    // Accepted wiring: TaskCompleted (Agent Teams) and SubagentStop (normal
+    // single-subagent orchestrations). Any other event name is a pass-through.
+    // v2.1.9 design-spec §5 I-12 requires the T15 gate on SubagentStop so
+    // normal orchestrations (not just Agent Teams) are covered.
+    const hookEvent = event.hook_event_name || null;
+    if (hookEvent && hookEvent !== 'TaskCompleted' && hookEvent !== 'SubagentStop') {
       process.stdout.write(JSON.stringify({ continue: true }));
       process.exit(0);
     }
+    const isSubagentStop = hookEvent === 'SubagentStop';
 
     let cwd;
     try { cwd = resolveSafeCwd(event.cwd); }
@@ -277,7 +285,9 @@ function main() {
     // Default to the legacy team-event gate whenever we lack clear T15
     // signals. This preserves "TaskCompleted requires task_id + task_subject"
     // contract for any payload shape callers have relied on since v2.0.x.
-    const looksLikeTeamEvent = hasTeamKeys || !hasT15Signals;
+    // SubagentStop events are NEVER Agent-Teams events — skip the teams gate
+    // entirely and go straight to T15 classification.
+    const looksLikeTeamEvent = !isSubagentStop && (hasTeamKeys || !hasT15Signals);
 
     if (looksLikeTeamEvent && (!event.task_id || !event.task_subject)) {
       const reason = !event.task_id && !event.task_subject
