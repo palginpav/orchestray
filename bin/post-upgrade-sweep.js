@@ -137,8 +137,26 @@ function emitUpgradePendingWarning(sessionId, cwd) {
     // Per-session marker present means we already warned this session.
     if (fs.existsSync(sessionMarkerPath)) return;
 
-    // Emit warning BEFORE writing marker so a crash mid-write doesn't
-    // suppress the warning on the next prompt (R2W5 completion-checklist #1).
+    // v2.1.9 I-10: write sentinel BEFORE emitting to eliminate the
+    // race-storm where rapid UserPromptSubmit turns in a single session
+    // could each enter this block between emit and the old trailing write.
+    // A stderr write + recordDegradation is slow enough (hundreds of µs)
+    // to allow concurrent hook processes to pile up emits; inverting the
+    // order guarantees only the first hook to reach this point emits.
+    let sentinelWritten = false;
+    try {
+      fs.writeFileSync(sessionMarkerPath, '1', { flag: 'wx', encoding: 'utf8' });
+      sentinelWritten = true;
+    } catch (err) {
+      if (err && err.code === 'EEXIST') {
+        // Another hook raced us and won — they emitted; we stay silent.
+        return;
+      }
+      // Any other write error falls through: we still emit once, and on
+      // retry we will re-emit. This preserves loud-failure semantics for
+      // unusual filesystems.
+    }
+
     const versionSuffix = data.version
       ? ' to v' + data.version + (data.previous_version ? ' (was v' + data.previous_version + ')' : '')
       : '';
@@ -158,7 +176,11 @@ function emitUpgradePendingWarning(sessionId, cwd) {
       },
     });
 
-    try { fs.writeFileSync(sessionMarkerPath, '1', 'utf8'); } catch (_e) { /* ignore */ }
+    // Belt-and-suspenders: if the wx write failed earlier, try a plain
+    // write now so future invocations still honour the dedup.
+    if (!sentinelWritten) {
+      try { fs.writeFileSync(sessionMarkerPath, '1', 'utf8'); } catch (_e) { /* ignore */ }
+    }
   } catch (_e) {
     // Best-effort warning; never block the user prompt.
   }

@@ -566,6 +566,30 @@ every delegation prompt is complete before the agent starts.
 4. **Proceed**: Once all items are verified or marked N/A, spawn the agent normally per
    Section 3 delegation rules.
 
+**v2.1.9 hard-enforced pre-flight items (hook-gated):**
+
+a. **task_subject requirement** — every `Agent()` spawn that passes a `subagent_type`
+   MUST carry a meaningful `description` field (≥ 5 chars) OR include a `task_subject:`
+   line in the prompt body. The `bin/validate-task-subject.js` PreToolUse hook exits 2
+   on violation. Missing task_subject is the root cause of the teammate_idle cascade
+   seen in v2.1.8 (18+ cascade events per run). A one-liner in `description` is
+   sufficient; the hook does not inspect semantic quality, only presence.
+
+b. **Reviewer file-list requirement** — every reviewer delegation MUST include an
+   explicit file list. Use a `files:` header with a bulleted list of repo-relative
+   paths, a `scope:` section, or a bulleted list of at least three paths. The
+   `bin/validate-reviewer-scope.js` PreToolUse hook emits a `reviewer_scope_warn`
+   audit event when this is absent (warn-only in v2.1.9; hard-block candidate in
+   v2.2). Broad-scope reviewer spawns caused turn-cap exhaustion in ~40% of v2.1.8
+   review cycles — bound the scope up front.
+
+c. **Release-phase no-deferral** — when spawning `release-manager` OR when the
+   current orchestration is release-tagged (orchestration.md frontmatter
+   `phase: release` or `task_flags: ["release"]`), the agent's output MUST NOT
+   contain deferral language ("deferred to", "will fix in", "out of scope
+   (deferrable)", "TODO for later", and in release context "punt"/"for now").
+   `bin/validate-no-deferral.js` runs at SubagentStop and exits 2 on match.
+
 ### 3.Y: Turn Budget Calculation
 
 Instead of relying on static `maxTurns` frontmatter defaults, calculate a per-agent turn
@@ -620,6 +644,25 @@ max_turns = min(estimated_turns, ceiling)
    more than once for budget exhaustion. If the agent is hitting the ceiling consistently
    across multiple orchestrations, surface this to the user as a recommendation to raise
    `max_turns_overrides[agent_type]` in config.
+
+**v2.1.9 reviewer-specific override (W2.OQ-3 / I-11):**
+
+For the **reviewer** agent specifically, the default formula underestimates turn
+budgets on large-scope reviews (empirical: 40% turn-cap rate in v2.1.8 reviewer
+spawns). Override the generic formula with:
+
+```
+reviewer_turns = max(30, ceil(file_count * 2.5))
+capped at max_turns_overrides.reviewer if configured, else 120
+```
+
+Where `file_count` is the length of the explicit file list in the delegation
+prompt (required by §3.X pre-flight item b). If `file_count` cannot be
+determined (broad-scope review — already warned), use the default formula.
+
+Pass the computed value explicitly as `maxTurns` on the `Agent()` call. The
+ceiling cap prevents pathological growth on mega-review scopes (>40 files);
+for those cases, split the review into multiple scoped spawns.
 
 **Integration with Agent() call — MUST pass explicitly**:
 
@@ -1081,6 +1124,54 @@ Before spawning a new dynamic agent (Section 17), check the specialist registry 
 reusable match. Registry check, matching rules, and staleness warnings are in
 `agents/pm-reference/specialist-protocol.md` §"Section 21 — Reuse". Consult ONLY when
 Section 17 criteria are met.
+
+### v2.1.9 shipped specialist routing heuristics
+
+Five specialists ship with Orchestray by default (translator, ui-ux-designer, and
+the three v2.1.9 additions below). Check routing before spawning a generic
+architect / developer pair.
+
+**database-migration** (opus / high by default)
+
+- **Trigger phrases (any):** `migration`, `schema change`, `backfill`,
+  `ALTER TABLE`, `zero-downtime`, `NOT NULL on existing`, `ADD COLUMN`,
+  `DROP COLUMN`.
+- **Framework signal required for auto-route:** Prisma schema.prisma, Knex
+  `migrations/` dir, `alembic.ini`, `db/migrate/`, `flyway.conf`,
+  `liquibase.properties`, `schema.rb`, `sqlx migrate`, `goose migrations`,
+  TypeORM `migrations/`. If the first signal fires but no framework signal is
+  detectable, offer the specialist as a candidate and fall back to
+  architect+developer when the user declines.
+- **Scope boundary:** does NOT own DB provisioning, DevOps deployment, or ORM
+  config migration (those go to architect).
+
+**api-contract-designer** (sonnet / high by default)
+
+- **Trigger phrases (any):** `API contract`, `OpenAPI`, `REST endpoint`,
+  `GraphQL schema`, `gRPC`, `versioning`, `/v1`, `/v2`, `breaking change`,
+  `deprecate`, `backward-compat`, `JSON Schema`.
+- **Route before architect** when the prompt is API-design-first. **Route after
+  architect** when the API contract is a subtask of a larger architectural
+  design.
+- **Scope boundary:** does NOT write implementation code (developer) or
+  load-test the contract (reviewer/perf); does NOT select auth schemes
+  (architect / security-engineer).
+
+**error-message-writer** (sonnet / medium by default)
+
+- **Trigger phrases (any):** `error message`, `error UX`, `CLI help`,
+  `validation feedback`, `form errors`, `user-facing copy`, `error tone`,
+  `rewrite errors`, `polish errors`. Does NOT trigger on raw `error handling`
+  or `error recovery` (those go to developer).
+- **Co-routes well with developer** when the user asks for both handling and
+  copy — developer first, error-message-writer second.
+- **Scope boundary:** does NOT change error codes, does NOT localize
+  (translator), does NOT remove messages (might break downstream handlers).
+
+All three specialists honor the universal Structured Result schema and emit
+role-specific fields (`migration_plan.stages[]`, `contract_diff`,
+`messages_rewritten[]`) alongside the common `status`/`summary`/
+`files_changed`/`files_read`/`issues` keys.
 
 ---
 

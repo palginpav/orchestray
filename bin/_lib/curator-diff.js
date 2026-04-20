@@ -266,13 +266,76 @@ function isDirty(opts) {
 // Degraded-journal helpers (fire-and-forget, never throw)
 // ---------------------------------------------------------------------------
 
+// v2.1.9 I-04: gate `curator_cursor_reset` to one event per session via a
+// filesystem sentinel. The prior `curator_diff_cursor_corrupt` kind produced
+// a per-turn storm (264 events per run observed in v2.1.8). We now emit
+// ONE `curator_cursor_reset` event per session on first corrupt-cursor
+// detection; subsequent detections in the same session are swallowed.
+//
+// Sentinel path: .orchestray/state/.curator-cursor-reset-<sessionId>
+// Session id is derived from CLAUDE_SESSION_ID (injected by Claude Code)
+// or the PID group parent for tests. Missing session-id falls back to the
+// process pid which still dedups within a single hook process.
+let _cursorResetSignalEmitted = false;
+
+function _sessionId() {
+  return process.env.CLAUDE_SESSION_ID
+    || process.env.ORCHESTRAY_SESSION_ID
+    || ('pid-' + process.pid);
+}
+
+function _sessionSentinelPath() {
+  const sessionSafe = String(_sessionId()).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 64);
+  return path.join(
+    process.cwd(),
+    '.orchestray', 'state', '.curator-cursor-reset-' + sessionSafe
+  );
+}
+
 function _journalCorrupt(absPath) {
   try {
     const slug = path.basename(absPath, '.md');
+
+    // v2.1.9 I-04: emit ONE `curator_cursor_reset` event per session. Check
+    // the filesystem sentinel first (survives across hook processes); then
+    // check the in-process flag (avoids rapid-fire write attempts within a
+    // single invocation).
+    if (!_cursorResetSignalEmitted) {
+      const sentinel = _sessionSentinelPath();
+      let alreadyMarked = false;
+      try { alreadyMarked = fs.existsSync(sentinel); } catch (_) {}
+
+      if (!alreadyMarked) {
+        try {
+          _degradedJournal().recordDegradation({
+            kind:     'curator_cursor_reset',
+            severity: 'warn',
+            detail:   {
+              slug,
+              session_id: _sessionId(),
+              dedup_key: 'curator_cursor_reset|' + _sessionId(),
+            },
+          });
+          try {
+            fs.mkdirSync(path.dirname(sentinel), { recursive: true });
+            fs.writeFileSync(sentinel, new Date().toISOString(), 'utf8');
+          } catch (_) { /* best-effort */ }
+        } catch (_) {}
+      }
+      _cursorResetSignalEmitted = true;
+    }
+
+    // Preserve the legacy kind for back-compat telemetry consumers, but
+    // silently (no emit) — the in-process dedup on `_seen` in
+    // degraded-journal.js already suppresses duplicates within a single
+    // process, so the storm was cross-process. The new `curator_cursor_reset`
+    // event is the authoritative signal going forward. If any downstream
+    // tool still reads `curator_diff_cursor_corrupt`, they will see at most
+    // one occurrence per session (via degraded-journal fingerprint dedup).
     _degradedJournal().recordDegradation({
       kind:     'curator_diff_cursor_corrupt',
       severity: 'warn',
-      detail:   { slug, dedup_key: 'curator_diff_cursor_corrupt|' + slug },
+      detail:   { slug, dedup_key: 'curator_diff_cursor_corrupt|session|' + _sessionId() },
     });
   } catch (_) {}
 }

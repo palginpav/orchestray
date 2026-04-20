@@ -100,6 +100,11 @@ const KINDS = [
   // v2.1.8 Bundle CTX: CiteCache degraded kinds
   'pattern_seen_set_write_failed',  // CiteCache: disk write error; PM falls back to emitting full bodies
   'pattern_seen_set_corrupt',       // CiteCache: JSONL parse error on read; PM emits full bodies for remainder of orch
+  // v2.1.9 Bundle B1 I-06: pattern-seen-set hardening
+  'pattern_seen_set_recovered',     // CiteCache: fail-open recovery — bad read or parse error salvaged
+  'pattern_seen_set_oversize',      // CiteCache: file exceeded 10 MB cap; truncated to ~5 MB tail
+  // v2.1.9 Bundle B1 I-04: curator cursor-corruption clean recovery
+  'curator_cursor_reset',           // Curator: corrupt cursor detected; full-diff mode restored (one event per session)
   // v2.1.8 Bundle CTX: SpecSketch degraded kinds
   'spec_sketch_parse_failed',       // SpecSketch: symbol parser errored on unfamiliar language; PM renders prose fallback
   'spec_sketch_budget_exceeded',    // SpecSketch: skeleton exceeded 400 tokens; truncated to top files + trailer

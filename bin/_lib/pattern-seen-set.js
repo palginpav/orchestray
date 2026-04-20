@@ -25,7 +25,11 @@ const crypto = require('crypto');
 const { atomicAppendJsonl } = require('./atomic-append');
 const { recordDegradation } = require('./degraded-journal');
 
-const MAX_FILE_BYTES = 2 * 1024 * 1024; // 2 MB safety cap
+// v2.1.9 I-06: hard size cap for the seen-set file. When exceeded, the reader
+// emits a degraded-journal `pattern_seen_set_oversize` entry and the writer
+// atomically truncates to roughly the most recent 5 MB of rows.
+const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
+const TRUNCATE_TARGET_BYTES = 5 * 1024 * 1024; // 5 MB — post-truncate target
 
 /**
  * Resolve path to the seen-set JSONL file.
@@ -49,40 +53,120 @@ function computeBodyHash(body) {
 }
 
 /**
- * Read all rows from the seen-set file. Returns [] on any error.
+ * Read all rows from the seen-set file. Returns [] on any error (fail-open).
+ *
+ * v2.1.9 I-06: hardened with try/catch around stat/read/parse. On ENOENT
+ * returns silently; on other errors or oversized files records a degraded-
+ * journal entry and returns an empty set (caller falls back to emitting full
+ * pattern bodies). Oversized files get a separate `pattern_seen_set_oversize`
+ * kind so operators can distinguish corruption from growth.
+ *
  * @param {string} filePath
  * @returns {Array<{orch_id:string, slug:string, first_agent:string, body_hash:string, ts:string}>}
  */
 function _readRows(filePath) {
+  let stat;
   try {
-    const stat = fs.statSync(filePath);
-    if (stat.size > MAX_FILE_BYTES) {
-      process.stderr.write('[orchestray] pattern-seen-set: file exceeds size cap; treating as empty\n');
-      return [];
-    }
-    const raw = fs.readFileSync(filePath, 'utf8');
-    const rows = [];
-    for (const line of raw.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        rows.push(JSON.parse(trimmed));
-      } catch (_) {
-        // Skip malformed lines; do not abort.
-      }
-    }
-    return rows;
+    stat = fs.statSync(filePath);
   } catch (err) {
-    if (err.code !== 'ENOENT') {
-      // File exists but could not be read — treat as corrupt.
+    if (err && err.code === 'ENOENT') return [];
+    try {
       recordDegradation({
         kind: 'pattern_seen_set_corrupt',
         severity: 'warn',
-        detail: { message: err.message, dedup_key: 'read-' + filePath },
+        detail: { message: String(err.message || err).slice(0, 200), dedup_key: 'stat-' + filePath },
       });
-    }
+    } catch (_) { /* last resort */ }
     return [];
   }
+
+  if (stat.size > MAX_FILE_BYTES) {
+    try {
+      recordDegradation({
+        kind: 'pattern_seen_set_oversize',
+        severity: 'warn',
+        detail: {
+          size_bytes: stat.size,
+          cap_bytes: MAX_FILE_BYTES,
+          dedup_key: 'oversize-' + filePath,
+        },
+      });
+    } catch (_) { /* last resort */ }
+    // Attempt in-place truncation — best effort; fail-open on write failure.
+    try {
+      _truncateToTarget(filePath, TRUNCATE_TARGET_BYTES);
+    } catch (_) { /* truncation failed; caller still sees empty rows */ }
+    return [];
+  }
+
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, 'utf8');
+  } catch (err) {
+    try {
+      recordDegradation({
+        kind: 'pattern_seen_set_recovered',
+        severity: 'warn',
+        detail: { message: String(err.message || err).slice(0, 200), dedup_key: 'read-' + filePath },
+      });
+    } catch (_) { /* last resort */ }
+    return [];
+  }
+
+  const rows = [];
+  let parseErrors = 0;
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      rows.push(JSON.parse(trimmed));
+    } catch (_) {
+      parseErrors++;
+    }
+  }
+  if (parseErrors > 0) {
+    try {
+      recordDegradation({
+        kind: 'pattern_seen_set_recovered',
+        severity: 'warn',
+        detail: { parse_errors: parseErrors, dedup_key: 'parse-' + filePath },
+      });
+    } catch (_) { /* last resort */ }
+  }
+  return rows;
+}
+
+/**
+ * Atomically rewrite the seen-set file, keeping only the tail rows that fit
+ * within `targetBytes`. Writes to a sibling tmp file then renames over the
+ * target (same-filesystem rename is atomic). Fail-open on any error.
+ *
+ * Exported for tests.
+ *
+ * @param {string} filePath
+ * @param {number} targetBytes
+ * @returns {{ truncated: boolean, kept?: number, dropped?: number }}
+ */
+function _truncateToTarget(filePath, targetBytes) {
+  const raw = fs.readFileSync(filePath, 'utf8');
+  const lines = raw.split('\n');
+  // Greedily keep tail lines whose cumulative bytes fit target.
+  let kept = [];
+  let running = 0;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line) continue;
+    const sz = Buffer.byteLength(line, 'utf8') + 1; // plus newline
+    if (running + sz > targetBytes) break;
+    running += sz;
+    kept.push(line);
+  }
+  kept.reverse();
+  const content = kept.length > 0 ? kept.join('\n') + '\n' : '';
+  const tmp = filePath + '.truncate.tmp';
+  fs.writeFileSync(tmp, content, 'utf8');
+  fs.renameSync(tmp, filePath);
+  return { truncated: true, kept: kept.length, dropped: Math.max(0, lines.length - kept.length) };
 }
 
 /**
@@ -121,6 +205,32 @@ function recordSeen(orchId, slug, body, agentType, projectRoot) {
     try {
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
     } catch (_) {}
+
+    // v2.1.9 I-06: pre-write size guard. If the file is already over the cap,
+    // truncate to ~5 MB worth of tail rows before appending.
+    try {
+      const stat = fs.statSync(filePath);
+      if (stat.size > MAX_FILE_BYTES) {
+        try {
+          recordDegradation({
+            kind: 'pattern_seen_set_oversize',
+            severity: 'warn',
+            detail: {
+              size_bytes: stat.size,
+              cap_bytes: MAX_FILE_BYTES,
+              phase: 'pre-write',
+              dedup_key: 'oversize-pre-write-' + filePath,
+            },
+          });
+        } catch (_) { /* ignore */ }
+        try { _truncateToTarget(filePath, TRUNCATE_TARGET_BYTES); } catch (_) { /* fail-open */ }
+      }
+    } catch (err) {
+      if (err && err.code !== 'ENOENT') {
+        // Non-ENOENT stat failure — log and continue; atomicAppendJsonl will
+        // retry or fail-open on its own.
+      }
+    }
 
     atomicAppendJsonl(filePath, row);
     return { recorded: true };
@@ -187,4 +297,14 @@ function clearForOrch(orchId, projectRoot) {
   }
 }
 
-module.exports = { recordSeen, isSeenInOrch, clearForOrch, computeBodyHash };
+module.exports = {
+  recordSeen,
+  isSeenInOrch,
+  clearForOrch,
+  computeBodyHash,
+  // Exported for tests and hardening inspection:
+  _readRows,
+  _truncateToTarget,
+  MAX_FILE_BYTES,
+  TRUNCATE_TARGET_BYTES,
+};

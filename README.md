@@ -188,6 +188,36 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | **Curator** | AI-driven pattern curation — promotes, merges, and deprecates patterns with tombstone rollback; invoked via `/orchestray:learn curate` |
 | **Specialists** | Plugin-shipped templates at `specialists/` (translator, ui-ux-designer); project-local overrides saved to `.orchestray/specialists/` by the PM when dynamic agents succeed |
 
+### Specialists shipped in v2.1.9 (preview)
+
+Three additional specialists are being finalized for v2.1.9. The installer wires
+them in and the PM routes to them automatically on matching prompts:
+
+- **database-migration** — plans zero-downtime schema migrations. Detects the
+  migration framework (Prisma, Knex, Flyway, Liquibase, Alembic, Rails,
+  TypeORM, sqlx, goose), emits staged migrations (nullable add → backfill →
+  constraint add), monitoring checkpoints, and rollback triggers. Default
+  model: opus/high. Routes on "migration", "schema change", "backfill",
+  "ALTER TABLE", "zero-downtime", "NOT NULL", "ADD COLUMN", "DROP COLUMN"
+  when a framework signal is also detectable.
+
+- **api-contract-designer** — designs REST / GraphQL / gRPC contracts with
+  versioning discipline: OpenAPI 3.1 or AsyncAPI 3 authoring, JSON Schema
+  evolution, deprecation path design, backward-compat impact analysis.
+  Default model: sonnet/high. Routes on "API contract", "OpenAPI",
+  "REST endpoint", "GraphQL schema", "gRPC", "versioning", "breaking change",
+  "deprecate", "backward-compat".
+
+- **error-message-writer** — polishes user-facing error messages, CLI output,
+  and validation feedback for clarity, tone, actionability, and progressive
+  disclosure. Preserves error codes, i18n keys, and programmatic contracts.
+  Default model: sonnet/medium. Routes on "error message", "error UX",
+  "CLI help", "validation feedback", "form errors", "user-facing copy",
+  "error tone".
+
+Run `npm run lint:specialists` in a clone of the repo to validate frontmatter
+on any new specialist you author.
+
 ## Configuration
 
 Run `/orchestray:config` to view all settings. Key options:

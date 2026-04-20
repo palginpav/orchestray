@@ -499,6 +499,143 @@ function install(targetDir) {
   const refCount = agentSubdirs.reduce((n, dir) => n + fs.readdirSync(path.join(agentsDir, dir)).length, 0);
   console.log(`  \x1b[32m✓\x1b[0m Installed ${agentFiles.length} agents + ${refCount} reference files`);
 
+  // 1b. v2.1.9 I-13: install specialists and symlink into agents/ so
+  // Claude Code's Agent() tool can resolve `subagent_type: <name>` for
+  // shipped specialists.
+  //
+  // Without this step, `Agent(subagent_type="translator")` errors with
+  // "unknown subagent_type" on a fresh install because only the 13 built-in
+  // agents are registered. The fix copies specialists into the installed
+  // tier and creates a symlink per specialist in agents/.
+  //
+  // Windows fallback: if symlink creation fails with EPERM, fall back to
+  // fs.copyFileSync and warn once. Copied files will NOT survive
+  // /orchestray:update — users on Windows need admin or Developer Mode for
+  // durable symlink support.
+  const specialistsDir = path.join(pkgRoot, 'specialists');
+  let specialistSymlinkedCount = 0;
+  let specialistCopiedCount = 0;
+  let specialistSkippedCount = 0;
+  let windowsFallbackWarned = false;
+  if (fs.existsSync(specialistsDir) && fs.statSync(specialistsDir).isDirectory()) {
+    const specFiles = fs.readdirSync(specialistsDir).filter(f => f.endsWith('.md'));
+    const installedSpecDir = path.join(targetDir, 'orchestray', 'specialists');
+    if (specFiles.length > 0) {
+      fs.mkdirSync(installedSpecDir, { recursive: true });
+    }
+    for (const specFile of specFiles) {
+      const srcPath = path.join(specialistsDir, specFile);
+      const installedPath = path.join(installedSpecDir, specFile);
+      const symlinkPath = path.join(targetDir, 'agents', specFile);
+      const expectedTarget = installedPath;
+
+      // 1) Copy specialist body into the installed tier so uninstall knows
+      // where it lives and /orchestray:update can refresh it.
+      try {
+        fs.copyFileSync(srcPath, installedPath);
+        track(path.join('orchestray', 'specialists', specFile));
+      } catch (err) {
+        console.log(
+          '  \x1b[33m⚠\x1b[0m Could not copy specialist ' + specFile + ': ' + err.message
+        );
+        continue;
+      }
+
+      // 2) Create a symlink agents/<name>.md -> orchestray/specialists/<name>.md
+      // so Claude Code's subagent registry picks it up. Idempotent: if the
+      // symlink already points where we expect, keep it; otherwise skip
+      // (user customization takes precedence).
+      let existingIsCorrect = false;
+      let existingConflict = false;
+      try {
+        const lstat = fs.lstatSync(symlinkPath);
+        if (lstat.isSymbolicLink()) {
+          try {
+            const currentTarget = fs.readlinkSync(symlinkPath);
+            const resolved = path.isAbsolute(currentTarget)
+              ? currentTarget
+              : path.resolve(path.dirname(symlinkPath), currentTarget);
+            if (resolved === expectedTarget) {
+              existingIsCorrect = true;
+            } else {
+              existingConflict = true;
+            }
+          } catch (_) {
+            existingConflict = true;
+          }
+        } else {
+          // Regular file or directory; treat as user customization.
+          existingConflict = true;
+        }
+      } catch (err) {
+        if (err && err.code !== 'ENOENT') {
+          existingConflict = true;
+        }
+      }
+
+      if (existingConflict) {
+        console.log(
+          '  \x1b[33m⚠\x1b[0m Skipping specialist symlink ' + path.join('agents', specFile) +
+          ' (existing file not managed by this installer)'
+        );
+        specialistSkippedCount++;
+        continue;
+      }
+
+      if (existingIsCorrect) {
+        track(path.join('agents', specFile));
+        specialistSymlinkedCount++;
+        continue;
+      }
+
+      // Create fresh symlink.
+      try {
+        fs.symlinkSync(expectedTarget, symlinkPath, 'file');
+        track(path.join('agents', specFile));
+        specialistSymlinkedCount++;
+      } catch (err) {
+        if (err && err.code === 'EPERM') {
+          // Windows without admin / Developer Mode. Fall back to copy.
+          try {
+            fs.copyFileSync(installedPath, symlinkPath);
+            track(path.join('agents', specFile));
+            specialistCopiedCount++;
+            if (!windowsFallbackWarned) {
+              console.log(
+                '  \x1b[33m⚠\x1b[0m Symlink permission denied; copied specialists into agents/. ' +
+                'Edits to copied files will not survive /orchestray:update. ' +
+                'Enable Developer Mode or run as admin for durable symlinks.'
+              );
+              windowsFallbackWarned = true;
+            }
+          } catch (copyErr) {
+            console.log(
+              '  \x1b[33m⚠\x1b[0m Could not install specialist ' + specFile + ' (' + copyErr.message + ')'
+            );
+          }
+        } else {
+          console.log(
+            '  \x1b[33m⚠\x1b[0m Could not symlink specialist ' + specFile + ' (' + err.message + ')'
+          );
+        }
+      }
+    }
+
+    const totalInstalled = specialistSymlinkedCount + specialistCopiedCount;
+    if (totalInstalled > 0) {
+      const how = specialistCopiedCount > 0
+        ? 'symlinked ' + specialistSymlinkedCount + ', copied ' + specialistCopiedCount
+        : 'symlinked into agents/';
+      console.log('  \x1b[32m✓\x1b[0m Installed ' + totalInstalled + ' specialists (' + how + ')');
+    }
+    if (specialistSkippedCount > 0) {
+      console.log(
+        '  \x1b[33m⚠\x1b[0m Skipped ' + specialistSkippedCount +
+        ' specialist(s) due to user-managed files in agents/'
+      );
+    }
+  }
+
   // 2. Copy skills (each is a directory with SKILL.md)
   const skillsDir = path.join(pkgRoot, 'skills');
   const skillDirs = fs.readdirSync(skillsDir).filter(f => {
@@ -1124,14 +1261,27 @@ function uninstall(targetDir) {
   // from a prior version are not stranded.
   if (Array.isArray(manifest.files)) {
     // 1. Remove every tracked file individually.
+    //    v2.1.9: use lstatSync before unlink so symlinks (specialist entries
+    //    in agents/) are removed without following to the target.
+    //    fs.unlinkSync on a symlink already removes the link itself, but
+    //    lstatSync-gated fs.existsSync gives us clear "this was a symlink"
+    //    telemetry in the log if something goes wrong.
     const removedDirs = new Set();
     for (const rel of manifest.files) {
       const p = path.join(targetDir, rel);
-      if (fs.existsSync(p)) {
+      let exists = false;
+      try {
+        fs.lstatSync(p);
+        exists = true;
+      } catch (e) {
+        if (e && e.code !== 'ENOENT') exists = true;
+      }
+      if (exists) {
         try {
           fs.unlinkSync(p);
         } catch (_e) {
-          // best effort
+          // best effort — symlinks, regular files, and broken links all
+          // unlink identically; any failure here is safe to ignore.
         }
       }
       removedDirs.add(path.dirname(p));
