@@ -19,6 +19,15 @@
             "timeout": 3
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/nudge-auto-learning.js",
+            "timeout": 3
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -169,6 +178,15 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/write-resilience-dossier.js",
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/post-orchestration-extract-on-stop.js",
+            "timeout": 60
           }
         ]
       }
