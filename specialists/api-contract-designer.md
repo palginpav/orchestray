@@ -74,13 +74,23 @@ POST /orders missing customerId → 422, body.type matches RFC 7807
 GET /orders/{id} unknown id → 404, body conforms to Problem Details
 ```
 
-## Structured Result
+## Output — Structured Result
+
+Emit a `## Structured Result` section at the end of every response, conforming to
+`agents/pm-reference/handoff-contract.md`. Required base fields (from §2): `status`,
+`summary`, `files_changed`, `files_read`, `issues`, `assumptions`. Specialist-specific
+fields (what this specialist adds on top): `contract_diff`, `breaking`,
+`breaking_mitigation`, `deprecations`, `consumer_impact_note`, `contract_test_starter`.
+The T15 hook (`bin/validate-task-completion.js`) blocks missing base fields.
 
 ```json
 {
   "status": "success|partial|failure",
   "summary": "one-line description of what was designed",
   "files_changed": [{ "path": "api/openapi.yaml", "description": "Added POST /orders" }],
+  "files_read": ["api/openapi.yaml"],
+  "issues": [],
+  "assumptions": [],
   "contract_diff": "unified diff or delta description",
   "breaking": false,
   "breaking_mitigation": "",

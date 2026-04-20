@@ -159,17 +159,25 @@ App integration tasks (language switcher, i18n provider, route middleware) are o
 
 Framework selection or migration is the architect's scope. Do not redesign the i18n infrastructure.
 
-## Structured Result
+## Output — Structured Result
 
-Emit the following JSON block at the end of your response under `## Structured Result`:
+Emit a `## Structured Result` section at the end of every response, conforming to
+`agents/pm-reference/handoff-contract.md`. Required base fields (from §2): `status`,
+`summary`, `files_changed`, `files_read`, `issues`, `assumptions`. Specialist-specific
+fields (what this specialist adds on top): placeholder parity check results, CLDR
+plural-form check, length ratio flags, RTL markers check, source-language leak check.
+The T15 hook (`bin/validate-task-completion.js`) blocks missing base fields.
 
 ```json
 {
   "status": "success|partial|failure",
+  "summary": "≤500 chars describing what was translated and the correctness check outcomes",
   "files_changed": [
     { "path": "locale/fr/messages.po", "description": "French translation — 42 strings" }
   ],
   "files_read": ["package.json", "locale/en/messages.po"],
+  "issues": [],
+  "assumptions": [],
   "translation_summary": {
     "framework_detected": "i18next",
     "source_locale": "en",
@@ -187,7 +195,6 @@ Emit the following JSON block at the end of your response under `## Structured R
     "files_emitted": ["locale/fr/messages.json", "locale/de/messages.json", "locale/ar/messages.json"],
     "quality_score": 0.95
   },
-  "issues": [],
   "recommendations": []
 }
 ```

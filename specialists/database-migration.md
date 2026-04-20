@@ -96,9 +96,14 @@ monitoring, and pre-flight verification — never a single-shot destructive `ALT
    against a staging clone before prod — including `EXPLAIN` / `EXPLAIN (ANALYZE, BUFFERS)`
    for the backfill query and a `pg_locks` / `SHOW ENGINE INNODB STATUS` snapshot plan.
 
-## Handoff — Structured Result schema
+## Output — Structured Result
 
-Emit a `## Structured Result` JSON block at the end of your response:
+Emit a `## Structured Result` section at the end of every response, conforming to
+`agents/pm-reference/handoff-contract.md`. Required base fields (from §2): `status`,
+`summary`, `files_changed`, `files_read`, `issues`, `assumptions`. Specialist-specific
+fields (what this specialist adds on top): `migration_phases`, `rollback_plan`,
+`monitoring_checklist`, `risk_register`. The T15 hook (`bin/validate-task-completion.js`)
+blocks missing base fields.
 
 ```json
 {
@@ -107,6 +112,9 @@ Emit a `## Structured Result` JSON block at the end of your response:
   "files_changed": [
     { "path": "db/migrate/20260420_add_email_not_null_phase1.sql", "description": "Phase 1 additive" }
   ],
+  "files_read": ["schema.rb", "db/migrate/"],
+  "issues": [],
+  "assumptions": [],
   "migration_phases": [
     {
       "phase": 1,

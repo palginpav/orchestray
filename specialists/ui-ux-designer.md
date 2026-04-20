@@ -154,15 +154,22 @@ Use `Write` for all file output. Emit new files only — never overwrite an exis
 
 ## Phase 6 — Structured Result
 
-Emit the following JSON block at the end of your response under `## Structured Result`:
+Emit a `## Structured Result` section at the end of every response, conforming to
+`agents/pm-reference/handoff-contract.md`. Required base fields (from §2): `status`,
+`summary`, `files_changed`, `files_read`, `issues`, `assumptions`. Specialist-specific
+fields (what this specialist adds on top): `surfaces_reviewed`, `components`, `tokens`
+(design-system details). The T15 hook (`bin/validate-task-completion.js`) blocks
+missing base fields.
 
 ```json
 {
   "status": "success|partial|failure",
+  "summary": "≤500 chars describing what tokens/components were produced and any a11y findings",
   "files_changed": [
     { "path": "tokens/design-tokens.tokens.json", "description": "DTCG 2025.10 token file — 48 tokens" }
   ],
   "files_read": ["package.json", "tailwind.config.ts"],
+  "assumptions": [],
   "design_summary": {
     "stack": {
       "framework": "Next.js 14",
