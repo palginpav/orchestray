@@ -596,6 +596,46 @@ describe('haiku-backend — Bundle A v2.1.7', () => {
       assert.equal(proposals.length, 0);
       assert.ok(parseErrors.some(e => e.includes('slug')));
     });
+
+    // Regression: Haiku CLI wraps output in ```json fences despite prompt
+    // instructions not to. Observed in production 2026-04-20 — 5 parse_failed
+    // events tripped the auto-extract circuit breaker. Parser must strip fences.
+    test('accepts ```json-fenced output', () => {
+      const envelope = {
+        schema_version: 1,
+        proposals: [],
+        skipped: [{ reason: 'insufficient_evidence' }],
+        budget_used: { input_tokens: 0, output_tokens: 0, elapsed_ms: 0 },
+      };
+      const fenced = '```json\n' + JSON.stringify(envelope, null, 2) + '\n```\n';
+      const { proposals, parseErrors } = parseExtractorOutput(fenced);
+      assert.equal(proposals.length, 0);
+      assert.deepStrictEqual(parseErrors, [], 'no parse errors on a valid empty envelope');
+    });
+
+    test('accepts bare ```-fenced output (no language tag)', () => {
+      const envelope = { schema_version: 1, proposals: [] };
+      const fenced = '```\n' + JSON.stringify(envelope) + '\n```';
+      const { proposals, parseErrors } = parseExtractorOutput(fenced);
+      assert.equal(proposals.length, 0);
+      assert.deepStrictEqual(parseErrors, []);
+    });
+
+    test('raw JSON without fences still parses', () => {
+      const envelope = { schema_version: 1, proposals: [] };
+      const { proposals, parseErrors } = parseExtractorOutput(JSON.stringify(envelope));
+      assert.equal(proposals.length, 0);
+      assert.deepStrictEqual(parseErrors, []);
+    });
+
+    test('reproduces the production degraded-journal payload', () => {
+      // Exact shape from .orchestray/state/degraded.jsonl on 2026-04-20.
+      const raw = '```json\n{\n  "schema_version": 1,\n  "proposals": [],\n  "skipped": [{ "reason": "insufficient_evidence" }],\n  "budget_used": { "input_tokens": 0, "output_tokens": 0, "elapsed_ms": 0 }\n}\n```\n';
+      const { proposals, parseErrors } = parseExtractorOutput(raw);
+      assert.equal(proposals.length, 0);
+      assert.deepStrictEqual(parseErrors, [],
+        'production-observed fenced payload must parse cleanly — this is the fix for the circuit-breaker trip');
+    });
   });
 
   describe('_isK7Excluded — unit', () => {

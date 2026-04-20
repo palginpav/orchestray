@@ -58,6 +58,34 @@ const VALID_TIP_TYPES = new Set([
 const ORCH_ID_RE = /^orch-/;
 
 /**
+ * Match a single wrapping markdown code fence, e.g.:
+ *   ```json
+ *   {...}
+ *   ```
+ * The language tag is optional. Leading/trailing whitespace around the fence
+ * is tolerated. Anything inside is captured and returned.
+ *
+ * Haiku often wraps structured output in a code fence despite explicit prompt
+ * instructions not to — this strip is the fail-open recovery path.
+ */
+const CODE_FENCE_RE = /^\s*```(?:[A-Za-z0-9_+.-]+)?\s*\n([\s\S]*?)\n```\s*$/;
+
+/**
+ * Remove a single wrapping markdown code fence if present. Returns the inner
+ * content trimmed. If no fence is present, returns the input trimmed.
+ *
+ * @param {string} raw
+ * @returns {string}
+ */
+function _stripCodeFence(raw) {
+  if (typeof raw !== 'string') return raw;
+  const trimmed = raw.trim();
+  const m = trimmed.match(CODE_FENCE_RE);
+  if (m) return m[1].trim();
+  return trimmed;
+}
+
+/**
  * @typedef {Object} ParseResult
  * @property {object[]} proposals   - Layer-B-compatible proposal objects (translated)
  * @property {string[]} parseErrors - Human-readable parse error descriptions
@@ -83,10 +111,23 @@ function parseExtractorOutput(stdout) {
   }
 
   let parsed;
+  const candidate = _stripCodeFence(stdout);
   try {
-    parsed = JSON.parse(stdout.trim());
+    parsed = JSON.parse(candidate);
   } catch (_e) {
-    return { proposals: [], parseErrors: ['stdout is not valid JSON'] };
+    // Fallback: if fence-stripping changed the input and the stripped form failed,
+    // retry on the raw trimmed input. Handles pathological cases where the fence
+    // regex matched too greedily or the backend emitted nested fences.
+    const raw = stdout.trim();
+    if (candidate !== raw) {
+      try {
+        parsed = JSON.parse(raw);
+      } catch (_e2) {
+        return { proposals: [], parseErrors: ['stdout is not valid JSON'] };
+      }
+    } else {
+      return { proposals: [], parseErrors: ['stdout is not valid JSON'] };
+    }
   }
 
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -234,4 +275,4 @@ function parseExtractorOutput(stdout) {
   return { proposals: translated, parseErrors };
 }
 
-module.exports = { parseExtractorOutput };
+module.exports = { parseExtractorOutput, _stripCodeFence };

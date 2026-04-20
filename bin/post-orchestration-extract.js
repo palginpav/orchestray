@@ -238,7 +238,7 @@ function spawnExtractor({ events, extractConfig, projectRoot }) {
   // Apply K7 filter before handing to transport.
   const k7Filtered = events.filter(ev => !_isK7Excluded(ev));
 
-  const timeoutMs      = extractConfig.timeout_ms       || 60_000;
+  const timeoutMs      = extractConfig.timeout_ms       || 180_000;
   const maxOutputBytes = extractConfig.max_output_bytes  || 65_536;
 
   const transportResult = runExtractor({

@@ -2729,7 +2729,11 @@ const DEFAULT_AUTO_LEARNING = Object.freeze({
     proposals_per_24h: 10,
     // v2.1.7 Bundle A: live Haiku backend config
     backend:          'haiku-cli', // 'haiku-cli' | 'stub' (haiku-sdk removed in v2.1.7 zero-deferral per K3)
-    timeout_ms:        60_000,     // SIGTERM threshold; clamp [5_000, 300_000]
+    // Empirically, 60s was too tight for Haiku on archives with 30+ quarantined
+    // events — the CLI routinely hit SIGTERM mid-reasoning (observed 2026-04-20
+    // on a 40-event v2.1.9-design archive). Default raised to 180s; clamp
+    // preserved at [5_000, 300_000] so operators can still cap aggressively.
+    timeout_ms:        180_000,
     max_output_bytes:  65_536,     // hard stdout cap; clamp [1024, 1_048_576]
   }),
   roi_aggregator: Object.freeze({

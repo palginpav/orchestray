@@ -60,7 +60,7 @@ const MAX_STDERR_BYTES = 1024;
  *
  * @param {object}   opts
  * @param {object[]} opts.quarantinedEvents  - Quarantined event array (Layer A output)
- * @param {number}   opts.timeoutMs          - SIGTERM after this many ms (default 60_000)
+ * @param {number}   opts.timeoutMs          - SIGTERM after this many ms (default 180_000)
  * @param {number}   [opts.maxInputBytes]    - Reserved for future use; not currently enforced
  * @param {number}   opts.maxOutputBytes     - Report oversize=true and clear stdout if exceeded
  * @param {string}   [opts.modelTag]         - Reserved for SDK path; not used for CLI transport
