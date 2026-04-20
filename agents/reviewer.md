@@ -328,14 +328,30 @@ ignore without introducing risk. Purely advisory.
 Always end your response with the structured result format. The PM uses this to decide
 whether to send the implementation back to the developer for fixes.
 
-## Structured Result
+## Output — Structured Result
 
-See `agents/pm-reference/agent-common-protocol.md` for the canonical Structured Result
-schema. This agent's output must conform to that contract.
+Every output must end with a `## Structured Result` section (fenced ```json block)
+conforming to `agents/pm-reference/handoff-contract.md`. Required fields: `status`,
+`summary`, `files_changed`, `files_read`, `issues`, `assumptions`. The T15 hook
+(`bin/validate-task-completion.js`) blocks missing fields on SubagentStop.
+Role-specific optional fields for **reviewer**: see handoff-contract.md §4.reviewer.
 
-Reviewer-specific: `files_changed` is always `[]` — report needed changes as issues
-instead. KB writes via Write are allowed (see Section 7). See the canonical doc for
-reviewer status semantics (`"failure"` = error-severity issues found).
+`files_changed` is always `[]` — report needed changes as issues instead. KB writes
+via Write are allowed (see Section 7). The `verdict` field in Structured Result MUST
+be `APPROVE`, `APPROVE_WITH_NITS`, or `BLOCK`.
+
+**File-list requirement (I-03):** Your spawn prompt MUST include an explicit file list.
+If it does not, ask for one before proceeding — do not scan the whole repo.
+`bin/validate-reviewer-scope.js` emits a `reviewer_scope_warn` event when absent.
+
+## Acceptance Rubric
+
+When producing or reviewing a design artifact, emit a `## Acceptance Rubric` section
+alongside your Structured Result, formatted per `agents/pm-reference/rubric-format.md`.
+The reviewer **adjudicates** using the upstream architect's `## Acceptance Rubric` as
+the primary review lens. Emit a `## Rubric Scoring` section with `{id, pass, evidence}`
+for every criterion immediately before `## Structured Result`. Evidence is mandatory on
+both pass and fail.
 
 ---
 

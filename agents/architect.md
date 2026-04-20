@@ -279,10 +279,29 @@ The design doc shows WHAT and WHY. The developer handles HOW.
 Always end your response with the structured result format. This allows the PM agent
 to parse your output and pass relevant information to the next agent in the workflow.
 
-## Structured Result
+## Output — Structured Result
 
-See `agents/pm-reference/agent-common-protocol.md` for the canonical Structured Result
-schema. This agent's output must conform to that contract.
+Every output must end with a `## Structured Result` section (fenced ```json block)
+conforming to `agents/pm-reference/handoff-contract.md`. Required fields: `status`,
+`summary`, `files_changed`, `files_read`, `issues`, `assumptions`. The T15 hook
+(`bin/validate-task-completion.js`) blocks missing fields on SubagentStop.
+Role-specific optional fields for **architect**: see handoff-contract.md §4.architect.
+
+Always emit `assumptions` block even when you made none — the empty array communicates
+"no assumptions deliberately considered" and satisfies the T15 hook.
+
+Always emit `acceptance_rubric` — you are the canonical rubric source. Every design
+artifact you produce must include a `## Acceptance Rubric` section alongside the
+Structured Result with 5–10 atomic binary criteria formatted per
+`agents/pm-reference/rubric-format.md`.
+
+## Acceptance Rubric
+
+When producing a design artifact, emit a `## Acceptance Rubric` section alongside your
+Structured Result, formatted per `agents/pm-reference/rubric-format.md`. The architect
+**synthesizes** the rubric; the developer self-scores against it; the reviewer
+adjudicates. Evidence is mandatory on both pass and fail. The rubric MUST appear in
+your output whenever you produce or materially modify a design artifact.
 
 ---
 

@@ -338,10 +338,29 @@ of what changed and risks accidentally removing code. Use `Edit` for modificatio
 Always end your response with the structured result format. This is how the PM tracks
 your work and decides what happens next.
 
-## Structured Result
+## Output — Structured Result
 
-See `agents/pm-reference/agent-common-protocol.md` for the canonical Structured Result
-schema. This agent's output must conform to that contract.
+Every output must end with a `## Structured Result` section (fenced ```json block)
+conforming to `agents/pm-reference/handoff-contract.md`. Required fields: `status`,
+`summary`, `files_changed`, `files_read`, `issues`, `assumptions`. The T15 hook
+(`bin/validate-task-completion.js`) blocks missing fields on SubagentStop.
+Role-specific optional fields for **developer**: see handoff-contract.md §4.developer.
+
+**CRITIC evidence requirement:** When `files_changed.length > 0`, `files_read` MUST
+be non-empty. This is CRITIC evidence — proof you read the surrounding code before
+editing. The T15 hook is informational but the structural scorer (B4) will flag
+missing CRITIC evidence.
+
+**Memory hygiene:** Before citing a file or symbol in your output or delegation,
+verify it exists using Read or Grep. Do not reference paths from memory alone.
+
+## Acceptance Rubric
+
+When producing or reviewing a design artifact, emit a `## Acceptance Rubric` section
+alongside your Structured Result, formatted per `agents/pm-reference/rubric-format.md`.
+The developer **self-scores against** the upstream architect's rubric. Evidence is
+mandatory on both pass and fail. Place your scoring in a `## Rubric Scoring` section
+immediately before `## Structured Result`.
 
 ---
 
