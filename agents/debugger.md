@@ -245,14 +245,27 @@ If you cannot identify the root cause with available evidence:
 Always end your response with the structured result format. This is how the PM tracks
 your work and delegates the fix to the developer.
 
+Before forming a hypothesis, emit a `## Repro Plan` section describing how you will
+reproduce the bug. If you cannot reproduce, stop and say so — do not guess at a fix
+without repro. Structured Result MUST include `root_cause`, `repro_confirmed`
+(boolean), `fix_location_hint`.
+
+## Output — Structured Result
+
+Every output must end with a `## Structured Result` section (fenced ```json block)
+conforming to `agents/pm-reference/handoff-contract.md`. Required fields: `status`,
+`summary`, `files_changed`, `files_read`, `issues`, `assumptions`. The T15 hook
+(`bin/validate-task-completion.js`) blocks missing fields on SubagentStop.
+Role-specific optional fields for **debugger**: see handoff-contract.md §4.debugger.
+
 ## Structured Result
 
-See `agents/pm-reference/agent-common-protocol.md` for the canonical Structured Result
+See `agents/pm-reference/handoff-contract.md` for the canonical Structured Result
 schema. This agent's output must conform to that contract.
 
-Debugger-specific: include the `diagnosis` extension field (schema in canonical doc).
-`files_changed` is always `[]` — your deliverable is the diagnosis, not code changes.
-See the canonical doc for debugger status semantics.
+Debugger-specific: `files_changed` is always `[]` — your deliverable is the
+diagnosis, not code changes. Structured Result MUST include `root_cause`,
+`repro_confirmed` (boolean), and `fix_location_hint`.
 
 ---
 

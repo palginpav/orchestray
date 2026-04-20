@@ -245,13 +245,25 @@ debugger or reviewer. Do not chase it yourself.
 ## 7. Output Format
 
 Always end your response with the structured result format. See
-`agents/pm-reference/agent-common-protocol.md` for the canonical schema.
+`agents/pm-reference/handoff-contract.md` for the canonical schema.
+
+Before critiquing user-facing surfaces (CLI output, slash-command prose, error strings,
+README claims), diff against canonical source (code or spec) to ensure your critique
+is not based on stale text. Emit `consistency_findings` in Structured Result.
 
 Required fields specific to ux-critic:
 - `findings_count` — total number of findings
 - `findings_path` — path to the findings artifact you wrote
 - `personas_used` — list of personas you adopted
 - `top_3_severity` — three highest-severity findings (by index)
+
+## Output — Structured Result
+
+Every output must end with a `## Structured Result` section (fenced ```json block)
+conforming to `agents/pm-reference/handoff-contract.md`. Required fields: `status`,
+`summary`, `files_changed`, `files_read`, `issues`, `assumptions`. The T15 hook
+(`bin/validate-task-completion.js`) blocks missing fields on SubagentStop.
+Role-specific optional fields for **ux-critic**: see handoff-contract.md §4.ux-critic.
 
 ---
 

@@ -38,13 +38,23 @@ Author or rewrite error messages so every one tells the user what happened, why 
 
 **7. Emit before/after diff** for every existing message edited. See Example A below.
 
-## Handoff / Structured Result
+## Output — Structured Result
+
+Emit a `## Structured Result` section at the end of every response, conforming to
+`agents/pm-reference/handoff-contract.md`. Required base fields (from §2): `status`,
+`summary`, `files_changed`, `files_read`, `issues`, `assumptions`. Specialist-specific
+fields (what this specialist adds on top): `messages_written`, `style_notes`,
+`consistency_findings`. The T15 hook (`bin/validate-task-completion.js`) blocks
+missing base fields.
 
 ```json
 {
   "status": "success|partial|failure",
   "summary": "Rewrote 3 CLI errors and 1 API body. Identified 2 drift messages.",
   "files_changed": [{"path": "src/cli/push.ts", "description": "Rewrote 403 and 404 errors"}],
+  "files_read": ["src/cli/push.ts", "src/cli/pull.ts"],
+  "issues": [],
+  "assumptions": [],
   "messages_written": [
     {"location": "src/cli/push.ts:42", "before": "Error: 403", "after": "permission denied — …"}
   ],

@@ -135,7 +135,12 @@ answer.
 ## 3. Output Format
 
 Always end your response with the structured result format. See
-`agents/pm-reference/agent-common-protocol.md` for the canonical schema.
+`agents/pm-reference/handoff-contract.md` for the canonical schema.
+
+Every claim MUST carry a `stability_tier` label: `stable` (documented, supported),
+`experimental` (documented but flagged as experimental), or `community` (third-party /
+unsupported). Include a `source_url` for every claim. Structured Result MUST include
+`claims` array with `{text, stability_tier, source_url}` objects.
 
 The body of your answer must contain these sections:
 
@@ -163,6 +168,14 @@ Required fields specific to platform-oracle:
 - `stability_tier` — one of the four tier labels (so PM can branch on it)
 - `cited_urls` — list of URLs fetched
 - `cross_referenced_files` — list of files read for verification, if any
+
+## Output — Structured Result
+
+Every output must end with a `## Structured Result` section (fenced ```json block)
+conforming to `agents/pm-reference/handoff-contract.md`. Required fields: `status`,
+`summary`, `files_changed`, `files_read`, `issues`, `assumptions`. The T15 hook
+(`bin/validate-task-completion.js`) blocks missing fields on SubagentStop.
+Role-specific optional fields for **platform-oracle**: see handoff-contract.md §4.platform-oracle.
 
 ---
 
