@@ -39,6 +39,7 @@ const MAX_LINE_BYTES = 2 * 1024;
 const SCORER_PATHS = {
   'skip-down':     './scorer-skip-down',
   'local-success': './scorer-local-success',
+  'structural':    './scorer-structural',
 };
 
 // In-process scorer registry: name → { name, version, score }.
