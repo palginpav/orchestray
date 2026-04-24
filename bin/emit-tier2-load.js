@@ -1,0 +1,171 @@
+#!/usr/bin/env node
+'use strict';
+
+/**
+ * emit-tier2-load.js — PostToolUse:Read hook (R-TEL, v2.1.12).
+ *
+ * Emits a `tier2_load` audit event whenever a Read tool call targets a file
+ * in `agents/pm-reference/` that is NOT in the always-loaded set. This gives
+ * the measurement signal needed to retroactively verify R1/R2/R3 effectiveness.
+ *
+ * Always-loaded files (excluded from tier-2 allowlist, per pm.md §"Section Loading Protocol"):
+ *   - tier1-orchestration.md  (loaded every orchestration via explicit Read directive)
+ *   - scoring-rubrics.md      (always-available)
+ *   - specialist-protocol.md  (always-available)
+ *   - delegation-templates.md (always-available)
+ *
+ * Fail-open contract: any error → exit 0, never blocks the Read tool.
+ * Kill-switch: ORCHESTRAY_METRICS_DISABLED=1 skips event emission.
+ *
+ * Input:  JSON on stdin (Claude Code PostToolUse:Read hook payload)
+ * Output: JSON on stdout ({ continue: true }), always
+ */
+
+const fs   = require('fs');
+const path = require('path');
+
+const { atomicAppendJsonl }      = require('./_lib/atomic-append');
+const { resolveSafeCwd }         = require('./_lib/resolve-project-cwd');
+const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
+const { MAX_INPUT_BYTES }        = require('./_lib/constants');
+
+// ---------------------------------------------------------------------------
+// Always-loaded set — these files are EXCLUDED from the tier-2 allowlist.
+// Keep this list in sync with pm.md §"Always-Available Reference Files" and
+// the always-loaded Tier-1 directive.
+// ---------------------------------------------------------------------------
+const ALWAYS_LOADED = new Set([
+  'tier1-orchestration.md',
+  'scoring-rubrics.md',
+  'specialist-protocol.md',
+  'delegation-templates.md',
+]);
+
+/**
+ * Return true if `filePath` is a tier-2 pm-reference file (i.e. it lives
+ * under `agents/pm-reference/` and is NOT in the always-loaded set).
+ *
+ * Accepts both absolute paths and relative paths (resolved against cwd).
+ *
+ * @param {string} filePath - The file_path from tool_input.
+ * @returns {boolean}
+ */
+function isTier2File(filePath) {
+  if (!filePath || typeof filePath !== 'string') return false;
+
+  // Normalize separators and extract the last two path segments so the check
+  // works for both absolute (/home/user/repo/agents/pm-reference/foo.md) and
+  // relative (agents/pm-reference/foo.md) forms.
+  const normalized = filePath.replace(/\\/g, '/');
+
+  // Must be inside agents/pm-reference/
+  if (!normalized.includes('agents/pm-reference/')) return false;
+
+  // Extract the basename.
+  const basename = normalized.split('/').pop() || '';
+
+  // Must have .md extension (the pm-reference dir contains only .md files).
+  if (!basename.endsWith('.md')) return false;
+
+  // Exclude always-loaded files.
+  if (ALWAYS_LOADED.has(basename)) return false;
+
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Main stdin processing
+// ---------------------------------------------------------------------------
+
+const CONTINUE_RESPONSE = JSON.stringify({ continue: true });
+
+if (require.main === module) {
+  let input = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('error', () => {
+    process.stdout.write(CONTINUE_RESPONSE);
+    process.exit(0);
+  });
+  process.stdin.on('data', (chunk) => {
+    input += chunk;
+    if (input.length > MAX_INPUT_BYTES) {
+      process.stderr.write('[orchestray] emit-tier2-load: stdin exceeded limit; skipping\n');
+      process.stdout.write(CONTINUE_RESPONSE);
+      process.exit(0);
+    }
+  });
+  process.stdin.on('end', () => {
+    try {
+      handle(JSON.parse(input || '{}'));
+    } catch (_e) {
+      // Fail-open: malformed stdin — exit 0 with no event emission.
+      process.stdout.write(CONTINUE_RESPONSE);
+      process.exit(0);
+    }
+  });
+}
+
+function handle(event) {
+  try {
+    // Kill-switch: skip emission when metrics are disabled.
+    if (process.env.ORCHESTRAY_METRICS_DISABLED === '1') {
+      process.stdout.write(CONTINUE_RESPONSE);
+      return;
+    }
+
+    const cwd       = resolveSafeCwd(event && event.cwd);
+    const toolInput = (event && event.tool_input) || {};
+    const filePath  = toolInput.file_path || toolInput.path || '';
+
+    // Only act when the Read target is a tier-2 pm-reference file.
+    if (!isTier2File(filePath)) {
+      process.stdout.write(CONTINUE_RESPONSE);
+      return;
+    }
+
+    // Read orchestration_id from current-orchestration.json.
+    let orchestrationId = 'unknown';
+    try {
+      const orchFile = getCurrentOrchestrationFile(cwd);
+      const orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
+      if (orchData && orchData.orchestration_id) {
+        orchestrationId = orchData.orchestration_id;
+      }
+    } catch (_e) {
+      // File missing or unreadable — keep 'unknown'
+    }
+
+    // Derive the basename for the event so callers don't need to parse paths.
+    const normalized = filePath.replace(/\\/g, '/');
+    const basename   = normalized.split('/').pop() || filePath;
+
+    const auditEvent = {
+      timestamp:        new Date().toISOString(),
+      type:             'tier2_load',
+      orchestration_id: orchestrationId,
+      file_path:        basename,
+      agent_role:       (event && event.agent_type) || null,
+      source:           'hook',
+    };
+
+    // task_id is optional; only include when the hook payload carries one.
+    const taskId = event && (event.task_id || null);
+    if (taskId) auditEvent.task_id = taskId;
+
+    const auditDir = path.join(cwd, '.orchestray', 'audit');
+    try {
+      fs.mkdirSync(auditDir, { recursive: true });
+    } catch (_e) {
+      // Directory creation failure is non-fatal.
+    }
+
+    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), auditEvent);
+  } catch (_e) {
+    // Fail-open: any unexpected error — exit 0 with no stderr spam.
+  } finally {
+    process.stdout.write(CONTINUE_RESPONSE);
+  }
+}
+
+// Export helpers for testing.
+module.exports = { isTier2File, ALWAYS_LOADED };

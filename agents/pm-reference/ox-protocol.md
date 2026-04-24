@@ -155,6 +155,8 @@ over: pattern search, KB lookup, routing lookup, budget check.
 simple peek where terse output is sufficient. These are process-automation ops,
 not reasoning inputs.
 
+When calling MCP tools with small, predictable outputs (e.g., pattern_find with 2–3 patterns), prefer `fields: ['slug','confidence']` projection over reading the full response.
+
 `ox` does NOT duplicate any existing MCP tool in v1. Future verbs (`ox kb read`,
 `ox events tail`) will be additive, not replacements.
 

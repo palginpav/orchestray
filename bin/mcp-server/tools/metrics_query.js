@@ -18,6 +18,7 @@ const path = require('node:path');
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
 const { toolSuccess, toolError } = require('../lib/tool-result');
 const { mean, p50, groupBy } = require('../../_lib/analytics');
+const { parseFields, projectArray } = require('../lib/field-projection');
 
 // ---------------------------------------------------------------------------
 // Schema constants
@@ -47,6 +48,10 @@ const INPUT_SCHEMA = {
       description:
         'Metric to aggregate: cache_hit_ratio, input_tokens, output_tokens, cost_usd, or count.',
     },
+    // fields: accepts a comma-separated string or string[] — validated by parseFields() at runtime.
+    // Schema type intentionally omitted: the validator subset does not support oneOf/anyOf,
+    // and parseFields() enforces the allowed shapes with clear error messages.
+    fields: { description: 'Optional comma-separated string or array of top-level field names to project. Omit for full response (backward compat).' },
   },
 };
 
@@ -350,8 +355,16 @@ async function handle(input, context) {
   // Aggregate
   const groups = aggregate(filtered, groupByField, metric);
 
+  // R-FPX (v2.1.12): apply field projection when `fields` is requested.
+  // Omitting `fields` returns the full legacy response (backward compat).
+  const fieldSpec = parseFields(input && input.fields);
+  if (fieldSpec && fieldSpec.error) {
+    return toolError('metrics_query: ' + fieldSpec.error);
+  }
+  const projectedGroups = (fieldSpec !== null) ? projectArray(groups, fieldSpec) : groups;
+
   return toolSuccess({
-    groups,
+    groups: projectedGroups,
     meta: {
       window: win,
       group_by: groupByField,

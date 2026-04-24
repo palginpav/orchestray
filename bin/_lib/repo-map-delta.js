@@ -7,6 +7,10 @@
  * the map is written to .orchestray/kb/facts/repo-map.md.
  * Subsequent delegations get a pointer block with hash + per-agent hint rows.
  *
+ * Also exports injectProjectIntent() — a sibling that injects the
+ * ## Project Intent block from .orchestray/kb/facts/project-intent.md into
+ * delegation prompts when the file exists AND low_confidence is false (AC-06).
+ *
  * State: .orchestray/state/repo-map-delta-state.jsonl
  * Row format: { orch_id, first_agent, file_hash, ts }
  *
@@ -21,6 +25,7 @@ const path   = require('path');
 const crypto = require('crypto');
 const { atomicAppendJsonl } = require('./atomic-append');
 const { recordDegradation } = require('./degraded-journal');
+const { readProjectIntent, isLowConfidence } = require('./project-intent');
 
 const STATE_FILE = 'repo-map-delta-state.jsonl';
 const REPO_MAP_KB_PATH = path.join('.orchestray', 'kb', 'facts', 'repo-map.md');
@@ -216,4 +221,44 @@ function _emitFirstFull(orchId, agentType, content, projectRoot) {
   }
 }
 
-module.exports = { injectRepoMap };
+/**
+ * Inject the Project Intent block into a delegation prompt.
+ *
+ * Reads .orchestray/kb/facts/project-intent.md and, if the file exists AND
+ * low_confidence is false, returns a formatted ## Project Intent block ready
+ * to prepend to the delegation prompt (AC-06).
+ *
+ * Returns '' (empty string) when:
+ *   - File does not exist
+ *   - File has low_confidence: true
+ *   - Any read error
+ *
+ * @param {object} [params]
+ * @param {string} [params.projectRoot]
+ * @returns {string}  The formatted ## Project Intent section, or ''.
+ */
+function injectProjectIntent(params) {
+  try {
+    const { projectRoot } = params || {};
+    const content = readProjectIntent(projectRoot);
+    if (!content) return '';
+    if (isLowConfidence(content)) return '';
+    // Return the content as a delegation prompt block.
+    // Strip the raw markdown header line (# Project Intent) and the HTML comment,
+    // then wrap cleanly so downstream agents see a stable section heading.
+    const lines = content.split('\n');
+    // Keep lines after stripping the first title line (we re-add it as ## heading)
+    const bodyLines = lines.filter(l => !l.startsWith('# Project Intent') && !l.startsWith('<!-- generated:'));
+    // Remove leading blank lines from body
+    while (bodyLines.length && bodyLines[0].trim() === '') bodyLines.shift();
+    // Remove trailing blank lines from body
+    while (bodyLines.length && bodyLines[bodyLines.length - 1].trim() === '') bodyLines.pop();
+    if (bodyLines.length === 0) return '';
+    return '## Project Intent\n\n' + bodyLines.join('\n');
+  } catch (err) {
+    // Fail-open: intent block is additive, so missing it is not fatal.
+    return '';
+  }
+}
+
+module.exports = { injectRepoMap, injectProjectIntent };

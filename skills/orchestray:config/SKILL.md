@@ -85,7 +85,8 @@ The user wants to view or modify orchestration settings.
     "self_escalation_enabled": true,
     "pm_recommendation_enabled": true,
     "tombstone_retention_runs": 3
-  }
+  },
+  "ox_telemetry_enabled": false
 }
 ```
 
@@ -160,6 +161,7 @@ to nested).
 | `curator.self_escalation_enabled` | boolean | `true` | Allow the curator to escalate to a higher-reasoning model for borderline merge decisions. When `false`, all merges are evaluated at the curator's default model tier. |
 | `curator.pm_recommendation_enabled` | boolean | `true` | Allow the PM to surface a once-per-session recommendation to run the curator when the pattern corpus shows signs of needing hygiene. When `false`, the PM never nags about curation. |
 | `curator.tombstone_retention_runs` | integer | `3` | Number of curator runs kept in the undo window (1–10). Runs older than this are archived to `.orchestray/curator/tombstones-archive/`. Affects how far back `undo <action-id>` can reach. |
+| `ox_telemetry_enabled` | boolean | `false` | Enable ox.jsonl telemetry log. Default false. Opt-in only. |
 | `mcp_server.max_per_task.ask_user` | integer | `20` | Per-task call limit for the `ask_user` MCP tool. Integer 1–1000. When exceeded within a single (orchestration_id, task_id) scope, the tool returns a budget-exceeded signal. Out-of-range or non-integer values fall back to the default and write a `mcp_server_max_per_task_out_of_range` degraded-journal entry. |
 | `mcp_server.max_per_task.kb_write` | integer | `20` | Per-task call limit for the `kb_write` MCP tool. Same constraints and fallback behaviour as `ask_user`. |
 | `mcp_server.max_per_task.pattern_record_application` | integer | `20` | Per-task call limit for the `pattern_record_application` MCP tool. Same constraints and fallback behaviour as `ask_user`. |
@@ -327,6 +329,7 @@ When showing settings:
 | curator.self_escalation_enabled | true | Allow curator to escalate model for borderline merge decisions |
 | curator.pm_recommendation_enabled | true | Allow PM to surface once-per-session curator recommendation |
 | curator.tombstone_retention_runs | 3 | Number of curator runs kept in the undo window (1-10) |
+| ox_telemetry_enabled | false | Enable ox.jsonl telemetry log. Default false. Opt-in only. |
 
 Use `/orchestray:config [setting] [value]` to change a setting.
 Use `/orchestray:config show federation` for federation settings and detectable projects.

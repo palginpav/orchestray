@@ -229,6 +229,59 @@ function emitRollup(cwd, orchestrationId) {
     return "- model auto-resolved to '" + mdl + "' (source: " + src + ") for agent " + agentStr + " (task: " + taskStr + ")";
   });
 
+  // -------------------------------------------------------------------------
+  // R-TEL (AC-04): tier2_load count-by-file summary.
+  // Aggregate tier2_load events for this orchestration by file_path.
+  // -------------------------------------------------------------------------
+  const tier2LoadEvents = orchEvents.filter(ev => ev.type === 'tier2_load');
+  const tier2LoadByFile = {};
+  for (const ev of tier2LoadEvents) {
+    const fp = ev.file_path || 'unknown';
+    tier2LoadByFile[fp] = (tier2LoadByFile[fp] || 0) + 1;
+  }
+  const tier2LoadTotal = tier2LoadEvents.length;
+
+  // -------------------------------------------------------------------------
+  // R-DXT (AC-01): model_auto_resolved count-by-source summary.
+  // Zero counts are elided per spec.
+  // -------------------------------------------------------------------------
+  const autoResolveBySource = {};
+  for (const ev of autoResolveEvents) {
+    const src = ev.source || 'unknown';
+    autoResolveBySource[src] = (autoResolveBySource[src] || 0) + 1;
+  }
+  const autoResolveTotal = autoResolveEvents.length;
+
+  // Build the human-readable count-by-source line (zero counts elided).
+  let modelAutoResolvedSummary = null;
+  if (autoResolveTotal > 0) {
+    const parts = Object.entries(autoResolveBySource)
+      .map(([src, n]) => src + '=' + n);
+    modelAutoResolvedSummary = '- model auto-resolved ' + autoResolveTotal + ' times: ' + parts.join(', ');
+  }
+
+  // -------------------------------------------------------------------------
+  // R-FPM (AC-02): fields_projected count-by-tool summary.
+  // Aggregate fields_projected observations from events.jsonl.
+  // Zero counts are elided per spec.
+  // -------------------------------------------------------------------------
+  const fieldsProjEvents = orchEvents.filter(ev => ev.type === 'fields_projected');
+  const fieldsProjByTool = {};
+  for (const ev of fieldsProjEvents) {
+    const toolName = ev.tool_name || 'unknown';
+    fieldsProjByTool[toolName] = (fieldsProjByTool[toolName] || 0) + 1;
+  }
+  const fieldsProjTotal   = fieldsProjEvents.length;
+  const fieldsProjToolCount = Object.keys(fieldsProjByTool).length;
+
+  let fieldsProjSummary = null;
+  if (fieldsProjTotal > 0) {
+    const parts = Object.entries(fieldsProjByTool)
+      .map(([tool, n]) => tool + ': ' + n);
+    fieldsProjSummary = '- MCP field projection used ' + fieldsProjTotal + ' times across ' +
+      fieldsProjToolCount + ' tools: {' + parts.join(', ') + '}';
+  }
+
   const rollupRow = {
     row_type:                        'orchestration_rollup',
     schema_version:                  1,
@@ -259,6 +312,14 @@ function emitRollup(cwd, orchestrationId) {
     model_auto_resolved_warnings:    model_auto_resolved_warnings.length > 0
       ? model_auto_resolved_warnings
       : undefined,
+    // R-TEL (AC-04): tier2_load count-by-file summary.
+    tier2_load_summary:              tier2LoadTotal > 0
+      ? { total: tier2LoadTotal, by_file: tier2LoadByFile }
+      : undefined,
+    // R-DXT (AC-01): model_auto_resolved count-by-source summary line.
+    model_auto_resolved_summary:     modelAutoResolvedSummary || undefined,
+    // R-FPM (AC-02): fields_projected count-by-tool summary line.
+    fields_projected_summary:        fieldsProjSummary || undefined,
   };
 
   // Write rollup row.

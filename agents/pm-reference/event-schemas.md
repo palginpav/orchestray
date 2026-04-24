@@ -22,6 +22,7 @@ state_cancel_aborted — cancel sentinel fired (PM)
 mcp_checkpoint_missing / kill_switch_activated / kill_switch_deactivated — enforcement (hook)
 model_auto_resolved — model auto-resolved by gate, warn level (hook, v2.1.11)
 pre_compact_archive / cite_cache_hit / spec_sketch_generated / repo_map_delta_injected — telemetry (hook)
+tier2_load — Tier-2 pm-reference file loaded (hook, v2.1.12)
 
 END CONDITIONAL-LOAD NOTICE -->
 
@@ -3611,3 +3612,54 @@ Field notes:
 - `routing_entry_timestamp` — present only when `source=routing_lookup`; records the original routing decision timestamp for forensic use (W6 T09/Info #2).
 - Kill-switch: `ORCHESTRAY_STRICT_MODEL_REQUIRED=1` disables auto-resolve and restores the v2.1.10 hard-block.
 - These events appear in the `model_auto_resolved_warnings` field of the orchestration rollup row as human-readable lines.
+
+---
+
+## v2.1.12 additions
+
+### `tier2_load` event (R-TEL)
+
+Emitted by `bin/emit-tier2-load.js` (PostToolUse:Read hook) whenever a Read tool call
+targets a Tier-2 file under `agents/pm-reference/`. Provides the measurement signal
+needed to verify R1/R2/R3 cost-saving effectiveness by counting how often each
+conditional file is actually loaded.
+
+**Tier-2 allowlist:** all files under `agents/pm-reference/` EXCLUDING the always-loaded
+set: `tier1-orchestration.md`, `scoring-rubrics.md`, `specialist-protocol.md`,
+`delegation-templates.md`.
+
+Emitted to `.orchestray/audit/events.jsonl`. Fail-open: any write failure is silently
+swallowed and the Read tool call is never blocked (exit 0 always).
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "tier2_load",
+  "orchestration_id": "<current orch id, or 'unknown' if no orchestration active>",
+  "task_id": "<subtask id, optional — present only when hook payload carries one>",
+  "file_path": "<basename of the loaded pm-reference file, e.g. 'event-schemas.md'>",
+  "agent_role": "<agent_type from hook payload, or null>",
+  "source": "hook"
+}
+```
+
+Field notes:
+- `type`: Always `"tier2_load"`.
+- `orchestration_id`: Read from `.orchestray/audit/current-orchestration.json` at hook
+  time. `"unknown"` when the file is absent or unreadable (e.g., Read called outside an
+  active orchestration, or before orchestration initialization).
+- `task_id`: Optional. Only present when `event.task_id` is populated in the hook
+  payload. The PM's Read calls may happen between tasks (task_id not yet assigned).
+- `file_path`: Basename only (e.g., `"event-schemas.md"`) — the full path is not needed
+  for measurement, and stripping it keeps the event compact.
+- `agent_role`: The `agent_type` field from the hook payload, or `null` when absent.
+- `source`: Always `"hook"` — emitted by `bin/emit-tier2-load.js`, never by the PM.
+
+**Consumer guidance:** aggregate `tier2_load` events by `file_path` over an orchestration
+to measure Tier-2 dispatch frequency. A count of 0 for `tier1-orchestration-rare.md`
+on a common-path orchestration retroactively verifies R2 AC-03. The post-orchestration
+rollup (`bin/emit-orchestration-rollup.js`) summarises counts-by-file as a human-readable
+section.
+
+**Schema stability:** additive only. Consumers that do not recognise this event type
+should ignore it. New fields will only be added as optional.

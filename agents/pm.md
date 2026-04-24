@@ -194,7 +194,7 @@ When the score meets or exceeds the threshold, enter orchestration mode:
 2.4. **Cross-session KB context scan:** Before decomposing, call
    `mcp__orchestray__kb_search` with the current task summary:
    - Example: `{"query": "<task summary>", "kb_sections": ["facts", "decisions"], "limit": 5}`.
-   - When only specific fields are needed, use the optional `fields` parameter to reduce output token cost: `{"query": "...", "fields": ["slug", "excerpt"]}`. Works the same way for `mcp__orchestray__pattern_find`: `{"task_summary": "...", "fields": ["slug", "confidence"]}`. Omit `fields` for the full response (backward compatible).
+   - When only specific fields are needed, use the optional `fields` parameter to reduce output token cost: `{"query": "...", "fields": ["slug", "excerpt"]}`. Works the same way for `mcp__orchestray__pattern_find`: `{"task_summary": "...", "fields": ["slug", "confidence"]}`, `mcp__orchestray__routing_lookup`: `{"orchestration_id": "...", "fields": ["ts", "agent_type", "model"]}`, and `mcp__orchestray__metrics_query`: `{"window": "7d", "group_by": "model", "metric": "cost_usd", "fields": ["key", "mean"]}`. Omit `fields` for the full response (backward compatible).
    - Read the top ≤3 matches via `@orchestray:kb://<section>/<slug>` attachments in the
      delegation prompt, only for the specialists that will directly use them. Do not
      broadcast KB matches to every spawned agent.
@@ -223,6 +223,23 @@ When the score meets or exceeds the threshold, enter orchestration mode:
    - If `enable_repo_map` or `enable_prescan` config is false, skip entirely.
    The repo map replaces the old `codebase-overview.md` pre-scan.
    > Read `agents/pm-reference/repo-map-protocol.md` for the full generation process.
+
+2.7a. **Project intent generation (goal-inference):** After Step 2.7, generate or
+   validate `.orchestray/kb/facts/project-intent.md` via the mechanical inference
+   script (`bin/_lib/project-intent.js`). Skip entirely if `enable_goal_inference`
+   is false OR if `enable_repo_map` is false (coupled gate, AC-05). The script:
+   - Checks `git ls-files | wc -l` — if < 10 files, writes a stub with
+     `low_confidence: true` and skips field inference (AC-08).
+   - Reads the cached file if it exists and compares `repo-hash` AND `readme-hash`
+     (sha256 of first 50 lines of README.md) to current values (AC-02 cache hit;
+     AC-03 invalidation on README change).
+   - When README is missing or < 100 words: writes `low_confidence: true` stub (AC-04).
+   - Otherwise: extracts five fields (domain, user problem, architectural constraint,
+     tech stack, entry points) from README.md, package.json, and CLAUDE.md.
+   Inject the intent block into delegation prompts via `injectProjectIntent()` from
+   `bin/_lib/repo-map-delta.js` — only when file exists AND `low_confidence: false`
+   (AC-06). See `agents/pm-reference/repo-map-protocol.md` §"Project Intent" for
+   the format spec and staleness rules.
 
 3. **Decompose** the task following Section 13 (Task Decomposition Protocol, in tier1-orchestration.md).
 
@@ -1273,9 +1290,9 @@ These environment variables are operator escape hatches that restore pre-v2.1.11
 
 | Variable | Default | Effect |
 |---|---|---|
-| `ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD=1` | unset (conditional) | Forces `event-schemas.md` to be loaded on every PM turn, matching v2.1.10 always-available behaviour. Disables the R1 AC-05 hook audit-event type validator (schema is always in context, no hook needed). |
-| `ORCHESTRAY_TIER1_RARE_ALWAYS_LOAD=1` | unset (conditional) | Forces `tier1-orchestration-rare.md` to be loaded alongside `tier1-orchestration.md` on every orchestration turn, matching pre-R2 single-file behaviour. |
-| `ORCHESTRAY_DELEGATION_TEMPLATES_MERGE=1` | unset (conditional) | Forces `delegation-templates-detailed.md` to be loaded alongside `delegation-templates.md` on every turn, matching pre-R3 merged-file behaviour. |
+| `ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD=1` | unset (conditional) | Mechanically injects `event-schemas.md` into every PM turn via hook (`bin/inject-archetype-advisory.js`), restoring v2.1.10 always-available behaviour. Rollback is guaranteed regardless of Tier-2 dispatch rule interpretation. |
+| `ORCHESTRAY_TIER1_RARE_ALWAYS_LOAD=1` | unset (conditional) | Mechanically injects `tier1-orchestration-rare.md` into every PM turn via hook (`bin/inject-archetype-advisory.js`), restoring pre-R2 always-load behaviour. Rollback is guaranteed regardless of Tier-2 dispatch rule interpretation. |
+| `ORCHESTRAY_DELEGATION_TEMPLATES_MERGE=1` | unset (conditional) | Mechanically injects `delegation-templates-detailed.md` into every PM turn via hook (`bin/inject-archetype-advisory.js`), restoring pre-R3 merged-file behaviour. Rollback is guaranteed regardless of Tier-2 dispatch rule interpretation. |
 | `ORCHESTRAY_STRICT_MODEL_REQUIRED=1` | unset (auto-resolve on) | Restores v2.1.10 hard-block: `Agent()` spawn fails immediately if `model` is omitted, with no auto-resolve fallback. |
 | `ORCHESTRAY_ARTIFACT_PATH_ENFORCEMENT=warn` | unset (block on placeholder) | Downgrades the R-DX2 artifact-path enforcement from exit 2 (blocking) to exit 0 + stderr warning. Use during migration if agents produce expected placeholder values transiently. |
 

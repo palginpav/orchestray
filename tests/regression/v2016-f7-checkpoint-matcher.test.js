@@ -62,8 +62,9 @@ describe('W10 T2 F7 regression — PostToolUse checkpoint matcher completeness',
     }
   });
 
-  test('matcher is a pipe-separated union of exactly the 5 expected tools', () => {
+  test('matcher is a pipe-separated union of exactly the 7 expected tools', () => {
     // Each tool name appears as a segment. We use .split('|') to count.
+    // v2.1.12 (R-FPM): routing_lookup and metrics_query added for fields-projected hook coverage.
     const segments = matcher.split('|').map(s => s.trim());
     const expected = new Set([
       'mcp__orchestray__pattern_find',
@@ -71,6 +72,8 @@ describe('W10 T2 F7 regression — PostToolUse checkpoint matcher completeness',
       'mcp__orchestray__history_find_similar_tasks',
       'mcp__orchestray__pattern_record_application',
       'mcp__orchestray__pattern_record_skip_reason',
+      'mcp__orchestray__routing_lookup',
+      'mcp__orchestray__metrics_query',
     ]);
     for (const seg of segments) {
       assert.ok(expected.has(seg),

@@ -446,3 +446,96 @@ verify_fix_max_rounds`, omit this budget line entirely for that reviewer delegat
 ---
 
 **Compression path observability (v2.1.10):** Each compression path (CiteCache, SpecSketch, RepoMapDelta) is now audit-traced by `bin/emit-compression-telemetry.js` on `SubagentStart`. When the delegation prompt reaches the subagent, the hook greps it for the three markers and appends a `cite_cache_hit`, `spec_sketch_generated`, or `repo_map_delta_injected` event to `.orchestray/audit/events.jsonl`. Running `grep -c cite_cache_hit .orchestray/audit/events.jsonl` is now a valid runtime smoke-test for confirming that CiteCache is actually firing during a given orchestration. If the count is zero after several delegations, it indicates the PM has fallen back to full pattern-body prose and the compression is not active. Kill-switch: `ORCHESTRAY_COMPRESSION_TELEMETRY_DISABLED=1`.
+
+---
+
+## Section 11: KB + Diff Handoff Flow
+
+Follow this 5-step pattern for every sequential agent handoff:
+
+1. **PM spawns Agent A** with the task description plus an instruction to write discoveries
+   to the KB (using the template from Section 10: "Instructing Agents to Write KB").
+
+2. **Agent A completes work** and writes findings to `.orchestray/kb/{category}/{slug}.md`,
+   updating `index.json` with the new entry.
+
+3. **PM prepares handoff for Agent B** by:
+   a. Checking `index.json` for entries where `source_agent` matches Agent A and
+      `updated_at` is recent (within the current orchestration timeframe)
+   b. Running `git diff` to capture Agent A's code changes (use `git diff HEAD~1` or
+      the appropriate range for Agent A's commits)
+   c. Composing Agent B's delegation prompt with all three components:
+      the task, the KB references, and the diff
+   d. **Selective relevance filter:** Before including any KB entry in the handoff, evaluate
+      whether it is relevant to Agent B's SPECIFIC subtask (not just the overall orchestration).
+      Skip entries about parts of the system Agent B won't touch. This prevents context waste
+      from irrelevant KB entries.
+
+4. **Agent B reads specified KB entries**, understands the changes via the diff, and
+   proceeds with its own task. Agent B does NOT re-read files that Agent A already
+   analyzed -- the KB entry provides the distilled context.
+
+5. **Agent B writes its own discoveries to KB**, continuing the chain for any subsequent
+   agent (e.g., reviewer after developer).
+
+---
+
+## Confidence Checkpoint Instructions
+
+When `enable_backpressure` is true, append this block to every agent delegation prompt
+(architect, developer, reviewer, refactorer, inventor, debugger, tester, documenter,
+security-engineer, and dynamic agents). This is the exact template used by Section 3.Z
+in tier1-orchestration.md. Replace `{TASK_ID}` with the subtask's actual ID before
+injection.
+
+### Template Block
+
+```
+## Confidence Checkpoints
+
+At three points during your work, pause and write a confidence signal to:
+  .orchestray/state/confidence/task-{TASK_ID}.json
+
+Use this exact JSON format:
+{
+  "task_id": "{TASK_ID}",
+  "checkpoint": "<post-exploration|post-approach|mid-implementation>",
+  "confidence": <0.0-1.0>,
+  "risk_factors": ["<list of specific concerns>"],
+  "estimated_remaining_turns": <number>,
+  "would_benefit_from": "<what additional context would help, or null>"
+}
+
+Checkpoint triggers:
+1. AFTER reading relevant files but BEFORE writing any code/design — write with
+   checkpoint "post-exploration"
+2. AFTER deciding on an implementation approach but BEFORE committing to it — write
+   with checkpoint "post-approach"
+3. HALFWAY through your estimated work — write with checkpoint "mid-implementation"
+
+Each write overwrites the previous one. Only your latest signal matters.
+
+Confidence calibration:
+- 0.9+: Very confident, familiar pattern, clear path
+- 0.7-0.89: Confident but some unknowns, manageable risk
+- 0.5-0.69: Uncertain, multiple concerns, may need help
+- 0.3-0.49: Low confidence, significant blockers, approach may be wrong
+- <0.3: Very low, should probably stop and get guidance
+
+Be honest. Overconfidence wastes more tokens than admitting uncertainty.
+In risk_factors, be specific: "unfamiliar async pattern in auth module" not "might be hard".
+In would_benefit_from, name the exact context: "architect guidance on module boundary"
+or null if nothing specific would help.
+```
+
+### Injection Rules
+
+- Place the `## Confidence Checkpoints` section at the END of the delegation prompt,
+  after all other sections (task description, context, playbooks, corrections, repo map,
+  upstream traces).
+- The section is self-contained — agents do not need to read any external file to
+  understand the protocol.
+- For dynamic agents (Section 17), include the same template block in the dynamically
+  generated agent definition's system prompt.
+- If `enable_backpressure` is false or absent, omit this section entirely. Do not include
+  an empty placeholder.

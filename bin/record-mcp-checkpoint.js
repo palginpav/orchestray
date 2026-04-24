@@ -140,7 +140,54 @@ process.stdin.on('end', () => {
     }
     const tool = rawToolName.slice(PREFIX.length);
 
-    // Ignore calls for tools not in the enforced set.
+    // R-FPM (AC-01): emit a fields_projected observation when tool_input carries
+    // a non-empty `fields` parameter. This fires for ANY mcp__orchestray__ tool
+    // (not just enforced ones) so that routing_lookup / metrics_query are covered
+    // once R-FPX wires them up.
+    try {
+      const toolInput = event.tool_input;
+      const rawFields = toolInput && toolInput.fields;
+      // Count field_count: parse the fields value the same way field-projection.js does.
+      let fieldCount = 0;
+      if (rawFields !== undefined && rawFields !== null) {
+        if (typeof rawFields === 'string') {
+          const parts = rawFields.split(',').map(s => s.trim()).filter(s => s.length > 0);
+          fieldCount = parts.length;
+        } else if (Array.isArray(rawFields)) {
+          fieldCount = rawFields.filter(s => typeof s === 'string' && s.trim().length > 0).length;
+        }
+      }
+      // AC-01: zero-length or missing fields → no observation.
+      if (fieldCount > 0) {
+        const cwd2 = resolveSafeCwd(event.cwd);
+        let oid2 = 'unknown';
+        try {
+          const orchFile2 = getCurrentOrchestrationFile(cwd2);
+          const orchData2 = JSON.parse(fs.readFileSync(orchFile2, 'utf8'));
+          if (orchData2 && orchData2.orchestration_id) oid2 = orchData2.orchestration_id;
+        } catch (_e2) {}
+
+        const fpEvent = {
+          timestamp:        new Date().toISOString(),
+          type:             'fields_projected',
+          orchestration_id: oid2,
+          tool_name:        tool,
+          field_count:      fieldCount,
+          source:           'hook',
+        };
+        const auditDir2 = path.join(cwd2, '.orchestray', 'audit');
+        try {
+          fs.mkdirSync(auditDir2, { recursive: true });
+          atomicAppendJsonl(path.join(auditDir2, 'events.jsonl'), fpEvent);
+        } catch (_fpWriteErr) {
+          // Fail-open
+        }
+      }
+    } catch (_fpErr) {
+      // Fail-open — fields_projected emission must never block checkpoint recording.
+    }
+
+    // Ignore calls for tools not in the enforced set (checkpoint recording only).
     if (!ENFORCED_TOOLS.has(tool)) {
       process.stdout.write(JSON.stringify({ continue: true }));
       process.exit(0);

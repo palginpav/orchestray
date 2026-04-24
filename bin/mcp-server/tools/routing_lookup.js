@@ -27,6 +27,7 @@ const path = require('node:path');
 
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
 const { toolSuccess, toolError } = require('../lib/tool-result');
+const { parseFields, projectArray } = require('../lib/field-projection');
 
 // Maximum bytes to read from routing.jsonl to avoid blocking on huge files.
 const MAX_ROUTING_READ = 2 * 1024 * 1024; // 2 MB
@@ -57,6 +58,10 @@ const INPUT_SCHEMA = deepFreeze({
       maxLength: 64,
       description: 'Filter by agent role (developer, reviewer, architect, …).',
     },
+    // fields: accepts a comma-separated string or string[] — validated by parseFields() at runtime.
+    // Schema type intentionally omitted: the validator subset does not support oneOf/anyOf,
+    // and parseFields() enforces the allowed shapes with clear error messages.
+    fields: { description: 'Optional comma-separated string or array of top-level field names to project. Omit for full response (backward compat).' },
   },
 });
 
@@ -409,6 +414,16 @@ async function handle(input, context) {
   // F22: warn when no filters were supplied — result spans all orchestrations.
   if (orchId === null && taskId === null && agentType === null) {
     result._note = 'no filter supplied — result is bounded but may span multiple orchestrations';
+  }
+
+  // R-FPX (v2.1.12): apply field projection when `fields` is requested.
+  // Omitting `fields` returns the full legacy response (backward compat).
+  const fieldSpec = parseFields(input && input.fields);
+  if (fieldSpec && fieldSpec.error) {
+    return toolError('routing_lookup: ' + fieldSpec.error);
+  }
+  if (fieldSpec !== null) {
+    result.matches = projectArray(result.matches, fieldSpec);
   }
 
   return toolSuccess(result);

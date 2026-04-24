@@ -142,6 +142,12 @@ function handleUserPromptSubmit(event) {
       },
     }));
 
+    // R-DXT (AC-02): emit the model auto-resolve nudge to stderr so operators
+    // know about the fallback chain. Character-exact template per spec.
+    process.stderr.write(
+      '[orchestray] remind-model-before-spawn: If model is omitted, gate-agent-spawn will auto-resolve from routing.jsonl → agent frontmatter → default sonnet (emits model_auto_resolved warn event). Set model explicitly for audit clarity.\n'
+    );
+
     // Write the model-reminder-shown sentinel AFTER emitting output (Fix 4.3)
     try {
       fs.mkdirSync(reminderShownDir, { recursive: true });

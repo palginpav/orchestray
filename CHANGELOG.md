@@ -3,6 +3,30 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.1.12] - 2026-04-24
+
+v2.1.12 closes the kill-switch rollback gap introduced in v2.1.11, adds cached project-intent injection so downstream agents receive your project's goal without re-deriving it each time, and surfaces three new post-orchestration signals: Tier-2 dispatch frequency, model auto-resolve counts, and MCP field-projection usage. MCP field projection now covers four tools (up from two). 3299/3299 tests green.
+
+### Fixed
+
+- **Kill-switch rollback is now guaranteed, not advisory.** The three v2.1.11 rollback switches (`ORCHESTRAY_TIER1_RARE_ALWAYS_LOAD=1`, `ORCHESTRAY_DELEGATION_TEMPLATES_MERGE=1`, `ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD=1`) previously relied on the PM model noticing the env-var clause in the dispatch table — meaning rollback could silently fail if the model skipped the dispatch rule. The env vars now trigger a hook (`bin/inject-archetype-advisory.js`) that mechanically injects the corresponding file content into PM context on the next turn. Setting any of the three vars guarantees the legacy file is loaded, regardless of how the PM interprets the dispatch rule.
+
+- **Recovered two delegation-template sections dropped during v2.1.10's file split.** The "Confidence Checkpoint Instructions" injectable block and the "Section 11: KB + Diff Handoff Flow" 5-step protocol were present in the pre-split `delegation-templates.md` but absent from both the lean and detailed halves produced in v2.1.10. Both sections are now restored to `delegation-templates-detailed.md`.
+
+### Added
+
+- **Cached project-intent block injected into every orchestration's delegation prompts.** On first run (or when `README.md` or the repo structure changes), the PM generates a `project-intent.md` file under `.orchestray/kb/facts/` with five fields: Domain, Primary user problem, Key architectural constraint, Tech stack summary, and Entry points. Downstream agents receive this block in their delegation context — they no longer need to re-read `README.md` or `CLAUDE.md` to understand what the project is for. Gate: if `README.md` is missing or too short, the block is marked `low_confidence` and omitted from delegation prompts to avoid injecting noise. Disable with `enable_goal_inference: false` in `.orchestray/config.json`.
+
+- **Post-orchestration rollup now shows Tier-2 dispatch frequency, model auto-resolve counts, and MCP field-projection usage.** After each orchestration, the summary now includes: which conditional PM-reference files were loaded (and how often), how many agent spawns required model auto-resolution (and at which fallback stage), and how often the PM used `fields` projection on MCP tool calls. These three signals make the v2.1.11 cost-saving features observable without digging into raw event logs.
+
+- **MCP field projection extended to `routing_lookup` and `metrics_query`.** Both tools now accept an optional `fields` parameter (same backward-compatible contract as `pattern_find` and `kb_search` introduced in v2.1.11). Field projection is now available on the four highest-traffic MCP tools.
+
+- **`/orchestray:config` now lists `ox_telemetry_enabled` as a discoverable toggle.** Previously this key could only be set by hand-editing `.orchestray/config.json`. It now appears in `/orchestray:config` output with a description ("Enable ox.jsonl telemetry log. Default false. Opt-in only.").
+
+### Under the hood
+
+- New hook `collectKillSwitchContent()` added to `bin/inject-archetype-advisory.js`; reads three env vars per turn and injects the corresponding file when set. New test file: `tests/kill-switch-injection.test.js` (7 tests). New event `tier2_load` emitted by `bin/emit-tier2-load.js` (PostToolUse:Read) whenever a conditional PM-reference file is loaded; schema in `agents/pm-reference/event-schemas.md §v2.1.12`. New lib `bin/_lib/project-intent.js` implements the goal-inference pass and staleness detection. New tests: `tests/kill-switch-injection.test.js`, `tests/tier2-load-hook.test.js`, `tests/model-auto-resolve-rollup.test.js`, `tests/fields-projected-metric.test.js`, `tests/project-intent-generation.test.js`, `bin/mcp-server/tools/__tests__/routing_lookup.test.js`, `bin/mcp-server/tools/__tests__/metrics_query.test.js`. Net +79 tests (3220 → 3299). 0 failing.
+
 ## [2.1.11] - 2026-04-24
 
 v2.1.11 ships seven bundles: the PM now loads ~162 KB less prompt on every orchestration by conditionally gating the event-schema reference and splitting two large tier-1 files into always-on and on-demand halves; a new `ox` CLI helper replaces verbose multi-line bash in PM workflows with six named verbs; `pattern_find` and `kb_search` now accept a `fields` parameter that cuts response size by up to 80%; the recurring "Agent() missing model" spawn-block is eliminated by auto-resolve; agents that must produce written artifacts can no longer silently skip them; the event-schema validator now hard-blocks unknown event types; and the installer no longer overwrites your shell PATH. 3220/3220 tests green.

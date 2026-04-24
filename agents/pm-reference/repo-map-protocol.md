@@ -294,3 +294,95 @@ staleness at Step 2.7:
 2. Include Module Index rows where the Entry column matches any file in the lists.
 3. Include rows where the "Used By" column references any file in the lists.
 4. Cap at 10 rows to keep delegation prompts tight.
+
+---
+
+## Project Intent (Step 2.7a)
+
+Step 2.7a extends the repo-map pipeline with a goal-inference pass that writes
+`.orchestray/kb/facts/project-intent.md` alongside `repo-map.md`. This pass is
+**mechanical** (no separate LLM turn) — it reads README.md, package.json, and
+CLAUDE.md via `bin/_lib/project-intent.js`.
+
+### File Format (locked)
+
+```markdown
+# Project Intent
+<!-- generated: {ISO ts} | repo-hash: {7-char} | readme-hash: {7-char} | low_confidence: {true|false} -->
+
+**Domain:** <one phrase>
+**Primary user problem:** <one sentence>
+**Key architectural constraint:** <one sentence>
+**Tech stack summary:** <language, framework, test runner>
+**Entry points:** <comma-separated key files, max 3>
+```
+
+- `repo-hash`: first 7 chars of `git rev-parse HEAD` (same algorithm as repo-map header `hash`)
+- `readme-hash`: sha256 hex of the first 50 lines of `README.md`, truncated to 7 chars
+- `low_confidence`: `true` when the block should NOT be injected into delegation prompts
+
+### When Step 2.7a Runs
+
+Step 2.7a runs immediately after Step 2.7 in the orchestration setup phase. It is
+skipped entirely when `enable_goal_inference: false` OR `enable_repo_map: false`
+(coupled gate — AC-05). Defaults: `enable_goal_inference` inherits the value of
+`enable_repo_map`, which defaults to `true`.
+
+### Staleness Detection
+
+The existing repo-map hash algorithm is **extended** with a second cache key:
+
+| Key | Source | Invalidates when |
+|-----|--------|-----------------|
+| `repo-hash` | `git rev-parse HEAD` (7-char) | Code changes committed |
+| `readme-hash` | sha256 of first 50 lines of README.md (7-char) | README description changes |
+
+**Cache hit (AC-02):** Both `repo-hash` AND `readme-hash` match the stored values →
+`project-intent.md` is used as-is. File mtime is NOT updated on a cache hit.
+
+**Invalidation (AC-03):** Either hash differs → regenerate the intent block and
+overwrite the file with a new timestamp.
+
+### Low-Confidence Gate (AC-04)
+
+When `README.md` is missing OR contains fewer than 100 words, the intent block is
+written with `low_confidence: true` and all five fields are empty strings. The block
+is **NOT injected** into delegation prompts — low-signal noise would degrade agent
+output quality.
+
+Condition summary:
+
+| Condition | `low_confidence` | Fields | Injected? |
+|-----------|-----------------|--------|-----------|
+| README exists, ≥ 100 words | `false` | Populated | Yes |
+| README exists, < 100 words | `true` | Empty strings | No |
+| README missing | `true` | Empty strings | No |
+| < 10 tracked files (AC-08) | `true` | Empty strings | No |
+
+### Minimum Project Size Gate (AC-08)
+
+If `git ls-files | wc -l` returns fewer than 10 files, Step 2.7a writes a stub with
+`low_confidence: true` and skips field inference. This avoids burning inference logic
+on trivially small or empty repos (e.g., fresh git init, demo directories).
+
+### Delegation Prompt Injection (AC-06)
+
+The intent block is injected via `injectProjectIntent()` from `bin/_lib/repo-map-delta.js`
+(sibling to `injectRepoMap()`). Injection rules:
+
+- `project-intent.md` exists AND `low_confidence: false` → inject `## Project Intent` block
+- File missing OR `low_confidence: true` → return `''` (no injection, no error)
+- Injection is additive: the intent block appears **alongside** the repo-map block,
+  not instead of it. Upstream agents that ignore unknown sections are unaffected.
+
+Example injected block shape (the exact content is project-specific):
+
+```
+## Project Intent
+
+**Domain:** Multi-agent orchestration plugin for Claude Code
+**Primary user problem:** Developers spend multiple turns re-exploring the same codebase context across agent sessions.
+**Key architectural constraint:** Must work as a Claude Code plugin — cannot modify Claude Code internals.
+**Tech stack summary:** Node.js/JavaScript, node:test
+**Entry points:** bin/install.js
+```

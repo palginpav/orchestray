@@ -2,22 +2,41 @@
 'use strict';
 
 /**
- * UserPromptSubmit hook — inject <orchestray-archetype-advisory> fence into PM context
- * before decomposition when a high-confidence archetype match is found.
+ * UserPromptSubmit hook — two responsibilities:
  *
- * Decision logic (all conditions must be true):
- *   1. Active orchestration exists (current-orchestration.json present).
- *   2. Orchestration is pre-decomposition: routing.jsonl has NO entries for this
- *      orchestration_id (routing is written at the END of decomposition).
- *   3. context_compression_v218.archetype_cache.enabled is not false.
- *   4. A match is found with confidence >= 0.85 AND prior_applications_count >= 3.
- *   5. The archetype_id is not in the blacklist.
+ * 1. R-KS kill-switch injection (v2.1.12):
+ *    Checks three env vars on every PM turn. When set to '1', reads the
+ *    corresponding backing file and prepends its content as additionalContext,
+ *    guaranteeing the file is in context regardless of Tier-2 dispatch rules.
  *
- * On match: emits hookSpecificOutput.additionalContext with the advisory fence.
- * On no match or any error: exits 0 with no output (fail-open).
+ *    ORCHESTRAY_TIER1_RARE_ALWAYS_LOAD=1
+ *      → injects agents/pm-reference/tier1-orchestration-rare.md
+ *    ORCHESTRAY_DELEGATION_TEMPLATES_MERGE=1
+ *      → injects agents/pm-reference/delegation-templates-detailed.md
+ *    ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD=1
+ *      → injects agents/pm-reference/event-schemas.md
+ *
+ *    Unknown values (=0, =false, empty, unset) are treated as unset (no-op).
+ *    Multiple vars may be set simultaneously — their content is concatenated.
+ *    Kill-switch injection is fail-open: any file read error is silently skipped.
+ *
+ * 2. Archetype advisory injection (v2.1.11):
+ *    Injects <orchestray-archetype-advisory> fence into PM context before
+ *    decomposition when a high-confidence archetype match is found.
+ *
+ *    Decision logic (all conditions must be true):
+ *      1. Active orchestration exists (current-orchestration.json present).
+ *      2. Orchestration is pre-decomposition: routing.jsonl has NO entries for this
+ *         orchestration_id (routing is written at the END of decomposition).
+ *      3. context_compression_v218.archetype_cache.enabled is not false.
+ *      4. A match is found with confidence >= 0.85 AND prior_applications_count >= 3.
+ *      5. The archetype_id is not in the blacklist.
+ *
+ * On any injection: emits hookSpecificOutput.additionalContext with the combined text.
+ * On no injection or any error: exits 0 with no output (fail-open).
  *
  * Input:  JSON on stdin (Claude Code UserPromptSubmit hook payload)
- * Output: exit 0 always; hookSpecificOutput JSON on stdout when advisory fires
+ * Output: exit 0 always; hookSpecificOutput JSON on stdout when any injection fires
  */
 
 const fs   = require('fs');
@@ -60,34 +79,115 @@ process.stdin.on('end', () => {
   }
 });
 
+// ─── Output helper ────────────────────────────────────────────────────────────
+
+/**
+ * Write `data` to stdout and exit 0. Uses the write callback to ensure the
+ * entire buffer is flushed before the process exits — required for large
+ * payloads (e.g., event-schemas.md is 144KB) where process.exit(0) called
+ * synchronously after write() can truncate the output before OS flushes the pipe.
+ *
+ * @param {string} data - The string to write (caller must include trailing \n if desired)
+ */
+function writeAndExit(data) {
+  process.stdout.write(data, () => process.exit(0));
+}
+
+// ─── R-KS kill-switch helpers (v2.1.12) ──────────────────────────────────────
+
+/**
+ * Kill-switch env var → backing file mapping.
+ * Each entry: [envVar, relativePathFromProjectRoot]
+ */
+const KILL_SWITCH_MAP = [
+  ['ORCHESTRAY_TIER1_RARE_ALWAYS_LOAD',    'agents/pm-reference/tier1-orchestration-rare.md'],
+  ['ORCHESTRAY_DELEGATION_TEMPLATES_MERGE', 'agents/pm-reference/delegation-templates-detailed.md'],
+  ['ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD', 'agents/pm-reference/event-schemas.md'],
+];
+
+/**
+ * Check all kill-switch env vars and collect content from their backing files.
+ * Only fires when the var is set to '1'. Unknown values (=0, =false, empty, unset)
+ * are treated as unset (AC-05).
+ *
+ * @param {string} cwd - Resolved project root
+ * @returns {string} Concatenated injected content (empty string if none)
+ */
+function collectKillSwitchContent(cwd) {
+  const parts = [];
+  for (const [envVar, relPath] of KILL_SWITCH_MAP) {
+    if (process.env[envVar] !== '1') continue; // unset or unknown value → skip
+    try {
+      const absPath = path.join(cwd, relPath);
+      const content = fs.readFileSync(absPath, 'utf8');
+      parts.push(
+        '[orchestray] kill-switch ' + envVar + '=1 — injecting ' + relPath + '\n\n' +
+        content
+      );
+    } catch (_e) {
+      // Fail-open: file missing or unreadable → skip silently
+    }
+  }
+  return parts.join('\n\n---\n\n');
+}
+
 // ─── Main handler ─────────────────────────────────────────────────────────────
 
 function handleUserPromptSubmit(event) {
   try {
     const cwd = resolveSafeCwd(event && event.cwd);
 
+    // ── R-KS (v2.1.12): collect kill-switch file content unconditionally ────
+    // This runs before the active-orchestration check so kill-switch injection
+    // fires on every PM turn when env vars are set, not just pre-decomposition.
+    const killSwitchContent = collectKillSwitchContent(cwd);
+
+    /**
+     * Emit kill-switch-only context and exit. Called from all early-exit paths
+     * where the archetype advisory cannot fire but kill-switch content may apply.
+     * Uses writeAndExit() to guarantee stdout is flushed before process exit —
+     * critical for large payloads (event-schemas.md is 144KB).
+     */
+    function exitWithKillSwitch() {
+      if (killSwitchContent) {
+        writeAndExit(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'UserPromptSubmit',
+            additionalContext: killSwitchContent,
+          },
+        }) + '\n');
+      } else {
+        process.exit(0);
+      }
+    }
+
     // Condition 1: active orchestration
     const orchFile = getCurrentOrchestrationFile(cwd);
     if (!fs.existsSync(orchFile)) {
-      process.exit(0);
+      exitWithKillSwitch();
+      return;
     }
 
     let orchData;
     try {
       orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
     } catch (_e) {
-      process.exit(0);
+      exitWithKillSwitch();
+      return;
     }
 
     const orchestrationId = orchData && orchData.orchestration_id;
     if (!orchestrationId || typeof orchestrationId !== 'string') {
-      process.exit(0);
+      exitWithKillSwitch();
+      return;
     }
 
-    // Condition 3: kill switch check
+    // Condition 3: archetype cache kill switch check (archetype advisory only)
     const cfg = loadConfig(cwd);
     if (!cfg.enabled) {
-      process.exit(0);
+      // Archetype advisory disabled — but kill-switch content still applies
+      exitWithKillSwitch();
+      return;
     }
 
     // Condition 2: pre-decomposition check — routing.jsonl must NOT have entries
@@ -100,8 +200,9 @@ function handleUserPromptSubmit(event) {
       } catch (_e) { /* fail-open: treat as no entries */ }
       const orchEntries = entries.filter(e => e && e.orchestration_id === orchestrationId);
       if (orchEntries.length > 0) {
-        // Already decomposed — advisory would be too late
-        process.exit(0);
+        // Already decomposed — advisory would be too late; kill-switch content still applies
+        exitWithKillSwitch();
+        return;
       }
     }
 
@@ -131,7 +232,8 @@ function handleUserPromptSubmit(event) {
           },
         });
       } catch (_de) { /* fail-open */ }
-      process.exit(0);
+      exitWithKillSwitch();
+      return;
     }
 
     // Condition 4 + 5: findMatch enforces guardrails 1, 2, 4, 5
@@ -140,24 +242,26 @@ function handleUserPromptSubmit(event) {
     if (!match) {
       // Check if there's a raw match that got blacklisted (for telemetry)
       checkAndRecordBlacklisted(cwd, sigDetails, cfg, orchestrationId);
-      process.exit(0);
+      exitWithKillSwitch();
+      return;
     }
 
     // Load the archetype record to get its task graph content
     const archetypeContent = loadArchetypeContent(cwd, match.archetypeId);
 
-    // Emit additionalContext with advisory fence
+    // Emit additionalContext combining kill-switch content + advisory fence.
+    // Uses writeAndExit() to guarantee stdout flush before process exit.
     const advisoryText = buildAdvisoryFence(match, archetypeContent, sigDetails);
+    const combinedContext = killSwitchContent
+      ? killSwitchContent + '\n\n---\n\n' + advisoryText
+      : advisoryText;
 
-    const output = {
+    writeAndExit(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'UserPromptSubmit',
-        additionalContext: advisoryText,
+        additionalContext: combinedContext,
       },
-    };
-
-    process.stdout.write(JSON.stringify(output) + '\n');
-    process.exit(0);
+    }) + '\n');
   } catch (_e) {
     // Fail-open: any error → no output, exit 0
     process.exit(0);
