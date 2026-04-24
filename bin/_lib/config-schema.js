@@ -2446,11 +2446,15 @@ function validateCuratorConfig(obj) {
 }
 
 // ---------------------------------------------------------------------------
-// retrieval section defaults and loader (RS v2.1.3)
+// retrieval section defaults and loader (RS v2.1.3, promoted v2.1.13 W8)
 //
-// retrieval.scorer_variant — enum "baseline", default "baseline".
-//   v2.1.3 ships only "baseline"; other values warn + coerce back to baseline.
-//   Future releases will open the enum when shadow telemetry is reviewed.
+// retrieval.scorer_variant — enum, default "baseline".
+//   v2.1.13 R-RET-PROMOTE: promoted from shadow-only to selectable. Valid
+//   values: "baseline" (default, legacy behaviour), "skip-down" (down-rank
+//   frequently-skipped patterns), "local-success" (boost patterns that worked
+//   in this project), "composite" (both adjustments stacked).
+//   The default remains "baseline"; v2.2.0 will revisit the default once we
+//   have more cross-install telemetry.
 //
 // retrieval.shadow_scorers — array of strings, default [].
 //   Names of scorers to run alongside the primary in shadow mode.
@@ -2474,7 +2478,8 @@ function validateCuratorConfig(obj) {
 const DEFAULT_RETRIEVAL = Object.freeze({
   /**
    * Authoritative scorer for pattern_find ranking.
-   * v2.1.3: only "baseline" is valid. Other values coerce to "baseline".
+   * v2.1.13 R-RET-PROMOTE: accepts "baseline" | "skip-down" | "local-success" |
+   * "composite". Default remains "baseline"; unknown values coerce to baseline.
    * @type {string}
    */
   scorer_variant: 'baseline',
@@ -2512,6 +2517,9 @@ const DEFAULT_RETRIEVAL = Object.freeze({
 });
 
 const _VALID_SHADOW_SCORER_NAMES = ['skip-down', 'local-success'];
+
+// W8 (v2.1.13 R-RET-PROMOTE): scorer_variant is now a selectable enum.
+const _VALID_SCORER_VARIANTS = ['baseline', 'skip-down', 'local-success', 'composite'];
 
 /**
  * Load and merge the retrieval block from <cwd>/.orchestray/config.json.
@@ -2561,11 +2569,13 @@ function loadRetrievalConfig(cwd) {
     logStderr('retrieval config warnings: ' + result.errors.join('; '));
   }
 
-  // scorer_variant: enforce "baseline" in v2.1.3.
-  if (merged.scorer_variant !== 'baseline') {
+  // scorer_variant: coerce unknown values to "baseline" (v2.1.13 promotes
+  // skip-down / local-success / composite alongside the legacy baseline).
+  if (!_VALID_SCORER_VARIANTS.includes(merged.scorer_variant)) {
     logStderr(
       'retrieval.scorer_variant "' + merged.scorer_variant +
-      '" not supported in v2.1.3; coercing to "baseline"'
+      '" not recognised; valid: ' + _VALID_SCORER_VARIANTS.join(', ') +
+      '. Coercing to "baseline".'
     );
     merged.scorer_variant = 'baseline';
   }
@@ -2638,9 +2648,10 @@ function validateRetrievalConfig(obj) {
     return { valid: false, errors: ['retrieval config must be an object'] };
   }
 
-  if ('scorer_variant' in obj && obj.scorer_variant !== 'baseline') {
+  if ('scorer_variant' in obj && !_VALID_SCORER_VARIANTS.includes(obj.scorer_variant)) {
     errors.push(
-      'retrieval.scorer_variant must be "baseline" in v2.1.3 — got ' +
+      'retrieval.scorer_variant must be one of: ' +
+      _VALID_SCORER_VARIANTS.join(', ') + ' — got ' +
       JSON.stringify(obj.scorer_variant)
     );
   }

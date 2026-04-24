@@ -207,6 +207,34 @@ function _minutesAgo(isoStr) {
 }
 ```
 
+### Step 8.5 — Count local-only patterns (R-FED-PRIVACY, v2.1.13)
+
+Patterns in `.orchestray/patterns/` tagged with `sharing: local-only` in
+frontmatter will never leave this machine regardless of project-level
+federation settings. Count them so the user can see how many patterns are
+pinned local:
+
+```js
+const localPatternsDir = nodePath.join(process.cwd(), '.orchestray', 'patterns');
+let localOnlyCount = 0;
+try {
+  const { parse: parseFm } = require('./bin/mcp-server/lib/frontmatter.js');
+  const localFiles = fs.readdirSync(localPatternsDir).filter((f) => f.endsWith('.md'));
+  for (const f of localFiles) {
+    try {
+      const content = fs.readFileSync(nodePath.join(localPatternsDir, f), 'utf8');
+      const parsed = parseFm(content);
+      if (parsed.hasFrontmatter && parsed.frontmatter.sharing === 'local-only') {
+        localOnlyCount++;
+      }
+    } catch (_) { /* best-effort */ }
+  }
+} catch (_) { /* patterns dir missing — no local-only */ }
+```
+
+Absent `sharing` key is treated as `federated` (backward-compat) — only
+explicit `sharing: local-only` is counted.
+
 ### Step 9 — Render State A
 
 Emit the full status report:
@@ -217,6 +245,7 @@ Federation: ENABLED
   sensitivity:   <sensitivity>   <sensitivity_note>
   project-id:    <projectHash>    (this project's stable hash)
   fts5 backend:  <fts5Status>
+  local-only patterns: <localOnlyCount>   (pinned to this machine — never promoted)
 
 Shared tier contents (<N> patterns, <totalKb> KB):
   Promoted by this project (<ownCount>):

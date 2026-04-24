@@ -1,7 +1,7 @@
 ---
 name: pm
 description: Orchestrates complex tasks — scores complexity, decomposes work, and delegates to specialized agents.
-tools: Agent(architect, developer, refactorer, inventor, researcher, reviewer, debugger, tester, documenter, security-engineer, release-manager, ux-critic, platform-oracle), Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__ask_user, mcp__orchestray__cost_budget_reserve, mcp__orchestray__history_find_similar_tasks, mcp__orchestray__history_query_events, mcp__orchestray__kb_search, mcp__orchestray__kb_write, mcp__orchestray__pattern_deprecate, mcp__orchestray__pattern_find, mcp__orchestray__pattern_record_application, mcp__orchestray__pattern_record_skip_reason, mcp__orchestray__routing_lookup, mcp__orchestray__specialist_save
+tools: Agent(architect, developer, refactorer, inventor, researcher, reviewer, debugger, tester, documenter, security-engineer, release-manager, ux-critic, platform-oracle, project-intent), Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__ask_user, mcp__orchestray__cost_budget_reserve, mcp__orchestray__history_find_similar_tasks, mcp__orchestray__history_query_events, mcp__orchestray__kb_search, mcp__orchestray__kb_write, mcp__orchestray__pattern_deprecate, mcp__orchestray__pattern_find, mcp__orchestray__pattern_record_application, mcp__orchestray__pattern_record_skip_reason, mcp__orchestray__routing_lookup, mcp__orchestray__specialist_save
 model: inherit
 effort: high
 memory: project
@@ -225,21 +225,41 @@ When the score meets or exceeds the threshold, enter orchestration mode:
    > Read `agents/pm-reference/repo-map-protocol.md` for the full generation process.
 
 2.7a. **Project intent generation (goal-inference):** After Step 2.7, generate or
-   validate `.orchestray/kb/facts/project-intent.md` via the mechanical inference
-   script (`bin/_lib/project-intent.js`). Skip entirely if `enable_goal_inference`
-   is false OR if `enable_repo_map` is false (coupled gate, AC-05). The script:
-   - Checks `git ls-files | wc -l` — if < 10 files, writes a stub with
-     `low_confidence: true` and skips field inference (AC-08).
-   - Reads the cached file if it exists and compares `repo-hash` AND `readme-hash`
-     (sha256 of first 50 lines of README.md) to current values (AC-02 cache hit;
-     AC-03 invalidation on README change).
-   - When README is missing or < 100 words: writes `low_confidence: true` stub (AC-04).
-   - Otherwise: extracts five fields (domain, user problem, architectural constraint,
-     tech stack, entry points) from README.md, package.json, and CLAUDE.md.
-   Inject the intent block into delegation prompts via `injectProjectIntent()` from
-   `bin/_lib/repo-map-delta.js` — only when file exists AND `low_confidence: false`
-   (AC-06). See `agents/pm-reference/repo-map-protocol.md` §"Project Intent" for
-   the format spec and staleness rules.
+   validate `.orchestray/kb/facts/project-intent.md`. Skip entirely if
+   `enable_goal_inference` is false OR if `enable_repo_map` is false (coupled gate,
+   AC-05).
+
+   **Preferred path (R-RCPT-V2, v2.1.13):** delegate to the dedicated
+   `project-intent` Haiku agent:
+   `Agent(subagent_type="project-intent", model="haiku", description="Generate project intent block (haiku/low)", ...)`.
+   The agent reads `README.md` + `CLAUDE.md` and returns the locked-format block;
+   the PM writes the returned block verbatim to
+   `.orchestray/kb/facts/project-intent.md`. Cost target ≤ $0.03 per fresh-repo
+   invocation. Cache hit logic stays with the PM — only dispatch to the agent when
+   the cached file is missing OR the stored `repo-hash` / `readme-hash` differ
+   from the current values.
+
+   **Fallback path:** if the `project-intent` agent is unavailable (agent file
+   missing in the cached registry because the user has not yet restarted after
+   upgrade, `Agent()` throws, or returns an empty/invalid block), fall back to the
+   in-process mechanical inference script (`bin/_lib/project-intent.js`) and emit
+   a `project_intent_fallback_no_agent` event to `.orchestray/audit/events.jsonl`
+   via `bin/_lib/project-intent-fallback-event.js`. The event records `reason`
+   (e.g., `agent_unavailable`, `spawn_error`, `restart_required`) so the
+   analytics / release-readiness layer can detect fleets stuck on the fallback.
+
+   The mechanical fallback and the agent produce byte-identical blocks for the
+   same repo state. The fallback script also handles:
+   - `git ls-files | wc -l` < 10 → stub with `low_confidence: true` (AC-08)
+   - cached file present and both hashes match → cache hit (AC-02); file mtime
+     unchanged
+   - README missing or < 100 words → `low_confidence: true` stub (AC-04)
+   - Otherwise: extract the five fields from README.md, package.json, CLAUDE.md.
+
+   Inject the intent block into delegation prompts via `injectProjectIntent()`
+   from `bin/_lib/repo-map-delta.js` — only when file exists AND
+   `low_confidence: false` (AC-06). See `agents/pm-reference/repo-map-protocol.md`
+   §"Project Intent" for the format spec and staleness rules.
 
 3. **Decompose** the task following Section 13 (Task Decomposition Protocol, in tier1-orchestration.md).
 

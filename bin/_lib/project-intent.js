@@ -328,10 +328,16 @@ function generateProjectIntent(options) {
   try { pkg = JSON.parse(_readFile(pkgPath)); } catch (_) {}
 
   const claudeMd = _readFile(path.join(projectRoot, 'CLAUDE.md'));
+  // R-AGENTS-MD (W10): AGENTS.md is an open convention (agents.md) used by 60K+
+  // repos. When present, its sections (## Build/Run, ## Testing, ## Architecture)
+  // are treated as additional context alongside CLAUDE.md for mechanical inference.
+  // Missing file → '' → no effect (graceful skip).
+  const agentsMd = _readFile(path.join(projectRoot, 'AGENTS.md'));
+  const combinedGuideText = claudeMd + '\n' + agentsMd;
 
   const domain = _inferDomain(readmeFull, pkg);
   const userProblem = _inferUserProblem(readmeFull);
-  const archConstraint = _inferArchConstraint(readmeFull, claudeMd);
+  const archConstraint = _inferArchConstraint(readmeFull, combinedGuideText);
   const techStack = _inferTechStack(pkg, readmeFull);
   const entryPoints = _inferEntryPoints(projectRoot, pkg);
 

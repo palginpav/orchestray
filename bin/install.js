@@ -920,6 +920,12 @@ function install(targetDir) {
       installed_at: new Date(now).toISOString(),
       installed_at_ms: now,
       version: VERSION,
+      // R-RCPT-V2 (v2.1.13): advertise features whose code path requires a
+      // Claude Code restart to take effect (because agent registry is cached
+      // at session start). Operators / downstream tools can read this list to
+      // explain *what* specifically the restart unlocks instead of a generic
+      // "restart required" nudge.
+      restart_gated_features: ['project-intent-agent'],
     };
     // Only include previous_version when it differs from the new version
     // (avoids self-contradictory "was vX → now vX" on fresh installs where

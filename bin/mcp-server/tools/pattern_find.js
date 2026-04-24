@@ -21,12 +21,16 @@ const { toolSuccess, toolError } = require('../lib/tool-result');
 const { sanitizeExcerpt } = require('../lib/excerpt');
 const { logStderr } = require('../lib/rpc');
 const { AGENT_ROLES } = require('../lib/constants');
-const { loadPatternDecayConfig } = require('../../_lib/config-schema');
+const { loadPatternDecayConfig, loadRetrievalConfig } = require('../../_lib/config-schema');
 const { searchPatterns, UNAVAILABLE: FTS5_UNAVAILABLE } = require('../../_lib/pattern-index-sqlite');
+const { _expandSynonyms } = require('./_synonyms');
 const { getSharedPatternsDir } = require('../lib/paths');
 const { writeAuditEvent, readOrchestrationId } = require('../lib/audit');
 const { _projectHash } = require('../../_lib/shared-promote');
 const { parseFields, projectArray } = require('../lib/field-projection');
+const scorerVariants = require('../../_lib/scorer-variants');
+const { getEventWindow } = require('../../_lib/scorer-telemetry');
+const { maybeAnnounce: maybeAnnounceScorerVariants } = require('../announce-scorer-variants');
 
 // Session flag to emit the FTS5 fallback warning at most once per process.
 let _fts5WarnedThisSession = false;
@@ -73,6 +77,39 @@ const definition = deepFreeze({
 });
 
 // ---------------------------------------------------------------------------
+// Scorer variant selection (W8 v2.1.13 R-RET-PROMOTE)
+// ---------------------------------------------------------------------------
+
+// Event windows used by the usage-aware variants — mirror the shadow scorers
+// shipped in v2.1.3 (skip-down: 180d, local-success: 90d) so the promoted
+// behaviour matches the telemetry operators have been observing.
+const SKIP_DOWN_WINDOW_MS    = 180 * 24 * 60 * 60 * 1000;
+const LOCAL_SUCCESS_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
+
+/**
+ * Select the active scoring function for this pattern_find call.
+ *
+ * Returns an object carrying:
+ *   - variant:  the resolved variant name (one of baseline/skip-down/local-success/composite).
+ *   - scoreFn:  (pattern, ctx) => number — the function to call per pattern.
+ *
+ * Unknown / invalid `retrieval.scorer_variant` values fall back to baseline.
+ * loadRetrievalConfig already performs validation + coercion before returning,
+ * so reaching here with an out-of-range value should be impossible; the
+ * defensive fallback in scorerForVariant is belt-and-braces.
+ *
+ * @param {object} retrievalConfig — result of loadRetrievalConfig(projectRoot).
+ * @returns {{ variant: string, scoreFn: Function }}
+ */
+function _selectScorer(retrievalConfig) {
+  const variant = (retrievalConfig && typeof retrievalConfig.scorer_variant === 'string')
+    ? retrievalConfig.scorer_variant
+    : 'baseline';
+  const scoreFn = scorerVariants.scorerForVariant(variant);
+  return { variant, scoreFn };
+}
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
@@ -105,6 +142,56 @@ async function handle(input, context) {
     decayConfig = loadPatternDecayConfig(projectRoot);
   } catch (_) {
     decayConfig = { default_half_life_days: 90, category_overrides: {} };
+  }
+
+  // W8 (v2.1.13 R-RET-PROMOTE): one-time stderr announcement of the newly
+  // selectable scorer variants. Fires at most once per install (sentinel
+  // lives at .orchestray/state/.scorer-variants-announced-2113).
+  try {
+    maybeAnnounceScorerVariants(projectRoot);
+  } catch (_) {
+    // Announcer is self-silencing; belt-and-braces.
+  }
+
+  // W8: resolve active scorer from retrieval.scorer_variant. Default stays
+  // `baseline` — this release promotes the other variants from shadow-only to
+  // selectable, but does NOT flip the default.
+  let retrievalConfig;
+  try {
+    retrievalConfig = loadRetrievalConfig(projectRoot);
+  } catch (_) {
+    retrievalConfig = { scorer_variant: 'baseline' };
+  }
+  const { variant: activeVariant, scoreFn: activeScoreFn } = _selectScorer(retrievalConfig);
+
+  // Event-count maps for the usage-aware variants. Only loaded when a non-
+  // baseline variant is active, so the default fast-path pays zero extra I/O.
+  // When loaded, the maps are reused for every pattern in the scoring loop.
+  let skipCounts = null;
+  let successCounts = null;
+  if (activeVariant !== 'baseline') {
+    const nowMsForEvents = Date.now();
+    try {
+      if (activeVariant === 'skip-down' || activeVariant === 'composite') {
+        const skipEvents = getEventWindow(projectRoot, {
+          types:   new Set(['pattern_skip_enriched']),
+          sinceMs: nowMsForEvents - SKIP_DOWN_WINDOW_MS,
+        });
+        skipCounts = scorerVariants.buildSkipCounts(skipEvents);
+      }
+      if (activeVariant === 'local-success' || activeVariant === 'composite') {
+        const successEvents = getEventWindow(projectRoot, {
+          types:   new Set(['mcp_tool_call']),
+          sinceMs: nowMsForEvents - LOCAL_SUCCESS_WINDOW_MS,
+        });
+        successCounts = scorerVariants.buildSuccessCounts(successEvents);
+      }
+    } catch (_) {
+      // Event-window read failure → variants fall back to empty maps, which
+      // makes scores collapse to baseline. Fail-open, do not surface.
+      skipCounts    = skipCounts    || new Map();
+      successCounts = successCounts || new Map();
+    }
   }
 
   let entries;
@@ -325,6 +412,15 @@ async function handle(input, context) {
           logStderr('pattern_find(shared).parse_error: ' + name);
           continue;
         }
+        // R-FED-PRIVACY (v2.1.13 W6): sharing: local-only patterns must never
+        // surface on the federation READ side. The shared-tier scan is by
+        // definition a federation read context — any entry flagged local-only
+        // (e.g. a pattern that slipped into the shared dir but is tagged not
+        // to leave this machine) is skipped here. Absent `sharing` key is
+        // treated as `federated` (backward compat with pre-v2.1.13 patterns).
+        if (parsed.frontmatter.sharing === 'local-only') {
+          continue;
+        }
         sharedIndex.push({
           slug: name.slice(0, -3),
           frontmatter: parsed.frontmatter,
@@ -376,6 +472,28 @@ async function handle(input, context) {
 
   const nowMs = Date.now();
   const taskTokens = _tokenize(taskSummary); // Pre-compute once for Jaccard path.
+
+  // R-RET-EXPAND (v2.1.13): synonym expansion for the Jaccard path.
+  // Default ON; `retrieval.synonyms_enabled = false` disables expansion entirely.
+  // loadRetrievalConfig is fail-open — on any parse error it returns defaults,
+  // and the synonyms_enabled key is treated as default-true when undefined.
+  //
+  // Scope note: expansion is applied ONLY to the Jaccard path (shared tier,
+  // proposed entries, and FTS5-fallback). The FTS5 primary path is left
+  // untouched to guarantee zero regression on the FTS5-indexed local corpus.
+  // This is the XS-scope trade-off for v2.1.13 — FTS5 expansion can come later
+  // once shadow-telemetry proves recall gains outweigh precision loss.
+  let synonymsEnabled = true;
+  try {
+    const retrievalCfg = loadRetrievalConfig(projectRoot);
+    if (retrievalCfg && retrievalCfg.synonyms_enabled === false) {
+      synonymsEnabled = false;
+    }
+  } catch (_) {
+    // Fail-open: default-on.
+  }
+  const { tokens: expandedTaskTokens, expansions: synonymExpansions } =
+    _expandSynonyms(taskTokens, { enabled: synonymsEnabled });
 
   // Build a slug → match_terms lookup from fts5Results for O(1) access in the
   // scoring loop (avoids O(N*M) Array.find per entry).
@@ -442,10 +560,12 @@ async function handle(input, context) {
       overlapTokens = new Set(); // no per-token breakdown available from FTS5
     } else {
       // Jaccard fallback path (FTS5 unavailable, shared-tier entry, or proposed entry).
+      // R-RET-EXPAND: use synonym-expanded task tokens (may equal taskTokens if
+      // kill switch is off or query has no known synonyms).
       const bodyHead = entry.body.slice(0, 200);
       const hay = (description + ' ' + bodyHead).toLowerCase();
       const hayTokens = _tokenize(hay);
-      const result = _jaccard(taskTokens, hayTokens);
+      const result = _jaccard(expandedTaskTokens, hayTokens);
       overlapRatio = result.ratio;
       overlapTokens = result.overlap;
     }
@@ -471,7 +591,21 @@ async function handle(input, context) {
       fileBonus = Math.min(0.4, 0.2 * overlapSeg);
     }
 
-    const score = confidence * (overlapRatio + roleBonus + fileBonus);
+    // W8 (v2.1.13 R-RET-PROMOTE): delegate final scoring to the selected
+    // variant. At default (baseline) this is identical to the legacy inline
+    // `confidence * (overlapRatio + roleBonus + fileBonus)` formula. Non-
+    // baseline variants layer a Laplace-smoothed penalty or boost on top.
+    const score = activeScoreFn({
+      slug:         entry.slug,
+      confidence,
+      overlapRatio,
+      roleBonus,
+      fileBonus,
+      timesApplied,
+    }, {
+      skipCounts,
+      successCounts,
+    });
 
     const matchReasons = [];
     if (usesFts5) {
@@ -508,6 +642,21 @@ async function handle(input, context) {
       }
       for (const tok of Array.from(overlapTokens).slice(0, 3)) {
         matchReasons.push('keyword:' + tok);
+      }
+      // R-RET-EXPAND: surface synonym-expansion hits in the audit trail.
+      // Only emit an entry for a token in overlapTokens that was added by
+      // synonym expansion (i.e. was NOT in the original task tokens).
+      // Deterministic order: iterate synonymExpansions (already sorted).
+      if (synonymsEnabled && synonymExpansions.length > 0 && overlapTokens.size > 0) {
+        const seenPairs = new Set();
+        for (const { from, to } of synonymExpansions) {
+          if (!overlapTokens.has(to)) continue;
+          if (taskTokens.has(to)) continue; // was in the original query; not an expansion hit
+          const key = from + '->' + to;
+          if (seenPairs.has(key)) continue;
+          seenPairs.add(key);
+          matchReasons.push('synonym_expanded:' + key);
+        }
       }
     }
     if (fileBonus > 0) matchReasons.push('file-overlap');
@@ -627,6 +776,30 @@ async function handle(input, context) {
 // ---------------------------------------------------------------------------
 // Scoring helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * R-FED-PRIVACY (v2.1.13 W6): Federation-context detector.
+ *
+ * Returns true when the supplied index-entry (or tier string) represents a
+ * cross-install federation read — i.e. a pattern loaded from the shared tier
+ * directory (`~/.orchestray/shared/patterns/`) rather than the local project
+ * directory. Patterns with `sharing: local-only` in frontmatter must be
+ * excluded from federation-context reads regardless of any future consumer
+ * that bypasses the in-scan filter.
+ *
+ * Local reads (tier === 'local') are not federation contexts — local-only
+ * patterns are fully visible to the project that owns them.
+ *
+ * Accepts either a full index entry `{_tier}` or a bare tier string.
+ */
+function _isFederationContext(entryOrTier) {
+  if (!entryOrTier) return false;
+  if (typeof entryOrTier === 'string') return entryOrTier === 'shared';
+  if (typeof entryOrTier === 'object' && entryOrTier._tier) {
+    return entryOrTier._tier === 'shared';
+  }
+  return false;
+}
 
 function _tokenize(text) {
   if (typeof text !== 'string') return new Set();
@@ -759,4 +932,5 @@ function _computeDecay(confidence, fm, filepath, category, decayConfig, nowMs) {
 module.exports = {
   definition,
   handle,
+  _isFederationContext,
 };
