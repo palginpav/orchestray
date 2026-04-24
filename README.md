@@ -164,6 +164,8 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | `/orchestray:federation status` | Show federation enabled/disabled/partial state, shared-dir contents, FTS5 status, and origin attribution |
 | `/orchestray:doctor` | Run 8 health probes (migrations, MCP tools, config keys, FTS5, ABI, degraded journal); emits `doctor-result-code: 0/1/2`; add `--deep` for full install-integrity manifest verification |
 | `/orchestray:learn [id]` | Extract patterns, capture corrections, manage federation sharing (`share` / `unshare` / `list --shared`), curate with AI (`curate` / `curate --diff` / `undo-last` / `undo <id>`); `explain <action-id>` shows curator rationale; `share --preview` diffs without writing; review auto-extracted proposals with `list --proposed` / `accept <slug>` / `reject <slug>` |
+| `/orchestray:learn-doc <url>` | Distill a URL into a reusable skill pack auto-loaded by future agents. Source-aware expiry: Claude Code docs 14d, Anthropic Platform 30d, other 90d. |
+| `/orchestray:distill <url>` | Alias for `/orchestray:learn-doc` — same command, shorter name. |
 | `/orchestray:resume` | Resume interrupted orchestration |
 | `/orchestray:analytics` | Performance stats + pattern dashboard |
 | `/orchestray:patterns` | Pattern effectiveness dashboard |
