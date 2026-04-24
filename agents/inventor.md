@@ -9,6 +9,7 @@ tools: Read, Glob, Grep, Bash, Write, Edit
 model: inherit
 effort: xhigh # default: xhigh (Opus 4.7 recommended default per Anthropic). max available via explicit override.
 memory: project
+isolation: worktree
 maxTurns: 125
 color: gold
 ---

@@ -71,11 +71,11 @@ describe('handleUserPromptSubmit — branches', () => {
     assert.ok(!r.output.hookSpecificOutput);
   });
 
-  test('lock-present + fresh dossier → injected with fence', () => {
+  test('lock-present + fresh dossier → injected (native envelope, no fence)', () => {
     const cwd = mkProject();
     writeLock(cwd, { source: 'compact', at: new Date().toISOString(), ingested_count: 0, max_injections: 3 });
     writeDossier(cwd);
-    const { handleUserPromptSubmit, FENCE_OPEN, FENCE_CLOSE } =
+    const { handleUserPromptSubmit, FENCE_OPEN } =
       freshModule('../../bin/inject-resilience-dossier');
     const r = handleUserPromptSubmit({ cwd });
     assert.equal(r.action, 'injected');
@@ -83,9 +83,9 @@ describe('handleUserPromptSubmit — branches', () => {
     assert.equal(r.counter_after, 1);
     assert.ok(r.output.hookSpecificOutput);
     const ctx = r.output.hookSpecificOutput.additionalContext;
-    assert.ok(ctx.includes(FENCE_OPEN));
-    assert.ok(ctx.includes(FENCE_CLOSE));
-    assert.ok(ctx.includes('orch-XYZ'));
+    // Native envelope: dossier content present, NOT wrapped in XML fence.
+    assert.ok(ctx.includes('orch-XYZ'), 'dossier orchestration_id must be in context');
+    assert.ok(!ctx.includes(FENCE_OPEN), 'native envelope must not wrap content in XML fence');
     // Counter advanced on disk.
     const lock = readLock(cwd);
     assert.equal(lock.ingested_count, 1);

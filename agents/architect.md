@@ -9,6 +9,7 @@ tools: Read, Glob, Grep, Bash, Write, mcp__orchestray__ask_user, mcp__orchestray
 model: inherit
 effort: xhigh # default: xhigh (Opus 4.7 recommended default per Anthropic). max available via explicit override.
 memory: project
+isolation: worktree
 maxTurns: 105
 color: blue
 ---

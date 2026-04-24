@@ -349,6 +349,96 @@ PM does not need to re-check.
 
 ---
 
+## 6.R: PreCompact Resilience Block (v2.1.10 R3)
+
+`bin/pre-compact-archive.js` is Orchestray's `PreCompact` hook handler. As of v2.1.10
+it acts as a **durability checkpoint**: if the resilience dossier write fails during
+an active orchestration, the hook exits 2 to block compaction rather than silently
+allowing a compaction that would leave the in-flight state unrecoverable.
+
+### Blocking Semantics
+
+| Dossier write | Orchestration phase | Exit code | Audit event emitted |
+|---|---|---|---|
+| Succeeds | Any | 0 | *(none from block path; normal `pre_compact_archive` event still fires)* |
+| Fails | Active phase (see below) | **2** | `resilience_block_triggered` |
+| Fails | Inactive phase (`completed`, `aborted`, `archived`, `failed`) | 0 | `resilience_block_suppressed_inactive` |
+| Fails | File missing / parse failure / unrecognised phase | 0 | *(none — conservative path)* |
+| Fails | Any — kill-switch or config flag active | 0 | `resilience_block_suppressed` |
+
+**Active phases** (hook blocks when phase is in this set):
+`decomposing`, `executing`, `reviewing`, `verifying`, `G1-executing` through `G9-executing`,
+`implementation`, `delegation`, `in_progress`.
+
+**The phase detector is conservative.** Any parse failure, missing file, or unrecognised
+phase value resolves to "do not block." False negatives (failing to block when we should
+have) are preferable to false positives (stuck compaction for the user). W2 audit
+documented 3 prior `file_read_failed` ENOENT races on `current-orchestration.json` — the
+hook is designed for this race condition.
+
+### Escape Hatches
+
+Two escape hatches disable blocking behaviour without code changes. Both are safe to
+combine; either one is sufficient to suppress the block.
+
+**Environment kill-switch (takes precedence over config):**
+
+```sh
+ORCHESTRAY_RESILIENCE_BLOCK_DISABLED=1
+```
+
+Set this env var in the shell before launching Claude Code. The hook will always exit 0
+on dossier-write failure and will emit a `resilience_block_suppressed` audit event with
+`reason: "env_ORCHESTRAY_RESILIENCE_BLOCK_DISABLED"` so you can see the override was
+active in the audit trail.
+
+**Config flag (readable at runtime, no session restart needed):**
+
+```json
+// .orchestray/config.json
+{
+  "resilience": {
+    "block_on_write_failure": false
+  }
+}
+```
+
+Default: `true` (blocking enabled). Setting to `false` produces the same exit-0 behaviour
+as the env kill-switch, with `reason: "config_resilience.block_on_write_failure_false"` in
+the suppressed event.
+
+### What the user sees on block
+
+When the hook exits 2, Claude Code surfaces the stderr message to the terminal:
+
+```
+Orchestray: refusing to compact — resilience dossier write failed during active
+orchestration <id>. Retry in a moment or run /orchestray:status and manually /compact after.
+```
+
+The recommended recovery steps are:
+1. Wait a moment and retry `/compact` (transient disk pressure often resolves).
+2. Run `/orchestray:status` to verify orchestration state is intact.
+3. If the block persists and you need to compact urgently, set
+   `ORCHESTRAY_RESILIENCE_BLOCK_DISABLED=1` and retry — understand that this bypasses the
+   durability checkpoint.
+
+### PM interaction
+
+The PM does not call `bin/pre-compact-archive.js` directly. This is a Claude Code hook
+that fires automatically on every `/compact` (manual) or auto-compact event. The PM only
+needs to know:
+
+- If the user reports "Orchestray is blocking /compact", the most likely cause is a
+  dossier-write failure during an active orchestration. Advise the user to check disk
+  space and use `/orchestray:status` before disabling the block.
+- A `resilience_block_triggered` event in `events.jsonl` is the definitive signal that
+  a block was issued. A `resilience_block_suppressed` event means a kill-switch was
+  active at the time of the block — check whether the orchestration state survived the
+  subsequent compaction.
+
+---
+
 ## 7. State Persistence Protocol
 
 When orchestrating (not for simple solo tasks), persist state continuously to
@@ -1084,9 +1174,11 @@ For each task in a parallel group:
    Agent(subagent_type="developer", model="sonnet", maxTurns=20,
          description="Fix auth (sonnet/medium)", prompt="...")
    ```
-   To enable worktree isolation, also pass `isolation: "worktree"` as an explicit parameter on
-   the `Agent()` call. This is a **per-invocation parameter** — no agent frontmatter field
-   handles this automatically. If you omit the parameter, the agent runs directly on master.
+   Write-capable agents (architect, developer, refactorer, tester, security-engineer, inventor)
+   now declare `isolation: worktree` in their frontmatter; read-only agents do not. You still
+   MUST NOT pass a conflicting `isolation:` override on an individual spawn. If a spawn goes to a
+   write-capable agent without worktree isolation (e.g. a custom specialist that omits the
+   frontmatter), `bin/warn-isolation-omitted.js` emits an `isolation_omitted_warn` event.
    Write a `running` checkpoint for this task per Section 32 (in checkpoints.md).
    After the agent completes and results are processed (Section 4), update the checkpoint
    to `completed`.

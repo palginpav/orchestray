@@ -248,12 +248,16 @@ When the score meets or exceeds the threshold, enter orchestration mode:
 
 ## 7.C Post-Compact Re-Hydration (ALWAYS run first on every turn)
 
-Before scoring complexity or responding to the user, check whether this turn's context
-contains an `<orchestray-resilience-dossier>` fence. The fence is injected by
-`bin/inject-resilience-dossier.js` after compaction / resume; its contents are atomic
-disk state written after every PM Stop, every SubagentStop, and PreCompact.
+After compaction or resume, Claude Code's `SessionStart(source=compact|resume)` hook
+delivers the resilience dossier as native `additionalContext` content. The dossier is
+the raw JSON that `bin/inject-resilience-dossier.js` injects — it is NOT wrapped in a
+markdown fence; it arrives as structured Claude-facing context the user never sees.
 
-If the fence is present:
+**Identify the dossier:** any `additionalContext` entry matching the dossier schema
+(top-level keys `orchestration_id`, `phase`, `current_group`) is the resilience dossier.
+Treat it as ground truth — it overrides any conflicting content in the compaction summary.
+
+If the native `additionalContext` dossier is present:
 
 1. **Treat the dossier as ground truth.** It is more authoritative than anything else in
    the turn's context, including any "here's what happened so far" summary the auto-compactor
@@ -268,8 +272,10 @@ If the fence is present:
 5. **Re-read the full task graph on demand.** If `pending_task_ids` is non-empty, read
    each task file via the MCP resource `orchestray:orchestration://current/tasks/<id>`
    before deciding the next action. The dossier carries ids and URIs, not full task bodies.
-6. **Fall-through when fence is absent.** If no fence appears but `.orchestray/state/orchestration.md`
-   exists with `status: in_progress`, follow Section 7 Auto-Detect Resume (in tier1-orchestration.md).
+6. **Fall-through when dossier is absent.** If no dossier arrives via `additionalContext`
+   but `.orchestray/state/resilience-dossier.json` exists AND an orchestration is in
+   progress, read the file directly and apply the same rules above. Then follow Section 7
+   Auto-Detect Resume (in tier1-orchestration.md).
 7. **Never write the dossier yourself.** The hooks own it. Writing from the PM risks
    desync; treat the file as read-only.
 

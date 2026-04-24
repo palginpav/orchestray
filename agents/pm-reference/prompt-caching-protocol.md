@@ -227,6 +227,72 @@ the sentinel is decorative only.
 
 ---
 
+## 10. 1-hour TTL activation (v2.1.10)
+
+### Default behaviour
+
+As of v2.1.10, Orchestray sets `ENABLE_PROMPT_CACHING_1H=1` in `settings.json` by
+default. This tells Claude Code (≥2.1.108) to keep cached prompt prefixes alive for
+1 hour instead of the default 5-minute TTL.
+
+The config flag `prompt_caching.ttl_1h_enabled` (default `true` in
+`.orchestray/config.json`) controls whether the installer includes this env key.
+If you set the flag to `false` and re-run the installer, the env key is omitted on
+the next install.
+
+### Why this matters: break-even analysis
+
+Consider a representative long orchestration: 10 turns, 30-minute wall time,
+50 000-token cacheable prefix (Block A + stable Tier-0 body).
+
+**5-minute TTL (old default) — every turn is a cache write:**
+
+```
+10 turns × 50 000 tokens × 1.25× write multiplier = 625 000 effective tokens
+```
+
+**1-hour TTL (new default) — first turn writes, subsequent nine turns read:**
+
+```
+1 write:  50 000 × 2.0× write multiplier  = 100 000 effective tokens
+9 reads:  50 000 × 0.1× read multiplier   =  45 000 effective tokens
+Total:                                       145 000 effective tokens
+```
+
+**Saving: (625 000 − 145 000) / 625 000 ≈ 77%** on the cacheable portion, or
+**15–30%** on total input tokens across a session (W1 matrix row 36).
+
+Break-even point: ≥ 2 reads within the 1-hour window. Orchestray orchestrations are
+multi-turn by definition, so the break-even condition is always satisfied.
+
+The only scenario where the 1-hour TTL is a net cost increase is a single-turn
+invocation that never reads the cache back. Orchestray's minimum viable orchestration
+(2 turns — PM + one agent) already exceeds break-even.
+
+### Rollback
+
+`FORCE_PROMPT_CACHING_5M=1` (native Claude Code env var, W1 row 37) reverts to
+5-minute TTL without any Orchestray code change and without restarting the session.
+
+```bash
+# Temporary — single session:
+FORCE_PROMPT_CACHING_5M=1 claude
+
+# Persistent — add to your shell profile or settings.json env block:
+# "FORCE_PROMPT_CACHING_5M": "1"
+```
+
+To permanently opt out, set `prompt_caching.ttl_1h_enabled: false` in
+`.orchestray/config.json` and re-run `node bin/install.js`.
+
+### Claude Code version floor
+
+`ENABLE_PROMPT_CACHING_1H` requires Claude Code **≥2.1.108** (W1 row 36). Orchestray's
+documented working floor (CLAUDE.md) is 2.1.111, which already satisfies this
+requirement. No user-visible version bump is required for v2.1.10.
+
+---
+
 ## 9. Cross-References
 
 - `bin/cache-prefix-lock.js` — UserPromptSubmit hook implementation

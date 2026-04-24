@@ -734,3 +734,7 @@ verify_fix_max_rounds`, omit this budget line entirely for that reviewer delegat
 - Do NOT include this section in first-spawn (pre-decomposition) PM self-calls.
 - Do NOT include this section in Haiku-tier agent delegations.
 - Do NOT include this section in the final verify-fix reviewer delegation (see exemption note above).
+
+---
+
+**Compression path observability (v2.1.10):** Each compression path (CiteCache, SpecSketch, RepoMapDelta) is now audit-traced by `bin/emit-compression-telemetry.js` on `SubagentStart`. When the delegation prompt reaches the subagent, the hook greps it for the three markers and appends a `cite_cache_hit`, `spec_sketch_generated`, or `repo_map_delta_injected` event to `.orchestray/audit/events.jsonl`. Running `grep -c cite_cache_hit .orchestray/audit/events.jsonl` is now a valid runtime smoke-test for confirming that CiteCache is actually firing during a given orchestration. If the count is zero after several delegations, it indicates the PM has fallen back to full pattern-body prose and the compression is not active. Kill-switch: `ORCHESTRAY_COMPRESSION_TELEMETRY_DISABLED=1`.

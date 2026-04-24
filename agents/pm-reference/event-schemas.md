@@ -3346,3 +3346,210 @@ Field notes:
 | `curator_cursor_reset` | `bin/_lib/curator-diff.js` | warn | Curator detected a corrupt or stale diff-cursor in `curate --diff` mode and reset to full-diff. Gated to one event per session via a dedup key; subsequent detections in the same session are suppressed. |
 | `pattern_seen_set_recovered` | `bin/_lib/pattern-seen-set.js` | warn | CiteCache seen-set read or parse failed; fail-open recovery applied — full pattern bodies emitted for the remainder of the orchestration. |
 | `pattern_seen_set_oversize` | `bin/_lib/pattern-seen-set.js` | warn | Seen-set file exceeded the 10 MB cap; file was tail-truncated to ~5 MB before parse. Orchestration continues with the truncated set. |
+
+---
+
+## Section 24: v2.1.10 Compression Telemetry and Resilience Events
+
+### `cite_cache_hit`
+
+Emitted by `bin/emit-compression-telemetry.js` (wired as `SubagentStart`) when the
+delegation prompt that is about to be sent to a subagent contains the CiteCache hit
+marker (`[CACHED — loaded by`). Confirms that the v2.1.8 CiteCache compression path
+fired on this delegation.
+
+```json
+{
+  "event": "cite_cache_hit",
+  "orchestration_id": "<current orch id | null>",
+  "ts": "<ISO 8601>",
+  "subagent_type": "<agent_type from SubagentStart payload | null>",
+  "match_count": "<N>"
+}
+```
+
+Field notes:
+- `match_count`: Number of non-overlapping occurrences of the CiteCache marker in the
+  delegation prompt. One event is emitted per delegation (not one per occurrence), with
+  `match_count` recording the cardinality. Typical value is ≥1 when CiteCache is active
+  and the PM correctly elided repeated pattern bodies.
+- `orchestration_id`: Resolved from `.orchestray/audit/current-orchestration.json`; `null`
+  if no orchestration is active at hook time.
+- Kill-switch: `ORCHESTRAY_COMPRESSION_TELEMETRY_DISABLED=1` suppresses all compression
+  telemetry events. Config key: `context_compression_v218.telemetry_enabled` (default `true`).
+
+---
+
+### `spec_sketch_generated`
+
+Emitted by `bin/emit-compression-telemetry.js` (wired as `SubagentStart`) when the
+delegation prompt contains a `spec_sketch:` YAML preamble key at line-start position.
+Confirms that the v2.1.8 SpecSketch injection fired on this delegation.
+
+```json
+{
+  "event": "spec_sketch_generated",
+  "orchestration_id": "<current orch id | null>",
+  "ts": "<ISO 8601>",
+  "subagent_type": "<agent_type from SubagentStart payload | null>",
+  "match_count": "<N>"
+}
+```
+
+Field notes:
+- `match_count`: Number of lines in the delegation prompt that begin with `spec_sketch:`
+  (after optional leading whitespace). In practice this is 1 per delegation, but the
+  field reflects the actual count for diagnostics.
+- Pattern is anchored to line-start (regex `/^\s*spec_sketch:/m`) to avoid false positives
+  from prose that mentions the key mid-sentence.
+- Same kill-switch and config key as `cite_cache_hit`.
+
+---
+
+### `repo_map_delta_injected`
+
+Emitted by `bin/emit-compression-telemetry.js` (wired as `SubagentStart`) when the
+delegation prompt contains a `repo_map_delta:` YAML/fence marker at line-start position.
+Confirms that the v2.1.8 RepoMapDelta injection fired on this delegation.
+
+```json
+{
+  "event": "repo_map_delta_injected",
+  "orchestration_id": "<current orch id | null>",
+  "ts": "<ISO 8601>",
+  "subagent_type": "<agent_type from SubagentStart payload | null>",
+  "match_count": "<N>"
+}
+```
+
+Field notes:
+- `match_count`: Number of lines in the delegation prompt beginning with `repo_map_delta:`
+  (after optional leading whitespace). Typically 1 per delegation.
+- Pattern is anchored to line-start (regex `/^\s*repo_map_delta:/m`), same rationale as
+  `spec_sketch_generated`.
+- Same kill-switch and config key as `cite_cache_hit`.
+
+---
+
+### `dossier_truncated`
+
+Emitted by `bin/inject-resilience-dossier.js` (wired as `UserPromptSubmit` and
+`SessionStart`) when the serialised resilience dossier exceeds the 10 000-character
+`additionalContext` cap. The dossier is truncated before injection and a truncation
+marker is appended so the PM knows to read the full dossier from disk.
+
+```json
+{
+  "type": "dossier_truncated",
+  "orchestration_id": "<current orch id | null>",
+  "original_length": "<N>",
+  "cap": 10000,
+  "mode": "<legacy_fence | native_envelope>"
+}
+```
+
+Field notes:
+- `original_length`: Byte-length of the serialised dossier before truncation. Useful
+  for sizing the dossier schema and identifying phases where state explodes.
+- `cap`: Always `10000` in v2.1.10 (the `NATIVE_ENVELOPE_MAX_CHARS` constant). Reserved
+  for future configurability.
+- `mode`: `"native_envelope"` when `hookSpecificOutput.additionalContext` is used (the
+  default in v2.1.10); `"legacy_fence"` when `ORCHESTRAY_RESILIENCE_NATIVE_ENVELOPE_DISABLED=1`
+  reverts to the prior fenced-markdown output.
+
+---
+
+### `resilience_block_triggered`
+
+Emitted by `bin/pre-compact-archive.js` (wired as `PreCompact`) when the resilience
+dossier write fails during an active orchestration and the block-on-write-failure
+default is enabled. The hook exits 2 after emitting this event, blocking the compaction.
+
+```json
+{
+  "type": "resilience_block_triggered",
+  "orchestration_id": "<active orch id | unknown>",
+  "phase": "<decomposing | executing | reviewing | verifying>",
+  "reason": "<human-readable error description>"
+}
+```
+
+Field notes:
+- `phase`: The `current_phase` read from `.orchestray/state/orchestration.md` at hook
+  time. Only phases in `{decomposing, executing, reviewing, verifying}` can trigger a
+  block; other phases (completed, aborted) or parse failures always exit 0.
+- `reason`: The underlying I/O error message from the failed dossier write.
+- Kill-switch: `ORCHESTRAY_RESILIENCE_BLOCK_DISABLED=1` or
+  `resilience.block_on_write_failure: false` in `.orchestray/config.json` — see
+  `resilience_block_suppressed`.
+
+---
+
+### `resilience_block_suppressed_inactive`
+
+Emitted by `bin/pre-compact-archive.js` when the dossier write fails but no active
+orchestration is detected (phase is completed, aborted, null, or parse failure). The
+hook exits 0 after emitting this event.
+
+```json
+{
+  "type": "resilience_block_suppressed_inactive",
+  "phase": "<phase value or null>",
+  "reason": "<human-readable error description>"
+}
+```
+
+Field notes:
+- Distinguishes from `resilience_block_suppressed` (kill-switch path) so operators can
+  tell whether the non-block was intentional or due to absent orchestration context.
+
+---
+
+### `resilience_block_suppressed`
+
+Emitted by `bin/pre-compact-archive.js` when `ORCHESTRAY_RESILIENCE_BLOCK_DISABLED=1`
+or `resilience.block_on_write_failure: false` overrides what would otherwise have been
+a triggered block during an active orchestration. The hook exits 0.
+
+```json
+{
+  "type": "resilience_block_suppressed",
+  "orchestration_id": "<active orch id | unknown>",
+  "phase": "<phase value>",
+  "reason": "<human-readable error description>",
+  "override": "<env_var | config_flag>"
+}
+```
+
+Field notes:
+- `override`: `"env_var"` when suppressed by `ORCHESTRAY_RESILIENCE_BLOCK_DISABLED=1`;
+  `"config_flag"` when suppressed by `resilience.block_on_write_failure: false`.
+
+---
+
+### `isolation_omitted_warn`
+
+Emitted by `bin/warn-isolation-omitted.js` (wired as `PreToolUse[Agent]`) when a
+write-capable agent (architect, developer, refactorer, tester, security-engineer,
+inventor) is spawned without worktree isolation. Advisory only — the spawn is not
+blocked (exit 0). Confirms the silent-skip risk identified in v2.1.10 R4.
+
+```json
+{
+  "event": "isolation_omitted_warn",
+  "orchestration_id": "<current orch id | unknown>",
+  "ts": "<ISO 8601>",
+  "agent": "<subagent_type>",
+  "reason": "write-capable agent spawned without worktree isolation"
+}
+```
+
+Field notes:
+- `agent`: The `subagent_type` value from the `Agent()` tool call.
+- `reason`: Always `"write-capable agent spawned without worktree isolation"` in v2.1.10.
+- Kill-switch: `ORCHESTRAY_ISOLATION_WARN_DISABLED=1` or
+  `worktree_isolation.warn_on_omission: false` in `.orchestray/config.json`.
+- As of v2.1.10, the six write-capable agents carry `isolation: worktree` in frontmatter,
+  so this event should not fire on standard orchestrations. It fires for custom/dynamic
+  agents that omit the field, or on Claude Code versions that do not apply frontmatter
+  isolation.

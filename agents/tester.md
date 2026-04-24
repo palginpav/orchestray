@@ -7,6 +7,7 @@ tools: Read, Glob, Grep, Bash, Write, Edit
 model: inherit
 effort: medium
 memory: project
+isolation: worktree
 maxTurns: 115
 color: yellow
 ---

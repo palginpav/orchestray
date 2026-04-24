@@ -17,6 +17,11 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/mark-compact-signal.js",
             "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/inject-resilience-dossier.js",
+            "timeout": 5
           }
         ]
       },
@@ -67,6 +72,11 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-reviewer-scope.js",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/warn-isolation-omitted.js",
             "timeout": 5
           }
         ]
@@ -176,6 +186,15 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/collect-context-telemetry.js start",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/emit-compression-telemetry.js",
             "timeout": 5
           }
         ]

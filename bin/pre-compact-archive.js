@@ -13,7 +13,21 @@
  *   - current-orchestration.json: copy of current audit marker (if exists)
  *
  * Triggered by Claude Code's PreCompact hook event (manual /compact or auto-compact).
- * Non-blocking: any errors are swallowed and the compaction is allowed to proceed.
+ *
+ * v2.1.10 R3: Durability checkpoint — if the resilience dossier write fails AND an
+ * orchestration is in-flight, exits 2 to block compaction (preserving in-flight state).
+ * Behaviour is governed by:
+ *   - ORCHESTRAY_RESILIENCE_BLOCK_DISABLED=1  env kill-switch  → never block (exit 0)
+ *   - .orchestray/config.json resilience.block_on_write_failure: false  → never block
+ *   - Phase detector is conservative: on any parse failure or unrecognised phase, exit 0.
+ *     False negatives (not blocking when we should) are preferable to false positives
+ *     (stuck compaction). W2 audit noted 3 prior ENOENT races on current-orchestration.json.
+ *
+ * New audit events emitted by this script (v2.1.10 R3 additions; catalogued in
+ * agents/pm-reference/event-schemas.md §v2.1.10 by W4 / W7 release-manager):
+ *   - resilience_block_triggered       — exit 2 issued; dossier write failed during active orch
+ *   - resilience_block_suppressed_inactive — dossier write failed but orch is not active; exit 0
+ *   - resilience_block_suppressed      — kill-switch or config flag active; forced exit 0
  */
 
 const fs = require('fs');
@@ -56,17 +70,6 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
-    // v2.1.7 Bundle D: belt-and-suspenders dossier write before compaction
-    // consumes the context. writeDossierSnapshot is fail-open; any error is
-    // journaled internally and does not propagate.
-    try {
-      const { writeDossierSnapshot } = require('./write-resilience-dossier');
-      writeDossierSnapshot(cwd, { trigger: 'pre_compact' });
-    } catch (_e) {
-      // Never block compaction over dossier issues — this is defense in depth;
-      // Stop/SubagentStop already produce a fresh dossier on every turn.
-    }
-
     // Resolve orchestration_id from the current marker (if an orchestration is active)
     let orchestrationId = null;
     try {
@@ -77,6 +80,63 @@ process.stdin.on('end', () => {
       }
     } catch (_e) {
       // ignore — marker may be missing or malformed
+    }
+
+    // v2.1.7 Bundle D: belt-and-suspenders dossier write before compaction
+    // consumes the context. writeDossierSnapshot returns {written, reason, ...}.
+    // v2.1.10 R3: if the write fails during an active orchestration we may block
+    // compaction (exit 2) to protect in-flight state — see _shouldBlockCompaction().
+    let dossierWriteResult = { written: false, reason: 'not_attempted' };
+    let dossierWriteFailed = false;
+    try {
+      const { writeDossierSnapshot } = require('./write-resilience-dossier');
+      dossierWriteResult = writeDossierSnapshot(cwd, { trigger: 'pre_compact' });
+      // Treat as failed only when writeDossierSnapshot explicitly reports a write
+      // failure — NOT when it intentionally skipped (disabled/no active orch).
+      dossierWriteFailed = !dossierWriteResult.written &&
+        dossierWriteResult.reason !== 'env_kill_switch' &&
+        dossierWriteResult.reason !== 'config_disabled' &&
+        dossierWriteResult.reason !== 'no_orchestray_dir' &&
+        dossierWriteResult.reason !== 'no_active_orchestration';
+    } catch (_e) {
+      // writeDossierSnapshot threw unexpectedly — treat as write failure.
+      dossierWriteFailed = true;
+    }
+
+    // v2.1.10 R3: Evaluate whether to block compaction.
+    // Conservative: any doubt about orchestration state → do NOT block.
+    if (dossierWriteFailed) {
+      const blockDecision = _shouldBlockCompaction(cwd, auditDir, orchestrationId);
+      if (blockDecision.block) {
+        // Emit resilience_block_triggered audit event (best-effort).
+        _emitBlockEvent(auditDir, 'resilience_block_triggered', {
+          orchestration_id: orchestrationId || blockDecision.orchestration_id || 'unknown',
+          phase: blockDecision.phase || 'unknown',
+          trigger,
+          reason: 'dossier_write_failed_during_active_orchestration',
+        });
+        process.stderr.write(
+          'Orchestray: refusing to compact — resilience dossier write failed during' +
+          ' active orchestration ' + (orchestrationId || blockDecision.orchestration_id || '(unknown)') +
+          '. Retry in a moment or run /orchestray:status and manually /compact after.\n'
+        );
+        process.stdout.write(JSON.stringify({ continue: false }));
+        process.exit(2);
+      } else if (blockDecision.suppressed_reason === 'kill_switch_or_config') {
+        _emitBlockEvent(auditDir, 'resilience_block_suppressed', {
+          orchestration_id: orchestrationId || 'unknown',
+          trigger,
+          reason: blockDecision.kill_switch_source || 'kill_switch_or_config',
+        });
+      } else if (blockDecision.suppressed_reason === 'inactive') {
+        _emitBlockEvent(auditDir, 'resilience_block_suppressed_inactive', {
+          orchestration_id: orchestrationId || 'unknown',
+          trigger,
+          phase: blockDecision.phase || 'unknown',
+          reason: 'orchestration_not_active',
+        });
+      }
+      // else: suppressed_reason === 'parse_failure' or other conservative path → no event
     }
 
     // Build snapshot directory name
@@ -214,3 +274,155 @@ process.stdin.on('end', () => {
   process.stdout.write(JSON.stringify({ continue: true }));
   process.exit(0);
 });
+
+// ---------------------------------------------------------------------------
+// v2.1.10 R3 helpers — resilience block decision
+// ---------------------------------------------------------------------------
+
+/**
+ * Active-orchestration phase values. Any phase not in this set (or not recognised)
+ * is treated as "inactive" — we do NOT block. Conservative by design.
+ *
+ * The spec lists: decomposing, G1-executing … G5-executing, executing, reviewing,
+ * verifying, plus any value that is not completed/aborted/null.
+ * We enumerate the known-active values explicitly; anything else → not active.
+ */
+const ACTIVE_PHASES = new Set([
+  'decomposing',
+  'executing',
+  'reviewing',
+  'verifying',
+  // grouped-execution phases (G1–G9 safety margin)
+  'G1-executing', 'G2-executing', 'G3-executing', 'G4-executing', 'G5-executing',
+  'G6-executing', 'G7-executing', 'G8-executing', 'G9-executing',
+  // implementation-phase aliases observed in practice
+  'implementation',
+  'delegation',
+  // any "in_progress" synonym
+  'in_progress',
+]);
+
+/** Phases that definitively indicate no active orchestration. */
+const INACTIVE_PHASES = new Set([
+  'completed', 'complete', 'aborted', 'archived', 'failed',
+]);
+
+/**
+ * Decide whether to block compaction.
+ *
+ * Returns one of:
+ *   { block: true,  orchestration_id, phase }
+ *   { block: false, suppressed_reason: 'kill_switch_or_config', kill_switch_source }
+ *   { block: false, suppressed_reason: 'inactive', phase }
+ *   { block: false, suppressed_reason: 'parse_failure' }
+ *
+ * Conservative rule: on any parse/read failure → suppressed_reason: 'parse_failure'.
+ *
+ * @param {string} cwd
+ * @param {string} auditDir
+ * @param {string|null} orchestrationId
+ * @returns {{ block: boolean, suppressed_reason?: string, orchestration_id?: string|null,
+ *             phase?: string|null, kill_switch_source?: string }}
+ */
+function _shouldBlockCompaction(cwd, auditDir, orchestrationId) {
+  // Kill-switch check first — never block if overridden.
+  if (process.env.ORCHESTRAY_RESILIENCE_BLOCK_DISABLED === '1') {
+    return { block: false, suppressed_reason: 'kill_switch_or_config', kill_switch_source: 'env_ORCHESTRAY_RESILIENCE_BLOCK_DISABLED' };
+  }
+
+  // Config flag check (fail-open: if config is unreadable, proceed to phase check).
+  try {
+    const configPath = path.join(cwd, '.orchestray', 'config.json');
+    if (fs.existsSync(configPath)) {
+      const raw = fs.readFileSync(configPath, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed &&
+          parsed.resilience &&
+          parsed.resilience.block_on_write_failure === false) {
+        return { block: false, suppressed_reason: 'kill_switch_or_config', kill_switch_source: 'config_resilience.block_on_write_failure_false' };
+      }
+    }
+  } catch (_e) {
+    // Config unreadable → conservative: proceed to phase check (don't block on config error).
+  }
+
+  // Phase detection from .orchestray/state/orchestration.md frontmatter.
+  // Conservative: on any error → suppressed_reason: 'parse_failure' (do NOT block).
+  const phase = _readOrchestrationPhase(cwd);
+  if (phase === null) {
+    // File missing or parse failure → do not block.
+    return { block: false, suppressed_reason: 'parse_failure' };
+  }
+
+  if (INACTIVE_PHASES.has(phase)) {
+    return { block: false, suppressed_reason: 'inactive', phase };
+  }
+
+  if (ACTIVE_PHASES.has(phase)) {
+    return { block: true, orchestration_id: orchestrationId, phase };
+  }
+
+  // Unrecognised phase value → conservative, do NOT block.
+  return { block: false, suppressed_reason: 'parse_failure', phase };
+}
+
+/**
+ * Read the `phase` (or `current_phase`) frontmatter field from
+ * `.orchestray/state/orchestration.md`.
+ *
+ * Returns the trimmed phase string, or `null` on any error (file missing,
+ * parse failure, no frontmatter). Returning `null` signals "do not block".
+ *
+ * @param {string} cwd
+ * @returns {string|null}
+ */
+function _readOrchestrationPhase(cwd) {
+  try {
+    const orchPath = path.join(cwd, '.orchestray', 'state', 'orchestration.md');
+    if (!fs.existsSync(orchPath)) return null;
+    const raw = fs.readFileSync(orchPath, 'utf8');
+    const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    if (!match) return null;
+    const fm = match[1];
+    for (const line of fm.split(/\r?\n/)) {
+      // Match `phase:` or `current_phase:` (both observed in practice).
+      const mm = line.match(/^(?:current_)?phase:\s*(.+)$/i);
+      if (!mm) continue;
+      let val = mm[1].trim();
+      // Strip surrounding quotes.
+      if (val.length >= 2 &&
+          (val[0] === '"' || val[0] === "'") &&
+          val[val.length - 1] === val[0]) {
+        val = val.slice(1, -1);
+      }
+      if (val) return val;
+    }
+    return null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
+ * Append a resilience-block audit event to events.jsonl. Best-effort: never throws.
+ *
+ * @param {string} auditDir
+ * @param {string} type   Event type name.
+ * @param {object} payload Additional fields merged into the event.
+ */
+function _emitBlockEvent(auditDir, type, payload) {
+  try {
+    if (!fs.existsSync(auditDir)) {
+      // Ensure the audit dir exists (first-run path).
+      fs.mkdirSync(auditDir, { recursive: true });
+    }
+    const eventsPath = path.join(auditDir, 'events.jsonl');
+    const evt = Object.assign(
+      { timestamp: new Date().toISOString(), type },
+      payload
+    );
+    atomicAppendJsonl(eventsPath, evt);
+  } catch (_e) {
+    // Never throw from audit emit.
+  }
+}
