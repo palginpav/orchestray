@@ -1,6 +1,7 @@
 CLAUDE.md
 .planning/**/*
 .claude/
+.mcp.json
 node_modules/
 .orchestray/
 !.orchestray/team-config.json
