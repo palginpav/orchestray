@@ -307,11 +307,11 @@ describe('Test 11: model_auto_resolved event written to events.jsonl', () => {
     const lines = fs.readFileSync(eventsPath, 'utf8').split('\n').filter(Boolean);
     const autoResolveEvents = lines
       .map(l => { try { return JSON.parse(l); } catch (_) { return null; } })
-      .filter(e => e && e.event === 'model_auto_resolved');
+      .filter(e => e && (e.type === 'model_auto_resolved' || e.event === 'model_auto_resolved'));
     assert.ok(autoResolveEvents.length > 0, 'Expected at least one model_auto_resolved event');
     const ev = autoResolveEvents[0];
     assert.ok(ev.orchestration_id, 'Event must have orchestration_id');
-    assert.ok(ev.ts, 'Event must have ts');
+    assert.ok(ev.timestamp || ev.ts, 'Event must have timestamp (or legacy ts)');
     assert.equal(ev.level, 'warn', 'Event level must be warn');
     assert.ok(['routing_lookup', 'frontmatter_default', 'global_default_sonnet'].includes(ev.source),
       'source must be one of the three valid values, got: ' + ev.source);
@@ -329,7 +329,7 @@ describe('Test 11: model_auto_resolved event written to events.jsonl', () => {
       const lines = fs.readFileSync(eventsPath, 'utf8').split('\n').filter(Boolean);
       const ev = lines
         .map(l => { try { return JSON.parse(l); } catch (_) { return null; } })
-        .find(e => e && e.event === 'model_auto_resolved' && e.source === 'routing_lookup');
+        .find(e => e && (e.type === 'model_auto_resolved' || e.event === 'model_auto_resolved') && e.source === 'routing_lookup');
       if (ev) {
         // routing_entry_timestamp is optional but recommended when source=routing_lookup.
         assert.ok(ev.routing_entry_timestamp, 'routing_entry_timestamp should be present for routing_lookup');

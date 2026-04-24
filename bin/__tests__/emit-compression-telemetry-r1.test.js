@@ -279,7 +279,7 @@ describe('R1 AC-03 — events emitted for all three compression markers', () => 
       assert.equal(r.status, 0, `Hook exited non-zero; stderr=${r.stderr}`);
 
       const events = readEvents(tmp);
-      const eventTypes = events.map((e) => e.event);
+      const eventTypes = events.map((e) => e.type);
       assert.ok(eventTypes.includes('cite_cache_hit'), 'cite_cache_hit event must be emitted');
       assert.ok(eventTypes.includes('spec_sketch_generated'), 'spec_sketch_generated event must be emitted');
       assert.ok(eventTypes.includes('repo_map_delta_injected'), 'repo_map_delta_injected event must be emitted');
@@ -300,7 +300,7 @@ describe('R1 AC-03 — events emitted for all three compression markers', () => 
     try {
       runHook({ cwd: tmp, agent_type: 'developer', agent_transcript_path: transcriptPath });
       const events = readEvents(tmp);
-      const hitEvent = events.find((e) => e.event === 'cite_cache_hit');
+      const hitEvent = events.find((e) => e.type === 'cite_cache_hit');
       assert.ok(hitEvent, 'cite_cache_hit event must be present');
       assert.equal(hitEvent.match_count, 3, 'match_count must be 3 for three occurrences');
     } finally {
@@ -316,7 +316,7 @@ describe('R1 AC-03 — events emitted for all three compression markers', () => 
     try {
       runHook({ cwd: tmp, agent_type: 'developer', agent_transcript_path: transcriptPath });
       const events = readEvents(tmp);
-      const citeCacheEvents = events.filter((e) => e.event === 'cite_cache_hit');
+      const citeCacheEvents = events.filter((e) => e.type === 'cite_cache_hit');
       assert.equal(citeCacheEvents.length, 1, 'must emit exactly one cite_cache_hit event (not one per occurrence)');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
@@ -330,7 +330,7 @@ describe('R1 AC-03 — events emitted for all three compression markers', () => 
     try {
       runHook({ cwd: tmp, agent_type: 'developer', agent_transcript_path: transcriptPath });
       const events = readEvents(tmp);
-      const hitEvent = events.find((e) => e.event === 'cite_cache_hit');
+      const hitEvent = events.find((e) => e.type === 'cite_cache_hit');
       assert.ok(hitEvent, 'cite_cache_hit event must be present');
       assert.equal(hitEvent.orchestration_id, 'orch-test-r1', 'orchestration_id must come from current-orchestration.json');
     } finally {
@@ -345,7 +345,7 @@ describe('R1 AC-03 — events emitted for all three compression markers', () => 
     try {
       runHook({ cwd: tmp, agent_type: 'architect', agent_transcript_path: transcriptPath });
       const events = readEvents(tmp);
-      const hitEvent = events.find((e) => e.event === 'cite_cache_hit');
+      const hitEvent = events.find((e) => e.type === 'cite_cache_hit');
       assert.ok(hitEvent, 'cite_cache_hit event must be present');
       assert.equal(hitEvent.subagent_type, 'architect');
     } finally {
@@ -361,7 +361,7 @@ describe('R1 AC-03 — events emitted for all three compression markers', () => 
       runHook({ cwd: tmp, agent_type: 'developer', agent_transcript_path: transcriptPath });
       const events = readEvents(tmp);
       const compressionEvents = events.filter((e) =>
-        ['cite_cache_hit', 'spec_sketch_generated', 'repo_map_delta_injected'].includes(e.event)
+        ['cite_cache_hit', 'spec_sketch_generated', 'repo_map_delta_injected'].includes(e.type)
       );
       assert.equal(compressionEvents.length, 0, 'no compression events must be emitted when markers absent');
     } finally {
@@ -386,7 +386,7 @@ describe('R1 AC-03 — events emitted for all three compression markers', () => 
     try {
       runHook({ cwd: tmp, agent_type: 'developer', agent_transcript_path: transcriptPath });
       const events = readEvents(tmp);
-      const specEvents = events.filter((e) => e.event === 'spec_sketch_generated');
+      const specEvents = events.filter((e) => e.type === 'spec_sketch_generated');
       assert.equal(specEvents.length, 0, 'mid-sentence spec_sketch: must NOT trigger spec_sketch_generated');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
@@ -401,7 +401,7 @@ describe('R1 AC-03 — events emitted for all three compression markers', () => 
     try {
       runHook({ cwd: tmp, agent_type: 'developer', agent_transcript_path: transcriptPath });
       const events = readEvents(tmp);
-      const specEvents = events.filter((e) => e.event === 'spec_sketch_generated');
+      const specEvents = events.filter((e) => e.type === 'spec_sketch_generated');
       assert.equal(specEvents.length, 1, 'spec_sketch: at line start must trigger spec_sketch_generated');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });

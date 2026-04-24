@@ -9,7 +9,10 @@
  *   async function* scanEvents(options?) -> AsyncGenerator<NormalizedEvent>
  *   async function queryEvents(filters, options?) -> { events, total_matching, returned }
  *
- * Normalization:
+ * Normalization (v2.1.13 R-EVENT-NAMING: field-name mapping is also exposed
+ * as a standalone helper in `bin/read-event.js :: normalizeEvent`; this
+ * function keeps its own copy because it additionally logs schema-drift
+ * stderr warnings and owns archive-mtime timestamp fallback):
  *   - `type` wins over legacy `event` field; legacy key is dropped.
  *   - Lines with neither type nor event are logged + skipped.
  *   - Live-audit lines without timestamp are skipped (no natural fallback).

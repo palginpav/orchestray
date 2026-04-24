@@ -1,0 +1,13 @@
+{
+  "auto_review": "yes",
+  "max_retries": -1,
+  "default_delegation": "async",
+  "complexity_threshold": 999,
+  "retrieval": {
+    "scorer_variant": "magic",
+    "top_k": 0
+  },
+  "mcp_enforcement": {
+    "global_kill_switch": true
+  }
+}

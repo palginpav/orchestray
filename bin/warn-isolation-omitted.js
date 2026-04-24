@@ -195,9 +195,12 @@ function main() {
     // Isolation omitted on a write-capable agent — emit advisory event.
     const orchestrationId = resolveOrchestrationId(cwd);
     emitAuditEvent(cwd, {
-      event: 'isolation_omitted_warn',
+      // v2.1.13 R-EVENT-NAMING: canonical snake_case shape.
+      // Legacy v2.1.12 emissions used `event`/`ts` — back-compat read path
+      // in bin/read-event.js maps both forms.
+      type: 'isolation_omitted_warn',
       orchestration_id: orchestrationId,
-      ts: new Date().toISOString(),
+      timestamp: new Date().toISOString(),
       agent: subagentType,
       reason: 'write-capable agent spawned without worktree isolation',
     });

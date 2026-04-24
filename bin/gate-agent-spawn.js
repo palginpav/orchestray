@@ -317,9 +317,12 @@ process.stdin.on('end', () => {
       try {
         const eventsPathForResolve = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
         const resolveEvent = {
-          event: 'model_auto_resolved',
+          // v2.1.13 R-EVENT-NAMING: canonical snake_case shape.
+          // Legacy v2.1.12 emissions used `event`/`ts` — back-compat read path
+          // in bin/read-event.js maps both forms.
+          type: 'model_auto_resolved',
           orchestration_id: resolveOrchId,
-          ts: new Date().toISOString(),
+          timestamp: new Date().toISOString(),
           level: 'warn',
           resolved_model: resolvedModel,
           source: resolveSource,

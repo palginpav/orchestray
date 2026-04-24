@@ -47,6 +47,7 @@ const { recordDegradation }           = require('./_lib/degraded-journal');
 const { loadAutoLearningConfig }      = require('./_lib/config-schema');
 const { EXTRACTION_BREAKER_SCOPE }    = require('./_lib/auto-learning-scopes');
 const { MAX_INPUT_BYTES }             = require('./_lib/constants');
+const { normalizeEvent }              = require('./read-event');
 // v2.1.7 Bundle A: live Haiku backend
 const { runExtractor }          = require('./_lib/haiku-extractor-transport');
 const { parseExtractorOutput }  = require('./_lib/extractor-output-parser');
@@ -572,7 +573,8 @@ function runExtraction({ projectRoot, eventsPath, orchFilePath }) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
-      allEvents.push(JSON.parse(trimmed));
+      // R-EVENT-NAMING (v2.1.13): legacy `event`/`ts` → canonical `type`/`timestamp`.
+      allEvents.push(normalizeEvent(JSON.parse(trimmed)));
     } catch (_e) {
       _emitEvent(auditFile, {
         timestamp: new Date().toISOString(),

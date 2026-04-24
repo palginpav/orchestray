@@ -32,6 +32,7 @@ const path = require('path');
 const { appendJsonlWithRotation } = require('./_lib/jsonl-rotate');
 const { mean, p50, countBy }      = require('./_lib/analytics');
 const { resolveSafeCwd }          = require('./_lib/resolve-project-cwd');
+const { normalizeEvent }          = require('./read-event');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -136,7 +137,10 @@ function emitRollup(cwd, orchestrationId) {
   const eventsPath  = path.join(auditDir,   'events.jsonl');
 
   const allMetrics = readJsonl(metricsPath, MAX_READ);
-  const allEvents  = readJsonl(eventsPath,  MAX_READ);
+  // R-EVENT-NAMING (v2.1.13): legacy `event`/`ts` keys are mapped forward to
+  // `type`/`timestamp` so downstream filters and `.type === ...` checks work
+  // on historical (v2.1.12-era) lines without a data migration.
+  const allEvents  = readJsonl(eventsPath, MAX_READ).map(normalizeEvent);
 
   // Filter to this orchestration.
   const orchMetrics = allMetrics.filter(r => r.orchestration_id === orchestrationId);
@@ -215,8 +219,10 @@ function emitRollup(cwd, orchestrationId) {
 
   // R-DX1 (AC-13): collect model_auto_resolved warn events and render as human-readable lines.
   // These appear in the rollup so the PM can see auto-resolutions at a glance.
+  // Post-normalization (see readJsonl call above) every event has a canonical
+  // `type` field regardless of whether it was written as `event` or `type`.
   const autoResolveEvents = orchEvents.filter(ev =>
-    ev.event === 'model_auto_resolved' || ev.type === 'model_auto_resolved'
+    ev.type === 'model_auto_resolved'
   );
   const model_auto_resolved_warnings = autoResolveEvents.map(ev => {
     const agentStr = ev.subagent_type || '(unknown)';

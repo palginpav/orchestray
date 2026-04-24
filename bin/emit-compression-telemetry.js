@@ -235,9 +235,12 @@ function handleSubagentStart(event) {
   const citeCacheCount = countOccurrences(promptText, CITE_CACHE_MARKER);
   if (citeCacheCount > 0) {
     emitEvent(cwd, {
-      event: 'cite_cache_hit',
+      // v2.1.13 R-EVENT-NAMING: canonical snake_case shape.
+      // Legacy v2.1.12 emissions used `event`/`ts` — back-compat read path
+      // in bin/read-event.js maps both forms.
+      type: 'cite_cache_hit',
       orchestration_id: orchestrationId,
-      ts,
+      timestamp: ts,
       subagent_type: agentType,
       match_count: citeCacheCount,
     });
@@ -248,9 +251,10 @@ function handleSubagentStart(event) {
   const specSketchMatches = promptText.match(new RegExp(SPEC_SKETCH_RE.source, 'gm'));
   if (specSketchMatches && specSketchMatches.length > 0) {
     emitEvent(cwd, {
-      event: 'spec_sketch_generated',
+      // v2.1.13 R-EVENT-NAMING: canonical snake_case shape (see cite_cache_hit above).
+      type: 'spec_sketch_generated',
       orchestration_id: orchestrationId,
-      ts,
+      timestamp: ts,
       subagent_type: agentType,
       match_count: specSketchMatches.length,
     });
@@ -261,9 +265,10 @@ function handleSubagentStart(event) {
   const repoMapMatches = promptText.match(new RegExp(REPO_MAP_DELTA_RE.source, 'gm'));
   if (repoMapMatches && repoMapMatches.length > 0) {
     emitEvent(cwd, {
-      event: 'repo_map_delta_injected',
+      // v2.1.13 R-EVENT-NAMING: canonical snake_case shape (see cite_cache_hit above).
+      type: 'repo_map_delta_injected',
       orchestration_id: orchestrationId,
-      ts,
+      timestamp: ts,
       subagent_type: agentType,
       match_count: repoMapMatches.length,
     });

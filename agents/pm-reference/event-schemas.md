@@ -3386,9 +3386,9 @@ fired on this delegation.
 
 ```json
 {
-  "event": "cite_cache_hit",
+  "type": "cite_cache_hit",
   "orchestration_id": "<current orch id | null>",
-  "ts": "<ISO 8601>",
+  "timestamp": "<ISO 8601>",
   "subagent_type": "<agent_type from SubagentStart payload | null>",
   "match_count": "<N>"
 }
@@ -3403,6 +3403,9 @@ Field notes:
   if no orchestration is active at hook time.
 - Kill-switch: `ORCHESTRAY_COMPRESSION_TELEMETRY_DISABLED=1` suppresses all compression
   telemetry events. Config key: `context_compression_v218.telemetry_enabled` (default `true`).
+- **Historical names (v2.1.12 and earlier):** `event` / `ts` in place of `type` / `timestamp`.
+  See §"Field naming — historical and unified (v2.1.13)" below. Consumers should normalize
+  every row through `bin/read-event.js :: normalizeEvent` before reading fields.
 
 ---
 
@@ -3414,9 +3417,9 @@ Confirms that the v2.1.8 SpecSketch injection fired on this delegation.
 
 ```json
 {
-  "event": "spec_sketch_generated",
+  "type": "spec_sketch_generated",
   "orchestration_id": "<current orch id | null>",
-  "ts": "<ISO 8601>",
+  "timestamp": "<ISO 8601>",
   "subagent_type": "<agent_type from SubagentStart payload | null>",
   "match_count": "<N>"
 }
@@ -3429,6 +3432,8 @@ Field notes:
 - Pattern is anchored to line-start (regex `/^\s*spec_sketch:/m`) to avoid false positives
   from prose that mentions the key mid-sentence.
 - Same kill-switch and config key as `cite_cache_hit`.
+- **Historical names (v2.1.12 and earlier):** `event` / `ts` in place of `type` / `timestamp`
+  — normalize via `bin/read-event.js`.
 
 ---
 
@@ -3440,9 +3445,9 @@ Confirms that the v2.1.8 RepoMapDelta injection fired on this delegation.
 
 ```json
 {
-  "event": "repo_map_delta_injected",
+  "type": "repo_map_delta_injected",
   "orchestration_id": "<current orch id | null>",
-  "ts": "<ISO 8601>",
+  "timestamp": "<ISO 8601>",
   "subagent_type": "<agent_type from SubagentStart payload | null>",
   "match_count": "<N>"
 }
@@ -3454,6 +3459,8 @@ Field notes:
 - Pattern is anchored to line-start (regex `/^\s*repo_map_delta:/m`), same rationale as
   `spec_sketch_generated`.
 - Same kill-switch and config key as `cite_cache_hit`.
+- **Historical names (v2.1.12 and earlier):** `event` / `ts` in place of `type` / `timestamp`
+  — normalize via `bin/read-event.js`.
 
 ---
 
@@ -3562,9 +3569,9 @@ blocked (exit 0). Confirms the silent-skip risk identified in v2.1.10 R4.
 
 ```json
 {
-  "event": "isolation_omitted_warn",
+  "type": "isolation_omitted_warn",
   "orchestration_id": "<current orch id | unknown>",
-  "ts": "<ISO 8601>",
+  "timestamp": "<ISO 8601>",
   "agent": "<subagent_type>",
   "reason": "write-capable agent spawned without worktree isolation"
 }
@@ -3579,6 +3586,8 @@ Field notes:
   so this event should not fire on standard orchestrations. It fires for custom/dynamic
   agents that omit the field, or on Claude Code versions that do not apply frontmatter
   isolation.
+- **Historical names (v2.1.12 and earlier):** `event` / `ts` in place of `type` / `timestamp`
+  — normalize via `bin/read-event.js`.
 
 ---
 
@@ -3592,9 +3601,9 @@ visible in the post-orchestration rollup without hard-blocking the spawn.
 
 ```jsonc
 {
-  "event":                   "model_auto_resolved",
+  "type":                    "model_auto_resolved",
   "orchestration_id":        "orch-1234567890",
-  "ts":                      "2026-04-24T12:00:00.000Z",
+  "timestamp":               "2026-04-24T12:00:00.000Z",
   "level":                   "warn",
   "resolved_model":          "sonnet",
   "source":                  "routing_lookup",
@@ -3612,6 +3621,9 @@ Field notes:
 - `routing_entry_timestamp` — present only when `source=routing_lookup`; records the original routing decision timestamp for forensic use (W6 T09/Info #2).
 - Kill-switch: `ORCHESTRAY_STRICT_MODEL_REQUIRED=1` disables auto-resolve and restores the v2.1.10 hard-block.
 - These events appear in the `model_auto_resolved_warnings` field of the orchestration rollup row as human-readable lines.
+- **Historical names (v2.1.12 and earlier):** `event` / `ts` in place of `type` / `timestamp`.
+  See §"Field naming — historical and unified (v2.1.13)" below. Consumers should normalize
+  every row through `bin/read-event.js :: normalizeEvent` before reading fields.
 
 ---
 
@@ -3663,3 +3675,44 @@ section.
 
 **Schema stability:** additive only. Consumers that do not recognise this event type
 should ignore it. New fields will only be added as optional.
+
+---
+
+## Field naming — historical and unified (v2.1.13)
+
+**Context.** `.orchestray/audit/events.jsonl` has always had two-way drift on two
+fields: a handful of emitters wrote `event` + `ts`, while the canonical writers
+(`bin/_lib/audit-event-writer.js`, `bin/_lib/kill-switch-event.js`, the `ox events
+append` CLI) wrote `type` + `timestamp`. Same semantics, different keys. v2.1.13
+R-EVENT-NAMING unifies emission on `type` + `timestamp` going forward and
+establishes a back-compat read path so v2.1.12-and-earlier `events.jsonl` files
+continue to read cleanly.
+
+**Scope of the rename.** ONLY fields in `.orchestray/audit/events.jsonl`.
+`.orchestray/state/routing.jsonl` documents `ts` as canonical there and is
+**excluded** from this rename — different file, different historical schema.
+
+**Unified mapping (historical → canonical).**
+
+| Historical | Canonical | Notes |
+|---|---|---|
+| `event` | `type` | Event-type identifier |
+| `ts` | `timestamp` | ISO 8601 UTC |
+
+Both names remain accepted by readers. New emit sites MUST use the canonical
+names. Source of truth: `bin/event-field-migration-map.js` (`OLD_TO_NEW`,
+`NEW_TO_OLD`).
+
+**Consumer contract.** Every consumer of `.orchestray/audit/events.jsonl` must
+normalise through `bin/read-event.js :: normalizeEvent(obj)` before dereferencing
+fields. `normalizeEvent` is idempotent: passing an already-canonical event is a
+no-op.
+
+**Back-compat guarantee.** Existing `.jsonl` files on disk are **not rewritten**.
+The read path handles legacy fields; the write path emits canonical fields. A
+v2.1.13 installation reading a v2.1.12 audit log produces well-formed events.
+
+**Drift prevention.** `tests/unit/event-field-migration.test.js` includes a grep
+lint that fails the test suite if any new emission site introduces a rogue field
+name. Expected keys are pinned against the migration map; any name that is
+neither canonical nor legacy is a drift candidate.

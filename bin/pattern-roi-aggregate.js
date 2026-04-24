@@ -57,6 +57,7 @@ const { parse: parseFrontmatter }    = require('./mcp-server/lib/frontmatter');
 const { recordDegradation }          = require('./_lib/degraded-journal');
 const { atomicAppendJsonl }          = require('./_lib/atomic-append');
 const { loadAutoLearningConfig }     = require('./_lib/config-schema');
+const { normalizeEvent }             = require('./read-event');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -352,7 +353,8 @@ function loadEvents(projectRoot, windowStart) {
         const trimmed = line.trim();
         if (!trimmed) continue;
         try {
-          const ev = JSON.parse(trimmed);
+          // R-EVENT-NAMING (v2.1.13): legacy `event`/`ts` → canonical `type`/`timestamp`.
+          const ev = normalizeEvent(JSON.parse(trimmed));
           if (!ev || typeof ev !== 'object') continue;
           // Filter to window
           const ts = ev.timestamp;

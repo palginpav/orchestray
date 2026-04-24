@@ -9,6 +9,7 @@ const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { loadCostBudgetCheckConfig } = require('./_lib/config-schema');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { appendJsonlWithRotation } = require('./_lib/jsonl-rotate');
+const { normalizeEvent } = require('./read-event');
 
 // Module-level fallback pricing per 1M tokens (current Anthropic rates as of 2026).
 // Used ONLY when loadCostBudgetCheckConfig() fails (fail-open contract).
@@ -190,7 +191,9 @@ function _hasOrchestrationComplete(eventsPath, orchestrationId) {
     for (const line of content.split('\n')) {
       if (!line || !line.includes('"orchestration_complete"')) continue;
       try {
-        const ev = JSON.parse(line);
+        // R-EVENT-NAMING (v2.1.13): normalise legacy `event`/`ts` to canonical
+        // `type`/`timestamp` so v2.1.12-era rows match here too.
+        const ev = normalizeEvent(JSON.parse(line));
         if (ev.type === 'orchestration_complete' && ev.orchestration_id === orchestrationId) {
           return true;
         }
@@ -351,7 +354,8 @@ process.stdin.on('end', () => {
           for (const line of eventsContent.split('\n')) {
             if (!line || !line.includes('"routing_outcome"')) continue;
             try {
-              const ev = JSON.parse(line);
+              // R-EVENT-NAMING (v2.1.13): canonicalise legacy `event`/`ts` fields.
+              const ev = normalizeEvent(JSON.parse(line));
               if (ev.type === 'routing_outcome' && ev.orchestration_id === orchestrationId) {
                 routingOutcomes.push(ev);
               }

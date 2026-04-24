@@ -385,7 +385,7 @@ describe('R4 full hook — write-capable agent without isolation', () => {
       const lines = fs.readFileSync(eventsPath, 'utf8').trim().split('\n').filter(Boolean);
       assert.equal(lines.length, 1, 'exactly one event must be emitted');
       const event = JSON.parse(lines[0]);
-      assert.equal(event.event, 'isolation_omitted_warn', 'event type must be isolation_omitted_warn');
+      assert.equal(event.type, 'isolation_omitted_warn', 'event type must be isolation_omitted_warn');
       assert.equal(event.agent, 'developer', 'event must record the spawned agent type');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });

@@ -1,0 +1,4 @@
+{"event":"agent_start","ts":"2026-04-20T10:15:30.123Z","agent_id":"abc","orchestration_id":"orch-123"}
+{"event":"agent_stop","ts":"2026-04-20T10:25:42.456Z","agent_id":"abc","orchestration_id":"orch-123","usage":{"input_tokens":100}}
+{"type":"orchestration_start","timestamp":"2026-04-20T10:00:00.000Z","orchestration_id":"orch-123"}
+{"event":"kill_switch_trip","ts":"2026-04-20T11:00:00.000Z","reason":"test"}

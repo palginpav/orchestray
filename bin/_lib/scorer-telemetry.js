@@ -15,6 +15,8 @@
 const fs   = require('fs');
 const path = require('path');
 
+const { normalizeEvent } = require('../read-event');
+
 // Safety caps matching degraded-journal.readJournalTail.
 const MAX_JSONL_READ_BYTES = 10 * 1024 * 1024;   // 10 MB
 const TAIL_CHUNK_BYTES     = 64 * 1024;           // 64 KB
@@ -128,16 +130,17 @@ function getEventWindow(projectRoot, opts) {
 
   for (const fp of filePaths) {
     const lines = _readJsonlFile(fp);
-    for (const ev of lines) {
-      if (!ev || typeof ev !== 'object') continue;
-      // Normalise event type: some events use `event`, others `type`.
-      const evType = ev.type || ev.event;
-      if (!types.has(evType)) continue;
+    for (const raw of lines) {
+      if (!raw || typeof raw !== 'object') continue;
+      // R-EVENT-NAMING (v2.1.13): legacy `event`/`ts` are mapped to
+      // canonical `type`/`timestamp` via read-event.js so every downstream
+      // check reads the canonical field names.
+      const ev = normalizeEvent(raw);
+      if (!types.has(ev.type)) continue;
       // Time window filter.
       if (sinceMs > 0) {
-        const ts = ev.timestamp || ev.ts;
-        if (!ts) continue;
-        const evMs = Date.parse(ts);
+        if (!ev.timestamp) continue;
+        const evMs = Date.parse(ev.timestamp);
         if (isNaN(evMs) || evMs < sinceMs) continue;
       }
       all.push(ev);
@@ -146,8 +149,8 @@ function getEventWindow(projectRoot, opts) {
 
   // Sort newest-first.
   all.sort((a, b) => {
-    const ta = Date.parse(a.timestamp || a.ts || 0);
-    const tb = Date.parse(b.timestamp || b.ts || 0);
+    const ta = Date.parse(a.timestamp || 0);
+    const tb = Date.parse(b.timestamp || 0);
     return tb - ta;
   });
 

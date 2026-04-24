@@ -35,6 +35,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+const { normalizeEvent } = require('./read-event');
+
 // ---------------------------------------------------------------------------
 // Argument parsing
 // ---------------------------------------------------------------------------
@@ -96,27 +98,23 @@ function parseEventsJsonl(filePath) {
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    let obj;
+    let rawObj;
     try {
-      obj = JSON.parse(trimmed);
+      rawObj = JSON.parse(trimmed);
     } catch (_e) {
       continue;
     }
-    if (!obj || typeof obj !== 'object') continue;
+    if (!rawObj || typeof rawObj !== 'object') continue;
 
-    // Check for completion event (type or event field, matching history_scan).
-    const eventType = (typeof obj.type === 'string' ? obj.type : null)
-      || (typeof obj.event === 'string' ? obj.event : null);
-    if (eventType === 'orchestration_complete') {
+    // R-EVENT-NAMING (v2.1.13): legacy `event`/`ts` → canonical `type`/`timestamp`.
+    const obj = normalizeEvent(rawObj);
+
+    if (obj.type === 'orchestration_complete') {
       hasComplete = true;
     }
 
-    // Resolve timestamp: canonical `timestamp` field first, then `ts` fallback.
-    const rawTs = (typeof obj.timestamp === 'string' && obj.timestamp)
-      ? obj.timestamp
-      : (typeof obj.ts === 'string' && obj.ts ? obj.ts : null);
-    if (rawTs) {
-      const ms = Date.parse(rawTs);
+    if (typeof obj.timestamp === 'string' && obj.timestamp) {
+      const ms = Date.parse(obj.timestamp);
       if (!isNaN(ms) && (latestMs === null || ms > latestMs)) {
         latestMs = ms;
       }

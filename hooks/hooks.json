@@ -11,6 +11,15 @@
         ]
       },
       {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/boot-validate-config.js",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "compact|resume",
         "hooks": [
           {
