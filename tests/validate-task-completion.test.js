@@ -452,3 +452,208 @@ describe('stdin parsing safety', () => {
 // AND collect-agent-metrics.js. Both append to events.jsonl. Since fs.appendFileSync
 // is not atomic at the OS level for concurrent writes, two simultaneous completions
 // could interleave bytes. This is a known limitation documented as an issue.
+
+// ---------------------------------------------------------------------------
+// R-DX2 (v2.1.11): Artifact-path field validation tests
+// ---------------------------------------------------------------------------
+
+describe('R-DX2 artifact-path validation — validateArtifactPaths unit tests', () => {
+  const {
+    validateArtifactPaths,
+    validateAuditEventType,
+    looksLikePath,
+    ARTIFACT_PATH_FIELDS,
+    PLACEHOLDER_PATTERNS,
+    KNOWN_EVENT_TYPES,
+  } = require('../bin/validate-task-completion.js');
+
+  // Helper to create a real temp file for path-existence tests.
+  function makeTmpFile(ext) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rdx2-test-'));
+    const file = path.join(dir, 'artifact' + (ext || '.md'));
+    fs.writeFileSync(file, '# test artifact\n', 'utf8');
+    return { file, dir };
+  }
+
+  test('TC1: real path that exists on disk → PASS', () => {
+    const { file, dir } = makeTmpFile('.md');
+    try {
+      const result = validateArtifactPaths({ findings_path: file }, dir);
+      assert.equal(result.rejected, false, 'existing file path must pass');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('TC2: "none (returned as assistant message)" → REJECT', () => {
+    const result = validateArtifactPaths({ findings_path: 'none (returned as assistant message)' }, os.tmpdir());
+    assert.equal(result.rejected, true, 'placeholder "none..." must be rejected');
+    assert.equal(result.field, 'findings_path');
+  });
+
+  test('TC3: "inline in reply" → REJECT', () => {
+    const result = validateArtifactPaths({ findings_path: 'inline in reply' }, os.tmpdir());
+    assert.equal(result.rejected, true, '"inline in reply" placeholder must be rejected');
+  });
+
+  test('TC4: "n/a" → REJECT', () => {
+    const result = validateArtifactPaths({ report_path: 'n/a' }, os.tmpdir());
+    assert.equal(result.rejected, true, '"n/a" placeholder must be rejected');
+  });
+
+  test('TC5: "skipped — not applicable" → REJECT', () => {
+    const result = validateArtifactPaths({ findings_path: 'skipped — not applicable' }, os.tmpdir());
+    assert.equal(result.rejected, true, '"skipped" placeholder must be rejected');
+  });
+
+  test('TC6: AC-05 false-positive protection — ".orchestray/kb/artifacts/anonymize-none.md" existing → PASS', () => {
+    // A real path that CONTAINS "none" as a substring must NOT be rejected by the heuristic.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rdx2-fp-'));
+    try {
+      const subdir = path.join(dir, '.orchestray', 'kb', 'artifacts');
+      fs.mkdirSync(subdir, { recursive: true });
+      const file = path.join(subdir, 'anonymize-none.md');
+      fs.writeFileSync(file, '# test\n', 'utf8');
+      const relPath = path.relative(dir, file);
+      const result = validateArtifactPaths({ findings_path: relPath }, dir);
+      assert.equal(result.rejected, false, 'path containing "none" substring must not be false-positive rejected');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('TC7: "/etc/passwd" (outside project root) → REJECT', () => {
+    const result = validateArtifactPaths({ findings_path: '/etc/passwd' }, os.tmpdir());
+    assert.equal(result.rejected, true, 'path outside project root must be rejected');
+    assert.ok(result.reason.includes('outside project root') || result.reason.includes('does not resolve'),
+      'reason must explain the rejection');
+  });
+
+  test('TC8: non-existent .md path → REJECT', () => {
+    const result = validateArtifactPaths(
+      { findings_path: '/tmp/this-file-does-not-exist-rdx2-test.md' },
+      os.tmpdir()
+    );
+    assert.equal(result.rejected, true, 'non-existent path must be rejected');
+    assert.ok(result.reason.includes('does not resolve'), 'reason must mention does not resolve');
+  });
+
+  test('TC9: no artifact-path fields → PASS (unchanged behavior)', () => {
+    const result = validateArtifactPaths({ status: 'success', summary: 'ok', files_changed: [] }, os.tmpdir());
+    assert.equal(result.rejected, false, 'result with no artifact-path fields must pass');
+  });
+
+  test('TC10: array value with one placeholder, one valid → REJECT', () => {
+    const { file, dir } = makeTmpFile('.md');
+    try {
+      const result = validateArtifactPaths(
+        { doc_paths: ['none (inline)', file] },
+        dir
+      );
+      // The placeholder "none (inline)" should be caught first.
+      assert.equal(result.rejected, true, 'any placeholder in array must reject the whole field');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('TC11: ORCHESTRAY_ARTIFACT_PATH_ENFORCEMENT=warn with placeholder — integration test', () => {
+    // This is tested via the CLI integration (subprocess) since the env var
+    // affects process.exit() behavior at runtime.
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'rdx2-warn-'));
+    try {
+      const payload = JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        subagent_type: 'reviewer',
+        output: JSON.stringify({
+          status: 'success',
+          summary: 'done',
+          files_changed: [],
+          files_read: [],
+          issues: [],
+          assumptions: [],
+          report_path: 'none (returned as text)',
+        }),
+        cwd,
+      });
+      const result = spawnSync(process.execPath, [SCRIPT], {
+        input: payload,
+        encoding: 'utf8',
+        timeout: 5000,
+        env: { ...process.env, ORCHESTRAY_ARTIFACT_PATH_ENFORCEMENT: 'warn' },
+      });
+      // With warn kill switch: must exit 0 (not blocked) even with placeholder.
+      assert.equal(result.status, 0, 'warn kill switch must allow exit 0 on placeholder');
+      assert.ok(result.stderr.includes('[orchestray]'), 'warn kill switch must still emit stderr warning');
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R1 AC-05 (v2.1.11): Audit event type validation tests
+// ---------------------------------------------------------------------------
+
+describe('R1 AC-05 — audit event type validation', () => {
+  const { validateAuditEventType, KNOWN_EVENT_TYPES } = require('../bin/validate-task-completion.js');
+
+  test('known event type (routing_outcome) → PASS', () => {
+    const result = validateAuditEventType({ type: 'routing_outcome' });
+    assert.equal(result.rejected, false, 'known event type must pass');
+  });
+
+  test('known event type (agent_start) → PASS', () => {
+    const result = validateAuditEventType({ type: 'agent_start' });
+    assert.equal(result.rejected, false, 'agent_start must pass');
+  });
+
+  test('unknown event type → REJECT with explanation', () => {
+    const result = validateAuditEventType({ type: 'completely_unknown_event_xyz' });
+    assert.equal(result.rejected, true, 'unknown event type must be rejected');
+    assert.ok(result.reason.includes('completely_unknown_event_xyz'), 'reason must include the unknown type');
+    assert.ok(result.reason.includes('event-schemas.md'), 'reason must reference event-schemas.md');
+  });
+
+  test('no type field → PASS (not an audit event)', () => {
+    const result = validateAuditEventType({ hook_event_name: 'SubagentStop', output: 'something' });
+    assert.equal(result.rejected, false, 'payload without type field must pass');
+  });
+
+  test('ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD=1 kill switch bypasses validation', () => {
+    const orig = process.env.ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD;
+    try {
+      process.env.ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD = '1';
+      const result = validateAuditEventType({ type: 'completely_unknown_event_xyz' });
+      assert.equal(result.rejected, false, 'kill switch must bypass validation');
+    } finally {
+      if (orig === undefined) {
+        delete process.env.ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD;
+      } else {
+        process.env.ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD = orig;
+      }
+    }
+  });
+
+  test('integration: unknown audit event type in SubagentStop payload exits 2', () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'r1-ac05-'));
+    try {
+      const payload = JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        type: 'totally_unknown_event_type_xyz',
+        cwd,
+      });
+      const result = spawnSync(process.execPath, [SCRIPT], {
+        input: payload,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      assert.equal(result.status, 2, 'unknown audit event type must exit 2');
+      assert.ok(result.stderr.includes('totally_unknown_event_type_xyz') ||
+        result.stderr.includes('[orchestray]'),
+        'stderr must identify the unknown event type');
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});

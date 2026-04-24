@@ -136,64 +136,224 @@ process.stdin.on('end', () => {
     const model = toolInput.model;
 
     if (model === undefined || model === null || model === '') {
-      // Fix B (v2.1.8): look up the routed model from routing.jsonl so the PM
-      // gets a concrete re-spawn hint instead of a generic "set explicitly" nudge.
-      let missingModelMsg =
-        "[orchestray] Agent() call missing required 'model' parameter. " +
-        "Per Section 19, every orchestration spawn must route to haiku/sonnet/opus.";
-      try {
-        const agentTypeForHint = (event.tool_input || {}).subagent_type || '';
-        const descRawForHint = (event.tool_input || {}).description ||
-          ((event.tool_input || {}).prompt && (event.tool_input || {}).prompt.substring(0, 80)) || '';
-        let spawnTaskIdForHint = (event.tool_input || {}).task_id || null;
-        if (!spawnTaskIdForHint && typeof descRawForHint === 'string') {
-          const hintMatch = descRawForHint.match(/^([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)\s/);
-          if (hintMatch) spawnTaskIdForHint = hintMatch[1];
-        }
-        const routingFileForHint = getRoutingFilePath(cwd);
-        if (spawnTaskIdForHint && fs.existsSync(routingFileForHint)) {
-          let currentOrchIdForHint = null;
-          try {
-            currentOrchIdForHint = JSON.parse(fs.readFileSync(orchFile, 'utf8')).orchestration_id || null;
-          } catch (_e) { /* fall through */ }
-          const allEntriesForHint = readRoutingEntries(cwd);
-          const matchesForHint = allEntriesForHint.filter(e =>
-            e && e.task_id === spawnTaskIdForHint && e.agent_type === agentTypeForHint &&
-            (!currentOrchIdForHint || e.orchestration_id === currentOrchIdForHint)
-          );
-          if (matchesForHint.length > 0) {
-            matchesForHint.sort((a, b) => ((b.timestamp || '') > (a.timestamp || '') ? 1 : -1));
-            const routedModel = matchesForHint[0].model;
-            if (routedModel) {
-              missingModelMsg +=
-                ' Routing entry says model="' + routedModel + '" for task ' +
-                spawnTaskIdForHint + '/' + agentTypeForHint +
-                '. Re-spawn with model="' + routedModel + '".';
-            } else {
-              missingModelMsg += ' Re-spawn with model set explicitly.';
-            }
-          } else {
-            missingModelMsg += ' Re-spawn with model set explicitly.';
-          }
-        } else {
-          missingModelMsg += ' Re-spawn with model set explicitly.';
-        }
-      } catch (_hintErr) {
-        // Fail-open: lookup errored — append generic suffix and continue to deny
-        missingModelMsg += ' Re-spawn with model set explicitly.';
+      // R-DX1 (v2.1.11): Kill switch — ORCHESTRAY_STRICT_MODEL_REQUIRED=1 restores
+      // the v2.1.10 hard-block for users who want the old strict gate.
+      if (process.env.ORCHESTRAY_STRICT_MODEL_REQUIRED === '1') {
+        const strictMsg =
+          "[orchestray] Agent() call missing required 'model' parameter. " +
+          "Per Section 19, every orchestration spawn must route to haiku/sonnet/opus. " +
+          "(ORCHESTRAY_STRICT_MODEL_REQUIRED=1 — auto-resolve disabled.)";
+        process.stderr.write(strictMsg + '\n');
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: strictMsg,
+          },
+        }));
+        process.exit(2);
       }
-      process.stderr.write(missingModelMsg + '\n');
-      process.stdout.write(JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'deny',
-          permissionDecisionReason: missingModelMsg,
-        },
-      }));
-      process.exit(2);
+
+      // R-DX1 (v2.1.11): Auto-resolve missing model via 3-stage fallback.
+      // Stage 1: routing.jsonl lookup
+      // Stage 2: per-agent frontmatter default_model field (S01 path-containment)
+      // Stage 3: global default 'sonnet'
+      //
+      // S01: CANONICAL_AGENTS allowlist — validated before any file read in Stage 2.
+      // S02: routing-resolved model MUST re-run isValidModel() AND != 'inherit'.
+      // After resolution, execution falls through to the inherit/invalid hard-blocks
+      // and the routing-mismatch check — they still fire on the resolved value.
+      const CANONICAL_AGENTS_ALLOWLIST = new Set([
+        'pm', 'architect', 'developer', 'refactorer', 'inventor', 'researcher', 'reviewer',
+        'debugger', 'tester', 'documenter', 'security-engineer',
+        'release-manager', 'ux-critic', 'platform-oracle',
+        'Explore', 'Plan', 'general-purpose', 'Task',
+      ]);
+
+      let resolvedModel = null;
+      let resolveSource = null;
+      let routingEntryTimestamp = null;
+
+      const agentTypeForResolve = toolInput.subagent_type || '';
+      const descRawForResolve = toolInput.description ||
+        (toolInput.prompt && toolInput.prompt.substring(0, 80)) || '';
+      const taskHint = (typeof descRawForResolve === 'string'
+        ? descRawForResolve : '').substring(0, 80);
+
+      // Read orchestration_id for event emission.
+      let resolveOrchId = 'unknown';
+      try {
+        const orchContent = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
+        if (orchContent && orchContent.orchestration_id) resolveOrchId = orchContent.orchestration_id;
+      } catch (_e) { /* fail-open */ }
+
+      // -----------------------------------------------------------------------
+      // Stage 1: routing.jsonl lookup
+      // -----------------------------------------------------------------------
+      try {
+        let spawnTaskIdForResolve = toolInput.task_id || null;
+        if (!spawnTaskIdForResolve && typeof descRawForResolve === 'string') {
+          const hintMatch = descRawForResolve.match(/^([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)\s/);
+          if (hintMatch) spawnTaskIdForResolve = hintMatch[1];
+        }
+        const routingFileForResolve = getRoutingFilePath(cwd);
+        if (fs.existsSync(routingFileForResolve)) {
+          const allEntriesForResolve = readRoutingEntries(cwd);
+          let candidates = [];
+          if (spawnTaskIdForResolve && agentTypeForResolve) {
+            candidates = allEntriesForResolve.filter(e =>
+              e && e.task_id === spawnTaskIdForResolve && e.agent_type === agentTypeForResolve &&
+              e.orchestration_id === resolveOrchId
+            );
+          }
+          // Fallback to description match within same orch if no task_id match.
+          if (candidates.length === 0 && agentTypeForResolve && taskHint) {
+            candidates = allEntriesForResolve.filter(e => {
+              if (!e || e.agent_type !== agentTypeForResolve) return false;
+              if (e.orchestration_id !== resolveOrchId) return false;
+              const ed = (e.description || '').trim();
+              const th = taskHint.trim();
+              return ed === th || ed.startsWith(th + ' ') || th.startsWith(ed + ' ');
+            });
+          }
+          if (candidates.length > 0) {
+            candidates.sort((a, b) => ((b.timestamp || '') > (a.timestamp || '') ? 1 : -1));
+            const candidate = candidates[0];
+            const candidateModel = candidate.model;
+            // S02: must pass isValidModel() AND must not be 'inherit'.
+            if (candidateModel && isValidModel(candidateModel) && candidateModel !== 'inherit') {
+              resolvedModel = candidateModel;
+              resolveSource = 'routing_lookup';
+              routingEntryTimestamp = candidate.timestamp || null;
+            }
+            // If inherit or invalid — fall through to Stage 2.
+          }
+        }
+      } catch (_stage1Err) {
+        // Fail-open: routing lookup errored — continue to Stage 2.
+        process.stderr.write(
+          '[orchestray] gate-agent-spawn: R-DX1 Stage 1 routing lookup error (' +
+          (_stage1Err && _stage1Err.message) + '); continuing to Stage 2\n'
+        );
+      }
+
+      // -----------------------------------------------------------------------
+      // Stage 2: per-agent frontmatter default_model (S01-protected)
+      // -----------------------------------------------------------------------
+      if (!resolvedModel) {
+        try {
+          // S01: validate subagent_type against CANONICAL_AGENTS allowlist before
+          // constructing ANY file path — rejects path-traversal attempts.
+          if (!CANONICAL_AGENTS_ALLOWLIST.has(agentTypeForResolve)) {
+            // Not in allowlist — skip to Stage 3 (default_sonnet).
+            // A non-canonical type (custom/dynamic) simply has no frontmatter to read.
+          } else {
+            // Construct path and assert it stays inside <cwd>/agents/ (S01 path-relative check).
+            const candidatePath = path.join(cwd, 'agents', agentTypeForResolve + '.md');
+            const relCheck = path.relative(path.join(cwd, 'agents'), candidatePath);
+            if (relCheck.startsWith('..')) {
+              // Path escape — reject and fall through to Stage 3.
+              process.stderr.write(
+                '[orchestray] gate-agent-spawn: R-DX1 Stage 2 path escape detected for ' +
+                JSON.stringify(agentTypeForResolve) + '; skipping to default_sonnet\n'
+              );
+            } else if (fs.existsSync(candidatePath)) {
+              const agentFileContent = fs.readFileSync(candidatePath, 'utf8');
+              // Parse the YAML frontmatter for default_model field.
+              const fmMatch = agentFileContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+              if (fmMatch) {
+                const fmBlock = fmMatch[1];
+                const defaultModelMatch = fmBlock.match(/^default_model:\s*(.+)$/m);
+                if (defaultModelMatch) {
+                  const fmModel = defaultModelMatch[1].trim();
+                  // S02: re-run isValidModel() on the frontmatter value.
+                  if (fmModel && isValidModel(fmModel) && fmModel !== 'inherit') {
+                    resolvedModel = fmModel;
+                    resolveSource = 'frontmatter_default';
+                  }
+                }
+              }
+            }
+          }
+        } catch (_stage2Err) {
+          // Fail-open: file read or parse error — continue to Stage 3.
+          process.stderr.write(
+            '[orchestray] gate-agent-spawn: R-DX1 Stage 2 frontmatter error (' +
+            (_stage2Err && _stage2Err.message) + '); continuing to Stage 3\n'
+          );
+        }
+      }
+
+      // -----------------------------------------------------------------------
+      // Stage 3: global default 'sonnet'
+      // -----------------------------------------------------------------------
+      if (!resolvedModel) {
+        resolvedModel = 'sonnet';
+        resolveSource = 'global_default_sonnet';
+      }
+
+      // -----------------------------------------------------------------------
+      // Emit stderr warning (F-03 character-exact format).
+      // -----------------------------------------------------------------------
+      if (resolveSource === 'routing_lookup') {
+        process.stderr.write(
+          '[orchestray] gate-agent-spawn: Agent() model missing; auto-resolved from routing.jsonl: "' +
+          resolvedModel + '" (task=' + (toolInput.task_id || 'null') + ', agent=' + agentTypeForResolve + ')\n'
+        );
+      } else if (resolveSource === 'frontmatter_default') {
+        process.stderr.write(
+          '[orchestray] gate-agent-spawn: Agent() model missing; auto-resolved from agents/' +
+          agentTypeForResolve + '.md frontmatter: "' + resolvedModel + '"\n'
+        );
+      } else {
+        process.stderr.write(
+          '[orchestray] gate-agent-spawn: Agent() model missing AND no routing hint AND no frontmatter; defaulting to "sonnet". Set model explicitly on future spawns.\n'
+        );
+      }
+
+      // -----------------------------------------------------------------------
+      // Emit model_auto_resolved audit event (AC-06 / Q8 warn-level).
+      // -----------------------------------------------------------------------
+      try {
+        const eventsPathForResolve = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
+        const resolveEvent = {
+          event: 'model_auto_resolved',
+          orchestration_id: resolveOrchId,
+          ts: new Date().toISOString(),
+          level: 'warn',
+          resolved_model: resolvedModel,
+          source: resolveSource,
+          subagent_type: agentTypeForResolve,
+          task_hint: taskHint,
+        };
+        if (resolveSource === 'routing_lookup' && routingEntryTimestamp) {
+          resolveEvent.routing_entry_timestamp = routingEntryTimestamp;
+        }
+        atomicAppendJsonl(eventsPathForResolve, resolveEvent);
+      } catch (_evErr) {
+        // Fail-open: event emission failure must not block the spawn.
+        process.stderr.write(
+          '[orchestray] gate-agent-spawn: failed to emit model_auto_resolved event (' +
+          (_evErr && _evErr.message) + '); continuing\n'
+        );
+      }
+
+      // -----------------------------------------------------------------------
+      // Mutate event.tool_input.model so the rest of the gate (inherit check,
+      // invalid-model check, routing-mismatch check) operates on the resolved value.
+      // S06: execution CONTINUES — does NOT exit here.
+      // -----------------------------------------------------------------------
+      event.tool_input.model = resolvedModel;
     }
 
-    if (model === 'inherit') {
+    // R-DX1: After auto-resolve, event.tool_input.model has been mutated.
+    // Re-read from toolInput (which is a reference to event.tool_input) so the
+    // inherit and invalid-model hard-blocks operate on the resolved value.
+    // For explicit-model spawns (model was set by the PM), toolInput.model is
+    // unchanged and these checks work as they always have.
+    const effectiveModel = toolInput.model;
+
+    if (effectiveModel === 'inherit') {
       const inheritMsg =
         "[orchestray] Agent() model=\"inherit\" is forbidden during orchestrations. " +
         "Route to haiku/sonnet/opus per Section 19.";
@@ -208,9 +368,9 @@ process.stdin.on('end', () => {
       process.exit(2);
     }
 
-    if (!isValidModel(model)) {
+    if (!isValidModel(effectiveModel)) {
       const invalidModelMsg =
-        "[orchestray] Agent() model=\"" + model + "\" is not a recognized routing tier. " +
+        "[orchestray] Agent() model=\"" + effectiveModel + "\" is not a recognized routing tier. " +
         "Must contain haiku, sonnet, or opus (full model IDs accepted, e.g. claude-sonnet-4-6). " +
         "Route to haiku/sonnet/opus per Section 19.";
       process.stderr.write(invalidModelMsg + '\n');
@@ -401,8 +561,8 @@ process.stdin.on('end', () => {
               orchestration_id: synthOrchId,
               task_id: spawnTaskId || null,
               agent_type: agentType,
-              // Use model from Agent call if available, else 'inherit' as placeholder.
-              model: (model && VALID_TIERS.find(tier => model.toLowerCase().includes(tier))) || 'inherit',
+              // Use effectiveModel (resolved or explicit) for the synth entry.
+              model: (effectiveModel && VALID_TIERS.find(tier => effectiveModel.toLowerCase().includes(tier))) || 'inherit',
               effort: 'medium',
               description: descPreview,
               rationale: 'auto-seeded on first-spawn miss — PM should replace with explicit routing decision',
@@ -425,7 +585,7 @@ process.stdin.on('end', () => {
               '; allowing spawn but routing.jsonl not updated\n'
             );
             // Set entry to a sentinel that will pass the model-mismatch check.
-            entry = { model: VALID_TIERS.find(tier => model.toLowerCase().includes(tier)) || 'sonnet' };
+            entry = { model: VALID_TIERS.find(tier => effectiveModel.toLowerCase().includes(tier)) || 'sonnet' };
           }
         }
 
@@ -434,13 +594,14 @@ process.stdin.on('end', () => {
         // synthEntry.model is derived from the spawn's own model tier.
         // The check exists to catch stale routing entries from previous sessions
         // where the operator changed the agent's model after decomposition.
-        const modelNormalized = VALID_TIERS.find(tier => model.toLowerCase().includes(tier));
+        // R-DX1: use effectiveModel (which reflects any auto-resolved value).
+        const modelNormalized = VALID_TIERS.find(tier => effectiveModel.toLowerCase().includes(tier));
         if (modelNormalized !== entry.model) {
           process.stderr.write(
             '[orchestray] model routing mismatch: routing.jsonl says ' + entry.model +
             ' for task ' + (entry.task_id || '(unknown)') +
             (matchedViaTaskId ? ' (matched via task_id)' : '') +
-            ' but Agent() was called with model=' + model + '. ' +
+            ' but Agent() was called with model=' + effectiveModel + '. ' +
             'The PM must pass the model recorded at decomposition time. ' +
             'Re-read routing.jsonl.\n'
           );

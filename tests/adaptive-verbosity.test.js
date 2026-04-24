@@ -377,18 +377,16 @@ describe('validateAdaptiveVerbosityConfig — valid inputs accepted', () => {
 
 describe('tier1-orchestration.md §3.Y structural content', () => {
 
+  // W5 split: §3.Y content moved to tier1-orchestration-rare.md.
+  // Tests scan both files so the suite passes regardless of which file hosts the content.
   const TIER1 = path.join(ROOT, 'agents/pm-reference/tier1-orchestration.md');
-  let content;
-
-  // Read once — synchronous is fine in test setup because node:test doesn't
-  // support top-level await in this runner version.
-  before: {
-    try { content = fs.readFileSync(TIER1, 'utf8'); } catch (_e) { content = ''; }
-  }
+  const TIER1_RARE = path.join(ROOT, 'agents/pm-reference/tier1-orchestration-rare.md');
 
   function getContent() {
-    if (!content) content = fs.readFileSync(TIER1, 'utf8');
-    return content;
+    let c = '';
+    try { c += fs.readFileSync(TIER1, 'utf8'); } catch (_e) { /* ok */ }
+    try { c += '\n' + fs.readFileSync(TIER1_RARE, 'utf8'); } catch (_e) { /* ok */ }
+    return c;
   }
 
   test('file exists', () => {
@@ -397,7 +395,7 @@ describe('tier1-orchestration.md §3.Y structural content', () => {
 
   test('contains §3.Y heading (adaptive verbosity section)', () => {
     const c = getContent();
-    assert.ok(/§3\.Y|3\.Y\s+Adaptive\s+Verbosity/i.test(c), '§3.Y heading not found');
+    assert.ok(/§3\.Y|3\.Y\s+Adaptive\s+Verbosity/i.test(c), '§3.Y heading not found in tier1-orchestration.md or tier1-orchestration-rare.md');
   });
 
   test('mentions phase_position in the formula section', () => {
@@ -443,10 +441,17 @@ describe('tier1-orchestration.md §3.Y structural content', () => {
 
 describe('delegation-templates.md response-budget line', () => {
 
+  // W5 split: response-budget content moved to delegation-templates-detailed.md.
+  // Tests scan both lean and detailed files so the suite passes regardless of
+  // which file hosts specific content.
   const TEMPLATES = path.join(ROOT, 'agents/pm-reference/delegation-templates.md');
+  const TEMPLATES_DETAILED = path.join(ROOT, 'agents/pm-reference/delegation-templates-detailed.md');
 
   function getContent() {
-    return fs.readFileSync(TEMPLATES, 'utf8');
+    let c = '';
+    try { c += fs.readFileSync(TEMPLATES, 'utf8'); } catch (_e) { /* ok */ }
+    try { c += '\n' + fs.readFileSync(TEMPLATES_DETAILED, 'utf8'); } catch (_e) { /* ok */ }
+    return c;
   }
 
   test('file exists', () => {
@@ -457,7 +462,7 @@ describe('delegation-templates.md response-budget line', () => {
     const c = getContent();
     assert.ok(
       /[Rr]esponse\s+[Bb]udget/.test(c),
-      'delegation-templates.md must contain a "Response budget" line'
+      'delegation-templates.md or delegation-templates-detailed.md must contain a "Response budget" line'
     );
   });
 
@@ -485,7 +490,7 @@ describe('delegation-templates.md response-budget line', () => {
     const c = getContent();
     assert.ok(
       /[Hh]aiku/.test(c),
-      'delegation-templates.md must mention Haiku exclusion for response-budget injection'
+      'delegation-templates.md or delegation-templates-detailed.md must mention Haiku exclusion for response-budget injection'
     );
   });
 

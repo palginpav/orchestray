@@ -20,6 +20,7 @@ const { toolSuccess, toolError } = require('../lib/tool-result');
 const { sanitizeExcerpt } = require('../lib/excerpt');
 const { getSharedKbDir } = require('../lib/paths');
 const { writeAuditEvent, readOrchestrationId } = require('../lib/audit');
+const { parseFields, projectArray } = require('../lib/field-projection');
 
 const SECTIONS = ['artifacts', 'facts', 'decisions'];
 
@@ -33,6 +34,10 @@ const INPUT_SCHEMA = {
       items: { type: 'string', enum: SECTIONS },
     },
     limit: { type: 'integer', minimum: 1, maximum: 20 },
+    // fields: accepts a comma-separated string or string[] — validated by parseFields() at runtime.
+    // Schema type intentionally omitted: the validator subset does not support oneOf/anyOf,
+    // and parseFields() enforces the allowed shapes with clear error messages.
+    fields: { description: 'Optional comma-separated string or array of top-level field names to project. Omit for full response (backward compat).' },
   },
 };
 
@@ -190,7 +195,19 @@ async function handle(input, context) {
     return 0;
   });
 
-  return toolSuccess({ matches: candidates.slice(0, limit) });
+  const limited = candidates.slice(0, limit);
+
+  // R5 field projection (v2.1.11): apply `fields` parameter if provided.
+  // Backward compat: omitting `fields` returns the full legacy response unchanged.
+  const fieldNames = parseFields(input.fields);
+  if (fieldNames !== null) {
+    if (fieldNames && typeof fieldNames === 'object' && 'error' in fieldNames) {
+      return toolError('kb_search: ' + fieldNames.error);
+    }
+    return toolSuccess({ matches: projectArray(limited, fieldNames) });
+  }
+
+  return toolSuccess({ matches: limited });
 }
 
 // ---------------------------------------------------------------------------

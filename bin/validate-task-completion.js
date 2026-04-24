@@ -41,7 +41,202 @@ const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { recordDegradation } = require('./_lib/degraded-journal');
 
+// ---------------------------------------------------------------------------
+// R-DX2 (v2.1.11): Artifact-path fields and placeholder rejection
+// ---------------------------------------------------------------------------
+
+// Top-level fields in Structured Result that must point to real files on disk.
+// When any of these fields contains a placeholder value, the hook rejects.
+const ARTIFACT_PATH_FIELDS = [
+  'findings_path',
+  'design_artifact',
+  'diagnosis_artifact',
+  'artifact',
+  'artifact_location',
+  'report_path',
+  'output_path',
+  'doc_paths',
+  'prototype_location',
+];
+
+// Patterns that indicate the agent returned a placeholder instead of a real path.
+const PLACEHOLDER_PATTERNS = [
+  /^none\b/i,
+  /returned as/i,
+  /\binline\b/i,
+  /^not written/i,
+  /^n\/?a$/i,
+  /^skipped\b/i,
+];
+
+/**
+ * Returns true if the value looks like a file path (contains '/' or a known
+ * file extension). Used to skip the placeholder heuristics for real paths that
+ * may contain placeholder-like substrings (e.g. "anonymize-none.md").
+ * AC-05 false-positive protection.
+ */
+function looksLikePath(v) {
+  return typeof v === 'string' && (v.includes('/') || /\.(md|json|jsonl|txt|yaml|yml)$/i.test(v));
+}
+
+/**
+ * Validate artifact-path fields in a Structured Result.
+ *
+ * @param {object} structuredResult
+ * @param {string} projectRoot
+ * @returns {{ rejected: boolean, field?: string, value?: string, reason?: string }}
+ */
+function validateArtifactPaths(structuredResult, projectRoot) {
+  if (!structuredResult || typeof structuredResult !== 'object') return { rejected: false };
+
+  for (const field of ARTIFACT_PATH_FIELDS) {
+    if (!(field in structuredResult)) continue;
+    let values = structuredResult[field];
+    if (values == null) continue;
+    if (!Array.isArray(values)) values = [values];
+
+    for (const v of values) {
+      if (typeof v !== 'string' || !v.trim()) continue;
+
+      const trimmed = v.trim();
+
+      // AC-05 false-positive protection: if the value looks like a real file path
+      // (contains '/' or has a known extension), skip the placeholder heuristics
+      // and go straight to file-existence verification.
+      if (!looksLikePath(trimmed)) {
+        for (const pat of PLACEHOLDER_PATTERNS) {
+          if (pat.test(trimmed)) {
+            return { rejected: true, field, value: v, reason: 'matches placeholder pattern ' + pat };
+          }
+        }
+        // Non-path, non-placeholder: skip (not a file reference).
+        continue;
+      }
+
+      // File-existence verification (symlink-escape guard via realpathSync).
+      try {
+        const resolved = fs.realpathSync(path.resolve(projectRoot, trimmed));
+        const rel = path.relative(projectRoot, resolved);
+        if (rel.startsWith('..') || path.isAbsolute(rel)) {
+          return { rejected: true, field, value: v, reason: 'path outside project root: ' + resolved };
+        }
+        const stat = fs.statSync(resolved);
+        if (!stat.isFile()) {
+          return { rejected: true, field, value: v, reason: 'not a regular file: ' + resolved };
+        }
+      } catch (e) {
+        return { rejected: true, field, value: v, reason: 'path does not resolve on disk: ' + e.message };
+      }
+    }
+  }
+  return { rejected: false };
+}
+
+// ---------------------------------------------------------------------------
+// R1 AC-05 (v2.1.11): Audit event schema validation
+// ---------------------------------------------------------------------------
+
+// Known event types extracted from agents/pm-reference/event-schemas.md §Summary Index.
+// This list is the allowlist — unknown event types are rejected (exit 2).
+// Honor ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD=1 kill switch (skip validation if set).
+const KNOWN_EVENT_TYPES = new Set([
+  'routing_outcome',
+  'agent_start',
+  'agent_stop',
+  'task_created',
+  'task_completed',
+  'task_validation_failed',
+  'teammate_idle',
+  'pattern_skip_enriched',
+  'auto_extract_quarantine_skipped',
+  'routing_decision',
+  'invariant_extracted',
+  'introspection_trace',
+  'confidence_signal',
+  'visual_review',
+  'consequence_forecast',
+  'drift_check',
+  'resilience_block_triggered',
+  'resilience_block_suppressed',
+  'resilience_block_suppressed_inactive',
+  'state_cancel_aborted',
+  'mcp_checkpoint_missing',
+  'kill_switch_activated',
+  'kill_switch_deactivated',
+  'model_auto_resolved',
+  'pre_compact_archive',
+  'cite_cache_hit',
+  'spec_sketch_generated',
+  'repo_map_delta_injected',
+  // Additional types from the full schema body:
+  'pattern_collision_resolved',
+  'pre_done_checklist_failed',
+  'pre_done_checklist_warn',
+  'task_completion_warn',
+  'dynamic_agent_spawn',
+  'specialist_saved',
+  'specialist_promoted',
+  'specialist_reused',
+  'pattern_pruned',
+  'contract_check',
+  'orchestration_roi',
+  'disagreement_surfaced',
+  'fts5_fallback',
+  'thread_created',
+  'thread_matched',
+  'thread_updated',
+  'persona_generated',
+  'persona_injected',
+  'probe_created',
+  'probe_validated',
+  'replay_analysis',
+  'mcp_checkpoint_recorded',
+  'pattern_record_skipped',
+  'anti_pattern_advisory_shown',
+  'pause_sentinel_detected',
+  'cancel_sentinel_detected',
+  'state_gc_run',
+  'state_gc_discarded',
+  'redo_requested',
+  'config_key_stripped',
+  'orchestration_start',
+  'orchestration_complete',
+  'degraded_journal_entry',
+  'pattern_index_rebuilt',
+  'pattern_index_build_failed',
+  'scorer_structural_result',
+]);
+
+/**
+ * Validate the event type in an audit event payload.
+ * Returns { rejected: true, reason } if the type is unknown, else { rejected: false }.
+ *
+ * @param {object} event - The parsed hook event.
+ * @returns {{ rejected: boolean, reason?: string }}
+ */
+function validateAuditEventType(event) {
+  // Kill switch: if set, skip validation (legacy behavior).
+  if (process.env.ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD === '1') return { rejected: false };
+
+  // Only validate events that have a 'type' field (audit events).
+  const eventType = event && event.type;
+  if (typeof eventType !== 'string' || !eventType) return { rejected: false };
+
+  if (!KNOWN_EVENT_TYPES.has(eventType)) {
+    return {
+      rejected: true,
+      reason: 'event type "' + eventType + '" not in event-schemas.md allowlist. ' +
+        'Either add it to the schema or use an approved event type. ' +
+        'See agents/pm-reference/event-schemas.md.',
+    };
+  }
+  return { rejected: false };
+}
+
+// ---------------------------------------------------------------------------
 // v2.1.9 I-12 agent tiers (§5 I-12 tier table).
+// ---------------------------------------------------------------------------
+
 const HARD_TIER = new Set([
   'developer',
   'architect',
@@ -364,6 +559,43 @@ function main() {
           );
         }
       }
+
+      // R-DX2 (v2.1.11): Validate artifact-path fields to catch placeholder values.
+      // This check runs after the structured-result section check so missing-section
+      // rejections take precedence. Only validates when structured result is present.
+      if (structuredResult) {
+        const artifactCheck = validateArtifactPaths(structuredResult, cwd);
+        if (artifactCheck.rejected) {
+          const warnMode = process.env.ORCHESTRAY_ARTIFACT_PATH_ENFORCEMENT === 'warn';
+          const stderrMsg =
+            '[orchestray] T15 block: agent ' + (agentRole || 'unknown') +
+            ' declared ' + artifactCheck.field + '="' + artifactCheck.value + '"' +
+            ' but ' + artifactCheck.reason + '.' +
+            ' The agent must write the artifact file and cite its real path.\n';
+          process.stderr.write(stderrMsg);
+          if (warnMode) {
+            // Kill switch: emit warning but do not block.
+            process.stdout.write(JSON.stringify({ continue: true }));
+            process.exit(0);
+          }
+          process.stdout.write(JSON.stringify({ continue: false, reason: 'artifact_path_invalid:' + artifactCheck.field }));
+          process.exit(2);
+        }
+      }
+    }
+
+    // R1 AC-05 (v2.1.11): Validate audit event type when event carries a 'type' field.
+    // This covers SubagentStop events that embed an audit event in their payload.
+    if (event.type) {
+      const eventTypeCheck = validateAuditEventType(event);
+      if (eventTypeCheck.rejected) {
+        process.stderr.write(
+          '[orchestray] validate-task-completion: audit event validator: ' + eventTypeCheck.reason + '\n'
+        );
+        // Exit 2 blocks the event. Kill switch: ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD=1 disables this check.
+        process.stdout.write(JSON.stringify({ continue: false, reason: 'unknown_audit_event_type' }));
+        process.exit(2);
+      }
     }
 
     // ── Write the standard team-mode TaskCompleted audit row (preserved).
@@ -391,6 +623,12 @@ module.exports = {
   extractStructuredResult,
   validateStructuredResult,
   identifyAgentRole,
+  validateArtifactPaths,
+  validateAuditEventType,
+  looksLikePath,
+  ARTIFACT_PATH_FIELDS,
+  PLACEHOLDER_PATTERNS,
+  KNOWN_EVENT_TYPES,
   HARD_TIER,
   WARN_TIER,
   REQUIRED_SECTIONS,

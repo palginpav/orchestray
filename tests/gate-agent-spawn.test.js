@@ -92,13 +92,13 @@ describe('tool filtering', () => {
     assert.equal(stderr, '');
   });
 
-  // Updated for 2.0.12: Task is now in AGENT_DISPATCH_ALLOWLIST — it is gated,
-  // not fast-exited. Inside an orchestration without a model → exit 2.
-  test('Task tool_name inside orchestration without model exits 2 (now gated)', () => {
+  // Updated for 2.1.11 (R-DX1): Task is in AGENT_DISPATCH_ALLOWLIST — it is gated.
+  // Missing model auto-resolves to sonnet (exit 0) instead of hard-blocking (exit 2).
+  test('Task tool_name inside orchestration without model auto-resolves (R-DX1)', () => {
     const dir = makeDir({ withOrch: true });
     const { status, stderr } = run({ tool_name: 'Task', cwd: dir, tool_input: {} });
-    assert.equal(status, 2);
-    assert.match(stderr, /missing required 'model' parameter/i);
+    assert.equal(status, 0);
+    assert.match(stderr, /defaulting to "sonnet"/);
   });
 
   test('Task tool_name inside orchestration with model="haiku" exits 0', () => {
@@ -137,14 +137,16 @@ describe('tool filtering', () => {
   // `event.tool_name` OR `event.tool_input.tool` as a secondary source. The
   // primary tests above hit the `tool_name` path; these cover the fallback
   // explicitly so it doesn't silently bit-rot.
-  test('missing tool_name but tool_input.tool="Agent" — fallback branch gates correctly', () => {
+  // Updated for 2.1.11 (R-DX1): missing model no longer hard-blocks; auto-resolve applies.
+  test('missing tool_name but tool_input.tool="Agent" — auto-resolves model (R-DX1)', () => {
     const dir = makeDir({ withOrch: true });
     const { status, stderr } = run({
       cwd: dir,
-      tool_input: { tool: 'Agent' /* no model — should be blocked */ },
+      tool_input: { tool: 'Agent' /* no model — auto-resolved via R-DX1 */ },
     });
-    assert.equal(status, 2);
-    assert.match(stderr, /missing required 'model' parameter/i);
+    // R-DX1: auto-resolve to global_default_sonnet → exit 0.
+    assert.equal(status, 0);
+    assert.match(stderr, /defaulting to "sonnet"/);
   });
 
   test('missing tool_name but tool_input.tool="Bash" — fallback branch exits 0', () => {
@@ -178,11 +180,12 @@ describe('tool filtering', () => {
 
 describe('D3 Fix 2 — Explore dispatch allowlist', () => {
 
-  test('Explore inside orchestration with no model exits 2', () => {
+  // Updated for 2.1.11 (R-DX1): missing model auto-resolves to sonnet (exit 0).
+  test('Explore inside orchestration with no model auto-resolves (R-DX1)', () => {
     const dir = makeDir({ withOrch: true });
     const { status, stderr } = run({ tool_name: 'Explore', cwd: dir, tool_input: {} });
-    assert.equal(status, 2);
-    assert.match(stderr, /missing required 'model' parameter/i);
+    assert.equal(status, 0);
+    assert.match(stderr, /defaulting to "sonnet"/);
   });
 
   test('Explore inside orchestration with model="haiku" and routing entry exits 0', () => {
@@ -524,37 +527,39 @@ describe('outside orchestration', () => {
 
 describe('inside orchestration — block paths', () => {
 
-  test('missing model parameter exits 2 with descriptive message', () => {
+  // Updated for 2.1.11 (R-DX1): missing model auto-resolves to sonnet (exit 0).
+  // Use ORCHESTRAY_STRICT_MODEL_REQUIRED=1 to restore the old blocking behavior.
+  test('missing model parameter auto-resolves to sonnet (R-DX1)', () => {
     const dir = makeDir({ withOrch: true });
     const { status, stderr } = run({
       tool_name: 'Agent',
       cwd: dir,
       tool_input: {},
     });
-    assert.equal(status, 2);
-    assert.match(stderr, /missing required 'model' parameter/i);
+    assert.equal(status, 0);
+    assert.match(stderr, /defaulting to "sonnet"/);
   });
 
-  test('null model exits 2', () => {
+  test('null model auto-resolves to sonnet (R-DX1)', () => {
     const dir = makeDir({ withOrch: true });
     const { status, stderr } = run({
       tool_name: 'Agent',
       cwd: dir,
       tool_input: { model: null },
     });
-    assert.equal(status, 2);
-    assert.match(stderr, /missing required 'model' parameter/i);
+    assert.equal(status, 0);
+    assert.match(stderr, /defaulting to "sonnet"/);
   });
 
-  test('empty string model exits 2', () => {
+  test('empty string model auto-resolves to sonnet (R-DX1)', () => {
     const dir = makeDir({ withOrch: true });
     const { status, stderr } = run({
       tool_name: 'Agent',
       cwd: dir,
       tool_input: { model: '' },
     });
-    assert.equal(status, 2);
-    assert.match(stderr, /missing required 'model' parameter/i);
+    assert.equal(status, 0);
+    assert.match(stderr, /defaulting to "sonnet"/);
   });
 
   test('model="inherit" exits 2 with "forbidden" message', () => {
@@ -684,15 +689,15 @@ describe('failure modes — fail open', () => {
     assert.equal(status, 0);
   });
 
-  test('missing tool_input when inside orchestration exits 0 or 2 — script treats missing input as missing model', () => {
+  // Updated for 2.1.11 (R-DX1): missing tool_input → model=undefined → auto-resolve.
+  test('missing tool_input when inside orchestration auto-resolves to sonnet (R-DX1)', () => {
     // The script does: const toolInput = event.tool_input || {};
-    // then const model = toolInput.model; => undefined => exits 2
-    // This is the documented expected behavior: inside orch with no tool_input
-    // is treated the same as missing model.
+    // then const model = toolInput.model; => undefined => R-DX1 auto-resolve → sonnet.
     const dir = makeDir({ withOrch: true });
-    const { status } = run({ tool_name: 'Agent', cwd: dir });
-    // Script exits 2 because model is undefined. Document this behavior.
-    assert.equal(status, 2);
+    const { status, stderr } = run({ tool_name: 'Agent', cwd: dir });
+    // R-DX1: auto-resolve to global_default_sonnet → exit 0.
+    assert.equal(status, 0);
+    assert.match(stderr, /defaulting to "sonnet"/);
   });
 
 });

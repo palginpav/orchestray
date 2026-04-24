@@ -213,6 +213,22 @@ function emitRollup(cwd, orchestrationId) {
     : null;
   const completed_at  = completeEvent ? (completeEvent.timestamp || null) : null;
 
+  // R-DX1 (AC-13): collect model_auto_resolved warn events and render as human-readable lines.
+  // These appear in the rollup so the PM can see auto-resolutions at a glance.
+  const autoResolveEvents = orchEvents.filter(ev =>
+    ev.event === 'model_auto_resolved' || ev.type === 'model_auto_resolved'
+  );
+  const model_auto_resolved_warnings = autoResolveEvents.map(ev => {
+    const agentStr = ev.subagent_type || '(unknown)';
+    const taskStr  = ev.task_hint ? ev.task_hint.substring(0, 40) : '(no hint)';
+    const src      = ev.source || 'unknown';
+    const mdl      = ev.resolved_model || '?';
+    if (src === 'global_default_sonnet') {
+      return "- model auto-resolved to default '" + mdl + "' for agent " + agentStr + " (task: " + taskStr + ")";
+    }
+    return "- model auto-resolved to '" + mdl + "' (source: " + src + ") for agent " + agentStr + " (task: " + taskStr + ")";
+  });
+
   const rollupRow = {
     row_type:                        'orchestration_rollup',
     schema_version:                  1,
@@ -239,6 +255,10 @@ function emitRollup(cwd, orchestrationId) {
     pm_total_output_tokens,
     pm_total_cache_read_input_tokens,
     pm_cache_hit_ratio,
+    // R-DX1 (AC-13): human-readable model auto-resolution warnings for the rollup.
+    model_auto_resolved_warnings:    model_auto_resolved_warnings.length > 0
+      ? model_auto_resolved_warnings
+      : undefined,
   };
 
   // Write rollup row.

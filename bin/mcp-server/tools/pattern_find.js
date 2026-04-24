@@ -26,6 +26,7 @@ const { searchPatterns, UNAVAILABLE: FTS5_UNAVAILABLE } = require('../../_lib/pa
 const { getSharedPatternsDir } = require('../lib/paths');
 const { writeAuditEvent, readOrchestrationId } = require('../lib/audit');
 const { _projectHash } = require('../../_lib/shared-promote');
+const { parseFields, projectArray } = require('../lib/field-projection');
 
 // Session flag to emit the FTS5 fallback warning at most once per process.
 let _fts5WarnedThisSession = false;
@@ -55,6 +56,10 @@ const INPUT_SCHEMA = {
     min_confidence: { type: 'number', minimum: 0, maximum: 1 },
     include_deprecated: { type: 'boolean' },
     include_proposed: { type: 'boolean' },
+    // fields: accepts a comma-separated string or string[] — validated by parseFields() at runtime.
+    // Schema type intentionally omitted: the validator subset does not support oneOf/anyOf,
+    // and parseFields() enforces the allowed shapes with clear error messages.
+    fields: { description: 'Optional comma-separated string or array of top-level field names to project. Omit for full response (backward compat).' },
   },
 };
 
@@ -597,6 +602,20 @@ async function handle(input, context) {
     // (extremely unlikely) case of the module failing to load.
   }
   // === END shadow scorer seam ===
+
+  // R5 field projection (v2.1.11): apply `fields` parameter if provided.
+  // Backward compat: omitting `fields` returns the full legacy response unchanged.
+  const fieldNames = parseFields(input.fields);
+  if (fieldNames !== null) {
+    if (fieldNames && typeof fieldNames === 'object' && 'error' in fieldNames) {
+      return toolError('pattern_find: ' + fieldNames.error);
+    }
+    return toolSuccess({
+      matches: projectArray(top, fieldNames),
+      considered,
+      filtered_out: filteredOut,
+    });
+  }
 
   return toolSuccess({
     matches: top,

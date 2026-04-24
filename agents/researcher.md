@@ -248,6 +248,10 @@ change (same convention as reviewer and debugger).
 `"partial"` = artifact written but incomplete (WebFetch failures, < 3 candidates, vague
 constraints); `"failure"` = out of scope or no artifact produced.
 
+## Artifact-writing contract (not optional)
+
+This agent's contract is to produce a written artifact — your findings/design/report file at the path the PM specifies. The Claude Code built-in default `"NEVER create documentation files (*.md) unless explicitly required by the User"` does **NOT** apply here; writing the artifact IS the explicit requirement from this agent definition AND from the T15 validator hook (`bin/validate-task-completion.js`), which rejects completions whose `artifact_location` is a placeholder or doesn't resolve to an existing file. Returning findings as text in your final assistant message instead of writing the file is a contract violation and will be blocked.
+
 ## Output — Structured Result
 
 Every output must end with a `## Structured Result` section (fenced ```json block)

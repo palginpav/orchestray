@@ -194,6 +194,7 @@ When the score meets or exceeds the threshold, enter orchestration mode:
 2.4. **Cross-session KB context scan:** Before decomposing, call
    `mcp__orchestray__kb_search` with the current task summary:
    - Example: `{"query": "<task summary>", "kb_sections": ["facts", "decisions"], "limit": 5}`.
+   - When only specific fields are needed, use the optional `fields` parameter to reduce output token cost: `{"query": "...", "fields": ["slug", "excerpt"]}`. Works the same way for `mcp__orchestray__pattern_find`: `{"task_summary": "...", "fields": ["slug", "confidence"]}`. Omit `fields` for the full response (backward compatible).
    - Read the top ≤3 matches via `@orchestray:kb://<section>/<slug>` attachments in the
      delegation prompt, only for the specialists that will directly use them. Do not
      broadcast KB matches to every spawned agent.
@@ -492,7 +493,7 @@ Spawn" rule above.
 
 ### Before Spawning: Write routing.jsonl First
 
-- **Before every `Agent()` call**, write a routing.jsonl row (task_id + agent_type + model + ...). The hook hard-blocks spawns with no matching row. See §14 "Step 0" in `tier1-orchestration.md` for the exact `printf` one-liner template and primary match-key rules.
+- **Before every `Agent()` call**, write a routing.jsonl row (task_id + agent_type + model + ...). The hook hard-blocks spawns with no matching row. See §14 "Step 0" in `tier1-orchestration.md` for the `ox routing add` canonical form and primary match-key rules.
 
 ### Durable Routing Decision (REQUIRED)
 
@@ -1056,15 +1057,23 @@ Run ONLY after orchestration completion.
 
 ## 19. Model Routing Protocol
 
-> **CRITICAL — GATE WILL BLOCK WITHOUT THIS:** Every `Agent()` call MUST include
+> **Best practice — set model explicitly:** Every `Agent()` call SHOULD include
 > `model: 'haiku'`, `model: 'sonnet'`, or `model: 'opus'` explicitly. This applies
 > to the FIRST spawn in an orchestration and every subsequent one. Omitting `model`
-> causes `bin/gate-agent-spawn.js` to exit 2 and the spawn is aborted. There is no
-> retry path — you must re-spawn with `model` set. The model parameter is NOT
-> optional, not inherited from frontmatter, and not filled in by default.
+> triggers the v2.1.11 auto-resolve fallback chain (routing.jsonl lookup → agent
+> frontmatter `default_model` → global default `sonnet`) and emits a warn-level
+> `model_auto_resolved` audit event visible in the post-orchestration rollup.
+> Set model explicitly for audit clarity and cost control.
 >
 > **Correct:** `Agent(subagent_type="developer", model="sonnet", maxTurns=20, description="...", prompt="...")`
-> **Wrong:**   `Agent(subagent_type="developer", maxTurns=20, description="...", prompt="...")`
+> **Auto-resolved (non-blocking):** `Agent(subagent_type="developer", maxTurns=20, description="...", prompt="...")`
+>
+> **Auto-resolution fallback chain (v2.1.11):**
+> 1. Routing.jsonl lookup — uses the model recorded at decomposition for this task/agent pair.
+> 2. Agent frontmatter `default_model` field — reads `agents/<subagent_type>.md`.
+> 3. Global default `sonnet` — always succeeds; emits `source: global_default_sonnet` in rollup.
+>
+> Kill switch: `ORCHESTRAY_STRICT_MODEL_REQUIRED=1` restores the v2.1.10 hard-block (spawn blocked if model omitted).
 
 > **Durable state:** as of 2.0.11, routing decisions computed by this protocol MUST be persisted to `.orchestray/state/routing.jsonl` via the helper in `bin/_lib/routing-lookup.js`. The `PreToolUse:Agent` hook enforces this. Do not rely on memory — write the decision and re-read it per spawn.
 
@@ -1240,6 +1249,11 @@ Load these reference files conditionally based on the situation:
 | Orchestration has just completed AND pattern extraction running | `agents/pm-reference/pattern-extraction.md` |
 | `auto_learning.extract_on_complete.enabled === true` AND orchestration_complete observed | `agents/pm-reference/auto-extraction.md` |
 | `context_compression_v218.archetype_cache.enabled` is not false AND `<orchestray-archetype-advisory>` fence present in context | `agents/pm-reference/archetype-cache-protocol.md` |
+| PM is about to emit an audit event of a type NOT already summarised in the event-schemas.md summary index, OR a hook validation error referencing an unknown event type has appeared in the current turn's context, OR PM is about to edit a file under hooks/ that emits events | `agents/pm-reference/event-schemas.md` |
+| PM is selecting an agent for delegation AND (a) the orchestration is a resume/redo/replay (evidenced by `.orchestray/state/orchestration.md` status field in {paused, redo_pending, replay_active}), OR (b) cost-budget-check hook has emitted a hard-block event in the current turn, OR (c) `enable_drift_sentinel` or `enable_consequence_forecast` flag is `true` in `.orchestray/config.json`, OR `ORCHESTRAY_TIER1_RARE_ALWAYS_LOAD=1` is set in session env | `agents/pm-reference/tier1-orchestration-rare.md` |
+| PM is selecting an agent whose type is NOT in {architect, developer, reviewer} AND the agent's delegation shape is not already in the current turn's context, OR `ORCHESTRAY_DELEGATION_TEMPLATES_MERGE=1` is set in session env | `agents/pm-reference/delegation-templates-detailed.md` |
+
+> CLI helper: run `ox help` for a ≤ 10-line verb table. Protocol reference: `agents/pm-reference/ox-protocol.md`.
 
 ### Always-Available Reference Files
 
@@ -1248,10 +1262,21 @@ These files are loaded regardless of orchestration mode when their content is ne
 - `agents/pm-reference/scoring-rubrics.md` — for complexity scoring (Section 12)
 - `agents/pm-reference/specialist-protocol.md` — for specialist checks (Sections 20, 21)
 - `agents/pm-reference/delegation-templates.md` — for delegation prompts (Section 3)
-- `agents/pm-reference/event-schemas.md` — for audit event formats
 
 ### Tier-2 Loading Discipline
 
 Load a Tier-2 file only when its declared gate condition in the table above is met. Do not pre-load. Do not speculate.
+
+### Kill Switches for Prompt Restructuring (v2.1.11)
+
+These environment variables are operator escape hatches that restore pre-v2.1.11 always-load behaviour without code changes. Set them in `settings.json` under `env:` or export before starting the session.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD=1` | unset (conditional) | Forces `event-schemas.md` to be loaded on every PM turn, matching v2.1.10 always-available behaviour. Disables the R1 AC-05 hook audit-event type validator (schema is always in context, no hook needed). |
+| `ORCHESTRAY_TIER1_RARE_ALWAYS_LOAD=1` | unset (conditional) | Forces `tier1-orchestration-rare.md` to be loaded alongside `tier1-orchestration.md` on every orchestration turn, matching pre-R2 single-file behaviour. |
+| `ORCHESTRAY_DELEGATION_TEMPLATES_MERGE=1` | unset (conditional) | Forces `delegation-templates-detailed.md` to be loaded alongside `delegation-templates.md` on every turn, matching pre-R3 merged-file behaviour. |
+| `ORCHESTRAY_STRICT_MODEL_REQUIRED=1` | unset (auto-resolve on) | Restores v2.1.10 hard-block: `Agent()` spawn fails immediately if `model` is omitted, with no auto-resolve fallback. |
+| `ORCHESTRAY_ARTIFACT_PATH_ENFORCEMENT=warn` | unset (block on placeholder) | Downgrades the R-DX2 artifact-path enforcement from exit 2 (blocking) to exit 0 + stderr warning. Use during migration if agents produce expected placeholder values transiently. |
 
 <!-- ORCHESTRAY_BLOCK_B_END -->

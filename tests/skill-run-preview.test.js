@@ -259,19 +259,28 @@ describe('skills/orchestray:redo/SKILL.md', () => {
 // ---------------------------------------------------------------------------
 
 describe('tier1-orchestration.md §6.T', () => {
+  // W5 split: §6.T content moved to tier1-orchestration-rare.md.
+  // Tests scan both files so the suite passes regardless of which file hosts the content.
   const TIER1_PATH = path.join(REPO_ROOT, 'agents', 'pm-reference', 'tier1-orchestration.md');
-  let content;
+  const TIER1_RARE_PATH = path.join(REPO_ROOT, 'agents', 'pm-reference', 'tier1-orchestration-rare.md');
+
+  function getCombinedContent() {
+    let c = '';
+    try { c += fs.readFileSync(TIER1_PATH, 'utf8'); } catch (_e) { /* ok */ }
+    try { c += '\n' + fs.readFileSync(TIER1_RARE_PATH, 'utf8'); } catch (_e) { /* ok */ }
+    return c;
+  }
 
   test('§6.T section exists', () => {
-    content = fs.readFileSync(TIER1_PATH, 'utf8');
+    const content = getCombinedContent();
     assert.ok(
       content.includes('6.T') && content.includes('Preview and Redo'),
-      '§6.T section present in tier1-orchestration.md'
+      '§6.T section present in tier1-orchestration.md or tier1-orchestration-rare.md'
     );
   });
 
   test('§6.T documents cost formula', () => {
-    if (!content) content = fs.readFileSync(TIER1_PATH, 'utf8');
+    const content = getCombinedContent();
     assert.ok(content.includes('base_cost'), 'cost formula base_cost present');
     assert.ok(content.includes('model_multiplier'), 'cost formula multiplier present');
     assert.ok(content.includes('0.25'), 'XS cost constant present');
@@ -279,12 +288,12 @@ describe('tier1-orchestration.md §6.T', () => {
   });
 
   test('§6.T documents redo.pending flow', () => {
-    if (!content) content = fs.readFileSync(TIER1_PATH, 'utf8');
+    const content = getCombinedContent();
     assert.ok(content.includes('redo.pending'), 'redo.pending referenced');
   });
 
   test('§6.T documents NEW commit (no amend) rule', () => {
-    if (!content) content = fs.readFileSync(TIER1_PATH, 'utf8');
+    const content = getCombinedContent();
     assert.ok(
       content.includes('never an amend') || content.includes('not an amend') ||
       content.includes('never amend') || content.includes('NEW commit'),

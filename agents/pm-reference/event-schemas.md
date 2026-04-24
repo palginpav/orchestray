@@ -1,5 +1,30 @@
 # Event Schemas Reference
 
+<!-- CONDITIONAL-LOAD NOTICE (v2.1.11 R1)
+     NOT always-loaded. Dispatched by Tier-2 rule in pm.md on three conditions:
+       A. PM about to emit an event type NOT in the index below.
+       B. Hook validation error referencing unknown event type appears in current turn.
+       C. PM about to edit a file under hooks/ that emits events.
+     Kill-switch: ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD=1 or config prompt_loading.event_schemas_conditional=false.
+
+## Summary Index
+
+routing_outcome — routing decision (3 variants: hook/PM/SubagentStop)
+agent_start / agent_stop — invocation lifecycle (hook)
+task_created / task_completed / task_validation_failed — task lifecycle (hook/PM)
+teammate_idle — Agent-Teams idle signal (hook)
+pattern_skip_enriched / auto_extract_quarantine_skipped — pattern skip events (hook)
+routing_decision — complexity scoring decision (PM)
+invariant_extracted / introspection_trace / confidence_signal — insight capture (PM)
+visual_review / consequence_forecast / drift_check — quality gate events (PM)
+resilience_block_triggered / resilience_block_suppressed(_inactive) — compact block (hook)
+state_cancel_aborted — cancel sentinel fired (PM)
+mcp_checkpoint_missing / kill_switch_activated / kill_switch_deactivated — enforcement (hook)
+model_auto_resolved — model auto-resolved by gate, warn level (hook, v2.1.11)
+pre_compact_archive / cite_cache_hit / spec_sketch_generated / repo_map_delta_injected — telemetry (hook)
+
+END CONDITIONAL-LOAD NOTICE -->
+
 JSON event schemas used by the PM agent for audit trail logging. These events are appended
 to `.orchestray/audit/events.jsonl`.
 
@@ -3553,3 +3578,36 @@ Field notes:
   so this event should not fire on standard orchestrations. It fires for custom/dynamic
   agents that omit the field, or on Claude Code versions that do not apply frontmatter
   isolation.
+
+---
+
+## v2.1.11 additions
+
+### `model_auto_resolved` event (R-DX1)
+
+Emitted by `bin/gate-agent-spawn.js` whenever an `Agent()` call omits the `model` parameter
+and the gate auto-resolves it instead of blocking. Level is always `warn` so it is
+visible in the post-orchestration rollup without hard-blocking the spawn.
+
+```jsonc
+{
+  "event":                   "model_auto_resolved",
+  "orchestration_id":        "orch-1234567890",
+  "ts":                      "2026-04-24T12:00:00.000Z",
+  "level":                   "warn",
+  "resolved_model":          "sonnet",
+  "source":                  "routing_lookup",
+  "subagent_type":           "developer",
+  "task_hint":               "DEV-1 implement feature X",
+  "routing_entry_timestamp": "2026-04-24T11:58:00.000Z"
+}
+```
+
+Field notes:
+- `source` values:
+  - `routing_lookup` — resolved from `.orchestray/state/routing.jsonl` using the task_id + agent_type match.
+  - `frontmatter_default` — resolved from the `default_model:` field in `agents/<subagent_type>.md` frontmatter.
+  - `global_default_sonnet` — no routing hint and no frontmatter default; `sonnet` applied unconditionally.
+- `routing_entry_timestamp` — present only when `source=routing_lookup`; records the original routing decision timestamp for forensic use (W6 T09/Info #2).
+- Kill-switch: `ORCHESTRAY_STRICT_MODEL_REQUIRED=1` disables auto-resolve and restores the v2.1.10 hard-block.
+- These events appear in the `model_auto_resolved_warnings` field of the orchestration rollup row as human-readable lines.

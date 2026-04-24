@@ -3,6 +3,32 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.1.11] - 2026-04-24
+
+v2.1.11 ships seven bundles: the PM now loads ~162 KB less prompt on every orchestration by conditionally gating the event-schema reference and splitting two large tier-1 files into always-on and on-demand halves; a new `ox` CLI helper replaces verbose multi-line bash in PM workflows with six named verbs; `pattern_find` and `kb_search` now accept a `fields` parameter that cuts response size by up to 80%; the recurring "Agent() missing model" spawn-block is eliminated by auto-resolve; agents that must produce written artifacts can no longer silently skip them; the event-schema validator now hard-blocks unknown event types; and the installer no longer overwrites your shell PATH. 3220/3220 tests green.
+
+### Added
+
+- **~162 KB prompt reduction on every orchestration.** The PM's always-loaded bundle is now leaner by default: `event-schemas.md` (138 KB) is gated to Tier-2 and loaded only when the PM is about to write a novel audit event type; `tier1-orchestration.md` sheds its rarely-used sections (consequence-forecast, drift-sentinel, orchestration-threads, adaptive-persona blocks) into a new sibling file `tier1-orchestration-rare.md` that loads on-demand; `delegation-templates.md` splits into a lean spawn-time core and a detailed on-demand extension. Measured ceiling: ~56 K tokens saved on the PM's first orchestration turn. Kill switches available if you need the legacy always-load behaviour: `ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD=1`, `ORCHESTRAY_TIER1_RARE_ALWAYS_LOAD=1`, `ORCHESTRAY_DELEGATION_TEMPLATES_MERGE=1`.
+
+- **`ox` helper — six verbs for routine PM operations.** A new `ox` command is installed on your PATH when you run `npx orchestray --global`. It covers the six most common PM bash one-liners: `ox state init`, `ox state complete`, `ox state pause`, `ox state peek`, `ox routing add`, and `ox events append`. Each verb writes or reads the orchestration state directory atomically, enforces a 2048-byte per-entry cap, and blocks reserved key names. Protocol reference: `agents/pm-reference/ox-protocol.md`. Run `ox --help` for usage.
+
+- **MCP response projection for `pattern_find` and `kb_search`.** Both tools now accept an optional `fields` parameter: a comma-separated list of top-level keys to return. A query returning 50 KB of pattern data can be reduced to under 10 KB by requesting only the fields the PM actually needs (`slug,approach,confidence`). Backward compatible — omit `fields` for the full legacy response. Documented in `agents/pm-reference/ox-protocol.md` §MCP projection.
+
+### Fixed
+
+- **"Agent() missing model" spawn-block eliminated.** Every session used to start with one guaranteed Agent() rejection — the PM forgot to pass `model` on the first spawn of an orchestration, the gate blocked it, and the PM retried. This is now resolved at the gate: missing `model` is auto-resolved via routing.jsonl lookup, then agent frontmatter default, then a global `sonnet` fallback. A `model_auto_resolved` warning event is emitted so the PM still gets a visible signal. If you want the old hard-block back: `ORCHESTRAY_STRICT_MODEL_REQUIRED=1`.
+
+- **Agents can no longer silently skip required artifact files.** Agents whose contract is to produce a written findings, design, or report file (architect, reviewer, debugger, researcher, security-engineer, ux-critic, documenter, inventor) now carry an explicit artifact-writing clause in their system prompt that overrides Claude Code's default "don't write .md files" rule. The T15 validator hook rejects placeholder path values and verifies the artifact exists on disk before the agent can stop. Kill switch: `ORCHESTRAY_ARTIFACT_PATH_ENFORCEMENT=warn` downgrades to a warning.
+
+- **Audit-event schema validator now hard-blocks unknown event types.** The validator hook (bin/validate-task-completion.js) now exits 2 — blocking the emission — when an audit event carries an event type that is not in the known-event-types set extracted from event-schemas.md. This catches novel-type events that would otherwise slip silently into events.jsonl with no schema. Kill switch: `ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD=1` (which also ensures the full schema is loaded, making false-positive blocks impossible).
+
+- **Installer no longer overwrites your shell PATH.** A bug introduced during v2.1.11 development caused the install script to overwrite `process.env.PATH` rather than prepend to it, which could strip existing PATH entries. Fixed: the ox bin directory is now prepended to the existing PATH. If you installed a pre-release build of v2.1.11, reinstall with `npx orchestray --global` to fix your shell config.
+
+### Under the hood
+
+- New files: `bin/ox.js` (ox CLI binary, 24 KB), `bin/mcp-server/lib/field-projection.js` (projection helper), `agents/pm-reference/ox-protocol.md` (protocol reference), `agents/pm-reference/tier1-orchestration-rare.md` (rare-path tier1 extract, 28 KB), `agents/pm-reference/delegation-templates-detailed.md` (detailed delegation templates, 23 KB). Test additions: `tests/ox.smoke.test.js`, `tests/install-ox.test.js`, `tests/kill-switches.test.js`, `bin/mcp-server/tools/__tests__/field-projection.test.js`, `tests/agent-spawn-auto-resolve.test.js`. Net +74 tests (3146 → 3220). 0 failing.
+
 ## [2.1.10] - 2026-04-24
 
 v2.1.10 ships five bundles: post-compaction state recovery is now delivered via Claude Code's native context envelope instead of a fenced markdown block in your prompt; compaction is blocked when state serialization fails mid-orchestration so recovery is guaranteed; the 1-hour prompt cache TTL is now on by default for measurably cheaper long orchestrations; the v2.1.8 context-compression paths (CiteCache, SpecSketch, RepoMapDelta) now emit telemetry proving they fired; and worktree isolation is now declared directly on write-capable agent frontmatter so the PM cannot silently skip it. One latent bug from v2.1.9 is also fixed: a crash in the post-compaction dossier injection that left the PM with no recovery context after a long orchestration.

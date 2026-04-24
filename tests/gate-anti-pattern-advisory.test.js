@@ -442,21 +442,25 @@ describe('kill flag', () => {
     assert.ok(!advisory, 'kill flag must prevent advisory event emission');
   });
 
-  test('kill flag does not affect other gate logic (model check still runs)', () => {
+  // Updated for 2.1.11 (R-DX1): missing model now auto-resolves to sonnet (exit 0)
+  // instead of hard-blocking (exit 2). The anti_pattern_gate kill flag only disables
+  // advisory logic — the rest of the gate still runs, including auto-resolve.
+  test('kill flag does not affect other gate logic (model auto-resolves via R-DX1)', () => {
     const { dir } = makeProject({
       config: {
         anti_pattern_gate: { enabled: false },
+        mcp_enforcement: { pattern_record_application: 'allow' },
       },
     });
 
-    // Omit model to trigger the model validation check (should still exit 2)
+    // Omit model — R-DX1 auto-resolves to sonnet (exit 0).
     const payload = {
       tool_name: 'Agent',
       cwd: dir,
       tool_input: {
         subagent_type: 'developer',
         description: 'Fix whole codebase review',
-        // model intentionally omitted
+        // model intentionally omitted — auto-resolved by R-DX1
       },
     };
     const result = spawnSync(process.execPath, [SCRIPT], {
@@ -464,8 +468,10 @@ describe('kill flag', () => {
       encoding: 'utf8',
       timeout: 10000,
     });
-    // Model check should still block (exit 2) — kill flag only disables advisory logic
-    assert.equal(result.status, 2, 'model check must still run when kill flag is set');
+    // R-DX1: auto-resolve to global_default_sonnet → exit 0.
+    // Kill flag only disables advisory logic — gate still processes the spawn.
+    assert.equal(result.status, 0, 'R-DX1 auto-resolve must still run when anti-pattern kill flag is set');
+    assert.match(result.stderr, /defaulting to "sonnet"/, 'Expected auto-resolve warning in stderr');
   });
 });
 

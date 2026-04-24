@@ -689,6 +689,44 @@ function install(targetDir) {
   }
   console.log(`  \x1b[32m✓\x1b[0m Installed ${binFiles.length} hook scripts`);
 
+  // 3a. F-04 closure: install `ox` as a bare command so agents can invoke
+  // `ox <verb>` without specifying the full path.
+  //
+  // Approach: create a wrapper shim `<targetDir>/orchestray/bin/ox` (no .js
+  // extension) with executable permissions, then prepend the bin directory
+  // to PATH in settings.json `env.PATH`.
+  //
+  // Windows note: .js shebangs don't work natively; we fall back to a .cmd
+  // wrapper on Windows (detected via process.platform === 'win32').
+  try {
+    const oxSrcPath = path.join(targetDir, 'orchestray', 'bin', 'ox.js');
+    const oxBinDir  = path.join(targetDir, 'orchestray', 'bin');
+    const isWindows = process.platform === 'win32';
+    const shimPath  = path.join(oxBinDir, isWindows ? 'ox.cmd' : 'ox');
+
+    if (!fs.existsSync(oxSrcPath)) {
+      console.log('  \x1b[33m⚠\x1b[0m ox.js not found in bin/; skipping ox shim install');
+    } else {
+      if (isWindows) {
+        const cmdContent = `@echo off\nnode "%~dp0ox.js" %*\n`;
+        fs.writeFileSync(shimPath, cmdContent, { encoding: 'utf8' });
+        track(path.join('orchestray', 'bin', 'ox.cmd'));
+      } else {
+        const shimContent = `#!/bin/sh\nexec node "$(dirname "$0")/ox.js" "$@"\n`;
+        fs.writeFileSync(shimPath, shimContent, { encoding: 'utf8', mode: 0o755 });
+        try { fs.chmodSync(shimPath, 0o755); } catch (_e) {}
+        track(path.join('orchestray', 'bin', 'ox'));
+      }
+      _prependOxBinToPath(targetDir, oxBinDir);
+      console.log('  \x1b[32m✓\x1b[0m Installed `ox` shim; bare `ox help` is now available');
+    }
+  } catch (oxErr) {
+    console.log(
+      '  \x1b[33m⚠\x1b[0m ox shim install failed (' + oxErr.message + '). ' +
+      'Use `node <install-dir>/orchestray/bin/ox.js` as fallback.'
+    );
+  }
+
   // 3b. Copy MCP server tree (recursive, .js only) to orchestray/bin/mcp-server/
   const mcpSrcDir = path.join(binDir, 'mcp-server');
   let mcpFileCount = 0;
@@ -914,6 +952,46 @@ function install(targetDir) {
   console.log('  The PM agent auto-detects complex tasks.');
   console.log('  Or run \x1b[36m/orchestray:run [task]\x1b[0m to trigger manually.');
   console.log('');
+}
+
+/**
+ * F-04 closure: prepend <oxBinDir> to the PATH entry in settings.json `env` block
+ * so that bare `ox` resolves without requiring the full path.
+ *
+ * Idempotent: if the directory is already present in the PATH value, does nothing.
+ * Non-fatal: any failure is logged but does not abort the install.
+ *
+ * @param {string} targetDir - The Claude config directory (e.g. ~/.claude).
+ * @param {string} oxBinDir  - The absolute path to the ox bin directory.
+ */
+function _prependOxBinToPath(targetDir, oxBinDir) {
+  try {
+    const settingsFile = path.join(targetDir, 'settings.json');
+    let settings = {};
+    if (fs.existsSync(settingsFile)) {
+      try {
+        settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+      } catch (_e) {
+        // Malformed settings.json — leave PATH alone to avoid corruption.
+        return;
+      }
+    }
+    if (!settings.env) settings.env = {};
+    // Preserve existing PATH: read from settings.json first, fall back to the
+    // process PATH so that system directories (/usr/bin, /bin) are never lost.
+    // If neither exists (edge case), use a safe minimal PATH.
+    const systemPath = process.env.PATH || '/usr/bin:/bin';
+    const current = settings.env.PATH || systemPath;
+    const separator = process.platform === 'win32' ? ';' : ':';
+    const parts = current.split(separator);
+    if (parts.includes(oxBinDir)) return;  // Already present — idempotent no-op.
+    settings.env.PATH = [oxBinDir, current].join(separator);
+    const tmp = settingsFile + '.tmp.' + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify(settings, null, 2) + '\n', 'utf8');
+    fs.renameSync(tmp, settingsFile);
+  } catch (err) {
+    console.log('  \x1b[33m⚠\x1b[0m Could not update settings.json PATH for ox: ' + err.message);
+  }
 }
 
 function mergeHooks(targetDir) {
