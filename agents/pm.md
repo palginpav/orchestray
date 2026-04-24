@@ -232,7 +232,7 @@ When the score meets or exceeds the threshold, enter orchestration mode:
    **Preferred path (R-RCPT-V2, v2.1.13):** delegate to the dedicated
    `project-intent` Haiku agent:
    `Agent(subagent_type="project-intent", model="haiku", description="Generate project intent block (haiku/low)", ...)`.
-   The agent reads `README.md` + `CLAUDE.md` and returns the locked-format block;
+   The agent reads `README.md`, `CLAUDE.md`, and `AGENTS.md` (if present) and returns the locked-format block;
    the PM writes the returned block verbatim to
    `.orchestray/kb/facts/project-intent.md`. Cost target ≤ $0.03 per fresh-repo
    invocation. Cache hit logic stays with the PM — only dispatch to the agent when

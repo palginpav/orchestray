@@ -3716,3 +3716,44 @@ v2.1.13 installation reading a v2.1.12 audit log produces well-formed events.
 lint that fails the test suite if any new emission site introduces a rogue field
 name. Expected keys are pinned against the migration map; any name that is
 neither canonical nor legacy is a drift candidate.
+
+---
+
+## v2.1.13 additions
+
+### project_intent_fallback_no_agent
+
+Emitted when the PM dispatches to the `project-intent` agent at Step 2.7a but
+the agent is unavailable (agent file missing from the session's registry,
+spawn throws, or returns an invalid block). The PM falls back to the in-process
+mechanical generator in `bin/_lib/project-intent.js`, preserving v2.1.12 inline
+behaviour, and emits this event so operators can see the degraded state.
+
+Canonical payload:
+
+```json
+{
+  "type": "project_intent_fallback_no_agent",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id, or null if no active orchestration>",
+  "reason": "<agent_file_missing|spawn_error|restart_required|other>",
+  "detail": { "...": "caller-supplied context, optional" },
+  "source": "pm-step-2.7a"
+}
+```
+
+Field notes:
+- `type`: Always `"project_intent_fallback_no_agent"`.
+- `reason`: One of the four documented values above, or any caller-supplied
+  string. Consumers that don't recognise a reason should treat it as "other".
+- `detail`: Optional free-form object; reserved for caller-supplied diagnostic
+  context (stack, file path, retry count). Do not rely on any specific shape.
+- `source`: Always `"pm-step-2.7a"` — emitted by `bin/_lib/project-intent-fallback-event.js`.
+
+Schema stability: additive-only. New reason values may appear in future releases;
+consumers should fail open on unknown reasons.
+
+Correlated user signal: `post-upgrade-sweep.js` names `project-intent-agent` in
+the restart reminder (v2.1.13 R-RCPT-V2 + F-M-2), so users who see this event
+fire while the upgrade sentinel is present are on the documented restart-required
+path.

@@ -517,6 +517,27 @@ async function promotePattern(slug, options = {}) {
   const { frontmatter, body } = parsed;
 
   // -------------------------------------------------------------------------
+  // Stage 1b: Per-pattern sharing flag (v2.1.13 R-FED-PRIVACY, F-M-1)
+  // A pattern with `sharing: local-only` in frontmatter must never leave this
+  // machine — even if the project-level sensitivity gate would allow it.
+  // Absent key defaults to `federated` (backward compat with pre-v2.1.13
+  // patterns). This is a defence-in-depth write-side check; the read-side
+  // filter in pattern_find.js already excludes local-only patterns from
+  // federation reads, but this closes the escape hatch of a pattern being
+  // written to the shared tier in the first place.
+  // -------------------------------------------------------------------------
+  if (frontmatter && frontmatter.sharing === 'local-only') {
+    return {
+      ok: false,
+      error:
+        `promote blocked: pattern '${slug}' has 'sharing: local-only' in frontmatter ` +
+        `— pinned to this machine regardless of project federation settings. ` +
+        `Remove the key (or change to 'federated') to allow promotion.`,
+      stage: 'sharing-flag',
+    };
+  }
+
+  // -------------------------------------------------------------------------
   // Stage 2: Sensitivity gate
   // Preview bypasses the hard-fail so users can see what WOULD be shared before
   // flipping sensitivity to shareable. sensitivityBlocks is recorded in the report.

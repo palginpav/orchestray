@@ -25,19 +25,9 @@
  * that illustrate the format, guarded by the `example: true` flag).
  */
 
-const RENAME_MAP = Object.freeze({
-  // --- Real historical renames (populate when a rename actually ships) ---
-  // (none yet)
-
-  // --- Documented format example, not emitted as a warning ---
-  // The drift detector skips entries with `example: true` so they don't fire
-  // accidentally if someone copies an example into their config.
-  '__example_old_key': Object.freeze({
-    to: '__example_new_key',
-    since: '0.0.0',
-    note: 'Illustrative only — never emitted (example: true).',
-    example: true,
-  }),
-});
+// Format example (for future maintainers):
+//   '<old_key>': { to: '<new_key>', since: '<release>', note?: '<why>' }
+// No real renames yet — v2.1.13 ships with an empty map.
+const RENAME_MAP = Object.freeze({});
 
 module.exports = { RENAME_MAP };

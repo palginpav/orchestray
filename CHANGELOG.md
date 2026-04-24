@@ -3,6 +3,50 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.1.13] - 2026-04-24
+
+v2.1.13 is an ergonomics and hardening patch. Repo context is now read once per session by a dedicated Haiku agent instead of inline inside the PM's turn. Docs you keep pasting become reusable skill packs. Pattern search understands common synonyms. Config mistakes become loud at boot with "did you mean…?" suggestions. Seven coordinated improvements, one carryover closed (event-field naming consistency), zero new runtime dependencies.
+
+### Added
+
+- **New `project-intent` agent.** The first time Orchestray sees a repo in a session, a lightweight Haiku agent briefly reads your `README.md`, `CLAUDE.md`, and (new) `AGENTS.md`, and stages a project-intent block that every downstream agent receives for free. In v2.1.12 this ran inline inside the PM's turn; in v2.1.13 it is a dedicated agent so your PM's turn budget goes to the actual task. Cost per fresh-repo invocation stays under $0.03. Requires a Claude Code session restart after upgrade — the post-upgrade reminder now names `project-intent-agent` specifically so you know what is waiting.
+
+- **`AGENTS.md` is read alongside `CLAUDE.md`.** If your repo has an `AGENTS.md` (the open convention adopted by 60,000+ projects, see https://agents.md), Orchestray agents now receive its Build/Run, Testing, and Architecture sections as context — same as `CLAUDE.md`. Graceful skip when the file is absent.
+
+- **`/orchestray:learn-doc <url>` — turn a doc page into a reusable skill pack.** Hand a URL you keep pasting into prompts, and Orchestray distills it into a concise, always-available knowledge pack that future agent sessions read automatically. Source-aware expiry keeps packs fresh: Claude Code docs refresh every 14 days, Anthropic Platform every 30 days, other sources every 90 days. Cost per run: under $0.03. The shorter alias `/orchestray:distill <url>` is registered and routes to the same flow.
+
+- **Per-pattern `sharing: local-only` flag.** A pattern with `sharing: local-only` in its frontmatter stays on this machine regardless of project-level federation settings. Use it for patterns that reference private business context. Honored on both the read path (pattern search excludes local-only patterns from cross-install views) and the write path (shared-tier promotion refuses local-only patterns with a clear message). Forward-compatible: when cross-machine federation sync ships in a future release, these patterns will continue to stay local. To pin a pattern today, edit its frontmatter directly in `.orchestray/patterns/<slug>.md`.
+
+### Changed — smarter pattern ranking
+
+- **Pattern search understands common synonyms.** Search for "bug fix" and you will also see patterns tagged "debug," "defect," "correction." The list is conservative (~44 equivalence classes); every expansion is auditable via the response's `match_reasons` field and one config flip disables the whole feature (`retrieval.synonyms_enabled: false`).
+
+- **Usage-aware ranking is now opt-in.** Three scorer variants are now selectable via `retrieval.scorer_variant` in `.orchestray/config.json`: `skip-down` (patterns you skip rank lower), `local-success` (patterns that worked in your project rank higher), `composite` (both signals combined), or the unchanged default `baseline`. Default behaviour is unchanged in this release — a default flip is planned for v2.2.0 once there is enough cross-install shadow data.
+
+### Under the hood — hardening
+
+- **Config and pattern files are now validated against a structured schema at boot.** Typos and invalid values produce clear, pointed error messages ("Invalid enum value. Expected …, got …") instead of silent fallbacks. Three declarative schemas cover `.orchestray/config.json`, pattern frontmatter, and specialist templates. The validator is a 300-line handwritten module shipped in-tree (no new runtime dependencies).
+
+- **Config typos become loud at boot with "did you mean…?" suggestions.** Unknown top-level keys produce a boot-time warning that suggests the nearest valid key (Levenshtein distance ≤ 2). Intentional custom keys can be silenced via `config_drift_silence: ["my_key"]`. Warnings are warnings (exit 0), not errors.
+
+- **Event-field naming consistency pass.** Fields in `.orchestray/audit/events.jsonl` are now uniformly `type` + `timestamp` across every emitter. Older `events.jsonl` files that mixed `event` + `ts` continue to read cleanly — a read-side normaliser handles back-compat. `agents/pm-reference/event-schemas.md` documents both historical and canonical names.
+
+- **New audit event `project_intent_fallback_no_agent`.** Fires when the PM dispatches to the `project-intent` agent but the agent is unavailable (pre-restart state, spawn error, or missing agent file) and the PM falls back to the in-process mechanical generator. Schema entry in `agents/pm-reference/event-schemas.md`.
+
+- **Post-upgrade restart reminder now names the features waiting on the restart.** When you upgrade Orchestray while a Claude Code session is open, the one-time stderr nudge reads "…RESTART to load new agents (this message won't repeat). New in this upgrade: project-intent-agent." so you know what specifically is dormant until you reload.
+
+### Not in this release (with triggers)
+
+- **Cross-machine federation sync** — still under internal test. Ships when internal soak passes, conflict-resolution has 30+ days of dogfood data, and the Windows git-over-SSH environment probe lands. No target version yet, to avoid another carryover-label.
+- **Usage-aware ranking as default** — deferred to v2.2.0, gated on ≥30 orchestrations of shadow-log telemetry showing tau-b divergence ≥0.15 between `baseline` and `composite`.
+- **Full 4-option RAG decision** (trigram FTS / vector DB / preflight retriever / skill packs) — deferred to v2.2.0, gated on Signal A/B/C measurement. `/orchestray:learn-doc` in v2.1.13 addresses Option 1 (skill packs) as a low-risk additive.
+- **Auto-apply curator suggestions** — **retired**; the human-gate is a permanent design principle.
+- **Federation team tier** — deferred to post-federation-sync-GA + security review + ≥3 peer installs × 30 days.
+
+### Tests
+
+- **+122 net new tests; baseline preserved.** 3456/3471 pass. The 15 failures are the pre-existing master baseline (4 routing-hint subtests + 11 post-upgrade-sweep subtests) and were not introduced by any v2.1.13 change. Two baseline failures that existed on master (compression-telemetry event tests, isolation-omitted event test) are now fixed by the field-naming unification pass.
+
 ## [2.1.12] - 2026-04-24
 
 v2.1.12 closes the kill-switch rollback gap introduced in v2.1.11, adds cached project-intent injection so downstream agents receive your project's goal without re-deriving it each time, and surfaces three new post-orchestration signals: Tier-2 dispatch frequency, model auto-resolve counts, and MCP field-projection usage. MCP field projection now covers four tools (up from two). 3299/3299 tests green.

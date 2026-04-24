@@ -80,8 +80,8 @@ function runDriftDetection(cwd) {
     const hint = suggested ? ' — did you mean "' + suggested + '"?' : '';
     warnOnce(
       'unknown:' + key,
-      'unknown top-level key "' + key + '" in .orchestray/config.json' + hint +
-        ' (silence with config_drift_silence: ["' + key + '"])'
+      'unknown top-level key "' + key + '" in .orchestray/config.json' + hint + '. ' +
+        'To silence, add "' + key + '" to config_drift_silence in .orchestray/config.json.'
     );
   }
   for (const r of renamed) {

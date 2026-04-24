@@ -102,6 +102,8 @@ describe('event-field drift lint — bin/ and hooks/', () => {
     'bin/state-gc.js',
     'bin/warn-isolation-omitted.js',
     'bin/_lib/scorer-telemetry.js',
+    // v2.1.13 F-m-3: new emitter introduced alongside the project-intent agent.
+    'bin/_lib/project-intent-fallback-event.js',
   ];
 
   test('no emitter re-introduces legacy field names in new writes', () => {

@@ -90,8 +90,14 @@ function issue(path, message) {
 
 // ---------- primitives ----------
 
-function stringSchema() {
-  const state = { min: null, max: null, regex: null, regexMsg: null, minMsg: null, maxMsg: null };
+// v2.1.13 F-M-3: chainables must return a NEW schema each call. Earlier
+// revisions mutated a closed-over `state` object and returned the SAME schema,
+// which silently poisoned any partially-built primitive that was reused
+// downstream (e.g. `const nonEmpty = z.string().min(1); const longer =
+// nonEmpty.min(10)` would make nonEmpty require min=10). Each chainable
+// rebuilds the schema over a shallow-copied state object.
+
+function _buildStringSchema(state) {
   const base = makeSchema((v, path) => {
     if (typeof v !== 'string') return issue(path, 'Expected string');
     if (state.min !== null && v.length < state.min) {
@@ -105,14 +111,17 @@ function stringSchema() {
     }
     return { ok: true, value: v };
   });
-  base.min = (n, opts) => { state.min = n; if (opts && opts.message) state.minMsg = opts.message; return base; };
-  base.max = (n, opts) => { state.max = n; if (opts && opts.message) state.maxMsg = opts.message; return base; };
-  base.regex = (re, opts) => { state.regex = re; if (opts && opts.message) state.regexMsg = opts.message; return base; };
+  base.min = (n, opts) => _buildStringSchema({ ...state, min: n, minMsg: opts && opts.message ? opts.message : state.minMsg });
+  base.max = (n, opts) => _buildStringSchema({ ...state, max: n, maxMsg: opts && opts.message ? opts.message : state.maxMsg });
+  base.regex = (re, opts) => _buildStringSchema({ ...state, regex: re, regexMsg: opts && opts.message ? opts.message : state.regexMsg });
   return base;
 }
 
-function numberSchema() {
-  const state = { min: null, max: null, int: false, positive: false, minMsg: null, maxMsg: null };
+function stringSchema() {
+  return _buildStringSchema({ min: null, max: null, regex: null, regexMsg: null, minMsg: null, maxMsg: null });
+}
+
+function _buildNumberSchema(state) {
   const base = makeSchema((v, path) => {
     if (typeof v !== 'number' || Number.isNaN(v)) return issue(path, 'Expected number');
     if (state.int && !Number.isInteger(v)) return issue(path, 'Expected integer');
@@ -125,11 +134,15 @@ function numberSchema() {
     }
     return { ok: true, value: v };
   });
-  base.min = (n, opts) => { state.min = n; if (opts && opts.message) state.minMsg = opts.message; return base; };
-  base.max = (n, opts) => { state.max = n; if (opts && opts.message) state.maxMsg = opts.message; return base; };
-  base.int = () => { state.int = true; return base; };
-  base.positive = () => { state.positive = true; return base; };
+  base.min = (n, opts) => _buildNumberSchema({ ...state, min: n, minMsg: opts && opts.message ? opts.message : state.minMsg });
+  base.max = (n, opts) => _buildNumberSchema({ ...state, max: n, maxMsg: opts && opts.message ? opts.message : state.maxMsg });
+  base.int = () => _buildNumberSchema({ ...state, int: true });
+  base.positive = () => _buildNumberSchema({ ...state, positive: true });
   return base;
+}
+
+function numberSchema() {
+  return _buildNumberSchema({ min: null, max: null, int: false, positive: false, minMsg: null, maxMsg: null });
 }
 
 function booleanSchema() {
@@ -148,8 +161,7 @@ function enumSchema(values) {
   });
 }
 
-function arraySchema(inner) {
-  const state = { min: null, max: null };
+function _buildArraySchema(inner, state) {
   const base = makeSchema((v, path) => {
     if (!Array.isArray(v)) return issue(path, 'Expected array');
     if (state.min !== null && v.length < state.min) {
@@ -168,13 +180,16 @@ function arraySchema(inner) {
     if (issues.length) return { ok: false, issues };
     return { ok: true, value: out };
   });
-  base.min = (n) => { state.min = n; return base; };
-  base.max = (n) => { state.max = n; return base; };
+  base.min = (n) => _buildArraySchema(inner, { ...state, min: n });
+  base.max = (n) => _buildArraySchema(inner, { ...state, max: n });
   return base;
 }
 
-function objectSchema(shape) {
-  const state = { mode: 'strip' }; // 'strip' (default) | 'passthrough' | 'strict'
+function arraySchema(inner) {
+  return _buildArraySchema(inner, { min: null, max: null });
+}
+
+function _buildObjectSchema(shape, state) {
   const keys = Object.keys(shape);
   const base = makeSchema((v, path) => {
     if (v === null || typeof v !== 'object' || Array.isArray(v)) {
@@ -204,9 +219,13 @@ function objectSchema(shape) {
     if (issues.length) return { ok: false, issues };
     return { ok: true, value: out };
   });
-  base.passthrough = () => { state.mode = 'passthrough'; return base; };
-  base.strict = () => { state.mode = 'strict'; return base; };
+  base.passthrough = () => _buildObjectSchema(shape, { ...state, mode: 'passthrough' });
+  base.strict = () => _buildObjectSchema(shape, { ...state, mode: 'strict' });
   return base;
+}
+
+function objectSchema(shape) {
+  return _buildObjectSchema(shape, { mode: 'strip' });
 }
 
 function unionSchema(options) {

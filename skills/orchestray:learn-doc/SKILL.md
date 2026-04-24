@@ -1,6 +1,6 @@
 ---
 name: learn-doc
-description: Distill a URL into a reusable, auto-loaded skill pack
+description: Turn a URL into a reusable, auto-loaded skill pack
 disable-model-invocation: true
 argument-hint: "<url>"
 ---
@@ -49,8 +49,8 @@ lowercased, non-word → `-`). Look for an existing skill pack at:
 If the file exists and its `expires_at` frontmatter value is in the future:
 
 > "Skill pack already cached at `.orchestray/skills/learn-doc/<slug>.md`
-> (expires {expires_at}). Use `--force` behaviour by re-running after the
-> expiry, or delete the file to refresh early."
+> (expires {expires_at}). To refresh early: delete the file
+> (`rm .orchestray/skills/learn-doc/<slug>.md`) and re-run."
 
 Stop.
 

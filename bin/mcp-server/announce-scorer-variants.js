@@ -27,9 +27,11 @@ const path = require('node:path');
 const SENTINEL_FILENAME = '.scorer-variants-announced-2113';
 
 const ANNOUNCEMENT_MESSAGE =
-  '[orchestray] retrieval.scorer_variant now accepts "skip-down", ' +
-  '"local-success", and "composite" alongside the default "baseline". ' +
-  'See /orchestray:config to opt in; default behaviour is unchanged.';
+  '[orchestray] retrieval.scorer_variant is now selectable: "skip-down" ' +
+  '(patterns you skip rank lower), "local-success" (patterns that worked ' +
+  'here rank higher), "composite" (both), or the default "baseline" ' +
+  '(unchanged). To opt in: add "retrieval": { "scorer_variant": ' +
+  '"composite" } to .orchestray/config.json.';
 
 // Per-process guard — defence-in-depth when sentinel writes fail (e.g. RO fs).
 let _announcedThisProcess = false;

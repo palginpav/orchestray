@@ -1,6 +1,6 @@
 ---
 name: distill
-description: Alias for /orchestray:learn-doc — distill a URL into a reusable skill pack
+description: Alias for /orchestray:learn-doc — same command, same cache, shorter name
 disable-model-invocation: true
 argument-hint: "<url>"
 ---

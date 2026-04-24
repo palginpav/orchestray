@@ -190,6 +190,7 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | **UX Critic** | Adversarial read-only critique of user-facing surfaces (commands, errors, statusLine, README) for friction, discoverability, consistency, and surprise |
 | **Platform Oracle** | Authoritative answers to Claude Code / Anthropic SDK / API / MCP questions via WebFetch + cited URLs; labels each claim with a stability tier (stable / experimental / community) |
 | **Curator** | AI-driven pattern curation — promotes, merges, and deprecates patterns with tombstone rollback; invoked via `/orchestray:learn curate` |
+| **Project Intent** | Lightweight Haiku agent — reads `README.md`, `CLAUDE.md`, and `AGENTS.md` once per session and stages a project-intent block that every downstream agent receives for free. Read-only; invoked automatically by the PM on fresh repos. |
 | **Specialists** | Plugin-shipped templates at `specialists/` (translator, ui-ux-designer, database-migration, api-contract-designer, error-message-writer); project-local overrides saved to `.orchestray/specialists/` by the PM when dynamic agents succeed |
 
 ### Shipped specialists (v2.1.9)
@@ -360,7 +361,21 @@ resilience.shadow_mode          When true, dossier is written but never injected
 resilience.inject_max_bytes     Maximum bytes injected into context per compaction event (default: 12288, range: 512–32768)
 resilience.max_inject_turns     Maximum injections per compaction before suppression (default: 3)
 resilience.kill_switch          Disable resilience instantly without changing enabled (default: false)
+
+retrieval.scorer_variant        Which ranking scorer pattern_find uses: "baseline" (default, unchanged),
+                                "skip-down" (patterns you skip rank lower), "local-success" (patterns that
+                                worked in your project rank higher), or "composite" (both combined).
+                                Default flip from baseline is planned for v2.2.0 once cross-install shadow
+                                data crosses threshold.
+retrieval.synonyms_enabled      Expand pattern_find queries with a ~44-entry synonym list (default: true).
+                                Every expansion is auditable via the response's match_reasons field; set
+                                false to disable.
+config_drift_silence            Top-level config keys to silence from the boot-time drift warning
+                                (default: []). Use for intentional custom keys (e.g., a third-party
+                                integration seed). Example: ["my_custom_key"].
 ```
+
+**Per-pattern sharing (2.1.13+).** A pattern with `sharing: local-only` in its frontmatter stays on this machine regardless of project-level federation settings. Honored on both the read path (pattern search excludes local-only patterns from cross-install views) and the write path (shared-tier promotion refuses local-only patterns). Forward-compatible with future federation sync. To pin a pattern today, edit its frontmatter directly: open `.orchestray/patterns/<slug>.md` and add `sharing: local-only` under the existing fields; `/orchestray:federation status` shows the total count of pinned patterns.
 
 The `mcp_enforcement` block is automatically added to `.orchestray/config.json` on the first `UserPromptSubmit` after upgrading to 2.0.13+ — no manual migration needed. On 2.0.14+, the same sweep also backfills the `mcp_server.cost_budget_check.pricing_table` block if absent. On 2.0.15+, the sweep additionally seeds the `kb_write` tool enable entry and the `pattern_record_skip_reason` / `cost_budget_check` enforcement keys for existing installs. On 2.0.16+, the sweep seeds `routing_lookup`, `cost_budget_reserve`, `pattern_deprecate`, `max_per_task` defaults (20 each), `cost_budget_enforcement`, `cost_budget_reserve.ttl_minutes`, and `routing_gate.auto_seed_on_miss`. On 2.0.17+, the sweep seeds the `v2017_experiments` block (all flags `"off"`), `adaptive_verbosity`, and `cache_choreography`. On 2.0.18+, the sweep also auto-strips the now-removed `pm_prompt_variant` and `pm_prose_strip` keys (emits a `config_key_stripped` audit event).
 

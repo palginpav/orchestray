@@ -160,9 +160,18 @@ function emitUpgradePendingWarning(sessionId, cwd) {
     const versionSuffix = data.version
       ? ' to v' + data.version + (data.previous_version ? ' (was v' + data.previous_version + ')' : '')
       : '';
+    // v2.1.13 R-RCPT-V2: name specific features waiting on the restart so users
+    // know WHAT is dormant until they reload the session.
+    const gatedList = Array.isArray(data.restart_gated_features)
+      ? data.restart_gated_features.filter((s) => typeof s === 'string' && s.length > 0)
+      : [];
+    const gatedSuffix = gatedList.length
+      ? ' New in this upgrade: ' + gatedList.join(', ') + '.'
+      : '';
     process.stderr.write(
       '[orchestray] Upgraded' + versionSuffix + ' while this session was open — ' +
-      'one-time reminder. RESTART to load new agents (this message won\'t repeat).\n'
+      'one-time reminder. RESTART to load new agents (this message won\'t repeat).' +
+      gatedSuffix + '\n'
     );
     recordDegradation({
       kind: 'agent_registry_stale',
