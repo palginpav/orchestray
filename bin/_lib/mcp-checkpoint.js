@@ -30,6 +30,7 @@
  * @property {string}       outcome          - answered | error | skipped
  * @property {string}       phase            - pre-decomposition | post-decomposition
  * @property {number|null}  result_count     - number of items returned for pattern_find; null otherwise
+ * @property {boolean}      fields_used      - R-PFX (v2.1.14): true if caller passed non-empty `fields` projection argument
  *
  * Example row:
  * {
@@ -38,7 +39,8 @@
  *   "tool": "pattern_find",
  *   "outcome": "answered",
  *   "phase": "pre-decomposition",
- *   "result_count": 3
+ *   "result_count": 3,
+ *   "fields_used": true
  * }
  */
 

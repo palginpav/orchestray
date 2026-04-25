@@ -192,6 +192,15 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/gate-telemetry.js",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SubagentStart": [

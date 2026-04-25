@@ -56,11 +56,18 @@ Before forming opinions, check what prior runs recorded about the code under rev
   resolved the question, cite it as "see `.orchestray/kb/decisions/X.md`" rather than
   re-debating the decision. The tool returns `matches[]` with `uri`, `section`, and
   `excerpt`.
+  **Default projection:** pass `fields: ["uri", "section", "excerpt"]`. Fetch full content
+  via the URI when the excerpt is insufficient.
 - **`mcp__orchestray__pattern_find`** -- call to augment the 7-dimension review. Filter
   by `categories: ["anti-pattern"]` and pass the relevant dimension or subsystem as
   `task_summary`. The tool returns `matches[]` with `slug` and `one_line`. If the code
   violates a recorded anti-pattern, cite the pattern `slug` in your finding so the
   developer can look it up.
+  **Default projection:** pass `fields: ["slug", "confidence", "one_line"]` to receive a
+  compact index. Request the full body via a follow-up call without `fields` only when
+  accuracy demands the full pattern text. Exception: when reviewing pattern correctness
+  itself (accuracy audits of the pattern library), request full bodies by passing
+  `fields: null` or omitting `fields`.
 - **When to skip:** doc-only reviews, README updates, or test-only commits with no
   logic changes.
 
@@ -339,6 +346,8 @@ conforming to `agents/pm-reference/handoff-contract.md`. Required fields: `statu
 `summary`, `files_changed`, `files_read`, `issues`, `assumptions`. The T15 hook
 (`bin/validate-task-completion.js`) blocks missing fields on SubagentStop.
 Role-specific optional fields for **reviewer**: see handoff-contract.md §4.reviewer.
+
+**Artifact body cap (§10):** Keep `summary`+`assumptions`+`issues` within 2,000 tokens; move overflow to a separate file and cite it as `"detail_artifact": "<path>"` — see `handoff-contract.md §10`.
 
 `files_changed` is always `[]` — report needed changes as issues instead. KB writes
 via Write are allowed (see Section 7). The `verdict` field in Structured Result MUST

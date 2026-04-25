@@ -50,6 +50,8 @@ const { MAX_INPUT_BYTES }             = require('./_lib/constants');
 const { normalizeEvent }              = require('./read-event');
 // v2.1.7 Bundle A: live Haiku backend
 const { runExtractor }          = require('./_lib/haiku-extractor-transport');
+// R-TGATE (v2.1.14): tier2_invoked emitter for pattern_extraction protocol
+const { emitTier2Invoked }      = require('./_lib/tier2-invoked-emitter');
 const { parseExtractorOutput }  = require('./_lib/extractor-output-parser');
 
 // ---------------------------------------------------------------------------
@@ -642,6 +644,16 @@ function runExtraction({ projectRoot, eventsPath, orchFilePath }) {
     });
     return { proposals_written: 0, shadow: shadowMode };
   }
+
+  // ── Step 5.5: R-TGATE (v2.1.14) — emit tier2_invoked for pattern_extraction ─
+  // Called here because all gates have passed and the extractor is about to run.
+  try {
+    emitTier2Invoked({
+      cwd: projectRoot,
+      protocol: 'pattern_extraction',
+      trigger_signal: 'auto-extraction gates passed; spawning extractor backend',
+    });
+  } catch (_te) { /* fail-open */ }
 
   // ── Step 6: Spawn extractor backend ───────────────────────────────────────
   // v2.1.7 Bundle A: live Haiku CLI transport. Stub path preserved via
