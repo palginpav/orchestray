@@ -41,6 +41,7 @@ const { runExtraction }    = require('./post-orchestration-extract');
 const { resolveSafeCwd }   = require('./_lib/resolve-project-cwd');
 const { recordDegradation } = require('./_lib/degraded-journal');
 const { MAX_INPUT_BYTES }   = require('./_lib/constants');
+const { emitTier2Invoked }  = require('./_lib/tier2-invoked-emitter');
 
 /** Only consider history archives newer than this (ms). 15 minutes. */
 const FRESH_ARCHIVE_WINDOW_MS = 15 * 60 * 1000;
@@ -136,6 +137,15 @@ function processStop(projectRoot) {
     });
     return;
   }
+
+  // R-TGATE (v2.1.14): emit tier2_invoked for pattern_extraction protocol.
+  try {
+    emitTier2Invoked({
+      cwd: projectRoot,
+      protocol: 'pattern_extraction',
+      trigger_signal: 'post-orchestration auto-extraction triggered on Stop',
+    });
+  } catch (_te) { /* fail-open */ }
 
   try {
     runExtraction({

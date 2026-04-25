@@ -252,12 +252,17 @@ process.stdin.on('end', () => {
     const outcome = classifyOutcome(toolResponse);
     const result_count = extractResultCount(tool, parsedResponse);
 
-    // R-PFX (v2.1.14): fields_used tracks whether the caller passed a non-empty
-    // `fields` projection argument. true = compact projection used, false = full body.
-    // Mirrors the fieldCount logic already computed above for the fields_projected event.
+    // R-PFX + R-TGATE (v2.1.14): extract fields_used and response_bytes for telemetry.
+    // R-PFX mandates compact `fields` projection on pattern_find / kb_search;
+    // R-TGATE captures fields_used + response_bytes across all ENFORCED_TOOLS.
+    // fields_used: true when the caller passed a non-empty `fields` parameter (string
+    // form "a,b,c" or array form). response_bytes: byte length of the raw tool_response
+    // (never logged — only size). Fail-open: enrichment never blocks the checkpoint.
     let fields_used = false;
+    let response_bytes = 0;
     try {
-      const rawFields = event.tool_input && event.tool_input.fields;
+      const toolInput = event.tool_input;
+      const rawFields = toolInput && toolInput.fields;
       if (rawFields !== undefined && rawFields !== null) {
         if (typeof rawFields === 'string') {
           fields_used = rawFields.split(',').map(s => s.trim()).filter(s => s.length > 0).length > 0;
@@ -265,8 +270,11 @@ process.stdin.on('end', () => {
           fields_used = rawFields.filter(s => typeof s === 'string' && s.trim().length > 0).length > 0;
         }
       }
+      if (typeof toolResponse === 'string') {
+        response_bytes = Buffer.byteLength(toolResponse, 'utf8');
+      }
     } catch (_fieldsErr) {
-      // Fail-open: fields_used defaults to false on any parse error.
+      // Fail-open — fields_used/response_bytes enrichment must never block checkpoint.
     }
 
     // Build the checkpoint row.
@@ -278,6 +286,7 @@ process.stdin.on('end', () => {
       phase,
       result_count,
       fields_used,
+      response_bytes,
     };
 
     // --- Write 1: operational ledger (.orchestray/state/mcp-checkpoint.jsonl) ---
@@ -306,6 +315,8 @@ process.stdin.on('end', () => {
         outcome,
         phase,
         result_count,
+        fields_used,
+        response_bytes,
         source: 'hook',
       };
       atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), auditEvent);
