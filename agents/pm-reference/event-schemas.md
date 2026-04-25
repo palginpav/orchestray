@@ -3958,3 +3958,113 @@ Field notes:
 - The agent MUST split overflow content into a separate file and cite it via
   `detail_artifact` in the Structured Result to resolve the block.
 - See `agents/pm-reference/handoff-contract.md §10` for full remediation guidance.
+
+---
+
+## v2.1.14 additions (R-SHDW)
+
+### `schema_shadow_hit` event
+
+Emitted when the PM consults the event-schema shadow and finds the event type.
+Indicates the shadow served its purpose and a full `event-schemas.md` load was
+avoided for this event type.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "schema_shadow_hit",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "event_type": "<the event type slug that was found in the shadow>"
+}
+```
+
+Field notes:
+- `event_type`: The slug of the event type that was found in the shadow index.
+- Source: emitted by the PM agent when it confirms an event type via the shadow.
+
+---
+
+### `schema_shadow_miss` event
+
+Emitted when the PM consults the event-schema shadow and does NOT find the event
+type — falling through to load the full `event-schemas.md`. Triggers a miss
+counter increment; 3 misses in 24 hours auto-disables the shadow.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "schema_shadow_miss",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "event_type": "<the event type slug that was NOT found in the shadow>",
+  "source_hash": "<sha256 of event-schemas.md at miss time>"
+}
+```
+
+Field notes:
+- `event_type`: The slug that caused the miss.
+- `source_hash`: Current hash of event-schemas.md — matches `_meta.source_hash`
+  in the shadow if the shadow is up to date.
+- Source: emitted by `bin/_lib/load-schema-shadow.js` recordMiss() on miss.
+
+---
+
+### `schema_shadow_validation_block` event
+
+Emitted by `bin/validate-schema-emit.js` (PreToolUse validator / pre-write check)
+when an audit event payload fails schema validation and is blocked before reaching
+`events.jsonl`. This is the correctness-gate firing.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "schema_shadow_validation_block",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "blocked_event_type": "<the event type slug that was blocked>",
+  "errors": ["<validation error message 1>", "..."],
+  "schema_ref": "agents/pm-reference/event-schemas.md"
+}
+```
+
+Field notes:
+- `blocked_event_type`: The `type` field of the event that was blocked.
+- `errors`: Array of human-readable validation error messages naming the missing
+  or wrong fields and the schema doc reference.
+- `schema_ref`: Always `"agents/pm-reference/event-schemas.md"`.
+- Source: emitted by `bin/validate-schema-emit.js`.
+
+---
+
+### `schema_shadow_stale` event
+
+Emitted by `bin/inject-schema-shadow.js` when the shadow's `_meta.source_hash`
+does not match the current SHA-256 of `event-schemas.md`. Indicates the shadow
+needs regeneration (`node bin/regen-schema-shadow.js`). Shadow injection is
+skipped; the PM falls back to loading the full schema file.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "schema_shadow_stale",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "source_hash_stored": "<sha256 stored in shadow _meta.source_hash>"
+}
+```
+
+Field notes:
+- `source_hash_stored`: The hash that was in the shadow when the mismatch was
+  detected. Compare to the current file hash to confirm staleness.
+- Source: emitted by `bin/inject-schema-shadow.js` on hash-mismatch detection.
+- Auto-resolution: edit `agents/pm-reference/event-schemas.md` (PostToolUse
+  hook auto-regenerates), or run `node bin/regen-schema-shadow.js` manually.

@@ -3311,6 +3311,111 @@ function validateTelemetryConfig(obj) {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// event_schema_shadow section defaults and loader (R-SHDW v2.1.14)
+//
+// event_schema_shadow.enabled — boolean, default true.
+//   When false, shadow injection and staleness checks are disabled.
+//   Kill switch: ORCHESTRAY_DISABLE_SCHEMA_SHADOW=1 env var.
+//
+// event_schema_shadow.miss_threshold_24h — integer, default 3.
+//   Number of shadow misses within 24 hours that trigger the three-strike
+//   auto-disable sentinel (.orchestray/state/.schema-shadow-disabled).
+// ---------------------------------------------------------------------------
+
+const DEFAULT_EVENT_SCHEMA_SHADOW = Object.freeze({
+  enabled: true,
+  miss_threshold_24h: 3,
+});
+
+/**
+ * Load and merge the event_schema_shadow block from .orchestray/config.json.
+ *
+ * Fail-open: missing/malformed → DEFAULT_EVENT_SCHEMA_SHADOW.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ enabled: boolean, miss_threshold_24h: number }}
+ */
+function loadEventSchemaShadowConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_EVENT_SCHEMA_SHADOW);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_EVENT_SCHEMA_SHADOW);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_EVENT_SCHEMA_SHADOW);
+  }
+
+  const fromFile = parsed.event_schema_shadow;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_EVENT_SCHEMA_SHADOW);
+  }
+
+  const merged = Object.assign({}, DEFAULT_EVENT_SCHEMA_SHADOW, sanitizeConfig(fromFile));
+
+  try {
+    const result = validateEventSchemaShadowConfig(merged);
+    if (!result.valid) {
+      logStderr('event_schema_shadow config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) {}
+
+  return merged;
+}
+
+/**
+ * Validate an event_schema_shadow config object.
+ *
+ * Did-you-mean hints on unknown keys.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateEventSchemaShadowConfig(obj) {
+  const errors = [];
+  const KNOWN_KEYS = ['enabled', 'miss_threshold_24h'];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['event_schema_shadow must be an object'] };
+  }
+
+  if ('enabled' in obj && typeof obj.enabled !== 'boolean') {
+    errors.push(
+      'event_schema_shadow.enabled must be a boolean — got ' + JSON.stringify(obj.enabled)
+    );
+  }
+
+  if ('miss_threshold_24h' in obj) {
+    const v = obj.miss_threshold_24h;
+    if (!Number.isInteger(v) || v < 1) {
+      errors.push(
+        'event_schema_shadow.miss_threshold_24h must be a positive integer — got ' + JSON.stringify(v)
+      );
+    }
+  }
+
+  // Did-you-mean hints for unknown keys
+  for (const key of Object.keys(obj)) {
+    if (!KNOWN_KEYS.includes(key)) {
+      errors.push(
+        'event_schema_shadow: unknown key "' + key + '". Known keys: ' + KNOWN_KEYS.join(', ')
+      );
+    }
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
 // handoff_body_cap section defaults and loader (R-HCAP v2.1.14)
 //
 // handoff_body_cap.enabled — boolean, default true.
@@ -3542,4 +3647,8 @@ module.exports = {
   DEFAULT_HANDOFF_BODY_CAP,
   loadHandoffBodyCapConfig,
   validateHandoffBodyCapConfig,
+  // R-SHDW (v2.1.14): event schema shadow config
+  DEFAULT_EVENT_SCHEMA_SHADOW,
+  loadEventSchemaShadowConfig,
+  validateEventSchemaShadowConfig,
 };
