@@ -53,6 +53,7 @@ const { verifyManifestOnBoot } = require('../_lib/install-manifest');
 // Stage 2 tool handlers
 const patternDeprecate = require('./tools/pattern_deprecate');
 const patternFind = require('./tools/pattern_find');
+const patternRead = require('./tools/pattern_read');
 const patternRecordApplication = require('./tools/pattern_record_application');
 const patternRecordSkipReason = require('./tools/pattern_record_skip_reason');
 const costBudgetCheck = require('./tools/cost_budget_check');
@@ -174,6 +175,10 @@ const TOOL_TABLE = Object.freeze({
   pattern_find: {
     definition: patternFind.definition,
     handler: patternFind.handle,
+  },
+  pattern_read: {
+    definition: patternRead.definition,
+    handler: patternRead.handle,
   },
   pattern_record_application: {
     definition: patternRecordApplication.definition,

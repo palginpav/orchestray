@@ -64,6 +64,12 @@ const INPUT_SCHEMA = {
     // Schema type intentionally omitted: the validator subset does not support oneOf/anyOf,
     // and parseFields() enforces the allowed shapes with clear error messages.
     fields: { description: 'Optional comma-separated string or array of top-level field names to project. Omit for full response (backward compat).' },
+    // R-CAT (v2.1.14): mode controls response shape.
+    //   "full"    (default) — existing behaviour: full match objects subject to `fields` projection.
+    //   "catalog" — TOON-formatted headline list (one line per pattern). When mode=catalog,
+    //               `fields` is ignored and the fixed catalog shape is returned.
+    // Precedence: mode wins over fields when mode="catalog".
+    mode: { type: 'string', enum: ['full', 'catalog'] },
   },
 };
 
@@ -72,7 +78,10 @@ const definition = deepFreeze({
   description:
     'Retrieve the most relevant patterns for a task. Call before decomposition; ' +
     'inject any returned URIs as @orchestray:pattern://<slug> references in ' +
-    'delegation prompts.',
+    'delegation prompts. ' +
+    'mode="catalog" returns a TOON-formatted headline list (one line per pattern, ' +
+    'no body text); use pattern_read(slug) to fetch a full pattern body on demand. ' +
+    'mode="full" (default) returns full match objects.',
   inputSchema: INPUT_SCHEMA,
 });
 
@@ -682,6 +691,13 @@ async function handle(input, context) {
     // W4 (v2.1.6): proposed entries are marked with proposed: true in the result
     // and their uri uses the proposed-pattern namespace so callers can distinguish
     // them from active patterns.
+    // R-CAT (v2.1.14): read context_hook from frontmatter for catalog mode.
+    // Populated by bin/backfill-pattern-hooks.js. Stored with underscore prefix
+    // so it is NOT included in full-mode responses (stripped alongside _score).
+    const _contextHook = (typeof fm.context_hook === 'string' && fm.context_hook.length >= 5)
+      ? fm.context_hook
+      : null;
+
     const matchEntry = {
       slug: entry.slug,
       uri: isProposed
@@ -696,6 +712,7 @@ async function handle(input, context) {
       match_reasons: matchReasons,
       source: entryTier,
       _score: score,
+      _context_hook: _contextHook,
     };
     if (entryTier === 'shared') {
       const promotedFrom = typeof fm.promoted_from === 'string' ? fm.promoted_from : undefined;
@@ -752,6 +769,35 @@ async function handle(input, context) {
   }
   // === END shadow scorer seam ===
 
+  // R-CAT (v2.1.14): mode=catalog returns a TOON-formatted headline list.
+  // Precedence: mode wins over fields — when mode=catalog, `fields` is ignored.
+  // mode=full (default) preserves the full legacy behaviour including field projection.
+  const mode = (typeof input.mode === 'string' && input.mode === 'catalog') ? 'catalog' : 'full';
+
+  if (mode === 'catalog') {
+    // Strip internal bookkeeping fields from the catalog slice.
+    // catalog shape: fixed TOON lines (no body, no match_reasons, no provenance).
+    const catalogMatches = top.map((m) => ({
+      slug: m.slug,
+      confidence: m.confidence,
+      one_line: m.one_line,
+      _context_hook: m._context_hook,
+    }));
+    return toolSuccess({
+      mode: 'catalog',
+      catalog: _renderToon(catalogMatches),
+      considered,
+      filtered_out: filteredOut,
+    });
+  }
+
+  // mode=full: existing behaviour — strip internal fields and apply field projection.
+  const topClean = top.map((m) => {
+    // eslint-disable-next-line no-unused-vars
+    const { _score: _s, _context_hook: _ch, ...rest } = m;
+    return rest;
+  });
+
   // R5 field projection (v2.1.11): apply `fields` parameter if provided.
   // Backward compat: omitting `fields` returns the full legacy response unchanged.
   // R-PFX (v2.1.14): agents should default to fields: ["slug","confidence","one_line"].
@@ -763,14 +809,14 @@ async function handle(input, context) {
       return toolError('pattern_find: ' + fieldNames.error);
     }
     return toolSuccess({
-      matches: projectArray(top, fieldNames),
+      matches: projectArray(topClean, fieldNames),
       considered,
       filtered_out: filteredOut,
     });
   }
 
   return toolSuccess({
-    matches: top,
+    matches: topClean,
     considered,
     filtered_out: filteredOut,
   });
@@ -932,8 +978,65 @@ function _computeDecay(confidence, fm, filepath, category, decayConfig, nowMs) {
   return { decayedConfidence, ageDays };
 }
 
+// ---------------------------------------------------------------------------
+// TOON renderer (R-CAT v2.1.14)
+//
+// TOON = Tag-Oriented Object Notation — minimal column-oriented compact text.
+// One line per pattern:
+//   PATTERN slug=<slug> confidence=<0.00> one_line="<...>" hook="<...>"
+//
+// Rules:
+//   - Values without spaces are bare (no quotes).
+//   - Values containing spaces are double-quoted.
+//   - Embedded double-quotes in a value are escaped as \".
+//   - confidence is fixed to 2 decimal places.
+// ---------------------------------------------------------------------------
+
+/**
+ * Escape a string value for a TOON field.
+ * If the value contains a space or a double-quote, wrap in double-quotes and
+ * escape embedded double-quotes as \".
+ *
+ * @param {string} s
+ * @returns {string}
+ */
+function _toonValue(s) {
+  if (typeof s !== 'string') s = String(s);
+  const needsQuotes = s.includes(' ') || s.includes('"');
+  if (!needsQuotes) return s;
+  return '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+}
+
+/**
+ * Render an array of match objects as a TOON catalog string.
+ * Each entry produces one line. The `context_hook` field (from frontmatter,
+ * populated by bin/backfill-pattern-hooks.js) is used for the hook column;
+ * falls back to `one_line` when absent.
+ *
+ * @param {Array<{slug, confidence, one_line, _context_hook}>} matches
+ * @returns {string} Multi-line TOON block (no trailing newline).
+ */
+function _renderToon(matches) {
+  return matches.map((m) => {
+    const confStr = (typeof m.confidence === 'number')
+      ? m.confidence.toFixed(2)
+      : String(m.confidence || '0.00');
+    const hook = (typeof m._context_hook === 'string' && m._context_hook.length >= 5)
+      ? m._context_hook
+      : (m.one_line || '');
+    return (
+      'PATTERN slug=' + _toonValue(m.slug) +
+      ' confidence=' + confStr +
+      ' one_line=' + _toonValue(m.one_line || '') +
+      ' hook=' + _toonValue(hook)
+    );
+  }).join('\n');
+}
+
 module.exports = {
   definition,
   handle,
   _isFederationContext,
+  _renderToon,
+  _toonValue,
 };
