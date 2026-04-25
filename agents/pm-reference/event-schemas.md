@@ -26,6 +26,9 @@ tier2_load — Tier-2 pm-reference file loaded (hook, v2.1.12)
 tier2_invoked — Tier-2 feature protocol primary action fired (hook, v2.1.14)
 feature_gate_eval — Feature gate state snapshot at PM turn start (hook, v2.1.14)
 mcp_checkpoint_recorded.fields_used — fields_used + response_bytes augmentation (hook, v2.1.14)
+block_a_zone_composed — Block A zone assembly (hook, v2.1.14)
+cache_invariant_broken — Zone 1 hash mismatch detected (hook, v2.1.14)
+block_a_zone1_invalidated — Zone 1 manual invalidation (hook, v2.1.14)
 
 END CONDITIONAL-LOAD NOTICE -->
 
@@ -4068,3 +4071,102 @@ Field notes:
 - Source: emitted by `bin/inject-schema-shadow.js` on hash-mismatch detection.
 - Auto-resolution: edit `agents/pm-reference/event-schemas.md` (PostToolUse
   hook auto-regenerates), or run `node bin/regen-schema-shadow.js` manually.
+
+---
+
+### `block_a_zone_composed` event
+
+Emitted by `bin/compose-block-a.js` (UserPromptSubmit hook) when Block A zones
+are successfully assembled and injected into PM context.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "block_a_zone_composed",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "turn_number": null,
+  "zone1_hash": "<sha256 prefix of Zone 1 content>",
+  "zone2_hash": "<sha256 prefix of Zone 2 content or 'empty'>",
+  "zone3_bytes": 42,
+  "cache_breakpoints": 3
+}
+```
+
+Field notes:
+- `turn_number`: Reserved for future use; always null in v1.
+- `zone1_hash`: SHA-256 hash of Zone 1 assembled content (full hex string).
+  Compare successive events to verify Zone 1 byte-stability within a session.
+- `zone2_hash`: SHA-256 hash of Zone 2 content, or `"empty"` if no active
+  orchestration.
+- `zone3_bytes`: Byte length of Zone 3 content (mutable, uncached).
+- `cache_breakpoints`: Always 3 in v1 (Zone 1, Zone 2, tools array).
+- Source: emitted by `bin/compose-block-a.js`.
+
+---
+
+### `cache_invariant_broken` event
+
+Emitted by `bin/validate-cache-invariant.js` (PreToolUse hook) when the
+recomputed Zone 1 hash differs from the stored hash in
+`.orchestray/state/block-a-zones.json`. Indicates an unintended Zone 1
+mutation occurred (e.g., CLAUDE.md was edited without calling
+`bin/invalidate-block-a-zone1.js`).
+
+This event is advisory. The tool call is never blocked.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "cache_invariant_broken",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "zone": "zone1",
+  "expected_hash": "<12-char prefix of stored hash>",
+  "actual_hash": "<12-char prefix of recomputed hash>",
+  "delta_files": ["CLAUDE.md", "agents/pm-reference/handoff-contract.md"]
+}
+```
+
+Field notes:
+- `zone`: Always `"zone1"` in v1. Zone 2 and Zone 3 are not invariant-checked.
+- `expected_hash`: First 12 hex characters of the hash stored at last compose.
+- `actual_hash`: First 12 hex characters of the freshly recomputed hash.
+- `delta_files`: Array of source file paths that were hashed in Zone 1 (used
+  to narrow down which file changed).
+- Source: emitted by `bin/validate-cache-invariant.js`.
+- Recovery: run `node bin/invalidate-block-a-zone1.js [reason]` to mint a
+  fresh Zone 1 breakpoint.
+
+---
+
+### `block_a_zone1_invalidated` event
+
+Emitted by `bin/invalidate-block-a-zone1.js` when a Zone 1 hash is manually
+cleared. The next `compose-block-a.js` run will recompute and store a fresh
+hash with the current source content.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "block_a_zone1_invalidated",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "reason": "<user-supplied reason string>",
+  "prior_hash": "<12-char prefix of the cleared hash>",
+  "sentinel_cleared": false
+}
+```
+
+Field notes:
+- `reason`: The reason argument passed to the CLI (default `"manual invalidation"`).
+- `prior_hash`: First 12 hex characters of the hash that was cleared.
+- `sentinel_cleared`: `true` if the auto-disable sentinel was also removed,
+  re-enabling zone caching.
+- Source: emitted by `bin/invalidate-block-a-zone1.js`.
