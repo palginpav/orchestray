@@ -252,6 +252,23 @@ process.stdin.on('end', () => {
     const outcome = classifyOutcome(toolResponse);
     const result_count = extractResultCount(tool, parsedResponse);
 
+    // R-PFX (v2.1.14): fields_used tracks whether the caller passed a non-empty
+    // `fields` projection argument. true = compact projection used, false = full body.
+    // Mirrors the fieldCount logic already computed above for the fields_projected event.
+    let fields_used = false;
+    try {
+      const rawFields = event.tool_input && event.tool_input.fields;
+      if (rawFields !== undefined && rawFields !== null) {
+        if (typeof rawFields === 'string') {
+          fields_used = rawFields.split(',').map(s => s.trim()).filter(s => s.length > 0).length > 0;
+        } else if (Array.isArray(rawFields)) {
+          fields_used = rawFields.filter(s => typeof s === 'string' && s.trim().length > 0).length > 0;
+        }
+      }
+    } catch (_fieldsErr) {
+      // Fail-open: fields_used defaults to false on any parse error.
+    }
+
     // Build the checkpoint row.
     const row = {
       timestamp: new Date().toISOString(),
@@ -260,6 +277,7 @@ process.stdin.on('end', () => {
       outcome,
       phase,
       result_count,
+      fields_used,
     };
 
     // --- Write 1: operational ledger (.orchestray/state/mcp-checkpoint.jsonl) ---

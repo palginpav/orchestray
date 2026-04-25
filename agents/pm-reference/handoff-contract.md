@@ -236,6 +236,45 @@ parsers, scorers, or human reviewers.
 - **Wrapping the JSON in extra prose inside the fence.** The fence body must
   parse as a single JSON object, nothing else.
 
-## 9. Change log
+## 9. MCP projection conventions (R-PFX, v2.1.14)
+
+All agents that call `pattern_find` or `kb_search` MUST pass the `fields` projection
+argument by default. This reduces response size by 93%+ (measured in v2.1.12 telemetry)
+and avoids burning tokens on full pattern bodies that agents almost never need on the
+first call.
+
+### Default `fields` shapes
+
+| Tool | Default `fields` value | Purpose |
+|------|------------------------|---------|
+| `pattern_find` | `["slug", "confidence", "one_line"]` | Compact index: enough to decide whether the pattern is relevant |
+| `kb_search` | `["uri", "section", "excerpt"]` | Compact index: excerpt tells you if the entry is worth fetching |
+
+### Follow-up full-body call pattern
+
+If the compact index surface suggests a match is highly relevant but the agent needs the
+full pattern or KB document body, issue a second call **without `fields`** (or with
+`fields: null`) to retrieve the complete response. This two-step pattern ensures most
+calls stay cheap while exact reads are still possible on demand.
+
+Example:
+1. First call: `pattern_find(task_summary="...", fields=["slug","confidence","one_line"])`
+2. If a returned slug looks like an exact match: follow-up read via the URI or a second
+   `pattern_find` call with `fields` omitted to get the full body.
+
+### Reviewer exception
+
+When the reviewer agent is auditing the correctness of the pattern library itself
+(i.e., reviewing pattern files, not applying them to a code review), it SHOULD request
+full bodies by omitting `fields` or passing `fields: null`. This exception applies only
+to pattern-accuracy review tasks — all other reviewer calls use the default projection.
+
+### Kill switch
+
+Agents may always pass `fields: null` or omit the argument to get the full legacy
+response. There is no config gate. Rollback is reverting the 5 agent prompt edits.
+
+## 10. Change log
 
 - v1 — v2.1.9 initial schema (2026-04-20)
+- v2 — v2.1.14 added §9 MCP projection conventions (R-PFX)
