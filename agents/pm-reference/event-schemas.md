@@ -3757,3 +3757,76 @@ Correlated user signal: `post-upgrade-sweep.js` names `project-intent-agent` in
 the restart reminder (v2.1.13 R-RCPT-V2 + F-M-2), so users who see this event
 fire while the upgrade sentinel is present are on the documented restart-required
 path.
+
+---
+
+## v2.1.14 additions
+
+### handoff_body_warn
+
+Emitted by the T15 hook (`bin/validate-task-completion.js`) when an artifact body
+exceeds the warn threshold (default 2,500 tokens) OR when the block threshold
+would have fired but `hard_block` is `false` (v2.1.14 soft-warn-only mode).
+Hook exits 0 in all cases — this event is advisory.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "handoff_body_warn",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "task_id": "<task id or null>",
+  "file": "<relative path to the artifact file>",
+  "body_tokens": "<estimated token count (4-bytes-per-token heuristic)>",
+  "has_detail_artifact": "<boolean — true if detail_artifact is set in the Structured Result>",
+  "threshold_breached": "<'warn' | 'block_would_have_fired'>"
+}
+```
+
+Field notes:
+- `threshold_breached`: `"warn"` — body is between warn_tokens and block_tokens,
+  OR body exceeds block_tokens but detail_artifact is present.
+  `"block_would_have_fired"` — body exceeds block_tokens, no detail_artifact, but
+  `hard_block` is `false` (v2.1.14 default). This is the telemetry trail for the
+  v2.1.15 flip to hard-block.
+- `has_detail_artifact`: `true` means the Structured Result already carries a
+  `detail_artifact` pointer. This may explain why the body is large — the pointer
+  is set but the inline content was not trimmed.
+- `file`: the specific artifact file whose content triggered the threshold.
+- `body_tokens`: estimated using the 4-bytes-per-token heuristic from W2
+  internal-token-profile conventions.
+
+---
+
+### handoff_body_block
+
+Emitted by the T15 hook when an artifact body exceeds the block threshold (default
+5,000 tokens), no `detail_artifact` pointer is set, AND `hard_block` is `true`.
+Hook exits 2 (blocks completion). Only emitted when `handoff_body_cap.hard_block:
+true` (default `false` in v2.1.14; default `true` from v2.1.15).
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "handoff_body_block",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "task_id": "<task id or null>",
+  "file": "<relative path to the artifact file>",
+  "body_tokens": "<estimated token count>",
+  "has_detail_artifact": false,
+  "threshold_breached": "block"
+}
+```
+
+Field notes:
+- `has_detail_artifact` is always `false` for this event — if `detail_artifact`
+  were present, the hook would emit `handoff_body_warn` instead.
+- `threshold_breached` is always `"block"`.
+- The agent MUST split overflow content into a separate file and cite it via
+  `detail_artifact` in the Structured Result to resolve the block.
+- See `agents/pm-reference/handoff-contract.md §10` for full remediation guidance.

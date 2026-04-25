@@ -292,6 +292,8 @@ conforming to `agents/pm-reference/handoff-contract.md`. Required fields: `statu
 (`bin/validate-task-completion.js`) blocks missing fields on SubagentStop.
 Role-specific optional fields for **architect**: see handoff-contract.md §4.architect.
 
+**Artifact body cap (§10):** Keep `summary`+`assumptions`+`issues` within 2,000 tokens; move overflow to a separate file and cite it as `"detail_artifact": "<path>"` — see `handoff-contract.md §10`.
+
 Always emit `assumptions` block even when you made none — the empty array communicates
 "no assumptions deliberately considered" and satisfies the T15 hook.
 
