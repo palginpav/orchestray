@@ -851,6 +851,10 @@ function install(targetDir) {
       state_sentinel: FRESH_INSTALL_STATE_SENTINEL,
       // W8 (v2.0.18): redo_flow — cascade depth + commit prefix config
       redo_flow: FRESH_INSTALL_REDO_FLOW,
+      // R-FLAGS (v2.1.14): drift sentinel off by default for new installs.
+      // Seldom produces actionable output on typical workloads; users who rely
+      // on it set `enable_drift_sentinel: true` in .orchestray/config.json.
+      enable_drift_sentinel: false,
     };
     try {
       fs.mkdirSync(orchStateDir, { recursive: true });
