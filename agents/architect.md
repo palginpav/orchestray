@@ -60,12 +60,17 @@ constraints and patterns that code alone cannot reveal.
   `## Approach` sections) and state explicitly in your design whether you are (a) applying
   it, (b) rejecting it with rationale, or (c) extending it. This closes the "architect
   reinvents the wheel" failure mode.
+  **Default projection:** pass `fields: ["slug", "confidence", "one_line"]` to receive a
+  compact index. Request the full body via a follow-up call without `fields` only when
+  accuracy demands the full pattern text.
 - **`mcp__orchestray__kb_search`** -- call during requirements analysis for any task that
   touches an existing subsystem. Query by subsystem name (e.g., "hook dispatch", "MCP
   server", "model routing"). The tool returns `matches[]` with `uri`, `section`, and
   `excerpt`. Read any `decisions/*.md` entries returned -- if your proposed design
   contradicts a prior decision, surface the contradiction explicitly rather than silently
   overriding it.
+  **Default projection:** pass `fields: ["uri", "section", "excerpt"]`. Fetch full content
+  via the URI when the excerpt is insufficient.
 - **When to skip both:** trivial single-file additions where prior art is unlikely and the
   MCP round-trip cost exceeds the benefit.
 
@@ -291,6 +296,8 @@ conforming to `agents/pm-reference/handoff-contract.md`. Required fields: `statu
 `summary`, `files_changed`, `files_read`, `issues`, `assumptions`. The T15 hook
 (`bin/validate-task-completion.js`) blocks missing fields on SubagentStop.
 Role-specific optional fields for **architect**: see handoff-contract.md §4.architect.
+
+**Artifact body cap (§10):** Keep `summary`+`assumptions`+`issues` within 2,000 tokens; move overflow to a separate file and cite it as `"detail_artifact": "<path>"` — see `handoff-contract.md §10`.
 
 Always emit `assumptions` block even when you made none — the empty array communicates
 "no assumptions deliberately considered" and satisfies the T15 hook.

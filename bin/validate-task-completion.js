@@ -40,6 +40,7 @@ const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { recordDegradation } = require('./_lib/degraded-journal');
+const { loadHandoffBodyCapConfig } = require('./_lib/config-schema');
 
 // ---------------------------------------------------------------------------
 // R-DX2 (v2.1.11): Artifact-path fields and placeholder rejection
@@ -205,6 +206,9 @@ const KNOWN_EVENT_TYPES = new Set([
   'pattern_index_rebuilt',
   'pattern_index_build_failed',
   'scorer_structural_result',
+  // R-HCAP (v2.1.14): handoff body cap events
+  'handoff_body_warn',
+  'handoff_body_block',
 ]);
 
 /**
@@ -377,6 +381,99 @@ function identifyAgentRole(event) {
     }
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// R-HCAP (v2.1.14): Artifact body-size cap validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Estimate token count for a string using the 4-bytes-per-token heuristic
+ * (per W2 internal-token-profile conventions).
+ *
+ * @param {string} content
+ * @returns {number}
+ */
+function estimateTokens(content) {
+  return Math.ceil(Buffer.byteLength(content, 'utf8') / 4);
+}
+
+/**
+ * Artifact-path fields that should be measured for body size.
+ * Includes all fields from ARTIFACT_PATH_FIELDS plus detail_artifact itself.
+ */
+const BODY_SIZE_FIELDS = ARTIFACT_PATH_FIELDS.concat(['detail_artifact']);
+
+/**
+ * Check artifact body sizes in a Structured Result against the handoff_body_cap
+ * config thresholds.
+ *
+ * Returns an array of check results, one per artifact file found (empty if
+ * body-cap is disabled or no artifact paths are present).
+ *
+ * @param {object} structuredResult
+ * @param {string} projectRoot
+ * @param {object} capConfig - As returned by loadHandoffBodyCapConfig()
+ * @returns {Array<{file: string, body_tokens: number, has_detail_artifact: boolean, action: 'pass'|'warn'|'block_would_have_fired'|'block'}>}
+ */
+function checkArtifactBodySizes(structuredResult, projectRoot, capConfig) {
+  if (!capConfig.enabled) return [];
+  if (!structuredResult || typeof structuredResult !== 'object') return [];
+
+  const hasDetailArtifact = typeof structuredResult.detail_artifact === 'string' &&
+    structuredResult.detail_artifact.trim().length > 0;
+
+  const results = [];
+
+  for (const field of BODY_SIZE_FIELDS) {
+    // detail_artifact itself is the overflow pointer — don't measure it for size
+    // (it's small by definition). Only measure the primary artifact fields.
+    if (field === 'detail_artifact') continue;
+    if (!(field in structuredResult)) continue;
+
+    let values = structuredResult[field];
+    if (values == null) continue;
+    if (!Array.isArray(values)) values = [values];
+
+    for (const v of values) {
+      if (typeof v !== 'string' || !v.trim()) continue;
+      if (!looksLikePath(v.trim())) continue;
+
+      // Try to read the file — wrap in try/catch (non-fatal per contract).
+      let content;
+      try {
+        const resolved = path.resolve(projectRoot, v.trim());
+        content = fs.readFileSync(resolved, 'utf8');
+      } catch (_) {
+        // Missing or unreadable file: not a block trigger per spec.
+        continue;
+      }
+
+      const bodyTokens = estimateTokens(content);
+      let action;
+
+      if (bodyTokens <= capConfig.warn_tokens) {
+        action = 'pass';
+      } else if (bodyTokens <= capConfig.block_tokens) {
+        // 2,501 – 5,000: always warn
+        action = 'warn';
+      } else {
+        // > 5,000
+        if (hasDetailArtifact) {
+          // detail_artifact present: warn only
+          action = 'warn';
+        } else if (capConfig.hard_block) {
+          action = 'block';
+        } else {
+          action = 'block_would_have_fired';
+        }
+      }
+
+      results.push({ file: v.trim(), body_tokens: bodyTokens, has_detail_artifact: hasDetailArtifact, action });
+    }
+  }
+
+  return results;
 }
 
 function resolveOrchestrationId(cwd) {
@@ -584,6 +681,68 @@ function main() {
       }
     }
 
+    // R-HCAP (v2.1.14): Artifact body-size cap validation.
+    // Runs after artifact-path validation so missing-file blocks take precedence.
+    if (structuredResult) {
+      try {
+        const capConfig = loadHandoffBodyCapConfig(cwd);
+        const sizeChecks = checkArtifactBodySizes(structuredResult, cwd, capConfig);
+        const orchId = resolveOrchestrationId(cwd);
+        const taskId = event.task_id || null;
+
+        for (const check of sizeChecks) {
+          if (check.action === 'pass') continue;
+
+          if (check.action === 'block') {
+            emitAuditEvent(cwd, {
+              timestamp: new Date().toISOString(),
+              type: 'handoff_body_block',
+              orchestration_id: orchId,
+              task_id: taskId,
+              file: check.file,
+              body_tokens: check.body_tokens,
+              has_detail_artifact: check.has_detail_artifact,
+              threshold_breached: 'block',
+            });
+            process.stderr.write(
+              '[orchestray] T15 R-HCAP block: artifact "' + check.file + '" has ' +
+              check.body_tokens + ' tokens (limit: ' + capConfig.block_tokens + ').\n' +
+              'Remediation: split overflow content into a separate file and cite it via\n' +
+              '  "detail_artifact": "<path>" in the Structured Result.\n' +
+              'See agents/pm-reference/handoff-contract.md §10 for details.\n'
+            );
+            process.stdout.write(JSON.stringify({ continue: false, reason: 'handoff_body_cap_exceeded:' + check.file }));
+            process.exit(2);
+          }
+
+          // action is 'warn' or 'block_would_have_fired'
+          const thresholdBreached = check.action === 'block_would_have_fired'
+            ? 'block_would_have_fired'
+            : 'warn';
+          emitAuditEvent(cwd, {
+            timestamp: new Date().toISOString(),
+            type: 'handoff_body_warn',
+            orchestration_id: orchId,
+            task_id: taskId,
+            file: check.file,
+            body_tokens: check.body_tokens,
+            has_detail_artifact: check.has_detail_artifact,
+            threshold_breached: thresholdBreached,
+          });
+          process.stderr.write(
+            '[orchestray] T15 R-HCAP warn: artifact "' + check.file + '" has ' +
+            check.body_tokens + ' tokens (warn_threshold: ' + capConfig.warn_tokens + ').' +
+            (thresholdBreached === 'block_would_have_fired'
+              ? ' hard_block is false — would have blocked in v2.1.15. Consider adding detail_artifact.'
+              : '') +
+            '\n'
+          );
+        }
+      } catch (_hcapErr) {
+        // Body-cap check must never block on unexpected error — fail-open.
+      }
+    }
+
     // R1 AC-05 (v2.1.11): Validate audit event type when event carries a 'type' field.
     // This covers SubagentStop events that embed an audit event in their payload.
     if (event.type) {
@@ -632,6 +791,10 @@ module.exports = {
   HARD_TIER,
   WARN_TIER,
   REQUIRED_SECTIONS,
+  // R-HCAP (v2.1.14): body-size cap exports
+  estimateTokens,
+  checkArtifactBodySizes,
+  BODY_SIZE_FIELDS,
 };
 
 if (require.main === module) {

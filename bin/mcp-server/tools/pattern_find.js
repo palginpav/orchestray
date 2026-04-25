@@ -754,6 +754,9 @@ async function handle(input, context) {
 
   // R5 field projection (v2.1.11): apply `fields` parameter if provided.
   // Backward compat: omitting `fields` returns the full legacy response unchanged.
+  // R-PFX (v2.1.14): agents should default to fields: ["slug","confidence","one_line"].
+  // The hook (bin/record-mcp-checkpoint.js) writes fields_used: <bool> to
+  // mcp-checkpoint.jsonl based on whether tool_input.fields was non-empty.
   const fieldNames = parseFields(input.fields);
   if (fieldNames !== null) {
     if (fieldNames && typeof fieldNames === 'object' && 'error' in fieldNames) {

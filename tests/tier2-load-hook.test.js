@@ -165,7 +165,9 @@ describe('emit-tier2-load.js integration (AC-05 R-TEL)', () => {
     const ev = events[0];
     assert.equal(ev.type, 'tier2_load');
     assert.equal(ev.orchestration_id, 'orch-tel-integration-1');
-    assert.equal(ev.file_path, 'event-schemas.md');
+    // v2.1.14 R-TGATE: file_path is now relative from cwd (e.g. 'agents/pm-reference/event-schemas.md')
+    // rather than just the basename. Verify it contains the basename at minimum.
+    assert.ok(ev.file_path.includes('event-schemas.md'), 'file_path must include basename');
     assert.equal(ev.source, 'hook');
     assert.ok(typeof ev.timestamp === 'string', 'timestamp must be present');
   });
@@ -181,7 +183,8 @@ describe('emit-tier2-load.js integration (AC-05 R-TEL)', () => {
     const events = readEvents(dir);
     assert.equal(events.length, 1);
     assert.equal(events[0].type, 'tier2_load');
-    assert.equal(events[0].file_path, 'drift-sentinel.md');
+    // v2.1.14 R-TGATE: file_path is now relative from cwd, not just basename.
+    assert.ok(events[0].file_path.includes('drift-sentinel.md'), 'file_path must include basename');
   });
 
   test('is silent (no event) when Read targets a non-tier-2 file (AC-05 R-TEL)', () => {

@@ -7,7 +7,7 @@
  * Verifies two bugs fixed in v2.1.0 Phase A:
  *
  *   Bug 1 (F05): pattern_record_application increments times_applied on disk.
- *     Root cause: §22c in pattern-extraction.md previously instructed a manual
+ *     Root cause: §22c in extraction-protocol.md previously instructed a manual
  *     file write instead of calling the MCP tool, so times_applied stayed 0.
  *     Fix: §22c now calls mcp__orchestray__pattern_record_application with
  *     outcome "applied-success"/"applied-failure".

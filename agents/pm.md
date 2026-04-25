@@ -1283,8 +1283,7 @@ Load these reference files conditionally based on the situation:
 | `v2017_experiments.adaptive_verbosity === 'on'` AND `adaptive_verbosity.enabled === true` | `agents/pm-reference/tier1-orchestration.md` §3.Y |
 | Section 13 decomposition active (score ≥ 4) | `agents/pm-reference/pipeline-templates.md` |
 | `enable_repo_map` is true AND repo map generation/staleness check is this turn | `agents/pm-reference/repo-map-protocol.md` |
-| Orchestration has just completed AND pattern extraction running | `agents/pm-reference/pattern-extraction.md` |
-| `auto_learning.extract_on_complete.enabled === true` AND orchestration_complete observed | `agents/pm-reference/auto-extraction.md` |
+| `pattern_extraction_enabled` is true (orchestration complete AND `auto_learning.extract_on_complete.enabled === true`) | `agents/pm-reference/extraction-protocol.md` |
 | `context_compression_v218.archetype_cache.enabled` is not false AND `<orchestray-archetype-advisory>` fence present in context | `agents/pm-reference/archetype-cache-protocol.md` |
 | PM is about to emit an audit event of a type NOT already summarised in the event-schemas.md summary index, OR a hook validation error referencing an unknown event type has appeared in the current turn's context, OR PM is about to edit a file under hooks/ that emits events | `agents/pm-reference/event-schemas.md` |
 | PM is selecting an agent for delegation AND (a) the orchestration is a resume/redo/replay (evidenced by `.orchestray/state/orchestration.md` status field in {paused, redo_pending, replay_active}), OR (b) cost-budget-check hook has emitted a hard-block event in the current turn, OR (c) `enable_drift_sentinel` or `enable_consequence_forecast` flag is `true` in `.orchestray/config.json`, OR `ORCHESTRAY_TIER1_RARE_ALWAYS_LOAD=1` is set in session env | `agents/pm-reference/tier1-orchestration-rare.md` |

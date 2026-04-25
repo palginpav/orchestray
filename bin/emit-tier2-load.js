@@ -15,7 +15,11 @@
  *   - delegation-templates.md (always-available)
  *
  * Fail-open contract: any error → exit 0, never blocks the Read tool.
- * Kill-switch: ORCHESTRAY_METRICS_DISABLED=1 skips event emission.
+ * Kill-switch: ORCHESTRAY_METRICS_DISABLED=1 or ORCHESTRAY_DISABLE_TIER2_TELEMETRY=1
+ * skips event emission. Also honours config.telemetry.tier2_tracking.enabled=false.
+ *
+ * v2.1.14 R-TGATE additions: emitted event now carries `version: 1`, `bytes` (file
+ * size at read time), and `turn_number` (from hook payload when available).
  *
  * Input:  JSON on stdin (Claude Code PostToolUse:Read hook payload)
  * Output: JSON on stdout ({ continue: true }), always
@@ -112,8 +116,35 @@ function handle(event) {
       process.stdout.write(CONTINUE_RESPONSE);
       return;
     }
+    // Kill-switch: tier2 telemetry specifically disabled (v2.1.14 R-TGATE).
+    if (process.env.ORCHESTRAY_DISABLE_TIER2_TELEMETRY === '1') {
+      process.stdout.write(CONTINUE_RESPONSE);
+      return;
+    }
 
     const cwd       = resolveSafeCwd(event && event.cwd);
+
+    // Kill-switch: check config.telemetry.tier2_tracking.enabled (v2.1.14 R-TGATE).
+    try {
+      const configPath = path.join(cwd, '.orchestray', 'config.json');
+      const raw = fs.readFileSync(configPath, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        parsed.telemetry &&
+        typeof parsed.telemetry === 'object' &&
+        parsed.telemetry.tier2_tracking &&
+        typeof parsed.telemetry.tier2_tracking === 'object' &&
+        parsed.telemetry.tier2_tracking.enabled === false
+      ) {
+        process.stdout.write(CONTINUE_RESPONSE);
+        return;
+      }
+    } catch (_configErr) {
+      // Config absent or unreadable — proceed (fail-open)
+    }
+
     const toolInput = (event && event.tool_input) || {};
     const filePath  = toolInput.file_path || toolInput.path || '';
 
@@ -135,15 +166,43 @@ function handle(event) {
       // File missing or unreadable — keep 'unknown'
     }
 
-    // Derive the basename for the event so callers don't need to parse paths.
+    // Derive the relative file_path for the event (R-TGATE: relative, not basename).
+    // Prefer relative path from the project root when the path is inside cwd;
+    // fall back to the basename for absolute paths outside the project root.
     const normalized = filePath.replace(/\\/g, '/');
-    const basename   = normalized.split('/').pop() || filePath;
+    const normalizedCwd = cwd.replace(/\\/g, '/').replace(/\/$/, '');
+    let relPath;
+    if (normalized.startsWith(normalizedCwd + '/')) {
+      relPath = normalized.slice(normalizedCwd.length + 1);
+    } else {
+      // Path is relative already, or outside cwd — use as-is, strip leading ./
+      relPath = normalized.replace(/^\.\//, '');
+    }
+
+    // Measure file size at read time for the `bytes` field (v2.1.14 R-TGATE).
+    let bytes = null;
+    try {
+      const absPath = normalized.startsWith('/') ? filePath : path.join(cwd, filePath);
+      const stat = fs.statSync(absPath);
+      bytes = stat.size;
+    } catch (_e) {
+      // File may have been deleted or path unresolvable — leave null.
+    }
+
+    // Extract turn_number from the hook payload when available (v2.1.14 R-TGATE).
+    // Claude Code may provide this in the event envelope.
+    const turnNumber = (event && typeof event.turn_number === 'number')
+      ? event.turn_number
+      : null;
 
     const auditEvent = {
+      version:          1,
       timestamp:        new Date().toISOString(),
       type:             'tier2_load',
       orchestration_id: orchestrationId,
-      file_path:        basename,
+      file_path:        relPath,
+      bytes,
+      turn_number:      turnNumber,
       agent_role:       (event && event.agent_type) || null,
       source:           'hook',
     };
