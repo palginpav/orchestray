@@ -168,12 +168,17 @@ function emitUpgradePendingWarning(sessionId, cwd) {
     const gatedSuffix = gatedList.length
       ? ' New in this upgrade: ' + gatedList.join(', ') + '.'
       : '';
-    // v2.1.14 R-FLAGS: append flag-flip note to the existing restart nudge.
-    const flagFlipNote = ' v2.1.14: enable_drift_sentinel default flipped to false; set explicitly to true to restore.';
     process.stderr.write(
       '[orchestray] Upgraded' + versionSuffix + ' while this session was open — ' +
       'one-time reminder. RESTART to load new agents (this message won\'t repeat).' +
-      gatedSuffix + flagFlipNote + '\n'
+      gatedSuffix + '\n'
+    );
+    // v2.1.14 R-FLAGS: emit drift-sentinel migration note as a separate line so it
+    // is not buried after the "won't repeat" boundary marker of the restart reminder.
+    process.stderr.write(
+      '[orchestray] v2.1.14 migration: enable_drift_sentinel default is now false. ' +
+      'If you rely on drift-sentinel output, add \'"enable_drift_sentinel": true\' to ' +
+      '.orchestray/config.json before your next orchestration.\n'
     );
     recordDegradation({
       kind: 'agent_registry_stale',

@@ -79,8 +79,8 @@ function main() {
   const report       = computeDemandReport(cwd);
 
   const lines = [];
-  lines.push('Feature Demand Gate Status (v2.1.14)');
-  lines.push('=====================================');
+  lines.push('Feature Demand Gate Status');
+  lines.push('==========================');
 
   lines.push(`Quarantine candidates (from config):  ${candidates.length > 0 ? candidates.join(', ') : '(none)'}`);
   lines.push(`Session wakes (override quarantine):  ${sessionWakes.size > 0 ? [...sessionWakes].join(', ') : '(none)'}`);
@@ -88,7 +88,7 @@ function main() {
   lines.push('');
 
   const slugs = Object.keys(report);
-  lines.push(`Eligible gate slugs (v2.1.14):        ${slugs.length > 0 ? slugs.join(', ') : '(none)'}`);
+  lines.push(`Eligible gate slugs:                  ${slugs.length > 0 ? slugs.join(', ') : '(none)'}`);
   for (const slug of slugs) {
     const r = report[slug];
     const eligStr = r.quarantine_eligible

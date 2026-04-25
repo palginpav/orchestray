@@ -264,14 +264,31 @@ function main() {
   const header = '| ' + pad('Flag', COL_FLAG) + ' | ' + pad('Current default', COL_DEFAULT) + ' | ' +
                  pad('Last 30d invocations', COL_COUNT) + ' | ' + pad('Last fired', COL_LAST) + ' | Notes |';
 
+  // Detect data-absent case: all counts are 0. Emit a clarifying note so users
+  // cannot mistake "no telemetry yet" for "these features genuinely never fire."
+  const allZero = rows.every(r => r.count === 0);
+  const eventsFile = path.join(orchDir, 'audit', 'events.jsonl');
+  const noEventsFile = !fs.existsSync(eventsFile) ||
+    (function () { try { return fs.statSync(eventsFile).size === 0; } catch (_e) { return true; } }());
+
   const lines = [
     '## v2.1.14 Default-true flags audit',
     '',
     `_Generated: ${new Date().toISOString().slice(0, 10)} from ${orchDir}_`,
     '',
-    header,
-    hr,
   ];
+
+  if (allZero && noEventsFile) {
+    lines.push(
+      '_Note: Invocation counts require R-TGATE events in .orchestray/audit/events.jsonl. ' +
+      'On this install, 0 eligible events were found — counts reflect "no telemetry yet" ' +
+      'rather than "feature never fired." Run a few orchestrations and re-run this tool ' +
+      'for meaningful demand data._',
+      ''
+    );
+  }
+
+  lines.push(header, hr);
 
   for (const r of rows) {
     const line =

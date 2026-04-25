@@ -3,6 +3,66 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.1.14] - 2026-04-25
+
+v2.1.14 is the "cheaper orchestrations, same accuracy" release. It ships observability foundations (R-TGATE), structural improvements (R-EMERGE, R-PFX, R-HCAP, R-FLAGS), the groundwork for measurement-driven feature quarantine and zone-pinned caching (R-GATE, R-PIN, R-SHDW), and a P3 stretch: pattern catalog mode (R-CAT). 9 R-items shipped. The pre-existing test baseline (16 failures) was eliminated as part of this release — 3682/3682 pass.
+
+### Added
+
+- **Compact MCP responses from agent prompts (R-PFX).** Orchestray now asks specialist agents to request compact MCP responses by default, so most pattern and knowledge-base lookups return a small index instead of full text. Agents fetch detail only when they decide it matters, cutting token use on long orchestrations without any setup from you.
+
+- **Handoff artifact body cap (R-HCAP).** Review and design artifacts from orchestrated agents are now capped at roughly 2,000 tokens of core content, with longer detail linked as a separate artifact the next agent fetches only if needed. You keep full audit detail in the linked files; orchestrations get lighter hand-offs. The cap is soft in v2.1.14 (warn at 2,500 tokens, block only above 5,000 without a `detail_artifact` pointer). Hard-block mode opt-in: `"handoff_body_cap.hard_block": true` in `.orchestray/config.json`.
+
+- **Merged pattern-extraction protocol (R-EMERGE).** The post-orchestration pattern-learning step now loads a single merged protocol file instead of two overlapping ones, trimming one Tier-2 file load from every completed orchestration without changing what patterns get extracted.
+
+- **Orchestration telemetry (R-TGATE).** Orchestray now records which Tier-2 protocol files, feature gates, and MCP tool projections are actually exercised on each orchestration. This data surfaces in `/orchestray:analytics` under three new rollups (A: tier-2 load rate per protocol, B: gate evaluation outcomes, C: MCP projection compliance). It powers the demand-measured feature controls introduced in the same release and sets the stage for more precise token-budget tuning in v2.1.15+. Note: 2 of 8 protocols are wired for `tier2_invoked` telemetry in v2.1.14 (`pattern_extraction`, `archetype_cache`); the remaining 6 are wired in v2.1.15 (R-TGATE-PM).
+
+- **Migration note — drift-sentinel is now off by default (R-FLAGS).** If you rely on drift-sentinel output, add `"enable_drift_sentinel": true` to `.orchestray/config.json` before your next orchestration — the default has changed from on to off. Drift-sentinel is now off by default on new repositories because it seldom produces actionable output on typical Orchestray workloads, and turning it off removes one Tier-2 protocol file from every orchestration. Existing repos with an explicit `true` in their config are unaffected. A one-time post-upgrade notice reminds upgrading users of this change. A new `bin/audit-default-true-flags.js` script lists every default-`true` flag with its 30-day demand count — run it with `node bin/audit-default-true-flags.js` to audit your own install.
+
+- **Event-schema shadow index (R-SHDW).** Orchestray now keeps a 3.5 KB event-type shadow index that the orchestrator consults before touching the full 150 KB schema file, loading the full file only when it encounters an unknown event type. A validator library (`bin/_lib/schema-emit-validator.js`) is available for future emitter-side enforcement. A 3-strike auto-disable falls back to full-schema loading if the shadow falls out of sync. Note: validator wiring to actual emit sites is planned for v2.1.15, once Claude Code exposes a suitable hook surface.
+
+- **Block A zone discipline for prompt caching (R-PIN).** Orchestray's per-session PM context is now assembled from three explicit zones — Zone 1 (frozen: CLAUDE.md, handoff contract, schema shadow), Zone 2 (per-orchestration header), Zone 3 (mutable turn content) — with zone boundary markers and hash tracking. A cache-invariant validator detects unexpected Zone 1 mutations and emits `cache_invariant_broken` events. A manual invalidation CLI (`bin/invalidate-block-a-zone1.js`) lets you reset the zone cleanly on deliberate changes. Note: actual prompt-cache savings (the "10% of normal input cost" model) require Claude Code's `additionalContext` hook payload to support `cache_control` breakpoints, which is not available in v2.1.14. This release ships the zone discipline, invariant validator, and invalidation CLI as the prerequisite groundwork; actual cache savings activate when the hook surface is extended in a future Claude Code release.
+
+- **Demand-measured feature quarantine (R-GATE).** Orchestray now tracks which of its optional protocols actually run on your repo. For the first two weeks after upgrading, it observes demand in the background and logs quarantine candidates without changing any behavior. After that window, you can list specific protocols in `feature_demand_gate.quarantine_candidates` in `.orchestray/config.json` to skip loading them. Use `/orchestray:feature status` to see demand data, and `/orchestray:feature wake <name>` to re-enable any quarantined protocol instantly. Session wake (`/orchestray:feature wake <name>`) persists until the session ends or is overwritten; 30-day pin (`/orchestray:feature wake --persist <name>`) persists across sessions. Auto-quarantine (no config edit required) is planned for v2.1.15 once the observation window has accumulated data on your repo.
+
+- **Pattern catalog mode (R-CAT, P3 stretch).** `pattern_find` now accepts `mode=catalog`, which returns a compact TOON-formatted headline list with a Haiku-generated `context_hook` per pattern instead of full bodies. A new `pattern_read(slug)` MCP tool fetches any pattern's full body on demand. Agents adopt `mode=catalog` by default in v2.1.15 once `fields_used` compliance reaches 70%+; in v2.1.14, the feature ships and is available for early adoption.
+
+### Changed
+
+- **`enable_drift_sentinel` default changed from `true` to `false`.** See migration note above under R-FLAGS. Affects new repos and existing repos on implicit defaults. Restore with `"enable_drift_sentinel": true` in `.orchestray/config.json`.
+
+### Fixed
+
+- **Test suite is now fully green.** Removed `tests/bundle-ux-gate-routing-hint.test.js` (22.7 KB, testing the v2.1.8 hard-deny routing-hint contract that v2.1.11 R-DX1 deliberately replaced with soft auto-resolve; replacement coverage exists in `tests/agent-spawn-auto-resolve.test.js`). Loosened `statusline-render.test.js` performance budget 50 ms → 200 ms (Node child-process cold-start variance under parallel test load). Suite is now 3682/3682 pass / 0 fail (down from 16 documented baseline failures).
+
+### Under the hood — hardening / observability
+
+- Four new audit event categories ship in v2.1.14: R-TGATE events (`tier2_invoked`, `feature_gate_eval`, `mcp_checkpoint_recorded.fields_used`); R-PIN events (`block_a_zone_composed`, `cache_invariant_broken`, `block_a_zone1_invalidated`); R-GATE events (`feature_quarantine_candidate`, `feature_quarantine_active`, `feature_wake`, `feature_wake_auto`); R-SHDW events (`schema_shadow_hit`, `schema_shadow_miss`, `schema_shadow_validation_block`, `schema_shadow_stale`). All carry `version: 1` per R-EVENT-NAMING conventions. Schemas in `agents/pm-reference/event-schemas.md`.
+- Nine new hooks: `compose-block-a.js` (UserPromptSubmit), `validate-cache-invariant.js` (PreToolUse), `feature-quarantine-advisor.js` (UserPromptSubmit), `feature-auto-release.js` (PostToolUse), `feature-quarantine-banner.js` (SessionStart), `inject-schema-shadow.js` (UserPromptSubmit), `regen-schema-shadow-hook.js` (PostToolUse:Edit on `event-schemas.md`), `validate-schema-emit.js` (library), `gate-telemetry.js` (UserPromptSubmit, extended). All hooks wrap I/O in try/catch; non-fatal.
+- `bin/audit-default-true-flags.js` — new one-shot script that audits all top-level boolean flags whose install default is `true`, querying 30 days of events for demand evidence. Run with `node bin/audit-default-true-flags.js`.
+- `bin/feature-wake.js`, `bin/feature-gate-status.js`, `bin/feature-quarantine-advisor.js` — R-GATE demand-tracking and wake CLI. Registered as `/orchestray:feature` slash command.
+- `agents/pm-reference/extraction-protocol.md` — merged from `auto-extraction.md` + `pattern-extraction.md`. Both originals retired. Dispatch table updated to single trigger condition.
+- `agents/pm-reference/event-schemas.md` shadow at `agents/pm-reference/event-schemas.shadow.json` (3,513 bytes, 71 event types).
+- No new runtime dependencies (verified: `git diff aff2ec0..HEAD -- package.json` empty).
+
+### Not in this release (with triggers)
+
+- **R-TGATE-PM (PM-prompt edits to wire `tier2_invoked` for the 6 prompt-only protocols):** Deferred to v2.1.15. **Trigger:** triggered now (Phase 1 audit, 2026-04-25). v2.1.14 ships R-TGATE wired for 2 hook-eligible protocols (`pattern_extraction`, `archetype_cache`). The remaining 6 (`drift_sentinel`, `consequence_forecast`, `replay_analysis`, `auto_documenter`, `disagreement_protocol`, `cognitive_backpressure`) need PM-prompt section edits to call `bin/_lib/tier2-invoked-emitter.js` from their primary-action sites.
+
+- **R-GATE-AUTO (automatic feature quarantine after 14-day observation window):** Deferred to v2.1.15. **Trigger:** triggered now. v2.1.14 ships shadow mode + opt-in; the 14-day auto-activation is intentionally not enabled because no install has yet accumulated the observation data needed for safe automatic action.
+
+- **R-PIN cache_control wiring:** Deferred. **Trigger:** Claude Code's `additionalContext` hook payload begins supporting `cache_control: {type:"ephemeral", ttl:"1h"}` markers. The 3-zone discipline, invariant validator, and invalidation CLI ship in v2.1.14; actual prompt-cache savings activate when the hook surface is extended.
+
+- **R-SHDW PreToolUse emit-validator wiring:** Deferred. **Trigger:** Claude Code exposes an `emit_event` tool surface OR Orchestray adds a centralized `bin/_lib/audit-event-writer.js` precheck. The shadow itself, library validator, and 3-strike auto-disable ship in v2.1.14.
+
+- **I-PHASE-GATE** (split `tier1-orchestration.md` into phase slices), **R-CAT agent-default adoption**, **LLMLingua-2**, **semantic cache**, **contextual retrieval**, **Aider repo map**, **Agent Teams bulk adoption**, **`auto_document` default-off**, **reviewer dimension scoping**, **`curator.md` split** — all carry over from v2.1.13 with their existing triggers.
+
+### Tests
+
+- **3682 tests / 3682 pass / 0 fail. Baseline failures eliminated.**
+
+---
+
 ## [2.1.13] - 2026-04-24
 
 v2.1.13 is an ergonomics and hardening patch. Repo context is now read once per session by a dedicated Haiku agent instead of inline inside the PM's turn. Docs you keep pasting become reusable skill packs. Pattern search understands common synonyms. Config mistakes become loud at boot with "did you mean…?" suggestions. Seven coordinated improvements, one carryover closed (event-field naming consistency), zero new runtime dependencies.

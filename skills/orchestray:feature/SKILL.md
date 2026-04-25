@@ -1,6 +1,6 @@
 ---
 name: feature
-description: Manage feature demand-gate quarantine state (R-GATE, v2.1.14)
+description: Wake or inspect quarantined feature gates — see which optional protocols are active
 disable-model-invocation: true
 argument-hint: "wake <name> | wake --persist <name> | status | list"
 ---
@@ -74,13 +74,13 @@ Display the output as-is.
 
 **Sample output:**
 ```
-Feature Demand Gate Status (v2.1.14)
-=====================================
+Feature Demand Gate Status
+==========================
 Quarantine candidates (from config):  pattern_extraction
 Session wakes (override quarantine):  (none)
 Pinned wakes (30-day, override):      (none)
 
-Eligible gate slugs (v2.1.14):        pattern_extraction, archetype_cache
+Eligible gate slugs:                  pattern_extraction, archetype_cache
   pattern_extraction:  eval_true_count=8, invoked_count=0, first_eval_at=2026-04-01, quarantine_eligible=true
   archetype_cache:     eval_true_count=2, invoked_count=0, first_eval_at=2026-04-22, quarantine_eligible=false (observation window not elapsed: 2d < 14d)
 

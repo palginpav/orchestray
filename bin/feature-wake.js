@@ -96,8 +96,12 @@ function main() {
     });
   } catch (_e) {}
 
-  const action = persist ? '30-day pinned wake' : 'session wake';
-  process.stdout.write(`[orchestray] ${slug}: ${action} activated. Gate will be treated as enabled.\n`);
+  if (persist) {
+    const expiryDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    process.stdout.write(`[orchestray] ${slug}: pinned wake active until ${expiryDate}. Gate will be treated as enabled across sessions until then.\n`);
+  } else {
+    process.stdout.write(`[orchestray] ${slug}: session wake activated. Gate will be treated as enabled.\n`);
+  }
 }
 
 main();

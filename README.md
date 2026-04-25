@@ -161,6 +161,7 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | `/orchestray:playbooks` | Manage project-specific playbooks |
 | `/orchestray:specialists` | Manage persistent specialist agents |
 | `/orchestray:workflows` | Manage custom YAML workflow definitions |
+| `/orchestray:feature` | Manage feature quarantine — show status, wake quarantined features, persist 30-day pins. See CHANGELOG R-GATE entry for details. |
 | `/orchestray:federation status` | Show federation enabled/disabled/partial state, shared-dir contents, FTS5 status, and origin attribution |
 | `/orchestray:doctor` | Run 8 health probes (migrations, MCP tools, config keys, FTS5, ABI, degraded journal); emits `doctor-result-code: 0/1/2`; add `--deep` for full install-integrity manifest verification |
 | `/orchestray:learn [id]` | Extract patterns, capture corrections, manage federation sharing (`share` / `unshare` / `list --shared`), curate with AI (`curate` / `curate --diff` / `undo-last` / `undo <id>`); `explain <action-id>` shows curator rationale; `share --preview` diffs without writing; review auto-extracted proposals with `list --proposed` / `accept <slug>` / `reject <slug>` |
@@ -172,6 +173,10 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | `/orchestray:review-pr [#/url]` | Review a GitHub pull request |
 | `/orchestray:kb` | View and manage the knowledge base |
 | `/orchestray:update` | Update Orchestray to the latest version |
+
+### Feature demand and quarantine (v2.1.14+)
+
+Orchestray watches which of its optional protocols actually run on your repo and logs quarantine candidates in the background — no behavior changes for the first two weeks. After that window, you can opt specific protocols out of loading by listing them in `feature_demand_gate.quarantine_candidates` in `.orchestray/config.json`. Use `/orchestray:feature status` to see demand counts, and `/orchestray:feature wake <name>` to re-enable a quarantined protocol instantly for the current session (or `/orchestray:feature wake --persist <name>` for a 30-day pin). Auto-quarantine without a config edit is planned for v2.1.15 once the observation window has accumulated data on your repo.
 
 ## Agent roles
 
