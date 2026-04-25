@@ -3416,6 +3416,113 @@ function validateEventSchemaShadowConfig(obj) {
   return errors.length === 0 ? { valid: true } : { valid: false, errors };
 }
 
+// ---------------------------------------------------------------------------
+// block_a_zone_caching section defaults and loader (R-PIN v2.1.14)
+//
+// block_a_zone_caching.enabled — boolean, default true.
+//   When false, compose-block-a.js and validate-cache-invariant.js are no-ops.
+//   Falls back to passive 1h caching from v2.1.10.
+//   Kill switch: ORCHESTRAY_DISABLE_BLOCK_A_ZONES=1 env var.
+//
+// block_a_zone_caching.invariant_violation_threshold_24h — integer, default 5.
+//   Number of cache_invariant_broken events in 24 hours that trigger the
+//   auto-disable sentinel (.orchestray/state/.block-a-zone-caching-disabled).
+// ---------------------------------------------------------------------------
+
+const DEFAULT_BLOCK_A_ZONE_CACHING = Object.freeze({
+  enabled: true,
+  invariant_violation_threshold_24h: 5,
+});
+
+/**
+ * Load and merge the block_a_zone_caching block from .orchestray/config.json.
+ *
+ * Fail-open: missing/malformed → DEFAULT_BLOCK_A_ZONE_CACHING.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ enabled: boolean, invariant_violation_threshold_24h: number }}
+ */
+function loadBlockAZoneCachingConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_BLOCK_A_ZONE_CACHING);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_BLOCK_A_ZONE_CACHING);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_BLOCK_A_ZONE_CACHING);
+  }
+
+  const fromFile = parsed.block_a_zone_caching;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_BLOCK_A_ZONE_CACHING);
+  }
+
+  const merged = Object.assign({}, DEFAULT_BLOCK_A_ZONE_CACHING, sanitizeConfig(fromFile));
+
+  try {
+    const result = validateBlockAZoneCachingConfig(merged);
+    if (!result.valid) {
+      logStderr('block_a_zone_caching config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) {}
+
+  return merged;
+}
+
+/**
+ * Validate a block_a_zone_caching config object.
+ *
+ * Did-you-mean hints on unknown keys.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateBlockAZoneCachingConfig(obj) {
+  const errors = [];
+  const KNOWN_KEYS = ['enabled', 'invariant_violation_threshold_24h'];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['block_a_zone_caching must be an object'] };
+  }
+
+  if ('enabled' in obj && typeof obj.enabled !== 'boolean') {
+    errors.push(
+      'block_a_zone_caching.enabled must be a boolean — got ' + JSON.stringify(obj.enabled)
+    );
+  }
+
+  if ('invariant_violation_threshold_24h' in obj) {
+    const v = obj.invariant_violation_threshold_24h;
+    if (!Number.isInteger(v) || v < 1) {
+      errors.push(
+        'block_a_zone_caching.invariant_violation_threshold_24h must be a positive integer — got ' +
+        JSON.stringify(v)
+      );
+    }
+  }
+
+  // Did-you-mean hints for unknown keys
+  for (const key of Object.keys(obj)) {
+    if (!KNOWN_KEYS.includes(key)) {
+      errors.push(
+        'block_a_zone_caching: unknown key "' + key + '". Known keys: ' + KNOWN_KEYS.join(', ')
+      );
+    }
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
 // handoff_body_cap section defaults and loader (R-HCAP v2.1.14)
 //
 // handoff_body_cap.enabled — boolean, default true.
@@ -3651,4 +3758,8 @@ module.exports = {
   DEFAULT_EVENT_SCHEMA_SHADOW,
   loadEventSchemaShadowConfig,
   validateEventSchemaShadowConfig,
+  // R-PIN (v2.1.14): block_a_zone_caching config
+  DEFAULT_BLOCK_A_ZONE_CACHING,
+  loadBlockAZoneCachingConfig,
+  validateBlockAZoneCachingConfig,
 };
