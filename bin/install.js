@@ -33,6 +33,8 @@ const FRESH_INSTALL_MCP_TOOLS_ENABLED = {
   cost_budget_reserve: true,
   // v2.0.17 T5: metrics_query telemetry tool
   metrics_query: true,
+  // v2.1.14 R-CAT: pattern_read JIT tool (catalog companion to pattern_find)
+  pattern_read: true,
 };
 
 // Default v2017_experiments block for fresh installs.
