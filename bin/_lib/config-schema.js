@@ -3667,6 +3667,168 @@ function validateHandoffBodyCapConfig(obj) {
   return errors.length === 0 ? { valid: true } : { valid: false, errors };
 }
 
+// ---------------------------------------------------------------------------
+// feature_demand_gate section defaults and loader (R-GATE, v2.1.14)
+//
+// feature_demand_gate.enabled — boolean, default true.
+//   Set to false to disable all R-GATE demand tracking and advisory behavior.
+//
+// feature_demand_gate.observation_window_days — number, default 14.
+//   Days of shadow data required before auto-quarantine activates.
+//   Auto-quarantine is a future mechanism; this setting is recorded for forward
+//   compatibility. In v2.1.14, manual opt-in via quarantine_candidates is the
+//   only activation path.
+//
+// feature_demand_gate.quarantine_candidates — array of gate slugs, default [].
+//   Gate slugs in this list are treated as quarantined (effective value: false)
+//   regardless of their actual config value. Opt-in immediate quarantine.
+//
+//   Valid slugs in v2.1.14 (only wired-emitter protocols):
+//     "pattern_extraction", "archetype_cache"
+//   Slugs not in the eligible allowlist produce a config warning with a list of
+//   valid slugs. (Unknown slugs are NOT hard errors — fail-open.)
+// ---------------------------------------------------------------------------
+
+/** @type {Readonly<{eligible_slugs: string[]}>} */
+const FEATURE_DEMAND_GATE_ELIGIBLE_SLUGS = Object.freeze(['pattern_extraction', 'archetype_cache']);
+
+const DEFAULT_FEATURE_DEMAND_GATE = Object.freeze({
+  enabled:                  true,
+  observation_window_days:  14,
+  quarantine_candidates:    Object.freeze([]),
+});
+
+/**
+ * Load and merge the feature_demand_gate config section from
+ * <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing/malformed returns DEFAULT_FEATURE_DEMAND_GATE.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ enabled: boolean, observation_window_days: number, quarantine_candidates: string[] }}
+ */
+function loadFeatureDemandGateConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return {
+      enabled:                 DEFAULT_FEATURE_DEMAND_GATE.enabled,
+      observation_window_days: DEFAULT_FEATURE_DEMAND_GATE.observation_window_days,
+      quarantine_candidates:   [...DEFAULT_FEATURE_DEMAND_GATE.quarantine_candidates],
+    };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return {
+      enabled:                 DEFAULT_FEATURE_DEMAND_GATE.enabled,
+      observation_window_days: DEFAULT_FEATURE_DEMAND_GATE.observation_window_days,
+      quarantine_candidates:   [...DEFAULT_FEATURE_DEMAND_GATE.quarantine_candidates],
+    };
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {
+      enabled:                 DEFAULT_FEATURE_DEMAND_GATE.enabled,
+      observation_window_days: DEFAULT_FEATURE_DEMAND_GATE.observation_window_days,
+      quarantine_candidates:   [...DEFAULT_FEATURE_DEMAND_GATE.quarantine_candidates],
+    };
+  }
+
+  const fromFile = parsed.feature_demand_gate;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return {
+      enabled:                 DEFAULT_FEATURE_DEMAND_GATE.enabled,
+      observation_window_days: DEFAULT_FEATURE_DEMAND_GATE.observation_window_days,
+      quarantine_candidates:   [...DEFAULT_FEATURE_DEMAND_GATE.quarantine_candidates],
+    };
+  }
+
+  const merged = Object.assign(
+    {},
+    DEFAULT_FEATURE_DEMAND_GATE,
+    sanitizeConfig(fromFile)
+  );
+
+  // Ensure quarantine_candidates is always an array
+  if (!Array.isArray(merged.quarantine_candidates)) {
+    merged.quarantine_candidates = [...DEFAULT_FEATURE_DEMAND_GATE.quarantine_candidates];
+  }
+
+  // Validate and warn — always return merged (fail-open).
+  try {
+    const result = validateFeatureDemandGateConfig(merged);
+    if (!result.valid) {
+      logStderr('feature_demand_gate config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) {
+    // Validation must never throw
+  }
+
+  return merged;
+}
+
+/**
+ * Validate a feature_demand_gate config object.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateFeatureDemandGateConfig(obj) {
+  const errors = [];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['feature_demand_gate must be an object'] };
+  }
+
+  if ('enabled' in obj && typeof obj.enabled !== 'boolean') {
+    errors.push(
+      'feature_demand_gate.enabled must be a boolean — got ' + JSON.stringify(obj.enabled)
+    );
+  }
+
+  if ('observation_window_days' in obj) {
+    const v = obj.observation_window_days;
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 1) {
+      errors.push(
+        'feature_demand_gate.observation_window_days must be a positive number — got ' +
+        JSON.stringify(v)
+      );
+    }
+  }
+
+  if ('quarantine_candidates' in obj) {
+    const qc = obj.quarantine_candidates;
+    if (!Array.isArray(qc)) {
+      errors.push('feature_demand_gate.quarantine_candidates must be an array');
+    } else {
+      // Validate each slug; warn for unknown slugs (did-you-mean).
+      for (const slug of qc) {
+        if (typeof slug !== 'string') {
+          errors.push(
+            'feature_demand_gate.quarantine_candidates entries must be strings — got ' +
+            JSON.stringify(slug)
+          );
+        } else if (!FEATURE_DEMAND_GATE_ELIGIBLE_SLUGS.includes(slug)) {
+          // Did-you-mean: suggest closest eligible slug.
+          const eligible = FEATURE_DEMAND_GATE_ELIGIBLE_SLUGS.join(', ');
+          errors.push(
+            `feature_demand_gate.quarantine_candidates: '${slug}' is not an eligible ` +
+            `gate slug in v2.1.14. Eligible: [${eligible}]. ` +
+            `(Unknown slugs become eligible in v2.1.15+ when their emitters are wired.)`
+          );
+        }
+      }
+    }
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
 module.exports = {
   DEFAULT_MCP_ENFORCEMENT,
   loadMcpEnforcement,
@@ -3762,4 +3924,8 @@ module.exports = {
   DEFAULT_BLOCK_A_ZONE_CACHING,
   loadBlockAZoneCachingConfig,
   validateBlockAZoneCachingConfig,
+  // R-GATE (v2.1.14): feature_demand_gate config
+  DEFAULT_FEATURE_DEMAND_GATE,
+  loadFeatureDemandGateConfig,
+  validateFeatureDemandGateConfig,
 };
