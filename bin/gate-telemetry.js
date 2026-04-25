@@ -2,12 +2,18 @@
 'use strict';
 
 /**
- * gate-telemetry.js — UserPromptSubmit hook (R-TGATE, v2.1.14).
+ * gate-telemetry.js — UserPromptSubmit hook (R-TGATE + R-GATE, v2.1.14).
  *
  * Reads .orchestray/config.json and emits a `feature_gate_eval` audit event
  * recording which feature gates are currently enabled (truthy/falsy) for the
  * upcoming PM turn. Provides the observability signal needed to correlate
  * feature-gate state with orchestration outcomes.
+ *
+ * R-GATE quarantine overlay (v2.1.14):
+ *   Gates listed in config.feature_demand_gate.quarantine_candidates are moved
+ *   from gates_true to gates_false even if their config value is true (opt-in
+ *   immediate quarantine). The eval_source field changes to
+ *   'config_with_quarantine_overlay' when any override applies.
  *
  * Kill switches (any one present → no-op, exit 0):
  *   - process.env.ORCHESTRAY_METRICS_DISABLED === '1'
@@ -27,6 +33,12 @@ const { atomicAppendJsonl }           = require('./_lib/atomic-append');
 const { resolveSafeCwd }              = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES }             = require('./_lib/constants');
+const {
+  getQuarantineCandidates,
+  readSessionWakes,
+  readPinnedWakes,
+  GATE_SLUG_TO_CONFIG_KEY,
+} = require('./_lib/effective-gate-state');
 
 // ---------------------------------------------------------------------------
 // Known gate keys to evaluate (all top-level boolean/truthy config keys whose
@@ -130,10 +142,36 @@ function handle(event) {
       }
     }
 
+    // R-GATE: load quarantine overlay state.
+    // quarantineCandidates: slugs from config.feature_demand_gate.quarantine_candidates
+    // quarantinedConfigKeys: the config keys (enable_*) for those slugs
+    let quarantineConfigKeys = new Set();
+    let hasQuarantineOverlay = false;
+    try {
+      const candidates = getQuarantineCandidates(config);
+      // Also check session/pinned wakes (woken gates are NOT quarantined even if in candidates)
+      const sessionWakes = readSessionWakes(cwd);
+      const pinnedWakes  = readPinnedWakes(cwd);
+      for (const slug of candidates) {
+        // Skip if the gate is woken (session or pinned wake wins)
+        if (sessionWakes.has(slug) || pinnedWakes.has(slug)) continue;
+        const configKey = GATE_SLUG_TO_CONFIG_KEY[slug];
+        if (configKey) {
+          quarantineConfigKeys.add(configKey);
+          hasQuarantineOverlay = true;
+        }
+      }
+    } catch (_e) {}
+
     // Evaluate each gate: truthy value → gates_true, falsy → gates_false.
     const gates_true  = [];
     const gates_false = [];
     for (const key of allGateKeys) {
+      // R-GATE overlay: quarantine candidates are treated as false regardless of config.
+      if (quarantineConfigKeys.has(key)) {
+        gates_false.push(key);
+        continue;
+      }
       const val = config[key];
       // A gate is "true" if the value is exactly boolean true, or a truthy non-boolean.
       // Gates explicitly set to false, 0, null, undefined, "" are considered false.
@@ -169,7 +207,7 @@ function handle(event) {
       orchestration_id: orchestrationId,
       gates_true:       gates_true.sort(),
       gates_false:      gates_false.sort(),
-      eval_source:      'config_snapshot',
+      eval_source:      hasQuarantineOverlay ? 'config_with_quarantine_overlay' : 'config_snapshot',
     };
 
     const auditDir = path.join(cwd, '.orchestray', 'audit');

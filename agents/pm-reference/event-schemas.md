@@ -4170,3 +4170,133 @@ Field notes:
 - `sentinel_cleared`: `true` if the auto-disable sentinel was also removed,
   re-enabling zone caching.
 - Source: emitted by `bin/invalidate-block-a-zone1.js`.
+
+---
+
+## v2.1.14 additions (R-GATE)
+
+### `feature_quarantine_candidate` event
+
+Emitted by `bin/feature-quarantine-advisor.js` (UserPromptSubmit hook, shadow mode)
+when a gate is computed to be quarantine-eligible (eval_true_count >= 5, invoked_count == 0,
+observation window >= 14 days). Shadow mode: no gate action is taken.
+
+Rate-limited to one emission per gate per 24 hours via
+`.orchestray/state/feature-quarantine-advisor-cursor.json`.
+
+```json
+{
+  "version": 1,
+  "type": "feature_quarantine_candidate",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id, or 'unknown'>",
+  "gate_slug": "<gate slug, e.g. pattern_extraction>",
+  "eval_true_count_30d": 8,
+  "invoked_count_30d": 0,
+  "first_eval_at": "<ISO 8601 timestamp of first gate_eval_true, or null>",
+  "eligibility_reason": "<human-readable eligibility summary>"
+}
+```
+
+Field notes:
+- `version`: Always `1`.
+- `gate_slug`: Gate identity (e.g., `pattern_extraction`, `archetype_cache`).
+  Only wired-emitter gates are eligible in v2.1.14.
+- `eval_true_count_30d`: Count of `feature_gate_eval` events where this gate appeared
+  in `gates_true` in the last 30 days.
+- `invoked_count_30d`: Count of `tier2_invoked` events for this gate's protocol in the
+  last 30 days.
+- `first_eval_at`: ISO timestamp of the earliest qualifying `feature_gate_eval` event
+  in the 30-day window.
+- `eligibility_reason`: Free-text description of why this gate is eligible.
+
+Schema stability: additive-only.
+
+Kill switches: `ORCHESTRAY_DISABLE_DEMAND_GATE=1`, `config.feature_demand_gate.enabled: false`.
+
+---
+
+### `feature_quarantine_active` event
+
+Emitted when an opt-in or auto quarantine takes effect for a gate. In v2.1.14, this is
+emitted when gate-telemetry.js applies a quarantine overlay (gate in quarantine_candidates).
+
+```json
+{
+  "version": 1,
+  "type": "feature_quarantine_active",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id, or 'unknown'>",
+  "gate_slug": "<gate slug>",
+  "mode": "opt_in",
+  "released_until": null
+}
+```
+
+Field notes:
+- `version`: Always `1`.
+- `gate_slug`: The gate that is quarantined.
+- `mode`: `"opt_in"` (user-specified via quarantine_candidates) or `"auto_window"`
+  (future: after 14-day observation window elapses automatically).
+- `released_until`: ISO timestamp until which the quarantine is lifted (by a pinned wake),
+  or `null` if no expiry (session wake or permanent opt-in).
+
+Schema stability: additive-only.
+
+---
+
+### `feature_wake` event
+
+Emitted by `bin/feature-wake.js` (invoked by `/orchestray:feature wake`) when a user
+manually wakes a quarantined gate.
+
+```json
+{
+  "version": 1,
+  "type": "feature_wake",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id, or 'unknown'>",
+  "gate_slug": "<gate slug>",
+  "scope": "session",
+  "caller": "cli"
+}
+```
+
+Field notes:
+- `version`: Always `1`.
+- `gate_slug`: The gate being woken.
+- `scope`: `"session"` (wake lasts for this session only) or `"30d_pinned"` (wake
+  persists across sessions for 30 days, stored in feature-wake-pinned.json).
+- `caller`: `"cli"` (from `/orchestray:feature wake`) or `"auto_release"` (future,
+  from auto-release on issues[]).
+
+Schema stability: additive-only.
+
+---
+
+### `feature_wake_auto` event
+
+Emitted by `bin/feature-auto-release.js` (PostToolUse hook) when a structured result's
+`issues[]` array contains text matching a quarantined feature's namespace, triggering
+automatic session-scoped wake.
+
+```json
+{
+  "version": 1,
+  "type": "feature_wake_auto",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id, or 'unknown'>",
+  "gate_slug": "<gate slug>",
+  "match_text": "<the issues[] entry text that matched>"
+}
+```
+
+Field notes:
+- `version`: Always `1`.
+- `gate_slug`: The gate that was auto-woken.
+- `match_text`: The full text of the issues[] entry that triggered the match. Not parsed
+  further — informational only.
+
+Schema stability: additive-only.
+
+Kill switches: `ORCHESTRAY_DISABLE_DEMAND_GATE=1`, `config.feature_demand_gate.enabled: false`.
