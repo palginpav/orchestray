@@ -252,6 +252,30 @@ process.stdin.on('end', () => {
     const outcome = classifyOutcome(toolResponse);
     const result_count = extractResultCount(tool, parsedResponse);
 
+    // R-TGATE (v2.1.14): extract fields_used and response_bytes from this tool call.
+    // W2 owns pattern_find/kb_search; this block covers history_find_similar_tasks
+    // and pattern_record_application (the remaining ENFORCED_TOOLS).
+    // fields_used: true when the caller passed a non-empty `fields` parameter.
+    let fields_used = false;
+    let response_bytes = 0;
+    try {
+      const toolInput = event.tool_input;
+      const rawFields = toolInput && toolInput.fields;
+      if (rawFields !== undefined && rawFields !== null) {
+        if (typeof rawFields === 'string') {
+          fields_used = rawFields.trim().length > 0;
+        } else if (Array.isArray(rawFields)) {
+          fields_used = rawFields.length > 0;
+        }
+      }
+      // response_bytes: byte length of the raw tool_response string (never logged — only size).
+      if (typeof toolResponse === 'string') {
+        response_bytes = Buffer.byteLength(toolResponse, 'utf8');
+      }
+    } catch (_fieldsErr) {
+      // Fail-open — fields_used/response_bytes enrichment must never block checkpoint.
+    }
+
     // Build the checkpoint row.
     const row = {
       timestamp: new Date().toISOString(),
@@ -260,6 +284,8 @@ process.stdin.on('end', () => {
       outcome,
       phase,
       result_count,
+      fields_used,
+      response_bytes,
     };
 
     // --- Write 1: operational ledger (.orchestray/state/mcp-checkpoint.jsonl) ---
@@ -288,6 +314,8 @@ process.stdin.on('end', () => {
         outcome,
         phase,
         result_count,
+        fields_used,
+        response_bytes,
         source: 'hook',
       };
       atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), auditEvent);
