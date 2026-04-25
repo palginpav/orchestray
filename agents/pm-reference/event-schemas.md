@@ -3878,12 +3878,83 @@ New fields:
   content — only the size. Useful for detecting unexpectedly large responses that may
   indicate pagination issues or oversized patterns.
 
-Scope note: W2 (R-PFX) adds these fields for `pattern_find` and `kb_search`; this
-R-TGATE work adds them for `history_find_similar_tasks` and `pattern_record_application`
-(all remaining ENFORCED_TOOLS). If W2 and R-TGATE both add the same field to the same
-tool, the merge produces a no-op duplicate — the field is written once.
-
-Both fields are present on every `mcp_checkpoint_recorded` row from v2.1.14 onward.
-Pre-v2.1.14 rows omit both fields; consumers must handle absent fields gracefully.
+Scope note: W2 (R-PFX) adds these fields for `pattern_find` and `kb_search`; R-TGATE
+adds them for `history_find_similar_tasks` and `pattern_record_application` (all
+remaining ENFORCED_TOOLS). Both fields are present on every `mcp_checkpoint_recorded`
+row from v2.1.14 onward. Pre-v2.1.14 rows omit both fields; consumers must handle
+absent fields gracefully.
 
 Schema stability: additive-only. No existing field is removed or renamed.
+
+---
+
+## v2.1.14 additions (R-HCAP)
+
+### `handoff_body_warn` event
+
+Emitted by the T15 hook (`bin/validate-task-completion.js`) when an artifact body
+exceeds the warn threshold (default 2,500 tokens) OR when the block threshold
+would have fired but `hard_block` is `false` (v2.1.14 soft-warn-only mode).
+Hook exits 0 in all cases — this event is advisory.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "handoff_body_warn",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "task_id": "<task id or null>",
+  "file": "<relative path to the artifact file>",
+  "body_tokens": "<estimated token count (4-bytes-per-token heuristic)>",
+  "has_detail_artifact": "<boolean — true if detail_artifact is set in the Structured Result>",
+  "threshold_breached": "<'warn' | 'block_would_have_fired'>"
+}
+```
+
+Field notes:
+- `threshold_breached`: `"warn"` — body is between warn_tokens and block_tokens,
+  OR body exceeds block_tokens but detail_artifact is present.
+  `"block_would_have_fired"` — body exceeds block_tokens, no detail_artifact, but
+  `hard_block` is `false` (v2.1.14 default). This is the telemetry trail for the
+  v2.1.15 flip to hard-block.
+- `has_detail_artifact`: `true` means the Structured Result already carries a
+  `detail_artifact` pointer. This may explain why the body is large — the pointer
+  is set but the inline content was not trimmed.
+- `file`: the specific artifact file whose content triggered the threshold.
+- `body_tokens`: estimated using the 4-bytes-per-token heuristic from W2
+  internal-token-profile conventions.
+
+---
+
+### `handoff_body_block` event
+
+Emitted by the T15 hook when an artifact body exceeds the block threshold (default
+5,000 tokens), no `detail_artifact` pointer is set, AND `hard_block` is `true`.
+Hook exits 2 (blocks completion). Only emitted when `handoff_body_cap.hard_block:
+true` (default `false` in v2.1.14; default `true` from v2.1.15).
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "handoff_body_block",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "task_id": "<task id or null>",
+  "file": "<relative path to the artifact file>",
+  "body_tokens": "<estimated token count>",
+  "has_detail_artifact": false,
+  "threshold_breached": "block"
+}
+```
+
+Field notes:
+- `has_detail_artifact` is always `false` for this event — if `detail_artifact`
+  were present, the hook would emit `handoff_body_warn` instead.
+- `threshold_breached` is always `"block"`.
+- The agent MUST split overflow content into a separate file and cite it via
+  `detail_artifact` in the Structured Result to resolve the block.
+- See `agents/pm-reference/handoff-contract.md §10` for full remediation guidance.

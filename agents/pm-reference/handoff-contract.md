@@ -269,12 +269,125 @@ When the reviewer agent is auditing the correctness of the pattern library itsel
 full bodies by omitting `fields` or passing `fields: null`. This exception applies only
 to pattern-accuracy review tasks — all other reviewer calls use the default projection.
 
-### Kill switch
+### Kill switch (R-PFX)
 
 Agents may always pass `fields: null` or omit the argument to get the full legacy
 response. There is no config gate. Rollback is reverting the 5 agent prompt edits.
 
-## 10. Change log
+## 10. Artifact body cap & detail pointer
+
+### 10.1 Target body cap
+
+The section of a Structured Result that the next-hop agent reads inline (the
+"readable body" — `summary` + `assumptions` + `issues`) MUST NOT exceed **2,000
+tokens** (~8 KB, using the 4-bytes-per-token heuristic). The existing `summary ≤
+500 chars` rule (§2) is unchanged and independent of this cap.
+
+When a task produces a design, review, or audit artifact whose body would exceed
+this threshold, the agent MUST:
+1. Keep the inline Structured Result within the 2,000-token body cap.
+2. Write the full content to a separate file and cite it via `detail_artifact`.
+
+### 10.2 The `detail_artifact` pointer
+
+`detail_artifact` is an optional top-level string field in the Structured Result
+JSON. It names a relative path (from the project root) to a file containing
+overflow content — the part of the artifact that exceeds the body cap.
+
+```json
+{
+  "status": "success",
+  "summary": "Reviewed auth module. 3 findings (1 error, 2 warnings). Details in artifact.",
+  "detail_artifact": ".orchestray/kb/artifacts/v2114-auth-review-full.md",
+  ...
+}
+```
+
+Rules:
+- The path MUST resolve to an existing file on disk (the T15 hook enforces this via
+  the `ARTIFACT_PATH_FIELDS` list — `detail_artifact` is included).
+- The file MUST be written by the agent BEFORE the Structured Result is emitted.
+- Downstream agents reading the result: read `summary` + `assumptions` + `issues`
+  by default; fetch `detail_artifact` via `Read` only when accuracy demands the
+  full content (e.g., the reviewer is re-auditing the artifact).
+
+### 10.3 Downstream-agent reading rule
+
+Downstream agents (PM routing, reviewer, next developer) MUST follow this
+precedence:
+1. Always read `summary`, `assumptions`, and `issues` inline — these fit within
+   the body cap by design.
+2. Fetch `detail_artifact` ONLY when the task requires reading the full artifact
+   body (e.g., "audit the prior review", "validate the design", "implement from
+   the spec"). Do NOT fetch it for routing decisions or cost projections.
+3. If `detail_artifact` is absent, treat the Structured Result body as complete.
+
+### 10.4 Dual-threshold validator (T15 R-HCAP)
+
+The T15 hook (`bin/validate-task-completion.js`) measures the byte size of any
+artifact path fields found in the Structured Result (e.g., `design_artifact`,
+`findings_path`, `detail_artifact` itself when it exists) and applies two
+thresholds using a 4-bytes-per-token heuristic:
+
+| Token range | `detail_artifact` present? | Behavior |
+|---|---|---|
+| ≤ 2,500 | any | Pass silently |
+| 2,501–5,000 | any | Emit `handoff_body_warn` (threshold: `"warn"`); exit 0 |
+| > 5,000 | yes | Emit `handoff_body_warn` (threshold: `"warn"`); exit 0 |
+| > 5,000 | no | Emit `handoff_body_warn` (threshold: `"block_would_have_fired"`) in v2.1.14; emit `handoff_body_block` + exit 2 when `hard_block: true` |
+
+### 10.5 Kill switch
+
+Set `handoff_body_cap.enabled: false` in `.orchestray/config.json` to disable
+all body-size checks (reverts to pre-v2.1.14 behavior):
+
+```json
+{
+  "handoff_body_cap": {
+    "enabled": false
+  }
+}
+```
+
+Default: `enabled: true`. See §10.6 for the full config schema.
+
+### 10.6 Config schema (`handoff_body_cap`)
+
+```json
+{
+  "handoff_body_cap": {
+    "enabled": true,
+    "warn_tokens": 2500,
+    "block_tokens": 5000,
+    "hard_block": false
+  }
+}
+```
+
+- `enabled` — boolean, default `true`. Set `false` to disable all size checks.
+- `warn_tokens` — integer, default `2500`. Token count at which `handoff_body_warn`
+  is emitted.
+- `block_tokens` — integer, default `5000`. Token count above which a block is
+  triggered (when no `detail_artifact` is present).
+- `hard_block` — boolean, default `false` in v2.1.14 (flip to `true` in v2.1.15).
+  When `false`: hard-block threshold is reached but the hook exits 0 with
+  `threshold_breached: "block_would_have_fired"` (soft-warn-only, telemetry
+  trail only). When `true`: exit 2 blocks completion.
+
+### 10.7 Reviewer and architect guidance
+
+Reviewer and architect artifacts routinely reach 23–43 KB (5,800–10,750 tokens).
+Structure large artifacts as:
+- `summary` (≤ 500 chars, §2) — the concise outcome.
+- `assumptions` (bulleted array) — explicit assumptions made.
+- `issues` (bulleted array) — findings by severity.
+- Overflow → write to a separate file and cite via `detail_artifact`.
+
+Do NOT embed raw tool output, full diffs, or verbose reasoning directly in the
+Structured Result body. These belong in `detail_artifact`.
+
+## 11. Change log
 
 - v1 — v2.1.9 initial schema (2026-04-20)
-- v2 — v2.1.14 added §9 MCP projection conventions (R-PFX)
+- v2 — v2.1.14 R-PFX: added §9 MCP projection conventions (2026-04-24)
+- v3 — v2.1.14 R-HCAP: added §10 artifact body cap & detail pointer (2026-04-24)

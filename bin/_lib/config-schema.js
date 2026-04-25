@@ -3310,6 +3310,151 @@ function validateTelemetryConfig(obj) {
   return errors.length === 0 ? { valid: true } : { valid: false, errors };
 }
 
+// ---------------------------------------------------------------------------
+// handoff_body_cap section defaults and loader (R-HCAP v2.1.14)
+//
+// handoff_body_cap.enabled — boolean, default true.
+//   When false, the T15 hook skips all body-size checks (reverts to pre-v2.1.14).
+//
+// handoff_body_cap.warn_tokens — integer, default 2500.
+//   Token count (4-bytes-per-token heuristic) at which handoff_body_warn is emitted.
+//
+// handoff_body_cap.block_tokens — integer, default 5000.
+//   Token count above which a block is triggered when no detail_artifact is present.
+//
+// handoff_body_cap.hard_block — boolean, default false (v2.1.14).
+//   When false: soft-warn-only (exit 0, threshold_breached: "block_would_have_fired").
+//   When true: exit 2 blocks completion. Flip to true in v2.1.15.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_HANDOFF_BODY_CAP = Object.freeze({
+  enabled: true,
+  warn_tokens: 2500,
+  block_tokens: 5000,
+  hard_block: false,
+});
+
+/**
+ * Load and merge the handoff_body_cap block from <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing/malformed returns DEFAULT_HANDOFF_BODY_CAP so
+ * the hook still runs at safe defaults rather than crashing.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ enabled: boolean, warn_tokens: number, block_tokens: number, hard_block: boolean }}
+ */
+function loadHandoffBodyCapConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_HANDOFF_BODY_CAP);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_HANDOFF_BODY_CAP);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_HANDOFF_BODY_CAP);
+  }
+
+  const fromFile = parsed.handoff_body_cap;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_HANDOFF_BODY_CAP);
+  }
+
+  const merged = Object.assign({}, DEFAULT_HANDOFF_BODY_CAP, sanitizeConfig(fromFile));
+
+  try {
+    const result = validateHandoffBodyCapConfig(merged);
+    if (!result.valid) {
+      logStderr('handoff_body_cap config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) {
+    // Validation must never throw
+  }
+
+  return merged;
+}
+
+/**
+ * Validate a handoff_body_cap config object.
+ *
+ * Did-you-mean suggestions follow the R-CONFIG-DRIFT (v2.1.13) pattern:
+ * common misspellings are detected and a correction hint is emitted.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateHandoffBodyCapConfig(obj) {
+  const errors = [];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['handoff_body_cap must be an object'] };
+  }
+
+  // Did-you-mean suggestions for common misspellings (R-CONFIG-DRIFT pattern).
+  const DID_YOU_MEAN = {
+    body_cap_enabled:     'handoff_body_cap.enabled',
+    cap_enabled:          'handoff_body_cap.enabled',
+    warn_threshold:       'handoff_body_cap.warn_tokens',
+    block_threshold:      'handoff_body_cap.block_tokens',
+    hard_block_enabled:   'handoff_body_cap.hard_block',
+    enable_hard_block:    'handoff_body_cap.hard_block',
+  };
+  for (const [misspelling, suggestion] of Object.entries(DID_YOU_MEAN)) {
+    if (misspelling in obj) {
+      errors.push(
+        'handoff_body_cap.' + misspelling + ' is not a valid key — did you mean ' + suggestion + '?'
+      );
+    }
+  }
+
+  if ('enabled' in obj && typeof obj.enabled !== 'boolean') {
+    errors.push(
+      'handoff_body_cap.enabled must be a boolean — got ' + JSON.stringify(obj.enabled)
+    );
+  }
+
+  if ('warn_tokens' in obj) {
+    const v = obj.warn_tokens;
+    if (!Number.isInteger(v) || v < 1) {
+      errors.push(
+        'handoff_body_cap.warn_tokens must be a positive integer — got ' + JSON.stringify(v)
+      );
+    }
+  }
+
+  if ('block_tokens' in obj) {
+    const v = obj.block_tokens;
+    if (!Number.isInteger(v) || v < 1) {
+      errors.push(
+        'handoff_body_cap.block_tokens must be a positive integer — got ' + JSON.stringify(v)
+      );
+    }
+    // Semantic check: block_tokens should be >= warn_tokens.
+    const wt = ('warn_tokens' in obj && Number.isInteger(obj.warn_tokens)) ? obj.warn_tokens : DEFAULT_HANDOFF_BODY_CAP.warn_tokens;
+    if (Number.isInteger(v) && v < wt) {
+      errors.push(
+        'handoff_body_cap.block_tokens (' + v + ') must be >= warn_tokens (' + wt + ')'
+      );
+    }
+  }
+
+  if ('hard_block' in obj && typeof obj.hard_block !== 'boolean') {
+    errors.push(
+      'handoff_body_cap.hard_block must be a boolean — got ' + JSON.stringify(obj.hard_block)
+    );
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
 module.exports = {
   DEFAULT_MCP_ENFORCEMENT,
   loadMcpEnforcement,
@@ -3393,4 +3538,8 @@ module.exports = {
   DEFAULT_TELEMETRY,
   loadTelemetryConfig,
   validateTelemetryConfig,
+  // R-HCAP (v2.1.14): handoff body cap config
+  DEFAULT_HANDOFF_BODY_CAP,
+  loadHandoffBodyCapConfig,
+  validateHandoffBodyCapConfig,
 };
