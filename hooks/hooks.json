@@ -99,6 +99,15 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-cache-invariant.js",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -134,6 +143,16 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/emit-tier2-load.js",
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/regen-schema-shadow-hook.js",
+            "timeout": 10
           }
         ]
       }
@@ -189,6 +208,33 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/inject-archetype-advisory.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/gate-telemetry.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/inject-schema-shadow.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/compose-block-a.js",
             "timeout": 5
           }
         ]

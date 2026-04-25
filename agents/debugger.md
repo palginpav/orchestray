@@ -52,6 +52,9 @@ already seen this symptom before.
   tool returns `matches[]` with `slug` and `one_line`. If your root cause matches a
   recorded anti-pattern, cite the pattern `slug` in your diagnosis and recommend
   applying that pattern's fix approach rather than inventing a new one.
+  **Default projection:** pass `fields: ["slug", "confidence", "one_line"]` to receive a
+  compact index. Request the full body via a follow-up call without `fields` only when
+  accuracy demands the full pattern text.
 - **When to skip:** trivially-reproducing bugs with a clear stack trace and a one-line
   fix where prior context adds no value.
 

@@ -60,7 +60,7 @@ The user wants to view or modify orchestration settings.
   "enable_introspection": true,
   "enable_backpressure": true,
   "surface_disagreements": true,
-  "enable_drift_sentinel": true,
+  "enable_drift_sentinel": false,
   "enable_visual_review": false,
   "enable_threads": true,
   "enable_outcome_tracking": false,
@@ -141,7 +141,7 @@ to nested).
 | `enable_introspection` | boolean | `true` | After each non-Haiku agent completes, a Haiku distiller extracts the reasoning trace into a compressed file for downstream agents. Opt-out to skip trace extraction. |
 | `enable_backpressure` | boolean | `true` | Agents write structured confidence signals at checkpoints; PM reacts by proceeding, injecting context, re-evaluating, or escalating. Opt-out to disable confidence-based backpressure. |
 | `surface_disagreements` | boolean | `true` | Reviewer findings that represent genuine design trade-offs are surfaced to the user as structured decisions instead of routing through verify-fix. Opt-out to treat all findings as verify-fix. |
-| `enable_drift_sentinel` | boolean | `true` | Detects architectural drift via invariants extracted from architect output and static rules. Pre/post-execution checks surface violations. Opt-out to disable drift detection. |
+| `enable_drift_sentinel` | boolean | `false` | Detects architectural drift via invariants extracted from architect output and static rules. Pre/post-execution checks surface violations. Default changed to `false` in v2.1.14 (rarely fires on typical workloads). Set to `true` to restore prior behavior. |
 | `enable_visual_review` | boolean | `false` | Multi-modal review for UI changes. PM auto-detects screenshots and includes them in reviewer delegation with a 6-dimension visual checklist. Opt-in since it requires screenshot artifacts. |
 | `enable_threads` | boolean | `true` | Enable cross-session thread creation and matching. Threads capture domain context across orchestrations and inject relevant history as "Previously" context. Opt-out to disable. |
 | `enable_outcome_tracking` | boolean | `false` | Enable deferred quality validation via outcome probes. After orchestration, PM records delivered files; on next relevant session, lazily validates via git history and test runs. Opt-in since it executes test commands. |
@@ -312,7 +312,7 @@ When showing settings:
 | enable_introspection | true | Extract reasoning traces from agents for downstream context |
 | enable_backpressure | true | Confidence-based backpressure between execution groups |
 | surface_disagreements | true | Surface design trade-offs to user instead of verify-fix |
-| enable_drift_sentinel | true | Detect architectural drift via invariant checks |
+| enable_drift_sentinel | false | Detect architectural drift via invariant checks (default flipped to false in v2.1.14) |
 | enable_visual_review | false | Multi-modal review for UI changes (opt-in) |
 | enable_threads | true | Cross-session thread creation and matching |
 | enable_outcome_tracking | false | Deferred quality validation via outcome probes (opt-in) |

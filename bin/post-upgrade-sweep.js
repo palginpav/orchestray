@@ -168,10 +168,12 @@ function emitUpgradePendingWarning(sessionId, cwd) {
     const gatedSuffix = gatedList.length
       ? ' New in this upgrade: ' + gatedList.join(', ') + '.'
       : '';
+    // v2.1.14 R-FLAGS: append flag-flip note to the existing restart nudge.
+    const flagFlipNote = ' v2.1.14: enable_drift_sentinel default flipped to false; set explicitly to true to restore.';
     process.stderr.write(
       '[orchestray] Upgraded' + versionSuffix + ' while this session was open — ' +
       'one-time reminder. RESTART to load new agents (this message won\'t repeat).' +
-      gatedSuffix + '\n'
+      gatedSuffix + flagFlipNote + '\n'
     );
     recordDegradation({
       kind: 'agent_registry_stale',

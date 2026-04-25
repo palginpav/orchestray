@@ -23,6 +23,12 @@ mcp_checkpoint_missing / kill_switch_activated / kill_switch_deactivated — enf
 model_auto_resolved — model auto-resolved by gate, warn level (hook, v2.1.11)
 pre_compact_archive / cite_cache_hit / spec_sketch_generated / repo_map_delta_injected — telemetry (hook)
 tier2_load — Tier-2 pm-reference file loaded (hook, v2.1.12)
+tier2_invoked — Tier-2 feature protocol primary action fired (hook, v2.1.14)
+feature_gate_eval — Feature gate state snapshot at PM turn start (hook, v2.1.14)
+mcp_checkpoint_recorded.fields_used — fields_used + response_bytes augmentation (hook, v2.1.14)
+block_a_zone_composed — Block A zone assembly (hook, v2.1.14)
+cache_invariant_broken — Zone 1 hash mismatch detected (hook, v2.1.14)
+block_a_zone1_invalidated — Zone 1 manual invalidation (hook, v2.1.14)
 
 END CONDITIONAL-LOAD NOTICE -->
 
@@ -421,7 +427,7 @@ signal so operators can distinguish "skipped because contextually mismatched" fr
 
 Cross-ref: the MCP tool that emits this event is `pattern_record_skip_reason`
 (`bin/mcp-server/tools/pattern_record_skip_reason.js`). The structured skip-recording
-contract is documented in `pattern-extraction.md §22b-pre`.
+contract is documented in `extraction-protocol.md §22b-pre`.
 
 ```json
 {
@@ -445,7 +451,7 @@ Field notes:
   `strong-match` = the pattern clearly applied; `weak-match` = partial overlap;
   `edge-case` = the pattern's documented context was at the boundary of applicability.
 - `skip_category`: The primary reason the pattern was not applied. See
-  `pattern-extraction.md §22b-pre` for the full taxonomy and guidance on when to use each.
+  `extraction-protocol.md §22b-pre` for the full taxonomy and guidance on when to use each.
 - `skip_reason`: Free-form prose (from either the `skip_reason` or `note` input field).
   May be `null` when no prose was provided.
 - `cited_confidence`: Optional. The `decayed_confidence` value from `pattern_find`
@@ -3757,3 +3763,410 @@ Correlated user signal: `post-upgrade-sweep.js` names `project-intent-agent` in
 the restart reminder (v2.1.13 R-RCPT-V2 + F-M-2), so users who see this event
 fire while the upgrade sentinel is present are on the documented restart-required
 path.
+
+---
+
+## v2.1.14 additions (R-TGATE)
+
+### `tier2_invoked` event
+
+Emitted by `bin/_lib/tier2-invoked-emitter.js` (called from protocol entry-point
+scripts) when a Tier-2 feature protocol fires its primary action. Provides signal
+to distinguish file-loaded (`tier2_load`) from actually-executed (this event) — a
+protocol may be loaded but silently skip if its conditions are not met.
+
+Wired protocols (hook-script entry points): `archetype_cache`, `pattern_extraction`.
+Protocols without entry-point scripts (PM-prompt only, not wired in v2.1.14):
+`drift_sentinel`, `consequence_forecast`, `replay_analysis`, `auto_documenter`,
+`disagreement_protocol`, `cognitive_backpressure` — these require a PM-prompt edit
+to emit this event (finding for reviewer: PM Section additions needed for these 6).
+
+Kill switches: `ORCHESTRAY_METRICS_DISABLED=1`, `ORCHESTRAY_DISABLE_TIER2_TELEMETRY=1`,
+or `config.telemetry.tier2_tracking.enabled: false`.
+
+```json
+{
+  "version": 1,
+  "type": "tier2_invoked",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id, or 'unknown'>",
+  "protocol": "<slug: archetype_cache | pattern_extraction | drift_sentinel | ...>",
+  "trigger_signal": "<free-text reason the protocol fired>"
+}
+```
+
+Field notes:
+- `version`: Always `1`. Bump on breaking schema changes.
+- `protocol`: One of the 8 slugs listed in the release plan. Unknown slugs are accepted
+  (fail-open) so future protocol additions don't break existing emitters.
+- `trigger_signal`: Human-readable reason string. Not parsed by consumers — informational only.
+
+**Consumer guidance:** join `tier2_invoked` with `tier2_load` on `(orchestration_id, protocol/file_path)`
+to measure conversion rate from loaded → actually executed. A file that loads frequently
+but never invokes may indicate a misconfigured gate condition.
+
+Schema stability: additive-only.
+
+---
+
+### `feature_gate_eval` event
+
+Emitted by `bin/gate-telemetry.js` (UserPromptSubmit hook) on every PM turn. Records
+which feature gates are currently enabled or disabled in `.orchestray/config.json`.
+Provides signal for correlating feature-gate state with orchestration outcomes.
+
+Kill switches: `ORCHESTRAY_METRICS_DISABLED=1`, `ORCHESTRAY_DISABLE_TIER2_TELEMETRY=1`,
+or `config.telemetry.tier2_tracking.enabled: false`.
+
+```json
+{
+  "version": 1,
+  "type": "feature_gate_eval",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id, or 'unknown'>",
+  "gates_true": ["enable_drift_sentinel", "auto_review"],
+  "gates_false": ["enable_consequence_forecast", "enable_replay_analysis"],
+  "eval_source": "config_snapshot"
+}
+```
+
+Field notes:
+- `version`: Always `1`.
+- `gates_true`: Sorted array of gate key names whose value is truthy in config.
+- `gates_false`: Sorted array of gate key names whose value is falsy or absent.
+- `eval_source`: Always `"config_snapshot"` in v2.1.14. Reserved for future eval sources
+  (e.g., runtime override, env-var override).
+
+Known gate keys evaluated (as of v2.1.14):
+`enable_drift_sentinel`, `enable_consequence_forecast`, `enable_replay_analysis`,
+`enable_disagreement_protocol`, `enable_personas`, `enable_introspection`,
+`enable_backpressure`, `enable_outcome_tracking`, `enable_repo_map`,
+`enable_visual_review`, `enable_threads`, `enable_agent_teams`, `auto_review`,
+`auto_document`, plus any other top-level config key starting with `enable_`.
+
+**Consumer guidance:** aggregate `feature_gate_eval` events by `orchestration_id` to
+build a per-orchestration feature-gate histogram. The truthy histogram rollup is
+surfaced in `/orchestray:analytics`.
+
+Schema stability: additive-only. New gate keys may appear in `gates_true`/`gates_false`
+as features are added; consumers should not assume a fixed key set.
+
+---
+
+### `mcp_checkpoint_recorded` — `fields_used` + `response_bytes` field additions (v2.1.14)
+
+`mcp_checkpoint_recorded` events (emitted by `bin/record-mcp-checkpoint.js`,
+PostToolUse hook) now carry two additional fields:
+
+```json
+{
+  "type": "mcp_checkpoint_recorded",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id>",
+  "tool": "<tool name>",
+  "outcome": "answered | error | skipped",
+  "phase": "pre-decomposition | post-decomposition",
+  "result_count": null,
+  "fields_used": true,
+  "response_bytes": 1234,
+  "source": "hook"
+}
+```
+
+New fields:
+- `fields_used` (bool): `true` when the caller passed a non-empty `fields` parameter
+  to the tool (enabling field projection / cost reduction). `false` when absent or empty.
+  Allows measuring field-projection compliance across all MCP tool calls.
+- `response_bytes` (int): byte length of the raw `tool_response` string. Never logs
+  content — only the size. Useful for detecting unexpectedly large responses that may
+  indicate pagination issues or oversized patterns.
+
+Scope note: W2 (R-PFX) adds these fields for `pattern_find` and `kb_search`; R-TGATE
+adds them for `history_find_similar_tasks` and `pattern_record_application` (all
+remaining ENFORCED_TOOLS). Both fields are present on every `mcp_checkpoint_recorded`
+row from v2.1.14 onward. Pre-v2.1.14 rows omit both fields; consumers must handle
+absent fields gracefully.
+
+Schema stability: additive-only. No existing field is removed or renamed.
+
+---
+
+## v2.1.14 additions (R-HCAP)
+
+### `handoff_body_warn` event
+
+Emitted by the T15 hook (`bin/validate-task-completion.js`) when an artifact body
+exceeds the warn threshold (default 2,500 tokens) OR when the block threshold
+would have fired but `hard_block` is `false` (v2.1.14 soft-warn-only mode).
+Hook exits 0 in all cases — this event is advisory.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "handoff_body_warn",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "task_id": "<task id or null>",
+  "file": "<relative path to the artifact file>",
+  "body_tokens": "<estimated token count (4-bytes-per-token heuristic)>",
+  "has_detail_artifact": "<boolean — true if detail_artifact is set in the Structured Result>",
+  "threshold_breached": "<'warn' | 'block_would_have_fired'>"
+}
+```
+
+Field notes:
+- `threshold_breached`: `"warn"` — body is between warn_tokens and block_tokens,
+  OR body exceeds block_tokens but detail_artifact is present.
+  `"block_would_have_fired"` — body exceeds block_tokens, no detail_artifact, but
+  `hard_block` is `false` (v2.1.14 default). This is the telemetry trail for the
+  v2.1.15 flip to hard-block.
+- `has_detail_artifact`: `true` means the Structured Result already carries a
+  `detail_artifact` pointer. This may explain why the body is large — the pointer
+  is set but the inline content was not trimmed.
+- `file`: the specific artifact file whose content triggered the threshold.
+- `body_tokens`: estimated using the 4-bytes-per-token heuristic from W2
+  internal-token-profile conventions.
+
+---
+
+### `handoff_body_block` event
+
+Emitted by the T15 hook when an artifact body exceeds the block threshold (default
+5,000 tokens), no `detail_artifact` pointer is set, AND `hard_block` is `true`.
+Hook exits 2 (blocks completion). Only emitted when `handoff_body_cap.hard_block:
+true` (default `false` in v2.1.14; default `true` from v2.1.15).
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "handoff_body_block",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "task_id": "<task id or null>",
+  "file": "<relative path to the artifact file>",
+  "body_tokens": "<estimated token count>",
+  "has_detail_artifact": false,
+  "threshold_breached": "block"
+}
+```
+
+Field notes:
+- `has_detail_artifact` is always `false` for this event — if `detail_artifact`
+  were present, the hook would emit `handoff_body_warn` instead.
+- `threshold_breached` is always `"block"`.
+- The agent MUST split overflow content into a separate file and cite it via
+  `detail_artifact` in the Structured Result to resolve the block.
+- See `agents/pm-reference/handoff-contract.md §10` for full remediation guidance.
+
+---
+
+## v2.1.14 additions (R-SHDW)
+
+### `schema_shadow_hit` event
+
+Emitted when the PM consults the event-schema shadow and finds the event type.
+Indicates the shadow served its purpose and a full `event-schemas.md` load was
+avoided for this event type.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "schema_shadow_hit",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "event_type": "<the event type slug that was found in the shadow>"
+}
+```
+
+Field notes:
+- `event_type`: The slug of the event type that was found in the shadow index.
+- Source: emitted by the PM agent when it confirms an event type via the shadow.
+
+---
+
+### `schema_shadow_miss` event
+
+Emitted when the PM consults the event-schema shadow and does NOT find the event
+type — falling through to load the full `event-schemas.md`. Triggers a miss
+counter increment; 3 misses in 24 hours auto-disables the shadow.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "schema_shadow_miss",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "event_type": "<the event type slug that was NOT found in the shadow>",
+  "source_hash": "<sha256 of event-schemas.md at miss time>"
+}
+```
+
+Field notes:
+- `event_type`: The slug that caused the miss.
+- `source_hash`: Current hash of event-schemas.md — matches `_meta.source_hash`
+  in the shadow if the shadow is up to date.
+- Source: emitted by `bin/_lib/load-schema-shadow.js` recordMiss() on miss.
+
+---
+
+### `schema_shadow_validation_block` event
+
+Emitted by `bin/validate-schema-emit.js` (PreToolUse validator / pre-write check)
+when an audit event payload fails schema validation and is blocked before reaching
+`events.jsonl`. This is the correctness-gate firing.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "schema_shadow_validation_block",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "blocked_event_type": "<the event type slug that was blocked>",
+  "errors": ["<validation error message 1>", "..."],
+  "schema_ref": "agents/pm-reference/event-schemas.md"
+}
+```
+
+Field notes:
+- `blocked_event_type`: The `type` field of the event that was blocked.
+- `errors`: Array of human-readable validation error messages naming the missing
+  or wrong fields and the schema doc reference.
+- `schema_ref`: Always `"agents/pm-reference/event-schemas.md"`.
+- Source: emitted by `bin/validate-schema-emit.js`.
+
+---
+
+### `schema_shadow_stale` event
+
+Emitted by `bin/inject-schema-shadow.js` when the shadow's `_meta.source_hash`
+does not match the current SHA-256 of `event-schemas.md`. Indicates the shadow
+needs regeneration (`node bin/regen-schema-shadow.js`). Shadow injection is
+skipped; the PM falls back to loading the full schema file.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "schema_shadow_stale",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "source_hash_stored": "<sha256 stored in shadow _meta.source_hash>"
+}
+```
+
+Field notes:
+- `source_hash_stored`: The hash that was in the shadow when the mismatch was
+  detected. Compare to the current file hash to confirm staleness.
+- Source: emitted by `bin/inject-schema-shadow.js` on hash-mismatch detection.
+- Auto-resolution: edit `agents/pm-reference/event-schemas.md` (PostToolUse
+  hook auto-regenerates), or run `node bin/regen-schema-shadow.js` manually.
+
+---
+
+### `block_a_zone_composed` event
+
+Emitted by `bin/compose-block-a.js` (UserPromptSubmit hook) when Block A zones
+are successfully assembled and injected into PM context.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "block_a_zone_composed",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "turn_number": null,
+  "zone1_hash": "<sha256 prefix of Zone 1 content>",
+  "zone2_hash": "<sha256 prefix of Zone 2 content or 'empty'>",
+  "zone3_bytes": 42,
+  "cache_breakpoints": 3
+}
+```
+
+Field notes:
+- `turn_number`: Reserved for future use; always null in v1.
+- `zone1_hash`: SHA-256 hash of Zone 1 assembled content (full hex string).
+  Compare successive events to verify Zone 1 byte-stability within a session.
+- `zone2_hash`: SHA-256 hash of Zone 2 content, or `"empty"` if no active
+  orchestration.
+- `zone3_bytes`: Byte length of Zone 3 content (mutable, uncached).
+- `cache_breakpoints`: Always 3 in v1 (Zone 1, Zone 2, tools array).
+- Source: emitted by `bin/compose-block-a.js`.
+
+---
+
+### `cache_invariant_broken` event
+
+Emitted by `bin/validate-cache-invariant.js` (PreToolUse hook) when the
+recomputed Zone 1 hash differs from the stored hash in
+`.orchestray/state/block-a-zones.json`. Indicates an unintended Zone 1
+mutation occurred (e.g., CLAUDE.md was edited without calling
+`bin/invalidate-block-a-zone1.js`).
+
+This event is advisory. The tool call is never blocked.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "cache_invariant_broken",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "zone": "zone1",
+  "expected_hash": "<12-char prefix of stored hash>",
+  "actual_hash": "<12-char prefix of recomputed hash>",
+  "delta_files": ["CLAUDE.md", "agents/pm-reference/handoff-contract.md"]
+}
+```
+
+Field notes:
+- `zone`: Always `"zone1"` in v1. Zone 2 and Zone 3 are not invariant-checked.
+- `expected_hash`: First 12 hex characters of the hash stored at last compose.
+- `actual_hash`: First 12 hex characters of the freshly recomputed hash.
+- `delta_files`: Array of source file paths that were hashed in Zone 1 (used
+  to narrow down which file changed).
+- Source: emitted by `bin/validate-cache-invariant.js`.
+- Recovery: run `node bin/invalidate-block-a-zone1.js [reason]` to mint a
+  fresh Zone 1 breakpoint.
+
+---
+
+### `block_a_zone1_invalidated` event
+
+Emitted by `bin/invalidate-block-a-zone1.js` when a Zone 1 hash is manually
+cleared. The next `compose-block-a.js` run will recompute and store a fresh
+hash with the current source content.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "block_a_zone1_invalidated",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "reason": "<user-supplied reason string>",
+  "prior_hash": "<12-char prefix of the cleared hash>",
+  "sentinel_cleared": false
+}
+```
+
+Field notes:
+- `reason`: The reason argument passed to the CLI (default `"manual invalidation"`).
+- `prior_hash`: First 12 hex characters of the hash that was cleared.
+- `sentinel_cleared`: `true` if the auto-disable sentinel was also removed,
+  re-enabling zone caching.
+- Source: emitted by `bin/invalidate-block-a-zone1.js`.
