@@ -23,6 +23,9 @@ mcp_checkpoint_missing / kill_switch_activated / kill_switch_deactivated — enf
 model_auto_resolved — model auto-resolved by gate, warn level (hook, v2.1.11)
 pre_compact_archive / cite_cache_hit / spec_sketch_generated / repo_map_delta_injected — telemetry (hook)
 tier2_load — Tier-2 pm-reference file loaded (hook, v2.1.12)
+tier2_invoked — Tier-2 feature protocol primary action fired (hook, v2.1.14)
+feature_gate_eval — Feature gate state snapshot at PM turn start (hook, v2.1.14)
+mcp_checkpoint_recorded.fields_used — fields_used + response_bytes augmentation (hook, v2.1.14)
 
 END CONDITIONAL-LOAD NOTICE -->
 
@@ -421,7 +424,7 @@ signal so operators can distinguish "skipped because contextually mismatched" fr
 
 Cross-ref: the MCP tool that emits this event is `pattern_record_skip_reason`
 (`bin/mcp-server/tools/pattern_record_skip_reason.js`). The structured skip-recording
-contract is documented in `pattern-extraction.md §22b-pre`.
+contract is documented in `extraction-protocol.md §22b-pre`.
 
 ```json
 {
@@ -445,7 +448,7 @@ Field notes:
   `strong-match` = the pattern clearly applied; `weak-match` = partial overlap;
   `edge-case` = the pattern's documented context was at the boundary of applicability.
 - `skip_category`: The primary reason the pattern was not applied. See
-  `pattern-extraction.md §22b-pre` for the full taxonomy and guidance on when to use each.
+  `extraction-protocol.md §22b-pre` for the full taxonomy and guidance on when to use each.
 - `skip_reason`: Free-form prose (from either the `skip_reason` or `note` input field).
   May be `null` when no prose was provided.
 - `cited_confidence`: Optional. The `decayed_confidence` value from `pattern_find`
@@ -3760,9 +3763,134 @@ path.
 
 ---
 
-## v2.1.14 additions
+## v2.1.14 additions (R-TGATE)
 
-### handoff_body_warn
+### `tier2_invoked` event
+
+Emitted by `bin/_lib/tier2-invoked-emitter.js` (called from protocol entry-point
+scripts) when a Tier-2 feature protocol fires its primary action. Provides signal
+to distinguish file-loaded (`tier2_load`) from actually-executed (this event) — a
+protocol may be loaded but silently skip if its conditions are not met.
+
+Wired protocols (hook-script entry points): `archetype_cache`, `pattern_extraction`.
+Protocols without entry-point scripts (PM-prompt only, not wired in v2.1.14):
+`drift_sentinel`, `consequence_forecast`, `replay_analysis`, `auto_documenter`,
+`disagreement_protocol`, `cognitive_backpressure` — these require a PM-prompt edit
+to emit this event (finding for reviewer: PM Section additions needed for these 6).
+
+Kill switches: `ORCHESTRAY_METRICS_DISABLED=1`, `ORCHESTRAY_DISABLE_TIER2_TELEMETRY=1`,
+or `config.telemetry.tier2_tracking.enabled: false`.
+
+```json
+{
+  "version": 1,
+  "type": "tier2_invoked",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id, or 'unknown'>",
+  "protocol": "<slug: archetype_cache | pattern_extraction | drift_sentinel | ...>",
+  "trigger_signal": "<free-text reason the protocol fired>"
+}
+```
+
+Field notes:
+- `version`: Always `1`. Bump on breaking schema changes.
+- `protocol`: One of the 8 slugs listed in the release plan. Unknown slugs are accepted
+  (fail-open) so future protocol additions don't break existing emitters.
+- `trigger_signal`: Human-readable reason string. Not parsed by consumers — informational only.
+
+**Consumer guidance:** join `tier2_invoked` with `tier2_load` on `(orchestration_id, protocol/file_path)`
+to measure conversion rate from loaded → actually executed. A file that loads frequently
+but never invokes may indicate a misconfigured gate condition.
+
+Schema stability: additive-only.
+
+---
+
+### `feature_gate_eval` event
+
+Emitted by `bin/gate-telemetry.js` (UserPromptSubmit hook) on every PM turn. Records
+which feature gates are currently enabled or disabled in `.orchestray/config.json`.
+Provides signal for correlating feature-gate state with orchestration outcomes.
+
+Kill switches: `ORCHESTRAY_METRICS_DISABLED=1`, `ORCHESTRAY_DISABLE_TIER2_TELEMETRY=1`,
+or `config.telemetry.tier2_tracking.enabled: false`.
+
+```json
+{
+  "version": 1,
+  "type": "feature_gate_eval",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id, or 'unknown'>",
+  "gates_true": ["enable_drift_sentinel", "auto_review"],
+  "gates_false": ["enable_consequence_forecast", "enable_replay_analysis"],
+  "eval_source": "config_snapshot"
+}
+```
+
+Field notes:
+- `version`: Always `1`.
+- `gates_true`: Sorted array of gate key names whose value is truthy in config.
+- `gates_false`: Sorted array of gate key names whose value is falsy or absent.
+- `eval_source`: Always `"config_snapshot"` in v2.1.14. Reserved for future eval sources
+  (e.g., runtime override, env-var override).
+
+Known gate keys evaluated (as of v2.1.14):
+`enable_drift_sentinel`, `enable_consequence_forecast`, `enable_replay_analysis`,
+`enable_disagreement_protocol`, `enable_personas`, `enable_introspection`,
+`enable_backpressure`, `enable_outcome_tracking`, `enable_repo_map`,
+`enable_visual_review`, `enable_threads`, `enable_agent_teams`, `auto_review`,
+`auto_document`, plus any other top-level config key starting with `enable_`.
+
+**Consumer guidance:** aggregate `feature_gate_eval` events by `orchestration_id` to
+build a per-orchestration feature-gate histogram. The truthy histogram rollup is
+surfaced in `/orchestray:analytics`.
+
+Schema stability: additive-only. New gate keys may appear in `gates_true`/`gates_false`
+as features are added; consumers should not assume a fixed key set.
+
+---
+
+### `mcp_checkpoint_recorded` — `fields_used` + `response_bytes` field additions (v2.1.14)
+
+`mcp_checkpoint_recorded` events (emitted by `bin/record-mcp-checkpoint.js`,
+PostToolUse hook) now carry two additional fields:
+
+```json
+{
+  "type": "mcp_checkpoint_recorded",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id>",
+  "tool": "<tool name>",
+  "outcome": "answered | error | skipped",
+  "phase": "pre-decomposition | post-decomposition",
+  "result_count": null,
+  "fields_used": true,
+  "response_bytes": 1234,
+  "source": "hook"
+}
+```
+
+New fields:
+- `fields_used` (bool): `true` when the caller passed a non-empty `fields` parameter
+  to the tool (enabling field projection / cost reduction). `false` when absent or empty.
+  Allows measuring field-projection compliance across all MCP tool calls.
+- `response_bytes` (int): byte length of the raw `tool_response` string. Never logs
+  content — only the size. Useful for detecting unexpectedly large responses that may
+  indicate pagination issues or oversized patterns.
+
+Scope note: W2 (R-PFX) adds these fields for `pattern_find` and `kb_search`; R-TGATE
+adds them for `history_find_similar_tasks` and `pattern_record_application` (all
+remaining ENFORCED_TOOLS). Both fields are present on every `mcp_checkpoint_recorded`
+row from v2.1.14 onward. Pre-v2.1.14 rows omit both fields; consumers must handle
+absent fields gracefully.
+
+Schema stability: additive-only. No existing field is removed or renamed.
+
+---
+
+## v2.1.14 additions (R-HCAP)
+
+### `handoff_body_warn` event
 
 Emitted by the T15 hook (`bin/validate-task-completion.js`) when an artifact body
 exceeds the warn threshold (default 2,500 tokens) OR when the block threshold
@@ -3800,7 +3928,7 @@ Field notes:
 
 ---
 
-### handoff_body_block
+### `handoff_body_block` event
 
 Emitted by the T15 hook when an artifact body exceeds the block threshold (default
 5,000 tokens), no `detail_artifact` pointer is set, AND `hard_block` is `true`.

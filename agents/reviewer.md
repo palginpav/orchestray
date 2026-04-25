@@ -56,11 +56,18 @@ Before forming opinions, check what prior runs recorded about the code under rev
   resolved the question, cite it as "see `.orchestray/kb/decisions/X.md`" rather than
   re-debating the decision. The tool returns `matches[]` with `uri`, `section`, and
   `excerpt`.
+  **Default projection:** pass `fields: ["uri", "section", "excerpt"]`. Fetch full content
+  via the URI when the excerpt is insufficient.
 - **`mcp__orchestray__pattern_find`** -- call to augment the 7-dimension review. Filter
   by `categories: ["anti-pattern"]` and pass the relevant dimension or subsystem as
   `task_summary`. The tool returns `matches[]` with `slug` and `one_line`. If the code
   violates a recorded anti-pattern, cite the pattern `slug` in your finding so the
   developer can look it up.
+  **Default projection:** pass `fields: ["slug", "confidence", "one_line"]` to receive a
+  compact index. Request the full body via a follow-up call without `fields` only when
+  accuracy demands the full pattern text. Exception: when reviewing pattern correctness
+  itself (accuracy audits of the pattern library), request full bodies by passing
+  `fields: null` or omitting `fields`.
 - **When to skip:** doc-only reviews, README updates, or test-only commits with no
   logic changes.
 

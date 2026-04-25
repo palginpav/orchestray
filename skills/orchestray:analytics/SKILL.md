@@ -134,9 +134,50 @@ The user wants to see aggregate performance analytics across orchestration histo
    - If no routing_outcome events found: show "No model routing data available (pre-routing orchestrations)."
    - If no agent cost data found: show "No per-agent cost data available."
 
-8. **Cache Performance, Cost Delta, Active Experiments**: After displaying the main analytics and before Health Signals, show the cache/cost/experiment sections. See the **Cache Performance**, **Cost Delta**, and **Active Experiments** sections below for display logic.
+8. **R-TGATE Observability** (v2.1.14): After the Pattern Learning section and before Cache Performance, show three R-TGATE rollups. Read `.orchestray/audit/events.jsonl` (up to last 1000 events) and aggregate:
 
-9. **Pattern Effectiveness Dashboard**: After displaying the main analytics, show pattern learning metrics.
+   **Rollup A — Tier-2 load rate per feature:**
+   - Count `tier2_load` events grouped by `file_path` (basename). Show count per file and percentage of total orchestrations that loaded each file.
+   - If no `tier2_load` events exist, show "No tier-2 load data (v2.1.14+ required)."
+
+   ```
+   ## Tier-2 Load Rate
+   | File | Loads | % of Orchestrations |
+   |------|-------|---------------------|
+   | event-schemas.md | 14 | 70% |
+   ...
+   ```
+
+   **Rollup B — fields_used compliance %:**
+   - Count `mcp_checkpoint_recorded` events. Of those, count events where `fields_used === true`.
+   - Show compliance percentage: `(fields_used_true / total) * 100`%.
+   - If no `mcp_checkpoint_recorded` events with `fields_used` field exist, show "No fields_used data (v2.1.14+ required)."
+
+   ```
+   ## Field Projection Compliance
+   | Metric | Value |
+   |--------|-------|
+   | Total MCP checkpoint calls | {N} |
+   | Calls using field projection | {N} ({pct}%) |
+   ```
+
+   **Rollup C — feature_gate_eval truthy histogram:**
+   - Count the most recent `feature_gate_eval` event per orchestration. For each gate key, count how many orchestrations had it in `gates_true`.
+   - Show the top gates sorted by truthy count descending.
+   - If no `feature_gate_eval` events exist, show "No feature gate data (v2.1.14+ required)."
+
+   ```
+   ## Feature Gate Histogram (last {N} orchestrations)
+   | Gate | Enabled in N orchestrations |
+   |------|-----------------------------|
+   | auto_review | 8 |
+   | enable_drift_sentinel | 3 |
+   ...
+   ```
+
+9. **Cache Performance, Cost Delta, Active Experiments**: After displaying the main analytics and before Health Signals, show the cache/cost/experiment sections. See the **Cache Performance**, **Cost Delta**, and **Active Experiments** sections below for display logic.
+
+10. **Pattern Effectiveness Dashboard**: After displaying the main analytics, show pattern learning metrics.
 
    **Read pattern files**: Glob `.orchestray/patterns/*.md` and parse each file's YAML frontmatter. Normalize fields to handle both Section 22 and Section 30 schemas:
    - `category` (or `type` for Section 30 corrections -- use `frontmatter.category || frontmatter.type || "unknown"`)

@@ -3209,6 +3209,108 @@ function validateResilienceConfig(obj) {
 }
 
 // ---------------------------------------------------------------------------
+// telemetry section defaults and loader (R-TGATE v2.1.14)
+//
+// telemetry.tier2_tracking.enabled — boolean, default true.
+//   When false, all R-TGATE hooks (emit-tier2-load.js, gate-telemetry.js,
+//   tier2-invoked-emitter.js) skip event emission. This is the config-level
+//   kill switch for the v2.1.14 tier-2 telemetry layer.
+//
+// Env-var kill switch: ORCHESTRAY_DISABLE_TIER2_TELEMETRY=1 overrides this
+//   setting (checked before config parse so even a malformed config can be killed).
+// ---------------------------------------------------------------------------
+
+const DEFAULT_TELEMETRY = Object.freeze({
+  tier2_tracking: Object.freeze({
+    enabled: true,
+  }),
+});
+
+/**
+ * Load and merge the telemetry block from <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing/malformed returns DEFAULT_TELEMETRY so hooks
+ * still run at safe defaults (enabled=true).
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ tier2_tracking: { enabled: boolean } }}
+ */
+function loadTelemetryConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return { tier2_tracking: Object.assign({}, DEFAULT_TELEMETRY.tier2_tracking) };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return { tier2_tracking: Object.assign({}, DEFAULT_TELEMETRY.tier2_tracking) };
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { tier2_tracking: Object.assign({}, DEFAULT_TELEMETRY.tier2_tracking) };
+  }
+
+  const fromFile = parsed.telemetry;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return { tier2_tracking: Object.assign({}, DEFAULT_TELEMETRY.tier2_tracking) };
+  }
+
+  // Merge tier2_tracking sub-section.
+  const t2FromFile = fromFile.tier2_tracking;
+  const t2Merged = Object.assign(
+    {},
+    DEFAULT_TELEMETRY.tier2_tracking,
+    (t2FromFile && typeof t2FromFile === 'object' && !Array.isArray(t2FromFile))
+      ? sanitizeConfig(t2FromFile)
+      : {}
+  );
+
+  // Validate and warn — always return merged (fail-open).
+  try {
+    const result = validateTelemetryConfig({ tier2_tracking: t2Merged });
+    if (!result.valid) {
+      logStderr('telemetry config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) {
+    // Validation must never throw
+  }
+
+  return { tier2_tracking: t2Merged };
+}
+
+/**
+ * Validate a telemetry config object (as returned by loadTelemetryConfig).
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateTelemetryConfig(obj) {
+  const errors = [];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['telemetry config must be an object'] };
+  }
+
+  if ('tier2_tracking' in obj) {
+    const t2 = obj.tier2_tracking;
+    if (!t2 || typeof t2 !== 'object' || Array.isArray(t2)) {
+      errors.push('telemetry.tier2_tracking must be an object');
+    } else if ('enabled' in t2 && typeof t2.enabled !== 'boolean') {
+      errors.push(
+        'telemetry.tier2_tracking.enabled must be a boolean — got ' + JSON.stringify(t2.enabled)
+      );
+    }
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
+// ---------------------------------------------------------------------------
 // handoff_body_cap section defaults and loader (R-HCAP v2.1.14)
 //
 // handoff_body_cap.enabled — boolean, default true.
@@ -3432,6 +3534,10 @@ module.exports = {
   DEFAULT_RESILIENCE,
   loadResilienceConfig,
   validateResilienceConfig,
+  // R-TGATE (v2.1.14): telemetry config block
+  DEFAULT_TELEMETRY,
+  loadTelemetryConfig,
+  validateTelemetryConfig,
   // R-HCAP (v2.1.14): handoff body cap config
   DEFAULT_HANDOFF_BODY_CAP,
   loadHandoffBodyCapConfig,

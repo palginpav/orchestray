@@ -54,10 +54,15 @@ you are working in.
   returns `matches[]` with `uri`, `section` (`facts`, `decisions`, or `artifacts`), and
   `excerpt`. Read any `facts/*.md` entries that describe invariants or historical bugs in
   that area -- these are the landmines prior debugging runs uncovered.
+  **Default projection:** pass `fields: ["uri", "section", "excerpt"]`. Fetch full content
+  via the URI when the excerpt is insufficient.
 - **`mcp__orchestray__pattern_find`** -- call before implementing a non-trivial code
   change. The tool returns `matches[]` with `slug`, `confidence`, `times_applied`, and
   `category`. If a returned match has `category: "anti-pattern"` and its description
   matches your plan, surface it as a correction rather than silently avoiding it.
+  **Default projection:** pass `fields: ["slug", "confidence", "one_line"]` to receive a
+  compact index. Request the full body via a follow-up call without `fields` only when
+  accuracy demands the full pattern text.
 - **`mcp__orchestray__history_query_events`** -- call when you encounter a recurring
   failure during implementation. Filter by `event_types: ["agent_stop"]` and optionally
   by `agent_role` or a time window. The event log shows what prior agent runs did so you
