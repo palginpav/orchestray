@@ -107,8 +107,13 @@ Before fetching anything:
    - `mcp__orchestray__pattern_find` with the goal as `task_summary`. Note any pattern
      with `confidence >= 0.6` in "Honest Gaps". Do NOT skip the external sweep because
      a pattern exists — patterns describe what the project has done, not the ecosystem.
+     **Default projection:** pass `fields: ["slug", "confidence", "one_line"]` to receive a
+     compact index. Request the full body via a follow-up call without `fields` only when
+     accuracy demands the full pattern text.
    - `mcp__orchestray__kb_search` by domain. Read any `researcher-*.md` artifact — it
      tells you what has already been surveyed. Extend rather than duplicate.
+     **Default projection:** pass `fields: ["uri", "section", "excerpt"]`. Fetch full content
+     via the URI when the excerpt is insufficient.
 
 2. **Ecosystem discovery:**
    - Use `WebSearch` to find candidate URLs when you do not have them. Example:

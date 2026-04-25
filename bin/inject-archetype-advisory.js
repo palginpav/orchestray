@@ -55,6 +55,8 @@ const {
   recordBlacklisted,
 } = require('./_lib/archetype-cache');
 
+const { emitTier2Invoked } = require('./_lib/tier2-invoked-emitter');
+
 const FENCE_OPEN  = '<orchestray-archetype-advisory>';
 const FENCE_CLOSE = '</orchestray-archetype-advisory>';
 
@@ -255,6 +257,16 @@ function handleUserPromptSubmit(event) {
     const combinedContext = killSwitchContent
       ? killSwitchContent + '\n\n---\n\n' + advisoryText
       : advisoryText;
+
+    // R-TGATE (v2.1.14): emit tier2_invoked for archetype_cache protocol.
+    // Fail-open: any emitter error must not prevent the advisory from being written.
+    try {
+      emitTier2Invoked({
+        cwd,
+        protocol: 'archetype_cache',
+        trigger_signal: 'archetype match confidence >= 0.85 with prior_applications_count >= 3',
+      });
+    } catch (_te) { /* fail-open */ }
 
     writeAndExit(JSON.stringify({
       hookSpecificOutput: {
