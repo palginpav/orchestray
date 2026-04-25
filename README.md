@@ -372,6 +372,13 @@ retrieval.scorer_variant        Which ranking scorer pattern_find uses: "baselin
 retrieval.synonyms_enabled      Expand pattern_find queries with a ~44-entry synonym list (default: true).
                                 Every expansion is auditable via the response's match_reasons field; set
                                 false to disable.
+enable_drift_sentinel           Detect architectural drift via auto-extracted invariants and static
+                                rules; pre/post-execution checks surface violations (default: false
+                                for new installs as of v2.1.14 — off by default because it seldom
+                                produces actionable output on typical workloads). To restore prior
+                                behavior, set `"enable_drift_sentinel": true` in
+                                `.orchestray/config.json`.
+
 config_drift_silence            Top-level config keys to silence from the boot-time drift warning
                                 (default: []). Use for intentional custom keys (e.g., a third-party
                                 integration seed). Example: ["my_custom_key"].
