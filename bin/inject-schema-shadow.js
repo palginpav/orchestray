@@ -26,8 +26,7 @@ const path = require('path');
 const { resolveSafeCwd }    = require('./_lib/resolve-project-cwd');
 const { MAX_INPUT_BYTES }   = require('./_lib/constants');
 const { loadShadowWithCheck, recordMiss } = require('./_lib/load-schema-shadow');
-const { atomicAppendJsonl } = require('./_lib/atomic-append');
-const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
+const { writeEvent } = require('./_lib/audit-event-writer');
 
 const CONTINUE_RESPONSE = JSON.stringify({ continue: true });
 
@@ -87,22 +86,11 @@ function loadShadowConfig(cwd) {
 
 function emitAuditEvent(cwd, eventType, extra) {
   try {
-    const auditDir    = path.join(cwd, '.orchestray', 'audit');
-    const eventsFile  = path.join(auditDir, 'events.jsonl');
-    fs.mkdirSync(auditDir, { recursive: true });
-
-    let orchestrationId = 'unknown';
-    try {
-      const orchFile = getCurrentOrchestrationFile(cwd);
-      const orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
-      if (orchData && orchData.orchestration_id) orchestrationId = orchData.orchestration_id;
-    } catch (_e) {}
-
-    const entry = Object.assign(
-      { timestamp: new Date().toISOString(), type: eventType, orchestration_id: orchestrationId },
-      extra
-    );
-    atomicAppendJsonl(eventsFile, entry);
+    const entry = Object.assign({ type: eventType }, extra);
+    // Special case: this hook is part of the schema-shadow infrastructure.
+    // Skipping validation here avoids a chicken-and-egg loop in which a
+    // corrupted schema would block its own staleness telemetry.
+    writeEvent(entry, { cwd, skipValidation: true });
   } catch (_e) {
     // Fail-open
   }

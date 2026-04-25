@@ -22,7 +22,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { writeEvent } = require('./_lib/audit-event-writer');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
@@ -75,8 +75,8 @@ process.stdin.on('end', () => {
       session_id: event.session_id || null,
     };
 
-    // Append to events.jsonl
-    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), auditEvent);
+    // Append to events.jsonl via the central gateway
+    writeEvent(auditEvent, { cwd });
 
     // Reassignment logic: check for pending tasks in task-graph.md
     const taskGraphPath = path.join(cwd, '.orchestray', 'state', 'task-graph.md');

@@ -35,7 +35,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { writeEvent } = require('./_lib/audit-event-writer');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
@@ -491,7 +491,7 @@ function emitAuditEvent(cwd, record) {
     const auditDir = path.join(cwd, '.orchestray', 'audit');
     fs.mkdirSync(auditDir, { recursive: true });
     try { fs.chmodSync(auditDir, 0o700); } catch (_e) { /* best-effort */ }
-    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), record);
+    writeEvent(record, { cwd });
   } catch (err) {
     // DEF-10 semantics: stderr MUST report audit-write failures so operators
     // can distinguish "rejected cleanly" from "rejected but audit trail

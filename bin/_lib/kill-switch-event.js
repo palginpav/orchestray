@@ -16,8 +16,7 @@
  */
 
 const fs = require('fs');
-const path = require('path');
-const { atomicAppendJsonl } = require('./atomic-append');
+const { writeEvent } = require('./audit-event-writer');
 const { getCurrentOrchestrationFile } = require('./orchestration-state');
 
 /**
@@ -38,9 +37,6 @@ function emitKillSwitchEvent({ cwd, previousValue, newValue, reason = null }) {
   }
 
   try {
-    const auditDir = path.join(cwd, '.orchestray', 'audit');
-    const eventsPath = path.join(auditDir, 'events.jsonl');
-
     // Read current orchestration_id (fail-open: null if unavailable).
     let orchestrationId = null;
     try {
@@ -65,7 +61,7 @@ function emitKillSwitchEvent({ cwd, previousValue, newValue, reason = null }) {
       new_value: newValue,
     };
 
-    atomicAppendJsonl(eventsPath, event);
+    writeEvent(event, { cwd });
     return true;
   } catch (err) {
     // Fail-open: warn but never throw — the config write must proceed.

@@ -29,7 +29,7 @@ const path = require('path');
 
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
-const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { writeEvent } = require('./_lib/audit-event-writer');
 const { recordDegradation } = require('./_lib/degraded-journal');
 const { loadResilienceConfig } = require('./_lib/config-schema');
 
@@ -98,16 +98,11 @@ function handleSessionStart(event) {
 
     // Audit event.
     try {
-      const auditDir = path.join(cwd, '.orchestray', 'audit');
-      if (_dirExists(auditDir)) {
-        atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), {
-          timestamp: new Date().toISOString(),
-          type: 'compaction_detected',
-          source,
-          trigger: event && typeof event.trigger === 'string' ? event.trigger : null,
-          orchestration_id: _peekOrchestrationId(cwd),
-        });
-      }
+      writeEvent({
+        type: 'compaction_detected',
+        source,
+        trigger: event && typeof event.trigger === 'string' ? event.trigger : null,
+      }, { cwd });
     } catch (_e) { /* swallow */ }
 
     return { dropped: true, source };

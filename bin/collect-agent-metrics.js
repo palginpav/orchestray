@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { writeEvent }        = require('./_lib/audit-event-writer');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { loadCostBudgetCheckConfig } = require('./_lib/config-schema');
@@ -499,7 +500,7 @@ process.stdin.on('end', () => {
           source: 'subagent_stop',
         };
 
-        atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), variantCEvent);
+        writeEvent(variantCEvent, { cwd });
 
         // LL6: write a pending entry to routing-pending.jsonl so that when
         // PostToolUse:Agent fires (after SubagentStop) it can correlate the
@@ -533,8 +534,8 @@ process.stdin.on('end', () => {
       }
     }
 
-    // Append to events.jsonl
-    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), auditEvent);
+    // Append to events.jsonl via the gateway
+    writeEvent(auditEvent, { cwd });
 
     // Emit per-spawn row to agent_metrics.jsonl (§4.2 S5 measurement surface).
     // Fail-open: any error here must never block the agent stop.

@@ -31,7 +31,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { writeEvent } = require('./_lib/audit-event-writer');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { readRoutingEntries } = require('./_lib/routing-lookup');
@@ -178,7 +178,7 @@ process.stdin.on('end', () => {
         const auditDir2 = path.join(cwd2, '.orchestray', 'audit');
         try {
           fs.mkdirSync(auditDir2, { recursive: true });
-          atomicAppendJsonl(path.join(auditDir2, 'events.jsonl'), fpEvent);
+          writeEvent(fpEvent, { cwd: cwd2 });
         } catch (_fpWriteErr) {
           // Fail-open
         }
@@ -319,7 +319,7 @@ process.stdin.on('end', () => {
         response_bytes,
         source: 'hook',
       };
-      atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), auditEvent);
+      writeEvent(auditEvent, { cwd });
     } catch (_auditErr) {
       process.stderr.write(
         '[orchestray] record-mcp-checkpoint: audit write failed (' +

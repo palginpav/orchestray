@@ -51,6 +51,15 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/inject-active-phase-slice.js",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -75,6 +84,11 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/collect-context-telemetry.js pre-spawn",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/preflight-spawn-budget.js",
             "timeout": 5
           }
         ]
@@ -114,6 +128,16 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-cache-invariant.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|MultiEdit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-schema-emit.js",
             "timeout": 5
           }
         ]
@@ -262,6 +286,15 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/feature-quarantine-advisor.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/inject-active-phase-slice.js",
             "timeout": 5
           }
         ]

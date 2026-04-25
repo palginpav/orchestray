@@ -34,6 +34,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const readline = require('node:readline');
+const { writeEvent } = require('./_lib/audit-event-writer');
 
 // ---------------------------------------------------------------------------
 // Argument parsing
@@ -249,8 +250,9 @@ function emitRedoEvent(itemId, overridePromptFile) {
     dry_run: dryRun,
   };
   try {
-    fs.mkdirSync(path.dirname(auditEventsPath), { recursive: true });
-    fs.appendFileSync(auditEventsPath, JSON.stringify(event) + '\n');
+    // Route through the central audit-event gateway. `auditEventsPath` is
+    // `<projectDir>/.orchestray/audit/events.jsonl`; pass projectDir as cwd.
+    writeEvent(event, { cwd: projectDir });
   } catch (_e) {
     // Fail-open: audit write errors must not block the redo
   }

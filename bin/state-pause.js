@@ -33,6 +33,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const { writeEvent } = require('./_lib/audit-event-writer');
 
 // ---------------------------------------------------------------------------
 // Argument parsing
@@ -62,21 +63,18 @@ if (projectDir === null) projectDir = process.cwd();
 
 const stateDir = path.join(projectDir, '.orchestray', 'state');
 const sentinelPath = path.join(stateDir, 'pause.sentinel');
-const auditEventsPath = path.join(projectDir, '.orchestray', 'audit', 'events.jsonl');
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Append a JSON line to a JSONL file. Best-effort; fail-open.
- * @param {string} filePath
+ * Append an audit event via the central gateway. Best-effort; fail-open.
  * @param {object} obj
  */
-function appendJsonl(filePath, obj) {
+function appendAuditEvent(obj) {
   try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.appendFileSync(filePath, JSON.stringify(obj) + '\n');
+    writeEvent(obj, { cwd: projectDir });
   } catch (_e) {
     // Fail-open: audit event loss is acceptable over blocking pause.
   }
@@ -147,7 +145,7 @@ if (resume) {
   }
 
   const orchId = sentinelData.orchestration_id || 'unknown';
-  appendJsonl(auditEventsPath, {
+  appendAuditEvent({
     timestamp: new Date().toISOString(),
     type: 'state_pause_resumed',
     orchestration_id: orchId,
@@ -186,7 +184,7 @@ try {
   process.exit(0);
 }
 
-appendJsonl(auditEventsPath, {
+appendAuditEvent({
   timestamp: now,
   type: 'state_pause_set',
   orchestration_id: orchId,

@@ -204,3 +204,101 @@ documenter, security-engineer, release-manager, ux-critic, platform-oracle), see
 **MCP field selection (R5 AC-05):** When calling `mcp__orchestray__pattern_find`, use the
 `fields` parameter to limit response payload to only the fields you need.
 Example: `pattern_find({query: "...", fields: ["slug","confidence"]})` — omit `fields` for full response.
+
+---
+
+## Section 12: Re-Delegation — Delta Payload (R-DELTA-HANDOFF, v2.1.15)
+
+When re-delegating to a developer agent after a reviewer pass, send the **delta payload**
+by default — not the full prior artifact. The full artifact stays in the KB and the
+developer fetches it on demand only when a deterministic fallback trigger fires.
+
+### Default re-delegation payload
+
+```yaml
+## Re-delegation context (delta mode)
+reviewer_summary: "<reviewer summary — ≤500 chars>"
+reviewer_issues:
+  - severity: "<error|warn|info>"
+    file: "<file path>"
+    line: <line number or null>
+    message: "<issue description>"
+delta_diff: |
+  <git diff of what the reviewer saw — max ~2000 tokens>
+detail_artifact: "<kb path to full reviewer artifact, e.g. .orchestray/kb/artifacts/reviewer-pass1.md>"
+```
+
+The `detail_artifact` field is the documented signal that puts the developer in **delta
+mode**. The developer reads the three fallback trigger rules (below) and fetches the
+full artifact only when required. This is an agent-side decision — the PM does not
+pre-decide for the developer.
+
+### Kill switch
+
+Set `config.delta_handoff.force_full: true` to disable delta mode for all re-delegations.
+When the kill switch is active, the developer always fetches the full artifact (reason:
+`"force_config"`). This is a rollback switch only — it appears in the CHANGELOG under
+"Kill switches available," not as a tuning option.
+
+Kill switch config key: `delta_handoff.force_full` (default: `false`).
+Enable/disable delta mode entirely: `delta_handoff.enabled` (default: `true`).
+
+---
+
+## Fallback: full-artifact fetch
+
+When the delegation payload contains `detail_artifact:`, the developer agent is in
+delta mode. The developer fetches the full artifact via `kb_read` and emits a
+`delta_handoff_fallback` event **only if** any of the three deterministic triggers
+below fires. Otherwise the developer emits `{fetched: false}` once and proceeds.
+
+### Trigger 1 — `issue_gap`
+
+`reviewer_issues[]` is empty **AND** the planned change touches a file or symbol that
+the `reviewer_summary` does not name.
+
+Signal: the reviewer saw no specific issues but the developer is about to touch
+something outside the summary's scope — the summary may be too thin for safe navigation.
+
+### Trigger 2 — `hedged_summary`
+
+The `reviewer_summary` contains any of these hedge phrases (case-insensitive):
+`"see details"`, `"additional context"`, `"depends on"`, `"may need"`, `"recommend reviewing"`.
+
+Signal: the reviewer hedged rather than being specific. The developer needs the full
+artifact to understand the actual guidance. (Reviewer discipline note: avoid these
+phrases — list specific items in `issues[]` instead.)
+
+### Trigger 3 — `cross_orch_scope`
+
+The planned `Edit`/`Write` targets a file whose `git log -1` commit date predates the
+current orchestration's start time.
+
+Signal: the developer is about to touch a file that was not part of this orchestration's
+context. The full artifact may contain prior-context that the delta summary omits.
+
+### Trigger evaluation order
+
+Triggers are evaluated in order: `force_full` (kill switch) → `hedged_summary` → `cross_orch_scope` → `issue_gap`. The first matching trigger sets `reason` in the emitted event.
+
+### Fallback event
+
+When any trigger fires, emit `delta_handoff_fallback` before fetching:
+
+```json
+{
+  "event_type": "delta_handoff_fallback",
+  "version": 1,
+  "orchestration_id": "<current orch id>",
+  "task_id": "<task id>",
+  "agent_type": "developer",
+  "fetched": true,
+  "reason": "<issue_gap | hedged_summary | cross_orch_scope | force_config>",
+  "summary_chars": <length of reviewer_summary>,
+  "detail_artifact": "<kb path>"
+}
+```
+
+Target fetch rate: 10–30% over a cohort of re-delegations. Rates above 30% indicate
+hedge-phrase creep in reviewer summaries (tighten in v2.1.16). Rates below 10% may
+indicate under-fetching (loosen trigger 1 in v2.1.16).

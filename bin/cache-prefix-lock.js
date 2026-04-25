@@ -30,7 +30,7 @@ const crypto = require('crypto');
 
 const { resolveSafeCwd }          = require('./_lib/resolve-project-cwd');
 const { loadV2017ExperimentsConfig, isExperimentActive } = require('./_lib/config-schema');
-const { atomicAppendJsonl }       = require('./_lib/atomic-append');
+const { writeEvent }              = require('./_lib/audit-event-writer');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES }         = require('./_lib/constants');
 
@@ -217,9 +217,8 @@ process.stdin.on('end', () => {
       orchestration_id:  orchestrationId,
     };
 
-    const eventsPath = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
     try {
-      atomicAppendJsonl(eventsPath, driftEvent);
+      writeEvent(driftEvent, { cwd });
     } catch (_e) {
       process.stderr.write('[orchestray] cache-prefix-lock: failed to write drift event: ' + String(_e) + '\n');
     }

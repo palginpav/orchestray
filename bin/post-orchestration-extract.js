@@ -37,7 +37,7 @@ const fs   = require('node:fs');
 const path = require('node:path');
 const os   = require('node:os');
 
-const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { writeEvent } = require('./_lib/audit-event-writer');
 const { resolveSafeCwd }              = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { quarantineEvents }            = require('./_lib/event-quarantine');
@@ -94,15 +94,20 @@ function _setMaxEventsBytesForTest(n) {
 // ---------------------------------------------------------------------------
 
 /**
- * Emit a single audit event to events.jsonl.  Fail-open: never throws.
+ * Emit a single audit event to events.jsonl via the gateway. Fail-open: never throws.
  *
- * @param {string} eventsPath
+ * The first arg is preserved as the events.jsonl path so callers do not need
+ * to thread a project-root through; we derive `cwd` from that path so the
+ * gateway resolves config + sentinel correctly.
+ *
+ * @param {string} eventsPath - Absolute path to events.jsonl.
  * @param {object} event
  */
 function _emitEvent(eventsPath, event) {
   try {
-    fs.mkdirSync(path.dirname(eventsPath), { recursive: true });
-    atomicAppendJsonl(eventsPath, event);
+    // events.jsonl lives at <cwd>/.orchestray/audit/events.jsonl
+    const cwd = path.resolve(path.dirname(eventsPath), '..', '..');
+    writeEvent(event, { cwd, eventsPath });
   } catch (_e) {
     // Fail-open.
   }

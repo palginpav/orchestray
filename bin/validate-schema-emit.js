@@ -38,6 +38,7 @@ const { MAX_INPUT_BYTES }   = require('./_lib/constants');
 const { validateEvent }     = require('./_lib/schema-emit-validator');
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
+const { isSentinelActive } = require('./_lib/load-schema-shadow');
 const fs = require('fs');
 
 // ---------------------------------------------------------------------------
@@ -132,6 +133,35 @@ function handle(hookPayload) {
 
     // Extract the audit event payload from tool_input
     const toolInput = (hookPayload && hookPayload.tool_input) || {};
+
+    // -----------------------------------------------------------------------
+    // R-SHDW-EMIT path-based defence (v2.1.15)
+    //
+    // Edit/MultiEdit on `.orchestray/audit/events.jsonl` is *always* blocked.
+    // Direct edits bypass the writeEvent gateway and break audit invariants.
+    // -----------------------------------------------------------------------
+    const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : null;
+    if (filePath && /\.orchestray[\\/]+audit[\\/]+events\.jsonl$/.test(filePath)) {
+      // Honour the same circuit / kill-switch semantics as the gateway: if
+      // shadow validation is disabled, allow the edit (fail-open).
+      const envDisabled = process.env.ORCHESTRAY_DISABLE_SCHEMA_SHADOW === '1';
+      if (envDisabled || isSentinelActive(cwd)) {
+        process.stderr.write(
+          '[validate-schema-emit] events.jsonl edit allowed — schema shadow disabled\n'
+        );
+        process.stdout.write(allowResponse() + '\n');
+        process.exit(0);
+        return;
+      }
+      const reason =
+        'Direct edits to events.jsonl are forbidden — emit via writeEvent gateway ' +
+        '(bin/_lib/audit-event-writer.js). Path-based defence; see ' +
+        'agents/pm-reference/event-schemas.md.';
+      process.stderr.write('[validate-schema-emit] BLOCKED Edit on ' + filePath + '\n');
+      process.stdout.write(blockResponse(reason) + '\n');
+      process.exit(2);
+      return;
+    }
 
     // The tool_input should have the event payload directly, or nested under 'event'
     const eventPayload = toolInput.event || toolInput;

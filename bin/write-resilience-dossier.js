@@ -28,7 +28,7 @@ const path = require('path');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
-const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { writeEvent } = require('./_lib/audit-event-writer');
 const { recordDegradation } = require('./_lib/degraded-journal');
 const { loadResilienceConfig } = require('./_lib/config-schema');
 const { readFileBounded } = require('./_lib/file-read-bounded');
@@ -431,9 +431,11 @@ function _readDriftInvariants(driftPath, cwd) {
 function _emitAuditEvent(auditDir, payload) {
   try {
     if (!_dirExists(auditDir)) return;
-    const eventsPath = path.join(auditDir, 'events.jsonl');
     const evt = Object.assign({ timestamp: new Date().toISOString() }, payload);
-    atomicAppendJsonl(eventsPath, evt);
+    // auditDir is `<cwd>/.orchestray/audit`; derive cwd two levels up so the
+    // gateway resolves the same target file.
+    const cwd = path.resolve(auditDir, '..', '..');
+    writeEvent(evt, { cwd });
   } catch (_e) { /* swallow */ }
 }
 

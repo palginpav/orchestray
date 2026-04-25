@@ -4,7 +4,7 @@
 /**
  * Golden-file test for W2 — §22b prompt hardening.
  *
- * Asserts that agents/pm-reference/tier1-orchestration.md §22b contains:
+ * Asserts that agents/pm-reference/phase-decomp.md §22b (post-W8 split) contains:
  *   1. The MUST directive with both tool names in an OR relationship.
  *   2. The fallback marker format example (pattern_record_skipped_reason:) in a
  *      code block context.
@@ -20,13 +20,33 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const TIER1_PATH = path.resolve(__dirname, '../agents/pm-reference/tier1-orchestration.md');
-const src = fs.readFileSync(TIER1_PATH, 'utf8');
+// W8 (v2.1.15): §22b moved from tier1-orchestration.md to phase-decomp.md
+// during the I-PHASE-GATE split. The header form changed from "### 22b." to
+// "## 22b." since the slice file uses H2 for top-level sections.
+const SLICE_PATH = path.resolve(__dirname, '../agents/pm-reference/phase-decomp.md');
+const src = fs.readFileSync(SLICE_PATH, 'utf8');
 
 // Extract §22b section once for all scoped tests.
-// §22b starts at "### 22b." and ends just before the next "\n### " heading.
-const section22bIdx = src.indexOf('### 22b.');
-const section22bEnd = src.indexOf('\n### ', section22bIdx + 1);
+// §22b in phase-decomp.md starts at "## 22b." and ends just before the next
+// "## " H2 (use a regex that won't greedily skip subsections like §22b.R).
+const section22bIdx = src.indexOf('## 22b.');
+// Walk forward to find the next H2 (`\n## `) that is NOT a §22b subsection.
+let section22bEnd = -1;
+{
+  let scan = section22bIdx + 1;
+  while (scan < src.length) {
+    const next = src.indexOf('\n## ', scan);
+    if (next === -1) { section22bEnd = -1; break; }
+    // §22b subsections (like ## 22b-federation, ## 22b.R) stay inside §22b
+    const tail = src.slice(next + 4, next + 20);
+    if (tail.startsWith('22b') || tail.startsWith('§22b')) {
+      scan = next + 4;
+      continue;
+    }
+    section22bEnd = next;
+    break;
+  }
+}
 const section22b = src.slice(section22bIdx, section22bEnd === -1 ? undefined : section22bEnd);
 
 describe('W2 golden-file — §22b prompt hardening', () => {

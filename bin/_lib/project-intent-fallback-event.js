@@ -20,7 +20,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { atomicAppendJsonl } = require('./atomic-append');
+const { writeEvent } = require('./audit-event-writer');
 const { getCurrentOrchestrationFile } = require('./orchestration-state');
 
 /**
@@ -41,7 +41,6 @@ function emitProjectIntentFallbackEvent({ cwd, reason = null, detail = null } = 
     if (!cwd || typeof cwd !== 'string') return false;
 
     const auditDir = path.join(cwd, '.orchestray', 'audit');
-    const eventsPath = path.join(auditDir, 'events.jsonl');
 
     // Read current orchestration_id (fail-open: null if unavailable).
     let orchestrationId = null;
@@ -69,7 +68,7 @@ function emitProjectIntentFallbackEvent({ cwd, reason = null, detail = null } = 
       source: 'pm-step-2.7a',
     };
 
-    atomicAppendJsonl(eventsPath, event);
+    writeEvent(event, { cwd });
     return true;
   } catch (err) {
     // Fail-open: warn but never throw — the PM must continue to the fallback path.

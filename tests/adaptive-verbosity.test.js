@@ -378,19 +378,22 @@ describe('validateAdaptiveVerbosityConfig — valid inputs accepted', () => {
 describe('tier1-orchestration.md §3.Y structural content', () => {
 
   // W5 split: §3.Y content moved to tier1-orchestration-rare.md.
-  // Tests scan both files so the suite passes regardless of which file hosts the content.
-  const TIER1 = path.join(ROOT, 'agents/pm-reference/tier1-orchestration.md');
+  // W8 (v2.1.15): tier1-orchestration.md retired to .legacy. Scan the legacy
+  // file plus the rare file so the suite passes regardless of which one hosts
+  // the content.
+  const TIER1_LEGACY = path.join(ROOT, 'agents/pm-reference/tier1-orchestration.md.legacy');
   const TIER1_RARE = path.join(ROOT, 'agents/pm-reference/tier1-orchestration-rare.md');
 
   function getContent() {
     let c = '';
-    try { c += fs.readFileSync(TIER1, 'utf8'); } catch (_e) { /* ok */ }
+    try { c += fs.readFileSync(TIER1_LEGACY, 'utf8'); } catch (_e) { /* ok */ }
     try { c += '\n' + fs.readFileSync(TIER1_RARE, 'utf8'); } catch (_e) { /* ok */ }
     return c;
   }
 
   test('file exists', () => {
-    assert.ok(fs.existsSync(TIER1), `${TIER1} must exist`);
+    // Legacy preserves §3.Y content for one release per W8 reversibility plan.
+    assert.ok(fs.existsSync(TIER1_LEGACY), `${TIER1_LEGACY} must exist for the rollback path`);
   });
 
   test('contains §3.Y heading (adaptive verbosity section)', () => {

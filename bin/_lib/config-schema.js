@@ -3687,6 +3687,20 @@ function validateHandoffBodyCapConfig(obj) {
 //     "pattern_extraction", "archetype_cache"
 //   Slugs not in the eligible allowlist produce a config warning with a list of
 //   valid slugs. (Unknown slugs are NOT hard errors — fail-open.)
+//
+// feature_demand_gate.shadow_mode — boolean, default FALSE in v2.1.15+.
+//   v2.1.14 advisory-only behavior is now opt-in. When false (the v2.1.15
+//   default), bin/session-feature-gate.js auto-populates quarantine_candidates
+//   with wired-emitter protocols whose 14-day observation window shows zero
+//   tier2_invoked events. When true, no auto-quarantine occurs (legacy
+//   v2.1.14 behavior — manual opt-in via quarantine_candidates only).
+//
+//   Locked Q1 (v2.1.15 release plan): aggressive default-on. Repos with an
+//   explicit `shadow_mode: true` set under v2.1.14 are MIGRATED to false on
+//   first session under v2.1.15 by bin/session-feature-gate.js, with a
+//   one-time stderr banner naming the override and the opt-out path. To
+//   restore v2.1.14 behavior, the user must re-set shadow_mode:true after
+//   the migration banner fires.
 // ---------------------------------------------------------------------------
 
 /** @type {Readonly<{eligible_slugs: string[]}>} */
@@ -3696,6 +3710,7 @@ const DEFAULT_FEATURE_DEMAND_GATE = Object.freeze({
   enabled:                  true,
   observation_window_days:  14,
   quarantine_candidates:    Object.freeze([]),
+  shadow_mode:              false, // v2.1.15 R-GATE-AUTO flip — was implicit-true (advisory) under v2.1.14.
 });
 
 /**
@@ -3705,47 +3720,39 @@ const DEFAULT_FEATURE_DEMAND_GATE = Object.freeze({
  * Fail-open contract: missing/malformed returns DEFAULT_FEATURE_DEMAND_GATE.
  *
  * @param {string} cwd - Project root directory (absolute path).
- * @returns {{ enabled: boolean, observation_window_days: number, quarantine_candidates: string[] }}
+ * @returns {{ enabled: boolean, observation_window_days: number, quarantine_candidates: string[], shadow_mode: boolean }}
  */
 function loadFeatureDemandGateConfig(cwd) {
   const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  const fallbackDefaults = () => ({
+    enabled:                 DEFAULT_FEATURE_DEMAND_GATE.enabled,
+    observation_window_days: DEFAULT_FEATURE_DEMAND_GATE.observation_window_days,
+    quarantine_candidates:   [...DEFAULT_FEATURE_DEMAND_GATE.quarantine_candidates],
+    shadow_mode:             DEFAULT_FEATURE_DEMAND_GATE.shadow_mode,
+  });
+
   let raw;
   try {
     raw = fs.readFileSync(configPath, 'utf8');
   } catch (_) {
-    return {
-      enabled:                 DEFAULT_FEATURE_DEMAND_GATE.enabled,
-      observation_window_days: DEFAULT_FEATURE_DEMAND_GATE.observation_window_days,
-      quarantine_candidates:   [...DEFAULT_FEATURE_DEMAND_GATE.quarantine_candidates],
-    };
+    return fallbackDefaults();
   }
 
   let parsed;
   try {
     parsed = JSON.parse(raw);
   } catch (_) {
-    return {
-      enabled:                 DEFAULT_FEATURE_DEMAND_GATE.enabled,
-      observation_window_days: DEFAULT_FEATURE_DEMAND_GATE.observation_window_days,
-      quarantine_candidates:   [...DEFAULT_FEATURE_DEMAND_GATE.quarantine_candidates],
-    };
+    return fallbackDefaults();
   }
 
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return {
-      enabled:                 DEFAULT_FEATURE_DEMAND_GATE.enabled,
-      observation_window_days: DEFAULT_FEATURE_DEMAND_GATE.observation_window_days,
-      quarantine_candidates:   [...DEFAULT_FEATURE_DEMAND_GATE.quarantine_candidates],
-    };
+    return fallbackDefaults();
   }
 
   const fromFile = parsed.feature_demand_gate;
   if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
-    return {
-      enabled:                 DEFAULT_FEATURE_DEMAND_GATE.enabled,
-      observation_window_days: DEFAULT_FEATURE_DEMAND_GATE.observation_window_days,
-      quarantine_candidates:   [...DEFAULT_FEATURE_DEMAND_GATE.quarantine_candidates],
-    };
+    return fallbackDefaults();
   }
 
   const merged = Object.assign(

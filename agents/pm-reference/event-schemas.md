@@ -29,6 +29,9 @@ mcp_checkpoint_recorded.fields_used — fields_used + response_bytes augmentatio
 block_a_zone_composed — Block A zone assembly (hook, v2.1.14)
 cache_invariant_broken — Zone 1 hash mismatch detected (hook, v2.1.14)
 block_a_zone1_invalidated — Zone 1 manual invalidation (hook, v2.1.14)
+delta_handoff_fallback — developer full-artifact fetch decision in delta mode (PM, v2.1.15)
+budget_warn — pre-spawn context-size budget exceeded (hook, v2.1.15)
+phase_slice_fallback — phase-slice hook degraded path (no orchestration / unknown phase / missing slice file) (hook, v2.1.15 W8)
 
 END CONDITIONAL-LOAD NOTICE -->
 
@@ -4300,3 +4303,180 @@ Field notes:
 Schema stability: additive-only.
 
 Kill switches: `ORCHESTRAY_DISABLE_DEMAND_GATE=1`, `config.feature_demand_gate.enabled: false`.
+
+---
+
+### `feature_demand_gate_migrated` event
+
+Emitted once per repo by `bin/session-feature-gate.js` on the first session under
+v2.1.15 when an explicit `feature_demand_gate.shadow_mode: true` setting (the
+v2.1.14 opt-out) is overridden by the locked-Q1 aggressive default-on migration.
+Records the override for the audit trail. Idempotent via the
+`.orchestray/state/.r-gate-auto-migration-2115` sentinel.
+
+```json
+{
+  "version": 1,
+  "type": "feature_demand_gate_migrated",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id, or 'unknown'>",
+  "previous_value": true,
+  "new_value": false,
+  "reason": "v2.1.15 R-GATE-AUTO aggressive default-on migration"
+}
+```
+
+Field notes:
+- `version`: Always `1`.
+- `previous_value`: Always `true` (the explicit opt-out being overridden). Other
+  values cannot trigger this event.
+- `new_value`: Always `false` (the v2.1.15 default).
+- `reason`: Free-form provenance string.
+
+Schema stability: additive-only.
+
+Kill switches: `feature_demand_gate.shadow_mode: true` re-set after migration
+(per the migration banner) reverts the aggressive flip.
+
+---
+
+## v2.1.15 additions (R-DELTA-HANDOFF)
+
+### `delta_handoff_fallback` event
+
+Emitted by the developer agent (or the PM on behalf of the developer prompt rule) when
+a re-delegation uses a delta payload and the agent must decide whether to fetch the full
+artifact. Emitted once per re-delegation regardless of fetch outcome.
+
+Three deterministic fetch triggers (P-DELTA-FALLBACK, W4 Gap 2):
+- `issue_gap` — `reviewer_issues[]` empty and planned file not named in summary.
+- `hedged_summary` — summary contains hedge phrases ("see details", "additional context",
+  "depends on", "may need", "recommend reviewing").
+- `cross_orch_scope` — planned Edit/Write targets a file whose `git log -1` predates
+  the orchestration start.
+
+Kill switch: `config.delta_handoff.force_full: true` forces `fetched: true` with
+`reason: "force_config"` regardless of trigger evaluation.
+
+```json
+{
+  "event_type": "delta_handoff_fallback",
+  "version": 1,
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id, or 'unknown'>",
+  "task_id": "<subtask id, or 'unknown'>",
+  "agent_type": "developer",
+  "fetched": true,
+  "reason": "<issue_gap | hedged_summary | cross_orch_scope | force_config | null>",
+  "summary_chars": 340,
+  "detail_artifact": "<kb path to full reviewer artifact>"
+}
+```
+
+Field notes:
+- `version`: Always `1`.
+- `fetched`: `true` if the developer fetched the full artifact; `false` if delta was sufficient.
+- `reason`: The trigger that caused the fetch, or `null` when `fetched` is `false`.
+  `force_config` means `config.delta_handoff.force_full` was `true`.
+- `summary_chars`: Character length of the reviewer summary — used to track summary
+  verbosity over time.
+- `detail_artifact`: KB path the developer used (or would use) to fetch the full artifact.
+
+Target fetch rate: 10–30%. Aggregate via `bin/collect-context-telemetry.js`.
+
+---
+
+## v2.1.15 additions (R-BUDGET)
+
+### `budget_warn` event
+
+Emitted by `bin/preflight-spawn-budget.js` (PreToolUse:Agent hook) when a role's
+computed context size (system + tier-2 + handoff) exceeds its configured budget.
+Emitted on WARN and BLOCK outcomes; not emitted when the check is disabled or
+the spawn is within budget.
+
+Enforcement default: **soft (warn-only)**. Hard-block requires
+`config.budget_enforcement.hard_block: true`.
+
+Kill switch: `config.budget_enforcement.enabled: false` disables all checks
+(hook exits 0 silently).
+
+Initial budgets ship as conservative defaults recorded as
+`source: "fallback_model_tier_thin_telemetry"` (W5 F-03: no p50 derivation
+when telemetry window < 14 days or N < 30 samples). Run
+`node bin/calibrate-role-budgets.js --window-days 14` after 14 days of data to
+generate recommended `1.2× p95` updates (v2.1.16 actor; does not auto-run).
+
+```json
+{
+  "event_type": "budget_warn",
+  "version": 1,
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id, or 'unknown'>",
+  "agent_role": "developer",
+  "computed_size": 72000,
+  "budget": 60000,
+  "source": "fallback_model_tier_thin_telemetry",
+  "overage_tokens": 12000,
+  "overage_pct": 20,
+  "hard_block": false,
+  "components": {
+    "system_prompt": 30000,
+    "tier2_injected": 20000,
+    "handoff_payload": 22000
+  }
+}
+```
+
+Field notes:
+- `version`: Always `1`.
+- `agent_role`: The role being spawned (e.g. `"developer"`, `"reviewer"`).
+- `computed_size`: Total tokens being sent to the agent (sum of components).
+- `budget`: The `budget_tokens` value from `config.role_budgets[role]`.
+- `source`: Source tag for the budget value (e.g. `"fallback_model_tier_thin_telemetry"`).
+- `overage_tokens`: `computed_size - budget`. Always positive when this event fires.
+- `overage_pct`: `round((overage_tokens / budget) * 100)`.
+- `hard_block`: `true` when `config.budget_enforcement.hard_block` is set and this
+  event causes the spawn to be denied (exit 2); `false` in soft-warn mode.
+- `components`: Breakdown of where the tokens come from — useful for identifying
+  the largest contributor to trim (system prompt vs. tier-2 injections vs. handoff).
+
+On receiving this event: trim `tier2_injected` by loading fewer `pm-reference/`
+files, or split the task into smaller subtasks to reduce `handoff_payload`.
+
+Schema stability: additive-only.
+
+
+---
+
+### `phase_slice_fallback` event (v2.1.15 W8 I-PHASE-GATE)
+
+Emitted by `bin/inject-active-phase-slice.js` when the runtime hook cannot
+stage a phase slice for the current PM turn. This is a degraded path —
+when fired, the PM falls back to contract-only context (no slice). The
+event is informational; it never blocks the turn.
+
+```json
+{
+  "version": 1,
+  "type": "phase_slice_fallback",
+  "ts": "2026-04-25T12:34:56.789Z",
+  "orchestration_id": "orch-1777200000",
+  "reason": "no_active_orchestration"
+}
+```
+
+`reason` field values:
+
+- `no_active_orchestration` — `.orchestray/state/orchestration.md` missing or
+  has no `current_phase` field. Common at session start.
+- `unrecognized_phase` — `current_phase` is set but does not map to any of the
+  five phase slices (decomp / execute / verify / close). May indicate a
+  mis-spelled phase value.
+- `slice_file_missing:<filename>` — the resolved slice file is not present on
+  disk (e.g. someone deleted `phase-execute.md`). Investigate the install.
+
+The hook returns `{continue: true}` regardless. Operators monitoring this
+event regularly indicate a slice mis-mapping needing investigation.
+
+Schema stability: additive-only.

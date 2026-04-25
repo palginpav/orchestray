@@ -44,7 +44,7 @@ const {
   DEFAULT_STATE_SENTINEL,
   DEFAULT_REDO_FLOW,
 } = require('./_lib/config-schema');
-const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { writeEvent } = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { recordDegradation } = require('./_lib/degraded-journal');
 
@@ -1811,14 +1811,11 @@ function runW9PatternDecaySeed(cwd, stateDir, sentinelPath) {
   }
 
   try {
-    const auditDir = path.join(cwd, '.orchestray', 'audit');
-    fs.mkdirSync(auditDir, { recursive: true });
-    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), {
-      timestamp: new Date().toISOString(),
+    writeEvent({
       type: 'config_key_seeded',
       key: 'pattern_decay',
       release: '2.0.18',
-    });
+    }, { cwd });
   } catch (_e) {
     // Audit failure is non-fatal.
   }
@@ -1895,14 +1892,11 @@ function runW12AntiPatternGateSeed(cwd, stateDir, sentinelPath) {
   }
 
   try {
-    const auditDir = path.join(cwd, '.orchestray', 'audit');
-    fs.mkdirSync(auditDir, { recursive: true });
-    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), {
-      timestamp: new Date().toISOString(),
+    writeEvent({
       type: 'config_key_seeded',
       key: 'anti_pattern_gate',
       release: '2.0.18',
-    });
+    }, { cwd });
   } catch (_e) {
     // Audit failure is non-fatal.
   }
@@ -1979,14 +1973,11 @@ function runW7StateSentinelSeed(cwd, stateDir, sentinelPath) {
   }
 
   try {
-    const auditDir = path.join(cwd, '.orchestray', 'audit');
-    fs.mkdirSync(auditDir, { recursive: true });
-    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), {
-      timestamp: new Date().toISOString(),
+    writeEvent({
       type: 'config_key_seeded',
       key: 'state_sentinel',
       release: '2.0.18',
-    });
+    }, { cwd });
   } catch (_e) {
     // Audit failure is non-fatal.
   }
@@ -2063,14 +2054,11 @@ function runW8RedoFlowSeed(cwd, stateDir, sentinelPath) {
   }
 
   try {
-    const auditDir = path.join(cwd, '.orchestray', 'audit');
-    fs.mkdirSync(auditDir, { recursive: true });
-    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), {
-      timestamp: new Date().toISOString(),
+    writeEvent({
       type: 'config_key_seeded',
       key: 'redo_flow',
       release: '2.0.18',
-    });
+    }, { cwd });
   } catch (_e) {
     // Audit failure is non-fatal.
   }
@@ -2155,14 +2143,11 @@ function runFC3bLegacyKeyStrip(cwd, _stateDir) {
   // Sub-object cleanup is silent — it accompanies the top-level strip.
   if (strippedTopLevel.length > 0) {
     try {
-      const auditDir = path.join(cwd, '.orchestray', 'audit');
-      fs.mkdirSync(auditDir, { recursive: true });
-      atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), {
-        timestamp: new Date().toISOString(),
+      writeEvent({
         type: 'config_key_stripped',
         keys_stripped: strippedTopLevel,
         release: '2.0.18',
-      });
+      }, { cwd });
     } catch (_e) {
       // Audit failure is non-fatal.
     }

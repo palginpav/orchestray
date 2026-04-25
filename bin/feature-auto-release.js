@@ -34,7 +34,7 @@ const fs   = require('fs');
 const path = require('path');
 
 const { resolveSafeCwd }    = require('./_lib/resolve-project-cwd');
-const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { writeEvent } = require('./_lib/audit-event-writer');
 const {
   getQuarantineCandidates,
   addSessionWake,
@@ -230,7 +230,7 @@ function handle(event) {
         gate_slug:        slug,
         match_text:       matchText,
       };
-      atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), auditEvent);
+      writeEvent(auditEvent, { cwd });
     }
   } catch (_e) {
     // Fail-open

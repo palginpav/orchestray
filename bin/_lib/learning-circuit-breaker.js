@@ -21,7 +21,7 @@
 
 const fs   = require('node:fs');
 const path = require('node:path');
-const { atomicAppendJsonl } = require('./atomic-append');
+const { writeEvent } = require('./audit-event-writer');
 const { getCurrentOrchestrationFile } = require('./orchestration-state');
 const { isLockAvailable } = require('./lock-probe');
 
@@ -83,14 +83,14 @@ function _emitLockContended(cwd, scope, lockWaitMs) {
   try {
     const auditDir = path.join(cwd, '.orchestray', 'audit');
     fs.mkdirSync(auditDir, { recursive: true });
-    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), {
+    writeEvent({
       timestamp: new Date().toISOString(),
       type: 'breaker_lock_contended',
       schema_version: 1,
       scope,
       mechanism: 'lock_probe_failed',
       wait_ms: lockWaitMs,
-    });
+    }, { cwd });
   } catch (_e) {
     // Fail-open.
   }
@@ -314,14 +314,14 @@ function _emitCircuitTripped(cwd, scope, reason, extra) {
 
     const auditDir = path.join(cwd, '.orchestray', 'audit');
     fs.mkdirSync(auditDir, { recursive: true });
-    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), Object.assign({
+    writeEvent(Object.assign({
       timestamp: new Date().toISOString(),
       type: 'learning_circuit_tripped',
       schema_version: 1,
       orchestration_id: orchId,
       scope,
       reason,
-    }, extra || {}));
+    }, extra || {}), { cwd });
   } catch (_e) {
     // Fail-open.
   }
@@ -504,13 +504,13 @@ function reset({ scope, cwd }) {
 
       const auditDir = path.join(root, '.orchestray', 'audit');
       fs.mkdirSync(auditDir, { recursive: true });
-      atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), {
+      writeEvent({
         timestamp: new Date().toISOString(),
         type: 'learning_circuit_reset',
         schema_version: 1,
         orchestration_id: orchId,
         scope,
-      });
+      }, { cwd: root });
     } catch (_e) { /* fail-open */ }
   }, root, scope);
 }

@@ -32,7 +32,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { writeEvent } = require('./_lib/audit-event-writer');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { clearSessionCache } = require('./_lib/shield-session-cache');
@@ -242,7 +242,6 @@ process.stdin.on('end', () => {
 
     // Append a pre_compact_archive event to the live audit log (if it exists)
     try {
-      const eventsPath = path.join(auditDir, 'events.jsonl');
       if (fs.existsSync(auditDir)) {
         const evt = {
           timestamp: new Date().toISOString(),
@@ -252,7 +251,7 @@ process.stdin.on('end', () => {
           snapshot_dir: path.relative(cwd, snapshotDir),
           archived_count: manifest.archived_files.length,
         };
-        atomicAppendJsonl(eventsPath, evt);
+        writeEvent(evt, { cwd });
       }
     } catch (_e) {
       // ignore — never fail the hook over audit logging
@@ -416,12 +415,14 @@ function _emitBlockEvent(auditDir, type, payload) {
       // Ensure the audit dir exists (first-run path).
       fs.mkdirSync(auditDir, { recursive: true });
     }
-    const eventsPath = path.join(auditDir, 'events.jsonl');
     const evt = Object.assign(
       { timestamp: new Date().toISOString(), type },
       payload
     );
-    atomicAppendJsonl(eventsPath, evt);
+    // auditDir is `<cwd>/.orchestray/audit`; derive cwd two levels up so
+    // writeEvent resolves the same events.jsonl target.
+    const cwd = path.resolve(auditDir, '..', '..');
+    writeEvent(evt, { cwd });
   } catch (_e) {
     // Never throw from audit emit.
   }

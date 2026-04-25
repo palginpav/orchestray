@@ -113,7 +113,14 @@ function getSchemas(cwd) {
 
   try {
     const content = fs.readFileSync(schemaPath, 'utf8');
-    _cachedSchemas = parseSchemas(content);
+    const parsed  = parseSchemas(content);
+    // Empty or unparseable schema content is functionally equivalent to an
+    // unreadable file — treat both as the "schema unavailable" signal so the
+    // gateway falls through to the warnings path rather than dropping every
+    // event as "unknown type". Tests run in tmpDirs with stub schema files
+    // and depend on this behavior.
+    if (!parsed || parsed.size === 0) return null;
+    _cachedSchemas   = parsed;
     _cacheSourcePath = schemaPath;
     return _cachedSchemas;
   } catch (_e) {

@@ -26,7 +26,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const { atomicAppendJsonl } = require('./atomic-append');
+const { writeEvent } = require('./audit-event-writer');
 const { resolveSafeCwd } = require('./resolve-project-cwd');
 const { recordDegradation } = require('./degraded-journal');
 
@@ -448,7 +448,6 @@ function recordAdvisoryServed(
 ) {
   try {
     const cwd = cwdOverride || resolveSafeCwd(null);
-    const eventsPath = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
     const eventsDir  = path.join(cwd, '.orchestray', 'audit');
     if (!fs.existsSync(eventsDir)) {
       try { fs.mkdirSync(eventsDir, { recursive: true }); } catch (_e) {}
@@ -469,7 +468,7 @@ function recordAdvisoryServed(
     };
 
     try {
-      atomicAppendJsonl(eventsPath, event);
+      writeEvent(event, { cwd });
     } catch (writeErr) {
       // Advisory hint write failed — record degraded entry so the failure is observable.
       // Wrapped in its own try/catch so a recordDegradation failure cannot throw here.

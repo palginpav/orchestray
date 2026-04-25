@@ -21,7 +21,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { writeEvent } = require('./_lib/audit-event-writer');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
@@ -203,7 +203,7 @@ process.stdin.on('end', () => {
 
     fs.mkdirSync(auditDir, { recursive: true });
     try { fs.chmodSync(auditDir, 0o700); } catch (_e) { /* best-effort hardening; chmod may fail on exotic filesystems */ }
-    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), routingEvent);
+    writeEvent(routingEvent, { cwd });
 
     // Fix A (v2.1.8): write spawn-accepted sentinel so remind-model-before-spawn.js
     // knows a spawn has completed in this orchestration and stops reminding.
@@ -253,7 +253,7 @@ process.stdin.on('end', () => {
           spawn_timestamp: spawnTs,
           duration_ms: durationMs,
         };
-        atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), mergedEvent);
+        writeEvent(mergedEvent, { cwd });
       } else {
         // No matching stop-side entry: orphaned spawn (agent may not have started,
         // or pending file was unavailable). No merged event emitted. This is normal

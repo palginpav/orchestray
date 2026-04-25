@@ -62,7 +62,7 @@ const {
 
 const { getSharedPatternsDir } = require('../mcp-server/lib/paths.js');
 const { recordDegradation } = require('./degraded-journal');
-const { atomicAppendJsonl } = require('./atomic-append');
+const { writeEvent } = require('./audit-event-writer');
 
 // ---------------------------------------------------------------------------
 // Audit event emitters for promote/unshare flagged paths (F-03/F-10 + W2-04 fix)
@@ -80,14 +80,14 @@ function _emitPromoteFlagged(projectRoot, tombstoneId, reason, slug) {
   try {
     const auditDir = path.join(projectRoot, '.orchestray', 'audit');
     fs.mkdirSync(auditDir, { recursive: true });
-    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), {
+    writeEvent({
       timestamp: new Date().toISOString(),
       type: 'curator_reconcile_promote_flagged',
       schema_version: 1,
       tombstone_id: tombstoneId || 'unknown',
       reason,
       recovery_command: '/orchestray:learn share ' + (slug || '<slug>'),
-    });
+    }, { cwd: projectRoot });
   } catch (_e) {
     // Fail-open.
   }
@@ -106,14 +106,14 @@ function _emitUnshareFlagged(projectRoot, tombstoneId, reason, slug) {
   try {
     const auditDir = path.join(projectRoot, '.orchestray', 'audit');
     fs.mkdirSync(auditDir, { recursive: true });
-    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), {
+    writeEvent({
       timestamp: new Date().toISOString(),
       type: 'curator_reconcile_unshare_flagged',
       schema_version: 1,
       tombstone_id: tombstoneId || 'unknown',
       reason,
       recovery_command: '/orchestray:learn unshare ' + (slug || '<slug>'),
-    });
+    }, { cwd: projectRoot });
   } catch (_e) {
     // Fail-open.
   }

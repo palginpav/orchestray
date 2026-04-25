@@ -24,8 +24,7 @@ const fs     = require('fs');
 const path   = require('path');
 
 const { resolveSafeCwd }    = require('./_lib/resolve-project-cwd');
-const { atomicAppendJsonl } = require('./_lib/atomic-append');
-const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
+const { writeEvent } = require('./_lib/audit-event-writer');
 
 const STATE_DIR      = path.join('.orchestray', 'state');
 const ZONES_FILE     = 'block-a-zones.json';
@@ -37,22 +36,8 @@ const SENTINEL_FILE  = '.block-a-zone-caching-disabled';
 
 function emitAuditEvent(cwd, eventType, extra) {
   try {
-    const auditDir   = path.join(cwd, '.orchestray', 'audit');
-    const eventsFile = path.join(auditDir, 'events.jsonl');
-    fs.mkdirSync(auditDir, { recursive: true });
-
-    let orchestrationId = 'unknown';
-    try {
-      const orchFile = getCurrentOrchestrationFile(cwd);
-      const orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
-      if (orchData && orchData.orchestration_id) orchestrationId = orchData.orchestration_id;
-    } catch (_e) {}
-
-    const entry = Object.assign(
-      { version: 1, timestamp: new Date().toISOString(), type: eventType, orchestration_id: orchestrationId },
-      extra
-    );
-    atomicAppendJsonl(eventsFile, entry);
+    const entry = Object.assign({ version: 1, type: eventType }, extra);
+    writeEvent(entry, { cwd });
   } catch (_e) {}
 }
 

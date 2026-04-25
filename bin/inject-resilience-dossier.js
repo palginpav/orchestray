@@ -44,7 +44,7 @@ const path = require('path');
 
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
-const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { writeEvent } = require('./_lib/audit-event-writer');
 const { recordDegradation } = require('./_lib/degraded-journal');
 const { loadResilienceConfig } = require('./_lib/config-schema');
 const { parseDossier, _fenceCollisionScan } = require('./_lib/resilience-dossier-schema');
@@ -568,8 +568,7 @@ function _audit(cwd, payload) {
   try {
     const auditDir = path.join(cwd, '.orchestray', 'audit');
     if (!_dirExists(auditDir)) return;
-    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'),
-      Object.assign({ timestamp: new Date().toISOString() }, payload));
+    writeEvent(payload, { cwd });
   } catch (_e) { /* swallow */ }
 }
 

@@ -55,7 +55,7 @@ const os   = require('node:os');
 
 const { parse: parseFrontmatter }    = require('./mcp-server/lib/frontmatter');
 const { recordDegradation }          = require('./_lib/degraded-journal');
-const { atomicAppendJsonl }          = require('./_lib/atomic-append');
+const { writeEvent }                 = require('./_lib/audit-event-writer');
 const { loadAutoLearningConfig }     = require('./_lib/config-schema');
 const { normalizeEvent }             = require('./read-event');
 
@@ -747,12 +747,11 @@ function emitAuditEvent(projectRoot, event) {
   try {
     const auditDir  = path.join(projectRoot, '.orchestray', 'audit');
     fs.mkdirSync(auditDir, { recursive: true });
-    const eventsPath = path.join(auditDir, 'events.jsonl');
-    atomicAppendJsonl(eventsPath, {
+    writeEvent({
       timestamp:        new Date().toISOString(),
       orchestration_id: _resolveOrchId(projectRoot),
       ...event,
-    });
+    }, { cwd: projectRoot });
   } catch (_e) {
     // fail-open
   }
@@ -1002,13 +1001,13 @@ if (require.main === module) {
     try {
       const auditDir  = path.join(projectRoot, '.orchestray', 'audit');
       fs.mkdirSync(auditDir, { recursive: true });
-      atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), {
+      writeEvent({
         timestamp:      new Date().toISOString(),
         type:           'pattern_roi_skipped',
         schema_version: SNAPSHOT_SCHEMA_VERSION,
         reason:         'error',
         orchestration_id: 'unknown',
-      });
+      }, { cwd: projectRoot });
     } catch (_e2) {}
     process.exit(0);
   }

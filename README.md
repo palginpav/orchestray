@@ -174,9 +174,11 @@ Orchestray activates automatically on complex prompts. You can also use slash co
 | `/orchestray:kb` | View and manage the knowledge base |
 | `/orchestray:update` | Update Orchestray to the latest version |
 
-### Feature demand and quarantine (v2.1.14+)
+### Feature demand and quarantine (v2.1.15+)
 
-Orchestray watches which of its optional protocols actually run on your repo and logs quarantine candidates in the background — no behavior changes for the first two weeks. After that window, you can opt specific protocols out of loading by listing them in `feature_demand_gate.quarantine_candidates` in `.orchestray/config.json`. Use `/orchestray:feature status` to see demand counts, and `/orchestray:feature wake <name>` to re-enable a quarantined protocol instantly for the current session (or `/orchestray:feature wake --persist <name>` for a 30-day pin). Auto-quarantine without a config edit is planned for v2.1.15 once the observation window has accumulated data on your repo.
+Starting in v2.1.15, auto-quarantine is active by default. Orchestray automatically skips feature protocols that haven't been used on your repo in the past 14 days and shows a session-start banner naming any quarantined features. If you set `feature_demand_gate.shadow_mode: true` in v2.1.14, that setting was overridden on your first session under v2.1.15 (you will have seen a one-time banner). To opt out, set `feature_demand_gate.shadow_mode: true` in `.orchestray/config.json` again.
+
+Use `/orchestray:feature status` to see demand counts, and `/orchestray:feature wake <name>` to re-enable a quarantined protocol instantly for the current session (or `/orchestray:feature wake --persist <name>` for a 30-day pin). Note: setting `shadow_mode: true` in config alone does not re-enable any already-quarantined protocol; use `/orchestray:feature wake --persist <name>` for each one.
 
 ## Agent roles
 
@@ -387,7 +389,49 @@ enable_drift_sentinel           Detect architectural drift via auto-extracted in
 config_drift_silence            Top-level config keys to silence from the boot-time drift warning
                                 (default: []). Use for intentional custom keys (e.g., a third-party
                                 integration seed). Example: ["my_custom_key"].
+
+feature_demand_gate.shadow_mode      Set true to disable automatic feature quarantine and restore
+                                     v2.1.14 observe-only behavior (default: false as of v2.1.15;
+                                     if you set this to true in v2.1.14, it was overridden on upgrade
+                                     — set it again to opt out)
+
+delta_handoff.enabled                Send only changed sections in agent handoffs instead of full
+                                     artifacts (default: true); set false to restore full-payload mode
+
+delta_handoff.force_full             Force a full handoff payload for this session regardless of
+                                     delta eligibility (default: false); rollback switch only
+
+phase_slice_loading.enabled          Load only the orchestration-phase-relevant slice of the main
+                                     reference file instead of the full file (default: true);
+                                     set false to restore full-file loading
+
+curator_slice_loading.enabled        Load only the active curator stage slice (default: true);
+                                     set false to restore full curator context loading
+
+budget_enforcement.enabled           Enable per-role context-size budget checks before each agent
+                                     spawn (default: true); set false to disable entirely
+
+budget_enforcement.hard_block        When true, block spawns that exceed their role budget;
+                                     when false, warn only (default: false)
+
+role_budgets.<role>.budget_tokens    Token budget for a named agent role
+                                     (e.g. role_budgets.developer.budget_tokens);
+                                     all roles seeded with conservative defaults on install
 ```
+
+### Emergency kill switches (v2.1.15)
+
+All v2.1.15 features have kill switches. To roll back any feature immediately, set the corresponding config key in `.orchestray/config.json`:
+
+| Feature | Kill switch | Effect |
+|---|---|---|
+| Auto-quarantine | `feature_demand_gate.shadow_mode: true` | Restores observe-only mode |
+| Delta handoff | `delta_handoff.enabled: false` | Full artifact payload restored |
+| Phase slice loading | `phase_slice_loading.enabled: false` | Full reference file loaded |
+| Curator slice loading | `curator_slice_loading.enabled: false` | Full curator context loaded |
+| Spawn budget gate | `budget_enforcement.enabled: false` | All budget checks disabled |
+
+No session restart is needed for any of these kill switches.
 
 **Per-pattern sharing (2.1.13+).** A pattern with `sharing: local-only` in its frontmatter stays on this machine regardless of project-level federation settings. Honored on both the read path (pattern search excludes local-only patterns from cross-install views) and the write path (shared-tier promotion refuses local-only patterns). Forward-compatible with future federation sync. To pin a pattern today, edit its frontmatter directly: open `.orchestray/patterns/<slug>.md` and add `sharing: local-only` under the existing fields; `/orchestray:federation status` shows the total count of pinned patterns.
 

@@ -9,7 +9,7 @@
  * stale artifact — OQ1 resolved, Stage C landed. The test suite has been updated to
  * reflect the new reality instead of asserting the presence of the removed guard.
  *
- * Asserts that agents/pm-reference/tier1-orchestration.md §22c contains:
+ * Asserts that agents/pm-reference/phase-close.md §22c (post-W8 split) contains:
  *   1. The "§22c Stage A" subsection heading.
  *   2. The escalation ladder (Stage A → Stage B → Stage C).
  *   3. Advisory-only framing (warn, not block) at Stage A.
@@ -21,8 +21,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const TIER1_PATH = path.resolve(__dirname, '../agents/pm-reference/tier1-orchestration.md');
-const src = fs.readFileSync(TIER1_PATH, 'utf8');
+// W8 (v2.1.15): §22c moved from tier1-orchestration.md to phase-close.md
+// during the I-PHASE-GATE split. Header level changed too (now H3 under H2).
+const SLICE_PATH = path.resolve(__dirname, '../agents/pm-reference/phase-close.md');
+const src = fs.readFileSync(SLICE_PATH, 'utf8');
 
 // Extract §22c section: starts at "### 22c." and ends just before the next "\n### " heading.
 const section22cIdx = src.indexOf('### 22c.');
@@ -31,10 +33,10 @@ const section22c = src.slice(section22cIdx, section22cEnd === -1 ? undefined : s
 
 describe('W5 golden-file — §22c Stage A prompt (v2.0.15)', () => {
 
-  test('§22c section is present in tier1-orchestration.md', () => {
+  test('§22c section is present in phase-close.md', () => {
     assert.ok(
       section22cIdx !== -1,
-      'tier1-orchestration.md must contain a "### 22c." section'
+      'phase-close.md must contain a "### 22c." section'
     );
   });
 

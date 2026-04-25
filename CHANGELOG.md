@@ -3,6 +3,90 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.1.15] - 2026-04-25
+
+v2.1.15 turns Orchestray's v2.1.14 observability investment into active token savings. Three improvements land in parallel: the feature-demand gate — which observed quietly since v2.1.14 — now activates automatically and starts skipping unused feature protocols; the main orchestration reference file splits into phase-scoped slices so only the section relevant to your current work stage loads; and handoffs between agents shrink to a summary-plus-changes format instead of the full prior artifact. Together, these reduce the typical per-orchestration token ceiling from ~120,000 to a target of 70–80,000. Every change ships with a kill switch, an opt-out path, and an audit gate. 7 R-items shipped. 3793/3793 tests pass.
+
+**Token savings summary:** ~28,000 tokens/orchestration from auto-quarantine (R-GATE-AUTO), ~16,800 from delta handoffs (R-DELTA-HANDOFF), ~21,000 per turn from phase slice loading (I-PHASE-GATE), ~8,600 per curator spawn from curator slice loading (R-CURATOR-SPLIT). Total projected ceiling: ~70K (down from ~120K in v2.1.14).
+
+### Added
+
+- **Automatic feature-protocol quarantine (R-GATE-AUTO).** Starting in v2.1.15, Orchestray automatically skips feature protocols that haven't been used on your repo in the past 14 days. You'll see a session-start banner naming any protocols that were skipped. To re-enable any one, run `/orchestray:feature wake <name>` for the current session or `/orchestray:feature wake --persist <name>` to keep it active across sessions. Saves ~28,000 tokens per orchestration on repos with multiple feature flags active. See migration note below.
+
+- **Delta handoffs between agents (R-DELTA-HANDOFF).** When Orchestray re-delegates work to a developer after a reviewer pass, it now sends only the reviewer's summary, findings, and a diff of what changed — not the entire prior artifact. The full artifact stays in the knowledge base and any agent can fetch it on demand if needed. Saves ~16,800 tokens per medium-complexity orchestration. Kill switch: `delta_handoff.enabled: false` in `.orchestray/config.json`.
+
+- **Per-role context-size budgets (R-BUDGET).** Before spawning any agent, Orchestray checks whether the total context it's about to send exceeds that role's budget. If it does, it shows a plain-language warning in the session log. The initial budgets cover all 15 agent roles and are soft-enforce only (warn, not block) for the first 14 days — they tighten automatically once telemetry accumulates. Hard-block mode opt-in: `budget_enforcement.hard_block: true`. Kill switch: `budget_enforcement.enabled: false`. Note: live size-hint wiring (the mechanism that makes the hook fire on every spawn) ships in v2.1.16 — until then, only spawns whose delegation context explicitly carries `context_size_hint` will generate warnings. The hook, schema, and 15 per-role budgets are all live in v2.1.15.
+
+- **Centralized audit event gateway (R-SHDW-EMIT).** All of Orchestray's internal audit events now flow through a single writer (`bin/_lib/audit-event-writer.js`) that validates each event against the schema before it reaches the audit log. Any schema mismatch is caught at write time rather than discovered later. Closes the validator-wiring gap noted in v2.1.14.
+
+- **Phase-scoped orchestration reference loading (I-PHASE-GATE).** The main orchestration reference — 2,282 lines covering how Orchestray plans, executes, verifies, and closes work — is now split into four phase-specific files plus a small always-loaded contract file. Only the section relevant to the current phase of your orchestration loads per turn, saving ~21,000 tokens per turn. The full content remains accessible on demand. Kill switch: `phase_slice_loading.enabled: false` in `.orchestray/config.json`, or `ORCHESTRAY_DISABLE_PHASE_SLICES=1`. The legacy file is preserved as `tier1-orchestration.md.legacy` for one release.
+
+- **Phase-scoped curator reference loading (R-CURATOR-SPLIT).** The curator agent's decision reference (~940 lines) now loads in stage-scoped slices matching the active curator phase, saving ~8,600 tokens per curator spawn. Same pattern and kill switch as I-PHASE-GATE: `curator_slice_loading.enabled: false`.
+
+- **Telemetry wiring for 6 remaining feature protocols (R-TGATE-PM).** The six optional protocols that couldn't emit "was this protocol used?" events (drift detection, consequence forecasting, replay analysis, auto-documenter, disagreement protocol, and cognitive backpressure) now emit those events. This completes the demand-measurement signal that R-GATE-AUTO needs to make accurate quarantine decisions across all protocols.
+
+### Changed
+
+- **`feature_demand_gate.shadow_mode` default changed from `true` to `false`.** Auto-quarantine is now on by default. See migration note below.
+
+### Under the hood — hardening / observability
+
+- Four new audit event types: `feature_demand_gate_migrated` (one-time aggressive-default migration record), `delta_handoff_fallback` (full-artifact fetch from delta mode), `budget_warn` (per-role context budget exceeded), `phase_slice_fallback` (fallback when phase cannot be determined). Schemas in `agents/pm-reference/event-schemas.md`. Note: per-turn `phase_slice_injected` events are deferred to v2.1.16 — only `phase_slice_fallback` ships in v2.1.15.
+- Delta-handoff trigger evaluation order: `force_full` (kill switch) → `hedged_summary` → `cross_orch_scope` → `issue_gap`. First matching trigger sets `reason` in the emitted `delta_handoff_fallback` event. Documented in `agents/pm-reference/delegation-templates.md` §12.
+- 15 per-role initial budget defaults (conservative): pm: 80K, architect: 70K, developer: 60K, refactorer: 60K, reviewer: 50K, debugger: 50K, tester: 50K, documenter: 40K, inventor: 70K, researcher: 50K, security-engineer: 50K, release-manager: 40K, ux-critic: 40K, project-intent: 20K, platform-oracle: 30K. Budget calibration script (`bin/calibrate-role-budgets.js`) ships but runs as a v2.1.16 actor.
+- `bin/generate-handoff-delta.js` — new script that produces delta payloads from reviewer artifacts.
+- `bin/inject-active-phase-slice.js` — registered `UserPromptSubmit` hook; emits a small file-pointer string (well under the 10K `additionalContext` cap); Phase Oracle audit (W12) confirmed GO-WITH-RISK.
+- `bin/inject-active-curator-stage.js` — curator stage injector; NOT registered in hooks.json because curator is manually invoked, not session-auto-spawned. PM loads curator stages via Read at spawn time.
+- `bin/preflight-spawn-budget.js` — registered `PreToolUse:Agent` hook; soft-warn on budget breach; hard-block opt-in.
+- `bin/_lib/audit-event-writer.js` — central gateway for all audit event writes; schema-validated; PreToolUse validator blocks malformed events at write time.
+- `agents/pm-reference/tier1-orchestration.md` split into `phase-contract.md`, `phase-decomp.md`, `phase-execute.md`, `phase-verify.md`, `phase-close.md`. Legacy file preserved as `tier1-orchestration.md.legacy` for one release. All 83 cross-phase references mechanically resolved (validate-refs exit 0).
+- Event-schemas shadow regenerated: 81 event types, 3,966 bytes (up from 78/3,835 in v2.1.14).
+
+### Migration notes
+
+**R-GATE-AUTO — aggressive default flip (action required if you opted out in v2.1.14)**
+
+Starting in v2.1.15, Orchestray automatically quarantines feature gates that haven't fired on your repo for 14 days. **If you explicitly set `feature_demand_gate.shadow_mode: true` in v2.1.14 to opt out, that setting was OVERRIDDEN on your first session under v2.1.15.** You will see the following one-time banner when this happens:
+
+```
+[orchestray] v2.1.15 R-GATE-AUTO: feature_demand_gate.shadow_mode flipped from true to false.
+[orchestray]   Your explicit `shadow_mode: true` setting was OVERRIDDEN by the aggressive-default migration.
+[orchestray]   Starting now, Orchestray automatically quarantines feature gates that haven't fired
+[orchestray]   on your repo for 14 days. You'll see a session-start banner naming any quarantined
+[orchestray]   features. Re-enable any one with `/orchestray:feature wake <name>` (session) or
+[orchestray]   `/orchestray:feature wake --persist <name>` (across sessions).
+[orchestray]   To fully restore v2.1.14 behavior — two steps required:
+[orchestray]   Step 1: set `feature_demand_gate.shadow_mode: true` in `.orchestray/config.json`.
+[orchestray]   Step 2: for each quarantined feature listed above, run:
+[orchestray]           /orchestray:feature wake --persist <name>
+[orchestray]   Skipping Step 2 leaves the feature quarantined even after Step 1.
+```
+
+To restore v2.1.14 observe-only behavior, two steps are required:
+1. Set `feature_demand_gate.shadow_mode: true` in `.orchestray/config.json`.
+2. For each protocol that was quarantined during your first v2.1.15 session, run `/orchestray:feature wake --persist <name>`. Skipping Step 2 leaves those protocols quarantined even after Step 1.
+
+Note: a flag set to `true` in your config does not auto-wake any quarantined feature. Setting `shadow_mode: true` in v2.1.14 no longer survives an upgrade.
+
+**I-PHASE-GATE — orchestration reference restructure (action required only if you edited the file directly)**
+
+Internal restructure of the main orchestration reference file. No action needed unless you've edited `agents/pm-reference/tier1-orchestration.md` directly — those edits will not carry over to the new phase slice files. The legacy file is preserved as `tier1-orchestration.md.legacy` for one release. To revert to the old file: set `phase_slice_loading.enabled: false` in `.orchestray/config.json`.
+
+### Not in this release (with triggers)
+
+- **R-PIN cache_control wiring** — waiting on Claude Code's `additionalContext` hook payload supporting `cache_control` markers. Platform Oracle audit (W12) confirmed no pending change is documented. Monitored via platform watch.
+- **R-BUDGET live size-hint wiring** — `bin/preflight-spawn-budget.js` is live and the 15 per-role budgets are configured, but the PM delegation templates do not yet populate `context_size_hint` on every spawn. Warnings fire only on spawns that explicitly carry the hint. Full wiring is a v2.1.16 item — trigger: first orchestration regression where a spawned agent's context measurably exceeds its budget.
+- **Per-turn `phase_slice_injected` telemetry** — deferred to v2.1.16. Only `phase_slice_fallback` events ship in v2.1.15. Trigger: a v2.1.16 audit pass measures `phase_slice_fallback` event count > 0 from any production install OR I-PHASE-GATE measured savings drop below 80% of the 21K projection over 14 days. Until then, the fallback variant alone is sufficient telemetry.
+- **R-ORACLE-2 (explicit file-pointer pattern relies on PM prompt compliance, not platform enforcement)** — W12 platform-oracle audit rated this medium risk, non-blocking. v2.1.15 W14 pre-ship pass added an explicit pointer-handling rule to `agents/pm.md` Section Loading Protocol (Branch (a) reading order) that names the pointer string format and instructs the PM to Read the named slice. The cross-phase flow is also encoded at file scope in `phase-verify.md §16 → phase-decomp.md §13` and mechanically verified by `bin/_tools/phase-split-validate-refs.js` exit 0 (83/83 references). The audit event log does not track `Read` tool calls, so live runtime evidence is unavailable in v2.1.15; this is accepted as the W12 GO-WITH-RISK basis. Trigger for v2.1.16 escalation to BLOCK: any user report of a PM that loads `phase-contract.md` but never reads any phase slice in an orchestration spanning ≥3 phases, OR a v2.1.16 audit-event addition that tracks `Read` calls and shows zero slice Reads across 5 dogfood orchestrations.
+- **R-ORACLE-3 (`inject-active-curator-stage.js` emits no `additionalContext`)** — W12 flagged this as medium risk. The curator uses an alternative Read-based discovery path. Verify in W14 that no context injection gap exists. Trigger: curator orchestration where a stage's content is not loaded despite the hook running.
+- **R-CAT agent-default adoption**, **LLMLingua-2**, **semantic cache**, **contextual retrieval**, **Aider repo map**, **Agent Teams bulk adoption**, **`auto_document` default-off**, **reviewer dimension scoping** — all carry over from v2.1.14 with their existing triggers.
+
+### Tests
+
+- **3793 tests / 3793 pass / 0 fail.** Net +112 tests across Phase 2 (R-DELTA-HANDOFF +35, R-BUDGET +16, R-GATE-AUTO +5, I-PHASE-GATE +24, R-CURATOR-SPLIT +21, adjustments +11). No deletions.
+
+---
+
 ## [2.1.14] - 2026-04-25
 
 v2.1.14 is the "cheaper orchestrations, same accuracy" release. It ships observability foundations (R-TGATE), structural improvements (R-EMERGE, R-PFX, R-HCAP, R-FLAGS), the groundwork for measurement-driven feature quarantine and zone-pinned caching (R-GATE, R-PIN, R-SHDW), and a P3 stretch: pattern catalog mode (R-CAT). 9 R-items shipped. The pre-existing test baseline (16 failures) was eliminated as part of this release — 3682/3682 pass.

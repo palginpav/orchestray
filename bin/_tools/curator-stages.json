@@ -1,0 +1,91 @@
+{
+  "name": "curator-stages",
+  "source_file": "agents/curator.md",
+  "phases": ["contract", "decomp", "execute", "close"],
+  "classification": {
+    "contract": {
+      "sections": ["1", "3"],
+      "keywords": [
+        "Identity and Scope",
+        "When you run",
+        "What you do NOT do",
+        "Per-run caps",
+        "times_applied Counter Semantics",
+        "Read This Before Scoring",
+        "What you do"
+      ]
+    },
+    "decomp": {
+      "sections": ["2"],
+      "keywords": [
+        "Inputs You Read Every Run",
+        "Allowed reads",
+        "Proposed-patterns metadata",
+        "Optional reads",
+        "Explicitly forbidden reads",
+        "Federation-absent promote block"
+      ]
+    },
+    "execute": {
+      "sections": ["4", "4.1", "4.2", "4.3"],
+      "keywords": [
+        "Decision Protocol",
+        "Promote (local",
+        "Merge (N patterns",
+        "Deprecate (mark",
+        "Candidate detection",
+        "Adversarial re-read skip",
+        "Low-value score formula",
+        "Skip-penalty suppression",
+        "Deprecation threshold"
+      ]
+    },
+    "close": {
+      "sections": ["5", "6", "7", "8", "9", "10", "11", "12"],
+      "keywords": [
+        "Tombstone Protocol",
+        "Guardrails",
+        "Hard Invariants",
+        "Run Output Format",
+        "Event Emission",
+        "Single-Pass Execution Model",
+        "pattern_find Closed-Loop",
+        "Configuration Keys",
+        "Dependency Notes",
+        "Incremental Mode",
+        "Atomicity ordering",
+        "Run lifecycle",
+        "Tombstone payload schema",
+        "Rationale field",
+        "Retention",
+        "Rollback commands",
+        "Category safety",
+        "Volume caps",
+        "Rollback safety",
+        "Concurrency safety",
+        "Scope safety",
+        "Merge lineage safety",
+        "curator_run_complete",
+        "undo-last via tool",
+        "undo-by-id via tool",
+        "list via tool",
+        "Tombstone invariant",
+        "Privacy and protection safety",
+        "Gate-before-commit safety",
+        "Default path (auto-apply)",
+        "Dry-run output",
+        "Events emitted automatically",
+        "Self-escalation",
+        "F1 (v2.1.0)",
+        "Your own reasoning",
+        "B9 (pattern_find",
+        "When this section applies",
+        "What dirtySetPath contains",
+        "Decision-scoping rules",
+        "evaluated_slugs",
+        "Zero-dirty short-circuit",
+        "Fallback: absent or empty"
+      ]
+    }
+  }
+}

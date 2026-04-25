@@ -878,17 +878,17 @@ function _localCollisionCheck(slug, promotedBody, cwd) {
 
     // Audit event.
     try {
-      const { atomicAppendJsonl } = require('./atomic-append');
+      const { writeEvent } = require('./audit-event-writer');
       const auditDir = path.join(cwd, '.orchestray', 'audit');
       fs.mkdirSync(auditDir, { recursive: true });
-      atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), {
+      writeEvent({
         timestamp: new Date().toISOString(),
         type: 'pattern_collision_local_warn',
         schema_version: 1,
         slug,
         local_hash: sharedHash.slice(0, 8),
         promoted_hash: promotedHash.slice(0, 8),
-      });
+      }, { cwd });
     } catch (_e) { /* swallow */ }
 
   } catch (_e) {

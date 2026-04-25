@@ -38,6 +38,7 @@ const {
   missingRequiredToolsFromRows,
 } = require('./_lib/mcp-checkpoint');
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { writeEvent }        = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 
 const VALID_TIERS = ['haiku', 'sonnet', 'opus'];
@@ -332,7 +333,7 @@ process.stdin.on('end', () => {
         if (resolveSource === 'routing_lookup' && routingEntryTimestamp) {
           resolveEvent.routing_entry_timestamp = routingEntryTimestamp;
         }
-        atomicAppendJsonl(eventsPathForResolve, resolveEvent);
+        writeEvent(resolveEvent, { cwd, eventsPath: eventsPathForResolve });
       } catch (_evErr) {
         // Fail-open: event emission failure must not block the spawn.
         process.stderr.write(
@@ -742,16 +743,14 @@ process.stdin.on('end', () => {
                     // Gated by !alreadyWarned: emit at most once per orchestration to avoid
                     // inflating analytics counts for mcp_checkpoint_missing events.
                     try {
-                      const eventsPath = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
-                      atomicAppendJsonl(eventsPath, {
-                        timestamp: new Date().toISOString(),
+                      writeEvent({
                         type: 'mcp_checkpoint_missing',
                         orchestration_id: orchId,
                         missing_tools: missing,
                         phase_mismatch: phaseMismatchTools.length > 0,
                         source: 'hook',
                         warn_mode: true,
-                      });
+                      }, { cwd });
                     } catch (_emitErr) {
                       process.stderr.write(
                         '[orchestray] gate-agent-spawn: failed to emit mcp_checkpoint_missing event (' +
@@ -875,16 +874,14 @@ process.stdin.on('end', () => {
                     if (praEnforcement === 'hook-strict') {
                       // Emit machine-readable audit event before blocking.
                       try {
-                        const eventsPath = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
-                        atomicAppendJsonl(eventsPath, {
-                          timestamp: new Date().toISOString(),
+                        writeEvent({
                           type: 'mcp_checkpoint_missing',
                           orchestration_id: orchId,
                           missing_tools: ['pattern_record_application'],
                           phase: 'post-decomposition',
                           phase_mismatch: false,
                           source: 'hook',
-                        });
+                        }, { cwd });
                       } catch (_emitErr) {
                         process.stderr.write(
                           '[orchestray] gate-agent-spawn: failed to emit post-decomp mcp_checkpoint_missing event (' +
@@ -964,16 +961,14 @@ process.stdin.on('end', () => {
         process.stdout.write(JSON.stringify({ additionalContext: antiPatternResult.additionalContext }));
         // Emit audit event (non-blocking — fail-open on write error).
         try {
-          const eventsPath = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
-          atomicAppendJsonl(eventsPath, {
-            timestamp: new Date().toISOString(),
+          writeEvent({
             type: 'anti_pattern_advisory_shown',
             orchestration_id: antiPatternResult.orchestration_id,
             pattern_name: antiPatternResult.pattern_name,
             agent_type: antiPatternResult.agent_type,
             matched_trigger: antiPatternResult.matched_trigger,
             decayed_confidence: antiPatternResult.decayed_confidence,
-          });
+          }, { cwd });
         } catch (_evErr) {
           process.stderr.write(
             '[orchestray] gate-agent-spawn: failed to emit anti_pattern_advisory_shown event (' +

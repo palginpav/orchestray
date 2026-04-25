@@ -18,7 +18,7 @@
 
 const path = require('node:path');
 const fs   = require('node:fs');
-const { atomicAppendJsonl } = require('./atomic-append');
+const { writeEvent } = require('./audit-event-writer');
 const { getCurrentOrchestrationFile } = require('./orchestration-state');
 
 // ---------------------------------------------------------------------------
@@ -252,21 +252,20 @@ function _emitQuarantineSkipped(orchestrationId, eventTypeDrop, reason, cwd) {
   try {
     const auditDir = path.join(cwd, '.orchestray', 'audit');
     fs.mkdirSync(auditDir, { recursive: true });
-    const eventsPath = path.join(auditDir, 'events.jsonl');
     // W2-09 fix: sanitize event_type_dropped to prevent adversary-controlled strings
     // from being echoed verbatim into events.jsonl. Truncate to 64 chars and replace
     // non-printable / non-ASCII bytes with '?'. Non-string types become 'unknown'.
     const sanitizedEventTypeDrop = typeof eventTypeDrop === 'string'
       ? eventTypeDrop.slice(0, 64).replace(/[^\x20-\x7E]/g, '?')
       : 'unknown';
-    atomicAppendJsonl(eventsPath, {
+    writeEvent({
       timestamp: new Date().toISOString(),
       type: 'auto_extract_quarantine_skipped',
       schema_version: 1,
       orchestration_id: orchestrationId,
       event_type_dropped: sanitizedEventTypeDrop,
       reason,
-    });
+    }, { cwd });
   } catch (_e) {
     // Fail-open: quarantine skip emission must never block the caller.
   }

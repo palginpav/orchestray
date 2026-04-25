@@ -18,8 +18,7 @@ const fs   = require('fs');
 const path = require('path');
 
 const { addSessionWake, addPinnedWake } = require('./_lib/effective-gate-state');
-const { atomicAppendJsonl }             = require('./_lib/atomic-append');
-const { getCurrentOrchestrationFile }   = require('./_lib/orchestration-state');
+const { writeEvent }                    = require('./_lib/audit-event-writer');
 const { WIRED_EMITTER_PROTOCOLS }       = require('./_lib/feature-demand-tracker');
 
 // ---------------------------------------------------------------------------
@@ -73,27 +72,15 @@ function main() {
     addSessionWake(cwd, slug);
   }
 
-  // Emit feature_wake audit event
+  // Emit feature_wake audit event (gateway auto-fills timestamp + orchestration_id)
   try {
-    let orchestrationId = 'unknown';
-    try {
-      const orchFile = getCurrentOrchestrationFile(cwd);
-      const orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
-      if (orchData && orchData.orchestration_id) orchestrationId = orchData.orchestration_id;
-    } catch (_e) {}
-
-    const auditDir = path.join(cwd, '.orchestray', 'audit');
-    try { fs.mkdirSync(auditDir, { recursive: true }); } catch (_e) {}
-
-    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), {
-      version:          1,
-      type:             'feature_wake',
-      timestamp:        new Date().toISOString(),
-      orchestration_id: orchestrationId,
-      gate_slug:        slug,
+    writeEvent({
+      version:   1,
+      type:      'feature_wake',
+      gate_slug: slug,
       scope,
-      caller:           'cli',
-    });
+      caller:    'cli',
+    }, { cwd });
   } catch (_e) {}
 
   if (persist) {

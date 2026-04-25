@@ -17,9 +17,9 @@ const fs = require('node:fs');
 
 const paths = require('./paths');
 const { logStderr } = require('./rpc');
-// Relative depth from bin/mcp-server/lib/audit.js to bin/_lib/atomic-append.js
+// Relative depth from bin/mcp-server/lib/audit.js to bin/_lib/audit-event-writer.js
 // is three hops: ../ out of lib/, ../ out of mcp-server/, _lib/. Verified.
-const { atomicAppendJsonl } = require('../../_lib/atomic-append');
+const { writeEvent } = require('../../_lib/audit-event-writer');
 
 const LEGAL_OUTCOMES = new Set(['answered', 'cancelled', 'declined', 'timeout', 'error']);
 
@@ -116,7 +116,11 @@ function readOrchestrationId() {
 function writeAuditEvent(event) {
   try {
     const target = paths.getAuditEventsPath();
-    atomicAppendJsonl(target, event);
+    // The MCP server resolves project root and events.jsonl through `paths`,
+    // which may differ from process.cwd(). Pass both so writeEvent uses the
+    // server-resolved target while still anchoring orchestration_id lookups
+    // to the same project root.
+    writeEvent(event, { cwd: paths.getProjectRoot(), eventsPath: target });
   } catch (err) {
     logStderr('audit write failed: ' + (err && err.message ? err.message : String(err)));
   }

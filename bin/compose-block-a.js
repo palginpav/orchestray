@@ -41,7 +41,7 @@ const crypto = require('crypto');
 const { resolveSafeCwd }    = require('./_lib/resolve-project-cwd');
 const { MAX_INPUT_BYTES }   = require('./_lib/constants');
 const { loadShadowWithCheck } = require('./_lib/load-schema-shadow');
-const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { writeEvent } = require('./_lib/audit-event-writer');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 
 const CONTINUE_RESPONSE = JSON.stringify({ continue: true });
@@ -54,6 +54,9 @@ const SENTINEL_FILE   = '.block-a-zone-caching-disabled';
 const ZONE1_SOURCES = [
   'CLAUDE.md',
   'agents/pm-reference/handoff-contract.md',
+  // v2.1.15 W8: phase-contract.md joins Zone 1 — always-loaded foundation for
+  // the I-PHASE-GATE phase-slice split.
+  'agents/pm-reference/phase-contract.md',
 ];
 
 // ---------------------------------------------------------------------------
@@ -121,22 +124,8 @@ function isSentinelActive(cwd) {
 
 function emitAuditEvent(cwd, eventType, extra) {
   try {
-    const auditDir   = path.join(cwd, '.orchestray', 'audit');
-    const eventsFile = path.join(auditDir, 'events.jsonl');
-    fs.mkdirSync(auditDir, { recursive: true });
-
-    let orchestrationId = 'unknown';
-    try {
-      const orchFile = getCurrentOrchestrationFile(cwd);
-      const orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
-      if (orchData && orchData.orchestration_id) orchestrationId = orchData.orchestration_id;
-    } catch (_e) {}
-
-    const entry = Object.assign(
-      { version: 1, timestamp: new Date().toISOString(), type: eventType, orchestration_id: orchestrationId },
-      extra
-    );
-    atomicAppendJsonl(eventsFile, entry);
+    const entry = Object.assign({ version: 1, type: eventType }, extra);
+    writeEvent(entry, { cwd });
   } catch (_e) {
     // Fail-open
   }

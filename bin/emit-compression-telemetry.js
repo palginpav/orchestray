@@ -30,7 +30,7 @@
 const fs = require('fs');
 const path = require('path');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
-const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { writeEvent } = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 
@@ -193,10 +193,7 @@ function countOccurrences(text, marker) {
  */
 function emitEvent(cwd, record) {
   try {
-    const auditDir = path.join(cwd, '.orchestray', 'audit');
-    fs.mkdirSync(auditDir, { recursive: true });
-    try { fs.chmodSync(auditDir, 0o700); } catch (_e) { /* best-effort */ }
-    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), record);
+    writeEvent(record, { cwd });
   } catch (_e) {
     // Swallow — telemetry must never crash the hook.
   }

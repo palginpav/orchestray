@@ -30,7 +30,10 @@
 const fs   = require('fs');
 const path = require('path');
 
-const { atomicAppendJsonl, atomicAppendJsonlIfAbsent } = require('./_lib/atomic-append');
+// atomicAppendJsonlIfAbsent is retained for the routing.jsonl write path (line ~553);
+// events.jsonl emissions now route through the central audit-event gateway.
+const { atomicAppendJsonlIfAbsent } = require('./_lib/atomic-append');
+const { writeEvent }                = require('./_lib/audit-event-writer');
 const { getCurrentOrchestrationFile }                  = require('./_lib/orchestration-state');
 
 // --------------------------------------------------------------------------
@@ -282,7 +285,7 @@ function cmdStateInit(positionals, flags, dryRun) {
     task:             task,
     started_at:       now,
   };
-  atomicAppendJsonl(eventsPath(cwd), event);
+  writeEvent(event, { cwd });
 }
 
 // --------------------------------------------------------------------------
@@ -328,7 +331,7 @@ function cmdStateComplete(positionals, flags, dryRun) {
     status:           status,
     completed_at:     now,
   };
-  atomicAppendJsonl(eventsPath(cwd), event);
+  writeEvent(event, { cwd });
 
   const mkrPath = getCurrentOrchestrationFile(cwd);
   try {
@@ -399,7 +402,7 @@ function cmdStatePause(positionals, flags, dryRun) {
     reason,
     paused_at:        now,
   };
-  atomicAppendJsonl(eventsPath(cwd), event);
+  writeEvent(event, { cwd });
 }
 
 // --------------------------------------------------------------------------
@@ -633,7 +636,7 @@ function cmdEventsAppend(positionals, flags, dryRun) {
     process.exit(0);
   }
 
-  atomicAppendJsonl(eventsPath(cwd), event);
+  writeEvent(event, { cwd });
 }
 
 // --------------------------------------------------------------------------

@@ -29,7 +29,7 @@
 const fs   = require('fs');
 const path = require('path');
 
-const { atomicAppendJsonl }           = require('./_lib/atomic-append');
+const { writeEvent }                  = require('./_lib/audit-event-writer');
 const { resolveSafeCwd }              = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES }             = require('./_lib/constants');
@@ -217,7 +217,7 @@ function handle(event) {
       // Directory creation failure is non-fatal.
     }
 
-    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), auditEvent);
+    writeEvent(auditEvent, { cwd });
   } catch (_e) {
     // Fail-open: any unexpected error — exit 0 with no stderr spam.
   } finally {

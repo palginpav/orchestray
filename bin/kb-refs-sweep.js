@@ -35,7 +35,7 @@ const fs   = require('node:fs');
 const path = require('node:path');
 const os   = require('node:os');
 
-const { atomicAppendJsonl }      = require('./_lib/atomic-append');
+const { writeEvent }             = require('./_lib/audit-event-writer');
 const { recordDegradation }       = require('./_lib/degraded-journal');
 const { resolveSafeCwd }          = require('./_lib/resolve-project-cwd');
 const { loadAutoLearningConfig }  = require('./_lib/config-schema');
@@ -166,16 +166,7 @@ function _isThrottled(lastRunPath, windowDays) {
 
 function _emitEvent(cwd, type, fields) {
   try {
-    const eventsPath = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
-    fs.mkdirSync(path.dirname(eventsPath), { recursive: true });
-    atomicAppendJsonl(eventsPath, Object.assign(
-      {
-        timestamp: new Date().toISOString(),
-        type,
-        schema_version: SCHEMA_VERSION,
-      },
-      fields
-    ));
+    writeEvent(Object.assign({ type, schema_version: SCHEMA_VERSION }, fields), { cwd });
   } catch (_e) {
     // Audit failure is non-fatal.
   }

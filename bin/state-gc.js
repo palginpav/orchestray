@@ -36,6 +36,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { normalizeEvent } = require('./read-event');
+const { writeEvent } = require('./_lib/audit-event-writer');
 
 // ---------------------------------------------------------------------------
 // Argument parsing
@@ -144,13 +145,11 @@ function isLeaked(eventsPath, keepDaysMs) {
 }
 
 /**
- * Append a JSON line to a JSONL file (best-effort, no locking needed here
- * because state-gc is an interactive CLI script, not a concurrent hook).
+ * Append an audit event via the central gateway. Best-effort; fail-open.
  */
-function appendJsonl(filePath, obj) {
+function appendAuditEvent(obj) {
   try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.appendFileSync(filePath, JSON.stringify(obj) + '\n');
+    writeEvent(obj, { cwd: projectDir });
   } catch (_e) {
     // Fail-open: audit event loss is acceptable over blocking gc.
   }
@@ -219,7 +218,7 @@ if (isDryRun) {
   }
   process.stdout.write('archived 0 dirs, discarded 0 dirs, skipped ' + skippedActive + ' active\n');
 
-  appendJsonl(auditEventsPath, {
+  appendAuditEvent({
     timestamp: new Date().toISOString(),
     type: 'state_gc_run',
     mode: effectiveMode,
@@ -262,7 +261,7 @@ for (const { dirName, dirPath } of leakedDirs) {
       fs.rmSync(dirPath, { recursive: true, force: true });
       discarded++;
       // Emit per-directory discard event
-      appendJsonl(auditEventsPath, {
+      appendAuditEvent({
         timestamp: new Date().toISOString(),
         type: 'state_gc_discarded',
         dir: dirName,
@@ -281,7 +280,7 @@ process.stdout.write(
   'archived ' + archived + ' dirs, discarded ' + discarded + ' dirs, skipped ' + skippedActive + ' active\n'
 );
 
-appendJsonl(auditEventsPath, {
+appendAuditEvent({
   timestamp: new Date().toISOString(),
   type: 'state_gc_run',
   mode: effectiveMode,

@@ -28,7 +28,7 @@ const fs   = require('fs');
 const path = require('path');
 
 const { resolveSafeCwd }    = require('./_lib/resolve-project-cwd');
-const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { writeEvent } = require('./_lib/audit-event-writer');
 const { computeDemandReport } = require('./_lib/feature-demand-tracker');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES }   = require('./_lib/constants');
@@ -140,7 +140,7 @@ function handle(event) {
       try {
         fs.mkdirSync(auditDir, { recursive: true });
       } catch (_e) {}
-      atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), auditEvent);
+      writeEvent(auditEvent, { cwd });
 
       cursor[slug] = new Date().toISOString();
       cursorDirty = true;

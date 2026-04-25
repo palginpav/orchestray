@@ -494,6 +494,22 @@ Bad: `description: "Fix auth module (developer)"` -> UI shows: `developer (Fix a
 
 > Read `agents/pm-reference/delegation-templates.md` for example delegation prompts and the full handoff template.
 
+### Re-Delegation After Reviewer Pass — Delta Payload (R-DELTA-HANDOFF)
+
+When re-delegating to a developer after a reviewer pass, use the **delta payload** by
+default (see `delegation-templates.md` § Section 12). Send only
+`reviewer_summary + reviewer_issues[] + delta_diff + detail_artifact` — not the full
+prior artifact. The full artifact remains in the KB; the developer fetches it on demand
+using the three deterministic trigger rules in `delegation-templates.md` § Fallback.
+
+**Kill switch:** Set `config.delta_handoff.force_full: true` in `.orchestray/config.json`
+to revert to full-artifact injection for all re-delegations. Default: `false`.
+The kill switch is a rollback mechanism, not a tuning option. When active, the developer
+emits `delta_handoff_fallback` with `reason: "force_config"`.
+
+**Delta mode disabled entirely:** Set `config.delta_handoff.enabled: false` to disable
+this feature and fall back to the previous full-context re-delegation behavior.
+
 ### Model and Effort Assignment at Spawn
 
 Every agent spawned during an orchestration MUST have its model set according to the
@@ -541,6 +557,39 @@ This file is the SINGLE SOURCE OF TRUTH for routing during the orchestration. Th
 **Dynamic spawns** (audit, debug, reviewer re-runs triggered mid-orchestration): you must append a new routing entry for any task not in the original decomposition BEFORE calling `Agent()`. The hook treats dynamic spawns identically — no entry, no spawn.
 
 **Re-planning and verify-fix re-spawns:** append a new entry with a fresh timestamp. The hook matches the MOST RECENT entry for `(agent_type, description)`, so re-spawns automatically pick up the latest routing.
+
+### Pre-Spawn Budget Check (R-BUDGET)
+
+Before spawning any agent, Orchestray checks whether the total context size
+(system instructions + tier-2 injected files + handoff payload) exceeds that
+role's configured budget. The check runs via `bin/preflight-spawn-budget.js`
+in the `PreToolUse:Agent` hook chain.
+
+**Default behaviour (soft enforce):** When the computed context exceeds the role
+budget, a `budget_warn` event is emitted and a warning appears in the session log.
+The spawn proceeds — it is NOT blocked.
+
+**Hard-block opt-in:** Set `config.budget_enforcement.hard_block: true` in
+`.orchestray/config.json` to upgrade enforcement to blocking (exit 2). Only enable
+this after 14+ days of telemetry confirm the soft-warn threshold is not producing
+false positives.
+
+**Kill switch:** Set `config.budget_enforcement.enabled: false` to disable all
+budget checks immediately. The hook still runs but exits 0 without inspecting
+context sizes. Suitable for emergency rollback or the first 14 days if the budgets
+prove too conservative.
+
+**On a `budget_warn` event:** Trim the tier-2 injection (load fewer `pm-reference/`
+files) or split the task into smaller subtasks before respawning. The event includes
+`components: {system_prompt, tier2_injected, handoff_payload}` to identify the largest
+contributor.
+
+**Initial budgets (v2.1.15 defaults):** All 15 role entries use conservative defaults
+recorded as `source: "fallback_model_tier_thin_telemetry"` per the W5 F-03 planning
+fix (no p50 derivation when telemetry window < 14 days or N < 30 samples).
+Run `node bin/calibrate-role-budgets.js --window-days 14` after 14 days of data to
+get recommended `1.2× p95` updates. See that script's header for the full recalibration
+protocol (ships as a v2.1.16 actor; does not run automatically in v2.1.15).
 
 ### Repository Map Injection
 
@@ -827,6 +876,10 @@ the architect's output for constraint-like statements and extract them as candid
 invariants. See Section 4.D in tier1-orchestration.md for the full extraction protocol
 and drift-sentinel.md for invariant source details.
 
+> **R-TGATE-PM (v2.1.15):** After confirming and writing invariants to `.orchestray/kb/decisions/`
+> (primary action), run:
+> `Bash("node bin/emit-tier2-invoked.js --protocol drift_sentinel --signal 'enable_drift_sentinel true; architect completed; invariants written to kb/decisions/'")`
+
 ### 4.Y: Reasoning Trace Distillation
 
 When `enable_introspection` is true and the completed agent is NOT Haiku-tier,
@@ -840,6 +893,50 @@ When `enable_backpressure` is true, read the agent's confidence signal file afte
 post-condition validation. Low confidence can override agent self-reports and trigger
 PM reactions. See Section 4.Z in tier1-orchestration.md for the full protocol and
 cognitive-backpressure.md for the reaction table.
+
+> **R-TGATE-PM (v2.1.15):** After reading the confidence signal and selecting a PM reaction
+> (primary action), run:
+> `Bash("node bin/emit-tier2-invoked.js --protocol cognitive_backpressure --signal 'enable_backpressure true; confidence signal read; PM reaction triggered'")`
+
+### 4.CF: Consequence Forecast
+
+When `enable_consequence_forecast` is true, run Phase A (pre-execution scan) after
+decomposition and Phase B (post-execution validation) after all agents complete.
+See Section 39 in tier1-orchestration-rare.md for the full protocol.
+
+> **R-TGATE-PM (v2.1.15):** After writing predictions to `.orchestray/state/consequences.md`
+> in Phase A (primary action), run:
+> `Bash("node bin/emit-tier2-invoked.js --protocol consequence_forecast --signal 'enable_consequence_forecast true; Phase A scan complete; predictions written to state/consequences.md'")`
+
+### 4.AD: Auto-Documenter
+
+When `auto_document` is true and a feature addition is detected after orchestration
+completes, spawn a documenter agent. See Section 36 in auto-documenter.md for the
+full detection and spawn protocol.
+
+> **R-TGATE-PM (v2.1.15):** After spawning the documenter agent (primary action), run:
+> `Bash("node bin/emit-tier2-invoked.js --protocol auto_documenter --signal 'auto_document true; feature addition detected; documenter agent spawned'")`
+
+### 4.DP: Disagreement Protocol
+
+When `surface_disagreements` is true and a reviewer finding is classified as a design
+trade-off (not a bug), surface the disagreement to the user in structured format rather
+than routing through the verify-fix loop. See disagreement-protocol.md for classification
+criteria and the surfacing format.
+
+> **R-TGATE-PM (v2.1.15):** After surfacing the structured trade-off to the user (primary
+> action), run:
+> `Bash("node bin/emit-tier2-invoked.js --protocol disagreement_protocol --signal 'surface_disagreements true; design trade-off detected; surfacing to user'")`
+
+### 4.RA: Replay Analysis
+
+When `enable_replay_analysis` is true and friction signals are detected at orchestration
+completion, run counterfactual analysis and write a replay pattern. See Section 43 in
+replay-analysis.md for the full friction detection and pattern-writing protocol.
+
+> **R-TGATE-PM (v2.1.15):** After writing the replay pattern file to `.orchestray/patterns/`
+> (primary action), run:
+> `Bash("node bin/emit-tier2-invoked.js --protocol replay_analysis --signal 'enable_replay_analysis true; friction signals detected; replay pattern written'")`
 
 ### Re-Plan Signal Evaluation
 
@@ -1092,6 +1189,84 @@ Run ONLY after orchestration completion.
 
 ---
 
+## 17. Feature Demand Gate (R-GATE-AUTO, v2.1.15)
+
+The feature-demand gate moved from observer mode (v2.1.14 advisory) to **auto-active**
+in v2.1.15. The default value of `feature_demand_gate.shadow_mode` is now `false`.
+`bin/session-feature-gate.js` runs once per session and auto-populates
+`feature_demand_gate.quarantine_candidates` with every wired-emitter protocol whose
+14-day observation window shows zero `tier2_invoked` events. Quarantined protocols
+are skipped on the current orchestration unless the user wakes them.
+
+### Aggressive default-on migration
+
+Per the locked Q1 decision in `.orchestray/kb/artifacts/v2115-release-plan.md`:
+
+- Repos with NO explicit `feature_demand_gate.shadow_mode` setting get the new
+  default (`false`) silently.
+- **Repos with an explicit `shadow_mode: true` setting (v2.1.14 opt-out) are
+  OVERRIDDEN by the v2.1.15 migration.** On the first session after upgrade,
+  `bin/session-feature-gate.js` flips the value in `.orchestray/config.json` to
+  `false` and writes a one-time stderr migration banner.
+- A sentinel at `.orchestray/state/.r-gate-auto-migration-2115` ensures the
+  banner emits once and only once.
+- A `feature_demand_gate_migrated` audit event records the override.
+
+### Session-start banner copy (verbatim)
+
+The migration banner must match the v2.1.15 CHANGELOG migration note for
+R-GATE-AUTO. The exact lines are:
+
+```
+[orchestray] v2.1.15 R-GATE-AUTO: feature_demand_gate.shadow_mode flipped from true to false.
+[orchestray]   Your explicit `shadow_mode: true` setting was OVERRIDDEN by the aggressive-default migration.
+[orchestray]   Starting now, Orchestray automatically quarantines feature gates that haven't fired
+[orchestray]   on your repo for 14 days. You'll see a session-start banner naming any quarantined
+[orchestray]   features. Re-enable any one with `/orchestray:feature wake <name>` (session) or
+[orchestray]   `/orchestray:feature wake --persist <name>` (across sessions).
+[orchestray]   To fully restore v2.1.14 behavior — two steps required:
+[orchestray]   Step 1: set `feature_demand_gate.shadow_mode: true` in `.orchestray/config.json`.
+[orchestray]   Step 2: for each quarantined feature listed above, run:
+[orchestray]           /orchestray:feature wake --persist <name>
+[orchestray]   Skipping Step 2 leaves the feature quarantined even after Step 1.
+```
+
+The post-migration quarantine banner (already shipped in v2.1.14 via
+`bin/feature-quarantine-banner.js`) is unchanged:
+
+```
+[orchestray] Quarantined this session: <slug1>, <slug2>. Re-enable with `/orchestray:feature wake <name>`.
+```
+
+### Operator surfaces
+
+| Concern | Path |
+|---|---|
+| Auto-quarantine + migration | `bin/session-feature-gate.js` (this section) |
+| Per-session banner | `bin/feature-quarantine-banner.js` (v2.1.14, unchanged) |
+| Wake a slug | `node bin/feature-wake.js [--persist] <slug>` (or `/orchestray:feature wake <slug>`) |
+| Status / G-OBSV-WINDOW | `node bin/feature-gate-status.js` (W15 release-manager runs `--since v2.1.14-tag` for the Phase-3 G-OBSV-WINDOW gate) |
+| `--dry-run` | `node bin/session-feature-gate.js --dry-run` lists candidates as JSON without writing config |
+| Kill switches | `ORCHESTRAY_DISABLE_DEMAND_GATE=1`; `feature_demand_gate.enabled: false` |
+| Rollback | Set `feature_demand_gate.shadow_mode: true` in config (after migration banner has fired) |
+
+### drift_sentinel × R-GATE-AUTO interaction (W5 F-04)
+
+The `drift_sentinel` protocol is default-off in v2.1.14 onward. Wiring its
+`tier2_invoked` events via R-TGATE-PM produces near-zero events under default-off
+behavior, so R-GATE-AUTO will quarantine the protocol regardless of the flag's
+config value. To wake it, run `/orchestray:feature wake drift_sentinel` after
+enabling the flag.
+
+### Phase-3 G-OBSV-WINDOW gate
+
+Tag prep is blocked until `bin/feature-gate-status.js --since v2.1.14-tag --json`
+reports `observation_days >= 14` and `installs_with_data >= 1`. This is a hard
+prerequisite — not a soft recommendation. W15 release-manager runs the gate; W7
+ships the auto-active flip itself.
+
+---
+
 ## 19. Model Routing Protocol
 
 > **Best practice — set model explicitly:** Every `Agent()` call SHOULD include
@@ -1249,9 +1424,29 @@ role-specific fields (`migration_plan.stages[]`, `contract_diff`,
 ## Section Loading Protocol
 
 When orchestrating (complexity score >= threshold), load the Tier 1 orchestration
-reference file for full protocols:
+reference using the **two-branch dispatch** below (W5 F-05 fix, v2.1.15 I-PHASE-GATE):
 
-> Read `agents/pm-reference/tier1-orchestration.md`
+| Branch | Condition | Files to load |
+|---|---|---|
+| (a) phase-slice mode (DEFAULT) | `phase_slice_loading.enabled` is `true` (or absent) AND env var `ORCHESTRAY_DISABLE_PHASE_SLICES` is unset | Always load `agents/pm-reference/phase-contract.md`. The active phase slice (`phase-decomp.md` / `phase-execute.md` / `phase-verify.md` / `phase-close.md`) is injected via `bin/inject-active-phase-slice.js` (UserPromptSubmit hook) based on `current_phase` in `.orchestray/state/orchestration.md`. |
+| (b) legacy / kill-switch | `phase_slice_loading.enabled === false` OR env var `ORCHESTRAY_DISABLE_PHASE_SLICES=1` | Load `agents/pm-reference/tier1-orchestration.md.legacy` directly. Do NOT load any phase slice or `phase-contract.md`. |
+
+Branch (b) is the atomic rollback path. Without it, flipping the kill switch
+silently leaves the PM with no orchestration reference at all. The legacy
+monolith ships for one release; rollback path stays available across v2.1.15.
+
+> **Branch (a) reading order:** Read `agents/pm-reference/phase-contract.md`
+> first; then read the active slice path supplied by the runtime hook
+> (or default to `agents/pm-reference/phase-decomp.md` if no orchestration
+> is yet active).
+>
+> **Pointer-handling rule (W12 R-ORACLE-2):** if a `UserPromptSubmit` (or
+> `SessionStart`) hook returns an `additionalContext` block whose first line
+> begins `Active phase slice (current_phase=...)`, treat the path it names
+> as the active slice — Read it after `phase-contract.md` regardless of the
+> branch (a) default. The pointer string format is the explicit contract
+> between `bin/inject-active-phase-slice.js` and the PM; ignoring it leaves
+> the slice unloaded.
 
 ### Tier 2: Feature-Gated Reference Files
 
@@ -1280,7 +1475,7 @@ Load these reference files conditionally based on the situation:
 | `enable_personas` is true | `agents/pm-reference/adaptive-personas.md` |
 | `enable_replay_analysis` is true | `agents/pm-reference/replay-analysis.md` |
 | `v2017_experiments.prompt_caching === 'on'` AND about to spawn subagents | `agents/pm-reference/prompt-caching-protocol.md` |
-| `v2017_experiments.adaptive_verbosity === 'on'` AND `adaptive_verbosity.enabled === true` | `agents/pm-reference/tier1-orchestration.md` §3.Y |
+| `v2017_experiments.adaptive_verbosity === 'on'` AND `adaptive_verbosity.enabled === true` | `agents/pm-reference/tier1-orchestration.md.legacy` §3.Y |
 | Section 13 decomposition active (score ≥ 4) | `agents/pm-reference/pipeline-templates.md` |
 | `enable_repo_map` is true AND repo map generation/staleness check is this turn | `agents/pm-reference/repo-map-protocol.md` |
 | `pattern_extraction_enabled` is true (orchestration complete AND `auto_learning.extract_on_complete.enabled === true`) | `agents/pm-reference/extraction-protocol.md` |
@@ -1302,6 +1497,25 @@ These files are loaded regardless of orchestration mode when their content is ne
 ### Tier-2 Loading Discipline
 
 Load a Tier-2 file only when its declared gate condition in the table above is met. Do not pre-load. Do not speculate.
+
+---
+
+## Curator Section Loading Protocol
+
+When spawning the curator agent (invoked via `/orchestray:learn curate`), load the
+curator reference using the **two-branch dispatch** below (W9 R-CURATOR-SPLIT, v2.1.15):
+
+| Branch | Condition | Files to load |
+|---|---|---|
+| (a) curator-stage mode (DEFAULT) | `curator_slice_loading.enabled` is `true` (or absent) AND env var `ORCHESTRAY_DISABLE_CURATOR_STAGES` is unset | Always load `agents/curator-stages/phase-contract.md`. The active curator stage (`phase-decomp.md` / `phase-execute.md` / `phase-close.md`) is injected via `bin/inject-active-curator-stage.js` (UserPromptSubmit hook) based on `current_stage` in `.orchestray/state/curator-run.md`. |
+| (b) legacy / kill-switch | `curator_slice_loading.enabled === false` OR env var `ORCHESTRAY_DISABLE_CURATOR_STAGES=1` | Load `agents/curator.md.legacy` directly. Do NOT load any curator stage or `curator-stages/phase-contract.md`. |
+
+Branch (b) is the atomic rollback path. Flipping `curator_slice_loading.enabled: false`
+in `.orchestray/config.json` restores the pre-split monolith immediately.
+
+> **Branch (a) reading order:** Read `agents/curator-stages/phase-contract.md` first;
+> then read the active stage path supplied by the runtime hook (or default to
+> `agents/curator-stages/phase-decomp.md` if no curator run is yet active).
 
 ### Kill Switches for Prompt Restructuring (v2.1.11)
 

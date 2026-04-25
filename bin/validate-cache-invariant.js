@@ -29,7 +29,10 @@ const crypto = require('crypto');
 const { resolveSafeCwd }    = require('./_lib/resolve-project-cwd');
 const { MAX_INPUT_BYTES }   = require('./_lib/constants');
 const { loadShadowWithCheck } = require('./_lib/load-schema-shadow');
+// atomicAppendJsonl is retained for the non-events.jsonl violations file (line 127);
+// events.jsonl emissions now route through the central audit-event gateway.
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
+const { writeEvent }        = require('./_lib/audit-event-writer');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 
 const STATE_DIR        = path.join('.orchestray', 'state');
@@ -42,6 +45,9 @@ const VIOLATION_WINDOW = 24 * 60 * 60 * 1000; // 24 hours in ms
 const ZONE1_SOURCES = [
   'CLAUDE.md',
   'agents/pm-reference/handoff-contract.md',
+  // v2.1.15 W8: phase-contract.md joins Zone 1 — always-loaded foundation for
+  // the I-PHASE-GATE phase-slice split. R-PIN cache invariant watches it.
+  'agents/pm-reference/phase-contract.md',
 ];
 
 // ---------------------------------------------------------------------------
@@ -154,7 +160,6 @@ function recordViolationAndCount(cwd) {
 function emitAuditEvent(cwd, eventType, extra) {
   try {
     const auditDir   = path.join(cwd, '.orchestray', 'audit');
-    const eventsFile = path.join(auditDir, 'events.jsonl');
     fs.mkdirSync(auditDir, { recursive: true });
 
     let orchestrationId = 'unknown';
@@ -168,7 +173,7 @@ function emitAuditEvent(cwd, eventType, extra) {
       { version: 1, timestamp: new Date().toISOString(), type: eventType, orchestration_id: orchestrationId },
       extra
     );
-    atomicAppendJsonl(eventsFile, entry);
+    writeEvent(entry, { cwd });
   } catch (_e) {}
 }
 

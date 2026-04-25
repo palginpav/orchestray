@@ -32,7 +32,7 @@ const fs   = require('node:fs');
 const path = require('node:path');
 
 const { loadAutoLearningConfig, DEFAULT_AUTO_LEARNING } = require('./config-schema');
-const { atomicAppendJsonl } = require('./atomic-append');
+const { writeEvent } = require('./audit-event-writer');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -205,12 +205,11 @@ function _emitAuditEvent(projectRoot, event) {
   try {
     const auditDir   = path.join(projectRoot, '.orchestray', 'audit');
     fs.mkdirSync(auditDir, { recursive: true });
-    const eventsPath = path.join(auditDir, 'events.jsonl');
-    atomicAppendJsonl(eventsPath, {
+    writeEvent({
       timestamp: new Date().toISOString(),
       schema_version: 1,
       ...event,
-    });
+    }, { cwd: projectRoot });
   } catch (_e) {
     // Audit failure is non-fatal.
   }

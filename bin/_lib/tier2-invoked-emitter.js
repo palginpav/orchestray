@@ -23,7 +23,7 @@
 const fs   = require('fs');
 const path = require('path');
 
-const { atomicAppendJsonl }           = require('./atomic-append');
+const { writeEvent }                  = require('./audit-event-writer');
 const { getCurrentOrchestrationFile } = require('./orchestration-state');
 
 /**
@@ -109,7 +109,7 @@ function emitTier2Invoked({ cwd, protocol, trigger_signal }) {
       // Directory creation failure is non-fatal
     }
 
-    atomicAppendJsonl(path.join(auditDir, 'events.jsonl'), auditEvent);
+    writeEvent(auditEvent, { cwd });
   } catch (_e) {
     // Fail-open: any unexpected error is silently swallowed
   }
