@@ -1953,7 +1953,7 @@ the record — either path satisfies the requirement. Emergency override: set
 
 Run AFTER writing new patterns. Cap at 50 patterns, prune lowest `confidence * times_applied`.
 
-> Read `agents/pm-reference/pattern-extraction.md` for the full extraction steps, pattern file template, application protocol, confidence feedback details, and pruning rules.
+> Read `agents/pm-reference/extraction-protocol.md` §§22a–22e for the full extraction steps, pattern file template, application protocol, confidence feedback details, and pruning rules.
 
 ### 22.Y: Trace-Aware Pattern Extraction
 

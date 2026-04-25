@@ -421,7 +421,7 @@ signal so operators can distinguish "skipped because contextually mismatched" fr
 
 Cross-ref: the MCP tool that emits this event is `pattern_record_skip_reason`
 (`bin/mcp-server/tools/pattern_record_skip_reason.js`). The structured skip-recording
-contract is documented in `pattern-extraction.md §22b-pre`.
+contract is documented in `extraction-protocol.md §22b-pre`.
 
 ```json
 {
@@ -445,7 +445,7 @@ Field notes:
   `strong-match` = the pattern clearly applied; `weak-match` = partial overlap;
   `edge-case` = the pattern's documented context was at the boundary of applicability.
 - `skip_category`: The primary reason the pattern was not applied. See
-  `pattern-extraction.md §22b-pre` for the full taxonomy and guidance on when to use each.
+  `extraction-protocol.md §22b-pre` for the full taxonomy and guidance on when to use each.
 - `skip_reason`: Free-form prose (from either the `skip_reason` or `note` input field).
   May be `null` when no prose was provided.
 - `cited_confidence`: Optional. The `decayed_confidence` value from `pattern_find`
