@@ -3,6 +3,96 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.1.16] - 2026-04-25
+
+v2.1.16 is the "carryover discipline + telemetry fill" release. It discharges four turnkey defaults that have been deferred across v2.1.13/14/15 — reviewer dimension scoping, compact pattern catalog by default for the busiest agents, `auto_document` flipped off, and Agent Teams flagged opt-in with the missing idle-teammate hook — and closes the three telemetry gaps v2.1.15 left open so the per-orchestration token-ceiling claims become verifiable. Two user-facing defaults change (`auto_document: false`, `agent_teams.enabled: false`); both come with one-line restore steps. 7 R-items shipped. 3851/3851 tests pass.
+
+### Added
+
+- **Compact pattern catalog by default for the five busiest agents.** PM, architect, developer, reviewer, and debugger now ask for a compact pattern catalog by default and fetch the full pattern body only when the catalog signal looks relevant (confidence ≥ 0.6, has been applied at least once, and the one-line description matches the task). Most pattern lookups now use roughly half the tokens of v2.1.15 with no setup from you. Reviewer keeps full-body access when auditing pattern accuracy itself. The full-body path is one explicit call away when an agent needs it. Soft-audit hook (`pattern_read_warn_zero` from v2.1.14) detects under-fetch at runtime; reviewer's correctness pass catches any regression. Kill switch: `catalog_mode_default: false` in `.orchestray/config.json` reverts the prompt-level default for new pattern queries.
+
+- **Scoped reviewer dimensions.** Reviewers now focus on the dimensions that actually apply to your change — a documentation-only diff gets a documentation-focused review, a UI/CLI tweak gets code-quality + documentation + operability, a backend API change gets code-quality + performance + operability + api-compat — saving roughly 2–5K tokens per orchestration. **Correctness and Security run on every review** regardless of scope; the PM cannot skip them. Default is `review_dimensions: "all"` for back-compat — explicit scoping is opt-in this release and becomes the default in v2.1.17 once compliance data accumulates. Kill switch: `review_dimension_scoping.enabled: false`.
+
+- **Live per-role context budgets.** v2.1.15 shipped the budget hook and 15 per-role defaults but the PM did not yet stamp every spawn with a context size — so the hook ran dormant. v2.1.16 wires `context_size_hint` into every `Agent()` spawn from PM delegation templates, and `bin/preflight-spawn-budget.js` now reads the live `.orchestray/state/role-budgets.json` file (with fallback to the static defaults when absent). Warnings stay soft; turn on hard-block via `budget_enforcement.hard_block: true` if you want the hook to refuse oversized spawns. Initial calibration uses fallback values pending 14 days of telemetry — the file recalibrates automatically once samples accumulate.
+
+- **Phase slice load telemetry (positive path).** The `/orchestray:analytics` dashboard now shows how often phase-scoped reference loading actually fires (positive-path) versus falls back to the legacy file — confirming the v2.1.15 ~21K-tokens-per-turn savings claim is being realized on your install. New event `phase_slice_injected` (paired with the existing `phase_slice_fallback`); rollup line in the analytics view shows the injected/fallback ratio. Read-only telemetry, additive only. Kill switch: `phase_slice_loading.telemetry_enabled: false`.
+
+- **Agent Teams decision protocol.** Agent Teams ships as a documented experimental feature with a use-case protocol naming the three conditions for using teams (≥ 3 independently-parallel tasks needing inter-agent messaging during execution; cross-layer changes where teammates own different layers; research-divergent investigations with competing hypotheses), the missing `bin/reassign-idle-teammate.js` hook so an idle teammate with remaining tasks gets redirected instead of allowed to stop, and a default-off gate. Turn it on with `agent_teams.enabled: true` AND `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` when your task fits the protocol. Both the config flag and the env var must be true to spawn a team; missing either keeps teams off.
+
+### Changed
+
+- **`auto_document` default flipped to `false`.** The auto-documenter post-orchestration trigger is now off by default. The reviewer's documentation pass already audits docs drift on every orchestration, making the auto-spawn redundant insurance on typical workloads. **Restore the v2.1.15 behavior** by setting `"auto_document": true` in `.orchestray/config.json`. Existing users with `"auto_document": true` already in their config keep their behavior; only implicit defaults flip. A one-time post-upgrade banner names the flip and the restore step.
+
+- **`enable_agent_teams` renamed to `agent_teams.enabled` and default flipped to `false`.** The legacy `enable_agent_teams` key is honored for one release with a deprecation warning. Implicit defaults flip from on to off; explicit `enable_agent_teams: true` is migrated to `agent_teams.enabled: true` on first session post-upgrade. The double-gate (config flag AND `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` env var) is required to spawn teams. A one-time post-upgrade banner names the rename, the default flip, and the dual-gate requirement.
+
+- **Repo-map protocol replaced with a recipe stub.** The 388-line hand-rolled file-list-and-heuristic ranking implementation in `agents/pm-reference/repo-map-protocol.md` is replaced with a concise stub recipe that names the canonical algorithm (tree-sitter tag extraction → reference graph → graphology-pagerank → fit-to-token-budget) and the v2.1.17 architect spike that will implement it. The legacy file is preserved as `repo-map-protocol.md.legacy` for one release.
+
+### Under the hood — hardening / observability
+
+- One new audit event type: `phase_slice_injected` (positive-path companion to `phase_slice_fallback`). All carry `version: 1` per R-EVENT-NAMING. Schema in `agents/pm-reference/event-schemas.md`.
+- Schema shadow cap raised 4096 → 8192 bytes; `event-schemas.shadow.json` now 83 events / 4052 bytes (up from 81/3966 in v2.1.15).
+- Boot-time config drift detector recognizes 11 newly-registered config keys: the v2.1.16 additions (`catalog_mode_default`, `review_dimension_scoping`, `phase_slice_loading`) plus a carryover-discipline cleanup of 5 v2.1.14/15 keys that shipped without drift-list entries (`delta_handoff`, `feature_demand_gate`, `role_budgets`, `budget_enforcement`, `curator_slice_loading`). Fresh-install users no longer see boot-time "unknown config key" warnings for valid shipped keys.
+- New PM classifier `bin/_lib/classify-review-dimensions.js` deterministically picks reviewer dimensions from changed-file paths across five archetypes (doc-only, UI/CLI including `agents/*.md` and `skills/**/SKILL.md`, backend API, security-touched, default fallback).
+- New script `bin/calibrate-role-budgets.js` produced `.orchestray/state/role-budgets.json` (fallback values seeded; recalibrates automatically after 14 days of telemetry).
+- New hook `bin/reassign-idle-teammate.js` registered for the `TeammateIdle` event; redirects idle teammates with remaining tasks instead of allowing stop. Falls back to allow-stop when no remaining work.
+- New one-shot script `bin/backfill-pattern-context-hooks.js` ships ready-to-run; uses Haiku to generate the `context_hook` field on existing patterns whose frontmatter lacks one. Idempotent and dry-run-verified.
+- New Tier-2 reference `agents/pm-reference/agent-teams-decision.md` (~85 lines) names the three use-case conditions and three anti-conditions for Agent Teams; cited from `agents/pm.md` Section 22.
+- 31 new tests across the release: R-RV-DIMS classifier and split (11), R-PHASE-INJ event emission and analytics (6), R-BUDGET preflight + live-file readback (5), R-AT-FLAG decision-doc + TeammateIdle handler (5), W12-fix regressions (~7) including the lone-`agents/*.md` classifier case, post-upgrade `runRAtFlagMigration` 6-case suite, and the `phase_slice_loading.telemetry_enabled` zod schema field.
+
+### Migration notes
+
+**`auto_document` default flip — action required if you relied on auto-doc generation**
+
+If you have not set `auto_document` in `.orchestray/config.json`, the auto-documenter post-orchestration trigger is now OFF on your next orchestration under v2.1.16. The reviewer's documentation dimension still runs on every review and surfaces docs drift there. You will see this one-time stderr banner on your first session post-upgrade:
+
+```
+[orchestray] v2.1.16 R-AUTODOC-OFF: auto_document default flipped from true to false.
+[orchestray]   The auto-documenter post-orchestration trigger is now off by default.
+[orchestray]   The reviewer's documentation dimension already audits docs drift on every orchestration.
+[orchestray]   To restore the v2.1.15 behavior:
+[orchestray]   set `"auto_document": true` in `.orchestray/config.json`.
+```
+
+To restore v2.1.15 behavior, set `"auto_document": true` in `.orchestray/config.json`. Existing users with explicit `"auto_document": true` in config keep that setting unchanged.
+
+**`enable_agent_teams` rename + default flip — action required if you relied on Agent Teams**
+
+The `enable_agent_teams` config key is renamed to `agent_teams.enabled` for namespace consistency. The legacy key is honored for one release with a deprecation warning. The default flips from `true` (v2.1.15) to `false` (v2.1.16) — Agent Teams is token-negative on most workloads, and v2.1.16 ships it as a documented experimental opt-in rather than an implicit default.
+
+If you had `enable_agent_teams: true` in v2.1.15, the v2.1.16 post-upgrade sweep migrates that to `agent_teams.enabled: true` automatically; your behavior is preserved. If you were on the implicit v2.1.15 default, Agent Teams is now off — to re-enable, both of these must be true:
+
+1. `agent_teams.enabled: true` in `.orchestray/config.json`
+2. `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in your environment or `settings.json`
+
+You will see this one-time stderr banner on your first session post-upgrade:
+
+```
+[orchestray] v2.1.16 R-AT-FLAG: enable_agent_teams renamed to agent_teams.enabled; default flipped to false.
+[orchestray]   Existing `enable_agent_teams: true` is migrated to `agent_teams.enabled: true` automatically.
+[orchestray]   To enable Agent Teams from a fresh default:
+[orchestray]     1) set `"agent_teams": { "enabled": true }` in `.orchestray/config.json`
+[orchestray]     2) set `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in your environment or settings.json
+[orchestray]   Read `agents/pm-reference/agent-teams-decision.md` for the three use-case conditions.
+```
+
+Read `agents/pm-reference/agent-teams-decision.md` for the three use-case conditions before enabling.
+
+### Not in this release (with triggers)
+
+- **LLMLingua-2 prose compression** — defer on technical grounds. The `@atjsh/llmlingua-2` JS port ships once every 6–9 months and has no production deployments verifiable in 2026-Q1; residual headroom on top of v2.1.14 R-DELTA-HANDOFF is only ~2–4K tokens/orch. **Trigger:** `@atjsh/llmlingua-2` ships v3.x with documented production deployments, OR a measured hotspot emerges where agent-produced free-form prose dominates cost.
+- **Local semantic cache for archetype matching** — defer on technical grounds. 2026-Q1 production hit-rates have been downrated from 60–70% to 20–45%; vCache (Feb 2026) shows similarity-distribution overlap between correct and incorrect hits. **Trigger:** archetype cache hit-rate telemetry (added in v2.1.17) shows ≤ 30% on the existing string-match path for 30+ days AND pattern corpus exceeds 200 patterns (currently ~80) AND a measured-savings analysis shows the embedded path beats the string path by ≥ 2K tokens/orch.
+- **Anthropic-recipe contextual retrieval over KB / pattern store** — defer on technical grounds. Local OSS rerankers are now ONNX-deployable in Node, but the full pipeline is L-effort and the corpus is small enough that brute-force Grep+Read remains competitive. **Trigger:** KB artifact count exceeds 1,000 files OR `kb_search` recall-at-top-3 drops below 80% in a measured audit OR the pattern corpus exceeds 500.
+- **Full Aider repo-map implementation (tree-sitter + PageRank)** — defer to v2.1.17. v2.1.16 ships only the recipe stub. **Trigger:** v2.1.17 architect spike (own design pass for tree-sitter integration, language-grammar bundling, graph cache invalidation, cross-platform native-dep testing).
+- **Documenter spawn-frequency telemetry, archetype cache hit-rate telemetry** — defer to v2.1.17, paired with the reviewer-scoped-by-default measurement window. Together they let v2.1.17 close the loop on R-AUTODOC-OFF effectiveness and R-RV-DIMS phase 2.
+- **Catalog mode default for the remaining 10 agents** — v2.1.16 covers the 5 busiest (pm, architect, developer, reviewer, debugger). **Trigger:** v2.1.16 measurement period shows the `pattern_read_warn_zero` event rate at 0 across 14 days on the first 5-agent rollout.
+- **Reviewer scoped-by-default flip** — v2.1.16 ships back-compat default `"all"` for unspecified spawns. **Trigger:** ≥ 60% of v2.1.16 reviewer spawns carry an explicit `review_dimensions` field in delegation AND no correctness-class regression vs the v2.1.15 baseline.
+
+### Tests
+
+- **3851 tests / 3851 pass / 0 fail.** Net +58 tests across the release (R-RV-DIMS 11, R-PHASE-INJ 6, R-BUDGET 5, R-AT-FLAG 5, W12-fix regressions ~7, post-upgrade R-AT-FLAG migration 6, plus reviewer-dimension-routing and i-phase-gate extensions). No deletions.
+
+---
+
 ## [2.1.15] - 2026-04-25
 
 v2.1.15 turns Orchestray's v2.1.14 observability investment into active token savings. Three improvements land in parallel: the feature-demand gate — which observed quietly since v2.1.14 — now activates automatically and starts skipping unused feature protocols; the main orchestration reference file splits into phase-scoped slices so only the section relevant to your current work stage loads; and handoffs between agents shrink to a summary-plus-changes format instead of the full prior artifact. Together, these reduce the typical per-orchestration token ceiling from ~120,000 to a target of 70–80,000. Every change ships with a kill switch, an opt-out path, and an audit gate. 7 R-items shipped. 3793/3793 tests pass.

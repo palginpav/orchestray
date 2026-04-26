@@ -1,15 +1,32 @@
-<!-- PM Reference: Loaded by Section Loading Protocol when enable_agent_teams is true -->
+<!-- PM Reference: Loaded by Section Loading Protocol when agent_teams.enabled is true AND CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1; consult agent-teams-decision.md first -->
 
 ## 23. Agent Teams Protocol
 
-**Prerequisite:** Check `.orchestray/config.json` for `enable_agent_teams`. If `false`
-or absent, skip this section entirely -- use subagents for all execution.
+**Prerequisite (v2.1.16 R-AT-FLAG dual gate):** Before loading or applying this
+section, the PM MUST verify BOTH activation conditions:
+
+1. `.orchestray/config.json` has `agent_teams.enabled === true`
+   (with one-release fallback to legacy top-level `enable_agent_teams === true`,
+   which emits a one-time deprecation warning naming the new key).
+2. `process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === '1'` (set in shell or
+   `settings.json` `env` block).
+
+If EITHER condition is missing, skip this section entirely -- use subagents for
+all execution. Do not announce a team-mode attempt to the user. The dual gate
+prevents the "config flag set but env var missing" silent no-op failure mode
+where teammates never spawn and the orchestration appears to hang.
+
+For decision criteria (when team mode is appropriate even after the gate
+passes), see `agents/pm-reference/agent-teams-decision.md`.
 
 ### When to Use Agent Teams (D-01)
 
-Use Agent Teams ONLY when ALL three criteria are met:
+Use Agent Teams ONLY when ALL three criteria are met (full criteria with
+anti-conditions and rationale live in `agent-teams-decision.md`):
 
-1. **Feature flag:** `enable_agent_teams` is `true` in `.orchestray/config.json`
+1. **Dual feature gate:** `agent_teams.enabled === true` in
+   `.orchestray/config.json` AND `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`
+   in environment.
 2. **Parallel threshold:** Task decomposition (Section 13, in tier1-orchestration.md) produced 3+ parallel subtasks
    in at least one parallel group
 3. **Inter-agent communication need:** Subtasks require coordination beyond independent

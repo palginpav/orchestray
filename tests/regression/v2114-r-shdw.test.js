@@ -6,7 +6,9 @@
  *
  * Covers:
  *   1. Generator produces non-empty JSON with _meta.version=1 and ≥ 5 event types.
- *   2. Generator output is ≤ 4096 bytes.
+ *   2. Generator output is ≤ 8192 bytes (cap raised from 4096 in v2.1.16
+ *      W12-fix F-005 to absorb v2.1.17 event-schema additions; still well
+ *      under PIPE_BUF on every supported platform).
  *   3. Shadow includes the 4 new R-SHDW event types.
  *   4. PostToolUse hook triggers regen when file is event-schemas.md.
  *   5. PostToolUse hook no-ops when file is NOT event-schemas.md.
@@ -119,9 +121,12 @@ describe('R-SHDW: generator', () => {
     assert.ok(eventTypes.length >= 5, 'shadow must have >= 5 event types, got ' + eventTypes.length);
   });
 
-  test('2. generator output is ≤ 4096 bytes', () => {
+  test('2. generator output is ≤ 8192 bytes', () => {
+    // v2.1.16 W12-fix F-005: cap raised from 4096 → 8192. The 4052-byte file
+    // landed in v2.1.16 with only 44 bytes of headroom; v2.1.17's
+    // R-DOCUMENTER-EVENT + R-ARCHETYPE-EVENT would have overflowed it.
     const stat = fs.statSync(SHADOW_PATH);
-    assert.ok(stat.size <= 4096, 'shadow file size ' + stat.size + ' exceeds 4096 bytes');
+    assert.ok(stat.size <= 8192, 'shadow file size ' + stat.size + ' exceeds 8192 bytes');
   });
 
   test('3. shadow includes the 4 new R-SHDW event types', () => {

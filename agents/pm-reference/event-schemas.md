@@ -32,6 +32,7 @@ block_a_zone1_invalidated — Zone 1 manual invalidation (hook, v2.1.14)
 delta_handoff_fallback — developer full-artifact fetch decision in delta mode (PM, v2.1.15)
 budget_warn — pre-spawn context-size budget exceeded (hook, v2.1.15)
 phase_slice_fallback — phase-slice hook degraded path (no orchestration / unknown phase / missing slice file) (hook, v2.1.15 W8)
+phase_slice_injected — phase-slice hook positive path (slice pointer staged into PM additionalContext) (hook, v2.1.16 W9 R-PHASE-INJ)
 
 END CONDITIONAL-LOAD NOTICE -->
 
@@ -4478,5 +4479,55 @@ event is informational; it never blocks the turn.
 
 The hook returns `{continue: true}` regardless. Operators monitoring this
 event regularly indicate a slice mis-mapping needing investigation.
+
+Schema stability: additive-only.
+
+
+---
+
+### `phase_slice_injected` event (v2.1.16 W9 R-PHASE-INJ)
+
+Emitted by `bin/inject-active-phase-slice.js` on the **positive path** —
+whenever it successfully stages a phase slice and writes the pointer into
+the PM's `additionalContext`. Pairs with `phase_slice_fallback` so the
+`injected / (injected + fallback)` ratio empirically validates the v2.1.15
+I-PHASE-GATE ~21K-tokens-per-turn savings claim.
+
+```json
+{
+  "version": 1,
+  "type": "phase_slice_injected",
+  "timestamp": "2026-04-25T12:34:56.789Z",
+  "orchestration_id": "orch-1777200000",
+  "phase": "execute",
+  "slice_path": "agents/pm-reference/phase-execute.md",
+  "pointer_bytes": 142
+}
+```
+
+Field meanings:
+
+- `phase`: the resolved phase value driving slice selection. One of
+  `decomp`, `execute`, `verify`, `close`, or `contract`. The first four
+  match the slice files; `contract` is reserved for future contract-only
+  emissions if the dispatch table ever stages `phase-contract.md` directly.
+- `slice_path`: repository-relative path of the slice file referenced by
+  the pointer (e.g. `agents/pm-reference/phase-execute.md`). Source of
+  truth for which slice the PM saw on this turn.
+- `pointer_bytes`: byte length of the `additionalContext` string written
+  to Claude Code. Useful for tracking the staged-pointer footprint over
+  time (the design budgets it well under the 10K char cap).
+- `orchestration_id`: auto-filled by the audit-event gateway when absent.
+- `timestamp`: ISO 8601, auto-filled by the audit-event gateway.
+
+Read-only telemetry — never blocks the hook. Gated by
+`phase_slice_loading.telemetry_enabled` (defaults `true`); the env kill
+switch `ORCHESTRAY_DISABLE_PHASE_INJECT_TELEMETRY=1` also disables
+emission. The kill switches gate ONLY this positive-path event; the
+sad-path `phase_slice_fallback` always emits because it is a fault signal.
+
+Consumed by the `/orchestray:analytics` rollup (Phase Slice Loading
+section) which displays the injected/fallback ratio per orchestration
+window.
 
 Schema stability: additive-only.

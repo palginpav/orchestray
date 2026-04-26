@@ -65,7 +65,7 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 - **First-spawn UX fix + Opus 4.7 cost calibration + xhigh adoption + shipped specialists + context compression (v2.1.8)** — four shipped bundles. (a) The first `Agent()` spawn of every session during an orchestration no longer fails for a missing `model` parameter — a pre-spawn reminder preempts the failure and the gate now tells you the exact model to re-spawn with if one still slips through. (b) `/orchestray:status` cost estimates for Opus-routed agents were running ~35% low because Opus 4.7 uses a new tokenizer that consumes more tokens for the same text; we recalibrated the cost model so new orchestrations show accurate numbers (historical rollups stay at the old value). (c) Architect and Inventor agents now default to Claude Code's new `xhigh` effort level (introduced in Claude Code 2.1.111) — Anthropic's recommended default for Opus 4.7. On older Claude Code, `xhigh` silently runs as `high`, so nothing breaks. (d) Two specialist templates now ship with every Orchestray install: Translator and UI/UX Designer. Both activate automatically when the PM detects matching keywords; project-local specialists at `.orchestray/specialists/` override shipped ones. (e) Four context-compression mechanisms (CiteCache, SpecSketch, RepoMapDelta, ArchetypeCache advisory) reduce repeated input tokens across long orchestrations; gated by `context_compression_v218.enabled` (default on), each with individual on/off controls. See CHANGELOG for details.
 - **Self-learning foundations (v2.1.6)** — Orchestray can stage pattern proposals automatically after each completed orchestration, instead of waiting for a manual `/orchestray:learn` run. All auto-learning features are off by default and gated behind a single kill switch (`auto_learning.global_kill_switch: true` in config, or `ORCHESTRAY_AUTO_LEARNING_KILL_SWITCH=1` in environment). Enable extraction with `auto_learning.extract_on_complete.enabled: true`; proposals land in `.orchestray/proposed-patterns/` for your review — nothing applies without `/orchestray:learn accept <slug>`. Run `/orchestray:learn list --proposed` to see what is staged. The Haiku extraction backend that was stubbed in v2.1.6 is now live in v2.1.7.
 - **Team features** — shared config, shared patterns, daily/weekly cost budgets
-- **Agent Teams** — opt-in dual-mode execution for tasks needing inter-agent communication
+- **Agent Teams** — opt-in dual-mode execution for tasks needing inter-agent communication. Default off as of v2.1.16. Both `agent_teams.enabled: true` in `.orchestray/config.json` AND `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in env are required to spawn teams; see `agents/pm-reference/agent-teams-decision.md` for the three use-case conditions.
 - **Prompt tiering** — 3-tier PM prompt architecture, significant token reduction for simple tasks
 - **Orchestration contracts** — machine-verifiable quality gates with file ownership tracking
 - **Consequence forecasting** — predicts downstream effects before execution, validates after
@@ -188,7 +188,7 @@ Use `/orchestray:feature status` to see demand counts, and `/orchestray:feature 
 | **Architect** | Design-only — produces design documents and technical decisions |
 | **Developer** | Implements code changes |
 | **Refactorer** | Systematic code transformation without behavior change |
-| **Reviewer** | Read-only review across 7 dimensions: correctness, quality, security, performance, docs, operability, API compatibility |
+| **Reviewer** | Read-only review across 7 dimensions: correctness, quality, security, performance, docs, operability, API compatibility. As of v2.1.16, the PM scopes reviewer dimensions to the changed-file shape (correctness and security always run); see `agents/pm-reference/agent-teams-decision.md`-sibling `agents/reviewer-dimensions/` for the 5 conditional fragments. |
 | **Security Engineer** | Shift-left security — design threat review and implementation audit (read-only) |
 | **Researcher** | Read-only, web-enabled survey of existing external approaches; returns a decision-ready shortlist for PM to route to Architect or Inventor |
 | **Inventor** | First-principles creation of novel tools, DSLs, and custom solutions with working prototypes |
@@ -386,6 +386,14 @@ enable_drift_sentinel           Detect architectural drift via auto-extracted in
                                 behavior, set `"enable_drift_sentinel": true` in
                                 `.orchestray/config.json`.
 
+auto_document                   Automatically spawn a documenter agent after orchestration when a
+                                feature addition is detected (default: false as of v2.1.16 — was
+                                true through v2.1.15). The reviewer's documentation pass already
+                                audits docs drift on every orchestration, making the auto-spawn
+                                redundant insurance on typical workloads. To restore the v2.1.15
+                                behavior, set `"auto_document": true` in
+                                `.orchestray/config.json`.
+
 config_drift_silence            Top-level config keys to silence from the boot-time drift warning
                                 (default: []). Use for intentional custom keys (e.g., a third-party
                                 integration seed). Example: ["my_custom_key"].
@@ -417,6 +425,29 @@ budget_enforcement.hard_block        When true, block spawns that exceed their r
 role_budgets.<role>.budget_tokens    Token budget for a named agent role
                                      (e.g. role_budgets.developer.budget_tokens);
                                      all roles seeded with conservative defaults on install
+
+catalog_mode_default                 Pattern catalog mode is on by default for the busiest 5 agents
+                                     (pm, architect, developer, reviewer, debugger). Agents request a
+                                     compact catalog and escalate to `pattern_read(slug)` only when the
+                                     headline matches the task (default: true as of v2.1.16). Reviewer
+                                     keeps full-body access when auditing pattern accuracy itself.
+
+review_dimension_scoping.enabled     Allow the PM to scope reviewer dimensions per spawn (default: true
+                                     as of v2.1.16). Correctness and Security always load. Default
+                                     `review_dimensions: "all"` for unspecified spawns; the PM
+                                     classifies based on changed-file paths via
+                                     `bin/_lib/classify-review-dimensions.js`.
+
+agent_teams.enabled                  Enable Agent Teams (default: false as of v2.1.16; legacy key
+                                     `enable_agent_teams` is honored for one release). Spawning a team
+                                     also requires `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in env or
+                                     `settings.json`. Read `agents/pm-reference/agent-teams-decision.md`
+                                     for the three use-case conditions before enabling.
+
+phase_slice_loading.telemetry_enabled  Emit `phase_slice_injected` events on every successful slice
+                                       inject so `/orchestray:analytics` can show the positive-path
+                                       slice-load ratio (default: true as of v2.1.16). Read-only
+                                       telemetry; no behavior change.
 ```
 
 ### Emergency kill switches (v2.1.15)
@@ -430,6 +461,9 @@ All v2.1.15 features have kill switches. To roll back any feature immediately, s
 | Phase slice loading | `phase_slice_loading.enabled: false` | Full reference file loaded |
 | Curator slice loading | `curator_slice_loading.enabled: false` | Full curator context loaded |
 | Spawn budget gate | `budget_enforcement.enabled: false` | All budget checks disabled |
+| Catalog default (v2.1.16) | `catalog_mode_default: false` | Restores full-body pattern fetches |
+| Reviewer scoping (v2.1.16) | `review_dimension_scoping.enabled: false` | All 7 dimensions on every review |
+| Agent Teams (v2.1.16) | `agent_teams.enabled: false` (default) | Teams cannot spawn |
 
 No session restart is needed for any of these kill switches.
 
@@ -447,6 +481,7 @@ The `mcp_enforcement` block is automatically added to `.orchestray/config.json` 
 - Warns when `mcp_enforcement.global_kill_switch` is `true` in `.orchestray/config.json` (the gate is bypassed; all MCP checkpoint enforcement is off)
 - Scans recent `events.jsonl` for unpaired `kill_switch_activated` events to surface an active kill-switch window that was never closed
 - Reports `prefix_drift` events from `bin/cache-prefix-lock.js` when Block A of `agents/pm.md` changed between sessions (2.0.17+, when `v2017_experiments.prompt_caching` is `"on"`)
+- Shows the phase-slice load ratio (`phase_slice_injected` vs `phase_slice_fallback`) so the v2.1.15 ~21K-tokens-per-turn savings claim is verifiable per install (2.1.16+)
 
 If the kill switch is active, the analytics output shows a bold warning with the config key and file path needed to clear it.
 
@@ -490,6 +525,8 @@ All orchestration state lives in `.orchestray/` (gitignored):
     .block-a-hash           # Block A hex hash used by cache-prefix-lock.js (2.0.17+)
     resilience-dossier.json # Active orchestration snapshot for compaction resilience (2.1.7+)
     compact-signal.lock     # Transient lock written on compaction, consumed on next prompt (2.1.7+)
+    role-budgets.json       # Live per-role context-size budgets read by bin/preflight-spawn-budget.js
+                            # (2.1.16+; falls back to static defaults when absent)
   kb/             # Shared knowledge base
     facts/
       project-intent.md   # Cached project intent block (domain, primary user problem, architectural

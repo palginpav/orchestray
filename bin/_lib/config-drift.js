@@ -70,7 +70,8 @@ const KNOWN_TOP_LEVEL_KEYS = Object.freeze([
   'default_effort',
   'force_effort',
   'effort_routing',
-  'enable_agent_teams',
+  'enable_agent_teams', // R-AT-FLAG (v2.1.16): deprecated; honored 1 release
+  'agent_teams',
 
   // Cost
   'max_cost_usd',
@@ -104,6 +105,12 @@ const KNOWN_TOP_LEVEL_KEYS = Object.freeze([
   'enable_replay_analysis',
   'max_turns_overrides',
 
+  // v2.1.16 (W12-fix F-002): top-level scalars added by R-CAT-DEFAULT and
+  // R-RV-DIMS. Mirroring them here suppresses boot-time "unknown config key"
+  // drift warnings on fresh v2.1.16 installs.
+  'catalog_mode_default',
+  'review_dimension_scoping',
+
   // Nested sections
   'mcp_server',
   'mcp_enforcement',
@@ -125,6 +132,22 @@ const KNOWN_TOP_LEVEL_KEYS = Object.freeze([
   'curator',
   'audit',
   'shield',
+
+  // R-PHASE-INJ (v2.1.16, W12-fix F-004): phase_slice_loading is declared in
+  // schemas/config.schema.js and must be mirrored here to stay in sync with
+  // the schema cross-ref test.
+  'phase_slice_loading',
+
+  // v2.1.16 (W14-fix F-W14-001): pre-existing v2.1.14/15 carryover-discipline
+  // cleanup. These keys are declared in schemas/config.schema.js and ship in
+  // .orchestray/config.json from v2.1.14 onward but were never registered as
+  // KNOWN_TOP_LEVEL_KEYS, generating spurious boot-time drift warnings on
+  // fresh installs. Mirroring them here closes the gap.
+  'delta_handoff',
+  'feature_demand_gate',
+  'role_budgets',
+  'budget_enforcement',
+  'curator_slice_loading',
 
   // Meta
   'config_drift_silence',

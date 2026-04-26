@@ -175,6 +175,30 @@ The user wants to see aggregate performance analytics across orchestration histo
    ...
    ```
 
+   **Rollup D — Phase Slice Loading ratio (v2.1.16 R-PHASE-INJ):**
+   - Count `phase_slice_injected` events (positive path) and `phase_slice_fallback` events (degraded path) over the same event window.
+   - Compute `injected_ratio = injected / (injected + fallback)`. Display as a percentage to 1 decimal place. Target ≥ 95% — matches the v2.1.15 I-PHASE-GATE design intent that fallbacks are rare and confirms the ~21K-tokens-per-turn savings claim is being realized.
+   - For the injected events, group by `phase` field and show a count breakdown (decomp / execute / verify / close / contract) so operators can see which phase dominates the loading mix.
+   - If the combined count is 0, show "No phase-slice loading data (v2.1.16+ required, telemetry may be disabled)."
+   - If `injected_ratio < 0.95`, prefix the section with: "WARNING: phase-slice fallback rate elevated — investigate `phase_slice_fallback` reasons in events.jsonl."
+
+   ```
+   ## Phase Slice Loading
+   | Metric | Value |
+   |--------|-------|
+   | Injected (positive path) | {N} |
+   | Fallback (degraded path) | {M} |
+   | Injected ratio | {pct}% (target ≥ 95%) |
+
+   ### Injected by Phase
+   | Phase | Count |
+   |-------|-------|
+   | execute | {N} |
+   | verify  | {N} |
+   | decomp  | {N} |
+   | close   | {N} |
+   ```
+
 9. **Cache Performance, Cost Delta, Active Experiments**: After displaying the main analytics and before Health Signals, show the cache/cost/experiment sections. See the **Cache Performance**, **Cost Delta**, and **Active Experiments** sections below for display logic.
 
 10. **Pattern Effectiveness Dashboard**: After displaying the main analytics, show pattern learning metrics.

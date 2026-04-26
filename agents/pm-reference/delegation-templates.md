@@ -10,6 +10,40 @@ review, adaptive verbosity), see `delegation-templates-detailed.md`.
 
 ---
 
+## Context Size Hint (R-BUDGET-WIRE, v2.1.16)
+
+Every `Agent()`, `Explore()`, and `Task()` spawn MUST carry a `context_size_hint`
+object in the tool input so the `PreToolUse:Agent` hook
+(`bin/preflight-spawn-budget.js`) can compare the total prompt size against the
+role's configured budget. The hint is the spawn-time projection — no new
+measurement is needed because the PM already assembles the prompt before the
+spawn.
+
+**Field shape:**
+
+```json
+"context_size_hint": {
+  "system":  <int — system-prompt tokens incl. tier-2 reference files>,
+  "tier2":   <int — duplicated for back-compat; equals the tier-2 portion of system>,
+  "handoff": <int — handoff payload tokens (delta or full)>
+}
+```
+
+**How to compute (rule of thumb):** total characters in the assembled prompt
+sections divided by 4 ≈ tokens. When a precomputed token count is available
+(e.g., from `bin/_lib/spec-sketch.js` or the prompt builder), use it instead.
+The hint is advisory — the hook fails open on missing or zero values, so
+omitting the hint never blocks the spawn but disables soft-warn telemetry for
+that spawn.
+
+**Per-template populating:** Every role's delegation contract below carries an
+implicit `context_size_hint` field. When a template's example shows a YAML or
+JSON contract, the PM SHOULD include the `context_size_hint` block alongside
+the role-specific fields. See `agents/pm.md` § "Pre-Spawn Budget Check
+(R-BUDGET)" for the canonical PM-side computation step.
+
+---
+
 ## Section 3: Delegation Prompt Format
 
 When delegating to a subagent, provide a **clear, self-contained task description**.
@@ -102,6 +136,48 @@ the reviewer MUST read closely (maximum 2 files, 80 lines each).
 The diff gives the reviewer a precise map of what changed, so it can focus analysis on
 modified lines and only read full files when surrounding context is needed.
 
+### Reviewer Delegation: Dimension Scoping
+
+**R-RV-DIMS (v2.1.16).** Every reviewer delegation MUST carry a `review_dimensions`
+field plus a `## Dimensions to Apply` block. The PM's classifier
+(`bin/_lib/classify-review-dimensions.js`, restated as a prompt rule in `pm.md`
+§3.RV) populates these from the developer's `files_changed` set.
+
+**Field shape:**
+
+```yaml
+# review_dimensions field (R-RV-DIMS, v2.1.16)
+review_dimensions:
+  type: "all" | string[]
+  default: "all"
+  allowed_values: ["code-quality", "performance", "documentation", "operability", "api-compat"]
+  invariant: "Correctness and Security are always reviewed; they cannot appear in this list."
+```
+
+**Delegation prompt block — insert immediately after `## Context`:**
+
+```
+## Dimensions to Apply
+{review_dimensions: "all" | bulleted list}
+
+For each item in the bulleted list, Read the matching fragment file BEFORE forming
+findings:
+- code-quality   → agents/reviewer-dimensions/code-quality.md
+- performance    → agents/reviewer-dimensions/performance.md
+- documentation  → agents/reviewer-dimensions/documentation.md
+- operability    → agents/reviewer-dimensions/operability.md
+- api-compat     → agents/reviewer-dimensions/api-compat.md
+
+If the value is "all", Read all five files. Correctness and Security are always
+reviewed and live in your core prompt — do NOT request fragment files for them.
+```
+
+When `review_dimension_scoping.enabled` is `false` (kill switch) or the env var
+`ORCHESTRAY_DISABLE_REVIEWER_SCOPING=1` is set, the PM falls back to
+`review_dimensions: "all"` and emits the same block listing all five fragment
+paths. v2.1.15-style spawns that omit the block entirely behave as if `"all"`
+was passed (back-compat by default per the v2.1.16 release plan).
+
 ---
 
 ## Section 11: Context Handoff Template
@@ -123,6 +199,7 @@ include only a file-grouped summary.
 
 ```yaml
 ## Previous: {agent_type} on task-{id}
+context_size_hint: { system: <int>, tier2: <int>, handoff: <int> }   # R-BUDGET-WIRE; PM-populated
 files:
   src/api/tasks.ts:
     added_exports: [createTask, updateTask]
@@ -144,6 +221,8 @@ rationale: |     # OPTIONAL — architect/inventor/debugger only, ≤ 60 tokens
 
 ```
 [Task description for Agent B -- specific, self-contained, per Section 3 rules]
+
+context_size_hint: { system: <int>, tier2: <int>, handoff: <int> }   # R-BUDGET-WIRE; PM-populated
 
 ## Context from Previous Agent
 
@@ -195,7 +274,8 @@ documenter, security-engineer, release-manager, ux-critic, platform-oracle), see
 - [ ] Specific file paths listed? (not "review the changes" -- exact files to examine)
 - [ ] Task requirements included? (what the code should do, not just "check for bugs")
 - [ ] Architect design reference linked if applicable? (design doc or KB entry for spec conformance)
-- [ ] Priority dimensions specified? (correctness, security, performance, maintainability -- which matter most)
+- [ ] `review_dimensions` field set? (`"all"` or a subset of `["code-quality","performance","documentation","operability","api-compat"]`; populated by the PM classifier per `pm.md` §3.RV)
+- [ ] `## Dimensions to Apply` block included with the explicit list of fragment file paths the reviewer must Read?
 - [ ] Git diff included? (per the Reviewer Delegation: Git Diff Inclusion protocol above)
 - [ ] Exploration hygiene stated? (delegation says: "Use Glob for structure and Grep with `output_mode: files_with_matches` to locate candidates; Read only files you intend to act on. The Repository Map is authoritative for project layout — do not Glob the whole repo to re-discover structure.")
 

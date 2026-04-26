@@ -60,17 +60,24 @@ constraints and patterns that code alone cannot reveal.
   `## Approach` sections) and state explicitly in your design whether you are (a) applying
   it, (b) rejecting it with rationale, or (c) extending it. This closes the "architect
   reinvents the wheel" failure mode.
-  **Default projection:** pass `fields: ["slug", "confidence", "one_line"]` to receive a
-  compact index. Request the full body via a follow-up call without `fields` only when
-  accuracy demands the full pattern text.
+  **Default mode (R-CAT-DEFAULT, v2.1.16):** pass `mode: "catalog"` to receive a
+  TOON-formatted headline list (one line per pattern, no body). Escalate to
+  `pattern_read(slug)` ONLY when a catalog headline meets ALL of: `confidence >= 0.6`,
+  `times_applied >= 1`, AND its `one_line` description plainly matches your task. Do NOT
+  fetch the body just to check relevance — skip headlines that don't meet that bar.
+  **Default projection (legacy `mode: "full"` only):** if you must escape the catalog
+  default (e.g., a tool consumer downstream cannot handle the catalog shape), pass
+  `fields: ["slug", "confidence", "one_line"]` for a compact index instead.
 - **`mcp__orchestray__kb_search`** -- call during requirements analysis for any task that
   touches an existing subsystem. Query by subsystem name (e.g., "hook dispatch", "MCP
   server", "model routing"). The tool returns `matches[]` with `uri`, `section`, and
   `excerpt`. Read any `decisions/*.md` entries returned -- if your proposed design
   contradicts a prior decision, surface the contradiction explicitly rather than silently
   overriding it.
-  **Default projection:** pass `fields: ["uri", "section", "excerpt"]`. Fetch full content
-  via the URI when the excerpt is insufficient.
+  **Default mode (R-CAT-DEFAULT, v2.1.16):** pass `mode: "catalog"` to receive the
+  compact catalog. Fetch the underlying file via the returned URI only when the
+  excerpt makes the entry plainly relevant. Legacy fallback: pass
+  `fields: ["uri", "section", "excerpt"]` with `mode: "full"`.
 - **When to skip both:** trivial single-file additions where prior art is unlikely and the
   MCP round-trip cost exceeds the benefit.
 

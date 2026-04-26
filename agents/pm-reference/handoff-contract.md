@@ -236,14 +236,42 @@ parsers, scorers, or human reviewers.
 - **Wrapping the JSON in extra prose inside the fence.** The fence body must
   parse as a single JSON object, nothing else.
 
-## 9. MCP projection conventions (R-PFX, v2.1.14)
+## 9. MCP projection conventions (R-PFX, v2.1.14; R-CAT-DEFAULT, v2.1.16)
 
-All agents that call `pattern_find` or `kb_search` MUST pass the `fields` projection
-argument by default. This reduces response size by 93%+ (measured in v2.1.12 telemetry)
-and avoids burning tokens on full pattern bodies that agents almost never need on the
-first call.
+All agents that call `pattern_find` or `kb_search` MUST minimize response size by
+default. v2.1.16 layers two defaults: **catalog mode** is the new top-level default
+(smallest payload), and the v2.1.14 `fields` projection still applies as the fallback
+shape when an agent explicitly opts out of catalog mode.
 
-### Default `fields` shapes
+### Default mode: catalog (R-CAT-DEFAULT, v2.1.16)
+
+Pass `mode: "catalog"` on every `pattern_find` and `kb_search` call. The response is
+a TOON-formatted headline list (one line per match: slug/uri, confidence,
+times_applied, one_line/excerpt) — no full bodies. Escalate to a full body fetch ONLY
+when a catalog headline meets ALL of:
+
+1. `confidence >= 0.6`
+2. `times_applied >= 1`
+3. The `one_line` (patterns) or `excerpt` (KB) description plainly matches the task.
+
+Skip headlines that don't meet the bar — DO NOT fetch the body just to check. For
+patterns, the full-body fetch is `pattern_read(slug)`. For KB, use a direct file
+`Read` via the returned URI.
+
+### Kill switch (R-CAT-DEFAULT)
+
+- `.orchestray/config.json` → `"catalog_mode_default": false` flips the prompt-level
+  default back to `mode: "full"` (the v2.1.15 shape).
+- Env var `ORCHESTRAY_DISABLE_CATALOG_DEFAULT=1` matches the v2.1.14 kill-switch
+  convention and overrides the config flag.
+- Agents can always pass `mode: "full"` per call without a config change.
+
+### Default `fields` shapes (R-PFX, v2.1.14 — applies under `mode: "full"`)
+
+When `mode: "full"` is explicitly set (kill switch on, or per-call escape), agents
+MUST still minimize the response shape by passing `fields`. This reduces response
+size by 93%+ (measured in v2.1.12 telemetry) and avoids burning tokens on full
+pattern bodies that agents almost never need on the first call.
 
 | Tool | Default `fields` value | Purpose |
 |------|------------------------|---------|
@@ -266,8 +294,9 @@ Example:
 
 When the reviewer agent is auditing the correctness of the pattern library itself
 (i.e., reviewing pattern files, not applying them to a code review), it SHOULD request
-full bodies by omitting `fields` or passing `fields: null`. This exception applies only
-to pattern-accuracy review tasks — all other reviewer calls use the default projection.
+full bodies by omitting `fields` or passing `fields: null` (and similarly may pass
+`mode: "full"` to bypass the catalog default). This exception applies only to
+pattern-accuracy review tasks — all other reviewer calls use the default projection.
 
 ### Kill switch (R-PFX)
 
@@ -391,3 +420,7 @@ Structured Result body. These belong in `detail_artifact`.
 - v1 — v2.1.9 initial schema (2026-04-20)
 - v2 — v2.1.14 R-PFX: added §9 MCP projection conventions (2026-04-24)
 - v3 — v2.1.14 R-HCAP: added §10 artifact body cap & detail pointer (2026-04-24)
+- v4 — v2.1.16 R-CAT-DEFAULT: §9 retitled to "MCP tool usage conventions"; catalog
+  mode is now the top-level default for `pattern_find`/`kb_search`; `fields`
+  projection becomes the legacy fallback shape; reviewer carve-out documented in
+  both axes (2026-04-25)

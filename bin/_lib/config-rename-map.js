@@ -27,7 +27,16 @@
 
 // Format example (for future maintainers):
 //   '<old_key>': { to: '<new_key>', since: '<release>', note?: '<why>' }
-// No real renames yet — v2.1.13 ships with an empty map.
-const RENAME_MAP = Object.freeze({});
+const RENAME_MAP = Object.freeze({
+  // R-AT-FLAG (v2.1.16): the top-level `enable_agent_teams` boolean is
+  // superseded by the namespaced `agent_teams.enabled` block. Both keys are
+  // honored for one release; the legacy key emits a one-time stderr
+  // deprecation warning when present (config-drift.js handles surfacing).
+  'enable_agent_teams': {
+    to: 'agent_teams.enabled',
+    since: '2.1.16',
+    note: 'Renamed for namespace consistency with v2.1.14 R-GATE patterns; the legacy boolean is honored as a fallback for one release.',
+  },
+});
 
 module.exports = { RENAME_MAP };

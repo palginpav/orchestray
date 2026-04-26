@@ -412,6 +412,146 @@ describe('Test 6: kill switch (W5 F-05)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Test 7 — phase_slice_injected positive-path telemetry (v2.1.16 R-PHASE-INJ)
+// ---------------------------------------------------------------------------
+
+describe('Test 7: phase_slice_injected positive-path event (v2.1.16 R-PHASE-INJ)', () => {
+  // Helper: spawn the hook in a tmp cwd with a real audit-event-writer wired
+  // and return the parsed events.jsonl contents.
+  function runHookInTmp({ phase, configBlock, env }) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'phase-inj-'));
+    const tmpOrch = path.join(tmp, '.orchestray', 'state');
+    fs.mkdirSync(tmpOrch, { recursive: true });
+    fs.mkdirSync(path.join(tmp, '.orchestray', 'audit'), { recursive: true });
+    if (configBlock !== undefined) {
+      fs.writeFileSync(
+        path.join(tmp, '.orchestray', 'config.json'),
+        JSON.stringify(configBlock)
+      );
+    }
+    fs.writeFileSync(
+      path.join(tmpOrch, 'orchestration.md'),
+      `---\nid: orch-test\ncurrent_phase: ${phase}\n---\n`
+    );
+    // The audit-event-writer requires bin/_lib/* to be reachable; run hook
+    // from the repo root so it resolves bin/_lib relative to ROOT, but use
+    // tmp as the audit cwd via process.chdir-style override. The hook uses
+    // process.cwd() everywhere — so the simplest path is to copy the bin/
+    // tree into tmp so `bin/_lib/audit-event-writer.js` exists relative to
+    // cwd. To avoid a heavy copy, we instead spawn the hook with `cwd: tmp`
+    // and symlink the repo's bin/ and agents/pm-reference/ trees into tmp.
+    fs.symlinkSync(path.join(ROOT, 'bin'),    path.join(tmp, 'bin'));
+    fs.mkdirSync(path.join(tmp, 'agents'), { recursive: true });
+    fs.symlinkSync(path.join(ROOT, 'agents', 'pm-reference'), path.join(tmp, 'agents', 'pm-reference'));
+
+    const hookPath = path.join(ROOT, 'bin', 'inject-active-phase-slice.js');
+    const r = spawnSync('node', [hookPath], {
+      cwd: tmp,
+      input: JSON.stringify({}),
+      encoding: 'utf8',
+      env: { ...process.env, ...(env || {}) },
+    });
+
+    const eventsPath = path.join(tmp, '.orchestray', 'audit', 'events.jsonl');
+    const events = fs.existsSync(eventsPath)
+      ? fs.readFileSync(eventsPath, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse)
+      : [];
+
+    return { tmp, status: r.status, stdout: r.stdout, events };
+  }
+
+  test('emits phase_slice_injected on success (default config)', () => {
+    const { tmp, status, stdout, events } = runHookInTmp({
+      phase: 'implementation',
+      configBlock: { phase_slice_loading: { enabled: true } },
+      env: { ORCHESTRAY_DISABLE_PHASE_SLICES: '', ORCHESTRAY_DISABLE_PHASE_INJECT_TELEMETRY: '' },
+    });
+    assert.equal(status, 0);
+    const out = JSON.parse(stdout.trim() || '{}');
+    assert.ok(out.hookSpecificOutput, 'positive path must inject additionalContext');
+
+    const inj = events.filter((e) => e.type === 'phase_slice_injected');
+    assert.equal(inj.length, 1, 'exactly one phase_slice_injected event must be emitted');
+    const ev = inj[0];
+    assert.equal(ev.version, 1);
+    assert.equal(ev.phase, 'implementation');
+    assert.equal(ev.slice_path, path.join('agents', 'pm-reference', 'phase-execute.md'));
+    assert.ok(typeof ev.pointer_bytes === 'number' && ev.pointer_bytes > 0,
+      'pointer_bytes must be a positive number');
+    assert.ok(typeof ev.timestamp === 'string' && ev.timestamp.length > 0,
+      'timestamp must be auto-filled');
+    assert.ok(typeof ev.orchestration_id === 'string',
+      'orchestration_id must be auto-filled');
+
+    // No fallback should fire on the success path.
+    const fb = events.filter((e) => e.type === 'phase_slice_fallback');
+    assert.equal(fb.length, 0, 'fallback must NOT fire on the success path');
+
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('config kill switch (telemetry_enabled: false) suppresses injected event but fallback still fires on errors', () => {
+    // Success path with telemetry disabled — slice still stages, but no event.
+    const { tmp, events } = runHookInTmp({
+      phase: 'verify',
+      configBlock: { phase_slice_loading: { enabled: true, telemetry_enabled: false } },
+    });
+    const inj = events.filter((e) => e.type === 'phase_slice_injected');
+    assert.equal(inj.length, 0,
+      'phase_slice_injected must NOT emit when telemetry_enabled: false');
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('env kill switch ORCHESTRAY_DISABLE_PHASE_INJECT_TELEMETRY=1 suppresses event', () => {
+    const { tmp, events } = runHookInTmp({
+      phase: 'execute',
+      configBlock: { phase_slice_loading: { enabled: true } },
+      env: { ORCHESTRAY_DISABLE_PHASE_INJECT_TELEMETRY: '1' },
+    });
+    const inj = events.filter((e) => e.type === 'phase_slice_injected');
+    assert.equal(inj.length, 0, 'env kill switch must suppress phase_slice_injected');
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('telemetry_enabled defaults to true when field absent (rollout default)', () => {
+    const { tmp, events } = runHookInTmp({
+      phase: 'close',
+      // Note: NO telemetry_enabled field — must default to true.
+      configBlock: { phase_slice_loading: { enabled: true } },
+    });
+    const inj = events.filter((e) => e.type === 'phase_slice_injected');
+    assert.equal(inj.length, 1,
+      'phase_slice_injected must emit by default when telemetry_enabled is unspecified');
+    assert.equal(inj[0].phase, 'close');
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('event-schemas.md and shadow include phase_slice_injected entry', () => {
+    const md = fs.readFileSync(
+      path.join(PM_REF_DIR, 'event-schemas.md'),
+      'utf8'
+    );
+    assert.ok(
+      md.includes('### `phase_slice_injected` event'),
+      'event-schemas.md must define phase_slice_injected section'
+    );
+    const shadow = JSON.parse(
+      fs.readFileSync(path.join(PM_REF_DIR, 'event-schemas.shadow.json'), 'utf8')
+    );
+    assert.ok(
+      shadow.phase_slice_injected && shadow.phase_slice_injected.v === 1,
+      'shadow must contain phase_slice_injected v1'
+    );
+  });
+
+  test('emitInjectedEvent is exported from the hook module', () => {
+    const mod = require(path.join(ROOT, 'bin', 'inject-active-phase-slice.js'));
+    assert.equal(typeof mod.emitInjectedEvent, 'function',
+      'emitInjectedEvent must be exported for downstream consumers');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Bonus: rule-driven toolchain (W9 reuse contract)
 // ---------------------------------------------------------------------------
 

@@ -291,6 +291,58 @@ const shieldSchema = z.object({
 // R-CONFIG-DRIFT (v2.1.13 W9) reserved key — listed so zod tolerates it today.
 const configDriftSilenceSchema = z.array(z.string());
 
+// R-AT-FLAG (v2.1.16): namespaced agent_teams block. Supersedes the top-level
+// `enable_agent_teams` boolean (kept for one release as a deprecated fallback).
+const agentTeamsSchema = z.object({
+  enabled: z.boolean().optional(),
+}).passthrough();
+
+// R-PHASE-INJ (v2.1.16): phase-slice loader knobs. F-004 (W12-fix) added the
+// `telemetry_enabled` documented kill switch declared in
+// bin/inject-active-phase-slice.js. Schema is passthrough so older configs
+// with extra keys don't fail validation.
+const phaseSliceLoadingSchema = z.object({
+  enabled: z.boolean().optional(),
+  telemetry_enabled: z.boolean().optional(),
+}).passthrough();
+
+// R-RV-DIMS (v2.1.16): reviewer-dimension scoping kill switch. F-002 (W12-fix)
+// added to KNOWN_TOP_LEVEL_KEYS; schema declaration mirrors that for the
+// cross-ref test in tests/unit/config-drift.test.js.
+const reviewDimensionScopingSchema = z.object({
+  enabled: z.boolean().optional(),
+}).passthrough();
+
+// v2.1.16 W14-fix F-W14-001: declarations for v2.1.14/v2.1.15 carryover sections
+// that ship in .orchestray/config.json but were never registered in the schema.
+// Closes the bidirectional cross-ref test gap (KNOWN_TOP_LEVEL_KEYS vs schema).
+const deltaHandoffSchema = z.object({
+  enabled: z.boolean().optional(),
+  force_full: z.boolean().optional(),
+}).passthrough();
+
+const featureDemandGateSchema = z.object({
+  shadow_mode: z.boolean().optional(),
+}).passthrough();
+
+const roleBudgetsSchema = z.record(
+  z.string(),
+  z.object({
+    budget_tokens: z.number().int().min(0).optional(),
+    source: z.string().optional(),
+    calibrated_at: z.string().optional(),
+  }).passthrough()
+);
+
+const budgetEnforcementSchema = z.object({
+  enabled: z.boolean().optional(),
+  hard_block: z.boolean().optional(),
+}).passthrough();
+
+const curatorSliceLoadingSchema = z.object({
+  enabled: z.boolean().optional(),
+}).passthrough();
+
 // ---------------------------------------------------------------------------
 // Top-level schema
 // ---------------------------------------------------------------------------
@@ -315,7 +367,11 @@ const configSchema = z.object({
   default_effort: effortLevel.nullable().optional(),
   force_effort: effortLevel.nullable().optional(),
   effort_routing: z.boolean().optional(),
+  // R-AT-FLAG (v2.1.16): legacy top-level flag — DEPRECATED. Prefer
+  // `agent_teams.enabled`. Honored for one release as a fallback with a
+  // one-time stderr deprecation warning emitted by post-upgrade-sweep.
   enable_agent_teams: z.boolean().optional(),
+  agent_teams: agentTeamsSchema.optional(),
 
   // Cost
   max_cost_usd: z.number().positive().nullable().optional(),
@@ -349,6 +405,10 @@ const configSchema = z.object({
   enable_replay_analysis: z.boolean().optional(),
   max_turns_overrides: z.record(z.string(), z.number().int().min(1)).nullable().optional(),
 
+  // R-CAT-DEFAULT (v2.1.16): pattern-find catalog-mode default flip. Boolean
+  // flag — true = catalog-only by default, false = full body. F-002 (W12-fix).
+  catalog_mode_default: z.boolean().optional(),
+
   // Nested sections
   mcp_server: mcpServerSchema.optional(),
   mcp_enforcement: mcpEnforcementSchema.optional(),
@@ -370,6 +430,19 @@ const configSchema = z.object({
   curator: curatorSchema.optional(),
   audit: auditSchema.optional(),
   shield: shieldSchema.optional(),
+  // R-PHASE-INJ (v2.1.16, F-004 W12-fix): declare phase_slice_loading so the
+  // documented `telemetry_enabled` kill switch is discoverable via schema.
+  phase_slice_loading: phaseSliceLoadingSchema.optional(),
+  // R-RV-DIMS (v2.1.16, F-002 W12-fix): reviewer-dimension scoping kill switch.
+  review_dimension_scoping: reviewDimensionScopingSchema.optional(),
+  // v2.1.16 W14-fix F-W14-001: declare v2.1.14/15 carryover sections so the
+  // bidirectional cross-ref test (KNOWN_TOP_LEVEL_KEYS == schema fields) holds
+  // and fresh-install boot stops emitting "unknown config key" drift warnings.
+  delta_handoff: deltaHandoffSchema.optional(),
+  feature_demand_gate: featureDemandGateSchema.optional(),
+  role_budgets: roleBudgetsSchema.optional(),
+  budget_enforcement: budgetEnforcementSchema.optional(),
+  curator_slice_loading: curatorSliceLoadingSchema.optional(),
   config_drift_silence: configDriftSilenceSchema.optional(),
 }).passthrough(); // R-CONFIG-DRIFT (W9) owns unknown-key warnings; this schema tolerates them.
 
@@ -397,4 +470,5 @@ module.exports = {
   curatorSchema,
   auditSchema,
   shieldSchema,
+  phaseSliceLoadingSchema,
 };

@@ -131,6 +131,9 @@ function stageSlice(cwd, sliceFileName) {
 function emitFallbackEvent(cwd, reason) {
   // Best-effort: append to events.jsonl directly via the audit gateway when
   // available; otherwise skip silently. This keeps the hook fail-open.
+  // The fallback event ALWAYS emits (it is a fault signal); it is NOT gated
+  // by `phase_slice_loading.telemetry_enabled` (that flag gates only the
+  // positive-path `phase_slice_injected` event added in v2.1.16 R-PHASE-INJ).
   try {
     const writerPath = path.join(cwd, 'bin', '_lib', 'audit-event-writer.js');
     if (!fs.existsSync(writerPath)) return;
@@ -143,6 +146,47 @@ function emitFallbackEvent(cwd, reason) {
     }, { cwd });
   } catch (_e) {
     // fail-open
+  }
+}
+
+/**
+ * Emit positive-path `phase_slice_injected` event (v2.1.16 R-PHASE-INJ).
+ *
+ * Pairs with `phase_slice_fallback` so the
+ * `injected / (injected + fallback)` ratio empirically validates the
+ * v2.1.15 I-PHASE-GATE ~21K/turn savings claim. Read-only telemetry —
+ * additive, non-fatal, never blocks the hook.
+ *
+ * Kill switches (any one → no emission, hook still proceeds normally):
+ *   - process.env.ORCHESTRAY_DISABLE_PHASE_INJECT_TELEMETRY === '1'
+ *   - config.phase_slice_loading.telemetry_enabled === false
+ *     (default true; the field is absent in v2.1.15 configs and we
+ *     treat undefined as enabled per the rollout posture in
+ *     v2116-release-plan.md §R-PHASE-INJ kill-switch line 115.)
+ */
+function emitInjectedEvent(cwd, cfg, phase, sliceFileName, pointer) {
+  // Kill switch (env)
+  if (process.env.ORCHESTRAY_DISABLE_PHASE_INJECT_TELEMETRY === '1') return;
+  // Kill switch (config) — only the explicit `false` disables; default is on.
+  const block = cfg && typeof cfg === 'object' ? cfg.phase_slice_loading : null;
+  if (block && typeof block === 'object' && block.telemetry_enabled === false) {
+    return;
+  }
+  try {
+    const writerPath = path.join(cwd, 'bin', '_lib', 'audit-event-writer.js');
+    if (!fs.existsSync(writerPath)) return;
+    // eslint-disable-next-line global-require
+    const { writeEvent } = require(writerPath);
+    const slicePath = path.join(SLICES_DIR_RELATIVE, sliceFileName);
+    writeEvent({
+      version: 1,
+      type: 'phase_slice_injected',
+      phase,
+      slice_path: slicePath,
+      pointer_bytes: Buffer.byteLength(String(pointer || ''), 'utf8'),
+    }, { cwd });
+  } catch (_e) {
+    // fail-open — telemetry must never break the hook
   }
 }
 
@@ -201,11 +245,18 @@ function handle(_payload) {
     },
     continue: true,
   };
+
+  // v2.1.16 R-PHASE-INJ: positive-path telemetry. Emit AFTER staging succeeded
+  // and BEFORE writing stdout so emission failures (which never throw) cannot
+  // bend the hook's response contract.
+  emitInjectedEvent(cwd, cfg, phase, slice, pointer);
+
   process.stdout.write(JSON.stringify(response) + '\n');
 }
 
 module.exports = {
   resolveSliceForPhase,
   readPhaseFromOrchestration,
+  emitInjectedEvent,
   PHASE_TO_FILE,
 };

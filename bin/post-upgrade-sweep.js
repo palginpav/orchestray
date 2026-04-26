@@ -180,6 +180,25 @@ function emitUpgradePendingWarning(sessionId, cwd) {
       'If you rely on drift-sentinel output, add \'"enable_drift_sentinel": true\' to ' +
       '.orchestray/config.json before your next orchestration.\n'
     );
+    // v2.1.16 R-AUTODOC-OFF: auto_document default flipped from true to false.
+    // The reviewer's documentation pass on every orchestration covers docs gaps,
+    // so the auto-spawn was redundant insurance on typical workloads.
+    process.stderr.write(
+      '[orchestray] v2.1.16 migration: auto_document default is now false. ' +
+      'The documenter agent no longer auto-spawns after every orchestration — ' +
+      'the reviewer\'s documentation pass already audits docs drift. ' +
+      'To restore prior behavior, add \'"auto_document": true\' to ' +
+      '.orchestray/config.json.\n'
+    );
+    // v2.1.16 R-AT-FLAG: announce the agent_teams namespace rename + dual-gate.
+    process.stderr.write(
+      '[orchestray] v2.1.16 migration (R-AT-FLAG): the top-level "enable_agent_teams" key ' +
+      'is renamed to the "agent_teams": { "enabled": ... } block. The legacy key is honored ' +
+      'for one release with a deprecation warning. Default flips to OFF in v2.1.16. ' +
+      'To re-enable Agent Teams, set BOTH \'"agent_teams": {"enabled": true}\' in ' +
+      '.orchestray/config.json AND CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 in your environment, ' +
+      'then read agents/pm-reference/agent-teams-decision.md before using team mode.\n'
+    );
     recordDegradation({
       kind: 'agent_registry_stale',
       severity: 'warn',
@@ -2226,6 +2245,82 @@ function runT22AdaptiveVerbositySeed(cwd, stateDir, sentinelPath) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// v2.1.16 R-AT-FLAG: enable_agent_teams → agent_teams.enabled migration
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run the v2.1.16 R-AT-FLAG config migration.
+ *
+ * For installs that still have the legacy top-level `enable_agent_teams`
+ * boolean, this helper additively seeds the new namespaced
+ * `agent_teams: { enabled: <legacy_value> }` block when absent. The legacy
+ * key is LEFT IN PLACE for one release so existing readers continue to work;
+ * the runtime deprecation warning fires from the banner above. Fail-open on
+ * every error — never blocks the user prompt.
+ *
+ * Idempotent: if `agent_teams` is already present (regardless of internal
+ * shape), the helper makes no further changes.
+ *
+ * @param {string} cwd          - Project root (absolute)
+ * @param {string} stateDir     - Absolute path to .orchestray/state/
+ * @param {string} sentinelPath - Absolute path to .agent-teams-namespace-migrated-2116
+ */
+function runRAtFlagMigration(cwd, stateDir, sentinelPath) {
+  if (existsSilent(sentinelPath)) return;
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // If new namespace already present, no-op.
+  if (
+    parsed.agent_teams &&
+    typeof parsed.agent_teams === 'object' &&
+    !Array.isArray(parsed.agent_teams)
+  ) {
+    touchSilent(sentinelPath, stateDir);
+    return;
+  }
+
+  // Seed the new namespace from the legacy value when present, else default OFF.
+  const legacy = typeof parsed.enable_agent_teams === 'boolean'
+    ? parsed.enable_agent_teams
+    : false;
+  parsed.agent_teams = { enabled: legacy };
+
+  const tmpPath = configPath + '.r-at-flag-2116-tmp';
+  try {
+    const out = JSON.stringify(parsed, null, 2) + '\n';
+    fs.writeFileSync(tmpPath, out, 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (_e) {
+    try { fs.unlinkSync(tmpPath); } catch (_e2) {}
+    return;
+  }
+
+  touchSilent(sentinelPath, stateDir);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Shared utilities
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -2345,6 +2440,8 @@ function main() {
       const stateSentinelSeedSentinel = path.join(stateDir, '.state-sentinel-seeded-2018');
       // W8 (v2.0.18): redo_flow config block seed.
       const redoFlowSeedSentinel = path.join(stateDir, '.redo-flow-seeded-2018');
+      // v2.1.16 R-AT-FLAG: enable_agent_teams → agent_teams.enabled migration sentinel.
+      const rAtFlagSentinel = path.join(stateDir, '.agent-teams-namespace-migrated-2116');
 
       // ── W8: config migration ────────────────────────────────────────────────
       try {
@@ -2532,6 +2629,16 @@ function main() {
       // Fresh installs get it via install.js.
       try {
         runW8RedoFlowSeed(cwd, stateDir, redoFlowSeedSentinel);
+      } catch (_e) {
+        // Fail-open.
+      }
+
+      // ── R-AT-FLAG (v2.1.16): agent_teams namespace migration ───────────────
+      // Seeds agent_teams: { enabled: <legacy_or_false> } from the legacy
+      // top-level enable_agent_teams boolean. Legacy key is left in place
+      // for one release; the deprecation banner above announces the rename.
+      try {
+        runRAtFlagMigration(cwd, stateDir, rAtFlagSentinel);
       } catch (_e) {
         // Fail-open.
       }

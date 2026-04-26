@@ -194,7 +194,16 @@ When the score meets or exceeds the threshold, enter orchestration mode:
 2.4. **Cross-session KB context scan:** Before decomposing, call
    `mcp__orchestray__kb_search` with the current task summary:
    - Example: `{"query": "<task summary>", "kb_sections": ["facts", "decisions"], "limit": 5}`.
-   - When only specific fields are needed, use the optional `fields` parameter to reduce output token cost: `{"query": "...", "fields": ["slug", "excerpt"]}`. Works the same way for `mcp__orchestray__pattern_find`: `{"task_summary": "...", "fields": ["slug", "confidence"]}`, `mcp__orchestray__routing_lookup`: `{"orchestration_id": "...", "fields": ["ts", "agent_type", "model"]}`, and `mcp__orchestray__metrics_query`: `{"window": "7d", "group_by": "model", "metric": "cost_usd", "fields": ["key", "mean"]}`. Omit `fields` for the full response (backward compatible).
+   - **Default mode (R-CAT-DEFAULT, v2.1.16):** pass `mode: "catalog"` to both
+     `mcp__orchestray__kb_search` and `mcp__orchestray__pattern_find` for a compact
+     headline list. Escalate to a full body fetch (`pattern_read(slug)` for patterns,
+     direct file Read via the URI for KB) ONLY when a headline meets ALL of:
+     `confidence >= 0.6`, `times_applied >= 1`, AND the `one_line`/`excerpt` plainly
+     matches the task. Skip headlines below that bar — do not pull the body to check.
+     Kill switch: `.orchestray/config.json` → `"catalog_mode_default": false` reverts
+     to the legacy `mode: "full"` shape; env `ORCHESTRAY_DISABLE_CATALOG_DEFAULT=1`
+     also reverts.
+   - When only specific fields are needed (legacy `mode: "full"` path), use the optional `fields` parameter to reduce output token cost: `{"query": "...", "fields": ["slug", "excerpt"]}`. Works the same way for `mcp__orchestray__pattern_find`: `{"task_summary": "...", "fields": ["slug", "confidence"]}`, `mcp__orchestray__routing_lookup`: `{"orchestration_id": "...", "fields": ["ts", "agent_type", "model"]}`, and `mcp__orchestray__metrics_query`: `{"window": "7d", "group_by": "model", "metric": "cost_usd", "fields": ["key", "mean"]}`. Omit `fields` for the full response (backward compatible).
    - Read the top ≤3 matches via `@orchestray:kb://<section>/<slug>` attachments in the
      delegation prompt, only for the specialists that will directly use them. Do not
      broadcast KB matches to every spawned agent.
@@ -565,6 +574,21 @@ Before spawning any agent, Orchestray checks whether the total context size
 role's configured budget. The check runs via `bin/preflight-spawn-budget.js`
 in the `PreToolUse:Agent` hook chain.
 
+**PM responsibility — populate `context_size_hint` on every spawn (R-BUDGET-WIRE,
+v2.1.16):** Before each `Agent()`, `Explore()`, or `Task()` call, the PM MUST
+include `context_size_hint: { system, tier2, handoff }` in the tool input.
+Compute each value from the prompt sections you already assembled — total
+characters / 4 ≈ tokens (or use a precomputed token count when available, e.g.,
+from `bin/_lib/spec-sketch.js`). No new measurement is needed; these are known
+numbers at spawn time. The hook fails open when the hint is absent or zero, so
+omitting it never blocks the spawn — but it disables soft-warn telemetry for
+that spawn and leaves the v2.1.15 R-BUDGET hook dormant. See
+`agents/pm-reference/delegation-templates.md` §"Context Size Hint" for the
+field schema. The hook now reads the live `.orchestray/state/role-budgets.json`
+file (written by `bin/calibrate-role-budgets.js`) when present, falling back to
+the static `role_budgets` block in `.orchestray/config.json` if the live file
+is absent.
+
 **Default behaviour (soft enforce):** When the computed context exceeds the role
 budget, a `budget_warn` event is emitted and a warning appears in the session log.
 The spawn proceeds — it is NOT blocked.
@@ -798,6 +822,63 @@ Agent(subagent_type="developer", model="sonnet", maxTurns=17,
 Agent(subagent_type="developer", model="sonnet",
       description="Fix auth (sonnet/medium)", prompt="...")  # maxTurns missing
 ```
+
+### 3.RV: Reviewer Dimension Classifier (R-RV-DIMS, v2.1.16)
+
+Before every reviewer `Agent()` spawn, deterministically choose which OPTIONAL
+review dimensions the reviewer should load. Correctness and Security are always
+reviewed (they live in `agents/reviewer.md` core); this step picks an additive
+subset of `["code-quality", "performance", "documentation", "operability",
+"api-compat"]` based on the developer's `files_changed` set.
+
+**Protocol:**
+
+1. **Read the kill switches.** Read `review_dimension_scoping.enabled` from merged
+   config (per Config Merge Semantics in §0). Read
+   `process.env.ORCHESTRAY_DISABLE_REVIEWER_SCOPING` from the spawn-time
+   environment. If either disables scoping (`enabled === false` or the env var is
+   `"1"`), set `review_dimensions = "all"` and skip the classifier.
+2. **Otherwise call the classifier.** Either invoke the helper at
+   `bin/_lib/classify-review-dimensions.js` or apply the equivalent rule below
+   mentally. The PM SHOULD prefer the helper for determinism; a Sonnet PM may
+   apply the rule from the prompt when calling JS is impractical.
+3. **Always include the `## Dimensions to Apply` block** in the spawn prompt — even
+   when scoping is disabled (it then enumerates all 5 fragment paths). v2.1.15-style
+   spawns that omit the block entirely fall back to `"all"` (reviewer back-compat).
+
+**Decision tree (apply top-down, first match wins):**
+
+1. Kill switch (config or env) → `"all"`.
+2. Empty diff (`files_changed.length === 0`) → `"all"` with rationale
+   `"empty diff — defensive fallback"`.
+3. **Security-sensitive paths present** (any path in `auth/`, `crypto/`,
+   `secrets`, `bin/validate-`, `hooks/hooks.json`, `.claude/settings.json`,
+   `mcp-server/`, or containing `permission`, `token`, `password`, `key`) →
+   `["code-quality", "operability", "api-compat"]`. (Security stays in core,
+   always loaded.)
+4. **Doc-only diff** (every path matches `**/*.md`, `docs/**`, `README*`, or
+   `CHANGELOG*`) → `["documentation"]`.
+5. **UI / CLI / message-string archetype** (paths in `agents/*.md`,
+   `skills/**/SKILL.md`, `bin/*statusline*`, `bin/*config*`, `lib/messages*`,
+   `lib/help*`) → `["code-quality", "documentation", "operability"]`.
+6. **Backend / data-path archetype** (paths in `bin/*.js` excluding
+   statusline/help/config, `mcp-server/`, `bin/validate-*`, `bin/inject-*`,
+   `bin/preflight-*`, or `agents/pm-reference/event-schemas.md`) →
+   `["code-quality", "performance", "operability", "api-compat"]`.
+7. **Config / schema archetype** (paths matching
+   `agents/pm-reference/*-schemas.md`, `*.schema.json`, `.orchestray/config.json`,
+   files exporting zod schemas) →
+   `["api-compat", "documentation", "operability"]`.
+8. **Fallback** → `"all"`.
+
+**Output:** `{review_dimensions: "all" | string[], rationale: string}`. Pass
+`review_dimensions` into the delegation prompt's `## Dimensions to Apply` block.
+Log `rationale` into the orchestration task file (do NOT include it in the
+reviewer prompt).
+
+**Invariant:** `"correctness"` and `"security"` MUST NEVER appear in the
+returned array. They are not in the allowed enum and they are evaluated on every
+review by the reviewer's core prompt.
 
 ---
 
@@ -1454,7 +1535,7 @@ Load these reference files conditionally based on the situation:
 
 | Condition | File to Read |
 |-----------|-------------|
-| `enable_agent_teams` is true | `agents/pm-reference/agent-teams.md` |
+| `agent_teams.enabled` is true (or legacy `enable_agent_teams: true` with deprecation warning) AND `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in env (R-AT-FLAG dual gate, v2.1.16) | `agents/pm-reference/agent-teams-decision.md` first, then `agents/pm-reference/agent-teams.md` |
 | Task involves security OR `security_review` is "auto" and security-sensitive | `agents/pm-reference/security-integration.md` |
 | Task source is GitHub issue | `agents/pm-reference/github-issue.md` |
 | `ci_command` is not null | `agents/pm-reference/ci-feedback.md` |

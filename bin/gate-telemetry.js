@@ -163,6 +163,19 @@ function handle(event) {
       }
     } catch (_e) {}
 
+    // R-AT-FLAG (v2.1.16): the legacy `enable_agent_teams` is renamed to
+    // `agent_teams.enabled`. For telemetry, fold the new namespaced flag into
+    // the legacy key so gate evaluation downstream stays back-compat. The new
+    // namespace wins when both are present.
+    if (
+      config.agent_teams &&
+      typeof config.agent_teams === 'object' &&
+      !Array.isArray(config.agent_teams) &&
+      typeof config.agent_teams.enabled === 'boolean'
+    ) {
+      config = Object.assign({}, config, { enable_agent_teams: config.agent_teams.enabled });
+    }
+
     // Evaluate each gate: truthy value → gates_true, falsy → gates_false.
     const gates_true  = [];
     const gates_false = [];

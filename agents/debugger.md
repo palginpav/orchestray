@@ -52,9 +52,12 @@ already seen this symptom before.
   tool returns `matches[]` with `slug` and `one_line`. If your root cause matches a
   recorded anti-pattern, cite the pattern `slug` in your diagnosis and recommend
   applying that pattern's fix approach rather than inventing a new one.
-  **Default projection:** pass `fields: ["slug", "confidence", "one_line"]` to receive a
-  compact index. Request the full body via a follow-up call without `fields` only when
-  accuracy demands the full pattern text.
+  **Default mode (R-CAT-DEFAULT, v2.1.16):** pass `mode: "catalog"` for the compact
+  TOON headline list. Escalate to `pattern_read(slug)` ONLY when a catalog headline
+  meets ALL of: `confidence >= 0.6`, `times_applied >= 1`, AND its `one_line` matches
+  the root cause symptom. Skip headlines that don't meet the bar — do not read the
+  body to check.
+  Legacy fallback: pass `fields: ["slug", "confidence", "one_line"]` with `mode: "full"`.
 - **When to skip:** trivially-reproducing bugs with a clear stack trace and a one-line
   fix where prior context adds no value.
 

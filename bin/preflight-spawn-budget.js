@@ -34,6 +34,39 @@ const { MAX_INPUT_BYTES }      = require('./_lib/constants');
 const { writeEvent }           = require('./_lib/audit-event-writer');
 
 // ---------------------------------------------------------------------------
+// loadLiveRoleBudgets — try `.orchestray/state/role-budgets.json` first, fall
+// back to the static `role_budgets` block in `.orchestray/config.json`.
+// (R-BUDGET-WIRE, v2.1.16.)
+// ---------------------------------------------------------------------------
+//
+// The live file is written by `bin/calibrate-role-budgets.js` (or as a fallback
+// matching the static defaults during the v2.1.16 release pass). When present
+// it takes precedence so calibrated p95 values flow through without a config
+// edit. On any read/parse error we silently fall back — the v2.1.15 fail-open
+// posture forbids blocking spawns on telemetry-source issues.
+//
+// Per-session debug log: when ORCHESTRAY_DEBUG is set, the source ('live'
+// vs 'static') is logged once per process to stderr.
+function loadLiveRoleBudgets(cwd, debugSink) {
+  const livePath = path.join(cwd, '.orchestray', 'state', 'role-budgets.json');
+  try {
+    if (fs.existsSync(livePath)) {
+      const raw = fs.readFileSync(livePath, 'utf8');
+      const parsed = JSON.parse(raw);
+      const liveBudgets = parsed && typeof parsed === 'object' ? (parsed.role_budgets || parsed) : null;
+      if (liveBudgets && typeof liveBudgets === 'object' && Object.keys(liveBudgets).length > 0) {
+        if (debugSink) debugSink('live');
+        return liveBudgets;
+      }
+    }
+  } catch (_e) {
+    // Fail-open: any read/parse error → fall through to static defaults.
+  }
+  if (debugSink) debugSink('static');
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // checkBudget — pure function, exported for unit tests
 // ---------------------------------------------------------------------------
 
@@ -170,6 +203,18 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
+    // R-BUDGET-WIRE (v2.1.16): overlay live calibrated budgets if present.
+    // The live file lives at `.orchestray/state/role-budgets.json` and is
+    // written by `bin/calibrate-role-budgets.js`. When absent, fall back to
+    // the static `role_budgets` block already loaded in config.json.
+    const debugSink = process.env.ORCHESTRAY_DEBUG
+      ? (src) => process.stderr.write(`[preflight-spawn-budget] role-budgets source=${src}\n`)
+      : null;
+    const liveBudgets = loadLiveRoleBudgets(cwd, debugSink);
+    if (liveBudgets) {
+      config = { ...config, role_budgets: { ...(config.role_budgets || {}), ...liveBudgets } };
+    }
+
     // Extract role from tool_input
     const toolInput = event.tool_input || {};
     const role = toolInput.subagent_type || toolInput.agent_type || '';
@@ -179,6 +224,15 @@ process.stdin.on('end', () => {
     // this check is wired into the delegation path. Fall back to 0 (no-op) when
     // not provided — this is the v2.1.15 conservative approach until the PM
     // delegation templates are updated to pass explicit size fields.
+    // TODO(v2.1.17): add a PreToolUse:Agent validator that emits
+    // `context_size_hint_missing` audit events when the hint is absent or zero
+    // (warn-only, never block). Today the PM populates this hint via prompt
+    // instruction in agents/pm.md §"PM responsibility — populate context_size_hint";
+    // there is no machine-checked enforcement, so the v2.1.16 R-BUDGET-WIRE
+    // success metric ("≥95% of agent_start events show populated
+    // context_size_hint within 7 days") is observable post-release but cannot
+    // be enforced pre-ship. See
+    // .orchestray/kb/artifacts/v2116-w12-release-review.md F-008.
     const systemSize   = (toolInput.context_size_hint && toolInput.context_size_hint.system)   || 0;
     const tier2Size    = (toolInput.context_size_hint && toolInput.context_size_hint.tier2)    || 0;
     const handoffSize  = (toolInput.context_size_hint && toolInput.context_size_hint.handoff)  || 0;
@@ -255,4 +309,4 @@ process.stdin.on('end', () => {
 
 } // end: if (require.main === module)
 
-module.exports = { checkBudget };
+module.exports = { checkBudget, loadLiveRoleBudgets };

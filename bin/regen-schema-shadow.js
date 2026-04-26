@@ -14,7 +14,11 @@
  *     ...
  *   }
  *
- * Output target: ≤ 4 KB. Script errors out if the shadow exceeds this limit.
+ * Output target: ≤ 8 KB. Script errors out if the shadow exceeds this limit.
+ * (Raised from 4 KB to 8 KB in v2.1.16 W12-fix F-005 — the v2.1.16 file landed
+ * at 4052/4096 bytes leaving only 44 bytes of headroom, and v2.1.17's
+ * R-DOCUMENTER-EVENT + R-ARCHETYPE-EVENT were guaranteed to overflow the cap.
+ * 8 KB still sits well under PIPE_BUF on every supported platform.)
  *
  * Usage: node bin/regen-schema-shadow.js [--cwd <dir>]
  *
@@ -34,7 +38,10 @@ const fs     = require('fs');
 const path   = require('path');
 const crypto = require('crypto');
 
-const MAX_SHADOW_BYTES = 4096; // 4 KB hard ceiling
+const MAX_SHADOW_BYTES = 8192; // 8 KB hard ceiling — raised from 4096 in v2.1.16
+                                // W12-fix F-005 to absorb v2.1.17 event-schema
+                                // additions without forcing per-event field
+                                // trimming. Still well under PIPE_BUF.
 
 // ---------------------------------------------------------------------------
 // Argument parsing
