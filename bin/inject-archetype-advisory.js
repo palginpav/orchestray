@@ -56,6 +56,7 @@ const {
 } = require('./_lib/archetype-cache');
 
 const { emitTier2Invoked } = require('./_lib/tier2-invoked-emitter');
+const { writeEvent }       = require('./_lib/audit-event-writer');
 
 const FENCE_OPEN  = '<orchestray-archetype-advisory>';
 const FENCE_CLOSE = '</orchestray-archetype-advisory>';
@@ -244,6 +245,10 @@ function handleUserPromptSubmit(event) {
     if (!match) {
       // Check if there's a raw match that got blacklisted (for telemetry)
       checkAndRecordBlacklisted(cwd, sigDetails, cfg, orchestrationId);
+      // R-ARCHETYPE-EVENT (v2.1.17): emit archetype_cache_miss on the no-match path
+      // so the analytics rollup can compute hit-rate = served / (served + miss).
+      // Mirrors the recordAdvisoryServed style; fail-open per audit-event contract.
+      recordCacheMiss(cwd, signature, orchestrationId);
       exitWithKillSwitch();
       return;
     }
@@ -299,6 +304,48 @@ function extractTaskDescription(orchData, event) {
     return event.prompt.slice(0, 2000);
   }
   return '';
+}
+
+/**
+ * Count archetypes searched by reading archetype-cache.jsonl line count.
+ * Returns 0 when the cache is missing or unreadable (fail-open).
+ *
+ * @param {string} cwd
+ * @returns {number}
+ */
+function countArchetypesSearched(cwd) {
+  try {
+    const cachePath = path.join(cwd, '.orchestray', 'state', 'archetype-cache.jsonl');
+    if (!fs.existsSync(cachePath)) return 0;
+    const raw = fs.readFileSync(cachePath, 'utf8');
+    if (!raw) return 0;
+    return raw.split('\n').filter(line => line.trim().length > 0).length;
+  } catch (_e) {
+    return 0;
+  }
+}
+
+/**
+ * Emit an archetype_cache_miss event on the no-match path.
+ * R-ARCHETYPE-EVENT (v2.1.17): pairs with archetype_cache_advisory_served (the hit
+ * signal) so the /orchestray:analytics rollup can compute hit-rate = served /
+ * (served + miss). Fail-open: any write error must not block the orchestration.
+ *
+ * @param {string} cwd
+ * @param {string} signature        - 12-hex task_shape_hash from computeSignature()
+ * @param {string} orchestrationId
+ */
+function recordCacheMiss(cwd, signature, orchestrationId) {
+  try {
+    const event = {
+      type: 'archetype_cache_miss',
+      version: 1,
+      orchestration_id: orchestrationId,
+      task_shape_hash: signature,
+      archetype_count_searched: countArchetypesSearched(cwd),
+    };
+    writeEvent(event, { cwd });
+  } catch (_e) { /* fail-open */ }
 }
 
 /**

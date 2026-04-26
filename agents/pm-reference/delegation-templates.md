@@ -178,6 +178,34 @@ When `review_dimension_scoping.enabled` is `false` (kill switch) or the env var
 paths. v2.1.15-style spawns that omit the block entirely behave as if `"all"`
 was passed (back-compat by default per the v2.1.16 release plan).
 
+### Repo-Map Token Budget (R-AIDER-FULL)
+
+**R-AIDER-FULL (v2.1.17 W8).** Code-touching agents (developer, refactorer,
+reviewer, debugger) receive an Aider-style repo map prepended to the
+delegation prompt under a `## Repo Map (Aider-style, top-K symbols)` block.
+Map size is capped by a per-role token budget; a per-spawn override field on
+the delegation template lets the PM tighten or lift the cap.
+
+**Field shape:**
+
+```yaml
+# repo_map_token_budget field (R-AIDER-FULL, v2.1.17)
+repo_map_token_budget: <int>   # 0 disables; defaults: dev 1500, refactorer 2500,
+                                #   reviewer 1000, debugger 1000, all others 0.
+```
+
+**Override semantics:** Set `repo_map_token_budget: 0` to opt out of repo-map
+injection for a single delegation (useful when the agent is reading a small
+focused diff and a 1500-token map would compete with handoff context). Set a
+larger value (e.g. `3000`) when the agent is doing a cross-cutting refactor
+and needs more graph context than the role default. Out-of-range or
+non-integer values fall back to the role default.
+
+When `repo_map.enabled` is `false` (kill switch) or `repo_map.cold_init_async`
+is `true` AND the cache is cold, the PM emits an empty map and proceeds. The
+agent prompt remains valid in both cases — the repo map is supplementary
+context, never load-bearing.
+
 ---
 
 ## Section 11: Context Handoff Template

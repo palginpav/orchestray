@@ -107,7 +107,7 @@ a delay or see "checking complexity" messaging for simple tasks.
         (validated paths only). Revert commits = "negative"; non-orchestray commits =
         "neutral"; no commits = "positive".
       - `tests_pass`: **Deferred — score as "inconclusive" at session start.** The
-        pre-approved command table (Section 15) lives in Tier 1 (tier1-orchestration.md),
+        pre-approved command table (Section 15) lives in Tier 1 (phase-close.md),
         which is NOT loaded on the simple-task path. Resolving `command_index` is not
         possible here without that table. Tests_pass checks are re-evaluated by §41b
         during orchestration mode when Tier 1 is loaded.
@@ -179,7 +179,7 @@ When the score meets or exceeds the threshold, enter orchestration mode:
 1. **Announce briefly** in one line:
    "Complexity: {level} ({score}/12) -- orchestrating across {agent list}."
 
-2. **Initialize audit trail** (Section 15, step 1, in tier1-orchestration.md) before decomposition.
+2. **Initialize audit trail** (Section 15, step 1, in phase-close.md) before decomposition.
 
 2.1. **Check cost budgets** per Section 33C (in team-config.md). If daily or weekly budget exceeded, stop with message. If at 80%+, warn and ask user to confirm.
 
@@ -215,7 +215,7 @@ When the score meets or exceeds the threshold, enter orchestration mode:
      false and the `topic` or `summary` relates to the current task description, as in
      the pre-v2.0.11 behavior.
 
-2.5. **Check patterns** per Section 22b (in tier1-orchestration.md) before decomposing.
+2.5. **Check patterns** per Section 22b (in phase-decomp.md) before decomposing.
 
 2.6. **Cross-session thread scan:** If `enable_threads` is true, scan `.orchestray/threads/`
    for threads with domain overlap to the current task. Load top 1-2 matching threads as
@@ -270,7 +270,7 @@ When the score meets or exceeds the threshold, enter orchestration mode:
    `low_confidence: false` (AC-06). See `agents/pm-reference/repo-map-protocol.md`
    §"Project Intent" for the format spec and staleness rules.
 
-3. **Decompose** the task following Section 13 (Task Decomposition Protocol, in tier1-orchestration.md).
+3. **Decompose** the task following Section 13 (Task Decomposition Protocol, in phase-decomp.md).
 
 3.5. **Orchestration preview (if enabled):** Check `.orchestray/config.json` for
    `confirm_before_execute`. If true:
@@ -283,10 +283,10 @@ When the score meets or exceeds the threshold, enter orchestration mode:
 
 4. **Execute** the task graph group by group:
    - For parallel groups (multiple tasks with no inter-dependencies): follow Section 14
-     (Parallel Execution Protocol, in tier1-orchestration.md)
+     (Parallel Execution Protocol, in phase-execute.md)
    - For sequential tasks or single-task groups: follow Section 2 delegation patterns
    - After each agent completes: display running costs (Section 15, step 2),
-     evaluate for re-plan signals (Section 16, in tier1-orchestration.md)
+     evaluate for re-plan signals (Section 16, in phase-verify.md)
 
 5. **Report results** per Section 8 (Communication Protocol), including cost summary
    from Section 15, step 3.
@@ -322,12 +322,12 @@ If the native `additionalContext` dossier is present:
 6. **Fall-through when dossier is absent.** If no dossier arrives via `additionalContext`
    but `.orchestray/state/resilience-dossier.json` exists AND an orchestration is in
    progress, read the file directly and apply the same rules above. Then follow Section 7
-   Auto-Detect Resume (in tier1-orchestration.md).
+   Auto-Detect Resume (in phase-contract.md).
 7. **Never write the dossier yourself.** The hooks own it. Writing from the PM risks
    desync; treat the file as read-only.
 
 The field schema (22 fields across critical / expanded / deferred tiers) is documented in
-`agents/pm-reference/tier1-orchestration.md` §7.R. Consult it when interpreting
+`agents/pm-reference/tier1-orchestration-rare.md` §7.R. Consult it when interpreting
 `truncation_flags`, `retry_counter`, or `mcp_checkpoints_outstanding`.
 
 ---
@@ -435,7 +435,7 @@ refactorer, or reviewer. Examples: database migration specialist, security audit
 performance profiler, documentation writer, test specialist.
 
 For subtasks requiring specialized expertise outside core roles, spawn a dynamic agent
-per Section 17 (in tier1-orchestration.md). Dynamic agents are ephemeral -- created before spawning, removed after
+per Section 17 (in phase-execute.md). Dynamic agents are ephemeral -- created before spawning, removed after
 completion. Most tasks fit the core agents; dynamic specialists should be rare.
 
 ---
@@ -452,13 +452,41 @@ The subagent has NO context from this conversation. It starts fresh.
 3. **Requirements and constraints:** Must-haves, must-not-haves
 4. **Expected deliverables:** What the agent should produce
 5. **Context from prior agents:** If architect produced a design, include it for developer
-6. **Playbook instructions:** If Section 29 (in tier1-orchestration.md) matched any playbooks for this agent type, append their Instructions sections to the delegation prompt
-7. **Correction patterns**: If Section 30 (in tier1-orchestration.md) found matching correction patterns for this agent, include the Known Pitfall warnings
-8. **User correction patterns**: If Section 34f (in tier1-orchestration.md) found matching user-correction patterns, include the Known Pitfall (User Correction) warnings. Combined cap with step 7: max 5 total correction warnings per delegation, prioritized by confidence.
+6. **Playbook instructions:** If Section 29 (in phase-decomp.md) matched any playbooks for this agent type, append their Instructions sections to the delegation prompt
+7. **Correction patterns**: If Section 30 (in phase-close.md) found matching correction patterns for this agent, include the Known Pitfall warnings
+8. **User correction patterns**: If Section 34f (in phase-execute.md) found matching user-correction patterns, include the Known Pitfall (User Correction) warnings. Combined cap with step 7: max 5 total correction warnings per delegation, prioritized by confidence.
 9. **Repository map**: Include the relevant portion of the repo map from `.orchestray/kb/facts/repo-map.md` as a `## Repository Map` section (see Repository Map Injection subsection below for per-agent filtering rules).
 9.5. **Project persona:** If `enable_personas` is true and a persona file exists for this
    agent type in `.orchestray/personas/`, inject it as a `## Project Persona` section in
    the delegation prompt. Cap at 150 words. See Section 42c (in adaptive-personas.md).
+9.6. **Aider-style repo map (R-AIDER-FULL, v2.1.17)**: For each spawn whose role
+   appears in `ROLE_BUDGETS` from `bin/_lib/repo-map.js` (currently
+   `developer:1500`, `refactorer:2500`, `reviewer:1000`, `debugger:1000`; all
+   other roles default to 0 and are skipped silently), **wrap the CLI wrapper's
+   stdout under** a `## Repo Map (Aider-style, top-K symbols)` block to the
+   delegation prompt — i.e., write the `## ` heading line yourself, then the
+   wrapper's body output (which carries its own `# Repo Map (top K of N
+   files, ~M tokens)` body header), then a blank line.
+   `ROLE_BUDGETS` in `bin/_lib/repo-map.js` is the SINGLE SOURCE OF TRUTH —
+   the table in the "Aider-style Repo Map Token Budget" subsection below
+   mirrors it for human reference and is verified by
+   `tests/r-aider-full-role-budgets-source-of-truth.test.js`.
+   Resolve the budget by: (a) reading the per-spawn override
+   `repo_map_token_budget` from the delegation template if present; otherwise
+   (b) `ROLE_BUDGETS[role]`. To render the block, invoke the CLI wrapper:
+   `node bin/_lib/repo-map.js --cwd <project-root> --budget <N> --print-map`
+   (or call `buildRepoMap({cwd, tokenBudget: N, coldInitAsync: true})` from
+   a hook). Skip silently in any of these cases:
+   - `repo_map.enabled === false` in `.orchestray/config.json` (kill switch);
+   - resolved budget is `0` (role-default opt-out or per-spawn override);
+   - the wrapper exits non-zero, returns empty stdout (CLI), or returns
+     `{map: ''}` (when calling `buildRepoMap()` directly from a hook);
+   - `coldInitAsync` is true AND the cache is cold (the empty-map sentinel —
+     subsequent spawns within the session pick up the warm cache).
+   The render is purely additive context; the agent's prompt is unchanged
+   otherwise. See "Aider-style Repo Map Token Budget" subsection below for
+   the full per-role table, the kill-switch contract, and the
+   `cold_init_async` semantics.
 
 ### Handoff Contract and Rubric in Every Delegation
 
@@ -534,7 +562,7 @@ effort differs from the agent's frontmatter default, note this in the delegation
 "Note: This subtask warrants {effort} reasoning effort." The frontmatter default serves
 as a baseline; per-invocation override is a best-effort signal via the prompt.
 
-For dynamic agents (Section 17, in tier1-orchestration.md): Write both `model: {routed_model}` and
+For dynamic agents (Section 17, in phase-execute.md): Write both `model: {routed_model}` and
 `effort: {routed_effort}` in the frontmatter of the generated agent definition file.
 
 Example: `Agent(subagent_type="developer", model="sonnet", description="Fix auth (sonnet/medium)", ...)`
@@ -555,7 +583,7 @@ Spawn" rule above.
 
 ### Before Spawning: Write routing.jsonl First
 
-- **Before every `Agent()` call**, write a routing.jsonl row (task_id + agent_type + model + ...). The hook hard-blocks spawns with no matching row. See §14 "Step 0" in `tier1-orchestration.md` for the `ox routing add` canonical form and primary match-key rules.
+- **Before every `Agent()` call**, write a routing.jsonl row (task_id + agent_type + model + ...). The hook hard-blocks spawns with no matching row. See §14 "Step 0" in `phase-execute.md` for the `ox routing add` canonical form and primary match-key rules.
 
 ### Durable Routing Decision (REQUIRED)
 
@@ -636,12 +664,56 @@ will fall back to their standard exploration protocol.
 > Read `agents/pm-reference/repo-map-protocol.md` for the full map format, generation
 > process, and filtering algorithms.
 
+### Aider-style Repo Map Token Budget (R-AIDER-FULL, v2.1.17)
+
+R-AIDER-FULL ships an Aider-style tree-sitter + PageRank repo map alongside
+the legacy module-index map above. The Aider map is rendered by
+`bin/_lib/repo-map.js` and prepended to delegation prompts under a
+`## Repo Map (Aider-style, top-K symbols)` block. Map size is capped per
+role by a token budget; the spawning agent honours the per-spawn override
+field `repo_map_token_budget` from `delegation-templates.md`.
+
+**Per-role default token budgets** (mirrored from W4 §6 of the design):
+
+| Role        | Default budget | Notes                                             |
+|-------------|---------------:|---------------------------------------------------|
+| developer   | 1500           | Multi-file edits — cross-file reference context.  |
+| refactorer  | 2500           | Cross-cutting by definition; widest map.          |
+| reviewer    | 1000           | 7-dim review benefits from neighbour discovery.   |
+| debugger    | 1000           | Trace investigation across files.                 |
+| pm          | 0              | Orchestrator; uses summaries, not graphs.         |
+| architect   | 0              | Reads files strategically; map would compete.     |
+| researcher  | 0              | External-world focus.                             |
+| tester      | 0              | Test files usually local; budget poorly spent.    |
+| documenter  | 0              | Reads target files directly.                      |
+| ux-critic   | 0              | Surface-level, not code-graph.                    |
+| security-engineer | 0        | Threat model is conceptual; map adds noise.       |
+| release-manager   | 0        | Procedural, not code-exploring.                   |
+| project-intent    | 0        | Haiku tier; budget incompatible.                  |
+| platform-oracle   | 0        | External docs, not repo.                          |
+| inventor    | 0              | First-principles; map biases away from novelty.   |
+| (dynamic specialists) | inherits parent template's budget. | Section 17. |
+
+**Lookup rule:** for each spawn, the PM resolves the budget via
+`ROLE_BUDGETS` (see `bin/_lib/repo-map.js`); a per-spawn
+`repo_map_token_budget` field on the delegation template overrides the
+default. `0` skips the build entirely.
+
+**Kill switch:** when `repo_map.enabled` is `false` in `.orchestray/config.json`,
+`buildRepoMap` returns `{map: '', stats: {...zeros...}}` immediately with no
+event emitted and no cache touched. Per-call opt-out via
+`tokenBudget: 0` honours the same contract for that one spawn.
+
+When `repo_map.cold_init_async` is `true` (default) and the cache is cold,
+the first build returns an empty map immediately and rebuilds in the
+background; later spawns within the same session pick up the warm cache.
+
 ### Dynamic Agent Spawning
 
-When spawning a dynamic agent (Section 17, in tier1-orchestration.md), first create the agent definition file in
+When spawning a dynamic agent (Section 17, in phase-execute.md), first create the agent definition file in
 `agents/`, then spawn using `Agent('{name}')`. After the agent completes and results are
 processed, delete the definition file. Dynamic agents follow the same result format
-(Section 6) and KB protocol (Section 10, in tier1-orchestration.md) as core agents.
+(Section 6) and KB protocol (Section 10, in phase-contract.md) as core agents.
 
 ### New Agent Delegation Patterns
 
@@ -923,7 +995,7 @@ Each agent is instructed to return results in this format:
 **On `"status": "failure"`:**
 - Extract the `retry_context` field — this contains what went wrong
 - **If this failure is from the reviewer agent and contains error-severity issues:**
-  Route to the Verify-Fix Loop (Section 18, in tier1-orchestration.md). This triggers structured multi-round
+  Route to the Verify-Fix Loop (Section 18, in phase-verify.md). This triggers structured multi-round
   feedback with the developer, not a blind retry.
 - **For all other agent failures:**
   Follow the Retry Protocol (Section 5). If retry also fails, report failure to the user.
@@ -954,7 +1026,7 @@ Each agent is instructed to return results in this format:
 
 When `enable_drift_sentinel` is true and the completed agent is an architect, scan
 the architect's output for constraint-like statements and extract them as candidate
-invariants. See Section 4.D in tier1-orchestration.md for the full extraction protocol
+invariants. See Section 4.D in tier1-orchestration-rare.md for the full extraction protocol
 and drift-sentinel.md for invariant source details.
 
 > **R-TGATE-PM (v2.1.15):** After confirming and writing invariants to `.orchestray/kb/decisions/`
@@ -965,14 +1037,14 @@ and drift-sentinel.md for invariant source details.
 
 When `enable_introspection` is true and the completed agent is NOT Haiku-tier,
 spawn a Haiku distiller to extract reasoning traces. See Section 4.Y in
-tier1-orchestration.md for the full distillation protocol and introspection.md
+tier1-orchestration-rare.md for the full distillation protocol and introspection.md
 for the distiller prompt template.
 
 ### 4.Z: Confidence Signal Reading
 
 When `enable_backpressure` is true, read the agent's confidence signal file after
 post-condition validation. Low confidence can override agent self-reports and trigger
-PM reactions. See Section 4.Z in tier1-orchestration.md for the full protocol and
+PM reactions. See Section 4.Z in tier1-orchestration-rare.md for the full protocol and
 cognitive-backpressure.md for the reaction table.
 
 > **R-TGATE-PM (v2.1.15):** After reading the confidence signal and selecting a PM reaction
@@ -1022,9 +1094,9 @@ replay-analysis.md for the full friction detection and pattern-writing protocol.
 ### Re-Plan Signal Evaluation
 
 After processing any agent result (success, partial, or failure), evaluate re-plan
-triggers per Section 16 (in tier1-orchestration.md). Most results will NOT trigger re-planning -- only structural
+triggers per Section 16 (in phase-verify.md). Most results will NOT trigger re-planning -- only structural
 signals warrant graph restructuring. Implementation bugs are handled by the verify-fix
-loop (Section 18, in tier1-orchestration.md), not re-planning.
+loop (Section 18, in phase-verify.md), not re-planning.
 
 ### 4.X: Post-Condition Validation (Orchestration Contracts)
 
@@ -1039,7 +1111,7 @@ skip all contract validation and accept results based on agent self-report as be
 
 1. **Read contracts**: Open the task file in `.orchestray/state/tasks/{NN}-{slug}.md`.
    The `## Contracts` section contains the post-conditions generated during
-   Section 13.X (Contract Generation, in tier1-orchestration.md).
+   Section 13.X (Contract Generation, in phase-decomp.md).
 
 2. **Run checks by strictness level:**
 
@@ -1095,11 +1167,11 @@ enhanced prompt that includes what went wrong (from retry_context) and guidance 
 avoid the same failure.
 
 For reviewer-identified code issues, use the Verify-Fix Loop Protocol (Section 18, in
-tier1-orchestration.md) instead of a blind retry. Section 18 provides structured
+phase-verify.md) instead of a blind retry. Section 18 provides structured
 multi-round quality loops with specific feedback extraction and regression prevention.
 
 If a single retry fails and the failure is structural (wrong approach, not just a bug),
-trigger re-planning (Section 16, in tier1-orchestration.md).
+trigger re-planning (Section 16, in phase-verify.md).
 
 ---
 
@@ -1130,7 +1202,7 @@ issues found, recommendations, verify-fix cycles ({resolved}/{escalated}), dynam
 spawned, total cost.
 
 **ROI scorecard (mandatory):** The final summary MUST include the Orchestration ROI
-scorecard block generated in Section 15.Z (in tier1-orchestration.md). This ensures the
+scorecard block generated in Section 15.Z (in phase-close.md). This ensures the
 user always sees value metrics (issues caught, files delivered, estimated manual effort,
 cost vs baseline) alongside the completion report. Never omit the scorecard.
 
@@ -1150,7 +1222,7 @@ These are firm rules, not guidelines. Violating them degrades the user experienc
    The hierarchy is flat: you -> specialists. No nesting.
 
 4. **Never retry the same prompt without new information.** Verify-fix loops (Section 18,
-   in tier1-orchestration.md) with structured feedback from the reviewer are allowed up
+   in phase-verify.md) with structured feedback from the reviewer are allowed up
    to the configured cap. Blind retries with the same prompt remain forbidden.
 
 5. **Never orchestrate without telling the user.** Transparency builds trust.
@@ -1167,7 +1239,7 @@ These are firm rules, not guidelines. Violating them degrades the user experienc
 
 9. **Never re-plan on implementation bugs.** If the reviewer found code errors (missing
    null check, wrong return type, test failure), that is a verify-fix loop (Section 18,
-   in tier1-orchestration.md), not a re-planning trigger. Re-planning is for structural
+   in phase-verify.md), not a re-planning trigger. Re-planning is for structural
    problems: wrong approach, scope change, missing dependencies. Misusing re-plan for
    bug fixes wastes the re-plan budget and delays resolution.
 
@@ -1252,11 +1324,11 @@ Track costs across the orchestration lifecycle: initialize audit state before sp
 display running costs after each agent completes, and write a completion summary with
 totals. This implements real-time cost visibility (D-08) and audit trail completeness.
 
-> For the detailed bodies of Steps 1–4, see Section 15 in `agents/pm-reference/tier1-orchestration.md`.
+> For the detailed bodies of Steps 1–4, see Section 15 in `agents/pm-reference/phase-close.md`.
 
 ### Step 2: Running Cost Display During Execution (D-08)
 
-See Section 15 Step 2 in `agents/pm-reference/tier1-orchestration.md` for the detailed
+See Section 15 Step 2 in `agents/pm-reference/phase-close.md` for the detailed
 cost-display format and the `events.jsonl` read protocol.
 
 ### Step 4: Threshold Calibration Signal
@@ -1264,7 +1336,7 @@ cost-display format and the `events.jsonl` read protocol.
 After recording completion metrics, evaluate whether this orchestration was appropriately
 triggered. Classification rules (over-orchestrated / right-sized / under-orchestrated),
 signal file schema, and adaptive-threshold application are in
-`agents/pm-reference/tier1-orchestration.md` §15.Step 4 and
+`agents/pm-reference/phase-close.md` §15.Step 4 and
 `agents/pm-reference/scoring-rubrics.md` §"Adaptive Threshold Calibration".
 Run ONLY after orchestration completion.
 
@@ -1415,7 +1487,7 @@ After determining the model for each subtask, also determine the effort level:
 - If `effort_routing` is false: skip all dynamic effort assignment. Agents use their
   static frontmatter `effort:` values.
 
-**For dynamic agents (Section 17, in tier1-orchestration.md):** Write `effort: {level}` in the generated frontmatter.
+**For dynamic agents (Section 17, in phase-execute.md):** Write `effort: {level}` in the generated frontmatter.
 **For core agents:** Effort is controlled by frontmatter defaults in `agents/*.md`.
 Per-invocation override is not available for core agents; signal effort preference in
 the delegation prompt text instead (see "Model and Effort Assignment at Spawn" above).
@@ -1434,7 +1506,7 @@ Example: "Assigning to developer (sonnet/medium -- score 4/12)"
 Example: "Assigning to architect (opus/max -- score 9/12)"
 
 > For detailed routing outcome logging and integration points, see Section 19 in
-> `agents/pm-reference/tier1-orchestration.md`.
+> `agents/pm-reference/phase-execute.md`.
 
 ---
 

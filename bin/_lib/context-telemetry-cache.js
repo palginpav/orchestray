@@ -20,6 +20,43 @@ const { _withAdvisoryLock } = require('./atomic-append');
 
 const SCHEMA_VERSION = 1;
 
+// ---------------------------------------------------------------------------
+// Lazy event emitter — never blocks if the audit gateway is unavailable.
+// W11-fix F-W11-07: the staging cache is fail-open by contract, but a silent
+// fail-open blinds operators to read-only filesystems / races. Emit a
+// `staging_write_failed` event so the failure is visible without changing the
+// fail-open behaviour. The emitter itself is wrapped in its own try/catch —
+// even a broken audit pipeline must never block the spawn.
+// ---------------------------------------------------------------------------
+
+let _writeEvent = undefined;
+function _emitStagingWriteFailed(projectDir, cachePath, op, err) {
+  if (_writeEvent === undefined) {
+    try {
+      // eslint-disable-next-line global-require
+      const mod = require('./audit-event-writer');
+      _writeEvent = (mod && mod.writeEvent) || null;
+    } catch (_e) {
+      _writeEvent = null;
+    }
+  }
+  if (typeof _writeEvent !== 'function') return;
+  try {
+    const code = (err && (err.code || (err.constructor && err.constructor.name))) || 'Error';
+    const msgRaw = err && err.message ? String(err.message) : String(err);
+    const message = msgRaw.length > 256 ? msgRaw.slice(0, 256) : msgRaw;
+    _writeEvent({
+      version:       1,
+      type:          'staging_write_failed',
+      cwd:           projectDir,
+      cache_path:    cachePath,
+      error_class:   code,
+      error_message: message,
+      op:            op,
+    }, { cwd: projectDir });
+  } catch (_e) { /* fail-open — emission itself can't fail */ }
+}
+
 /**
  * Return the absolute path to the cache file for a given project root.
  * @param {string} projectDir
@@ -75,7 +112,13 @@ function readCache(projectDir) {
       return _skeleton(null);
     }
     return parsed;
-  } catch (_e) {
+  } catch (err) {
+    // Missing-file is the steady-state pre-first-write condition; never warn
+    // for it. Real read failures (permissions, partial decode) emit so the
+    // operator can see the silent skeleton fallback.
+    if (err && err.code !== 'ENOENT') {
+      _emitStagingWriteFailed(projectDir, cachePath, 'read', err);
+    }
     return _skeleton(null);
   }
 }
@@ -103,7 +146,14 @@ function updateCache(projectDir, updaterFn) {
   // Ensure the directory exists.
   try {
     fs.mkdirSync(path.dirname(cachePath), { recursive: true });
-  } catch (_e) { /* swallow */ }
+  } catch (mkErr) {
+    // mkdir failure is the canonical "read-only mount / permission denied"
+    // signal that prevents every subsequent write. Emit and continue — the
+    // tmp-write below will fail and we'll record that under op:"write".
+    if (mkErr && mkErr.code !== 'EEXIST') {
+      _emitStagingWriteFailed(projectDir, cachePath, 'write', mkErr);
+    }
+  }
 
   try {
     _withAdvisoryLock(lockPath, () => {
@@ -115,7 +165,10 @@ function updateCache(projectDir, updaterFn) {
         if (!current || typeof current !== 'object' || current.schema_version !== SCHEMA_VERSION) {
           current = _skeleton(null);
         }
-      } catch (_e) {
+      } catch (readErr) {
+        if (readErr && readErr.code !== 'ENOENT') {
+          _emitStagingWriteFailed(projectDir, cachePath, 'read', readErr);
+        }
         current = _skeleton(null);
       }
 
@@ -125,11 +178,18 @@ function updateCache(projectDir, updaterFn) {
         updated = updaterFn(current);
       } catch (updErr) {
         process.stderr.write('[orchestray] context-telemetry-cache: updaterFn threw: ' + String(updErr) + '\n');
+        _emitStagingWriteFailed(projectDir, cachePath, 'update', updErr);
         return;
       }
 
       if (!updated || typeof updated !== 'object') {
         process.stderr.write('[orchestray] context-telemetry-cache: updaterFn returned non-object; skipping write\n');
+        _emitStagingWriteFailed(
+          projectDir,
+          cachePath,
+          'update',
+          new Error('updaterFn returned non-object')
+        );
         return;
       }
 
@@ -138,12 +198,28 @@ function updateCache(projectDir, updaterFn) {
 
       // Atomic write: tmp then rename.
       const serialized = JSON.stringify(updated, null, 2) + '\n';
-      fs.writeFileSync(tmpPath, serialized, 'utf8');
-      fs.renameSync(tmpPath, cachePath);
+      try {
+        fs.writeFileSync(tmpPath, serialized, 'utf8');
+      } catch (writeErr) {
+        _emitStagingWriteFailed(projectDir, cachePath, 'write', writeErr);
+        throw writeErr;
+      }
+      try {
+        fs.renameSync(tmpPath, cachePath);
+      } catch (renameErr) {
+        _emitStagingWriteFailed(projectDir, cachePath, 'write', renameErr);
+        throw renameErr;
+      }
     });
   } catch (err) {
     const msg = '[orchestray] context-telemetry-cache: updateCache failed: ' + String(err);
     process.stderr.write(msg + '\n');
+    // The inner write/rename catches above already emitted op:"write" for the
+    // common read-only-fs case. Emit op:"update" only if the failure didn't
+    // come from the write path (e.g., advisory-lock acquisition failed).
+    if (err && err.code !== 'EACCES' && err.code !== 'EROFS' && err.code !== 'ENOSPC') {
+      _emitStagingWriteFailed(projectDir, cachePath, 'update', err);
+    }
   }
 }
 

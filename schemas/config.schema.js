@@ -313,6 +313,17 @@ const reviewDimensionScopingSchema = z.object({
   enabled: z.boolean().optional(),
 }).passthrough();
 
+// R-AIDER-FULL (v2.1.17 W8): Aider-style tree-sitter + PageRank repo-map.
+// Top-level kill switch (`enabled: false`), language opt-out, cache-dir
+// override, and async cold-init knob. Mirrors KNOWN_TOP_LEVEL_KEYS entry in
+// bin/_lib/config-drift.js so the bidirectional cross-ref test stays green.
+const repoMapSchema = z.object({
+  enabled:         z.boolean().optional(),
+  languages:       z.array(z.enum(['js', 'ts', 'py', 'go', 'rs', 'sh'])).optional(),
+  cache_dir:       z.string().optional(),
+  cold_init_async: z.boolean().optional(),
+}).passthrough();
+
 // v2.1.16 W14-fix F-W14-001: declarations for v2.1.14/v2.1.15 carryover sections
 // that ship in .orchestray/config.json but were never registered in the schema.
 // Closes the bidirectional cross-ref test gap (KNOWN_TOP_LEVEL_KEYS vs schema).
@@ -435,6 +446,8 @@ const configSchema = z.object({
   phase_slice_loading: phaseSliceLoadingSchema.optional(),
   // R-RV-DIMS (v2.1.16, F-002 W12-fix): reviewer-dimension scoping kill switch.
   review_dimension_scoping: reviewDimensionScopingSchema.optional(),
+  // R-AIDER-FULL (v2.1.17 W8): Aider-style repo-map kill switch + knobs.
+  repo_map: repoMapSchema.optional(),
   // v2.1.16 W14-fix F-W14-001: declare v2.1.14/15 carryover sections so the
   // bidirectional cross-ref test (KNOWN_TOP_LEVEL_KEYS == schema fields) holds
   // and fresh-install boot stops emitting "unknown config key" drift warnings.
@@ -471,4 +484,5 @@ module.exports = {
   auditSchema,
   shieldSchema,
   phaseSliceLoadingSchema,
+  repoMapSchema,
 };

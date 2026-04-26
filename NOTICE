@@ -1,0 +1,44 @@
+Orchestray
+Copyright (c) 2026 palginpav and contributors
+Licensed under the MIT License — see LICENSE.
+
+================================================================================
+Third-party attributions
+================================================================================
+
+This product includes work derived from Aider — an AI pair-programming tool by
+Aider-AI:
+
+  https://github.com/Aider-AI/aider
+
+Specifically, the tree-sitter tag query files under
+`bin/_lib/repo-map-grammars/queries/*.scm` are lifted verbatim from Aider's
+`aider/queries/tree-sitter-*-tags.scm` files. They are used here in support of
+Orchestray's repo-map feature (R-AIDER-FULL, shipped in v2.1.17).
+
+Aider is licensed under the Apache License, Version 2.0:
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+The six query files (bash.scm, go.scm, javascript.scm, python.scm, rust.scm,
+typescript.scm) each carry an in-file header comment naming the upstream Aider
+source path and the Apache-2.0 license. Their content is unmodified from Aider.
+The surrounding repo-map implementation (graph construction, PageRank ranking,
+cache, render, and grammar loader) is original Orchestray work under MIT.
+
+================================================================================
+Bundled WebAssembly grammars
+================================================================================
+
+The six tree-sitter grammar binaries under `bin/_lib/repo-map-grammars/` are
+compiled WebAssembly distributions of the corresponding upstream tree-sitter
+language repositories. Each grammar is licensed under MIT or a permissive MIT-
+compatible license; consult the upstream repositories for verbatim license
+text:
+
+  - tree-sitter-bash         https://github.com/tree-sitter/tree-sitter-bash
+  - tree-sitter-go           https://github.com/tree-sitter/tree-sitter-go
+  - tree-sitter-javascript   https://github.com/tree-sitter/tree-sitter-javascript
+  - tree-sitter-python       https://github.com/tree-sitter/tree-sitter-python
+  - tree-sitter-rust         https://github.com/tree-sitter/tree-sitter-rust
+  - tree-sitter-typescript   https://github.com/tree-sitter/tree-sitter-typescript

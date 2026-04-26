@@ -28,8 +28,17 @@ const { extractLastAssistantUsage, extractFirstAssistantModel } = require('./_li
 const { safeRealpath, isInsideAllowed, encodeProjectPath } = require('./_lib/path-containment');
 const { lookupModel, resolveContextWindow } = require('./_lib/models');
 const { runJanitor }             = require('./_lib/subagent-janitor');
+const { extractReviewDimensions } = require('./_lib/extract-review-dimensions');
 
 let _staging_counter = 0;
+
+// W11-fix F-W11-01: must equal the constant in `bin/audit-event.js`. Both the
+// peek (audit-event.js peekStagedReviewDimensions) and the consume side
+// (handleStart, here) drop staging entries older than this. 5 s is well above
+// the typical PreToolUse→SubagentStart gap (tens of ms) but tight enough to
+// bound cross-spawn leakage during back-to-back reviewer spawns. If you change
+// this, mirror the change in audit-event.js.
+const RECENT_TTL_MS = 5000;
 
 const SUBCOMMAND = process.argv[2] || '';
 
@@ -125,12 +134,28 @@ function handlePreSpawn(event, cwd) {
   const toolInput = event.tool_input || {};
   const key = event.tool_use_id || ('spawn-' + Date.now() + '-' + process.pid + '-' + (_staging_counter++));
 
+  // R-RV-DIMS-CAPTURE (v2.1.17): when the spawn is a reviewer, parse the
+  // delegation prompt's `## Dimensions to Apply` block so the SubagentStart
+  // hook (audit-event.js) can attach `review_dimensions` to the agent_start
+  // event. Reviewer-only — non-reviewer spawns leave the field unset and the
+  // emit path skips it. Pure parser, fail-safe (returns null on absence).
+  const subagentType = toolInput.subagent_type || toolInput.agent_type || null;
+  let reviewDimensions = null;
+  if (subagentType === 'reviewer' && typeof toolInput.prompt === 'string') {
+    try {
+      reviewDimensions = extractReviewDimensions(toolInput.prompt);
+    } catch (_e) { /* fail-open — never block the spawn on parser error */ }
+  }
+
   updateCache(cwd, (cache) => {
     if (!cache._spawn_staging) cache._spawn_staging = {};
     cache._spawn_staging[key] = {
       model:       toolInput.model       || null,
       effort:      toolInput.effort      || null,
       description: toolInput.description || null,
+      // review_dimensions: "all" | string[] | null. Reviewer-only.
+      review_dimensions: reviewDimensions,
+      agent_type:  subagentType,
       staged_at:   new Date().toISOString(),
     };
     // Evict staging entries older than 60s to avoid unbounded growth.
@@ -162,20 +187,68 @@ function handleStart(event, cwd) {
 
   updateCache(cwd, (cache) => {
     // Try to consume staged spawn info.
+    //
+    // W11-fix F-W11-01: mirror the peek-side logic in
+    // `bin/audit-event.js peekStagedReviewDimensions` so the audit-event peek
+    // and this consume-side delete agree on which entry corresponds to which
+    // SubagentStart. Pre-fix the consume side picked the LATEST entry (LIFO),
+    // contradicting the audit-event peek's FIFO selection. Under back-to-back
+    // reviewer spawns A→B that disagreement caused: audit-event peek for A
+    // picked A's entry (correct); this consume picked B's entry and deleted
+    // it (wrong); the second SubagentStart (for B) found an empty staging map.
+    //
+    // Selection rules now match the peek side:
+    //   1. Drop entries older than RECENT_TTL_MS (5 s).
+    //   2. When the consumer is a reviewer (event.agent_type === 'reviewer')
+    //      AND there is at least one staged reviewer entry, restrict the
+    //      candidate set to reviewer entries — this prevents an interleaved
+    //      non-reviewer spawn from being consumed by a reviewer SubagentStart
+    //      (and vice versa). If no reviewer entries are staged, fall through
+    //      to any agent_type so we don't lose unrelated metadata.
+    //   3. Pick the OLDEST candidate (FIFO). PreToolUse fires in spawn-
+    //      submission order; FIFO matches submissions to SubagentStarts in
+    //      the same order.
     let staged = null;
     let stagedKey = null;
     if (cache._spawn_staging) {
-      // Find the most recent unstale staging entry.
-      let latestKey = null;
-      let latestTime = 0;
+      const now = Date.now();
+      const consumerIsReviewer = agentType === 'reviewer';
+
+      // Build the candidate list of (key, entry, time) tuples that are within
+      // the TTL. Skip stale entries entirely.
+      const candidates = [];
+      let hasReviewerCandidate = false;
       for (const [k, v] of Object.entries(cache._spawn_staging)) {
-        const t = v.staged_at ? new Date(v.staged_at).getTime() : 0;
-        if (t > latestTime) { latestTime = t; latestKey = k; }
+        if (!v || typeof v !== 'object') continue;
+        const t = v.staged_at ? Date.parse(v.staged_at) : 0;
+        if (!Number.isFinite(t) || t === 0) continue;
+        if ((now - t) > RECENT_TTL_MS) continue;
+        candidates.push({ k, v, t });
+        if (v.agent_type === 'reviewer') hasReviewerCandidate = true;
       }
-      if (latestKey) {
-        staged = cache._spawn_staging[latestKey];
-        stagedKey = latestKey; // Equals the PreToolUse tool_use_id when one was present.
-        delete cache._spawn_staging[latestKey];
+
+      // Filter to reviewer candidates when both the consumer is a reviewer
+      // and at least one reviewer candidate exists. Otherwise keep all.
+      let filtered = candidates;
+      if (consumerIsReviewer && hasReviewerCandidate) {
+        filtered = candidates.filter((c) => c.v.agent_type === 'reviewer');
+      } else if (!consumerIsReviewer) {
+        // For non-reviewer consumers, prefer non-reviewer candidates if any
+        // exist — symmetric protection so a developer SubagentStart does not
+        // consume a reviewer's staged dims.
+        const nonReviewer = candidates.filter((c) => c.v.agent_type !== 'reviewer');
+        if (nonReviewer.length > 0) filtered = nonReviewer;
+      }
+
+      // Pick the OLDEST candidate (FIFO).
+      let oldest = null;
+      for (const c of filtered) {
+        if (!oldest || c.t < oldest.t) oldest = c;
+      }
+      if (oldest) {
+        staged = oldest.v;
+        stagedKey = oldest.k; // Equals the PreToolUse tool_use_id when one was present.
+        delete cache._spawn_staging[oldest.k];
       }
     }
 
@@ -371,9 +444,11 @@ process.stdin.on('data', (chunk) => {
   }
 });
 process.stdin.on('end', () => {
+  let resolvedCwd = process.cwd();
   try {
     const event = JSON.parse(input || '{}');
     const cwd   = resolveSafeCwd(event.cwd);
+    resolvedCwd = cwd;
 
     switch (SUBCOMMAND) {
       case 'pre-spawn':  handlePreSpawn(event, cwd);  break;
@@ -384,6 +459,34 @@ process.stdin.on('end', () => {
     }
   } catch (err) {
     process.stderr.write('[orchestray] collect-context-telemetry ' + SUBCOMMAND + ': error (fail-open): ' + String(err) + '\n');
+    // W11-fix F-W11-07: surface the silent fail-open as a `staging_write_failed`
+    // event. The top-level catch covers JSON-parse, dispatch, and uncaught
+    // updateCache failures — `op` is mapped from the SUBCOMMAND so consumers
+    // can tell read paths from write paths. Emission itself is fail-open.
+    try {
+      // eslint-disable-next-line global-require
+      const { writeEvent } = require('./_lib/audit-event-writer');
+      const opMap = {
+        'pre-spawn':  'write',
+        'start':      'update',
+        'stop':       'update',
+        'post-spawn': 'delete',
+      };
+      const op = opMap[SUBCOMMAND] || 'write';
+      const cachePath = path.join(resolvedCwd, '.orchestray', 'state', 'context-telemetry.json');
+      const code = (err && (err.code || (err.constructor && err.constructor.name))) || 'Error';
+      const msgRaw = err && err.message ? String(err.message) : String(err);
+      const message = msgRaw.length > 256 ? msgRaw.slice(0, 256) : msgRaw;
+      writeEvent({
+        version:       1,
+        type:          'staging_write_failed',
+        cwd:           resolvedCwd,
+        cache_path:    cachePath,
+        error_class:   code,
+        error_message: message,
+        op:            op,
+      }, { cwd: resolvedCwd });
+    } catch (_e) { /* fail-open — emission itself can't fail */ }
   }
 
   process.stdout.write(JSON.stringify({ continue: true }));

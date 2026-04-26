@@ -1,0 +1,11 @@
+{
+  "tree_sitter_runtime": "0.26.8",
+  "grammars": [
+    {"lang": "js", "wasm": "tree-sitter-javascript.wasm", "sha256": "4a378293fe7853cbee2836023be072dafa0e53b3b5edb245920838ca834ed121"},
+    {"lang": "ts", "wasm": "tree-sitter-typescript.wasm", "sha256": "778025db5a8be0e70f8ccc3671e486dfeddd048c25d9e8a70c26de2e1bf6f97d"},
+    {"lang": "py", "wasm": "tree-sitter-python.wasm", "sha256": "16108b50df4ee9a30168794252ab55e7c93bfc5765d7fa0aa3e335752c515f47"},
+    {"lang": "go", "wasm": "tree-sitter-go.wasm", "sha256": "9504573f352b20be7f2f1911754d710622aedc15afff16d5ed8fb5645681aee7"},
+    {"lang": "rs", "wasm": "tree-sitter-rust.wasm", "sha256": "f65f354215611fd94ad34134b3427eb3d58cbb745df7b6509ba722184db73d57"},
+    {"lang": "sh", "wasm": "tree-sitter-bash.wasm", "sha256": "8292919c88a0f7d3fb31d0cd0253ca5a9531bc1ede82b0537f2c63dd8abe6a7a"}
+  ]
+}

@@ -199,6 +199,94 @@ The user wants to see aggregate performance analytics across orchestration histo
    | close   | {N} |
    ```
 
+   **Rollup E — Documenter spawn frequency (R-DOCUMENTER-EVENT, v2.1.17):**
+   - Filter `agent_start` events where `agent_type === "documenter"` over the same event window.
+   - Count documenter spawns and compute `documenter_spawns / orchestrations` (the
+     denominator is the same `total orchestrations` value computed in step 5
+     "Overview metrics"). Also compute the per-day spawn rate over a rolling
+     window: split into 7-day and 30-day windows by reading the event
+     `timestamp` field (ISO-8601). For each window, count documenter
+     `agent_start` events whose timestamp is within the window's lower bound
+     (now − N days) and divide by N to produce a per-day rate.
+   - This rollup gates the v2.1.16 R-AUTODOC-OFF effectiveness metric: on a
+     fresh install with `auto_document: false` the documenter agent should only
+     spawn on explicit `/orchestray:document` invocations, so the count should
+     read `0` (or a very small number reflecting only explicit user-driven
+     calls) and the per-orchestration ratio should be near `0`.
+   - If no `agent_start` events exist in the window at all, show "No agent_start
+     data in window (v2.1.16+ required)."
+   - If documenter spawns exceed `0.10 * orchestrations` (i.e., >10% of
+     orchestrations spawn a documenter), prefix the section with: "WARNING:
+     documenter spawn rate elevated for default-off configuration — verify
+     `auto_document` is `false` in `.orchestray/config.json` and confirm spawns
+     trace to explicit `/orchestray:document` invocations."
+
+   ```
+   ## Documenter Spawn Frequency
+   | Metric | Value |
+   |--------|-------|
+   | Documenter spawns (window) | {N} |
+   | Total orchestrations (window) | {M} |
+   | Spawns per orchestration | {N/M ratio, 3-decimal} |
+   | Spawns per day (last 7 days) | {N7/7, 2-decimal} |
+   | Spawns per day (last 30 days) | {N30/30, 2-decimal} |
+   ```
+
+   **Rollup F — Archetype cache hit-rate (R-ARCHETYPE-EVENT, v2.1.17):**
+   - Read `.orchestray/audit/events.jsonl` over a 30-day window. Count
+     `archetype_cache_advisory_served` events as `hits` and `archetype_cache_miss`
+     events as `misses`. Compute `hit_rate = hits / (hits + misses)`.
+   - Display the hit-rate as a percentage to 1 decimal place along with the raw
+     `hits`, `misses`, and `total = hits + misses` for sample-size annotation.
+     If `total === 0`, render `hit_rate` as `n/a` rather than dividing by zero —
+     the rollup MUST NOT NaN out when the cache has not been exercised.
+   - This rollup gates the v2.1.18+ R-SEMANTIC-CACHE defer trigger ("≤30%
+     hit-rate over 30+ days AND corpus > 200 patterns"). Until both `total ≥ 30`
+     AND the 30-day window has fully accrued, the trigger MUST NOT be considered
+     fired — annotate small-sample hit-rates with `(sample size N — not
+     trigger-eligible)`.
+   - If `archetype_cache_miss` events are absent from the window but
+     `archetype_cache_advisory_served` events are present, this is the pre-W6
+     legacy state (hits emitted, misses not) — display
+     `hit_rate = n/a (legacy events.jsonl: pre-v2.1.17 archetype_cache_miss
+     not yet emitted)` rather than returning 100%.
+
+   ```
+   ## Archetype Cache Hit-Rate
+   | Metric | Value |
+   |--------|-------|
+   | Hits (advisory_served) | {N} |
+   | Misses                 | {M} |
+   | Total decisions        | {N+M} |
+   | Hit-rate               | {pct}% (or "n/a" when total=0) |
+   ```
+
+   **Rollup G — Reviewer dimension adoption (R-RV-DIMS-CAPTURE, v2.1.17):**
+   - Filter `agent_start` events to those where `agent_type === "reviewer"` over the same event window. Call this denominator `total_reviewer_spawns`.
+   - Of those, count the events where the optional `review_dimensions` field is present (either the literal string `"all"` or a non-empty `string[]`). Call this numerator `spawns_with_field`.
+   - Compute `adoption_pct = (spawns_with_field / total_reviewer_spawns) * 100`. Display to 1 decimal place. Annotate the sample size on the same line so a 2-of-3 result is not mistaken for a definitive 67%.
+   - Among the `spawns_with_field` rows, group by the dimension-set shape and show a count breakdown so operators can see how often the PM falls back to `"all"` vs. picks a scoped subset:
+       - `"all"` literal
+       - explicit subset (any `string[]`)
+   - **Trigger feed:** the v2.1.18 R-RV-DIMS scoped-by-default flip fires when `adoption_pct >= 60` over a ≥ 14-day window (per the v2.1.16 release plan). This rollup is the ground-truth feed for that decision.
+   - If `total_reviewer_spawns === 0`, show "No reviewer spawn data yet (R-RV-DIMS-CAPTURE landed in v2.1.17 — accrues from v2.1.17 ship onward)."
+   - If `total_reviewer_spawns > 0 && spawns_with_field === 0`, show "Reviewer spawns observed but none carried `review_dimensions` — check that the PM's `## Dimensions to Apply` block is being emitted."
+
+   ```
+   ## Reviewer Dimension Adoption (R-RV-DIMS-CAPTURE)
+   | Metric | Value |
+   |--------|-------|
+   | Reviewer spawns (total) | {N} |
+   | Spawns with field       | {M} ({pct}%) |
+   | Trigger threshold       | 60% (v2.1.18 flip gate) |
+
+   ### Field-shape breakdown (of {M} populated)
+   | Shape | Count |
+   |-------|-------|
+   | "all"           | {a} |
+   | explicit subset | {b} |
+   ```
+
 9. **Cache Performance, Cost Delta, Active Experiments**: After displaying the main analytics and before Health Signals, show the cache/cost/experiment sections. See the **Cache Performance**, **Cost Delta**, and **Active Experiments** sections below for display logic.
 
 10. **Pattern Effectiveness Dashboard**: After displaying the main analytics, show pattern learning metrics.

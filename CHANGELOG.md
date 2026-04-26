@@ -3,6 +3,59 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.1.17] - 2026-04-26
+
+v2.1.17 is the "discharge the carryover backlog" release. Four items deferred from v2.1.16 ship together: the full Aider-style repo map (replacing the recipe stub from v2.1.16), and three telemetry signals — documenter spawn-frequency, archetype cache hit-rate, and reviewer dimension adoption — that close the measurement loop on three v2.1.16 defaults so v2.1.18 can flip them with evidence rather than guesswork. No user-facing config defaults change behavior; one new default-on config block (`repo_map`) ships pre-configured. 5 R-items shipped. 3975/3975 tests pass.
+
+### Added
+
+- **Aider-style repo map for code-aware agents.** When the developer, reviewer, refactorer, or debugger is spawned to touch code, Orchestray now sends a focused repo map — symbol declarations and reference graph extracted with tree-sitter, ranked by graph-PageRank, fit to a per-role token budget — instead of dumping whole files into the prompt. The agent sees the most-relevant symbols across the repository, not a flat file listing. Per-role budgets default to: developer 1500 tokens, refactorer 2500, reviewer 1000, debugger 1000. Six languages ship with bundled tree-sitter grammars: JavaScript, TypeScript, Python, Go, Rust, and Bash. The map is cached on git blob SHA + grammar manifest so unchanged files never re-parse. Default on; disable with `repo_map.enabled: false` in `.orchestray/config.json`.
+
+- **Documenter spawn analytics.** `/orchestray:analytics` now reports how often the documenter agent has been auto-spawned post-orchestration over the last 14 days. This is the measurement window for v2.1.16's `auto_document: false` default — if the rollup shows zero documenter spawns and zero reviewer-flagged docs drift, the default flip is validated; if drift is appearing without doc updates, you have a signal to flip `auto_document` back on.
+
+- **Archetype cache hit-rate analytics.** `/orchestray:analytics` now reports archetype cache hit-rate (hits vs misses) across recent orchestrations. The new `archetype_cache_miss` event makes the miss path visible for the first time — until v2.1.17, only the hit path emitted, so the hit-rate denominator was unmeasurable. The 30-day measurement window gates the v2.1.18 R-SEMANTIC-CACHE deferral trigger named in v2.1.16.
+
+- **Reviewer dimension adoption telemetry.** `/orchestray:analytics` now reports the share of reviewer spawns whose delegation prompt carried an explicit `## Dimensions to Apply` block, parsed from the spawn's prompt context. This is the trigger metric for v2.1.16's R-RV-DIMS scoped-by-default plan: once adoption clears 60% over a 14-day window with no correctness regression, v2.1.18 flips the back-compat `"all"` default to scoped-by-default.
+
+### Changed
+
+- **`repo_map.enabled: true` is the new default for fresh installs.** The v2.1.16 stub recipe in `agents/pm-reference/repo-map-protocol.md` is replaced with a working call-site invoked by the PM in Section 3 step 9.6 for code-touching spawns. The legacy 388-line heuristic file remains available as `repo-map-protocol.md.legacy` for one more release. To opt out, set `repo_map.enabled: false`.
+
+- **`agent_start` audit event schema bumped v1 → v2 (additive).** Reviewer spawns whose delegation prompt includes a `## Dimensions to Apply` block now record the parsed dimensions in a new optional `review_dimensions` field. The bump is additive — analytics consumers that ignore unknown fields keep working unchanged. All other agent types emit `agent_start` v2 with the field absent.
+
+### Under the hood — hardening / observability
+
+- 4 new audit event types for repo-map observability (`repo_map_built`, `repo_map_parse_failed`, `repo_map_grammar_load_failed`, `repo_map_cache_unavailable`) plus 1 (`archetype_cache_miss`) plus 1 (`staging_write_failed`, observability for the reviewer-dimension prompt-staging cache — emitted on read/write/update/delete failure paths in `bin/_lib/context-telemetry-cache.js` and `bin/collect-context-telemetry.js`; closes the silent-failure observability gap noted in pre-ship audit). All carry `version: 1` per R-EVENT-NAMING. Schema in `agents/pm-reference/event-schemas.md`.
+- Schema shadow regenerated: 92 events / 4411 bytes (was 83 / 4052 in v2.1.16).
+- Swept 33 stale `tier1-orchestration.md` references in `agents/pm.md` to point at the v2.1.15 phase-split files (`phase-contract.md` / `phase-decomp.md` / `phase-execute.md` / `phase-verify.md` / `phase-close.md` / `tier1-orchestration-rare.md`). Closes the v2.1.15 stub-split documentation drift; the legacy file remains preserved at `tier1-orchestration.md.legacy` for one more release.
+- `bin/_lib/repo-map.js` plus four helpers (`repo-map-graph.js`, `repo-map-cache.js`, `repo-map-render.js`, `repo-map-tags.js`) and a grammar manifest with six bundled WASM parsers under `bin/_lib/repo-map-grammars/`.
+- PM call-site instructions in `agents/pm.md` Section 3 step 9.6 invoke the repo-map CLI on code-touching spawns and route the rendered map into the delegation prompt.
+- `graphology-pagerank` (deprecated upstream) replaced with `graphology-metrics/centrality/pagerank`.
+- New parser `bin/_lib/extract-review-dimensions.js` reads the reviewer delegation prompt for the `## Dimensions to Apply` block and surfaces the result on `agent_start` v2 events.
+- Three new `/orchestray:analytics` rollups: documenter spawn frequency (rollup E), archetype cache hit-rate (rollup F), and reviewer dimension adoption (rollup G).
+- New `NOTICE` file at the repo root attributes the six Aider `.scm` query files (Apache-2.0) and the bundled tree-sitter WASM grammars; in-file header comments on each `.scm` file already cited the Aider source.
+- 56 new tests across the release: R-AIDER-FULL ~25, R-DOCUMENTER-EVENT 11, R-ARCHETYPE-EVENT 17, R-RV-DIMS-CAPTURE 15, plus three W10 sweep files (~46 tests across coverage gaps) and ~5 W11-fix parallel-spawn regressions.
+
+### Migration notes
+
+**`repo_map.enabled: true` is on by default for fresh installs.** The bundled tree-sitter grammars add roughly 5–6 MB to your `node_modules/web-tree-sitter` footprint (one-time on-disk cost, lazy-loaded only when the map is first built). The on-disk cache lives at `.orchestray/state/repo-map-cache/` and is gitignored. To disable, set `repo_map.enabled: false` in `.orchestray/config.json` — no session restart needed. To restrict the languages parsed, edit `repo_map.languages` (default `["js", "ts", "py", "go", "rs", "sh"]`).
+
+**`agent_start` event schema bumped v1 → v2 (additive).** External analytics consumers that read `agent_start` rows from `.orchestray/audit/events.jsonl` will see an optional `review_dimensions` field on reviewer spawns whose delegation included a dimensions block. Old consumers that ignore unknown fields require no changes. The `version: 1` rows already in your archive remain readable; the schema shadow validator accepts both versions.
+
+### Not in this release (with triggers)
+
+- **Compact-pattern-catalog default for the remaining 7 agents.** v2.1.16 covered the 5 busiest (pm, architect, developer, reviewer, debugger). **Trigger:** `pattern_read_warn_zero` event rate stays at zero across 14 days on the v2.1.16 rollout — earliest fire date 2026-05-09.
+- **Reviewer scoped-by-default flip (Phase 2).** **Trigger:** ≥60% of v2.1.17 reviewer spawns carry an explicit `review_dimensions` field across a 14-day window — measurable as of v2.1.17 via the new R-RV-DIMS-CAPTURE adoption rollup.
+- **LLMLingua-2 prose compression.** Trigger unchanged from v2.1.16: `@atjsh/llmlingua-2` ships v3.x with documented production deployments, OR a measured prose-dominated cost hotspot emerges. The npm port has not advanced in this cycle.
+- **Local semantic cache for archetype matching.** **Trigger:** archetype cache hit-rate ≤30% on the existing string-match path for 30+ days (now measurable via the v2.1.17 R-ARCHETYPE-EVENT rollup), AND pattern corpus exceeds 200 patterns (currently ~40), AND the embedded path beats the string path by ≥2K tokens/orch in measured savings.
+- **Anthropic-recipe contextual retrieval.** Trigger unchanged: KB artifact count exceeds 1,000 files (currently 432) OR `kb_search` recall-at-top-3 drops below 80% in a measured audit OR the pattern corpus exceeds 500.
+
+### Tests
+
+- **3975 tests / 3975 pass / 0 fail.** Net +124 tests across the release.
+
+---
+
 ## [2.1.16] - 2026-04-25
 
 v2.1.16 is the "carryover discipline + telemetry fill" release. It discharges four turnkey defaults that have been deferred across v2.1.13/14/15 — reviewer dimension scoping, compact pattern catalog by default for the busiest agents, `auto_document` flipped off, and Agent Teams flagged opt-in with the missing idle-teammate hook — and closes the three telemetry gaps v2.1.15 left open so the per-orchestration token-ceiling claims become verifiable. Two user-facing defaults change (`auto_document: false`, `agent_teams.enabled: false`); both come with one-line restore steps. 7 R-items shipped. 3851/3851 tests pass.

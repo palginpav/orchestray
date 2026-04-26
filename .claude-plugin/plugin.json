@@ -1,7 +1,7 @@
 {
   "name": "orchestray",
   "description": "Multi-agent orchestration for complex tasks — automatically decomposes work across specialized AI agents",
-  "version": "2.1.16",
+  "version": "2.1.17",
   "author": {
     "name": "palginpav"
   },

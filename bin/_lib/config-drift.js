@@ -149,6 +149,11 @@ const KNOWN_TOP_LEVEL_KEYS = Object.freeze([
   'budget_enforcement',
   'curator_slice_loading',
 
+  // R-AIDER-FULL (v2.1.17 W8): Aider-style tree-sitter + PageRank repo map.
+  // Top-level `repo_map` block declared in schemas/config.schema.js;
+  // mirrored here so the bidirectional cross-ref test stays green.
+  'repo_map',
+
   // Meta
   'config_drift_silence',
 ]);

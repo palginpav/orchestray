@@ -18,6 +18,7 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 - **Context-saving bundle** — six coordinated prompt-engineering techniques (handoff shrinkage, PM slimming, output discipline, Read/Grep hygiene, cache-boundary preservation, telemetry integration) reduce agent token consumption by an estimated ~7k–15k per medium-complexity orchestration; v2.1.11 adds conditional prompt loading that removes up to ~56K tokens from the PM's first orchestration turn (~162 KB of always-loaded files moved to on-demand)
 - **Auto-trigger** — complexity scoring detects when orchestration helps, self-calibrates over time
 - **Smart model routing** — assigns Haiku/Sonnet/Opus per subtask based on complexity, tracks cost savings; routing decisions are persisted to `.orchestray/state/routing.jsonl` and hook-enforced on every `Agent()`, `Explore()`, and `Task()` spawn, surviving context compaction and session reloads
+- **Aider-style repo map (v2.1.17+)** — when developer, reviewer, refactorer, or debugger is spawned to touch code, the PM sends a focused symbol map (tree-sitter tag extraction → reference graph → PageRank → fit-to-token-budget) instead of a flat file dump. Six bundled language grammars (JS, TS, Python, Go, Rust, Bash); per-role token budgets default to developer 1500 / refactorer 2500 / reviewer 1000 / debugger 1000. Cached on git blob SHA so unchanged files never re-parse. Default on; disable with `repo_map.enabled: false`.
 - **Mid-task elicitation** — agents can pause to ask the user a structured ≤5-field form via `mcp__orchestray__ask_user` and resume with the answers; no orchestration unwind required
 - **Hook-enforced MCP retrieval** — pre-decomposition `pattern_find`, `kb_search`, and `history_find_similar_tasks` calls are verified by `gate-agent-spawn.js` via a checkpoint ledger (`.orchestray/state/mcp-checkpoint.jsonl`) before the first orchestration spawn; falls back gracefully via `mcp_enforcement` config flags with no session restart required; the `mcp_enforcement` block is automatically migrated into `.orchestray/config.json` on first 2.0.13+ use; after `pattern_find` returns, the PM calls either `pattern_record_application` or `pattern_record_skip_reason` to produce an auditable signal for every outcome; a skipped pre-spawn retrieval emits a one-time `info:` advisory to stderr (warn-mode)
 - **Cache-Aware Tool Result Compaction (R14)** — a `PreToolUse:Read` hook (`bin/context-shield.js`) denies re-reads of the same `(file_path, mtime, size)` triple within a session with no `offset`/`limit` change, eliminating cache-replay token waste; re-reads with an explicit offset/limit or after on-disk changes are always allowed; disable per-session via `shield.r14_dedup_reads.enabled: false`
@@ -448,6 +449,17 @@ phase_slice_loading.telemetry_enabled  Emit `phase_slice_injected` events on eve
                                        inject so `/orchestray:analytics` can show the positive-path
                                        slice-load ratio (default: true as of v2.1.16). Read-only
                                        telemetry; no behavior change.
+
+repo_map.enabled            Enable the Aider-style repo map for code-touching agent spawns
+                            (default: true as of v2.1.17). When true, PM Section 3 step 9.6
+                            invokes the repo-map CLI on developer/reviewer/refactorer/debugger
+                            spawns and routes the rendered map into the delegation prompt.
+repo_map.languages          Languages to parse with bundled tree-sitter grammars
+                            (default: ["js", "ts", "py", "go", "rs", "sh"]).
+repo_map.cache_dir          On-disk cache location, keyed on git blob SHA + grammar manifest
+                            (default: ".orchestray/state/repo-map-cache"; gitignored).
+repo_map.cold_init_async    On first run after install, build the cache asynchronously so the
+                            first orchestration is not blocked on parse (default: true).
 ```
 
 ### Emergency kill switches (v2.1.15)
@@ -464,6 +476,7 @@ All v2.1.15 features have kill switches. To roll back any feature immediately, s
 | Catalog default (v2.1.16) | `catalog_mode_default: false` | Restores full-body pattern fetches |
 | Reviewer scoping (v2.1.16) | `review_dimension_scoping.enabled: false` | All 7 dimensions on every review |
 | Agent Teams (v2.1.16) | `agent_teams.enabled: false` (default) | Teams cannot spawn |
+| Aider repo map (v2.1.17) | `repo_map.enabled: false` | Code-touching spawns receive no symbol map |
 
 No session restart is needed for any of these kill switches.
 
@@ -482,6 +495,9 @@ The `mcp_enforcement` block is automatically added to `.orchestray/config.json` 
 - Scans recent `events.jsonl` for unpaired `kill_switch_activated` events to surface an active kill-switch window that was never closed
 - Reports `prefix_drift` events from `bin/cache-prefix-lock.js` when Block A of `agents/pm.md` changed between sessions (2.0.17+, when `v2017_experiments.prompt_caching` is `"on"`)
 - Shows the phase-slice load ratio (`phase_slice_injected` vs `phase_slice_fallback`) so the v2.1.15 ~21K-tokens-per-turn savings claim is verifiable per install (2.1.16+)
+- Documenter spawn frequency over the last 14 days, validating the v2.1.16 `auto_document: false` default (2.1.17+)
+- Archetype cache hit-rate (`archetype_cache_hit` vs `archetype_cache_miss`); the miss event is new in v2.1.17, making the hit-rate denominator measurable for the first time and gating the v2.1.18 R-SEMANTIC-CACHE deferral trigger
+- Reviewer dimension adoption — share of reviewer spawns whose delegation included a `## Dimensions to Apply` block; ≥60% over 14 days triggers the v2.1.18 scoped-by-default flip (2.1.17+)
 
 If the kill switch is active, the analytics output shows a bold warning with the config key and file path needed to clear it.
 
@@ -527,6 +543,8 @@ All orchestration state lives in `.orchestray/` (gitignored):
     compact-signal.lock     # Transient lock written on compaction, consumed on next prompt (2.1.7+)
     role-budgets.json       # Live per-role context-size budgets read by bin/preflight-spawn-budget.js
                             # (2.1.16+; falls back to static defaults when absent)
+    repo-map-cache/         # Aider-style repo-map cache, keyed on git blob SHA + grammar manifest
+                            # (2.1.17+; auto-cleaned; disable with `repo_map.enabled: false`)
   kb/             # Shared knowledge base
     facts/
       project-intent.md   # Cached project intent block (domain, primary user problem, architectural

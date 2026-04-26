@@ -33,6 +33,7 @@ delta_handoff_fallback — developer full-artifact fetch decision in delta mode 
 budget_warn — pre-spawn context-size budget exceeded (hook, v2.1.15)
 phase_slice_fallback — phase-slice hook degraded path (no orchestration / unknown phase / missing slice file) (hook, v2.1.15 W8)
 phase_slice_injected — phase-slice hook positive path (slice pointer staged into PM additionalContext) (hook, v2.1.16 W9 R-PHASE-INJ)
+repo_map_built / repo_map_parse_failed / repo_map_grammar_load_failed / repo_map_cache_unavailable — Aider-style repo map events (v2.1.17 W8 R-AIDER-FULL)
 
 END CONDITIONAL-LOAD NOTICE -->
 
@@ -681,6 +682,57 @@ Field notes:
   `false` when `user_decision` is `"defer"`.
 - `preference_name`: The name of the saved or updated pattern, or `null` if no pattern
   was saved.
+
+---
+
+## Agent Lifecycle Events
+
+### `agent_start`
+
+Appended on every `SubagentStart` hook by `bin/audit-event.js`. Records the
+spawn-time identity of an Orchestray subagent for the audit trail. Paired with
+the corresponding `agent_stop` event (joinable on `agent_id`).
+
+**Schema version:** `2` (v2.1.17 — additive bump from `1`; old consumers
+ignore unknown fields per R-EVENT-NAMING).
+
+```json
+{
+  "type": "agent_start",
+  "version": 2,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx",
+  "agent_id": "agent-xxx",
+  "agent_type": "developer",
+  "session_id": "uuid",
+  "review_dimensions": "<optional, reviewer-only: \"all\" | string[]>"
+}
+```
+
+Field notes:
+- `agent_id`: Stable per-invocation id from the `SubagentStart` payload.
+- `agent_type`: Canonical agent name (`pm`, `architect`, `developer`,
+  `reviewer`, etc.) or a non-canonical specialist name (in which case a
+  paired `dynamic_agent_spawn` event follows).
+- `session_id`: The parent (PM) session id.
+- `review_dimensions` *(optional, reviewer-only, v2)*: The dimension scope the
+  PM passed via the `## Dimensions to Apply` block of the delegation prompt
+  (R-RV-DIMS, v2.1.16). Either the literal string `"all"` or a sorted subset
+  of `["code-quality","performance","documentation","operability","api-compat"]`.
+  ABSENT (field not present on the event) when:
+    - the spawn is not a reviewer;
+    - the prompt did not carry a `## Dimensions to Apply` block (legacy
+      v2.1.15-style spawns);
+    - the staging cache was unavailable at SubagentStart (fail-open).
+  This field exists to feed the v2.1.18 R-RV-DIMS scoped-by-default flip
+  trigger (≥ 60 % of reviewer spawns carry an explicit field) — the analytics
+  rollup is in `skills/orchestray:analytics/SKILL.md` Rollup G.
+
+**Schema changelog:**
+- `v1` (≤ v2.1.16): `agent_id`, `agent_type`, `session_id`. Required fields
+  unchanged in v2.
+- `v2` (v2.1.17, R-RV-DIMS-CAPTURE): added optional `review_dimensions`
+  (reviewer-only). Additive — no consumer changes required.
 
 ---
 
@@ -3132,7 +3184,7 @@ Field notes:
 
 ## Section 22: ArchetypeCache Events (v2.1.8)
 
-### archetype_cache_advisory_served
+### `archetype_cache_advisory_served`
 
 Emitted by the PM (via `bin/_lib/archetype-cache.js recordAdvisoryServed()`) after the PM
 reads an `<orchestray-archetype-advisory>` fence and decides how to use it.
@@ -3167,6 +3219,46 @@ Field notes:
 **When to emit:** the PM emits this event AFTER deciding accepted/adapted/overridden
 in Section 13, as part of the archetype advisory protocol. The hook
 `inject-archetype-advisory.js` injects the fence; the PM emits the event.
+
+---
+
+### `archetype_cache_miss`
+
+Emitted by `bin/inject-archetype-advisory.js` (`recordCacheMiss()`) on the no-match
+path — the orchestration has a computed task signature but no archetype in the cache
+satisfies the confidence/prior-applications guardrails, so no advisory fence is
+injected. R-ARCHETYPE-EVENT (v2.1.17) added this event so the `/orchestray:analytics`
+rollup can compute `hit_rate = served / (served + miss)` over a rolling window;
+the hit-rate gates v2.1.18+ R-SEMANTIC-CACHE's "≤30% hit-rate" defer trigger.
+
+```jsonc
+{
+  "timestamp": "<ISO 8601>",
+  "type": "archetype_cache_miss",
+  "version": 1,
+  "orchestration_id": "<current orch id>",
+  "task_shape_hash": "<12-hex signature>",
+  "archetype_count_searched": 12
+}
+```
+
+Field notes:
+- `task_shape_hash` is the 12-hex signature returned by `computeSignature()` for the
+  current orchestration's task. Same field shape as `archetype_cache_advisory_served`.
+- `archetype_count_searched` is the number of records in `archetype-cache.jsonl` at
+  evaluation time (post-TTL filtering not applied — raw line count). Useful for
+  distinguishing "miss because cache was empty" from "miss despite a populated
+  cache." `0` when the cache file is missing.
+
+**When to emit:** the hook emits this event when `findMatch()` returns `null` after
+all guardrails (confidence floor, min prior applications, blacklist, kill switch)
+have been considered. Pairs with `archetype_cache_advisory_served` (the hit signal)
+to provide the denominator for hit-rate analytics.
+
+**Pairing with `archetype_cache_blacklisted`:** when a match exists but is suppressed
+because the archetype_id is on the operator blacklist, the hook emits both
+`archetype_cache_blacklisted` (degraded-journal) AND `archetype_cache_miss` —
+blacklist suppression IS a miss from the analytics perspective.
 
 ---
 
@@ -4529,5 +4621,176 @@ sad-path `phase_slice_fallback` always emits because it is a fault signal.
 Consumed by the `/orchestray:analytics` rollup (Phase Slice Loading
 section) which displays the injected/fallback ratio per orchestration
 window.
+
+Schema stability: additive-only.
+
+
+---
+
+### `repo_map_built` event (v2.1.17 W8 R-AIDER-FULL)
+
+Emitted by `bin/_lib/repo-map.js` after every successful repo-map build,
+warm-cache hit included. Pairs with the three failure-mode events below to
+give the analytics rollup a complete picture of repo-map health.
+
+```json
+{
+  "version": 1,
+  "type": "repo_map_built",
+  "timestamp": "2026-04-26T12:34:56.789Z",
+  "orchestration_id": "orch-1777200000",
+  "cwd": "/home/user/project",
+  "files_parsed": 312,
+  "symbols_ranked": 312,
+  "ms": 2840,
+  "cache_hit": false,
+  "token_count": 987
+}
+```
+
+Fields:
+
+- `cwd`: absolute project root the build ran against.
+- `files_parsed`: count of files whose tags landed in the graph.
+- `symbols_ranked`: count of nodes scored by PageRank (typically equal to
+  `files_parsed`; lower when a file had zero defs and was dropped).
+- `ms`: end-to-end build time in milliseconds (`process.hrtime.bigint`
+  delta).
+- `cache_hit`: `true` when the on-disk aggregate matched and the build
+  reused the persisted graph + scores; `false` on cold or partial rebuild.
+- `token_count`: tokens of the rendered map (post-binary-search). Hits
+  `0` when `tokenBudget === 0` or no symbols ranked.
+
+Schema stability: additive-only.
+
+
+---
+
+### `repo_map_parse_failed` event (v2.1.17 W8 R-AIDER-FULL)
+
+Emitted when tree-sitter rejects a single file (parser threw, file >1 MB,
+or the read failed). The build continues; the offending file is dropped
+from the graph.
+
+```json
+{
+  "version": 1,
+  "type": "repo_map_parse_failed",
+  "timestamp": "2026-04-26T12:34:56.789Z",
+  "orchestration_id": "orch-1777200000",
+  "cwd": "/home/user/project",
+  "file": "src/broken.py",
+  "error_class": "file_too_large"
+}
+```
+
+`error_class` values:
+
+- `file_too_large` — source exceeded the 1 MB cap (W4 §3 step 1).
+- `read_error` — `fs.readFileSync` threw (permissions, vanished file).
+- `parse_error:<truncated message>` — tree-sitter parser or query threw.
+
+Schema stability: additive-only.
+
+
+---
+
+### `repo_map_grammar_load_failed` event (v2.1.17 W8 R-AIDER-FULL)
+
+Emitted at most once per process per language when the WASM grammar
+cannot be loaded (file missing, corrupt bytes, runtime ABI mismatch).
+The language is dropped from the build; surviving languages still parse.
+
+```json
+{
+  "version": 1,
+  "type": "repo_map_grammar_load_failed",
+  "timestamp": "2026-04-26T12:34:56.789Z",
+  "orchestration_id": "orch-1777200000",
+  "cwd": "/home/user/project",
+  "language": "sh",
+  "error_class": "grammar_load_failed:sh"
+}
+```
+
+`language` is the canonical short code (`js`, `ts`, `py`, `go`, `rs`,
+`sh`). `error_class` carries the truncated underlying error string.
+
+Schema stability: additive-only.
+
+
+---
+
+### `repo_map_cache_unavailable` event (v2.1.17 W8 R-AIDER-FULL)
+
+Emitted once per `buildRepoMap` invocation when the cache directory is
+not writable (read-only mount, permission denied, path collision). The
+build proceeds in-memory: results return normally but nothing is
+persisted.
+
+```json
+{
+  "version": 1,
+  "type": "repo_map_cache_unavailable",
+  "timestamp": "2026-04-26T12:34:56.789Z",
+  "orchestration_id": "orch-1777200000",
+  "cwd": "/home/user/project",
+  "reason": "cache_dir_not_writable"
+}
+```
+
+`reason` values (extensible):
+
+- `cache_dir_not_writable` — `fs.writeFileSync` probe failed.
+
+Schema stability: additive-only.
+
+
+---
+
+### `staging_write_failed` event (v2.1.17 W11-fix F-W11-07 R-RV-DIMS-CAPTURE)
+
+Emitted by `bin/_lib/context-telemetry-cache.js` (and its callers in
+`bin/collect-context-telemetry.js`) when an I/O operation against the
+context-telemetry staging cache (`.orchestray/state/context-telemetry.json`)
+fails. The cache itself remains fail-open — the spawn never blocks — but
+the emission gives operators a visible signal when a read-only filesystem,
+a race condition, or a permission error is silently degrading the
+R-RV-DIMS-CAPTURE telemetry stream.
+
+```json
+{
+  "version": 1,
+  "type": "staging_write_failed",
+  "timestamp": "2026-04-26T12:34:56.789Z",
+  "orchestration_id": "orch-1777200000",
+  "cwd": "/home/user/project",
+  "cache_path": "/home/user/project/.orchestray/state/context-telemetry.json",
+  "error_class": "EACCES",
+  "error_message": "EACCES: permission denied, open '...context-telemetry.json.tmp'",
+  "op": "write"
+}
+```
+
+Fields:
+
+- `cwd`: absolute project root the failed I/O ran against.
+- `cache_path`: full path of the cache file whose I/O failed.
+- `error_class`: `error.code` when present (e.g., `EACCES`, `ENOSPC`,
+  `EROFS`), otherwise `error.constructor.name` (e.g., `TypeError`).
+- `error_message`: the underlying `error.message`, truncated to 256 chars.
+- `op`: which operation failed. One of `read`, `write`, `update`, `delete`.
+  - `read` — `readCache` could not parse / read the file.
+  - `write` — atomic tmp-then-rename or direct write failed.
+  - `update` — `updateCache` outer catch (lock or read-modify-write failed).
+  - `delete` — staging-entry delete from within an `updateCache` body
+    failed (e.g., serialization rejected after mutation).
+
+The emit itself is fail-open: any failure inside the emitter is swallowed
+so a degraded audit pipeline cannot itself block the spawn.
+
+Schema changelog:
+
+- v1 — initial (v2.1.17 W11-fix F-W11-07).
 
 Schema stability: additive-only.

@@ -95,6 +95,21 @@ const FRESH_INSTALL_REDO_FLOW = {
   commit_prefix: 'redo',
 };
 
+// R-AIDER-FULL (v2.1.17): Aider-style tree-sitter + PageRank repo-map seed.
+// `enabled: true` ships the feature on by default for fresh installs because
+// the PM agent's delegation pipeline (agents/pm.md Section 3) prepends a
+// repo map block to code-touching spawns when this flag is true. To soft-
+// launch (skip the inline map until PM behaviour is observed in the wild),
+// flip this to false in your project's .orchestray/config.json. The 6
+// languages mirror schemas/config.schema.js repoMapSchema; cache_dir under
+// .orchestray/state keeps build artifacts gitignored. v2.1.17 W9-fix F-005.
+const FRESH_INSTALL_REPO_MAP = {
+  enabled: true,
+  languages: ['js', 'ts', 'py', 'go', 'rs', 'sh'],
+  cache_dir: '.orchestray/state/repo-map-cache',
+  cold_init_async: true,
+};
+
 // Default cost_budget_check config block for fresh installs.
 // Pricing values mirror bin/collect-agent-metrics.js PRICING constant.
 // Per 2014-scope-proposal.md §W3 AC4.
@@ -857,6 +872,9 @@ function install(targetDir) {
       // Seldom produces actionable output on typical workloads; users who rely
       // on it set `enable_drift_sentinel: true` in .orchestray/config.json.
       enable_drift_sentinel: false,
+      // R-AIDER-FULL (v2.1.17): Aider-style repo-map seed. See
+      // FRESH_INSTALL_REPO_MAP comment above.
+      repo_map: FRESH_INSTALL_REPO_MAP,
     };
     try {
       fs.mkdirSync(orchStateDir, { recursive: true });
@@ -1183,6 +1201,11 @@ function mergeHooks(targetDir) {
 // entry name that directory is not descended into and not copied.
 function copyJsTree(src, dst, skipDir = () => false) {
   const copied = [];
+  // v2.1.17 W8 R-AIDER-FULL: also copy .scm tree-sitter queries and
+  // manifest.json under bin/_lib/repo-map-grammars/. Limit non-.js extensions
+  // to the explicit allow-list so we don't accidentally bundle test fixtures
+  // or build artifacts that happen to live under bin/_lib/.
+  const ALLOW_NON_JS = /\.(scm|json|wasm)$/;
   const walk = (srcSub, dstSub, relPrefix) => {
     fs.mkdirSync(dstSub, { recursive: true });
     for (const entry of fs.readdirSync(srcSub, { withFileTypes: true })) {
@@ -1192,7 +1215,7 @@ function copyJsTree(src, dst, skipDir = () => false) {
       if (entry.isDirectory()) {
         if (skipDir(entry.name)) continue;
         walk(srcPath, dstPath, rel);
-      } else if (entry.isFile() && entry.name.endsWith('.js')) {
+      } else if (entry.isFile() && (entry.name.endsWith('.js') || ALLOW_NON_JS.test(entry.name))) {
         fs.copyFileSync(srcPath, dstPath);
         copied.push(rel);
       }
