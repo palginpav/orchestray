@@ -153,17 +153,88 @@ If a workflow is matched, Section 38 (adversarial review, in `agents/pm-referenc
 9. **Write task graph**: Create the task graph document and individual task files in
    `.orchestray/state/tasks/`.
 
-10. **Estimate orchestration duration (P2.1, v2.2.0).** After the task graph is finalized,
-    write `pm_protocol.estimated_orch_duration_minutes` (a positive integer) into the
-    orchestration JSON at `.orchestray/state/orchestration.md`'s frontmatter (or the
-    equivalent metadata write site already used for `orchestration_id`). Heuristic:
-    `5 × pending_task_count` minutes, clamped to `[5, 480]`. Floor at 5 prevents
-    division-by-zero in the TTL helper; ceiling at 480 is a sanity bound. This single
-    field powers the cache-breakpoint manifest's TTL auto-downgrade (`bin/_lib/
-    cache-breakpoint-manifest.js:146-150`): orchestrations expected to finish in under
-    25 minutes get Slot 1/Slot 2 written with TTL `5m` instead of `1h`, eliminating the
-    1h-write tax on short orchestrations. Fall-through: if the field is missing or
-    non-numeric, the helper assumes "long orch" and uses 1h TTL — safe but suboptimal.
+10. **Estimate orchestration duration (P2.1, v2.2.0; refined v2.2.3 P3 W5/C11).**
+    After the task graph is finalized, write `pm_protocol.estimated_orch_duration_minutes`
+    (a positive integer) into `.orchestray/audit/current-orchestration.json` — the
+    canonical orchestration marker file resolved via
+    `getCurrentOrchestrationFile()` in `bin/_lib/orchestration-state.js`. The cache
+    manifest reader at `bin/_lib/cache-breakpoint-manifest.js:144-149` opens this
+    same file and reads `pm_protocol.estimated_orch_duration_minutes` to decide
+    Slot 1/Slot 2 TTL.
+
+    **Calibrated heuristic (size × model-tier × parallelism).** The earlier
+    `5 × pending_task_count` rule ignored both per-item size and model tier. The
+    refined formula matches the §6.T cost multipliers so duration estimates and
+    cost estimates use the same shape:
+
+    Per-item base minutes (from the W-item's `Granularity` + scope):
+
+    | Item size | Base minutes | Use when |
+    |-----------|-------------:|----------|
+    | XS        | 2            | trivial single-line/file edit, doc tweak |
+    | S         | 5            | small focused change in 1–2 files |
+    | M         | 15           | standard feature in 3–5 files (default) |
+    | L         | 30           | cross-cutting change with tests |
+    | XL        | 60           | architectural sweep, multi-module refactor |
+
+    Model-tier multiplier (matches the §6.T tier table):
+
+    | Model tier         | Multiplier |
+    |--------------------|-----------:|
+    | haiku / low        | 0.35       |
+    | sonnet / medium    | 1.00       |
+    | opus / high        | 2.20       |
+    | opus / xhigh, max  | 2.50       |
+
+    Per-item minutes = `base × tier_multiplier`.
+
+    Parallelism roll-up:
+    - **Sequential group:** sum of children's per-item minutes.
+    - **Parallel group:** max of children's per-item minutes (longest path
+      governs wall-clock).
+    - **Total:** sum across groups (groups always execute sequentially relative
+      to each other — see step 7).
+
+    Clamp the final integer to `[5, 480]`. Floor at 5 prevents division-by-zero
+    in the TTL helper; ceiling at 480 is a sanity bound.
+
+    **Fallback (no per-item sizing available).** When item sizes have not been
+    annotated (re-plans, dynamic graphs), fall back to the legacy
+    `5 × pending_task_count` heuristic with the same `[5, 480]` clamp.
+
+    **Write template (current-orchestration.json).** After computation, merge
+    the field into the existing JSON marker without disturbing other keys:
+
+    ```json
+    {
+      "orchestration_id": "orch-1712345678",
+      "pm_protocol": {
+        "estimated_orch_duration_minutes": 15,
+        "duration_estimate_method": "calibrated"
+      }
+    }
+    ```
+
+    `duration_estimate_method` is `"calibrated"` for the size×tier path or
+    `"fallback"` for the `5 × count` path. The PM SHOULD also write the field
+    into the `.orchestray/state/orchestration.md` frontmatter as a human-readable
+    mirror, but the JSON marker is authoritative — that is the file the cache
+    manifest reader actually opens.
+
+    **Audit event.** Immediately after the write, append a
+    `pm_orch_duration_estimated` event to `.orchestray/audit/events.jsonl`
+    (schema in `agents/pm-reference/event-schemas.md`). The event records the
+    estimate, item count, parallel-group count, longest-path minutes, and the
+    method (`calibrated` | `fallback`) so analytics can compare predicted vs
+    actual duration over time.
+
+    **Why this matters.** This single field powers the cache-breakpoint
+    manifest's TTL auto-downgrade: orchestrations expected to finish in under
+    25 minutes get Slot 1/Slot 2 written with TTL `5m` instead of `1h`,
+    eliminating the 1h-write tax on short orchestrations. Fall-through: if the
+    field is missing or non-numeric, the helper assumes "long orch" and uses
+    1h TTL — safe but suboptimal. The whole purpose of step 10 is to keep the
+    refined cache TTL rule (which has shipped since v2.2.0) from being dormant.
 
 ### Task Graph Format
 
