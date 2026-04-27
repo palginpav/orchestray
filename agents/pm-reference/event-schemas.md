@@ -6409,7 +6409,7 @@ Schema stability: additive-only.
 
 ---
 
-## v2.2.3 additions (P2 W1 — scout_decision telemetry)
+## v2.2.3 additions (P2 W1 + P3 W4 — scout_decision telemetry & enforcement)
 
 ### `scout_decision` event
 
@@ -6421,9 +6421,17 @@ than burn PM context. v2.2.0 shipped the rule as PROSE only; W3 audit
 showed 0 scout invocations across 8 post-v2.2.0 orchestrations. This
 event makes the missed-scout decision visible to validation.
 
-**v2.2.3 scope: OBSERVE-ONLY.** The hook never blocks the Read.
-Enforcement (force scout spawn, deny large inline Reads) is deferred to
-v2.2.4 once telemetry confirms the missed-scout class distribution.
+**v2.2.3 P2 (W1) shipped observe-only.** **P3 (W4) added enforcement
+modes** controlled by `haiku_routing.scout_enforcement`:
+
+- `"off"`   — observe-only. Hook emits `inline_read_observed` and never
+  blocks. Equivalent to P2 W1 behavior.
+- `"warn"` — hook emits `scout_spawn_required` to surface the missed
+  scout but does NOT block. **v2.2.3 default.**
+- `"block"` — hook emits `inline_read_forced` AND blocks the Read by
+  writing `{continue:false, reason:"scout_spawn_required:<path>"}` to
+  stdout, an informative stderr line, and exiting 2. Promoted to default
+  in v2.2.4 after the 14-day measurement window.
 
 ```json
 {
@@ -6434,7 +6442,7 @@ v2.2.4 once telemetry confirms the missed-scout class distribution.
   "file_path": "agents/pm-reference/event-schemas.md",
   "file_bytes": 228714,
   "scout_min_bytes": 12288,
-  "decision": "inline_read_observed",
+  "decision": "scout_spawn_required",
   "caller_role": "pm"
 }
 ```
@@ -6450,11 +6458,18 @@ Field meanings:
 - `scout_min_bytes`: the threshold in effect at decision time. Mirrors
   `config.haiku_routing.scout_min_bytes`; falls back to 12288 when the
   config block is absent.
-- `decision`: enum. v2.2.3 emits only `inline_read_observed` (PM Read
-  proceeded inline despite the threshold). Reserved values for future
-  v2.2.4 enforcement: `scout_spawn_required` (hook blocked the Read and
-  asked the PM to spawn `haiku-scout`); `inline_read_forced` (operator
-  override of an enforced threshold).
+- `decision`: enum. Possible values (P3 W4):
+  - `inline_read_observed` — mode `"off"`; PM proceeded inline,
+    legacy P2 W1 telemetry.
+  - `scout_spawn_required` — mode `"warn"`; PM should have spawned
+    `haiku-scout`. Read still allowed.
+  - `inline_read_forced` — mode `"block"`; Read was blocked by the
+    hook, PM must spawn `haiku-scout` (or set
+    `ORCHESTRAY_SCOUT_BYPASS=1` for a single-session override).
+  - `exempt_path_observed` — file matched the exempt allowlist
+    (`.orchestray/state/*`, `.orchestray/config.json`,
+    `agents/pm-reference/*`, current orchestration's KB artifacts at
+    `.orchestray/kb/artifacts/<orch-id>-*`). No enforcement applied.
 - `caller_role`: name of the agent that issued the Read tool call. The
   PM is the canonical caller for in-prose Reads, so the field defaults
   to `"pm"` when the hook payload lacks an explicit `agent_type` /
@@ -6465,7 +6480,13 @@ Field meanings:
   `"unknown"` outside an active orchestration.
 - `timestamp`: ISO 8601, set at hook fire time.
 
-Kill switches (any one suppresses emission, hook still proceeds):
+Enforcement bypass (single session, never persists):
+
+- env `ORCHESTRAY_SCOUT_BYPASS=1` — coerces the resolved enforcement
+  mode to `"off"` for the lifetime of the process.
+
+Telemetry kill switches (any one suppresses emission; enforcement still
+applies because the bypass channel is intentionally separate):
 
 - env `ORCHESTRAY_DISABLE_SCOUT_TELEMETRY=1`
 - env `ORCHESTRAY_METRICS_DISABLED=1`
@@ -6474,8 +6495,9 @@ Kill switches (any one suppresses emission, hook still proceeds):
 
 Cardinality: roughly equal to the count of >=12 KB Reads the PM does
 inline per orchestration. Pre-v2.2.3 baseline (W3) implies a few dozen
-firings per multi-phase orchestration. Once v2.2.4 enforcement lands,
-this rate should fall toward zero as the rule auto-redirects.
+firings per multi-phase orchestration. Once `"block"` enforcement is the
+default (v2.2.4), this rate should fall toward zero as the rule
+auto-redirects to `haiku-scout`.
 
 Schema stability: additive-only. The `decision` enum may grow;
 consumers MUST treat unknown values as opaque per R-EVENT-NAMING.

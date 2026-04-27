@@ -348,6 +348,12 @@ const haikuRoutingSchema = z.object({
   scout_min_bytes:     z.number().int().min(1).optional(),
   scout_blocked_ops:   z.array(z.string()).optional(),
   scout_blocked_paths: z.array(z.string()).optional(),
+  // v2.2.3 P3 W4: PreToolUse:Read enforcement mode for Section 23.
+  //   "off"   — observe-only (P2 W1 behavior)
+  //   "warn"  — emit scout_spawn_required, do NOT block (default v2.2.3)
+  //   "block" — emit inline_read_forced AND block the Read (planned v2.2.4)
+  // Per-session bypass: env ORCHESTRAY_SCOUT_BYPASS=1.
+  scout_enforcement:   z.enum(['off', 'warn', 'block']).optional(),
 }).passthrough();
 
 // v2.2.0 P1.3 + P3.2: top-level `pm_protocol` block. Holds the chunked

@@ -94,7 +94,16 @@ describe('track-scout-decision — fires above threshold', () => {
   test('Read of 12288-byte file emits scout_decision (boundary inclusive)', () => {
     const root = makeRoot();
     writeOrchMarker(root, 'orch-scout-test-1');
-    writeConfig(root, { haiku_routing: { scout_min_bytes: 12288 } });
+    // P3 W4: pin enforcement mode to "off" so this P2-baseline test
+    // continues to assert the legacy `inline_read_observed` decision
+    // value. The v2.2.3 default flipped to "warn", which is covered by
+    // the dedicated P3 test file.
+    writeConfig(root, {
+      haiku_routing: {
+        scout_min_bytes: 12288,
+        scout_enforcement: 'off',
+      },
+    });
     const abs = writeFileSized(root, 'big.md', 12288);
 
     const r = runHook({

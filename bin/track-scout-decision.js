@@ -2,41 +2,47 @@
 'use strict';
 
 /**
- * track-scout-decision.js — PreToolUse:Read hook (v2.2.3 P2 W1).
+ * track-scout-decision.js — PreToolUse:Read hook (v2.2.3 P2 W1 + P3 W4).
  *
- * Phase 2 instrumentation for PM Section 23 inline-vs-scout decision rule.
- * v2.2.0 defined a four-class taxonomy and a `scout_min_bytes` threshold
- * (default 12288): when the PM is about to Read a file >= threshold, the
- * decision rule says spawn `haiku-scout` instead of reading inline. v2.2.0
- * shipped the rule as PROSE only — no enforcement, no telemetry. W3 audit
- * found 0 scout invocations across 8 post-v2.2.0 orchestrations: the rule
- * lives in the prompt and is invisible to validation.
+ * Phase 2 (W1) shipped this hook as observe-only: emit `scout_decision`
+ * with `decision='inline_read_observed'` whenever the PM (or a named
+ * subagent) was about to inline-Read a file >= scout_min_bytes. No
+ * blocking, no enforcement — pure telemetry.
  *
- * This hook is the OBSERVE-ONLY half. On PreToolUse:Read it:
- *   1. Reads tool_input.file_path from the hook payload.
- *   2. fs.statSync the path. If absent or unreadable, exits 0 silently
- *      (let Read return its own error).
- *   3. Loads .orchestray/config.json for haiku_routing.scout_min_bytes
- *      (default 12288).
- *   4. If size >= threshold, emits `scout_decision` with
- *      decision='inline_read_observed'.
- *   5. If size < threshold, exits 0 with no event (avoid noise).
- *   6. NEVER blocks the read. Always exits 0.
+ * Phase 3 (W4) upgrades the hook with three enforcement modes
+ * (`haiku_routing.scout_enforcement`):
  *
- * Enforcement (block large-file Reads, force scout spawn) is deferred to
- * v2.2.4. This hook produces the telemetry needed to verify P0-1 fix and
- * tune the threshold (P3-5 A5 trigger window opens once spawn_count > 0).
+ *   - "off"   — observe-only (P2 W1 behavior). Emits `inline_read_observed`.
+ *   - "warn"  — emits `scout_spawn_required` but DOES NOT block. Default
+ *               for v2.2.3; surfaces the missed-scout signal without
+ *               breaking workflows. Promotes to "block" in v2.2.4 after
+ *               the 14-day measurement window.
+ *   - "block" — emits `inline_read_forced` AND blocks the Read by writing
+ *               `{continue:false, reason:"..."}` and exiting 2. The
+ *               stderr message tells the PM to spawn `haiku-scout` and
+ *               cites the per-session bypass env var.
  *
- * Kill switches (any one → no-op, exit 0):
+ * Exempt paths (the EXEMPT_PATHS allowlist) are LEGITIMATE inline reads
+ * — orchestration state files, config, tier-2 PM reference, the current
+ * orchestration's KB artifacts. Reads matching an exempt entry skip
+ * enforcement in all modes and emit `decision='exempt_path_observed'`
+ * for visibility.
+ *
+ * Kill switches (any one → no enforcement, observe-only fallback):
+ *   - process.env.ORCHESTRAY_SCOUT_BYPASS === '1' (per-session override)
+ *   - config.haiku_routing.scout_enforcement === 'off'
+ *
+ * Telemetry kill switches (any one → no event, hook still proceeds):
  *   - process.env.ORCHESTRAY_DISABLE_SCOUT_TELEMETRY === '1'
  *   - process.env.ORCHESTRAY_METRICS_DISABLED === '1'
- *   - config.haiku_routing.enabled === false (the whole feature disabled)
- *   - config.haiku_routing.scout_telemetry_enabled === false (just this event)
+ *   - config.haiku_routing.enabled === false (whole feature off)
+ *   - config.haiku_routing.scout_telemetry_enabled === false (event only)
  *
  * Input:  JSON on stdin (Claude Code PreToolUse:Read hook payload).
  *         Shape: { tool_name: 'Read', tool_input: { file_path }, cwd, ... }
- * Output: JSON on stdout ({ continue: true }), always.
- * Exit:   always 0 — observe-only, never blocks.
+ * Output: JSON on stdout — `{continue:true}` (allow) or
+ *         `{continue:false, reason:"..."}` (block).
+ * Exit:   0 on allow, 2 on block.
  */
 
 const fs   = require('fs');
@@ -49,6 +55,29 @@ const { MAX_INPUT_BYTES }             = require('./_lib/constants');
 
 const CONTINUE_RESPONSE = JSON.stringify({ continue: true });
 const DEFAULT_SCOUT_MIN_BYTES = 12288;
+
+// Default enforcement mode for v2.2.3. Surfaces the signal without
+// breaking workflows. v2.2.4 promotes to 'block' after measurement.
+const DEFAULT_ENFORCEMENT_MODE = 'warn';
+const VALID_MODES = new Set(['off', 'warn', 'block']);
+
+/**
+ * Static exempt-path patterns (regex). Matched against the cwd-relative
+ * file path. These are LEGITIMATE inline reads:
+ *
+ *   - Orchestration state (`.orchestray/state/*`)
+ *   - Config file
+ *   - Tier-2 PM reference (loaded lazily by Section Loading Protocol)
+ *
+ * The current-orchestration KB artifact pattern
+ * (`.orchestray/kb/artifacts/<orch-id>-*`) is dynamic and resolved per
+ * call — see `isExemptPath()`.
+ */
+const STATIC_EXEMPT_PATTERNS = [
+  /^\.orchestray\/state\//,
+  /^\.orchestray\/config\.json$/,
+  /^agents\/pm-reference\//,
+];
 
 // ---------------------------------------------------------------------------
 // Stdin reader (require.main guard so unit tests can require() this module)
@@ -70,13 +99,39 @@ if (require.main === module) {
   });
   process.stdin.on('end', () => {
     try {
-      handle(JSON.parse(input || '{}'));
+      runMain(JSON.parse(input || '{}'));
     } catch (_e) {
       // Malformed stdin — fail-open.
       process.stdout.write(CONTINUE_RESPONSE);
       process.exit(0);
     }
   });
+}
+
+/**
+ * Top-level dispatch in the require.main path. Calls handle() for the
+ * decision and emits the right stdout/exit pair.
+ *
+ * @param {object} event
+ */
+function runMain(event) {
+  let outcome;
+  try {
+    outcome = handle(event);
+  } catch (_e) {
+    // Defence in depth — fail-open on any unexpected throw.
+    outcome = { action: 'allow' };
+  }
+  if (outcome && outcome.action === 'block') {
+    if (outcome.stderrMsg) process.stderr.write(outcome.stderrMsg);
+    process.stdout.write(JSON.stringify({
+      continue: false,
+      reason:   outcome.reason || 'scout_spawn_required',
+    }));
+    process.exit(2);
+  }
+  process.stdout.write(CONTINUE_RESPONSE);
+  process.exit(0);
 }
 
 // ---------------------------------------------------------------------------
@@ -112,6 +167,29 @@ function resolveScoutMinBytes(config) {
     if (Number.isInteger(v) && v > 0) return v;
   }
   return DEFAULT_SCOUT_MIN_BYTES;
+}
+
+/**
+ * Resolve enforcement mode from config + env.
+ *
+ * Priority:
+ *   1. ORCHESTRAY_SCOUT_BYPASS=1 → 'off' (per-session override)
+ *   2. config.haiku_routing.scout_enforcement (off|warn|block)
+ *   3. DEFAULT_ENFORCEMENT_MODE ('warn')
+ *
+ * Invalid config values fall back to the default.
+ *
+ * @param {object} config
+ * @returns {'off'|'warn'|'block'}
+ */
+function resolveEnforcementMode(config) {
+  if (process.env.ORCHESTRAY_SCOUT_BYPASS === '1') return 'off';
+  const block = config && config.haiku_routing;
+  if (block && typeof block === 'object') {
+    const v = block.scout_enforcement;
+    if (typeof v === 'string' && VALID_MODES.has(v)) return v;
+  }
+  return DEFAULT_ENFORCEMENT_MODE;
 }
 
 /**
@@ -209,52 +287,175 @@ function relativizeFilePath(cwd, filePath) {
   return normalized.replace(/^\.\//, '');
 }
 
+/**
+ * Decide whether a relative path is exempt from scout enforcement. Static
+ * patterns cover state files, config, tier-2 reference. The dynamic
+ * pattern allows the current orchestration's KB artifacts
+ * (`.orchestray/kb/artifacts/<orch-id>-*`) to be read inline since those
+ * are typically the same orchestration's own outputs.
+ *
+ * @param {string} relPath        cwd-relative path (forward slashes)
+ * @param {string} orchestrationId resolved active orchestration id
+ * @returns {boolean}
+ */
+function isExemptPath(relPath, orchestrationId) {
+  if (!relPath || typeof relPath !== 'string') return false;
+  for (const re of STATIC_EXEMPT_PATTERNS) {
+    if (re.test(relPath)) return true;
+  }
+  // Dynamic: current orchestration's KB artifacts.
+  if (orchestrationId && orchestrationId !== 'unknown') {
+    const orchKbPrefix =
+      '.orchestray/kb/artifacts/' + orchestrationId + '-';
+    if (relPath.startsWith(orchKbPrefix)) return true;
+  }
+  return false;
+}
+
+/**
+ * Build the stderr message presented to the PM when a Read is blocked.
+ *
+ * @param {string} relPath
+ * @param {number} fileBytes
+ * @param {number} scoutMinBytes
+ * @returns {string}
+ */
+function buildBlockMessage(relPath, fileBytes, scoutMinBytes) {
+  return (
+    '[orchestray] track-scout-decision: PM is reading ' + relPath +
+    ' (' + fileBytes + ' bytes) >= scout_min_bytes (' + scoutMinBytes +
+    '). Per Section 23, spawn haiku-scout instead. ' +
+    'To override for this session, set ORCHESTRAY_SCOUT_BYPASS=1.\n'
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main handler
 // ---------------------------------------------------------------------------
 
+/**
+ * Decide what action to take for the given hook payload.
+ *
+ * Returns:
+ *   - { action: 'allow' }                              — proceed with Read
+ *   - { action: 'block', reason, stderrMsg }           — block Read, exit 2
+ *
+ * Always logs telemetry when applicable (subject to kill switches). Never
+ * throws.
+ *
+ * @param {object} event
+ * @returns {{action: 'allow'|'block', reason?: string, stderrMsg?: string}}
+ */
 function handle(event) {
   try {
     const cwd = resolveSafeCwd(event && event.cwd);
     const config = loadConfig(cwd);
 
-    if (isTelemetryDisabled(config)) return;
+    // Telemetry kill switches still apply, but we keep going so we can
+    // honor enforcement (block mode must work even if telemetry is muted —
+    // bypass is a separate env var).
+    const telemetryDisabled = isTelemetryDisabled(config);
 
     const toolInput = (event && event.tool_input) || {};
     const filePath = toolInput.file_path || toolInput.path || '';
-    if (!filePath) return;
+    if (!filePath) return { action: 'allow' };
 
     const fileBytes = statBytes(cwd, filePath);
     // Missing file or stat error — let Read produce its own error.
-    if (fileBytes === null) return;
+    if (fileBytes === null) return { action: 'allow' };
 
     const scoutMinBytes = resolveScoutMinBytes(config);
-    // Below threshold — no event (avoid noise on every small Read).
-    if (fileBytes < scoutMinBytes) return;
+    const relPath = relativizeFilePath(cwd, filePath);
+    const orchestrationId = resolveOrchestrationId(cwd);
+    const exempt = isExemptPath(relPath, orchestrationId);
 
-    // Threshold crossed and PM (or named subagent) is reading inline.
-    const auditEvent = {
+    // Below threshold AND not exempt: silent. (We don't emit
+    // exempt_path_observed for sub-threshold reads either — keeps the
+    // stream sized like P2 baseline.)
+    if (fileBytes < scoutMinBytes) return { action: 'allow' };
+
+    const callerRole = resolveCallerRole(event);
+
+    // Exempt paths bypass enforcement in all modes; emit a dedicated
+    // decision value so analytics can distinguish "didn't enforce because
+    // exempt" from "enforced and allowed".
+    if (exempt) {
+      if (!telemetryDisabled) {
+        emitDecision({
+          cwd, orchestrationId, relPath, fileBytes,
+          scoutMinBytes, callerRole,
+          decision: 'exempt_path_observed',
+        });
+      }
+      return { action: 'allow' };
+    }
+
+    const mode = resolveEnforcementMode(config);
+
+    if (mode === 'off') {
+      // Legacy P2 W1 observe-only behavior.
+      if (!telemetryDisabled) {
+        emitDecision({
+          cwd, orchestrationId, relPath, fileBytes,
+          scoutMinBytes, callerRole,
+          decision: 'inline_read_observed',
+        });
+      }
+      return { action: 'allow' };
+    }
+
+    if (mode === 'warn') {
+      // Surface the missed-scout signal but don't block.
+      if (!telemetryDisabled) {
+        emitDecision({
+          cwd, orchestrationId, relPath, fileBytes,
+          scoutMinBytes, callerRole,
+          decision: 'scout_spawn_required',
+        });
+      }
+      return { action: 'allow' };
+    }
+
+    // mode === 'block'
+    if (!telemetryDisabled) {
+      emitDecision({
+        cwd, orchestrationId, relPath, fileBytes,
+        scoutMinBytes, callerRole,
+        decision: 'inline_read_forced',
+      });
+    }
+    return {
+      action:    'block',
+      reason:    'scout_spawn_required:' + relPath,
+      stderrMsg: buildBlockMessage(relPath, fileBytes, scoutMinBytes),
+    };
+  } catch (_e) {
+    // Defence in depth — outer fail-open.
+    return { action: 'allow' };
+  }
+}
+
+/**
+ * Write a `scout_decision` event via the central audit gateway. Never
+ * throws — telemetry must not break the hook.
+ *
+ * @param {object} args
+ */
+function emitDecision(args) {
+  try {
+    writeEvent({
       version:          1,
       timestamp:        new Date().toISOString(),
       type:             'scout_decision',
-      orchestration_id: resolveOrchestrationId(cwd),
-      file_path:        relativizeFilePath(cwd, filePath),
-      file_bytes:       fileBytes,
-      scout_min_bytes:  scoutMinBytes,
-      decision:         'inline_read_observed',
-      caller_role:      resolveCallerRole(event),
-    };
-
-    try {
-      writeEvent(auditEvent, { cwd });
-    } catch (_e) {
-      // Telemetry must never break the hook.
-    }
+      orchestration_id: args.orchestrationId,
+      file_path:        args.relPath,
+      file_bytes:       args.fileBytes,
+      scout_min_bytes:  args.scoutMinBytes,
+      decision:         args.decision,
+      caller_role:      args.callerRole,
+    }, { cwd: args.cwd });
   } catch (_e) {
-    // Defence in depth — outer fail-open.
-  } finally {
-    // Single write site — exactly one CONTINUE_RESPONSE per hook invocation.
-    process.stdout.write(CONTINUE_RESPONSE);
+    // swallow — telemetry must never break the hook.
   }
 }
 
@@ -262,10 +463,15 @@ module.exports = {
   handle,
   loadConfig,
   resolveScoutMinBytes,
+  resolveEnforcementMode,
   isTelemetryDisabled,
+  isExemptPath,
   statBytes,
   resolveCallerRole,
   resolveOrchestrationId,
   relativizeFilePath,
+  buildBlockMessage,
   DEFAULT_SCOUT_MIN_BYTES,
+  DEFAULT_ENFORCEMENT_MODE,
+  STATIC_EXEMPT_PATTERNS,
 };
