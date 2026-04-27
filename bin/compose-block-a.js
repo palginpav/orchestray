@@ -242,7 +242,19 @@ function buildZone1(cwd) {
     }
   }
 
-  // Schema shadow (R-SHDW content joins Zone 1 when present and non-stale)
+  // v2.2.3 P0-2: compute the invariant hash from CORE SOURCE FILES ONLY.
+  // The shadow content is still emitted into the cache prefix below, but its
+  // hash is tracked separately as `shadowHash` so a shadow regen does not
+  // self-trip the zone-1 invariant. Pre-fix behavior was: every release that
+  // added an event type regenerated `event-schemas.shadow.json`, the hash
+  // changed, and PreToolUse hook emitted 38+ `cache_invariant_broken` events
+  // and disabled cache for 24h. See v223-comprehensive-plan.md §2 P0-2.
+  const invariantContent = parts.join('\n\n');
+  const hash             = crypto.createHash('sha256').update(invariantContent).digest('hex');
+
+  // Schema shadow (R-SHDW content joins Zone 1 emit when present and non-stale).
+  // Hash is tracked under `shadowHash` (separate from invariant `hash`).
+  let shadowHash = null;
   try {
     const { shadow, stale, disabled } = loadShadowWithCheck(cwd, {
       envDisabled:    process.env.ORCHESTRAY_DISABLE_SCHEMA_SHADOW === '1',
@@ -261,16 +273,20 @@ function buildZone1(cwd) {
         '</event-schema-shadow>',
       ].join('\n');
       parts.push(shadowContent);
-      fileHashes['agents/pm-reference/event-schemas.shadow.json'] =
-        crypto.createHash('sha256').update(shadowContent).digest('hex');
+      shadowHash = crypto.createHash('sha256').update(shadowContent).digest('hex');
     }
   } catch (_e) {
     // Schema shadow load failure — skip gracefully
   }
 
   const content = parts.join('\n\n');
-  const hash    = crypto.createHash('sha256').update(content).digest('hex');
-  return { content, hash, bytes: Buffer.byteLength(content, 'utf8'), fileHashes };
+  return {
+    content,
+    hash,
+    bytes: Buffer.byteLength(content, 'utf8'),
+    fileHashes,
+    shadowHash,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -473,12 +489,18 @@ function buildZone3(cwd) {
  * uses it to compute true `delta_files`. The legacy `zone1_hash` field
  * stays so older readers (and the upstream invariant check) keep working.
  *
+ * v2.2.3 P0-2: optional `zone1ShadowHash` arg (sha256 hex) is persisted
+ * as the additive `zone1_shadow_hash` field. The shadow is NOT folded
+ * into the invariant `zone1_hash` (see `buildZone1` above) — this field
+ * powers the `cache_zone_shadow_regen_observed` telemetry instead.
+ *
  * @param {string} cwd
  * @param {string} zone1Hash
  * @param {string} zone2Hash
  * @param {Record<string,string>=} zone1FileHashes
+ * @param {string=} zone1ShadowHash
  */
-function saveZoneHashes(cwd, zone1Hash, zone2Hash, zone1FileHashes) {
+function saveZoneHashes(cwd, zone1Hash, zone2Hash, zone1FileHashes, zone1ShadowHash) {
   try {
     const stateDir   = path.join(cwd, STATE_DIR);
     const zonesPath  = path.join(stateDir, ZONES_FILE);
@@ -490,6 +512,10 @@ function saveZoneHashes(cwd, zone1Hash, zone2Hash, zone1FileHashes) {
     };
     if (zone1FileHashes && typeof zone1FileHashes === 'object') {
       data.zone1_file_hashes = zone1FileHashes;
+    }
+    if (typeof zone1ShadowHash === 'string' && zone1ShadowHash.length > 0) {
+      data.zone1_shadow_hash       = zone1ShadowHash;
+      data.zone1_shadow_updated_at = new Date().toISOString();
     }
     const tmp = zonesPath + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', 'utf8');
@@ -582,7 +608,7 @@ function handle(event) {
 
     // Save hashes for the invariant validator (v2.2.1 W2: include per-file
     // hashes so the validator computes true `delta_files`).
-    saveZoneHashes(cwd, zone1.hash, zone2.hash, zone1.fileHashes);
+    saveZoneHashes(cwd, zone1.hash, zone2.hash, zone1.fileHashes, zone1.shadowHash);
 
     // P2.1 (v2.2.0): build the 4-slot manifest after zones are computed.
     // Fail-soft: error → manifest.slots = [] and we skip persistence below.

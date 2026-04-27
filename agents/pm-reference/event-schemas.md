@@ -29,6 +29,7 @@ mcp_checkpoint_recorded.fields_used — fields_used + response_bytes augmentatio
 block_a_zone_composed — Block A zone assembly (hook, v2.1.14)
 cache_invariant_broken — Zone 1 hash mismatch detected (hook, v2.1.14)
 cache_manifest_bootstrap — first-prompt manifest cold-start (hook, v2.2.2)
+cache_zone_shadow_regen_observed — schema-shadow regen detected (hook, v2.2.3)
 block_a_zone1_invalidated — Zone 1 manual invalidation (hook, v2.1.14)
 delta_handoff_fallback — developer full-artifact fetch decision in delta mode (PM, v2.1.15)
 budget_warn — pre-spawn context-size budget exceeded (hook, v2.1.15)
@@ -4687,6 +4688,10 @@ event type:
    from the stored hash in `.orchestray/state/block-a-zones.json`.
    Indicates an unintended Zone 1 mutation occurred (e.g., CLAUDE.md was
    edited without calling `bin/invalidate-block-a-zone1.js`).
+   v2.2.3+: `agents/pm-reference/event-schemas.shadow.json` is NOT
+   included in this hash — shadow regen is normal release-time
+   behavior and is surfaced via the separate
+   `cache_zone_shadow_regen_observed` event instead.
 2. **Manifest mode (`zone: "manifest"`, v2.2.0+):** the 4-slot
    cache-breakpoint manifest computed by
    `bin/_lib/cache-breakpoint-manifest.js` failed an invariant check. The
@@ -4797,6 +4802,57 @@ Field notes:
   UserPromptSubmit batch) will write the manifest.
 
 Backward compatibility: new event type in v2.2.2; older consumers
+ignore unknown types per R-EVENT-NAMING. Schema stability:
+additive-only.
+
+---
+
+### `cache_zone_shadow_regen_observed` event
+
+Emitted by `bin/validate-cache-invariant.js` (PreToolUse hook, v2.2.3)
+when the recomputed schema-shadow content hash differs from the value
+persisted in `block-a-zones.json` under `zone1_shadow_hash`. The shadow
+is intentionally NOT folded into the zone-1 invariant hash any more
+(see v223 P0-2 — every release that added an event type used to
+self-trip 38+ `cache_invariant_broken` events and disable cache for
+24h). This event preserves observability for release tooling and
+dashboards: it lets us see shadow regen without confusing it with a
+real zone-1 violation.
+
+Always advisory — never blocks the tool call, never increments the
+violation counter, and never causes the
+`.block-a-zone-caching-disabled` sentinel to be written. The validator
+also opportunistically refreshes the persisted `zone1_shadow_hash` so
+the next regen has a fresh baseline.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "cache_zone_shadow_regen_observed",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "zone": "zone1",
+  "previous_shadow_hash": "<12-char prefix of stored shadow hash>",
+  "current_shadow_hash":  "<12-char prefix of recomputed shadow hash>",
+  "note": "shadow regen excluded from zone-1 invariant per v2.2.3 P0-2"
+}
+```
+
+Field notes:
+- `zone`: always `"zone1"` (the shadow is conceptually part of the
+  zone-1 emit even though it is not part of the invariant hash).
+- `previous_shadow_hash` / `current_shadow_hash`: 12-char hex prefixes.
+  The full sha256 lives only in the on-disk
+  `block-a-zones.json#zone1_shadow_hash` field.
+- `note`: human-readable reminder of the v2.2.3 design choice. Useful
+  in dashboards when triaging "is this telemetry or a regression?".
+- Source: emitted by `bin/validate-cache-invariant.js`.
+- Recovery: none required. The validator persists the new shadow hash
+  on the same call.
+
+Backward compatibility: new event type in v2.2.3; older consumers
 ignore unknown types per R-EVENT-NAMING. Schema stability:
 additive-only.
 
