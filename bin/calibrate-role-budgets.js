@@ -21,6 +21,7 @@
  * Usage:
  *   node bin/calibrate-role-budgets.js [--window-days N] [--cwd /path/to/project]
  *   node bin/calibrate-role-budgets.js --emit-cache [--window-days N] [--cwd ...]
+ *   node bin/calibrate-role-budgets.js --emit-cache --if-stale [--cwd ...]
  *
  * Options:
  *   --window-days N    Look back N days of events (default: 14)
@@ -31,6 +32,10 @@
  *                      .orchestray/state/role-budgets.json in the wrapped form
  *                      that bin/_lib/output-shape.js consumes (W7 F-003 fix,
  *                      v2.2.0). Without this flag the tool prints to stdout only.
+ *   --if-stale         Used with --emit-cache. Exits 0 with no work when the
+ *                      existing cache file is fresher than --window-days. When
+ *                      the cache is missing or older, runs normally. Designed
+ *                      for cheap SessionStart-hook invocation (P3 B1, v2.2.3).
  *
  * Output:
  *   A recommendation table printed to stdout. No files are written unless
@@ -78,6 +83,7 @@ const windowDays  = parseInt(getArg('--window-days', '14'), 10);
 const minSamples  = parseInt(getArg('--min-samples', '10'), 10);
 const cwdArg      = getArg('--cwd', process.cwd());
 const emitCache   = hasFlag('--emit-cache');
+const ifStale     = hasFlag('--if-stale');
 
 if (hasFlag('--help') || hasFlag('-h')) {
   process.stdout.write(`
@@ -95,6 +101,8 @@ Options:
   --emit-cache       Write .orchestray/state/role-budgets.json from the
                      recommendations (wrapped form consumed by
                      bin/_lib/output-shape.js getRoleLengthCap()).
+  --if-stale         With --emit-cache: exit 0 silently when the cache is
+                     fresher than --window-days. Cheap SessionStart hook.
   --help             Show this help
 
 Output: recommendation table to stdout. Does NOT write to config.json.
@@ -149,6 +157,32 @@ function percentile(sortedArr, p) {
 function main() {
   const cwd = path.resolve(cwdArg);
   const eventsPath = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
+
+  // --if-stale (paired with --emit-cache, P3 B1, v2.2.3): if the cache
+  // exists and was written within --window-days, skip work and exit 0.
+  // SessionStart hook semantics — never block, never error on stale path.
+  if (ifStale && emitCache) {
+    const cachePath = path.join(cwd, '.orchestray', 'state', 'role-budgets.json');
+    if (fs.existsSync(cachePath)) {
+      try {
+        const stat = fs.statSync(cachePath);
+        const ageMs = Date.now() - stat.mtimeMs;
+        const windowMs = windowDays * 24 * 60 * 60 * 1000;
+        if (ageMs < windowMs) {
+          // Fresh cache — silent exit.
+          process.exit(0);
+        }
+      } catch (_e) {
+        // stat failure → fall through to refresh
+      }
+    }
+    // Cache missing or stale → continue. But events file may also be
+    // missing on a brand-new install: in that case --if-stale stays
+    // silent and exits 0 (a SessionStart hook MUST NOT error).
+    if (!fs.existsSync(eventsPath)) {
+      process.exit(0);
+    }
+  }
 
   if (!fs.existsSync(eventsPath)) {
     process.stderr.write(
