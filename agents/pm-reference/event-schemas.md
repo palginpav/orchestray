@@ -6232,7 +6232,8 @@ measurement signal needed to verify P1.3 effectiveness.
   "fingerprint_only_bytes": 1024,
   "full_file_bytes_avoided": 186058,
   "found": true,
-  "source": "fingerprint"
+  "source": "fingerprint",
+  "caller_context": "mcp_tool_call"
 }
 ```
 
@@ -6251,6 +6252,23 @@ Field notes:
   with `found: false` — no full-file fallback per the P1.3 D-8 contract.
 - `source`: `"fingerprint"` if the PM read the fingerprint section;
   `"mcp_schema_get"` if the resolution went through the MCP verb.
+- `caller_context` (v2.2.3 P2 W4): identifies the caller so rollups can
+  separate real lookups from fuzz/test inputs. Enum:
+  - `"real_agent_spawn"` — emitted because an agent spawn triggered a
+    schema lookup (highest signal).
+  - `"mcp_tool_call"` — emitted via the `mcp__orchestray__schema_get`
+    MCP tool. Default for the MCP verb path.
+  - `"cli_invocation"` — emitted from a direct CLI / ad-hoc node
+    invocation.
+  - `"test_fixture"` — emitted from a test fixture, fuzz harness, or
+    attack-input replay. The default fallback when test-environment
+    markers (`NODE_TEST_CONTEXT`, `ORCHESTRAY_TEST_SHARED_DIR`,
+    `JEST_WORKER_ID`, `npm_lifecycle_event=test`) are present.
+  - `"unknown"` — fallback when no caller signal is available.
+    Post-v2.2.3, the distribution should skew strongly away from
+    `"unknown"`; non-trivial counts indicate an unmigrated emit site.
+  Resolved by `resolveCallerContext()` in
+  `bin/_lib/tier2-index.js`. New in v2.2.3.
 - Schema stability: additive only. New fields will only be added as
   optional. Backward compat: new in v2.2.0; ignore-unknown per
   R-EVENT-NAMING. Source: `bin/mcp-server/tools/schema_get.js` or

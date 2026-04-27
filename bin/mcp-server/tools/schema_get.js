@@ -72,10 +72,13 @@ async function handle(input, context) {
   const cwd = (context && context.projectRoot) || process.cwd();
   const event_type = input.event_type;
 
+  // v2.2.3 P2 W4: every emit MUST carry caller_context. The MCP tool path is
+  // by definition mcp_tool_call — pass it explicitly so resolveCallerContext()
+  // doesn't fall through to test-env detection in CI runs.
   let result;
   let parserError = null;
   try {
-    result = getChunk(event_type, { cwd });
+    result = getChunk(event_type, { cwd, callerContext: 'mcp_tool_call' });
   } catch (err) {
     parserError = err && err.message;
     logStderr('schema_get: getChunk threw: ' + parserError);
@@ -123,6 +126,9 @@ async function handle(input, context) {
   } catch (_e) { /* non-fatal */ }
 
   // Audit: tier2_index_lookup with hit/miss telemetry. Fail-open.
+  // v2.2.3 P2 W4: stamp caller_context from the getChunk() result. The MCP
+  // path always passes 'mcp_tool_call' explicitly above; the field on result
+  // is the resolved value (test-env markers can override during unit tests).
   try {
     writeAuditEvent({
       version: 1,
@@ -135,6 +141,7 @@ async function handle(input, context) {
       full_file_bytes_avoided: fullFileBytesAvoided,
       found: !!result.found,
       source: 'mcp_schema_get',
+      caller_context: (result && result.caller_context) || 'unknown',
     });
   } catch (_e) { /* non-fatal */ }
 

@@ -19,9 +19,19 @@
  *
  * Exports:
  *   buildIndex({cwd}) -> { events, fingerprint, _meta }
- *   getChunk(event_type, {cwd}) -> { chunk, line_range, event_type, found, source }
- *                                | { found: false, error, message, event_type }
+ *   getChunk(event_type, {cwd, callerContext}) ->
+ *       { chunk, line_range, event_type, found, source, caller_context }
+ *     | { found: false, error, message, event_type, caller_context }
+ *   resolveCallerContext(explicit) -> string  (v2.2.3 P2 W4)
+ *   CALLER_CONTEXT_VALUES
  *   TIER2_INDEX_REL_PATH
+ *
+ * v2.2.3 P2 W4: caller_context distinguishes real callers (real_agent_spawn,
+ * mcp_tool_call) from fuzz/test inputs (test_fixture) so rollups don't conflate
+ * them. Post-v2.2.0 telemetry showed 94 tier2_index_lookup events, ALL with
+ * found:false and event_type strings that look like attack inputs ('BadCase',
+ * '../../etc/passwd'). The index was never queried for a real schema. The new
+ * field surfaces the distinction.
  */
 
 const fs     = require('fs');
@@ -44,6 +54,53 @@ const SCHEMA_REL_PATH = path.join(
 // than the 186 KB source and well under any I/O limit). The sidecar is
 // loaded JIT, never injected wholesale.
 const MAX_INDEX_BYTES = 65536; // 64 KB soft ceiling.
+
+// v2.2.3 P2 W4: caller_context taxonomy. Telemetry consumers MUST treat any
+// value not in this enum as "unknown" — the parser is permissive on emit but
+// strict on rollup. Adding a new value is additive (R-EVENT-NAMING).
+const CALLER_CONTEXT_VALUES = Object.freeze([
+  'real_agent_spawn', // hook script invoked during an Agent() spawn
+  'mcp_tool_call',    // mcp__orchestray__schema_get path
+  'cli_invocation',   // direct CLI / ad-hoc node invocation
+  'test_fixture',     // unit test, fuzz harness, or attack input replay
+  'unknown',          // fallback when no caller signal is available
+]);
+
+/**
+ * Resolve the caller_context value for a tier2_index_lookup emission.
+ *
+ * Priority order:
+ *   1. explicit `callerContext` param if it's in CALLER_CONTEXT_VALUES
+ *   2. test-environment markers (NODE_TEST_CONTEXT,
+ *      ORCHESTRAY_TEST_SHARED_DIR, NODE_TEST, JEST_WORKER_ID, npm_lifecycle_event=test)
+ *      → 'test_fixture'
+ *   3. 'unknown'
+ *
+ * The default-fallback to 'unknown' (rather than throwing) preserves fail-open
+ * semantics for the audit path. Unmigrated callers show up as 'unknown' in
+ * telemetry — easy to find and migrate.
+ *
+ * @param {string} [explicit] - explicit caller hint passed by the call site
+ * @returns {string} one of CALLER_CONTEXT_VALUES
+ */
+function resolveCallerContext(explicit) {
+  if (typeof explicit === 'string' && CALLER_CONTEXT_VALUES.includes(explicit)) {
+    return explicit;
+  }
+  // Detect test environments via well-known env markers. Order doesn't matter
+  // — any one of them is enough to flip the default to test_fixture.
+  const env = process.env || {};
+  if (
+    env.NODE_TEST_CONTEXT ||
+    env.ORCHESTRAY_TEST_SHARED_DIR ||
+    env.NODE_TEST ||
+    env.JEST_WORKER_ID ||
+    env.npm_lifecycle_event === 'test'
+  ) {
+    return 'test_fixture';
+  }
+  return 'unknown';
+}
 
 // W7 fix-pass L-001 (security): pre-stat ceiling for the source markdown.
 // 25× the current 226 KB source — generous headroom for legitimate growth,
@@ -196,12 +253,17 @@ function buildIndex(opts) {
  * mechanism. Updated to match the implementation.
  *
  * @param {string} event_type
- * @param {object} opts - { cwd: string }
- * @returns {object} {found:true, chunk, line_range, event_type, source}
- *                  | {found:false, error, message, event_type}
+ * @param {object} opts - { cwd: string, callerContext?: string }
+ *   callerContext (v2.2.3 P2 W4): caller-identity hint surfaced on the
+ *   returned object so the audit emitter can stamp tier2_index_lookup with
+ *   the correct caller_context. Resolved through resolveCallerContext()
+ *   (explicit value > test-env markers > 'unknown').
+ * @returns {object} {found:true, chunk, line_range, event_type, source, caller_context}
+ *                  | {found:false, error, message, event_type, caller_context}
  */
 function getChunk(event_type, opts) {
   const cwd = (opts && opts.cwd) || process.cwd();
+  const caller_context = resolveCallerContext(opts && opts.callerContext);
 
   if (typeof event_type !== 'string' || !event_type) {
     return {
@@ -209,6 +271,7 @@ function getChunk(event_type, opts) {
       event_type: String(event_type || ''),
       error: 'invalid_event_type',
       message: 'event_type must be a non-empty string',
+      caller_context,
     };
   }
   if (!/^[a-z][a-z0-9_.-]*$/.test(event_type)) {
@@ -217,6 +280,7 @@ function getChunk(event_type, opts) {
       event_type,
       error: 'invalid_event_type',
       message: 'event_type must match ^[a-z][a-z0-9_.-]*$',
+      caller_context,
     };
   }
 
@@ -234,6 +298,7 @@ function getChunk(event_type, opts) {
       error: 'index_missing',
       message: 'tier2-index sidecar not found or unreadable: ' + err.message +
                ' — run bin/regen-schema-shadow.js to regenerate.',
+      caller_context,
     };
   }
 
@@ -245,6 +310,7 @@ function getChunk(event_type, opts) {
       error: 'event_type_unknown',
       message: 'no entry in tier2-index for "' + event_type +
                '"; full-file Read of event-schemas.md is disabled — call schema_get with a known slug or add the schema heading first.',
+      caller_context,
     };
   }
 
@@ -258,6 +324,7 @@ function getChunk(event_type, opts) {
       error: 'stale_index',
       message: 'tier2-index source_hash mismatch; the PostToolUse(Edit) hook ' +
                'has not yet regenerated the sidecar. Retry next turn.',
+      caller_context,
     };
   }
 
@@ -277,6 +344,7 @@ function getChunk(event_type, opts) {
       event_type,
       error: 'source_read_failed',
       message: 'cannot read event-schemas.md: ' + err.message,
+      caller_context,
     };
   }
 
@@ -295,12 +363,15 @@ function getChunk(event_type, opts) {
     short_doc: entry.short_doc,
     citation_anchor: entry.citation_anchor,
     source: 'mcp_schema_get',
+    caller_context,
   };
 }
 
 module.exports = {
   buildIndex,
   getChunk,
+  resolveCallerContext,
+  CALLER_CONTEXT_VALUES,
   TIER2_INDEX_REL_PATH,
   MAX_INDEX_BYTES,
   MAX_SCHEMA_BYTES,
