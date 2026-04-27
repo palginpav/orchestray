@@ -60,6 +60,15 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/migrate-routing-jsonl.js",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PreToolUse": [

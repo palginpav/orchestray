@@ -265,16 +265,27 @@ process.stdin.on('end', () => {
       // S02: routing-resolved model MUST re-run isValidModel() AND != 'inherit'.
       // After resolution, execution falls through to the inherit/invalid hard-blocks
       // and the routing-mismatch check — they still fire on the resolved value.
+      // v2.2.3 P0-1: Haiku-default agents added so Stage-2 frontmatter resolution
+      // can fire for them. Pre-v2.2.3 the resolver silently skipped these four
+      // because they were not in the allowlist, falling through to Stage-3 sonnet.
+      // See `.orchestray/kb/artifacts/v223-p1-haiku-routing-rca-and-fix.md`.
       const CANONICAL_AGENTS_ALLOWLIST = new Set([
         'pm', 'architect', 'developer', 'refactorer', 'inventor', 'researcher', 'reviewer',
         'debugger', 'tester', 'documenter', 'security-engineer',
         'release-manager', 'ux-critic', 'platform-oracle',
+        'haiku-scout', 'orchestray-housekeeper', 'project-intent', 'pattern-extractor',
         'Explore', 'Plan', 'general-purpose', 'Task',
       ]);
 
       let resolvedModel = null;
       let resolveSource = null;
       let routingEntryTimestamp = null;
+      // v2.2.3 P0-1: stage-trace records which resolver stages were entered, so
+      // post-hoc telemetry can detect frontmatter-bypass live. Each stage pushes
+      // a marker on entry. The final array is attached to the model_auto_resolved
+      // event as `path_trace`. Required by §P2-5 (model_auto_resolved.source taxonomy
+      // extension) of `v223-comprehensive-plan.md`.
+      const pathTrace = [];
 
       const agentTypeForResolve = toolInput.subagent_type || '';
       const descRawForResolve = toolInput.description ||
@@ -292,6 +303,7 @@ process.stdin.on('end', () => {
       // -----------------------------------------------------------------------
       // Stage 1: routing.jsonl lookup
       // -----------------------------------------------------------------------
+      pathTrace.push('stage1_entered');
       try {
         let spawnTaskIdForResolve = toolInput.task_id || null;
         if (!spawnTaskIdForResolve && typeof descRawForResolve === 'string') {
@@ -327,8 +339,13 @@ process.stdin.on('end', () => {
               resolvedModel = candidateModel;
               resolveSource = 'routing_lookup';
               routingEntryTimestamp = candidate.timestamp || null;
+              pathTrace.push('stage1_routing_hit');
+            } else {
+              pathTrace.push('stage1_routing_invalid_or_inherit');
             }
             // If inherit or invalid — fall through to Stage 2.
+          } else {
+            pathTrace.push('stage1_no_candidates');
           }
         }
       } catch (_stage1Err) {
@@ -350,12 +367,14 @@ process.stdin.on('end', () => {
       // model IDs resolve normally.
       // -----------------------------------------------------------------------
       if (!resolvedModel) {
+        pathTrace.push('stage2_entered');
         try {
           // S01: validate subagent_type against CANONICAL_AGENTS allowlist before
           // constructing ANY file path — rejects path-traversal attempts.
           if (!CANONICAL_AGENTS_ALLOWLIST.has(agentTypeForResolve)) {
             // Not in allowlist — skip to Stage 3 (default_sonnet).
             // A non-canonical type (custom/dynamic) simply has no frontmatter to read.
+            pathTrace.push('stage2_allowlist_miss');
           } else {
             // Construct path and assert it stays inside <cwd>/agents/ (S01 path-relative check).
             const candidatePath = path.join(cwd, 'agents', agentTypeForResolve + '.md');
@@ -367,6 +386,7 @@ process.stdin.on('end', () => {
                 JSON.stringify(agentTypeForResolve) + '; skipping to default_sonnet\n'
               );
             } else if (fs.existsSync(candidatePath)) {
+              pathTrace.push('stage2_file_read');
               const agentFileContent = fs.readFileSync(candidatePath, 'utf8');
               // Parse the YAML frontmatter for the `model:` field.
               const fmMatch = agentFileContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
@@ -379,9 +399,18 @@ process.stdin.on('end', () => {
                   if (fmModel && isValidModel(fmModel) && fmModel !== 'inherit') {
                     resolvedModel = fmModel;
                     resolveSource = 'frontmatter_default';
+                    pathTrace.push('stage2_frontmatter_hit');
+                  } else {
+                    pathTrace.push('stage2_frontmatter_invalid_or_inherit');
                   }
+                } else {
+                  pathTrace.push('stage2_no_model_field');
                 }
+              } else {
+                pathTrace.push('stage2_no_frontmatter_block');
               }
+            } else {
+              pathTrace.push('stage2_file_missing');
             }
           }
         } catch (_stage2Err) {
@@ -397,6 +426,7 @@ process.stdin.on('end', () => {
       // Stage 3: global default 'sonnet'
       // -----------------------------------------------------------------------
       if (!resolvedModel) {
+        pathTrace.push('stage3_default');
         resolvedModel = 'sonnet';
         resolveSource = 'global_default_sonnet';
       }
@@ -437,6 +467,11 @@ process.stdin.on('end', () => {
           source: resolveSource,
           subagent_type: agentTypeForResolve,
           task_hint: taskHint,
+          // v2.2.3 P0-1: path_trace records which resolver stages were entered.
+          // Used to detect frontmatter-bypass live (e.g., a Haiku-default agent
+          // that resolves to sonnet via global_default_sonnet → trace shows
+          // stage2_allowlist_miss or stage2_file_missing).
+          path_trace: pathTrace,
         };
         if (resolveSource === 'routing_lookup' && routingEntryTimestamp) {
           resolveEvent.routing_entry_timestamp = routingEntryTimestamp;
