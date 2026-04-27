@@ -5962,3 +5962,78 @@ Field notes:
   emitted on every `schema_get` call.
 
 Schema stability: additive-only.
+
+---
+
+## v2.2.3 additions (P2 W1 — scout_decision telemetry)
+
+### `scout_decision` event
+
+Emitted by `bin/track-scout-decision.js` (PreToolUse:Read hook) when the
+PM (or a named subagent) is about to inline-Read a file whose size meets
+or exceeds `haiku_routing.scout_min_bytes` (default 12288). Section 23
+of the PM prompt says such Reads should hand off to `haiku-scout` rather
+than burn PM context. v2.2.0 shipped the rule as PROSE only; W3 audit
+showed 0 scout invocations across 8 post-v2.2.0 orchestrations. This
+event makes the missed-scout decision visible to validation.
+
+**v2.2.3 scope: OBSERVE-ONLY.** The hook never blocks the Read.
+Enforcement (force scout spawn, deny large inline Reads) is deferred to
+v2.2.4 once telemetry confirms the missed-scout class distribution.
+
+```json
+{
+  "version": 1,
+  "type": "scout_decision",
+  "timestamp": "2026-04-27T15:30:12.345Z",
+  "orchestration_id": "orch-1777310000-v223-impl",
+  "file_path": "agents/pm-reference/event-schemas.md",
+  "file_bytes": 228714,
+  "scout_min_bytes": 12288,
+  "decision": "inline_read_observed",
+  "caller_role": "pm"
+}
+```
+
+Field meanings:
+
+- `file_path`: repo-relative path the Read targeted, normalized from
+  `tool_input.file_path`. Falls back to the raw input string when the
+  path lies outside cwd.
+- `file_bytes`: actual file size at hook fire time (`fs.statSync().size`).
+  Always >= `scout_min_bytes` because the hook returns silently below
+  threshold.
+- `scout_min_bytes`: the threshold in effect at decision time. Mirrors
+  `config.haiku_routing.scout_min_bytes`; falls back to 12288 when the
+  config block is absent.
+- `decision`: enum. v2.2.3 emits only `inline_read_observed` (PM Read
+  proceeded inline despite the threshold). Reserved values for future
+  v2.2.4 enforcement: `scout_spawn_required` (hook blocked the Read and
+  asked the PM to spawn `haiku-scout`); `inline_read_forced` (operator
+  override of an enforced threshold).
+- `caller_role`: name of the agent that issued the Read tool call. The
+  PM is the canonical caller for in-prose Reads, so the field defaults
+  to `"pm"` when the hook payload lacks an explicit `agent_type` /
+  `subagent_type` / `agent_role`. Subagent Reads carry the agent's
+  canonical name (e.g. `"haiku-scout"`, `"reviewer"`).
+- `orchestration_id`: auto-filled by the audit-event gateway from
+  `.orchestray/audit/current-orchestration.json`; falls back to
+  `"unknown"` outside an active orchestration.
+- `timestamp`: ISO 8601, set at hook fire time.
+
+Kill switches (any one suppresses emission, hook still proceeds):
+
+- env `ORCHESTRAY_DISABLE_SCOUT_TELEMETRY=1`
+- env `ORCHESTRAY_METRICS_DISABLED=1`
+- `config.haiku_routing.enabled === false` (whole feature off)
+- `config.haiku_routing.scout_telemetry_enabled === false` (event only)
+
+Cardinality: roughly equal to the count of >=12 KB Reads the PM does
+inline per orchestration. Pre-v2.2.3 baseline (W3) implies a few dozen
+firings per multi-phase orchestration. Once v2.2.4 enforcement lands,
+this rate should fall toward zero as the rule auto-redirects.
+
+Schema stability: additive-only. The `decision` enum may grow;
+consumers MUST treat unknown values as opaque per R-EVENT-NAMING.
+
+Source: `bin/track-scout-decision.js`.

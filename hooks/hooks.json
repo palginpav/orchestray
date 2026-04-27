@@ -130,6 +130,11 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/context-shield.js",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/track-scout-decision.js",
+            "timeout": 5
           }
         ]
       },
