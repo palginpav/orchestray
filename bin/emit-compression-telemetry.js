@@ -379,10 +379,16 @@ function handleSubagentStart(event) {
     emitted.push('repo_map_skipped');
   } else {
     // Heading absent AND config-enabled AND agent not on opt-out list.
-    // Most likely cause: PM forgot to inject (true leak). Mark as size_exceeded
-    // when the on-disk repo-map.md exceeds the configured cap; otherwise
-    // emit reason='error' to surface a real injection-pipeline gap.
-    const skipReason = inferSkipReason(cwd);
+    // Possible causes (in priority order):
+    //   1. size_exceeded — on-disk repo-map.md > cap (rare; configured)
+    //   2. template_drift — a NEAR-MISS heading is present (e.g.,
+    //      `### Repository Map`, lowercased, indented, or `## Repo Map`)
+    //      indicating PM template drift, NOT an injection-pipeline bug.
+    //   3. error — true leak; PM forgot to call injectRepoMap().
+    //
+    // v2.2.3 P2 follow-up: detect template_drift first so analytics do not
+    // conflate template-drift with real leaks. Reviewer's W3 issue.
+    const skipReason = inferSkipReason(cwd, promptText);
     emitEvent(cwd, {
       version: 1,
       type: 'repo_map_skipped',
@@ -441,20 +447,56 @@ function extractRepoMapSection(promptText) {
 }
 
 /**
- * Infer the skip reason for a missing Repository Map heading when no other
- * signal is available. Today this is heuristic:
- *   - If a recent `repo_map_built` event recorded `cache_hit: false` AND
- *     `token_count` exceeded the configured cap, return 'size_exceeded'.
- *   - Otherwise return 'error' (real leak; PM forgot to inject).
+ * Near-miss detector for Repository Map headings. Catches template drift
+ * BEFORE reporting a true injection-pipeline gap. Matches:
  *
- * This deliberately defaults to 'error' rather than 'unknown' so the
- * mismatch between `repo_map_built` and `repo_map_injected` shows up as
- * an actionable gap in analytics.
+ *   `### Repository Map`            — wrong heading level
+ *   `## repository map`             — lowercase
+ *   `   ## Repository Map`          — leading whitespace / indented
+ *   `## Repo Map`                   — alternate name
+ *   `## RepositoryMap`              — collapsed whitespace
+ *
+ * Anchored line-start (with optional leading whitespace) and case-insensitive
+ * over `repo(?:sitory)?\s*map`. Rejects prose mid-sentence ("the Repository Map
+ * for context") because the regex requires `^\s*#{1,6}\s+` heading prefix.
+ *
+ * Returns true when a near-miss is found and the canonical regex did NOT match
+ * (callers should only invoke this AFTER confirming `extractRepoMapSection`
+ * returned null).
+ *
+ * @param {string} promptText
+ * @returns {boolean}
+ */
+function hasNearMissRepoMapHeading(promptText) {
+  if (!promptText || typeof promptText !== 'string') return false;
+  // 1-to-6 hashes, optional leading whitespace, then "repo" / "repository" map.
+  // Case-insensitive, multiline.
+  const re = /^[ \t]*#{1,6}[ \t]+repo(?:sitory)?[ \t]*map\b/im;
+  return re.test(promptText);
+}
+
+/**
+ * Infer the skip reason for a missing Repository Map heading when no other
+ * signal is available.
+ *
+ *   1. size_exceeded — config has `repo_map.max_inject_bytes` AND the on-disk
+ *      `.orchestray/kb/facts/repo-map.md` exceeds the cap.
+ *   2. template_drift — a NEAR-MISS heading is present in the prompt
+ *      (e.g., `### Repository Map`, lowercase, indented, `## Repo Map`).
+ *      The PM's delegation template drifted; the injection pipeline is fine.
+ *   3. error — heading absent AND no near-miss; most likely a true leak
+ *      (PM forgot to call `injectRepoMap()`).
+ *
+ * This deliberately distinguishes template_drift from error so analytics
+ * surface the two failure classes separately. v2.2.3 P2 follow-up.
  *
  * @param {string} cwd
- * @returns {'size_exceeded'|'error'}
+ * @param {string|null} [promptText] - delegation prompt; pass to enable the
+ *   `template_drift` near-miss heuristic. When omitted, only size_exceeded
+ *   vs error is distinguished (back-compat for callers that already checked).
+ * @returns {'size_exceeded'|'template_drift'|'error'}
  */
-function inferSkipReason(cwd) {
+function inferSkipReason(cwd, promptText) {
   try {
     const configPath = path.join(cwd, '.orchestray', 'config.json');
     const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -469,6 +511,10 @@ function inferSkipReason(cwd) {
       } catch (_e) { /* file missing */ }
     }
   } catch (_e) { /* fail-open */ }
+  // Template-drift check: only when caller passed promptText.
+  if (typeof promptText === 'string' && hasNearMissRepoMapHeading(promptText)) {
+    return 'template_drift';
+  }
   return 'error';
 }
 
@@ -510,6 +556,7 @@ module.exports = {
   isRepoMapEnabled,
   extractRepoMapSection,
   inferSkipReason,
+  hasNearMissRepoMapHeading,
   CITE_CACHE_MARKER,
   SPEC_SKETCH_RE,
   REPO_MAP_DELTA_RE,

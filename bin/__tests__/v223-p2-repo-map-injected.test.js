@@ -36,6 +36,7 @@ const {
   extractRepoMapSection,
   isRepoMapEnabled,
   inferSkipReason,
+  hasNearMissRepoMapHeading,
   REPO_MAP_HEADING_RE,
   REPO_MAP_HEADING_CACHE_RE,
   REPO_MAP_OPT_OUT_AGENTS,
@@ -493,5 +494,158 @@ describe('inferSkipReason', () => {
       repoMapBytes: 1000,
     });
     assert.equal(inferSkipReason(tmp), 'size_exceeded');
+  });
+
+  test('returns template_drift when promptText has near-miss heading', () => {
+    const { tmp } = makeProject({ config: { enable_repo_map: true } });
+    const drifted = '### Repository Map\n\nfoo\n\n## Acceptance Rubric\n';
+    assert.equal(inferSkipReason(tmp, drifted), 'template_drift');
+  });
+
+  test('size_exceeded wins over template_drift when both apply', () => {
+    const { tmp } = makeProject({
+      config: { repo_map: { max_inject_bytes: 50 } },
+      repoMapBytes: 1000,
+    });
+    const drifted = '### Repository Map\n\nfoo\n';
+    assert.equal(inferSkipReason(tmp, drifted), 'size_exceeded');
+  });
+
+  test('returns error when promptText has no near-miss heading', () => {
+    const { tmp } = makeProject({ config: { enable_repo_map: true } });
+    assert.equal(inferSkipReason(tmp, 'task: build a thing\n\n## Acceptance\n'), 'error');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hasNearMissRepoMapHeading unit (v2.2.3 P2 follow-up)
+// ---------------------------------------------------------------------------
+
+describe('hasNearMissRepoMapHeading', () => {
+
+  test('matches "### Repository Map" (h3 instead of h2)', () => {
+    assert.equal(hasNearMissRepoMapHeading('### Repository Map\n\nfoo'), true);
+  });
+
+  test('matches lowercase "## repository map"', () => {
+    assert.equal(hasNearMissRepoMapHeading('## repository map\n\nfoo'), true);
+  });
+
+  test('matches indented "   ## Repository Map"', () => {
+    assert.equal(hasNearMissRepoMapHeading('   ## Repository Map\n\nfoo'), true);
+  });
+
+  test('matches alternate "## Repo Map"', () => {
+    assert.equal(hasNearMissRepoMapHeading('## Repo Map\n\nfoo'), true);
+  });
+
+  test('matches uppercase "## REPOSITORY MAP"', () => {
+    assert.equal(hasNearMissRepoMapHeading('## REPOSITORY MAP\n\nfoo'), true);
+  });
+
+  test('does NOT match prose mention "the Repository Map for context"', () => {
+    assert.equal(hasNearMissRepoMapHeading('See the Repository Map for context.\n'), false);
+  });
+
+  test('does NOT match unrelated text', () => {
+    assert.equal(hasNearMissRepoMapHeading('## Acceptance Rubric\n\nfoo'), false);
+  });
+
+  test('returns false on null or empty', () => {
+    assert.equal(hasNearMissRepoMapHeading(null), false);
+    assert.equal(hasNearMissRepoMapHeading(''), false);
+    assert.equal(hasNearMissRepoMapHeading(undefined), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// repo_map_skipped template_drift integration (v2.2.3 P2 follow-up)
+// ---------------------------------------------------------------------------
+
+describe('repo_map_skipped template_drift', () => {
+
+  function buildPromptWithDriftedHeading(heading) {
+    return [
+      'task_subject: build a thing',
+      '',
+      heading,
+      '',
+      'src/ index.ts',
+      '',
+      '## Acceptance Rubric',
+      '',
+      'foo',
+    ].join('\n');
+  }
+
+  test('emits template_drift on "### Repository Map" (h3)', () => {
+    const { tmp, transcriptPath } = makeProject({
+      transcriptPrompt: buildPromptWithDriftedHeading('### Repository Map'),
+    });
+    handleSubagentStart({
+      cwd: tmp,
+      agent_type: 'developer',
+      agent_transcript_path: transcriptPath,
+    });
+    const skip = findEvent(readEvents(tmp), 'repo_map_skipped');
+    assert.ok(skip);
+    assert.equal(skip.skip_reason, 'template_drift');
+    assert.equal(skip.subagent_type, 'developer');
+  });
+
+  test('emits template_drift on lowercase "## repository map"', () => {
+    const { tmp, transcriptPath } = makeProject({
+      transcriptPrompt: buildPromptWithDriftedHeading('## repository map'),
+    });
+    handleSubagentStart({
+      cwd: tmp,
+      agent_type: 'developer',
+      agent_transcript_path: transcriptPath,
+    });
+    const skip = findEvent(readEvents(tmp), 'repo_map_skipped');
+    assert.ok(skip);
+    assert.equal(skip.skip_reason, 'template_drift');
+  });
+
+  test('emits template_drift on indented "   ## Repository Map"', () => {
+    const { tmp, transcriptPath } = makeProject({
+      transcriptPrompt: buildPromptWithDriftedHeading('   ## Repository Map'),
+    });
+    handleSubagentStart({
+      cwd: tmp,
+      agent_type: 'developer',
+      agent_transcript_path: transcriptPath,
+    });
+    const skip = findEvent(readEvents(tmp), 'repo_map_skipped');
+    assert.ok(skip);
+    assert.equal(skip.skip_reason, 'template_drift');
+  });
+
+  test('emits template_drift on "## Repo Map" alternate name', () => {
+    const { tmp, transcriptPath } = makeProject({
+      transcriptPrompt: buildPromptWithDriftedHeading('## Repo Map'),
+    });
+    handleSubagentStart({
+      cwd: tmp,
+      agent_type: 'developer',
+      agent_transcript_path: transcriptPath,
+    });
+    const skip = findEvent(readEvents(tmp), 'repo_map_skipped');
+    assert.ok(skip);
+    assert.equal(skip.skip_reason, 'template_drift');
+  });
+
+  test('still emits error when no heading and no near-miss', () => {
+    const { tmp, transcriptPath } = makeProject({
+      transcriptPrompt: buildPromptWithoutMap(),
+    });
+    handleSubagentStart({
+      cwd: tmp,
+      agent_type: 'developer',
+      agent_transcript_path: transcriptPath,
+    });
+    const skip = findEvent(readEvents(tmp), 'repo_map_skipped');
+    assert.ok(skip);
+    assert.equal(skip.skip_reason, 'error');
   });
 });

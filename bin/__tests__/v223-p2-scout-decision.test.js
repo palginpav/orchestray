@@ -465,3 +465,58 @@ describe('track-scout-decision — hooks.json registration', () => {
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// 9. tool_input.path fallback (v2.2.3 P2 follow-up)
+//
+// track-scout-decision.js:224 accepts `tool_input.path` as a defensive
+// fallback for `tool_input.file_path` (the documented Read input shape).
+// Reviewer flagged the fallback as untested. Confirm it works so the
+// fallback is exercised by CI before deciding to remove it.
+// ---------------------------------------------------------------------------
+
+describe('track-scout-decision — tool_input.path fallback', () => {
+
+  test('tool_input.path (alternate key) is accepted and emits scout_decision', () => {
+    const root = makeRoot();
+    writeOrchMarker(root, 'orch-scout-test-path-fallback');
+    writeConfig(root, { haiku_routing: { scout_min_bytes: 12288 } });
+    const abs = writeFileSized(root, 'big.md', 13000);
+
+    const r = runHook({
+      tool_name: 'Read',
+      cwd: root,
+      // No file_path — only `path`. Defensive fallback exercised.
+      tool_input: { path: abs },
+    });
+    assert.equal(r.status, 0);
+
+    const evs = readEvents(root).filter((e) => e.type === 'scout_decision');
+    assert.equal(evs.length, 1, 'fallback path key produces one event');
+    assert.equal(evs[0].file_bytes, 13000);
+    assert.equal(evs[0].file_path, 'big.md',
+      'file_path field carries the relativized path from the fallback key');
+  });
+
+  test('file_path takes priority over path when BOTH keys present', () => {
+    const root = makeRoot();
+    writeOrchMarker(root, 'orch-scout-test-path-priority');
+    writeConfig(root, { haiku_routing: { scout_min_bytes: 12288 } });
+    const correct = writeFileSized(root, 'correct.md', 13000);
+    const wrong = writeFileSized(root, 'wrong.md', 25000);
+
+    const r = runHook({
+      tool_name: 'Read',
+      cwd: root,
+      tool_input: { file_path: correct, path: wrong },
+    });
+    assert.equal(r.status, 0);
+
+    const evs = readEvents(root).filter((e) => e.type === 'scout_decision');
+    assert.equal(evs.length, 1);
+    assert.equal(evs[0].file_path, 'correct.md',
+      'documented file_path key wins over fallback path key');
+    assert.equal(evs[0].file_bytes, 13000);
+  });
+
+});

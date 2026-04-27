@@ -370,6 +370,84 @@ describe('observe-output-shape: no matching applied row → silent no-op', () =>
   });
 });
 
+describe('observe-output-shape: pair_missing telemetry (v2.2.3 P2 follow-up)', () => {
+  test('emits output_shape_observed_pair_missing when no applied row matches', () => {
+    const root = makeTmpRoot();
+    writeOrchMarker(root, 'orch-w2-pair-missing');
+
+    // Note: NO inject hook firing. The applied row does NOT exist.
+    runHook(OBSERVE_HOOK, {
+      hook_event_name: 'SubagentStop',
+      cwd: root,
+      agent_type: 'reviewer',
+      usage: { output_tokens: 8000 },
+    });
+
+    const events = readEvents(root);
+    const missing = events.find((e) => e.type === 'output_shape_observed_pair_missing');
+    assert.ok(missing, 'pair_missing event must fire when no applied row found');
+    assert.equal(missing.version, 1);
+    assert.equal(missing.orchestration_id, 'orch-w2-pair-missing');
+    assert.equal(missing.role, 'reviewer');
+    assert.equal(typeof missing.scanned_bytes, 'number',
+      'scanned_bytes is numeric (0 when events.jsonl missing)');
+    assert.ok(missing.scanned_bytes >= 0);
+    // Confirm no observed row written.
+    assert.equal(events.filter((e) => e.type === 'output_shape_observed').length, 0,
+      'no observed row when pair missing');
+  });
+
+  test('emits pair_missing when applied row beyond tail window', () => {
+    const root = makeTmpRoot();
+    writeOrchMarker(root, 'orch-w2-tail-exhausted');
+
+    // Stuff events.jsonl: write a real applied row first, then >32 KB of
+    // padding rows so the canonical applied row scrolls past the tail.
+    const eventsPath = path.join(root, '.orchestray', 'audit', 'events.jsonl');
+    const appliedRow = JSON.stringify({
+      version: 1,
+      type: 'output_shape_applied',
+      timestamp: '2026-04-27T00:00:00.000Z',
+      orchestration_id: 'orch-w2-tail-exhausted',
+      role: 'reviewer',
+      category: 'hybrid',
+      cap_output_tokens: 50000,
+      length_cap: 50000,
+      baseline_output_tokens: 50000,
+      baseline_source: 'budget_tokens_cache',
+    }) + '\n';
+    fs.writeFileSync(eventsPath, appliedRow);
+    // Pad with 40 KB of unrelated rows (well past the 32 KB tail).
+    const padRow = JSON.stringify({
+      version: 1,
+      type: 'sentinel_probe',
+      timestamp: '2026-04-27T00:00:01.000Z',
+      orchestration_id: 'orch-w2-tail-exhausted',
+      filler: 'x'.repeat(400),
+    }) + '\n';
+    let padded = '';
+    while (padded.length < 40 * 1024) padded += padRow;
+    fs.appendFileSync(eventsPath, padded);
+
+    runHook(OBSERVE_HOOK, {
+      hook_event_name: 'SubagentStop',
+      cwd: root,
+      agent_type: 'reviewer',
+      usage: { output_tokens: 8000 },
+    });
+
+    const events = readEvents(root);
+    const missing = events.find((e) => e.type === 'output_shape_observed_pair_missing');
+    assert.ok(missing, 'pair_missing must fire when applied row scrolled past tail');
+    assert.equal(missing.role, 'reviewer');
+    assert.equal(missing.orchestration_id, 'orch-w2-tail-exhausted');
+    // scanned_bytes capped at EVENTS_TAIL_BYTES (32 KB).
+    assert.equal(missing.scanned_bytes, 32 * 1024);
+    // No observed row should be paired.
+    assert.equal(events.filter((e) => e.type === 'output_shape_observed').length, 0);
+  });
+});
+
 describe('observe-output-shape: defensive paths', () => {
   test('malformed stdin → silent continue, no row written', () => {
     const r = cp.spawnSync(NODE, [OBSERVE_HOOK], {

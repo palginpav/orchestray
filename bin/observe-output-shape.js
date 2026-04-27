@@ -238,7 +238,25 @@ process.stdin.on('end', () => {
     if (!applied) {
       // No matching applied row — either the role is excluded
       // (pm/haiku-scout/etc.), the kill switch tripped, or the row scrolled
-      // out of the bounded tail. Either way, no observation to emit.
+      // out of the bounded tail. Emit a low-frequency
+      // `output_shape_observed_pair_missing` event so a tail-exhausted gap
+      // is visible in telemetry rather than silent. Reviewer's W2 issue.
+      try {
+        const eventsPath = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
+        let scannedBytes = 0;
+        try {
+          const stat = fs.statSync(eventsPath);
+          scannedBytes = Math.min(stat.size, EVENTS_TAIL_BYTES);
+        } catch (_e) { /* file missing — scannedBytes stays 0 */ }
+        writeEvent({
+          version: 1,
+          type: 'output_shape_observed_pair_missing',
+          timestamp: new Date().toISOString(),
+          orchestration_id: orchestrationId,
+          role,
+          scanned_bytes: scannedBytes,
+        }, { cwd });
+      } catch (_e) { /* swallow — telemetry must not break the hook */ }
       emitContinue();
       process.exit(0);
       return;
