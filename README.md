@@ -8,6 +8,23 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 
 **Simple prompts** pass through to normal Claude Code behavior. **Complex prompts** get the full treatment.
 
+### What's new in v2.2.3 ("Runtime")
+
+v2.2.3 is the runtime release for v2.2.0's design. v2.2.0 shipped six token-saving features default-on, but production telemetry (collected after v2.2.2) showed only the Aider repo map was actually firing. v2.2.3 heals six production-correctness regressions (Haiku routing dead in production, cache geometry self-tripping every release, pattern extractor circuit-broken, phase-slice noise, silent fail-open paths in spawn counter and validator), instruments the rest of the v2.2.0 telemetry path so savings claims become measurable for the first time, expands four leverage features that had been gated on measurement windows, lands the new `pm-router` Haiku entry-point gateway for `/orchestray:run`, and strips the `orchestray-housekeeper` agent that was structurally non-functional. Restart Claude Code after upgrading.
+
+- **`pm-router` Haiku entry-point gateway** routes trivial `/orchestray:run` tasks (typos, single-file edits, isolated questions) to a cheap Haiku-tier `pm-router` agent that solo-handles them end-to-end. Complex tasks pay one Haiku classification turn (~$0.001) and escalate to the existing Opus PM unchanged. Other slash commands (`/orchestray:resume`, `/orchestray:redo`, `/orchestray:issue`, `/orchestray:review-pr`) bypass the router. Default on; `pm_router.enabled: false` or `ORCHESTRAY_DISABLE_PM_ROUTER=1` to opt out.
+- **Haiku routing actually works.** v2.2.0's `haiku-scout` agent recorded zero spawns post-ship; the PM tool allowlist excluded it and the resolver's canonical-agent list excluded all four Haiku-default agents. Both layers fixed; a one-shot session-start migrator purges poisoned `routing.jsonl` entries from the v2.2.0–v2.2.2 auto-seed loop.
+- **Section 23 scout enforcement** ships in **warn** mode: a `PreToolUse:Read` hook fires on every PM Read at or above the 12 KB threshold and emits `scout_decision` events naming the four cases. Static and dynamic exempt-path allowlist; per-session bypass via `ORCHESTRAY_SCOUT_BYPASS=1`. Block mode promotes in v2.2.4.
+- **Cache geometry no longer self-trips on every release.** The `event-schemas.shadow.json` artifact is removed from the zone-1 invariant hash; shadow drift now emits a separate `cache_zone_shadow_regen_observed` event so observability is preserved without the false-positive cache disable.
+- **Output-shape token savings now measured.** Paired `output_shape_observed` event from a SubagentStop hook populates the previously-null `baseline_output_tokens` and `observed_output_tokens` fields. After 14 days of telemetry, smart-shaping savings will read directly off `/orchestray:analytics`.
+- **Per-spawn repo-map injection telemetry** with template-drift detection on the canonical `## Repository Map` heading.
+- **Eight more agent roles get Anthropic Structured Outputs schema enforcement.** Developer, debugger, reviewer, architect, documenter, refactorer, inventor, release-manager all join the canary `[researcher, tester]` allowlist. Per-role rollback: edit `output_shape.staged_flip_allowlist` in `.orchestray/config.json`.
+- **Five features default-on:** `cost_budget_enforcement`, `enable_disagreement_protocol`, `enable_outcome_tracking`, `enable_checkpoints`, `adaptive_verbosity`. Cost-budget enforcement is a no-op when no caps are configured.
+- **Cache TTL auto-downgrade now actually fires.** PM writes a calibrated `estimated_orch_duration_minutes` at decomposition; short orchestrations downgrade slot 1+2 from 1h to 5m TTL automatically.
+- **Role-budget cache auto-refreshes on stale data** via a SessionStart `--if-stale` calibrator hook.
+- **Reviewer scope validator** promoted from observe to warn mode (block mode in v2.2.4 after 14-day measurement).
+- **`orchestray-housekeeper` agent removed.** Zero invocations across all post-v2.2.0 orchestrations; the marker-to-spawn routing was never wired. Re-introducing in a future release as an explicit MCP tool. `ORCHESTRAY_HOUSEKEEPER_DISABLED=1` is now a silent no-op.
+
 ### What's new in v2.2.0 ("Tokens, not Actions")
 
 The v2.2.0 release reshapes how Orchestray pays for the prompt prefix it sends to Claude on every turn. Nine shipping items, every flag default-on, every behavior change with a kill switch. Headline savings: roughly **−18% to −33% per orchestration** (mid-range −22%; multi-round audits land at the upper end).
@@ -16,13 +33,13 @@ The v2.2.0 release reshapes how Orchestray pays for the prompt prefix it sends t
 - **Chunked schema lookup** replaces the 186 KB event-schemas reload with a small fingerprint plus a new `mcp__orchestray__schema_get` MCP verb that returns the chunk you need. Default on; full-file Read is blocked.
 - **Engineered cache geometry** anchors stable prompt prefixes in a byte-stable Block-Z header backed by a 4-slot cache-control manifest with TTL auto-downgrade. Back-to-back orchestrations within the hour pay 90% less for shared overhead. (v2.2.1: the auto-disable sentinel now carries a 1-hour TTL and a trip-counter so transient false positives no longer disable cache geometry permanently.)
 - **Haiku scout** (new agent: `haiku-scout`) takes Read/Glob/Grep recon at and above 12 KB off Opus. Three-layer tool-whitelist enforcement; default on.
-- **Background-housekeeper Haiku** (new agent: `orchestray-housekeeper`) handles three narrow background ops (KB-write verify, schema-shadow regen, telemetry rollup recompute) at Read+Glob only — stricter than scout. Per-action audit telemetry, drift detector that fails closed on tool-whitelist mutation, three independent kill switches.
+- **Background-housekeeper Haiku** (`orchestray-housekeeper` agent — **removed in v2.2.3** after recording zero invocations across all post-ship orchestrations; the marker-to-spawn routing was never wired. The design will return as an MCP tool in a future release.)
 - **Deterministic sentinel probes** replace inline Bash for five common checks (file-exists, line-count, git-status, schema-validate, hash-compute) with zero LLM cost.
 - **Audit-round auto-archive** distills completed rounds of multi-round audits into compact 500-token digests. Verbatim findings stay in the audit log.
 - **Delta delegation for repeat agent spawns** — first spawn gets the full prompt; subsequent spawns get a prefix reference plus a small delta block, hash-anchored so cache misses self-heal. (v2.2.2: composed by a `PreToolUse:Agent` hook on every spawn, so the delta event fires deterministically rather than depending on orchestrator-side prompt composition.)
 - **Telemetry truth** — fixed the ~59% duplicate-row bug in `agent_metrics.jsonl`, the silent-default-to-Sonnet bug for team-member rows, and made PM-direct token cost visible in the metrics dashboard for the first time.
 
-**Restart Claude Code after upgrading**: the two new agents (`haiku-scout`, `orchestray-housekeeper`) require a session restart to load.
+**Restart Claude Code after upgrading**: the new `pm-router` agent requires a session restart to load (and v2.2.3 removes the `orchestray-housekeeper` agent — sessions started before the upgrade will not pick up either change until restart).
 
 ### Key features
 
@@ -218,7 +235,7 @@ Use `/orchestray:feature status` to see demand counts, and `/orchestray:feature 
 | **Curator** | AI-driven pattern curation — promotes, merges, and deprecates patterns with tombstone rollback; invoked via `/orchestray:learn curate` |
 | **Project Intent** | Lightweight Haiku agent — reads `README.md`, `CLAUDE.md`, and `AGENTS.md` once per session and stages a project-intent block that every downstream agent receives for free. Read-only; invoked automatically by the PM on fresh repos. |
 | **Haiku Scout (v2.2.0+)** | Read-only Haiku agent — handles Read/Glob/Grep operations at and above the 12 KB threshold so the PM keeps Opus for orchestration decisions. Tools restricted to `[Read, Glob, Grep]`; three-layer tool-whitelist enforcement (declarative frontmatter, runtime rejection, frozen-byte CI test). Disable with `haiku_routing.enabled: false`. |
-| **Orchestray Housekeeper (v2.2.0+)** | Read-only Haiku agent — handles three narrow background ops: knowledge-base write verification, schema-shadow regen, and telemetry rollup recompute. Tools restricted to `[Read, Glob]` (stricter than scout). Per-action audit telemetry, drift detector fails closed on tool-whitelist mutation, three independent kill switches (`haiku_routing.housekeeper_enabled: false`, `ORCHESTRAY_HOUSEKEEPER_DISABLED=1`, runtime sentinel). Promotion to broader tools requires explicit tagged commit cycle. (v2.2.1: drift detector now resolves the agent through project → user → plugin priority order, fixing a v2.2.0 false-positive that quarantined global-scope installs.) |
+| **PM Router (v2.2.3+)** | Haiku-tier entry-point router for `/orchestray:run`. Reads the user task, decides solo (handle at Haiku end-to-end), escalate (spawn the Opus PM unchanged), or decline (refuse with reason). Default-fallback-to-escalate on any uncertain input. Other slash commands (`/orchestray:resume`, `/orchestray:redo`, `/orchestray:issue`, `/orchestray:review-pr`) bypass the router. Disable with `pm_router.enabled: false` or `ORCHESTRAY_DISABLE_PM_ROUTER=1`. |
 | **Specialists** | Plugin-shipped templates at `specialists/` (translator, ui-ux-designer, database-migration, api-contract-designer, error-message-writer); project-local overrides saved to `.orchestray/specialists/` by the PM when dynamic agents succeed |
 
 ### Shipped specialists (v2.1.9)
@@ -517,10 +534,12 @@ haiku_routing.scout_min_bytes           File-size threshold above which the PM h
                                         Glob/Grep operations to the scout instead of doing
                                         them inline. Default: 12288 (12 KB). Per OQ-1 verdict.
 
-haiku_routing.housekeeper_enabled       Enable the background-housekeeper Haiku agent for
-                                        narrow background ops (KB-write verify, schema-shadow
-                                        regen, telemetry rollup recompute). Default: true.
-                                        Env override: ORCHESTRAY_HOUSEKEEPER_DISABLED=1.
+haiku_routing.scout_enforcement         Section 23 scout-spawn enforcement mode for
+                                        PreToolUse:Read on files at or above scout_min_bytes.
+                                        Modes: "off" (telemetry-only, P2 W1 behavior),
+                                        "warn" (default for v2.2.3 — emit signal, allow Read),
+                                        "block" (planned default for v2.2.4 — exit 2 unless
+                                        path is exempt or ORCHESTRAY_SCOUT_BYPASS=1 is set).
 
 audit.round_archive.enabled             Distill completed rounds of multi-round audit
                                         orchestrations into compact 500-token digests in the
@@ -556,9 +575,21 @@ All nine v2.2.0 shipping items default on. Each has a dedicated kill switch; whe
 | Engineered Block-Z prefix | `caching.block_z.enabled: false` | — | Prompt prefix reverts to non-anchored composition |
 | 4-slot cache-control manifest | `caching.engineered_breakpoints.enabled: false` | — | Cache-control falls back to inherited defaults |
 | Haiku scout | `haiku_routing.enabled: false` | — | All Class-B file ops run inline at PM model rate |
-| Background housekeeper | `haiku_routing.housekeeper_enabled: false` | `ORCHESTRAY_HOUSEKEEPER_DISABLED=1` | Three background ops run inline |
 | Audit-round auto-archive | `audit.round_archive.enabled: false` | — | Multi-round audits keep verbatim findings in the active prompt |
 | Delta delegation | `pm_protocol.delegation_delta.enabled: false` | `ORCHESTRAY_DISABLE_DELEGATION_DELTA=1` | All agent spawns receive the full delegation prompt |
+
+### Emergency kill switches (v2.2.3)
+
+| Feature | Kill switch | Env override | Effect |
+|---|---|---|---|
+| PM Router | `pm_router.enabled: false` | `ORCHESTRAY_DISABLE_PM_ROUTER=1` | `/orchestray:run` invokes the Opus PM directly as in v2.2.0–v2.2.2 |
+| Section 23 scout enforcement | `haiku_routing.scout_enforcement: "off"` | `ORCHESTRAY_SCOUT_BYPASS=1` (per-session) | Disables scout-decision gate; warn-mode signal still emits in `"warn"` (default), block-mode forced-Read prevention disables in `"off"` |
+| Cost budget enforcement | `cost_budget_enforcement.enabled: false` | — | Pre-spawn cost-budget gate disabled. No-op when no caps are configured. |
+| Disagreement protocol | `enable_disagreement_protocol: false` | — | Reverts to verify-fix loop only |
+| Outcome tracking | `enable_outcome_tracking: false` | — | Disables deferred quality validation probes |
+| Mid-orchestration checkpoints | `enable_checkpoints: false` | — | No pause-between-groups review prompt |
+| Adaptive verbosity | `adaptive_verbosity.enabled: false` | — | Per-agent response budgets fall back to fixed defaults |
+| Structured outputs (per role) | `output_shape.staged_flip_allowlist: ["researcher", "tester"]` | — | Reverts hybrid roles to caveman-only output shape; researcher/tester keep canary defaults |
 
 No session restart is needed for any of these kill switches.
 
@@ -659,11 +690,13 @@ Agent Teams features (TaskCreated / TaskCompleted / TeammateIdle hooks) require 
 
 ## Troubleshooting
 
-### Scout or housekeeper disabled but Class-B file ops still occur (v2.2.0+)
+### Scout disabled but Class-B file ops still occur (v2.2.0+)
 
-If you have set `haiku_routing.enabled: false` (or `haiku_routing.housekeeper_enabled: false`) but `/orchestray:analytics` still shows Class-B Read/Glob/Grep operations running at the PM's model rate, this is **expected**: the kill switch tells the PM to do the I/O inline rather than delegating it to Haiku. The "forgone savings" line in `/orchestray:analytics` reports how much you would have saved if the scout had been on for those operations — useful as a one-glance signal of whether to flip the kill switch back.
+If you have set `haiku_routing.enabled: false` but `/orchestray:analytics` still shows Class-B Read/Glob/Grep operations running at the PM's model rate, this is **expected**: the kill switch tells the PM to do the I/O inline rather than delegating it to Haiku. The "forgone savings" line in `/orchestray:analytics` reports how much you would have saved if the scout had been on for those operations — useful as a one-glance signal of whether to flip the kill switch back.
 
 To re-enable scout routing without restarting the session, set `haiku_routing.enabled: true` in `.orchestray/config.json`; the next Class-B op picks up the new setting.
+
+> Note: `orchestray-housekeeper` was removed in v2.2.3 (zero invocations across all post-v2.2.0 orchestrations). The `haiku_routing.housekeeper_enabled` config key and `ORCHESTRAY_HOUSEKEEPER_DISABLED=1` env var are now silent no-ops; remove from your config/env if set.
 
 ### `mcp__orchestray__schema_get` returns `{found: false, error: 'stale_index'}` (v2.2.0+)
 
