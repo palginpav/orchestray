@@ -4169,6 +4169,7 @@ visible in the post-orchestration rollup without hard-blocking the spawn.
   "source":                  "routing_lookup",
   "subagent_type":           "developer",
   "task_hint":               "DEV-1 implement feature X",
+  "path_trace":              ["stage1_entered", "stage1_routing_hit"],
   "routing_entry_timestamp": "2026-04-24T11:58:00.000Z"
 }
 ```
@@ -4176,9 +4177,13 @@ visible in the post-orchestration rollup without hard-blocking the spawn.
 Field notes:
 - `source` values:
   - `routing_lookup` — resolved from `.orchestray/state/routing.jsonl` using the task_id + agent_type match.
-  - `frontmatter_default` — resolved from the `default_model:` field in `agents/<subagent_type>.md` frontmatter.
+  - `frontmatter_default` — resolved from the `model:` field in `agents/<subagent_type>.md` frontmatter (renamed from `default_model:` in v2.2.2 Fix A2).
   - `global_default_sonnet` — no routing hint and no frontmatter default; `sonnet` applied unconditionally.
 - `routing_entry_timestamp` — present only when `source=routing_lookup`; records the original routing decision timestamp for forensic use (W6 T09/Info #2).
+- `path_trace` (v2.2.3 P0-1) — ordered array of stage markers recording which resolver stages were entered. Used to detect frontmatter-bypass live: a Haiku-default agent resolving to `sonnet` via `global_default_sonnet` whose trace contains `stage2_allowlist_miss` or `stage2_file_missing` indicates the resolver never read frontmatter. Markers are stable strings, append-only:
+  - `stage1_entered`, `stage1_no_candidates`, `stage1_routing_hit`, `stage1_routing_invalid_or_inherit`
+  - `stage2_entered`, `stage2_allowlist_miss`, `stage2_file_missing`, `stage2_file_read`, `stage2_no_frontmatter_block`, `stage2_no_model_field`, `stage2_frontmatter_invalid_or_inherit`, `stage2_frontmatter_hit`
+  - `stage3_default`
 - Kill-switch: `ORCHESTRAY_STRICT_MODEL_REQUIRED=1` disables auto-resolve and restores the v2.1.10 hard-block.
 - These events appear in the `model_auto_resolved_warnings` field of the orchestration rollup row as human-readable lines.
 - **Historical names (v2.1.12 and earlier):** `event` / `ts` in place of `type` / `timestamp`.

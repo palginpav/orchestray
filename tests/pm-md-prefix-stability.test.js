@@ -145,7 +145,12 @@ describe('agents/pm.md Block A hash stability', () => {
     // v2.2.2 Bucket C hook-enforcement markers added to §9.7, §12.a, and
     // Delegation Delta Pre-Render heading (orch-1777291253) — prose retained
     // as the behavior contract; the hooks now do the runtime enforcement.
-    const PINNED_BLOCK_A_HASH = '7f43a0b52d169d1b';
+    // v2.2.3 P0-1: PM tools allowlist extended with haiku-scout +
+    // orchestray-housekeeper so Claude Code permits dispatch to the
+    // Haiku-default agents. Required for Section-23 scout and §23f
+    // housekeeper protocol to actually fire. See
+    // .orchestray/kb/artifacts/v223-p1-haiku-routing-rca-and-fix.md.
+    const PINNED_BLOCK_A_HASH = 'bf35359343dd3557';
 
     assert.equal(
       actualHash,
