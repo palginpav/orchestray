@@ -102,9 +102,13 @@ function renderPatternsBanner(options) {
 
   // Circuit breaker — W8-10: use shared scope constant so this matches what
   // post-orchestration-extract.js writes (was 'extraction', now 'auto_extract').
+  // v2.2.3 P0-3: pass cooldownMs from config so isTripped() honors auto-reset.
   let breakerState = 'OK';
   try {
-    if (isTripped({ scope: EXTRACTION_BREAKER_SCOPE, cwd: projectRoot })) {
+    const cooldownMs = alConfig && alConfig.safety && alConfig.safety.circuit_breaker
+      ? alConfig.safety.circuit_breaker.cooldown_minutes_on_trip * 60 * 1000
+      : undefined;
+    if (isTripped({ scope: EXTRACTION_BREAKER_SCOPE, cwd: projectRoot, cooldownMs })) {
       breakerState = 'TRIPPED';
     }
   } catch (_e) {

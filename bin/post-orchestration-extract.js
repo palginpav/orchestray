@@ -513,15 +513,21 @@ function runExtraction({ projectRoot, eventsPath, orchFilePath }) {
   // breaker's internal sentinel/trip logic.
   const breakerMax   = alConfig.safety.circuit_breaker.max_extractions_per_24h;
   const breakerWinMs = 24 * 60 * 60 * 1000; // 24h rolling window (matches DEFAULT_WINDOW_MS)
+  // v2.2.3 P0-3: honor cooldown_minutes_on_trip so a tripped breaker auto-resets
+  // after the configured cooldown instead of sticking until manual reset().
+  // Without this, post-v2.2.0 telemetry showed the extractor never running for
+  // 7+ days after a single trip event. Convert minutes → ms.
+  const breakerCooldownMs = alConfig.safety.circuit_breaker.cooldown_minutes_on_trip * 60 * 1000;
   // Per-orchestration cap is validated and clamped by the loader.
   const perOrchCap = extractConfig.proposals_per_orchestration;
 
   // ── Gate 3: circuit breaker ────────────────────────────────────────────────
   const breakerResult = checkAndIncrement({
-    scope:    EXTRACTION_BREAKER_SCOPE,
-    max:      breakerMax,
-    windowMs: breakerWinMs,
-    cwd:      projectRoot,
+    scope:      EXTRACTION_BREAKER_SCOPE,
+    max:        breakerMax,
+    windowMs:   breakerWinMs,
+    cooldownMs: breakerCooldownMs,
+    cwd:        projectRoot,
   });
   if (!breakerResult.allowed) {
     _emitEvent(auditFile, {
