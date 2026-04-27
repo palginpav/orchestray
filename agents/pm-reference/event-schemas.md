@@ -3432,6 +3432,42 @@ event following a `learning_circuit_tripped` in the same session.
 
 ---
 
+### `learning_circuit_auto_reset` (v2.2.3)
+
+Emitted by `bin/_lib/learning-circuit-breaker.js` when a tripped sentinel is automatically
+cleared because the configured cooldown has elapsed since the trip. Healed v2.2.0 P0-3
+regression where a single trip suppressed all subsequent extractions until manual repair.
+Fires from both `checkAndIncrement` (fast path) and `isTripped` (read-only). Fail-open.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "learning_circuit_auto_reset",
+  "schema_version": 1,
+  "orchestration_id": "<current orch id, or 'unknown'>",
+  "scope": "auto_extract",
+  "tripped_at": "<ISO 8601 of original trip>",
+  "age_ms": 3600123,
+  "cooldown_ms": 3600000,
+  "prior_reason": "quota_exceeded"
+}
+```
+
+**Field notes:**
+- `age_ms`: How long the sentinel persisted before auto-reset cleared it.
+- `cooldown_ms`: The cooldown that was honored. Sourced from
+  `auto_learning.safety.circuit_breaker.cooldown_minutes_on_trip` (×60×1000), clamped to
+  a 24h hard ceiling.
+- `prior_reason`: The original trip reason copied from the sentinel — `quota_exceeded`,
+  `counter_corrupt`, `internal_error`, or `counter_only` (counter file tripped but no
+  sentinel was present).
+
+**Consumer:** Operators tracking extractor uptime should treat each `learning_circuit_auto_reset`
+as the close-out of a prior `learning_circuit_tripped`. Two close events in a row without an
+intervening trip indicate a consistency issue worth investigating.
+
+---
+
 ### Degraded-journal `kind` additions (v2.1.6)
 
 New `kind` values added to the degraded-journal enum (see v2.1.2 section for the full

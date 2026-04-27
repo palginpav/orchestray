@@ -42,6 +42,14 @@ const SCHEMA_VERSION = 1;
 // Window for the rolling count (24 hours in ms)
 const DEFAULT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+// v2.2.3 P0-3: cooldown auto-reset.
+// Default cooldown if caller does not pass cooldownMs. Matches config-schema.js
+// safety.circuit_breaker.cooldown_minutes_on_trip default (60 minutes).
+// Hard ceiling at 24h ensures a stuck sentinel never persists past the rolling
+// window: even with a misconfigured cooldown, the breaker self-heals daily.
+const DEFAULT_COOLDOWN_MS = 60 * 60 * 1000;       // 60 minutes
+const HARD_COOLDOWN_CEILING_MS = 24 * 60 * 60 * 1000; // 24h hard ceiling
+
 // ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------
@@ -294,6 +302,96 @@ function _readSentinel(sentinelPath) {
 }
 
 // ---------------------------------------------------------------------------
+// Cooldown helpers (v2.2.3 P0-3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the effective cooldown in ms from caller opts.
+ *
+ * Precedence:
+ *   1. Explicit `cooldownMs` (number, > 0) — clamped at HARD_COOLDOWN_CEILING_MS.
+ *   2. DEFAULT_COOLDOWN_MS (60 minutes) — matches config-schema default.
+ *
+ * Negative / zero / non-numeric values fall back to the default. Values above
+ * the hard ceiling are clamped down. Caller config may pass either ms or
+ * minutes; this helper treats the input as milliseconds (callers convert).
+ *
+ * @param {number|undefined} cooldownMs
+ * @returns {number}
+ */
+function _resolveCooldownMs(cooldownMs) {
+  if (typeof cooldownMs !== 'number' || !Number.isFinite(cooldownMs) || cooldownMs <= 0) {
+    return DEFAULT_COOLDOWN_MS;
+  }
+  if (cooldownMs > HARD_COOLDOWN_CEILING_MS) return HARD_COOLDOWN_CEILING_MS;
+  return cooldownMs;
+}
+
+/**
+ * Check whether a sentinel's cooldown has expired and clear it on disk if so.
+ *
+ * Returns:
+ *   - { expired: true, ageMs }  → caller must treat the breaker as RESET (cooldown elapsed).
+ *   - { expired: false, ageMs } → caller must treat the breaker as TRIPPED.
+ *   - { expired: false, ageMs: 0 } when sentinel has no parseable trippedAt.
+ *
+ * Side effects on expiry:
+ *   - Removes the sentinel file (best-effort; ENOENT is fine).
+ *   - Removes the counter file too so the next caller starts a fresh window
+ *     instead of inheriting the over-cap count from the previous window.
+ *   - Emits `learning_circuit_auto_reset` audit event (fail-open).
+ *
+ * Fail-open: any unexpected error returns { expired: false, ageMs: 0 } (treat as still tripped).
+ *
+ * @param {string} cwd
+ * @param {string} scope
+ * @param {object} sentinel - parsed sentinel object with trippedAt
+ * @param {number} cooldownMs
+ * @returns {{ expired: boolean, ageMs: number }}
+ */
+function _autoResetIfCooldownExpired(cwd, scope, sentinel, cooldownMs) {
+  if (!sentinel || !sentinel.trippedAt) return { expired: false, ageMs: 0 };
+
+  const trippedAtMs = Date.parse(sentinel.trippedAt);
+  if (!Number.isFinite(trippedAtMs)) return { expired: false, ageMs: 0 };
+
+  const now = Date.now();
+  const ageMs = now - trippedAtMs;
+  if (ageMs < cooldownMs) return { expired: false, ageMs };
+
+  // Cooldown expired — clear sentinel + counter, emit audit event.
+  const sPath = _sentinelPath(cwd, scope);
+  const cPath = _counterPath(cwd, scope);
+  try { fs.unlinkSync(sPath); } catch (_e) { /* best-effort */ }
+  try { fs.unlinkSync(cPath); } catch (_e) { /* best-effort */ }
+
+  try {
+    let orchId = 'unknown';
+    try {
+      const orchFile = getCurrentOrchestrationFile(cwd);
+      const data = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
+      if (data.orchestration_id) orchId = data.orchestration_id;
+    } catch (_e) { /* ignore */ }
+
+    const auditDir = path.join(cwd, '.orchestray', 'audit');
+    fs.mkdirSync(auditDir, { recursive: true });
+    writeEvent({
+      timestamp: new Date().toISOString(),
+      type: 'learning_circuit_auto_reset',
+      schema_version: 1,
+      orchestration_id: orchId,
+      scope,
+      tripped_at: sentinel.trippedAt,
+      age_ms: ageMs,
+      cooldown_ms: cooldownMs,
+      prior_reason: sentinel.reason || 'unknown',
+    }, { cwd });
+  } catch (_e) { /* fail-open */ }
+
+  return { expired: true, ageMs };
+}
+
+// ---------------------------------------------------------------------------
 // Emit learning_circuit_tripped event (fail-open)
 // ---------------------------------------------------------------------------
 
@@ -342,21 +440,33 @@ function _emitCircuitTripped(cwd, scope, reason, extra) {
  * @param {number} [opts.windowMs]      - Rolling window in ms. Defaults to 24h.
  * @param {string} [opts.cwd]           - Project root. Defaults to process.cwd().
  * @param {number} [opts.lockMaxWaitMs] - Wall-clock limit for lock acquisition. Default ~1s.
+ * @param {number} [opts.cooldownMs]    - v2.2.3 P0-3: cooldown before auto-reset of a tripped sentinel.
+ *                                        Defaults to 60 minutes (matches config-schema default).
+ *                                        Clamped to a 24h hard ceiling so the breaker self-heals daily.
  * @returns {{ allowed: true, count: number, max: number }
  *          | { allowed: false, reason: 'tripped' | 'counter_corrupt' | 'lock_unavailable', count: number, max: number }}
  */
-function checkAndIncrement({ scope, max, windowMs, cwd, lockMaxWaitMs }) {
+function checkAndIncrement({ scope, max, windowMs, cwd, lockMaxWaitMs, cooldownMs }) {
   const root       = cwd || process.cwd();
   const window     = windowMs != null ? windowMs : DEFAULT_WINDOW_MS;
+  const cooldown   = _resolveCooldownMs(cooldownMs);
   const cPath      = _counterPath(root, scope);
   const sPath      = _sentinelPath(root, scope);
   const lockPath   = cPath + '.lock';
 
   // Fast path: check trip sentinel before acquiring the lock.
   // The sentinel persists independently of the counter file (F-04).
+  // v2.2.3 P0-3: auto-reset if cooldown has elapsed since trip. Without this,
+  // a sentinel persists forever until manual `reset()`, suppressing all
+  // future extractions even after the trip cause is gone.
   const sentinel = _readSentinel(sPath);
   if (sentinel && sentinel.trippedAt) {
-    return { allowed: false, reason: 'tripped', count: sentinel.count || 0, max };
+    const auto = _autoResetIfCooldownExpired(root, scope, sentinel, cooldown);
+    if (!auto.expired) {
+      return { allowed: false, reason: 'tripped', count: sentinel.count || 0, max };
+    }
+    // Cooldown elapsed — sentinel was cleared. Fall through to the locked
+    // critical section, which will see no counter file and start a fresh window.
   }
 
   const lockOpts = lockMaxWaitMs != null ? { lockMaxWaitMs } : undefined;
@@ -438,23 +548,46 @@ function checkAndIncrement({ scope, max, windowMs, cwd, lockMaxWaitMs }) {
 /**
  * Read-only trip check without incrementing.
  *
+ * v2.2.3 P0-3: callers may pass `cooldownMs` to honor cooldown auto-reset.
+ * If a tripped sentinel has aged past the cooldown, the sentinel + counter
+ * are cleared on disk and `false` is returned (treat as healed). When called
+ * without `cooldownMs`, the default 60-minute cooldown applies — preserves
+ * the legacy "stays tripped until reset()" only when callers explicitly pass
+ * `cooldownMs: 0` or `cooldownMs: Infinity`-equivalent (negative values fall
+ * back to default; pass a very large value to effectively disable auto-reset
+ * up to the 24h hard ceiling).
+ *
  * @param {object} opts
  * @param {string} opts.scope
  * @param {string} [opts.cwd]
- * @returns {boolean} true if the breaker is currently tripped.
+ * @param {number} [opts.cooldownMs] - Cooldown before auto-reset (default 60 min, clamped at 24h).
+ * @returns {boolean} true if the breaker is currently tripped (after cooldown auto-reset).
  */
-function isTripped({ scope, cwd }) {
+function isTripped({ scope, cwd, cooldownMs }) {
   const root  = cwd || process.cwd();
+  const cooldown = _resolveCooldownMs(cooldownMs);
   const sPath = _sentinelPath(root, scope);
 
   // Check sentinel file (F-04: persists independently of counter).
   const sentinel = _readSentinel(sPath);
-  if (sentinel && sentinel.trippedAt) return true;
+  if (sentinel && sentinel.trippedAt) {
+    const auto = _autoResetIfCooldownExpired(root, scope, sentinel, cooldown);
+    if (!auto.expired) return true;
+    // Sentinel auto-cleared. Fall through to counter check (which will be
+    // ENOENT after the auto-reset cleanup).
+  }
 
   // Also check counter file for consistency.
   try {
     const state = _readCounterFile(_counterPath(root, scope));
-    if (state && state.trippedAt) return true;
+    if (state && state.trippedAt) {
+      // Counter says tripped but sentinel did not — apply cooldown to counter
+      // too. Build a synthetic sentinel-like object and reuse the helper so
+      // the audit event still fires and both files end up cleared.
+      const synth = { trippedAt: state.trippedAt, count: state.count, reason: 'counter_only' };
+      const auto = _autoResetIfCooldownExpired(root, scope, synth, cooldown);
+      if (!auto.expired) return true;
+    }
   } catch (_e) {
     // Corrupt → treat as tripped.
     return true;
@@ -519,6 +652,9 @@ module.exports = {
   checkAndIncrement,
   isTripped,
   reset,
+  // v2.2.3 P0-3: cooldown defaults (exported so callers + tests can reference).
+  DEFAULT_COOLDOWN_MS,
+  HARD_COOLDOWN_CEILING_MS,
   // Expose internals for tests.
   _internal: {
     _counterPath,
@@ -527,5 +663,7 @@ module.exports = {
     _writeCounterFile,
     _writeSentinel,
     _readSentinel,
+    _autoResetIfCooldownExpired,
+    _resolveCooldownMs,
   },
 };
