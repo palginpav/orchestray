@@ -59,6 +59,36 @@ const SPEC_SKETCH_RE = /^\s*spec_sketch\s*:/m;
  */
 const REPO_MAP_DELTA_RE = /^\s*repo_map_delta\s*:/m;
 
+/**
+ * Pattern D (v2.2.3 W3 P1-6): Repository Map heading.
+ * Emitted by `bin/_lib/repo-map-delta.js#injectRepoMap()` as the section
+ * heading prefix. Two shapes:
+ *   `## Repository Map`                              — full content or first emission
+ *   `## Repository Map (unchanged this orchestration)` — pointer / cache hit
+ * Both shapes start with `## Repository Map`. We anchor to line-start so prose
+ * mentions ("the Repository Map") are not false-matched.
+ */
+const REPO_MAP_HEADING_RE = /^## Repository Map(?: \(unchanged this orchestration\))?\s*$/m;
+const REPO_MAP_HEADING_CACHE_RE = /^## Repository Map \(unchanged this orchestration\)\s*$/m;
+
+/**
+ * Per-spawn repo-map opt-out list. Haiku-default agents that run on tiny
+ * scoped tasks and do not benefit from a structural repo map. Emit
+ * `repo_map_skipped` with reason='agent_opted_out' when the spawn type
+ * matches AND the prompt does not contain a Repository Map heading.
+ *
+ * Source: agents/*.md frontmatter `model: haiku` agents that handle
+ * size-bounded scoped work (W3 §A — these agents accounted for 0 spawns
+ * receiving the map post-v2.2.0, but we still want explicit skip telemetry
+ * to distinguish "opted out" from "leaked").
+ */
+const REPO_MAP_OPT_OUT_AGENTS = new Set([
+  'haiku-scout',
+  'orchestray-housekeeper',
+  'project-intent',
+  'pattern-extractor',
+]);
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -84,6 +114,27 @@ function isTelemetryEnabled(cwd) {
   } catch (_e) {
     // Config missing or unreadable — default to enabled.
   }
+  return true;
+}
+
+/**
+ * v2.2.3 W3 P1-6: Read the `enable_repo_map` config flag. Defaults to true.
+ *
+ * @param {string} cwd
+ * @returns {boolean}
+ */
+function isRepoMapEnabled(cwd) {
+  try {
+    const configPath = path.join(cwd, '.orchestray', 'config.json');
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    if (cfg && typeof cfg.enable_repo_map === 'boolean') {
+      return cfg.enable_repo_map;
+    }
+    // Nested top-level repo_map.enabled also disables (R-AIDER-FULL knob).
+    if (cfg && cfg.repo_map && cfg.repo_map.enabled === false) {
+      return false;
+    }
+  } catch (_e) { /* default true */ }
   return true;
 }
 
@@ -272,7 +323,153 @@ function handleSubagentStart(event) {
     emitted.push('repo_map_delta_injected');
   }
 
+  // -------------------------------------------------------------------------
+  // Pattern D (v2.2.3 W3 P1-6): per-delegation repo_map injected/skipped.
+  //
+  // `repo_map_built` fires once at build time but does not prove the spawn
+  // received the rendered map. Detect the `## Repository Map` heading in the
+  // delegation prompt and emit one of:
+  //   - repo_map_injected — heading present
+  //   - repo_map_skipped  — heading absent, with a reason
+  //
+  // Repo-map injection is gated by `enable_repo_map` (top-level) AND
+  // `repo_map.enabled` (R-AIDER-FULL block). When config disables it we
+  // emit `repo_map_skipped { skip_reason: 'disabled_by_config' }`.
+  // -------------------------------------------------------------------------
+  const repoMapEnabled = isRepoMapEnabled(cwd);
+  const repoMapSection = extractRepoMapSection(promptText);
+
+  if (!repoMapEnabled) {
+    emitEvent(cwd, {
+      version: 1,
+      type: 'repo_map_skipped',
+      orchestration_id: orchestrationId,
+      timestamp: ts,
+      subagent_type: agentType,
+      agent_id: event.agent_id || null,
+      skip_reason: 'disabled_by_config',
+    });
+    emitted.push('repo_map_skipped');
+  } else if (repoMapSection) {
+    const bytes = Buffer.byteLength(repoMapSection.text, 'utf8');
+    // Heuristic ~4 chars/token (matches v2.1.17 W8 budget math).
+    const tokens = Math.ceil(bytes / 4);
+    emitEvent(cwd, {
+      version: 1,
+      type: 'repo_map_injected',
+      orchestration_id: orchestrationId,
+      timestamp: ts,
+      subagent_type: agentType,
+      agent_id: event.agent_id || null,
+      repo_map_bytes: bytes,
+      repo_map_tokens: tokens,
+      repo_map_source: repoMapSection.source,
+    });
+    emitted.push('repo_map_injected');
+  } else if (REPO_MAP_OPT_OUT_AGENTS.has(agentType || '')) {
+    emitEvent(cwd, {
+      version: 1,
+      type: 'repo_map_skipped',
+      orchestration_id: orchestrationId,
+      timestamp: ts,
+      subagent_type: agentType,
+      agent_id: event.agent_id || null,
+      skip_reason: 'agent_opted_out',
+    });
+    emitted.push('repo_map_skipped');
+  } else {
+    // Heading absent AND config-enabled AND agent not on opt-out list.
+    // Most likely cause: PM forgot to inject (true leak). Mark as size_exceeded
+    // when the on-disk repo-map.md exceeds the configured cap; otherwise
+    // emit reason='error' to surface a real injection-pipeline gap.
+    const skipReason = inferSkipReason(cwd);
+    emitEvent(cwd, {
+      version: 1,
+      type: 'repo_map_skipped',
+      orchestration_id: orchestrationId,
+      timestamp: ts,
+      subagent_type: agentType,
+      agent_id: event.agent_id || null,
+      skip_reason: skipReason,
+    });
+    emitted.push('repo_map_skipped');
+  }
+
   return { eventsEmitted: emitted };
+}
+
+/**
+ * Extract the `## Repository Map` section from a delegation prompt.
+ *
+ * Returns { text, source } where:
+ *   - text is the raw section text (heading line through next `## ` or EOF).
+ *   - source is 'cache' when the heading is the "(unchanged this orchestration)"
+ *     pointer variant or contains a `repo_map_delta:` marker; 'fresh'
+ *     otherwise. (Note: `stale` is reserved for future use — it is not
+ *     directly observable from the rendered prompt.)
+ *
+ * Returns null when no Repository Map heading is found.
+ *
+ * @param {string} promptText
+ * @returns {{ text: string, source: 'fresh'|'cache' } | null}
+ */
+function extractRepoMapSection(promptText) {
+  if (!promptText || typeof promptText !== 'string') return null;
+
+  const re = new RegExp(REPO_MAP_HEADING_RE.source, 'gm');
+  const match = re.exec(promptText);
+  if (!match) return null;
+
+  const sectionStart = match.index;
+  // Find the next top-level `## ` heading (not the same one).
+  const remainder = promptText.slice(sectionStart + match[0].length);
+  const nextHeadingRe = /^## (?!Repository Map\b)/m;
+  const nextMatch = remainder.match(nextHeadingRe);
+  const sectionEnd = nextMatch
+    ? sectionStart + match[0].length + nextMatch.index
+    : promptText.length;
+
+  const text = promptText.slice(sectionStart, sectionEnd);
+
+  // Determine source. Cache pointer block has the "(unchanged ...)" suffix
+  // OR the body contains a `repo_map_delta:` marker (delta-mode pointer).
+  const isCachePointer = REPO_MAP_HEADING_CACHE_RE.test(match[0]);
+  const hasDeltaMarker = REPO_MAP_DELTA_RE.test(text);
+  const source = (isCachePointer || hasDeltaMarker) ? 'cache' : 'fresh';
+
+  return { text, source };
+}
+
+/**
+ * Infer the skip reason for a missing Repository Map heading when no other
+ * signal is available. Today this is heuristic:
+ *   - If a recent `repo_map_built` event recorded `cache_hit: false` AND
+ *     `token_count` exceeded the configured cap, return 'size_exceeded'.
+ *   - Otherwise return 'error' (real leak; PM forgot to inject).
+ *
+ * This deliberately defaults to 'error' rather than 'unknown' so the
+ * mismatch between `repo_map_built` and `repo_map_injected` shows up as
+ * an actionable gap in analytics.
+ *
+ * @param {string} cwd
+ * @returns {'size_exceeded'|'error'}
+ */
+function inferSkipReason(cwd) {
+  try {
+    const configPath = path.join(cwd, '.orchestray', 'config.json');
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const cap = cfg && cfg.repo_map && typeof cfg.repo_map.max_inject_bytes === 'number'
+      ? cfg.repo_map.max_inject_bytes
+      : null;
+    if (cap !== null) {
+      const mapPath = path.join(cwd, '.orchestray', 'kb', 'facts', 'repo-map.md');
+      try {
+        const stat = fs.statSync(mapPath);
+        if (stat.size > cap) return 'size_exceeded';
+      } catch (_e) { /* file missing */ }
+    }
+  } catch (_e) { /* fail-open */ }
+  return 'error';
 }
 
 // ---------------------------------------------------------------------------
@@ -310,9 +507,15 @@ module.exports = {
   readDelegationPrompt,
   countOccurrences,
   isTelemetryEnabled,
+  isRepoMapEnabled,
+  extractRepoMapSection,
+  inferSkipReason,
   CITE_CACHE_MARKER,
   SPEC_SKETCH_RE,
   REPO_MAP_DELTA_RE,
+  REPO_MAP_HEADING_RE,
+  REPO_MAP_HEADING_CACHE_RE,
+  REPO_MAP_OPT_OUT_AGENTS,
 };
 
 if (require.main === module) {

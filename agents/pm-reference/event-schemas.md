@@ -4024,6 +4024,84 @@ Field notes:
 
 ---
 
+### `repo_map_injected`
+
+Emitted by `bin/emit-compression-telemetry.js` (wired as `SubagentStart`) when the
+delegation prompt contains a `## Repository Map` heading at line-start position.
+v2.2.3 W3 P1-6: pairs with `repo_map_built` to prove that the freshly built map
+actually reached the spawned agent. The mismatch `count(repo_map_built) -
+count(repo_map_injected) - count(repo_map_skipped)` is the leak metric.
+
+```json
+{
+  "version": 1,
+  "type": "repo_map_injected",
+  "orchestration_id": "<current orch id | null>",
+  "timestamp": "<ISO 8601>",
+  "subagent_type": "<agent_type from SubagentStart payload | null>",
+  "agent_id": "<spawn agent_id | null>",
+  "repo_map_bytes": "<N>",
+  "repo_map_tokens": "<N>",
+  "repo_map_source": "fresh"
+}
+```
+
+Field notes:
+- `repo_map_bytes`: byte length (utf8) of the `## Repository Map` section through
+  the next top-level heading or EOF. Includes the heading line.
+- `repo_map_tokens`: token estimate computed as `ceil(repo_map_bytes / 4)`. Mirrors
+  the chars-per-token heuristic used by the v2.1.17 R-AIDER-FULL budget renderer.
+- `repo_map_source`: enum.
+  - `fresh`: full filtered repo-map content body present (first emission for the
+    orchestration, or full-injection fallback path).
+  - `cache`: pointer-only block — heading is `## Repository Map (unchanged this
+    orchestration)` OR body contains a `repo_map_delta:` marker. The receiver is
+    expected to read `.orchestray/kb/facts/repo-map.md` if needed.
+  - `stale`: reserved for future use; not currently observable from the rendered
+    prompt alone.
+- Detection regex: `/^## Repository Map(?: \(unchanged this orchestration\))?\s*$/m`.
+  Anchored to line-start so prose mentions ("the Repository Map") are not matched.
+- Same kill-switch (`ORCHESTRAY_COMPRESSION_TELEMETRY_DISABLED=1`) and config key
+  (`context_compression_v218.telemetry_enabled`) as `cite_cache_hit`.
+
+---
+
+### `repo_map_skipped`
+
+Emitted by `bin/emit-compression-telemetry.js` (wired as `SubagentStart`) when no
+`## Repository Map` heading is present in the delegation prompt OR repo-map
+injection is gated off by config. v2.2.3 W3 P1-6: dual of `repo_map_injected`;
+makes per-spawn skips explicit instead of inferred from absence.
+
+```json
+{
+  "version": 1,
+  "type": "repo_map_skipped",
+  "orchestration_id": "<current orch id | null>",
+  "timestamp": "<ISO 8601>",
+  "subagent_type": "<agent_type from SubagentStart payload | null>",
+  "agent_id": "<spawn agent_id | null>",
+  "skip_reason": "disabled_by_config"
+}
+```
+
+Field notes:
+- `skip_reason`: enum.
+  - `disabled_by_config`: top-level `enable_repo_map: false` OR
+    `repo_map.enabled: false`.
+  - `agent_opted_out`: `subagent_type` is on the per-spawn opt-out list
+    (`haiku-scout`, `orchestray-housekeeper`, `project-intent`,
+    `pattern-extractor` — Haiku-default agents on size-bounded scoped tasks).
+  - `size_exceeded`: heading absent AND on-disk
+    `.orchestray/kb/facts/repo-map.md` is bigger than
+    `repo_map.max_inject_bytes`. Configured but rare.
+  - `error`: heading absent for any other reason — most often a real
+    injection-pipeline gap (PM forgot to call `injectRepoMap()`).
+- Same kill-switch and config key as `cite_cache_hit` /
+  `repo_map_injected`.
+
+---
+
 ### `dossier_truncated`
 
 Emitted by `bin/inject-resilience-dossier.js` (wired as `UserPromptSubmit` and

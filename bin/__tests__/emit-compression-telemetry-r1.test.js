@@ -618,13 +618,22 @@ describe('R1 unit — isTelemetryEnabled', () => {
 
 describe('R1 unit — handleSubagentStart', () => {
 
-  test('returns empty eventsEmitted when prompt has no markers', () => {
+  test('emits only repo_map_skipped when prompt has no compression markers (v2.2.3 W3 P1-6)', () => {
+    // v2.2.3 W3 P1-6: every Agent spawn must produce one of repo_map_injected
+    // or repo_map_skipped. A prompt with no `## Repository Map` heading and a
+    // non-opt-out agent type produces repo_map_skipped(reason='error') so the
+    // mismatch between repo_map_built and repo_map_injected is auditable.
     const { tmp, transcriptPath } = makeProjectDir({
       transcriptContent: buildTranscript('ordinary task with no compression markers'),
     });
     try {
       const result = handleSubagentStart({ cwd: tmp, agent_transcript_path: transcriptPath, agent_type: 'developer' });
-      assert.deepEqual(result.eventsEmitted, []);
+      // No A/B/C compression markers -> none of those three fire.
+      assert.ok(!result.eventsEmitted.includes('cite_cache_hit'));
+      assert.ok(!result.eventsEmitted.includes('spec_sketch_generated'));
+      assert.ok(!result.eventsEmitted.includes('repo_map_delta_injected'));
+      // P1-6: per-spawn skip telemetry MUST fire.
+      assert.deepEqual(result.eventsEmitted, ['repo_map_skipped']);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
