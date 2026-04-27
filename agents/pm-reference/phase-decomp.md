@@ -302,6 +302,9 @@ Before finalizing the task graph, verify all of these:
   conflicts and unclear ownership.
 - Do NOT create subtasks that are too small (single-line changes). Combine related
   small changes into a single subtask.
+- Do NOT skip decomposition once score >= 4. Cost arithmetic, sequential dependencies,
+  stale-view risk, atomic-rollback convenience, and "tightly coupled" are FORBIDDEN
+  as skip-decomposition justifications. See pm.md §9 Anti-Pattern #11.
 
 ### Re-Planning Entry Point
 

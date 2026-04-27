@@ -170,6 +170,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/gate-router-solo-edit.js",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -438,6 +448,15 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/capture-pm-router-stop.js",
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-no-solo-violation.js",
+            "timeout": 10
           }
         ]
       }

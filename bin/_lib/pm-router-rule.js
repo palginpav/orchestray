@@ -38,11 +38,55 @@ const HARD_DECLINE_KEYWORDS = [
 ];
 
 const ESCALATE_KEYWORDS = [
-  'refactor', 'migrate', 'audit', 'investigate', 'debug', 'diagnose',
+  'refactor', 'migrate', 'audit', 'investigate', 'diagnose',
+  // 'debug' replaced with phrase forms (W3-FP-1): bare 'debug' matched
+  // "debug log statement" as a FP. Phrase forms require an action-target word
+  // that confirms the user wants investigation, not a code change.
+  'debug the', 'debug why', 'debug this', 'debug a', 'debug an',
   'review', 'security', 'redesign', 'rewrite', 'architect', 'design',
   'release', 'ship', 'phase ', 'orchestrate', 'decompose',
   'multi-file', 'cross-cutting', 'implement feature',
+  'check why', 'look at', 'figure out', 'find where', 'identify', 'why did', "why didn't",
+  // Orchestration-prompt phrases — noun form "orchestration" alone is too
+  // broad (e.g., "orchestration logic" should solo). Phrase "orchestration
+  // prompt" anchors to prompt-editing tasks specifically.
+  'orchestration prompt',
+  // Agent/prompt-file phrases (bare "agent" is too broad; use phrases only).
+  'prompt file', 'prompt files',
+  'agent definition', 'agent definitions',
+  'agent prompt', 'agent prompts',
+  'agent template', 'agent templates',
+  // "prompt for X" patterns — added R3 NEW-1. Bare "prompt for" risks false
+  // positives ("prompt for password"). Using multi-word context phrases that
+  // require a role/component word adjacent to the phrase keeps FP rate near
+  // zero for /orchestray:run usage where "prompt for the orchestrator/pm/agent"
+  // always refers to an agent system prompt, not a UI interaction.
+  'prompt for the orchestrator', 'prompt for the pm',
+  'prompt for the developer', 'prompt for the router',
+  'prompt for the agent', 'prompt for the subagent',
+  'prompt for the architect', 'prompt for the reviewer',
+  // Short aliases / synonyms — added R4 W3-FP-2.
+  'prompt for the dev', 'prompt for the qa', 'prompt for the engineer',
+  // "instructions for X" phrases — "instructions for the user" is NOT included
+  // (user is not an agent role), keeping FP rate near zero.
+  'instructions for the orchestrator', 'instructions for the developer',
+  'instructions for the architect', 'instructions for the reviewer',
+  'instructions for the agent', 'instructions for the pm',
+  'instructions for the router', 'instructions for the subagent',
+  'instructions for the dev', 'instructions for the tester',
+  'instructions for the qa',
 ];
+
+const PATH_FLOOR_PREFIXES = [
+  'agents/', 'agents/pm-reference/', 'bin/', 'hooks/', 'skills/', '.claude/',
+];
+
+// Known filenames that belong to protected directories.
+// Extend as new agent/bin files are added.
+// "router" matches router.md, pm-router.md, etc.
+// "SKILL" matches SKILL.md (skills directory protected file).
+// "CLAUDE" matches CLAUDE.md (project-root orchestration config) — added R3 NEW-2.
+const PATH_FLOOR_FILENAMES = /\b(?:CLAUDE|pm|pm-router|router|phase-decomp|phase-close|phase-verify|tier1-orchestration|scoring-rubrics|event-schemas|handoff-contract|hooks|install|gate-[a-z-]+|validate-[a-z-]+|capture-[a-z-]+|inject-[a-z-]+|emit-[a-z-]+|SKILL)\.(md|js|json)\b/;
 
 const CROSS_CUTTING_TOKENS = [
   'api', 'db', 'auth', 'frontend', 'backend', 'tests', 'docs',
@@ -225,6 +269,18 @@ function decideRoute(input) {
       return { decision: 'escalate', reason: 'preview_mode_forced', lite_score: 0 };
     }
 
+    // PATH FLOOR: any mention of protected dir paths or filenames → escalate immediately.
+    const lowerText = text.toLowerCase();
+    for (const prefix of PATH_FLOOR_PREFIXES) {
+      if (lowerText.includes(prefix)) {
+        return { decision: 'escalate', reason: 'keyword_denylist_hit', lite_score: 0, path_floor_triggered: true };
+      }
+    }
+    // Filename-in-prose for protected file types.
+    if (PATH_FLOOR_FILENAMES.test(text)) {
+      return { decision: 'escalate', reason: 'keyword_denylist_hit', lite_score: 0, path_floor_triggered: true };
+    }
+
     // 2. Hard-escalate keyword denylist.
     for (const k of ESCALATE_KEYWORDS) {
       if (lower.indexOf(k) !== -1) {
@@ -274,4 +330,6 @@ module.exports = {
   DEFAULTS,
   HARD_DECLINE_KEYWORDS,
   ESCALATE_KEYWORDS,
+  PATH_FLOOR_PREFIXES,
+  PATH_FLOOR_FILENAMES,
 };

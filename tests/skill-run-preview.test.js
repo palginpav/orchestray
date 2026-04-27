@@ -158,51 +158,59 @@ describe('skills/orchestray:run/SKILL.md', () => {
     );
   });
 
-  test('PREVIEW MODE block contains no-spawn instruction', () => {
+  test('PREVIEW MODE comment is present (v2.2.4: predicate forces escalate, verbose block removed)', () => {
+    // v2.2.4 topology fix: --preview forces decision: "escalate" inside decideRoute(),
+    // so the slash command dispatches PM directly. The verbose no-spawn / no-state /
+    // cost-formula block moved to pm.md §PREVIEW. SKILL.md retains only a comment.
     if (!content) content = fs.readFileSync(SKILL_PATH, 'utf8');
     assert.ok(
-      content.includes('Do NOT spawn any subagents'),
-      'PREVIEW MODE block instructs PM not to spawn subagents'
+      content.includes('PREVIEW MODE'),
+      'PREVIEW MODE comment still present'
     );
   });
 
-  test('PREVIEW MODE block contains no-state-files instruction', () => {
+  test('Routing Protocol section dispatches PM directly on escalate', () => {
     if (!content) content = fs.readFileSync(SKILL_PATH, 'utf8');
     assert.ok(
-      content.includes('Do NOT write any state files'),
-      'PREVIEW MODE block instructs PM not to write state files'
+      content.includes('Routing Protocol'),
+      'Routing Protocol section present (v2.2.4 dispatcher)'
+    );
+    assert.ok(
+      content.includes('subagent_type="pm"'),
+      'PM spawn call present on escalate path'
     );
   });
 
-  test('PREVIEW MODE block references cost formula', () => {
+  test('predicate CLI invocation is present', () => {
     if (!content) content = fs.readFileSync(SKILL_PATH, 'utf8');
     assert.ok(
-      content.includes('base_cost') && content.includes('multiplier'),
-      'PREVIEW MODE block includes cost formula keywords'
+      content.includes('pm-router-cli.js'),
+      'predicate CLI call present in routing step'
     );
   });
 
-  test('PREVIEW MODE block instructs user to re-issue /orchestray:run without --preview', () => {
+  test('SKILL.md references /orchestray:run re-issue pattern', () => {
     if (!content) content = fs.readFileSync(SKILL_PATH, 'utf8');
+    // v2.2.4: predicate handles --preview stripping. Slash command passes $ARGUMENTS
+    // through; no "without --preview" prose needed in SKILL.md because the predicate
+    // forces escalate on --preview. The re-issue instruction now lives in the PM.
     assert.ok(
-      content.includes('/orchestray:run') && content.includes('without --preview'),
-      'PREVIEW MODE block instructs re-issue without --preview'
+      content.includes('/orchestray:run'),
+      '/orchestray:run is referenced in SKILL.md'
     );
   });
 
-  test('standard Orchestration Instructions are still present', () => {
+  test('standard routing instructions present (v2.2.4)', () => {
     if (!content) content = fs.readFileSync(SKILL_PATH, 'utf8');
-    // v2.2.3 P4 A3: SKILL.md rewritten to invoke pm-router gateway. The full
-    // complexity scoring + decomposition lives behind the router (in pm.md
-    // §12/§13). The PREVIEW MODE block, however, still mentions both. Assert
-    // the canonical phrasing that appears in the rewritten SKILL.md.
+    // v2.2.4: decomposition/scoring lives in pm.md. SKILL.md is now a dispatcher.
+    // Assert the dispatcher step structure is present.
     assert.ok(
-      content.includes('Score the task complexity'),
-      'complexity scoring instruction (PREVIEW MODE) still present'
+      content.includes('Step 1'),
+      'Step 1 (Read config) present in routing protocol'
     );
     assert.ok(
-      content.includes('Decompose the task'),
-      'standard decomposition instruction still present'
+      content.includes('Step 4'),
+      'Step 4 (Branch on decision) present in routing protocol'
     );
   });
 });

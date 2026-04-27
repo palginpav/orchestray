@@ -38,6 +38,7 @@ phase_slice_fallback — phase-slice hook degraded path (no orchestration / unkn
 phase_slice_injected — phase-slice hook positive path (slice pointer staged into PM additionalContext) (hook, v2.1.16 W9 R-PHASE-INJ)
 repo_map_built / repo_map_parse_failed / repo_map_grammar_load_failed / repo_map_cache_unavailable — Aider-style repo map events (v2.1.17 W8 R-AIDER-FULL)
 pm_router_decision / pm_router_complete / pm_router_solo_complete — PM-router (Haiku entry-point gateway) decision + terminal + solo-only events (hook, v2.2.3 P4 A3)
+pm_router_escalated_via_slash / solo_violation_detected — v2.2.4 topology fix: escalate-path audit event + PM solo-gate tripwire (hook, v2.2.4)
 
 END CONDITIONAL-LOAD NOTICE -->
 
@@ -5787,6 +5788,7 @@ signal for prompt/rule divergence.
   "routing_path": "router_solo",
   "escalation_target_orch_id": null,
   "files_changed_count": 1,
+  "decision_disagreement": null,
   "session_id": "uuid-or-null"
 }
 ```
@@ -5802,6 +5804,12 @@ Field notes:
   `decision_taken === "escalate"`; null otherwise.
 - `files_changed_count`: integer — bounded by `pm_router.solo_max_files`
   on solo paths.
+- `decision_disagreement`: boolean or null (optional) — `true` when the
+  hook's re-run of `decideRoute()` on the original prompt disagrees with
+  the agent's `decision_taken`. `null` when task text is unavailable or
+  `decision_taken` is null (field is absent/null in those paths and the
+  validator must not treat it as a required boolean). Drives the QA signal
+  for prompt/rule divergence.
 
 **Cross-references:** `pm_router_decision` (paired observational row),
 `pm_router_solo_complete` (fires only on solo path).
@@ -6494,3 +6502,74 @@ Schema stability: additive-only. The `decision` enum may grow;
 consumers MUST treat unknown values as opaque per R-EVENT-NAMING.
 
 Source: `bin/track-scout-decision.js`.
+
+---
+
+### `pm_router_escalated_via_slash` event
+
+Emitted by `bin/_lib/emit-slash-escalation.js` after the slash command (`/orchestray:run`)
+dispatches the escalate path directly to the PM (v2.2.4 topology fix). Under the old
+topology, pm-router spawned the PM and `pm_router_decision` covered escalations.
+Under v2.2.4, pm-router is only spawned on the solo path; this event covers escalations
+that bypass pm-router entirely.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "pm_router_escalated_via_slash",
+  "timestamp": "2026-04-27T10:00:00.000Z",
+  "orchestration_id": "pre_orch",
+  "reason": "keyword_denylist_hit",
+  "lite_score": 3,
+  "task_summary": "investigate why pm.md section 9 ...",
+  "routing_path": "router_escalated_via_slash_dispatch",
+  "session_id": null
+}
+```
+
+Fields:
+- `reason`: enum from `decideRoute()` — same set as `pm_router_decision.reason`.
+- `lite_score`: predicate score at time of escalate decision.
+- `routing_path`: always `"router_escalated_via_slash_dispatch"` (new value,
+  distinguishable from old `"router_escalated"` which was pm-router-spawned).
+- `task_summary`: first 80 chars of the task text.
+
+Source: `bin/_lib/emit-slash-escalation.js`. Schema stability: additive-only.
+
+---
+
+### `solo_violation_detected` event
+
+Emitted by `bin/validate-no-solo-violation.js` (SubagentStop hook) when a top-level PM
+session completes with complexity_score >= threshold but spawned zero subagents. This is
+an observational event only — the hook always exits 0 and never blocks. It serves as an
+audit signal for post-hoc analysis of gate-bypass incidents.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "solo_violation_detected",
+  "timestamp": "2026-04-27T10:00:00.000Z",
+  "orchestration_id": "orch-abc123",
+  "complexity_score": 7,
+  "complexity_threshold": 4,
+  "agents_spawned": 0,
+  "severity": "error",
+  "summary": "PM ran solo despite complexity score 7/12 (threshold 4). No subagents spawned.",
+  "session_id": null
+}
+```
+
+Fields:
+- `complexity_score`: the score from `current-orchestration.json`.
+- `complexity_threshold`: effective threshold at detection time (default 4).
+- `agents_spawned`: count of routing.jsonl rows where `decided_by="pm"` and
+  `orchestration_id` matches.
+- `severity`: always `"error"` — a gate-bypass is always an error-severity signal.
+- `session_id`: `CLAUDE_AGENT_SESSION_ID` if available, else null.
+
+Source: `bin/validate-no-solo-violation.js`. Schema stability: additive-only.

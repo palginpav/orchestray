@@ -158,7 +158,11 @@ describe('agents/pm.md Block A hash stability', () => {
     //   /orchestray:run may now reach the PM via pm-router escalation
     //   (default-on, Haiku entry-point gateway).
     // See .orchestray/kb/artifacts/v223-p4-strip-and-a3-impl.md.
-    const PINNED_BLOCK_A_HASH = '2000cd1cec2755e9';
+    // v2.2.4: Core Principle rewritten; §1 Medium band hardened; §9 Anti-Pattern #11
+    // added; §9.5 Memory Citation Discipline section added.
+    // v2.2.4 R2: §9 AP #11 epistemic-uncertainty bullet added (F1 fix).
+    // v2.2.4 R3: §9 AP #11 four rationalization patterns added (NEW-5).
+    const PINNED_BLOCK_A_HASH = '54da62fa33bf121d';
 
     assert.equal(
       actualHash,

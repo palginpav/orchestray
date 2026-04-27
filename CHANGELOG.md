@@ -3,6 +3,55 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.2.4] - 2026-04-27
+
+Fixes two compounding escalation regressions in v2.2.3's pm-router that caused escalated tasks to run as single-agent Opus solos, bypassing the cost-saving orchestration entirely. Tightens PM decision protocol to forbid solo-execution rationalizations once the complexity gate has triggered. Adds three new hook validators to detect and flag violations, plus decision-logging for audit.
+
+### Fixed
+
+- **Escalated tasks now decompose into multi-agent orchestrations.** v2.2.3 introduced pm-router as a Haiku entry-point gateway with a solo path and an escalate path. The escalate path routed to the orchestrator PM, but created it as a depth-2 subagent. Claude Code's documented architecture forbids subagents from spawning further subagents — so the depth-2 PM had no `Agent()` tool and was structurally forced to solo-execute every escalated task. From the user's perspective: `/orchestray:run` on complex tasks was paying single-Opus xhigh cost for all escalations since v2.2.3 shipped, with zero delegated subagents. v2.2.4 fixes topology: the slash command now routes directly (depth-0 decision context), then either spawns pm-router (solo path, depth 1) or PM (escalate path, depth 1). Both spawned agents have full toolkits. Escalated tasks now decompose and delegate as designed, recovering the cost savings from splitting work across specialized roles.
+
+- **Router occasionally solo'd tasks that should have escalated.** Multi-file prompt-file edits (e.g., "update agents/pm.md and agents/pm-reference/*.md") were sometimes routed solo at Haiku tier, producing wrong-tier work on critical PM and reference files. v2.2.4 adds hard path-floor rules: any task touching `agents/`, `agents/pm-reference/`, `bin/`, `hooks/`, `skills/`, `.claude/`, or `CLAUDE.md` is mandatory-escalate, bypassing solo eligibility. Also expanded keyword matching from single words to phrase-level detection (e.g., "prompt for the PM", "orchestration prompt", "agent definitions") and tightened false-positive safety on debug tasks.
+
+- **PM can no longer rationalize solo execution after the gate.** v2.2.3 permitted the PM to solo-execute medium and large tasks via judgment-call reasoning (cost arithmetic, sequential dependencies, stale-view risk, atomic-rollback convenience, scope-reinterpretation). v2.2.4 makes decomposition mandatory once the complexity score hits the gate threshold. These rationalizations are now explicit anti-patterns (#11 in §9): "Cost arithmetic", "Sequential dependencies", "Stale-view risk", "Atomic-rollback convenience", "Tightly coupled", and all other solo-escape justifications are forbidden when score >= threshold. Permitted overrides: exact phrase "just do it yourself" / "handle this solo" / "no need for agents" in the user prompt, or `force_solo: true` in config. All other reasoning is a violation and will be detected.
+
+- **Three new validators detect and surface solo violations.** New `bin/gate-router-solo-edit.js` PreToolUse hook blocks pm-router from editing protected paths at runtime (defense-in-depth against routing miscalls). New `bin/validate-no-solo-violation.js` Stop hook flags zero-spawn orchestrations on complex tasks (e.g., "score >= 4 but zero Agent() calls") and emits `solo_violation_detected` events for analytics. Decision-disagreement logging: pm-router records when its own routing decision diverges from the predicate's parallel computation, enabling post-hoc analysis.
+
+- **Memory-citation discipline enforced.** PM can no longer cite user-memory files (`feedback_*.md`, `project_*.md`) as justification for routing decisions unless the file has been verified to exist in the current turn. This closes a hallucination vector where confident-sounding (but false) memory citations led to wrong decisions.
+
+### Added
+
+- **New audit events:** `solo_violation_detected` (top-level PM spawned on high-complexity task but produced zero subagent spawns), `pm_router_escalated_via_slash` (decision routed to escalate path), `decision_disagreement` (pm-router decision diverges from predicate).
+- **Test coverage:** 100+ new unit/integration tests covering routing predicate, gate hook, audit tripwire, topology dispatcher, and path-floor validation.
+
+### Changed
+
+- **PM core principle reworded:** "Orchestrate when complexity gate triggers" replaces the ambiguous "orchestrate when it adds value." Binary gate semantics: below threshold solo, above threshold decompose. No cost-arithmetic escape hatch.
+- **Medium-task band tightened:** Tasks scoring >= 4 via `/orchestray:run` now mandatory-decompose. No discretionary solo override except explicit user phrase or `force_solo: true`.
+- **PM Anti-Pattern #11 added:** Explicit catalogue of forbidden solo-escape rationalizations (cost arithmetic, sequential dependencies, stale-view risk, atomic-rollback convenience, tightly coupled, epistemic-uncertainty, scope-reinterpretation, score-overriding, phased-solo-deferral, and self-identification as the orchestration).
+- **pm-router decision protocol tightened:** Hard path-floor for `agents/`, `agents/pm-reference/`, `bin/`, `hooks/`, `skills/`, `.claude/`, `CLAUDE.md`. Expanded keyword list with phrase-level matching. False-positive-safe debug-phrase forms.
+
+### Migration notes
+
+- **Restart Claude Code after upgrading.** Agent file (pm.md) changes substantially; the pm-router routing predicate expands.
+- **Topology change: pm-router is no longer spawned on escalate path.** `/orchestray:run` decision now happens in the slash-command context (depth 0), not via pm-router spawn. Existing `pm_router.enabled: false` continues to work — direct PM invocation with no routing gate.
+- **No new env vars.** Existing `pm_router.enabled: false` in config and `ORCHESTRAY_DISABLE_PM_ROUTER=1` continue to bypass the router gate; v2.2.4's topology fix is in effect on both default-on and bypass paths.
+- **Audit events:** `solo_violation_detected` events will appear on your next orchestration if any task hits the gate but produces zero spawns. These are informational in v2.2.4 (logged, not blocking); block mode planned for v2.2.5 if violation rate is elevated.
+
+### Under the hood — hardening / observability
+
+- New hook scripts: `bin/gate-router-solo-edit.js` (PreToolUse), `bin/validate-no-solo-violation.js` (Stop).
+- New helper: `bin/_lib/emit-slash-escalation.js` for pm_router_escalated_via_slash event emission.
+- PM Agent Section 9 Anti-Pattern #11 + Section 9.5 Memory Citation Discipline.
+- Phase-decomp Anti-Patterns updated to mirror PM #11 ban.
+- New predicate rules in `bin/_lib/pm-router-rule.js`: PATH_FLOOR_PREFIXES, phrase-level keyword matching, false-positive-safe debug-phrase detection.
+
+### Tests
+
+- **4794 tests / 4793 pass / 1 intentional skip (pre-existing) / 0 fail.** Test runtime ~17 s. ~130 new subtests across 7 new test files covering the routing predicate, gate hook, audit tripwire, decision-disagreement emit, and topology dispatcher.
+
+---
+
 ## [2.2.3] - 2026-04-27
 
 v2.2.3 is the **"v2.2.0 was the design; v2.2.3 is the runtime"** release. v2.2.0 shipped six token-saving features default-on, but production telemetry collected after v2.2.2 showed only one of them was actually firing. This release heals six production-correctness regressions, instruments the rest of the v2.2.0 telemetry path so savings claims become measurable for the first time, expands four leverage features that had been gated on measurement windows, lands the new `pm-router` Haiku entry-point gateway for `/orchestray:run`, and strips the `orchestray-housekeeper` agent that was structurally non-functional. Every shipping item defaults on. Restart Claude Code after upgrading; agent definitions changed.

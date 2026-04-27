@@ -19,7 +19,14 @@ const path = require('path');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { writeEvent } = require('./_lib/audit-event-writer');
+const { decideRoute } = require('./_lib/pm-router-rule');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
+
+function loadConfig(cwd) {
+  const cfgPath = path.join(cwd, '.orchestray', 'config.json');
+  try { return JSON.parse(fs.readFileSync(cfgPath, 'utf8')); }
+  catch (_e) { return {}; }
+}
 
 function resolveOrchestrationId(cwd) {
   try {
@@ -86,8 +93,23 @@ process.stdin.on('end', () => {
 
     const orchId = resolveOrchestrationId(cwd) || 'pre_orch';
 
+    // Compute decision_disagreement: rerun predicate on original prompt and
+    // compare against agent's actual decision. The agent stop event carries
+    // the prompt in tool_input.prompt (same field inject-pm-router-decision.js reads).
+    let decisionDisagreement = null;
+    try {
+      const taskText = (event.tool_input && typeof event.tool_input.prompt === 'string')
+        ? event.tool_input.prompt : '';
+      if (taskText && decisionTaken !== null) {
+        const cfg = loadConfig(cwd);
+        const predicateResult = decideRoute({ task_text: taskText, config: cfg, env: process.env });
+        decisionDisagreement = predicateResult.decision !== decisionTaken;
+      }
+    } catch (_predErr) { /* fail-open — disagreement stays null */ }
+
     try {
       writeEvent({
+        version: 1,
         timestamp: new Date().toISOString(),
         type: 'pm_router_complete',
         hook: 'capture-pm-router-stop',
@@ -98,6 +120,7 @@ process.stdin.on('end', () => {
         routing_path: routingPath,
         escalation_target_orch_id: delegationTarget,
         files_changed_count: filesChanged.length,
+        decision_disagreement: decisionDisagreement,
         session_id: event.session_id || null,
       }, { cwd });
     } catch (_writeErr) { /* fail-open */ }
@@ -105,6 +128,7 @@ process.stdin.on('end', () => {
     if (decisionTaken === 'solo') {
       try {
         writeEvent({
+          version: 1,
           timestamp: new Date().toISOString(),
           type: 'pm_router_solo_complete',
           hook: 'capture-pm-router-stop',

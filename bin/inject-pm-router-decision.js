@@ -81,6 +81,7 @@ process.stdin.on('end', () => {
       '-' + Math.random().toString(36).slice(2, 8);
 
     const record = {
+      version: 1,
       timestamp: new Date().toISOString(),
       type: 'pm_router_decision',
       hook: 'inject-pm-router-decision',

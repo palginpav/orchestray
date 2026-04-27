@@ -7,86 +7,135 @@ argument-hint: "[--preview] [task description]"
 
 # Orchestrate Task
 
-You are receiving this because the user invoked `/orchestray:run`. v2.2.3 P4 A3 introduced the **`pm-router`** Haiku entry-point gateway: trivial single-file tasks finish at Haiku rates, complex tasks escalate to the Opus PM unchanged.
+You received this because the user invoked `/orchestray:run`. v2.2.4 fixes the
+escalate-path topology: the slash command (depth 0) now dispatches directly.
+pm-router handles solo-only path. PM is always spawned at depth 1 with full
+Agent toolkit.
 
-<!-- W8 v2.0.18: --preview flag handling (UX2)
-  If $ARGUMENTS contains the token "--preview" (anywhere in the string):
-    1. Strip "--preview" from $ARGUMENTS to obtain the clean task description.
-    2. The effective invocation prompt is the task description below PLUS the
-       PREVIEW MODE instruction appended at the end of this file.
-  If "--preview" is NOT present: proceed normally with the standard protocol.
--->
+<!-- Strip "--preview" from the raw arguments to get the actual task description. -->
 
 ## Task
 
-<!-- Strip "--preview" from the raw arguments to get the actual task description. -->
 $ARGUMENTS
 
-## Routing Instructions
+## Routing Protocol
 
-1. **Read configuration**: Read `.orchestray/config.json` if it exists. Check `pm_router.enabled` (default `true`) and the env var `ORCHESTRAY_DISABLE_PM_ROUTER`.
+### Step 1 — Read config
 
-2. **Default-on path — invoke `pm-router`**: when `pm_router.enabled` is `true` (or absent) AND `ORCHESTRAY_DISABLE_PM_ROUTER` is unset, spawn:
+Read `.orchestray/config.json` if it exists. Extract:
+- `pm_router.enabled` (default `true`)
+- env var `ORCHESTRAY_DISABLE_PM_ROUTER`
 
-   ```
-   Agent(
-     subagent_type="pm-router",
-     model="haiku",
-     effort="low",
-     description="Route /orchestray:run task (haiku/low)",
-     prompt=$ARGUMENTS
-   )
-   ```
+### Step 2 — Bypass check
 
-   The router decides one of three terminal states:
-   - **`solo`** — handles the task itself at Haiku rates and returns its Structured Result.
-   - **`escalate`** — spawns `Agent(subagent_type="pm", model="opus", ...)` with the user task verbatim and forwards the orchestrator's output back.
-   - **`decline`** — refuses with a one-line redirect (e.g., control-flow keywords like `stop`, `abort`).
+If `pm_router.enabled === false` OR env `ORCHESTRAY_DISABLE_PM_ROUTER=1`:
+skip to **Direct Escalation** below.
 
-   Return the router's output verbatim to the user.
+### Step 3 — Compute routing decision via predicate helper
 
-3. **Bypass path — invoke `pm` directly**: when `pm_router.enabled === false` OR `ORCHESTRAY_DISABLE_PM_ROUTER=1`, the router gate (`bin/gate-agent-spawn.js`) blocks any router spawn. In that case, spawn the orchestrator PM directly:
+Run:
 
-   ```
-   Agent(
-     subagent_type="pm",
-     model="opus",
-     effort="high",
-     description="Orchestrate /orchestray:run task (opus/high)",
-     prompt=$ARGUMENTS
-   )
-   ```
+```bash
+echo "$ARGUMENTS" | node "${CLAUDE_PLUGIN_ROOT}/bin/_lib/pm-router-cli.js"
+```
 
-4. **Other slash commands stay unchanged.** `/orchestray:resume`, `/orchestray:redo`, `/orchestray:issue`, `/orchestray:review-pr`, `/orchestray:feature`, `/orchestray:learn`, `/orchestray:learn-doc` continue to invoke `pm` directly. Only `/orchestray:run` goes through the router.
+This prints one JSON line: `{"decision":"solo"|"escalate"|"decline", "reason":"...", "lite_score":N}`.
+
+If the Bash call fails (non-zero exit, no output, or malformed JSON): treat as
+`{"decision":"escalate","reason":"parse_error_fail_safe","lite_score":0}`.
+
+Note: `--preview` in `$ARGUMENTS` always forces `decision: "escalate"` (handled
+inside `decideRoute()`).
+
+After parsing the JSON output, set these variables for use in Step 4:
+- `ROUTE_DECISION` = the `decision` field from JSON
+- `ROUTE_REASON` = the `reason` field from JSON
+- `LITE_SCORE` = the `lite_score` field from JSON
+
+When substituting these into Bash commands below, inline the resolved values
+directly — do not pass unresolved shell variable names (the model emits the Bash
+call as a string; substitute the actual values inline).
+
+### Step 4 — Branch on decision
+
+**`decline`:**
+Print: `Router: declined — <reason>. No action taken.`
+Stop. No agent spawn.
+
+**`solo`:**
+Spawn pm-router for solo execution:
+
+```
+Agent(
+  subagent_type="pm-router",
+  model="haiku",
+  effort="low",
+  description="Route /orchestray:run task solo (haiku/low)",
+  prompt=$ARGUMENTS
+)
+```
+
+Return pm-router's output verbatim. The router's solo path handles the task and
+emits `pm_router_solo_complete` via SubagentStop hook.
+
+**`escalate`** (or bypass path):
+Spawn PM directly at depth 1:
+
+```
+Agent(
+  subagent_type="pm",
+  model="opus",
+  effort="high",
+  description="Orchestrate /orchestray:run task (opus/high)",
+  prompt=$ARGUMENTS
+)
+```
+
+After the PM agent completes, emit audit event by running:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/bin/_lib/emit-slash-escalation.js" \
+  --reason "$ROUTE_REASON" \
+  --lite-score "$LITE_SCORE" \
+  --task "$ARGUMENTS"
+```
+
+(See §Audit Events below for `emit-slash-escalation.js` design.)
+
+Return PM's output verbatim.
+
+### Direct Escalation (bypass path)
+
+When router is disabled (Step 2 short-circuits), spawn PM directly — same call
+as `escalate` above. No predicate run, no pm-router spawn.
+
+Because Step 3 was skipped, set these values before emitting the audit event:
+- `ROUTE_REASON` = `"router_disabled"`
+- `LITE_SCORE` = `0`
+
+Then emit the audit event after PM completes, using those hardcoded values
+substituted inline into the Bash invocation:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/bin/_lib/emit-slash-escalation.js" \
+  --reason "router_disabled" \
+  --lite-score 0 \
+  --task "$ARGUMENTS"
+```
+
+### Other slash commands unchanged
+
+`/orchestray:resume`, `/orchestray:redo`, `/orchestray:issue`, `/orchestray:review-pr`,
+`/orchestray:feature`, `/orchestray:learn`, `/orchestray:learn-doc` continue
+to invoke `pm` directly. Only `/orchestray:run` uses this dispatch logic.
 
 ## Output
 
-Return the spawned agent's output verbatim. The router emits its own audit events (`pm_router_decision`, `pm_router_complete`, `pm_router_solo_complete`); the orchestrator PM continues to emit `orchestration_start` / `orchestration_complete` on the escalation path.
+Return spawned agent output verbatim.
 
 ---
 
-<!-- W8 v2.0.18: PREVIEW MODE instruction block (UX2)
-
-If the string "--preview" appeared anywhere in $ARGUMENTS, append the following
-instruction to your invocation prompt. The router detects --preview and ALWAYS
-escalates (preview rendering remains in pm.md), so this block is forwarded
-verbatim through the router to the orchestrator.
-
-PREVIEW MODE — perform decomposition and complexity scoring only. Do the following:
-1. Score the task complexity (Section 12).
-2. Decompose the task into W-items (Section 13): identify agents, sizes, dependencies,
-   and parallel groups.
-3. Print the W-item table in this format:
-   | W | Title | Agent | Model/Effort | Size | Est. Cost | Depends on |
-   | -- | ----- | ----- | ------------ | ---- | --------- | ---------- |
-   (Cost estimates are approximate; actual usage will vary.)
-   Use the cost formula from §6.T of tier1-orchestration.md:
-     base_cost(XS)=$0.25, S=$0.45, M=$0.70, L=$1.20, XL=$2.50
-     multiplier: haiku/low=0.35, sonnet/medium=1.0, opus/high=2.2
-   Per-item estimate = base_cost × multiplier.
-4. Do NOT write any state files. Do NOT write orchestration.md, task-graph.md,
-   tasks/, or any audit file.
-5. Do NOT spawn any subagents.
-6. Stop after displaying the preview table and print:
-   "Preview only. Re-issue `/orchestray:run <task>` (without --preview) to execute."
--->
+<!-- PREVIEW MODE — if "--preview" appeared in $ARGUMENTS, the predicate forces
+escalate, so the PM handles preview rendering per pm.md §PREVIEW section.
+No special handling here beyond stripping "--preview" from the prompt before
+passing to the PM — the predicate does this stripping. -->
