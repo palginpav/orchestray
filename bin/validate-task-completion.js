@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * validate-task-completion.js — TaskCompleted hook.
+ * validate-task-completion.js -- TaskCompleted hook.
  *
  * v2.1.9 Bundle B1 / Intervention I-12 (pre-done checklist T15).
  *
@@ -68,7 +68,7 @@ const ARTIFACT_PATH_FIELDS = [
 // (and any future read-only-tier agent). Per
 // `~/.claude/projects/-home-palgin-orchestray/memory/feedback_explore_agent_readonly.md`:
 // tool drift on read-only roles must be observable. The forbidden-tool set
-// enforces the frontmatter `tools:` whitelist at runtime — three-layer
+// enforces the frontmatter `tools:` whitelist at runtime -- three-layer
 // defense: (a) frontmatter declarative, (b) THIS rejection, (c) the
 // `bin/__tests__/p22-scout-whitelist-frozen.test.js` byte-equality check.
 //
@@ -163,8 +163,8 @@ function validateArtifactPaths(structuredResult, projectRoot) {
 // R1 AC-05 (v2.1.11): Audit event schema validation
 // ---------------------------------------------------------------------------
 
-// Known event types extracted from agents/pm-reference/event-schemas.md §Summary Index.
-// This list is the allowlist — unknown event types are rejected (exit 2).
+// Known event types extracted from agents/pm-reference/event-schemas.md Sec.Summary Index.
+// This list is the allowlist -- unknown event types are rejected (exit 2).
 // Honor ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD=1 kill switch (skip validation if set).
 const KNOWN_EVENT_TYPES = new Set([
   'routing_outcome',
@@ -246,7 +246,7 @@ const KNOWN_EVENT_TYPES = new Set([
   'housekeeper_baseline_missing',
   // S-008 (v2.2.0 fix-pass): verify_fix_* trigger events for the P3.1
   // audit-round archive. Without these rows in the allowlist, the
-  // schema-emit validator rejected them as unknown — silently disabling
+  // schema-emit validator rejected them as unknown -- silently disabling
   // P3.1 in default installs.
   'verify_fix_start',
   'verify_fix_pass',
@@ -281,7 +281,7 @@ function validateAuditEventType(event) {
 }
 
 // ---------------------------------------------------------------------------
-// v2.1.9 I-12 agent tiers (§5 I-12 tier table).
+// v2.1.9 I-12 agent tiers (Sec.5 I-12 tier table).
 // ---------------------------------------------------------------------------
 
 const HARD_TIER = new Set([
@@ -302,8 +302,8 @@ const WARN_TIER = new Set([
   'platform-oracle',
 ]);
 
-// Per v2.1.9 design-spec §5 I-12 item (c): `assumptions` is required even when
-// empty — the section must appear in every Structured Result so downstream
+// Per v2.1.9 design-spec Sec.5 I-12 item (c): `assumptions` is required even when
+// empty -- the section must appear in every Structured Result so downstream
 // consumers can distinguish "no assumptions made" from "assumptions omitted".
 //
 // v2.2.2 Fix #7: sourced from bin/_lib/handoff-contract-text.js so the
@@ -411,7 +411,7 @@ function validateStructuredResult(result) {
  */
 function identifyAgentRole(event) {
   if (!event) return null;
-  // NOTE: teammate_name is deliberately excluded — in Agent-Teams mode it is
+  // NOTE: teammate_name is deliberately excluded -- in Agent-Teams mode it is
   // an operator-chosen label, not a subagent role, and conflating the two
   // causes the T15 gate to fire on well-formed team TaskCompleted events.
   const candidates = [
@@ -425,7 +425,7 @@ function identifyAgentRole(event) {
   for (const c of candidates) {
     if (typeof c === 'string' && c.length > 0) {
       // S-001 (v2.2.0 fix-pass): trim whitespace AND strip embedded NUL/zero-width
-      // bytes so a near-equivalent like 'haiku-scout ' or 'haiku-scout '
+      // bytes so a near-equivalent like 'haiku-scout ' or 'haiku-scout\x00'
       // does not silently bypass READ_ONLY_AGENTS strict-equality Set membership.
       // Defensive against future Claude Code payload-shape changes (CWE-178).
       // S-001 (v2.2.0 fix-pass round 2): NFKC-normalize first, then strip
@@ -520,7 +520,7 @@ function checkArtifactBodySizes(structuredResult, projectRoot, capConfig) {
   const results = [];
 
   for (const field of BODY_SIZE_FIELDS) {
-    // detail_artifact itself is the overflow pointer — don't measure it for size
+    // detail_artifact itself is the overflow pointer -- don't measure it for size
     // (it's small by definition). Only measure the primary artifact fields.
     if (field === 'detail_artifact') continue;
     if (!(field in structuredResult)) continue;
@@ -533,7 +533,7 @@ function checkArtifactBodySizes(structuredResult, projectRoot, capConfig) {
       if (typeof v !== 'string' || !v.trim()) continue;
       if (!looksLikePath(v.trim())) continue;
 
-      // Try to read the file — wrap in try/catch (non-fatal per contract).
+      // Try to read the file -- wrap in try/catch (non-fatal per contract).
       let content;
       try {
         const resolved = path.resolve(projectRoot, v.trim());
@@ -549,7 +549,7 @@ function checkArtifactBodySizes(structuredResult, projectRoot, capConfig) {
       if (bodyTokens <= capConfig.warn_tokens) {
         action = 'pass';
       } else if (bodyTokens <= capConfig.block_tokens) {
-        // 2,501 – 5,000: always warn
+        // 2,501 - 5,000: always warn
         action = 'warn';
       } else {
         // > 5,000
@@ -618,7 +618,7 @@ function main() {
     }
   });
   process.stdin.on('end', () => {
-    // Empty stdin: fail-open (historical behavior — some hook runners send
+    // Empty stdin: fail-open (historical behavior -- some hook runners send
     // no payload in smoke tests). Invalid JSON: same.
     if (input.length === 0) {
       process.stdout.write(JSON.stringify({ continue: true }));
@@ -634,7 +634,7 @@ function main() {
 
     // Accepted wiring: TaskCompleted (Agent Teams) and SubagentStop (normal
     // single-subagent orchestrations). Any other event name is a pass-through.
-    // v2.1.9 design-spec §5 I-12 requires the T15 gate on SubagentStop so
+    // v2.1.9 design-spec Sec.5 I-12 requires the T15 gate on SubagentStop so
     // normal orchestrations (not just Agent Teams) are covered.
     const hookEvent = event.hook_event_name || null;
     if (hookEvent && hookEvent !== 'TaskCompleted' && hookEvent !== 'SubagentStop') {
@@ -647,7 +647,7 @@ function main() {
     try { cwd = resolveSafeCwd(event.cwd); }
     catch (_) { cwd = process.cwd(); }
 
-    // ── Legacy Agent Teams gate (v2.0.x preserved).
+    // -- Legacy Agent Teams gate (v2.0.x preserved).
     //
     // Historical behavior: TaskCompleted events that look like Agent-Teams
     // events but lack `task_id` or `task_subject` are rejected with exit 2
@@ -671,7 +671,7 @@ function main() {
     // Default to the legacy team-event gate whenever we lack clear T15
     // signals. This preserves "TaskCompleted requires task_id + task_subject"
     // contract for any payload shape callers have relied on since v2.0.x.
-    // SubagentStop events are NEVER Agent-Teams events — skip the teams gate
+    // SubagentStop events are NEVER Agent-Teams events -- skip the teams gate
     // entirely and go straight to T15 classification.
     const looksLikeTeamEvent = !isSubagentStop && (hasTeamKeys || !hasT15Signals);
 
@@ -694,12 +694,12 @@ function main() {
       process.exit(2);
     }
 
-    // ── v2.1.9 T15 pre-done checklist (I-12).
+    // -- v2.1.9 T15 pre-done checklist (I-12).
     const agentRole = identifyAgentRole(event);
     const structuredResult = extractStructuredResult(event);
 
-    // ── P2.2 (v2.2.0): read-only contract enforcement for haiku-scout.
-    // ── P3.3 (v2.2.0): same enforcement extended to orchestray-housekeeper
+    // -- P2.2 (v2.2.0): read-only contract enforcement for haiku-scout.
+    // -- P3.3 (v2.2.0): same enforcement extended to orchestray-housekeeper
     //    with a STRICTER forbidden set (also rejects Grep). Per-agent map at
     //    READ_ONLY_AGENT_FORBIDDEN_TOOLS.
     // Runs BEFORE the structured-result section check so any forbidden tool
@@ -775,7 +775,7 @@ function main() {
 
         if (isHard) {
           // I-12 rollback path: PRE_DONE_ENFORCEMENT=warn downgrades hard-tier
-          // block to warn-only exit(0). Design-spec §5 I-12 rollback plan.
+          // block to warn-only exit(0). Design-spec Sec.5 I-12 rollback plan.
           if (process.env.PRE_DONE_ENFORCEMENT === 'warn') {
             emitAuditEvent(cwd, {
               timestamp: new Date().toISOString(),
@@ -790,7 +790,7 @@ function main() {
             process.stderr.write(
               '[orchestray] validate-task-completion: WARN (PRE_DONE_ENFORCEMENT=warn): ' +
               agentRole + ' missing ' + check.missing.join(', ') +
-              ' — would block in enforcement mode.\n'
+              ' -- would block in enforcement mode.\n'
             );
             process.stdout.write(JSON.stringify({ continue: true }));
             process.exit(0);
@@ -804,7 +804,7 @@ function main() {
           process.exit(2);
         } else {
           process.stderr.write(
-            '[orchestray] validate-task-completion: WARN — ' + agentRole +
+            '[orchestray] validate-task-completion: WARN -- ' + agentRole +
             ' Structured Result missing: ' + check.missing.join(', ') + ' (warn-tier, not blocking).\n'
           );
         }
@@ -862,7 +862,7 @@ function main() {
               check.body_tokens + ' tokens (limit: ' + capConfig.block_tokens + ').\n' +
               'Remediation: split overflow content into a separate file and cite it via\n' +
               '  "detail_artifact": "<path>" in the Structured Result.\n' +
-              'See agents/pm-reference/handoff-contract.md §10 for details.\n'
+              'See agents/pm-reference/handoff-contract.md Sec.10 for details.\n'
             );
             process.stdout.write(JSON.stringify({ continue: false, reason: 'handoff_body_cap_exceeded:' + check.file }));
             process.exit(2);
@@ -886,13 +886,13 @@ function main() {
             '[orchestray] T15 R-HCAP warn: artifact "' + check.file + '" has ' +
             check.body_tokens + ' tokens (warn_threshold: ' + capConfig.warn_tokens + ').' +
             (thresholdBreached === 'block_would_have_fired'
-              ? ' hard_block is false — would have blocked in v2.1.15. Consider adding detail_artifact.'
+              ? ' hard_block is false -- would have blocked in v2.1.15. Consider adding detail_artifact.'
               : '') +
             '\n'
           );
         }
       } catch (_hcapErr) {
-        // Body-cap check must never block on unexpected error — fail-open.
+        // Body-cap check must never block on unexpected error -- fail-open.
       }
     }
 
@@ -910,7 +910,7 @@ function main() {
       }
     }
 
-    // ── Write the standard team-mode TaskCompleted audit row (preserved).
+    // -- Write the standard team-mode TaskCompleted audit row (preserved).
     if (event.task_id || event.task_subject || event.teammate_name) {
       emitAuditEvent(cwd, {
         timestamp: new Date().toISOString(),

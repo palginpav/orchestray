@@ -955,6 +955,51 @@ ignore unknown types per R-EVENT-NAMING. Schema stability: additive-only.
 
 ---
 
+### `spawn_counter_write_failed` event
+
+Emitted by `bin/inject-delegation-delta.js` (`nextSpawnN`) when the
+spawn-counter sidecar (`.orchestray/state/spawn-prefix-cache/<orch>-<agent>.count`)
+cannot be written. The function preserves fail-open semantics by
+returning the fallback `spawn_n: 1` so spawns are never blocked, but
+the failure is now observable instead of silent. v2.2.3 P0-6 -- closes
+the W2 Bucket F #4 telemetry gap.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "spawn_counter_write_failed",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id> | null",
+  "agent_type": "<developer | reviewer | ...> | null",
+  "counter_path": "<absolute path of the .count sidecar>",
+  "attempted_spawn_n": 3,
+  "fallback_spawn_n": 1,
+  "error_message": "EACCES: permission denied, open '...'",
+  "error_class": "Error"
+}
+```
+
+Field notes:
+
+- `counter_path`: absolute path of the sidecar that failed to write.
+  Useful for diagnosing permission or filesystem issues.
+- `attempted_spawn_n`: the value the function tried to persist (i.e.,
+  the genuine next sequence number). May diverge from
+  `fallback_spawn_n` returned to the caller.
+- `fallback_spawn_n`: always `1` in v2.2.3. Surfaces what value the
+  caller received in lieu of `attempted_spawn_n`.
+- `error_message`: stringified error message from the underlying
+  `fs.writeFileSync` failure.
+- `error_class`: constructor name of the thrown exception (e.g.,
+  `'Error'`, `'TypeError'`).
+
+Backward compatibility: new event type in v2.2.3; older consumers
+ignore unknown types per R-EVENT-NAMING. Schema stability: additive-only.
+
+---
+
 ### `scout_spawn` event
 
 Audit row emitted at the moment the PM's Section 23 decision rule returns

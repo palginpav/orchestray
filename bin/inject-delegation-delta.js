@@ -149,11 +149,31 @@ function detectPostCompactResume(cwd, orchestration_id, agent_type) {
 // resolve to 1 (matches `first_spawn` semantics).
 // ---------------------------------------------------------------------------
 
+function emitSpawnCounterWriteFailed(cwd, orchestration_id, agent_type, counterPath, attempted, err) {
+  // v2.2.3 P0-6: surface .count sidecar write failures instead of swallowing.
+  // Fail-open is preserved (caller still receives spawn_n=1); this event makes
+  // the failure visible in telemetry. writeEvent itself is fail-soft.
+  try {
+    writeEvent({
+      version: 1,
+      type: 'spawn_counter_write_failed',
+      orchestration_id: orchestration_id || null,
+      agent_type: agent_type || null,
+      counter_path: counterPath || null,
+      attempted_spawn_n: typeof attempted === 'number' ? attempted : null,
+      fallback_spawn_n: 1,
+      error_message: (err && err.message) ? String(err.message) : 'unknown',
+      error_class: (err && err.constructor && err.constructor.name) || 'Error',
+    }, { cwd });
+  } catch (_e) { /* swallow -- advisory event never crashes the hook */ }
+}
+
 function nextSpawnN(cwd, orchestration_id, agent_type) {
+  let counterPath = null;
   try {
     const dir = path.join(cwd, PREFIX_CACHE_DIR_REL);
     fs.mkdirSync(dir, { recursive: true });
-    const counterPath = path.join(dir, `${orchestration_id}-${agent_type}.count`);
+    counterPath = path.join(dir, `${orchestration_id}-${agent_type}.count`);
     let n = 0;
     try {
       const raw = fs.readFileSync(counterPath, 'utf8').trim();
@@ -161,9 +181,20 @@ function nextSpawnN(cwd, orchestration_id, agent_type) {
       if (Number.isFinite(parsed) && parsed > 0) n = parsed;
     } catch (_e) { /* missing file = 0 */ }
     n += 1;
-    try { fs.writeFileSync(counterPath, String(n), 'utf8'); } catch (_e) { /* swallow */ }
+    try {
+      fs.writeFileSync(counterPath, String(n), 'utf8');
+    } catch (writeErr) {
+      // Inner write-fail: directory existed and counter read OK, but persisting
+      // the incremented value failed. Caller still gets the live `n` value for
+      // THIS spawn; subsequent spawns will replay the same `n` because the
+      // sidecar was not advanced. Emit so operators notice.
+      emitSpawnCounterWriteFailed(cwd, orchestration_id, agent_type, counterPath, n, writeErr);
+    }
     return n;
-  } catch (_e) {
+  } catch (outerErr) {
+    // Outer catch: typically mkdirSync EACCES / EROFS. We never persisted, so
+    // the counter remains stuck and every spawn returns the fallback 1.
+    emitSpawnCounterWriteFailed(cwd, orchestration_id, agent_type, counterPath, 1, outerErr);
     return 1;
   }
 }
