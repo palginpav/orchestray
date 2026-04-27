@@ -29,16 +29,37 @@
  * Exit: always 0.
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs     = require('fs');
+const os     = require('os');                                    // NEW
+const path   = require('path');
 const crypto = require('crypto');
 
-const { writeEvent } = require('./_lib/audit-event-writer');
-const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
+const { writeEvent }      = require('./_lib/audit-event-writer');
+const { resolveSafeCwd }  = require('./_lib/resolve-project-cwd');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 
-const AGENT_FILE_REL = path.join('agents', 'orchestray-housekeeper.md');
-const SENTINEL_REL = path.join('.orchestray', 'state', 'housekeeper-quarantined');
+const AGENT_FILE_NAME = 'orchestray-housekeeper.md';             // NEW
+// Legacy/dev cwd-relative path retained for plugin-source repo layouts and
+// the test sandbox (`<cwd>/agents/orchestray-housekeeper.md`).
+const AGENT_FILE_REL  = path.join('agents', AGENT_FILE_NAME);
+const SENTINEL_REL    = path.join('.orchestray', 'state', 'housekeeper-quarantined');
+
+function resolveAgentFile(cwd) {
+  let home;
+  try { home = os.homedir(); } catch (_e) { home = null; }
+  const candidates = [
+    { tier: 'project', file: path.join(cwd,  '.claude', 'agents', AGENT_FILE_NAME) },
+    { tier: 'project', file: path.join(cwd,  AGENT_FILE_REL) },                       // legacy
+    home ? { tier: 'user',   file: path.join(home, '.claude', 'agents', AGENT_FILE_NAME) }            : null,
+    home ? { tier: 'plugin', file: path.join(home, '.claude', 'orchestray', 'agents', AGENT_FILE_NAME) } : null,
+  ].filter(Boolean);
+  for (const c of candidates) {
+    let exists = false;
+    try { exists = fs.existsSync(c.file); } catch (_e) { exists = false; }
+    if (exists) return { filePath: c.file, resolvedVia: c.tier };
+  }
+  return null;
+}
 
 function quarantineSentinel(cwd) {
   return path.join(cwd, SENTINEL_REL);
@@ -156,9 +177,9 @@ function runDriftCheck(cwd) {
     return;
   }
 
-  // Locate the agent file.
-  const agentPath = path.join(cwd, AGENT_FILE_REL);
-  if (!fs.existsSync(agentPath)) {
+  // Locate the agent file across project/user/plugin tiers.
+  const resolved = resolveAgentFile(cwd);
+  if (!resolved) {
     writeEvent({
       version: 1,
       type: 'housekeeper_drift_detected',
@@ -168,14 +189,18 @@ function runDriftCheck(cwd) {
       previous_tools: baseline.BASELINE_TOOLS_LINE,
       current_tools: null,
       reason: 'agent_file_missing',
+      resolved_via: null,
     }, { cwd });
     writeSentinel(cwd, 'agent_file_missing');
     process.stderr.write(
-      '[orchestray] audit-housekeeper-drift: agents/orchestray-housekeeper.md ' +
-      'missing — housekeeper spawns quarantined.\n'
+      '[orchestray] audit-housekeeper-drift: orchestray-housekeeper.md ' +
+      'not found in any of: <cwd>/.claude/agents, ~/.claude/agents, ' +
+      '~/.claude/orchestray/agents — housekeeper spawns quarantined.\n'
     );
     return;
   }
+  const agentPath   = resolved.filePath;
+  const resolvedVia = resolved.resolvedVia;
 
   // Compute current SHA + tools-line.
   let body;
@@ -208,10 +233,12 @@ function runDriftCheck(cwd) {
       previous_tools: baseline.BASELINE_TOOLS_LINE,
       current_tools: currentTools,
       reason,
+      resolved_via: resolvedVia,
     }, { cwd });
     writeSentinel(cwd, reason);
     process.stderr.write(
-      '[orchestray] audit-housekeeper-drift: drift detected (' + reason + ') — ' +
+      '[orchestray] audit-housekeeper-drift: drift detected (' + reason + ') ' +
+      'resolved_via=' + resolvedVia + ' — ' +
       'spawns quarantined until baseline updated. Resolve via a commit ' +
       'tagged [housekeeper-tools-extension] updating agents/orchestray-housekeeper.md ' +
       'AND bin/_lib/_housekeeper-baseline.js together.\n'
@@ -262,6 +289,7 @@ module.exports = {
   quarantineSentinel,
   extractToolsLine,
   loadConfigEnabled,
+  resolveAgentFile,
 };
 
 if (require.main === module) {

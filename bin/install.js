@@ -886,6 +886,25 @@ function install(targetDir) {
     }
   }
 
+  // 8a (v2.2.1 W2). One-shot self-heal sweep — clears stale
+  // `.block-a-zone-caching-disabled` and `housekeeper-quarantined` sentinels
+  // from v2.2.0's false-positive era. Idempotent (writes
+  // `.orchestray/state/.v221-self-heal-done`); fail-open at every step.
+  try {
+    const { runSelfHeal } = require('./v221-self-heal');
+    const r = runSelfHeal(process.cwd());
+    if (r && r.ran) {
+      const cleared = [];
+      if (r.cache_sentinel_cleared)         cleared.push('cache-disable sentinel');
+      if (r.housekeeper_quarantine_cleared) cleared.push('housekeeper quarantine');
+      if (cleared.length > 0) {
+        console.log(`  \x1b[32m✓\x1b[0m v2.2.1 self-heal: cleared ${cleared.join(', ')}`);
+      }
+    }
+  } catch (_e) {
+    // Fail-open: never fail the install on self-heal errors.
+  }
+
   // 8. Write manifest for clean uninstall.
   // Compute per-file SHA-256 hashes for all tracked files (manifest schema v2).
   // Excluded from hashing: manifest.json itself (cannot self-hash).

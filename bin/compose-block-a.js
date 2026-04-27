@@ -157,11 +157,46 @@ function loadBlockAConfig(cwd) {
 }
 
 // ---------------------------------------------------------------------------
-// Sentinel check
+// Sentinel check (v2.2.1 W2 — TTL + structured body)
+//
+// Mirrors `bin/validate-cache-invariant.js` parseSentinelBody / isSentinelActive.
+// Bare-string and TTL-expired sentinels are treated as INACTIVE so installed
+// users self-heal on the first UserPromptSubmit after v2.2.1 ships. The
+// stale file is best-effort unlinked here so subsequent reads don't repeat
+// the work.
 // ---------------------------------------------------------------------------
 
+function _parseSentinelBody(raw) {
+  if (raw == null) return null;
+  const trimmed = String(raw).trim();
+  if (!trimmed || trimmed[0] !== '{') return null; // bare-string → legacy
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    return parsed;
+  } catch (_e) {
+    return null;
+  }
+}
+
 function isSentinelActive(cwd) {
-  return fs.existsSync(path.join(cwd, STATE_DIR, SENTINEL_FILE));
+  const sentinelPath = path.join(cwd, STATE_DIR, SENTINEL_FILE);
+  if (!fs.existsSync(sentinelPath)) return false;
+  let raw = null;
+  try { raw = fs.readFileSync(sentinelPath, 'utf8'); } catch (_e) { return false; }
+  const parsed = _parseSentinelBody(raw);
+  if (!parsed) {
+    try { fs.unlinkSync(sentinelPath); } catch (_e) {}
+    return false;
+  }
+  if (parsed.quarantined === true) return true;
+  const expiresAt = parsed.expires_at ? new Date(parsed.expires_at).getTime() : 0;
+  if (!expiresAt || isNaN(expiresAt)) return false;
+  if (expiresAt <= Date.now()) {
+    try { fs.unlinkSync(sentinelPath); } catch (_e) {}
+    return false;
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -185,11 +220,15 @@ function emitAuditEvent(cwd, eventType, extra) {
  * Build Zone 1 content (frozen). Reads CLAUDE.md, handoff-contract.md,
  * and the schema shadow (if present and valid).
  *
+ * v2.2.1 W2: also returns per-file SHA-256s so saveZoneHashes can persist
+ * `zone1_file_hashes` for the validator's true delta-files computation.
+ *
  * @param {string} cwd
- * @returns {{ content: string, hash: string, bytes: number }}
+ * @returns {{ content: string, hash: string, bytes: number, fileHashes: Record<string,string> }}
  */
 function buildZone1(cwd) {
   const parts = [];
+  const fileHashes = {};
 
   // Core source files
   for (const relPath of ZONE1_SOURCES) {
@@ -197,6 +236,7 @@ function buildZone1(cwd) {
       const absPath = path.join(cwd, relPath);
       const text    = fs.readFileSync(absPath, 'utf8');
       parts.push('<!-- zone1:file:' + relPath + ' -->\n' + text);
+      fileHashes[relPath] = crypto.createHash('sha256').update(text).digest('hex');
     } catch (_e) {
       // File missing — skip gracefully
     }
@@ -221,6 +261,8 @@ function buildZone1(cwd) {
         '</event-schema-shadow>',
       ].join('\n');
       parts.push(shadowContent);
+      fileHashes['agents/pm-reference/event-schemas.shadow.json'] =
+        crypto.createHash('sha256').update(shadowContent).digest('hex');
     }
   } catch (_e) {
     // Schema shadow load failure — skip gracefully
@@ -228,7 +270,7 @@ function buildZone1(cwd) {
 
   const content = parts.join('\n\n');
   const hash    = crypto.createHash('sha256').update(content).digest('hex');
-  return { content, hash, bytes: Buffer.byteLength(content, 'utf8') };
+  return { content, hash, bytes: Buffer.byteLength(content, 'utf8'), fileHashes };
 }
 
 // ---------------------------------------------------------------------------
@@ -425,11 +467,18 @@ function buildZone3(cwd) {
 
 /**
  * Persist zone hashes to .orchestray/state/block-a-zones.json.
+ *
+ * v2.2.1 W2: optional `zone1FileHashes` arg (Record<path,sha256>) is
+ * persisted as the additive `zone1_file_hashes` field. The validator
+ * uses it to compute true `delta_files`. The legacy `zone1_hash` field
+ * stays so older readers (and the upstream invariant check) keep working.
+ *
  * @param {string} cwd
  * @param {string} zone1Hash
  * @param {string} zone2Hash
+ * @param {Record<string,string>=} zone1FileHashes
  */
-function saveZoneHashes(cwd, zone1Hash, zone2Hash) {
+function saveZoneHashes(cwd, zone1Hash, zone2Hash, zone1FileHashes) {
   try {
     const stateDir   = path.join(cwd, STATE_DIR);
     const zonesPath  = path.join(stateDir, ZONES_FILE);
@@ -439,7 +488,13 @@ function saveZoneHashes(cwd, zone1Hash, zone2Hash) {
       zone2_hash: zone2Hash,
       updated_at: new Date().toISOString(),
     };
-    fs.writeFileSync(zonesPath, JSON.stringify(data, null, 2) + '\n', 'utf8');
+    if (zone1FileHashes && typeof zone1FileHashes === 'object') {
+      data.zone1_file_hashes = zone1FileHashes;
+    }
+    const tmp = zonesPath + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', 'utf8');
+    try { fs.renameSync(tmp, zonesPath); }
+    catch (_e) { fs.writeFileSync(zonesPath, JSON.stringify(data, null, 2) + '\n', 'utf8'); }
   } catch (_e) {
     // Fail-open
   }
@@ -525,8 +580,9 @@ function handle(event) {
     const zone2 = buildZone2(cwd);
     const zone3 = buildZone3(cwd);
 
-    // Save hashes for the invariant validator
-    saveZoneHashes(cwd, zone1.hash, zone2.hash);
+    // Save hashes for the invariant validator (v2.2.1 W2: include per-file
+    // hashes so the validator computes true `delta_files`).
+    saveZoneHashes(cwd, zone1.hash, zone2.hash, zone1.fileHashes);
 
     // P2.1 (v2.2.0): build the 4-slot manifest after zones are computed.
     // Fail-soft: error → manifest.slots = [] and we skip persistence below.

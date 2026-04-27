@@ -2,15 +2,37 @@
 'use strict';
 
 /**
- * validate-cache-invariant.js — PreToolUse hook (R-PIN, v2.1.14).
+ * validate-cache-invariant.js — PreToolUse hook (R-PIN, v2.1.14 / v2.2.1 W2).
  *
  * On every tool call, recomputes Zone 1's hash from current source files and
  * compares against the stored hash in .orchestray/state/block-a-zones.json.
  *
- * If the hash differs:
- *   - Emits a cache_invariant_broken audit event with the delta.
- *   - Increments a 24h violation counter.
- *   - If violations >= threshold in 24h, writes auto-disable sentinel.
+ * v2.2.1 W2 — sentinel + validator self-healing redesign. Fixes the false-
+ * positive auto-disable cascade documented in
+ * `.orchestray/kb/artifacts/v221-w1-validate-cache-invariant-rca.md`:
+ *
+ *   1. Dedupe violations by (expected_hash, actual_hash) tuple within a
+ *      configurable window (default 60s) so one source-file edit produces
+ *      one counted violation, not N.
+ *   2. Auto-rebaseline on first mismatch when the delta is confined to the
+ *      Zone 1 user-editable allowlist (CLAUDE.md, handoff-contract.md,
+ *      phase-contract.md). Emits `cache_baseline_refreshed` instead of
+ *      `cache_invariant_broken`. The schema shadow is NOT in the allowlist —
+ *      drift there must be resolved via explicit `update-schema-shadow.js`.
+ *   3. Sentinel has TTL + structured JSON body + trip counter. Bare-string
+ *      legacy sentinels (the format v2.1.x and v2.2.0 wrote) are treated as
+ *      EXPIRED IMMEDIATELY so users self-heal on the first PreToolUse after
+ *      v2.2.1 ships, with no separate post-upgrade step.
+ *   4. trip_count >= quarantine_trip_threshold (default 3) latches the
+ *      sentinel past TTL and emits `cache_geometry_quarantined`.
+ *   5. delta_files now reports the changed-file subset (computed from
+ *      per-file SHA256s persisted in zone1_file_hashes), not the entire
+ *      hash input set.
+ *
+ * If the hash differs and auto-rebaseline does not apply:
+ *   - Emits a cache_invariant_broken audit event with the true delta.
+ *   - Increments a 24h violation counter (deduped per item 1 above).
+ *   - If non-deduped count >= threshold, writes the structured sentinel.
  *   - Exits 0 (advisory only — does NOT block the tool call).
  *
  * v2.2.0 (P2.1) extension — UserPromptSubmit-mounted manifest invariant.
@@ -24,14 +46,13 @@
  *   Default behaviour is ADVISORY (exit 0 + emit `cache_invariant_broken`
  *   with `zone: 'manifest'`). Strict mode is enabled when
  *   `caching.engineered_breakpoints.strict_invariant === true`; in that
- *   mode, a malformed manifest exits 2. v2.2.0 ships strict_invariant=false
- *   for safety (UserPromptSubmit exit-2 hard-blocks the user typing); v2.2.1
- *   may flip the default after telemetry confirms zero false positives.
+ *   mode, a malformed manifest exits 2.
  *
  * Kill switches (any one → no-op):
  *   - process.env.ORCHESTRAY_DISABLE_BLOCK_A_ZONES === '1'
  *   - config.block_a_zone_caching.enabled === false
- *   - sentinel: .orchestray/state/.block-a-zone-caching-disabled exists
+ *   - sentinel: .orchestray/state/.block-a-zone-caching-disabled is ACTIVE
+ *     (v2.2.1: TTL-aware, JSON-body, ignores legacy bare strings)
  *
  * Input:  JSON on stdin (Claude Code PreToolUse hook payload)
  * Output: exit 0 always (advisory PreToolUse path; manifest mode may exit 2 in strict)
@@ -44,8 +65,8 @@ const crypto = require('crypto');
 const { resolveSafeCwd }    = require('./_lib/resolve-project-cwd');
 const { MAX_INPUT_BYTES }   = require('./_lib/constants');
 const { loadShadowWithCheck } = require('./_lib/load-schema-shadow');
-// atomicAppendJsonl is retained for the non-events.jsonl violations file (line 127);
-// events.jsonl emissions now route through the central audit-event gateway.
+// atomicAppendJsonl is retained for the non-events.jsonl violations file;
+// events.jsonl emissions route through the central audit-event gateway.
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
 const { writeEvent }        = require('./_lib/audit-event-writer');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
@@ -56,6 +77,23 @@ const VIOLATIONS_FILE  = 'block-a-zone-violations.jsonl';
 const SENTINEL_FILE    = '.block-a-zone-caching-disabled';
 const MANIFEST_FILE    = 'cache-breakpoint-manifest.json';
 const VIOLATION_WINDOW = 24 * 60 * 60 * 1000; // 24 hours in ms
+
+// v2.2.1 W2 defaults — overridable via .orchestray/config.json under
+// caching.cache_invariant_validator.*. Default-on per project memory
+// `feedback_default_on_shipping`.
+const DEFAULT_DEDUPE_WINDOW_SECONDS     = 60;
+const DEFAULT_SENTINEL_TTL_HOURS        = 24;
+const DEFAULT_QUARANTINE_TRIP_THRESHOLD = 3;
+const DEFAULT_AUTO_REBASELINE_ENABLED   = true;
+
+// Files for which auto-rebaseline is allowed (Zone 1 user-editable sources).
+// The schema shadow is intentionally NOT in this list — drift there must
+// be resolved via explicit `update-schema-shadow.js`, not silently absorbed.
+const AUTO_REBASELINE_ALLOWLIST = new Set([
+  'CLAUDE.md',
+  'agents/pm-reference/handoff-contract.md',
+  'agents/pm-reference/phase-contract.md',
+]);
 
 // Zone 1 source files (must match compose-block-a.js ZONE1_SOURCES)
 const ZONE1_SOURCES = [
@@ -125,67 +163,272 @@ function runManifestInvariantFromStdin(raw) {
 // ---------------------------------------------------------------------------
 
 function loadBlockAConfig(cwd) {
-  const defaults = { enabled: true, invariant_violation_threshold_24h: 5 };
+  const defaults = {
+    enabled: true,
+    invariant_violation_threshold_24h: 5,
+    // v2.2.1 W2 self-healing knobs (canonical path: caching.cache_invariant_validator.*)
+    dedupe_window_seconds:     DEFAULT_DEDUPE_WINDOW_SECONDS,
+    sentinel_ttl_hours:        DEFAULT_SENTINEL_TTL_HOURS,
+    quarantine_trip_threshold: DEFAULT_QUARANTINE_TRIP_THRESHOLD,
+    auto_rebaseline_enabled:   DEFAULT_AUTO_REBASELINE_ENABLED,
+  };
   try {
     const configPath = path.join(cwd, '.orchestray', 'config.json');
     const raw    = fs.readFileSync(configPath, 'utf8');
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return defaults;
+    const out = Object.assign({}, defaults);
     const block = parsed.block_a_zone_caching;
-    if (!block || typeof block !== 'object' || Array.isArray(block)) return defaults;
-    return Object.assign({}, defaults, block);
+    if (block && typeof block === 'object' && !Array.isArray(block)) {
+      Object.assign(out, block);
+    }
+    if (parsed.caching && typeof parsed.caching === 'object') {
+      const civ = parsed.caching.cache_invariant_validator;
+      if (civ && typeof civ === 'object' && !Array.isArray(civ)) {
+        if (typeof civ.dedupe_window_seconds === 'number' && civ.dedupe_window_seconds >= 0) {
+          out.dedupe_window_seconds = civ.dedupe_window_seconds;
+        }
+        if (typeof civ.sentinel_ttl_hours === 'number' && civ.sentinel_ttl_hours > 0) {
+          out.sentinel_ttl_hours = civ.sentinel_ttl_hours;
+        }
+        if (typeof civ.quarantine_trip_threshold === 'number' && civ.quarantine_trip_threshold >= 1) {
+          out.quarantine_trip_threshold = civ.quarantine_trip_threshold;
+        }
+        if (typeof civ.auto_rebaseline_enabled === 'boolean') {
+          out.auto_rebaseline_enabled = civ.auto_rebaseline_enabled;
+        }
+      }
+    }
+    return out;
   } catch (_e) {
     return defaults;
   }
 }
 
 // ---------------------------------------------------------------------------
-// Sentinel
+// Sentinel (v2.2.1 W2 — TTL + structured body + trip counter)
+//
+// Wire format (JSON):
+//   {
+//     written_at:    "<ISO-8601>",
+//     expires_at:    "<ISO-8601>",
+//     reason:        "<short reason string>",
+//     recovery_hint: "<single-line operator hint>",
+//     trip_count:    <integer >= 1>,
+//     quarantined:   <boolean>           // true → keep past TTL
+//   }
+//
+// Bare-string sentinels (the legacy v2.1.x / v2.2.0 format that wrote
+// "auto-disabled by validate-cache-invariant.js at <ts>") are treated as
+// EXPIRED IMMEDIATELY. This is how installed users self-heal on first
+// prompt after v2.2.1 ships — no separate post-upgrade step required.
 // ---------------------------------------------------------------------------
 
-function isSentinelActive(cwd) {
-  return fs.existsSync(path.join(cwd, STATE_DIR, SENTINEL_FILE));
-}
-
-function writeSentinel(cwd) {
+function _readSentinelBody(cwd) {
   try {
-    const stateDir = path.join(cwd, STATE_DIR);
-    fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(stateDir, SENTINEL_FILE),
-      'auto-disabled by validate-cache-invariant.js at ' + new Date().toISOString() + '\n',
-      'utf8'
+    return fs.readFileSync(path.join(cwd, STATE_DIR, SENTINEL_FILE), 'utf8');
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
+ * Parse a sentinel body. Returns null for bare-string / unparseable bodies
+ * (caller treats null as expired/legacy).
+ */
+function parseSentinelBody(raw) {
+  if (raw == null) return null;
+  const trimmed = String(raw).trim();
+  if (!trimmed || trimmed[0] !== '{') return null; // bare-string → legacy
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    return parsed;
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
+ * Returns true ONLY when the sentinel currently disables zone caching:
+ *   - parsed JSON body
+ *   - quarantined === true OR expires_at > now
+ * Bare-string and TTL-expired sentinels are treated as INACTIVE.
+ */
+function isSentinelActive(cwd) {
+  const sentinelPath = path.join(cwd, STATE_DIR, SENTINEL_FILE);
+  if (!fs.existsSync(sentinelPath)) return false;
+  const parsed = parseSentinelBody(_readSentinelBody(cwd));
+  if (!parsed) return false; // legacy / unparseable → expired
+  if (parsed.quarantined === true) return true;
+  const expiresAt = parsed.expires_at ? new Date(parsed.expires_at).getTime() : 0;
+  if (!expiresAt || isNaN(expiresAt)) return false;
+  return expiresAt > Date.now();
+}
+
+/**
+ * Best-effort: remove a stale sentinel and emit a recovery audit event.
+ * Called from hash-OK paths so the disk file is cleaned up on the very
+ * next tool call after recovery (sentinel was already INACTIVE per
+ * `isSentinelActive` semantics; this just removes the stale file).
+ */
+function clearStaleSentinelIfAny(cwd, cfg) {
+  const sentinelPath = path.join(cwd, STATE_DIR, SENTINEL_FILE);
+  if (!fs.existsSync(sentinelPath)) return false;
+  const raw = _readSentinelBody(cwd);
+  const parsed = parseSentinelBody(raw);
+  let staleReason = null;
+  if (!parsed) {
+    staleReason = 'legacy_bare_string';
+  } else if (parsed.quarantined !== true) {
+    const expiresAt = parsed.expires_at ? new Date(parsed.expires_at).getTime() : 0;
+    if (!expiresAt || isNaN(expiresAt) || expiresAt <= Date.now()) {
+      staleReason = 'ttl_expired';
+    }
+  }
+  if (!staleReason) return false;
+  try {
+    fs.unlinkSync(sentinelPath);
+    emitAuditEvent(cwd, 'cache_sentinel_expired', {
+      reason:        staleReason,
+      previous_body: raw ? raw.slice(0, 256) : null,
+      ttl_hours:     cfg && cfg.sentinel_ttl_hours,
+    });
+    process.stderr.write(
+      '[validate-cache-invariant] sentinel expired (' + staleReason +
+      '), re-enabling block_a_zone_caching\n'
     );
-  } catch (_e) {}
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
+
+/**
+ * Write or refresh the sentinel. Increments trip_count if a structured
+ * sentinel already exists; quarantines (latches past TTL + emits
+ * cache_geometry_quarantined) when trip_count >= quarantine_trip_threshold.
+ *
+ * @param {string} cwd
+ * @param {object} cfg  validator config
+ * @param {object} extra  { reason, recovery_hint }
+ * @returns {{ trip_count: number, quarantined: boolean }}
+ */
+function writeSentinel(cwd, cfg, extra) {
+  const stateDir = path.join(cwd, STATE_DIR);
+  const sentinelPath = path.join(stateDir, SENTINEL_FILE);
+  const now = Date.now();
+  const ttlHours = (cfg && cfg.sentinel_ttl_hours) || DEFAULT_SENTINEL_TTL_HOURS;
+  const ttlMs    = ttlHours * 60 * 60 * 1000;
+  const threshold = (cfg && cfg.quarantine_trip_threshold) || DEFAULT_QUARANTINE_TRIP_THRESHOLD;
+
+  let prior = null;
+  try { prior = parseSentinelBody(_readSentinelBody(cwd)); } catch (_e) { prior = null; }
+  const tripCount = (prior && Number.isInteger(prior.trip_count) && prior.trip_count > 0)
+    ? prior.trip_count + 1
+    : 1;
+  const quarantined = tripCount >= threshold;
+
+  const body = {
+    written_at:    new Date(now).toISOString(),
+    expires_at:    new Date(now + ttlMs).toISOString(),
+    reason:        (extra && extra.reason) || 'invariant_threshold_exceeded',
+    recovery_hint: (extra && extra.recovery_hint) ||
+      ('Run: node bin/invalidate-block-a-zone1.js (sentinel auto-clears after ' +
+       ttlHours + 'h)'),
+    trip_count:    tripCount,
+    quarantined,
+  };
+
+  try {
+    fs.mkdirSync(stateDir, { recursive: true });
+    const tmp = sentinelPath + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(body, null, 2) + '\n', 'utf8');
+    fs.renameSync(tmp, sentinelPath);
+  } catch (_e) {
+    try { fs.writeFileSync(sentinelPath, JSON.stringify(body, null, 2) + '\n', 'utf8'); }
+    catch (_e2) {}
+  }
+
+  if (quarantined) {
+    emitAuditEvent(cwd, 'cache_geometry_quarantined', {
+      trip_count: tripCount,
+      threshold,
+      reason:     body.reason,
+      ttl_hours:  ttlHours,
+    });
+  }
+
+  return { trip_count: tripCount, quarantined };
 }
 
 // ---------------------------------------------------------------------------
-// Violation counter
+// Violation counter (v2.2.1 W2 — dedupe by hash pair within window)
 // ---------------------------------------------------------------------------
 
 /**
  * Record a violation and return the count of violations within the window.
+ *
+ * Dedupe rule: when the most-recent line in `block-a-zone-violations.jsonl`
+ * has the same (expected_hash, actual_hash) AND its ts is within
+ * `dedupeWindowSeconds`, the new line is NOT appended and the counter is
+ * NOT incremented — collapsing one logical edit into one counted violation.
+ *
  * @param {string} cwd
- * @returns {number} violations in last 24h including this one
+ * @param {object} opts { expectedHash, actualHash, dedupeWindowSeconds }
+ * @returns {{ count: number, deduped: boolean }}
  */
-function recordViolationAndCount(cwd) {
+function recordViolationAndCount(cwd, opts) {
+  opts = opts || {};
+  const expectedHash = opts.expectedHash || '';
+  const actualHash   = opts.actualHash   || '';
+  const dedupeWindowMs = (typeof opts.dedupeWindowSeconds === 'number'
+    ? opts.dedupeWindowSeconds
+    : DEFAULT_DEDUPE_WINDOW_SECONDS) * 1000;
+
   try {
-    const stateDir     = path.join(cwd, STATE_DIR);
-    const violPath     = path.join(stateDir, VIOLATIONS_FILE);
-    const now          = Date.now();
-    const windowStart  = now - VIOLATION_WINDOW;
+    const stateDir    = path.join(cwd, STATE_DIR);
+    const violPath    = path.join(stateDir, VIOLATIONS_FILE);
+    const now         = Date.now();
+    const windowStart = now - VIOLATION_WINDOW;
 
     fs.mkdirSync(stateDir, { recursive: true });
 
-    // Append this violation
-    const entry = { ts: new Date(now).toISOString() };
-    atomicAppendJsonl(violPath, entry);
-
-    // Count recent violations
+    let existing = [];
     try {
-      const raw   = fs.readFileSync(violPath, 'utf8');
+      const raw = fs.readFileSync(violPath, 'utf8');
+      existing = raw.split('\n').filter(Boolean);
+    } catch (_e) { existing = []; }
+
+    let deduped = false;
+    if (existing.length > 0 && expectedHash && actualHash && dedupeWindowMs > 0) {
+      for (let i = existing.length - 1; i >= 0; i--) {
+        try {
+          const last = JSON.parse(existing[i]);
+          if (!last) break;
+          const lastTs = last.ts ? new Date(last.ts).getTime() : 0;
+          if (!lastTs || (now - lastTs) > dedupeWindowMs) break;
+          if (last.expected_hash === expectedHash && last.actual_hash === actualHash) {
+            deduped = true;
+            break;
+          }
+        } catch (_e) { /* skip malformed */ }
+      }
+    }
+
+    if (!deduped) {
+      const entry = {
+        ts: new Date(now).toISOString(),
+        expected_hash: expectedHash,
+        actual_hash:   actualHash,
+      };
+      atomicAppendJsonl(violPath, entry);
+    }
+
+    let count = 0;
+    try {
+      const raw = fs.readFileSync(violPath, 'utf8');
       const lines = raw.split('\n').filter(Boolean);
-      let count   = 0;
       for (const line of lines) {
         try {
           const parsed = JSON.parse(line);
@@ -193,12 +436,11 @@ function recordViolationAndCount(cwd) {
           if (ts >= windowStart) count++;
         } catch (_e) {}
       }
-      return count;
-    } catch (_e) {
-      return 1;
-    }
+    } catch (_e) { count = 1; }
+
+    return { count: count || 1, deduped };
   } catch (_e) {
-    return 1;
+    return { count: 1, deduped: false };
   }
 }
 
@@ -232,21 +474,26 @@ function emitAuditEvent(cwd, eventType, extra) {
 
 /**
  * Recompute Zone 1 hash from current source files on disk.
+ *
+ * v2.2.1 W2: also returns `fileHashes` (per-file SHA-256) so the validator
+ * computes a true `delta_files` (only the paths whose individual sha
+ * changed) by diffing against the persisted `zone1_file_hashes` map.
+ *
  * @param {string} cwd
- * @returns {{ hash: string, deltaFiles: string[] }}
- *   hash: the recomputed hash
- *   deltaFiles: files that were hashed (for diff reporting)
+ * @returns {{ hash: string, hashedFiles: string[], fileHashes: Record<string,string> }}
  */
 function recomputeZone1Hash(cwd) {
-  const parts      = [];
-  const deltaFiles = [];
+  const parts       = [];
+  const hashedFiles = [];
+  const fileHashes  = {};
 
   for (const relPath of ZONE1_SOURCES) {
     try {
       const absPath = path.join(cwd, relPath);
       const text    = fs.readFileSync(absPath, 'utf8');
       parts.push('<!-- zone1:file:' + relPath + ' -->\n' + text);
-      deltaFiles.push(relPath);
+      hashedFiles.push(relPath);
+      fileHashes[relPath] = crypto.createHash('sha256').update(text).digest('hex');
     } catch (_e) {}
   }
 
@@ -269,13 +516,33 @@ function recomputeZone1Hash(cwd) {
         '</event-schema-shadow>',
       ].join('\n');
       parts.push(shadowContent);
-      deltaFiles.push('agents/pm-reference/event-schemas.shadow.json');
+      const shadowKey = 'agents/pm-reference/event-schemas.shadow.json';
+      hashedFiles.push(shadowKey);
+      fileHashes[shadowKey] = crypto.createHash('sha256').update(shadowContent).digest('hex');
     }
   } catch (_e) {}
 
   const content = parts.join('\n\n');
   const hash    = crypto.createHash('sha256').update(content).digest('hex');
-  return { hash, deltaFiles };
+  return { hash, hashedFiles, fileHashes };
+}
+
+/**
+ * Compute the changed-file subset given current and previous per-file hashes.
+ * Falls back to the full hashed set when no prior map exists (preserving
+ * pre-v2.2.1 reporting behaviour for installs whose block-a-zones.json was
+ * written before this release).
+ */
+function computeDeltaFiles(current, previous, hashedFiles) {
+  if (!previous || typeof previous !== 'object') return hashedFiles.slice();
+  const delta = [];
+  for (const k of hashedFiles) {
+    if (current[k] !== previous[k]) delta.push(k);
+  }
+  for (const k of Object.keys(previous)) {
+    if (!(k in current)) delta.push(k);
+  }
+  return delta;
 }
 
 // ---------------------------------------------------------------------------
@@ -302,7 +569,6 @@ function handle(event) {
   try {
     const cwd = resolveSafeCwd(event && event.cwd);
 
-    // Kill switches
     if (process.env.ORCHESTRAY_DISABLE_BLOCK_A_ZONES === '1') {
       process.exit(0);
       return;
@@ -314,60 +580,104 @@ function handle(event) {
       return;
     }
 
+    // v2.2.1 W2: isSentinelActive() now treats bare-string and TTL-expired
+    // sentinels as INACTIVE. The fast-path early-exits only on a still-active
+    // (parsed JSON, future expires_at OR quarantined) sentinel.
     if (isSentinelActive(cwd)) {
       process.exit(0);
       return;
     }
 
-    // Load stored hashes
     const stored = loadStoredHashes(cwd);
     if (!stored || !stored.zone1_hash) {
-      // No baseline yet — nothing to compare
       process.exit(0);
       return;
     }
 
-    // Recompute Zone 1 hash
-    const { hash: currentHash, deltaFiles } = recomputeZone1Hash(cwd);
+    const { hash: currentHash, hashedFiles, fileHashes } = recomputeZone1Hash(cwd);
 
     if (currentHash === stored.zone1_hash) {
-      // Zone 1 is stable
+      // Zone 1 stable — opportunistically clean a legacy/expired sentinel.
+      clearStaleSentinelIfAny(cwd, cfg);
       process.exit(0);
       return;
     }
 
-    // Zone 1 hash mismatch — emit advisory event
-    const violationCount = recordViolationAndCount(cwd);
-    const threshold      = cfg.invariant_violation_threshold_24h || 5;
+    // True per-file delta (against persisted zone1_file_hashes if present).
+    const deltaFiles = computeDeltaFiles(fileHashes, stored.zone1_file_hashes, hashedFiles);
+
+    // Auto-rebaseline path. If every delta path is in the user-editable
+    // allowlist, overwrite block-a-zones.json with the current hash and
+    // emit cache_baseline_refreshed instead of cache_invariant_broken.
+    const onlyAllowed = deltaFiles.length > 0 &&
+      deltaFiles.every(f => AUTO_REBASELINE_ALLOWLIST.has(f));
+    if (cfg.auto_rebaseline_enabled && onlyAllowed) {
+      try {
+        const stateDir  = path.join(cwd, STATE_DIR);
+        const zonesPath = path.join(stateDir, ZONES_FILE);
+        fs.mkdirSync(stateDir, { recursive: true });
+        const next = Object.assign({}, stored, {
+          zone1_hash:         currentHash,
+          zone1_file_hashes:  fileHashes,
+          updated_at:         new Date().toISOString(),
+          last_rebaseline_at: new Date().toISOString(),
+        });
+        const tmp = zonesPath + '.tmp';
+        fs.writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', 'utf8');
+        fs.renameSync(tmp, zonesPath);
+      } catch (_e) {}
+      emitAuditEvent(cwd, 'cache_baseline_refreshed', {
+        zone:          'zone1',
+        expected_hash: stored.zone1_hash.substring(0, 12),
+        actual_hash:   currentHash.substring(0, 12),
+        delta_files:   deltaFiles,
+        reason:        'editable_zone1_drift',
+      });
+      process.exit(0);
+      return;
+    }
+
+    // Either auto_rebaseline disabled, or delta includes a non-editable file
+    // (e.g., the schema shadow). Treat as a real violation.
+    const { count: violationCount, deduped } = recordViolationAndCount(cwd, {
+      expectedHash:        stored.zone1_hash.substring(0, 12),
+      actualHash:          currentHash.substring(0, 12),
+      dedupeWindowSeconds: cfg.dedupe_window_seconds,
+    });
+    const threshold = cfg.invariant_violation_threshold_24h || 5;
 
     emitAuditEvent(cwd, 'cache_invariant_broken', {
       zone:          'zone1',
       expected_hash: stored.zone1_hash.substring(0, 12),
       actual_hash:   currentHash.substring(0, 12),
       delta_files:   deltaFiles,
+      deduped:       deduped === true,
     });
 
     process.stderr.write(
-      '[compose-block-a] cache_invariant_broken: zone1 hash changed ' +
+      '[validate-cache-invariant] cache_invariant_broken: zone1 hash changed ' +
       '(was ' + stored.zone1_hash.substring(0, 8) + ', now ' +
       currentHash.substring(0, 8) + '). ' +
       'Run node bin/invalidate-block-a-zone1.js to refresh.\n'
     );
 
-    // Auto-disable if threshold exceeded
-    if (violationCount >= threshold) {
-      writeSentinel(cwd);
+    if (!deduped && violationCount >= threshold) {
+      const result = writeSentinel(cwd, cfg, {
+        reason:        'invariant_violation_threshold_exceeded',
+        recovery_hint: 'sentinel auto-clears after ' +
+                       (cfg.sentinel_ttl_hours || DEFAULT_SENTINEL_TTL_HOURS) +
+                       'h; or run: node bin/invalidate-block-a-zone1.js',
+      });
       process.stderr.write(
-        '[compose-block-a] auto-disabled block_a_zone_caching: ' +
-        violationCount + ' violations in 24h (threshold=' + threshold + ').\n'
+        '[validate-cache-invariant] auto-disabled block_a_zone_caching: ' +
+        violationCount + ' violations in 24h (threshold=' + threshold +
+        ', trip=' + result.trip_count +
+        (result.quarantined ? ', QUARANTINED' : '') + ').\n'
       );
     }
 
-    // Exit 0 — advisory only, never blocks
     process.exit(0);
-
   } catch (_e) {
-    // Fail-open
     process.exit(0);
   }
 }
@@ -379,12 +689,6 @@ function handle(event) {
 const HEX_64_RE = /^[0-9a-f]{64}$/;
 const VALID_TTLS = new Set(['1h', '5m']);
 
-/**
- * Validate the persisted 4-slot manifest. Returns { valid, reason }.
- *
- * @param {string} cwd
- * @returns {{ valid: boolean, reason: string|null, manifest: object|null }}
- */
 function recomputeManifestInvariant(cwd) {
   const manifestPath = path.join(cwd, STATE_DIR, MANIFEST_FILE);
   let manifest;
@@ -423,15 +727,10 @@ function recomputeManifestInvariant(cwd) {
   return { valid: true, reason: null, manifest };
 }
 
-/**
- * UserPromptSubmit handler for manifest invariant. Advisory by default;
- * exits 2 only when caching.engineered_breakpoints.strict_invariant === true.
- */
 function handleManifestMode(event) {
   try {
     const cwd = resolveSafeCwd(event && event.cwd);
 
-    // Kill switches: same suite as Zone 1 advisory, plus the caching.* knobs.
     if (process.env.ORCHESTRAY_DISABLE_BLOCK_A_ZONES === '1') { process.exit(0); return; }
     if (process.env.ORCHESTRAY_DISABLE_ENGINEERED_BREAKPOINTS === '1') { process.exit(0); return; }
 
@@ -439,8 +738,6 @@ function handleManifestMode(event) {
     if (cfg.enabled === false) { process.exit(0); return; }
     if (isSentinelActive(cwd)) { process.exit(0); return; }
 
-    // Read engineered_breakpoints.* knobs from config (this loader does NOT
-    // include them — read raw config to avoid duplicating logic).
     let strictInvariant = false;
     let breakpointsEnabled = true;
     try {
@@ -464,7 +761,6 @@ function handleManifestMode(event) {
       return;
     }
 
-    // Emit the cache_invariant_broken event with zone='manifest' + reason.
     emitAuditEvent(cwd, 'cache_invariant_broken', {
       zone:          'manifest',
       reason:        result.reason,
@@ -473,9 +769,6 @@ function handleManifestMode(event) {
       delta_files:   [],
     });
 
-    // Strict mode: exit 2 (blocks user prompt). Default: exit 0 (advisory).
-    // Manifest-missing is ALWAYS advisory regardless of strict mode — the
-    // first turn after a fresh install legitimately has no manifest yet.
     if (strictInvariant && result.reason !== 'manifest_missing') {
       process.stderr.write(
         '[validate-cache-invariant] manifest invariant broken (' + result.reason +
@@ -486,12 +779,24 @@ function handleManifestMode(event) {
     }
     process.exit(0);
   } catch (_e) {
-    // Fail-open — never block the user prompt on internal errors.
     process.exit(0);
   }
 }
 
-// Expose manifest helpers for tests.
+// Expose helpers for tests (W5 owns the test suite).
 module.exports = {
   recomputeManifestInvariant,
+  // v2.2.1 W2 self-healing surface
+  loadBlockAConfig,
+  isSentinelActive,
+  parseSentinelBody,
+  writeSentinel,
+  clearStaleSentinelIfAny,
+  recordViolationAndCount,
+  recomputeZone1Hash,
+  computeDeltaFiles,
+  AUTO_REBASELINE_ALLOWLIST,
+  DEFAULT_DEDUPE_WINDOW_SECONDS,
+  DEFAULT_SENTINEL_TTL_HOURS,
+  DEFAULT_QUARANTINE_TRIP_THRESHOLD,
 };

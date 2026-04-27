@@ -41,8 +41,21 @@ const {
 } = require('./_lib/effective-gate-state');
 
 // ---------------------------------------------------------------------------
-// Known gate keys to evaluate (all top-level boolean/truthy config keys whose
-// name starts with 'enable_' or are in the explicit list below).
+// Known gate keys to evaluate.
+//
+// Two sources contribute to the gate set surfaced in `feature_gate_eval`:
+//   1. Legacy top-level `enable_*` keys (and a small explicit list of other
+//      top-level boolean flags such as `auto_review` / `auto_document`). These
+//      are preserved verbatim so existing dashboards keep working.
+//   2. Namespaced boolean leaves discovered by walking the parsed config tree.
+//      A leaf qualifies as a gate when its final path segment matches
+//      `enabled`, `*_enabled`, or `*_disabled` (the polarity is carried by the
+//      gate name — see `event_schemas.full_load_disabled`). The walker emits
+//      the dotted path (e.g., `caching.block_z.enabled`).
+//
+// The walker is intentionally discovery-based: any future namespaced gate that
+// follows the `<namespace>...enabled` / `<namespace>...disabled` convention is
+// surfaced automatically without code changes here. (R-NSGATE, v2.2.1.)
 // ---------------------------------------------------------------------------
 
 const EXPLICIT_GATE_KEYS = [
@@ -61,6 +74,68 @@ const EXPLICIT_GATE_KEYS = [
   'auto_review',
   'auto_document',
 ];
+
+// Top-level keys whose subtrees are NOT walked for namespaced gates.
+// Rationale: these branches hold infra/telemetry knobs unrelated to feature
+// gating, or are folded into a legacy alias elsewhere.
+//   - `telemetry`: tier2 kill-switch lives at telemetry.tier2_tracking.enabled
+//     and is read directly above; surfacing it as a gate would be circular.
+//   - `agent_teams`: `agent_teams.enabled` is folded into the legacy
+//     `enable_agent_teams` key below; the walker must not double-emit it.
+const NAMESPACE_WALK_BLOCKLIST = new Set([
+  'telemetry',
+  'agent_teams',
+]);
+
+// Path-segment matcher: which leaf names look like a feature gate?
+function isGateLeafName(name) {
+  if (typeof name !== 'string') return false;
+  if (name === 'enabled') return true;
+  if (name.endsWith('_enabled')) return true;
+  if (name.endsWith('_disabled')) return true;
+  return false;
+}
+
+/**
+ * Recursively walk a parsed config object and collect dotted paths for every
+ * boolean leaf whose final segment looks like a gate (see `isGateLeafName`).
+ *
+ * Returns an array of `{ path: string, value: boolean }` records.
+ * Non-boolean leaves are skipped (gates are strictly boolean).
+ *
+ * Top-level branches listed in NAMESPACE_WALK_BLOCKLIST are not descended into.
+ *
+ * @param {object} config
+ * @returns {Array<{path: string, value: boolean}>}
+ */
+function walkNamespacedGates(config) {
+  const results = [];
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return results;
+
+  function visit(node, segments) {
+    if (!node || typeof node !== 'object' || Array.isArray(node)) return;
+    for (const key of Object.keys(node)) {
+      const val = node[key];
+      const nextSegments = segments.concat(key);
+      if (typeof val === 'boolean') {
+        if (isGateLeafName(key) && nextSegments.length >= 2) {
+          results.push({ path: nextSegments.join('.'), value: val });
+        }
+      } else if (val && typeof val === 'object' && !Array.isArray(val)) {
+        visit(val, nextSegments);
+      }
+    }
+  }
+
+  for (const topKey of Object.keys(config)) {
+    if (NAMESPACE_WALK_BLOCKLIST.has(topKey)) continue;
+    const branch = config[topKey];
+    if (branch && typeof branch === 'object' && !Array.isArray(branch)) {
+      visit(branch, [topKey]);
+    }
+  }
+  return results;
+}
 
 // ---------------------------------------------------------------------------
 // Stdin reader
@@ -134,39 +209,12 @@ function handle(event) {
       return;
     }
 
-    // Collect all gate keys: explicit list + any top-level key starting with 'enable_'
-    const allGateKeys = new Set(EXPLICIT_GATE_KEYS);
-    for (const key of Object.keys(config)) {
-      if (key.startsWith('enable_')) {
-        allGateKeys.add(key);
-      }
-    }
-
-    // R-GATE: load quarantine overlay state.
-    // quarantineCandidates: slugs from config.feature_demand_gate.quarantine_candidates
-    // quarantinedConfigKeys: the config keys (enable_*) for those slugs
-    let quarantineConfigKeys = new Set();
-    let hasQuarantineOverlay = false;
-    try {
-      const candidates = getQuarantineCandidates(config);
-      // Also check session/pinned wakes (woken gates are NOT quarantined even if in candidates)
-      const sessionWakes = readSessionWakes(cwd);
-      const pinnedWakes  = readPinnedWakes(cwd);
-      for (const slug of candidates) {
-        // Skip if the gate is woken (session or pinned wake wins)
-        if (sessionWakes.has(slug) || pinnedWakes.has(slug)) continue;
-        const configKey = GATE_SLUG_TO_CONFIG_KEY[slug];
-        if (configKey) {
-          quarantineConfigKeys.add(configKey);
-          hasQuarantineOverlay = true;
-        }
-      }
-    } catch (_e) {}
-
     // R-AT-FLAG (v2.1.16): the legacy `enable_agent_teams` is renamed to
     // `agent_teams.enabled`. For telemetry, fold the new namespaced flag into
     // the legacy key so gate evaluation downstream stays back-compat. The new
-    // namespace wins when both are present.
+    // namespace wins when both are present. (Done before the walker runs so
+    // `agent_teams.enabled` is not double-emitted as a namespaced gate; the
+    // walker also blocklists `agent_teams` for the same reason.)
     if (
       config.agent_teams &&
       typeof config.agent_teams === 'object' &&
@@ -176,12 +224,68 @@ function handle(event) {
       config = Object.assign({}, config, { enable_agent_teams: config.agent_teams.enabled });
     }
 
+    // Collect all gate keys: explicit list + any top-level key starting with
+    // 'enable_' (legacy surface) + namespaced gates discovered via walker.
+    // (R-NSGATE, v2.2.1.) The walker output is added as dotted paths.
+    const legacyGateKeys = new Set(EXPLICIT_GATE_KEYS);
+    for (const key of Object.keys(config)) {
+      if (key.startsWith('enable_')) {
+        legacyGateKeys.add(key);
+      }
+    }
+
+    // Map dotted gate path → boolean value (its config-snapshot value).
+    const namespacedGates = walkNamespacedGates(config);
+    const namespacedGateValues = new Map();
+    for (const { path: gatePath, value } of namespacedGates) {
+      namespacedGateValues.set(gatePath, value);
+    }
+
+    // R-GATE: load quarantine overlay state.
+    // quarantineCandidates: slugs from config.feature_demand_gate.quarantine_candidates
+    // For legacy gates the slug → config-key mapping comes from
+    // GATE_SLUG_TO_CONFIG_KEY. For namespaced gates the candidate string IS the
+    // dotted gate path (e.g., "output_shape.enabled"); this lets ops quarantine
+    // a namespaced gate the same way they already quarantine a legacy slug.
+    const quarantinedLegacyKeys      = new Set();
+    const quarantinedNamespacedPaths = new Set();
+    let hasQuarantineOverlay = false;
+    try {
+      const candidates = getQuarantineCandidates(config);
+      // Wakes apply to the slug name as-stored. We honour wake → no-quarantine
+      // for both legacy slugs and dotted-path entries (a dotted path can also
+      // be woken if ops put it into the wake file).
+      const sessionWakes = readSessionWakes(cwd);
+      const pinnedWakes  = readPinnedWakes(cwd);
+      for (const slug of candidates) {
+        if (sessionWakes.has(slug) || pinnedWakes.has(slug)) continue;
+        // Legacy slug?
+        const legacyConfigKey = GATE_SLUG_TO_CONFIG_KEY[slug];
+        if (legacyConfigKey) {
+          quarantinedLegacyKeys.add(legacyConfigKey);
+          hasQuarantineOverlay = true;
+          continue;
+        }
+        // Otherwise interpret as a namespaced dotted path. We don't require
+        // the path to currently exist in the config — quarantining a future
+        // gate is fine; it just has no effect until the gate appears.
+        if (typeof slug === 'string' && slug.includes('.')) {
+          quarantinedNamespacedPaths.add(slug);
+          if (namespacedGateValues.has(slug)) {
+            hasQuarantineOverlay = true;
+          }
+        }
+      }
+    } catch (_e) {}
+
     // Evaluate each gate: truthy value → gates_true, falsy → gates_false.
     const gates_true  = [];
     const gates_false = [];
-    for (const key of allGateKeys) {
+
+    // Legacy gates (top-level `enable_*` and the explicit list).
+    for (const key of legacyGateKeys) {
       // R-GATE overlay: quarantine candidates are treated as false regardless of config.
-      if (quarantineConfigKeys.has(key)) {
+      if (quarantinedLegacyKeys.has(key)) {
         gates_false.push(key);
         continue;
       }
@@ -189,8 +293,6 @@ function handle(event) {
       // A gate is "true" if the value is exactly boolean true, or a truthy non-boolean.
       // Gates explicitly set to false, 0, null, undefined, "" are considered false.
       if (val === true || (val !== false && val !== null && val !== undefined && val !== 0 && val !== '' && val !== 'false')) {
-        // For boolean config keys, only trust boolean true to be "enabled"
-        // (non-boolean values like 'on'/'off' strings should be truthy/falsy per JS)
         if (val === true || (typeof val !== 'boolean' && Boolean(val))) {
           gates_true.push(key);
         } else {
@@ -198,6 +300,21 @@ function handle(event) {
         }
       } else {
         gates_false.push(key);
+      }
+    }
+
+    // Namespaced gates discovered by the walker. The gate name carries its own
+    // polarity (e.g., `event_schemas.full_load_disabled: true` → gates_true);
+    // we report the boolean value verbatim, no inversion.
+    for (const { path: gatePath, value } of namespacedGates) {
+      if (quarantinedNamespacedPaths.has(gatePath)) {
+        gates_false.push(gatePath);
+        continue;
+      }
+      if (value === true) {
+        gates_true.push(gatePath);
+      } else {
+        gates_false.push(gatePath);
       }
     }
 
@@ -239,4 +356,10 @@ function handle(event) {
 }
 
 // Export for testing.
-module.exports = { EXPLICIT_GATE_KEYS, handle };
+module.exports = {
+  EXPLICIT_GATE_KEYS,
+  NAMESPACE_WALK_BLOCKLIST,
+  isGateLeafName,
+  walkNamespacedGates,
+  handle,
+};

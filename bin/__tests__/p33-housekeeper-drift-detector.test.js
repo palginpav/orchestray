@@ -155,9 +155,15 @@ describe('P3.3 — audit-housekeeper-drift hook', () => {
   });
 
   test('agent file missing → drift event with reason agent_file_missing', () => {
+    // W3 introduced a 3-tier resolver: project (<cwd>/.claude/agents),
+    // user (~/.claude/agents), and plugin (~/.claude/orchestray/agents).
+    // To assert "missing in ALL tiers", we pin HOME to the sandbox so the
+    // user/plugin tiers point inside <tmp> (which is empty) and cannot
+    // accidentally pick up the real ~/.claude/agents/orchestray-housekeeper.md
+    // that exists on the developer's machine.
     const tmp = setupSandbox({ skipAgentFile: true });
     try {
-      const r = runHook(tmp);
+      const r = runHook(tmp, { HOME: tmp });
       assert.equal(r.status, 0);
       const events = readEvents(tmp);
       const hit = events.find(e => e.type === 'housekeeper_drift_detected');
@@ -165,8 +171,55 @@ describe('P3.3 — audit-housekeeper-drift hook', () => {
       assert.equal(hit.reason, 'agent_file_missing');
       assert.equal(hit.current_sha, null);
       assert.equal(hit.current_tools, null);
+      // W3 contract: when no tier resolves, resolved_via is null.
+      assert.equal(hit.resolved_via, null,
+        'resolved_via must be null when the agent file is missing in every tier');
       assert.equal(fs.existsSync(sentinelPath(tmp)), true);
     } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  test('agent file found via user-scope tier → drift event has resolved_via: "user"', () => {
+    // Coverage gap closer (v2.2.1): exercise the user-scope path W3 added.
+    // The hook ONLY emits events on drift, so to observe `resolved_via: "user"`
+    // we must (a) make the project-local file absent, (b) place a TAMPERED
+    // copy in the user-scope tier, and (c) pin HOME=<tmp>. The hook resolves
+    // via user-scope, detects SHA drift on the tampered body, and emits a
+    // drift event whose `resolved_via` field is "user" — proving both the
+    // tier-resolution and the field propagation.
+    const realBody = fs.readFileSync(REAL_AGENT, 'utf8');
+    const tamperedBody = realBody + '\n<!-- user-tier tamper -->\n';
+    const tmp = setupSandbox({ skipAgentFile: true });
+    // HOME must be DISTINCT from cwd, otherwise <cwd>/.claude/agents and
+    // <HOME>/.claude/agents collapse to the same path and the resolver
+    // attributes the hit to the project tier (first candidate wins).
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'p33-home-'));
+    try {
+      const userAgentDir = path.join(fakeHome, '.claude', 'agents');
+      fs.mkdirSync(userAgentDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(userAgentDir, 'orchestray-housekeeper.md'),
+        tamperedBody, 'utf8'
+      );
+      const r = runHook(tmp, { HOME: fakeHome });
+      assert.equal(r.status, 0, 'stderr=' + r.stderr);
+      const events = readEvents(tmp);
+      const missing = events.find(e =>
+        e.type === 'housekeeper_drift_detected' && e.reason === 'agent_file_missing');
+      assert.equal(missing, undefined,
+        'agent_file_missing must NOT fire when user-scope tier resolves');
+      const drift = events.find(e => e.type === 'housekeeper_drift_detected');
+      assert.ok(drift, 'expected drift event from user-scope tampered copy; events=' +
+        JSON.stringify(events));
+      assert.equal(drift.resolved_via, 'user',
+        'resolved_via must be "user" when only the user-scope tier has the file');
+      assert.equal(drift.reason, 'sha_only',
+        'tampered tail (tools line intact) → reason should be sha_only');
+      assert.match(r.stderr, /resolved_via=user/,
+        'stderr must surface resolved_via=user for operator visibility');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      fs.rmSync(fakeHome, { recursive: true, force: true });
+    }
   });
 
   test('recovery: clean run after drift unlinks the sentinel', () => {

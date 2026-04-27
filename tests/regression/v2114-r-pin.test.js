@@ -259,7 +259,14 @@ describe('AC3 — Zone 1 hash changes on CLAUDE.md edit', () => {
 // ---------------------------------------------------------------------------
 
 describe('AC4 — Validator detects Zone 1 mutation', () => {
-  test('emits cache_invariant_broken when CLAUDE.md changes after compose', () => {
+  // v2.2.1 W2: editable Zone 1 sources (CLAUDE.md, handoff-contract.md,
+  // phase-contract.md) auto-rebaseline on first mismatch instead of emitting
+  // cache_invariant_broken. The legitimate developer workflow ("edit
+  // CLAUDE.md → next prompt") is now a silent baseline refresh, not a
+  // recoverable advisory event. cache_invariant_broken is reserved for
+  // non-allowlisted drift (e.g. schema-shadow / contract files outside the
+  // editable allowlist).
+  test('emits cache_baseline_refreshed (not cache_invariant_broken) when CLAUDE.md changes after compose', () => {
     const dir = makeDir({ claudeMd: '# Original content' });
     // First compose sets the baseline
     runCompose(dir);
@@ -267,19 +274,23 @@ describe('AC4 — Validator detects Zone 1 mutation', () => {
     // Edit CLAUDE.md without invalidating
     fs.writeFileSync(path.join(dir, 'CLAUDE.md'), '# MUTATED content!!', 'utf8');
 
-    // Validator should detect the mutation
+    // Validator should auto-rebaseline the editable allowlist drift
     const result = runValidator(dir);
     assert.equal(result.status, 0, 'validator must exit 0 (advisory)');
 
     const events = readEvents(dir);
-    const ev = events.find(e => e && e.type === 'cache_invariant_broken');
-    assert.ok(ev, 'cache_invariant_broken event must be emitted');
-    assert.equal(ev.version, 1, 'version must be 1');
-    assert.equal(ev.zone, 'zone1', 'zone must be zone1');
-    assert.ok(typeof ev.expected_hash === 'string', 'expected_hash must be present');
-    assert.ok(typeof ev.actual_hash   === 'string', 'actual_hash must be present');
-    assert.notEqual(ev.expected_hash, ev.actual_hash, 'hashes must differ');
-    assert.ok(Array.isArray(ev.delta_files), 'delta_files must be an array');
+    const refreshed = events.find(e => e && e.type === 'cache_baseline_refreshed');
+    assert.ok(refreshed, 'cache_baseline_refreshed event must be emitted (auto-rebaseline path)');
+    assert.equal(refreshed.zone, 'zone1', 'zone must be zone1');
+    assert.equal(refreshed.reason, 'editable_zone1_drift',
+      'reason must identify the editable-allowlist path');
+    assert.ok(Array.isArray(refreshed.delta_files), 'delta_files must be an array');
+    assert.ok(refreshed.delta_files.includes('CLAUDE.md'),
+      'delta_files must include CLAUDE.md (the only mutated file)');
+
+    const broken = events.find(e => e && e.type === 'cache_invariant_broken');
+    assert.equal(broken, undefined,
+      'cache_invariant_broken must NOT fire for editable-allowlist drift in v2.2.1');
   });
 });
 
@@ -310,37 +321,123 @@ describe('AC5 — Validator is advisory only (exit 0)', () => {
 // ---------------------------------------------------------------------------
 
 describe('AC6 — Auto-disable sentinel after 5 violations', () => {
-  test('sentinel written after invariant_violation_threshold_24h violations', () => {
+  // v2.2.1 W2: CLAUDE.md mutations are in the auto-rebaseline allowlist and
+  // therefore do NOT count as invariant violations. Driving the sentinel now
+  // requires drift in a non-allowlisted file (e.g. the schema shadow). This
+  // test uses the schema-shadow path to legitimately exceed the threshold.
+  test('sentinel written after invariant_violation_threshold_24h non-allowlisted violations (JSON body, not bare-string)', () => {
+    const shadow = {
+      _meta: { version: 1 },
+      test_event: { version: 1, required: ['type'], optional: [] },
+    };
     const dir = makeDir({
-      config: { block_a_zone_caching: { invariant_violation_threshold_24h: 3 } },
+      shadow,
+      config: {
+        block_a_zone_caching: { invariant_violation_threshold_24h: 3 },
+        // Turn off auto-rebaseline so any drift counts (the shadow drift
+        // would already not be auto-rebaselined; turning it off makes the
+        // intent explicit and exercises the disable path too).
+        caching: {
+          cache_invariant_validator: {
+            auto_rebaseline_enabled: false,
+            dedupe_window_seconds: 0, // disable dedupe so the loop counts every hit
+          },
+        },
+      },
     });
     runCompose(dir);
 
-    // Trigger 3 violations
+    // Trigger 3 violations against the schema shadow (not in allowlist)
     for (let i = 0; i < 3; i++) {
-      fs.writeFileSync(path.join(dir, 'CLAUDE.md'), '# Mutation #' + i, 'utf8');
+      const mutated = Object.assign({}, shadow, {
+        ['extra_event_' + i]: { version: 1, required: [], optional: [] },
+      });
+      const crypto = require('node:crypto');
+      const schemaContent = '# Event Schemas\n\ndummy content for hash';
+      const hash = crypto.createHash('sha256').update(schemaContent).digest('hex');
+      const withHash = Object.assign({}, mutated, { _meta: Object.assign({ version: 1 }, { source_hash: hash }) });
+      fs.writeFileSync(
+        path.join(dir, 'agents', 'pm-reference', 'event-schemas.shadow.json'),
+        JSON.stringify(withHash),
+        'utf8'
+      );
       runValidator(dir);
-      // Reset CLAUDE.md to original but keep zones file stale
     }
 
     const sentinelPath = path.join(dir, '.orchestray', 'state', '.block-a-zone-caching-disabled');
-    assert.ok(fs.existsSync(sentinelPath), 'auto-disable sentinel must be written after threshold violations');
+    assert.ok(fs.existsSync(sentinelPath),
+      'auto-disable sentinel must be written after threshold non-allowlisted violations');
+
+    // v2.2.1 W2 — sentinel body is now structured JSON (not bare-string).
+    // It carries written_at, expires_at, reason, recovery_hint, trip_count,
+    // and quarantined fields so a later run can decide whether the sentinel
+    // is still in force, has expired, or has been latched into quarantine.
+    const body = fs.readFileSync(sentinelPath, 'utf8').trim();
+    assert.equal(body[0], '{',
+      'v2.2.1 sentinel body MUST be JSON (starts with `{`), not the legacy bare-string format');
+    const parsed = JSON.parse(body);
+    assert.ok(parsed.expires_at, 'sentinel JSON must include expires_at');
+    assert.ok(parsed.written_at, 'sentinel JSON must include written_at');
+    assert.equal(typeof parsed.trip_count, 'number',
+      'sentinel JSON must include trip_count');
+    assert.equal(typeof parsed.quarantined, 'boolean',
+      'sentinel JSON must include quarantined');
+    assert.ok(parsed.reason, 'sentinel JSON must include a reason');
   });
 
-  test('compose hook is no-op when sentinel exists', () => {
-    const dir = makeDir();
-    // Write sentinel manually
-    const stateDir = path.join(dir, '.orchestray', 'state');
-    fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(path.join(stateDir, '.block-a-zone-caching-disabled'), 'disabled\n', 'utf8');
+  // v2.2.1 W2: legacy bare-string sentinel bodies are intentionally treated
+  // as EXPIRED — that is how installed v2.2.0 users self-heal on the first
+  // prompt after upgrade, with no install-side action required. A test that
+  // writes a bare-string sentinel is therefore exercising the self-expiry
+  // path: compose must NOT short-circuit and the bare-string file must be
+  // unlinked. A truly-active sentinel (JSON body, future expires_at) still
+  // forces compose into no-op mode.
+  test('compose hook self-heals legacy bare-string sentinel and remains no-op only for active JSON sentinel', () => {
+    // Case A: legacy bare-string body → treated as expired → compose runs.
+    const dirLegacy = makeDir();
+    const stateLegacy   = path.join(dirLegacy, '.orchestray', 'state');
+    const legacySentinel = path.join(stateLegacy, '.block-a-zone-caching-disabled');
+    fs.mkdirSync(stateLegacy, { recursive: true });
+    fs.writeFileSync(legacySentinel, 'disabled\n', 'utf8');
 
-    const result = runCompose(dir);
-    assert.equal(result.status, 0, 'must exit 0');
-    // Should produce CONTINUE_RESPONSE (no additionalContext)
-    let parsed;
-    try { parsed = JSON.parse(result.stdout); } catch (_) { parsed = null; }
-    const hasAdditional = parsed && parsed.hookSpecificOutput && parsed.hookSpecificOutput.additionalContext;
-    assert.ok(!hasAdditional, 'compose must be no-op (no additionalContext) when sentinel active');
+    const legacyResult = runCompose(dirLegacy);
+    assert.equal(legacyResult.status, 0, 'must exit 0');
+    let parsedLegacy;
+    try { parsedLegacy = JSON.parse(legacyResult.stdout); } catch (_) { parsedLegacy = null; }
+    const hasContextLegacy = parsedLegacy && parsedLegacy.hookSpecificOutput &&
+                             parsedLegacy.hookSpecificOutput.additionalContext;
+    assert.ok(hasContextLegacy,
+      'compose MUST run normally (additionalContext present) when sentinel is a legacy ' +
+      'bare-string — v2.2.1 self-expires the legacy format on read');
+    assert.ok(!fs.existsSync(legacySentinel),
+      'legacy bare-string sentinel MUST be unlinked after compose self-heals it');
+
+    // Case B: structured JSON sentinel with future expires_at → still active.
+    const dirActive = makeDir();
+    const stateActive   = path.join(dirActive, '.orchestray', 'state');
+    const activeSentinel = path.join(stateActive, '.block-a-zone-caching-disabled');
+    fs.mkdirSync(stateActive, { recursive: true });
+    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    fs.writeFileSync(activeSentinel, JSON.stringify({
+      written_at:    new Date().toISOString(),
+      expires_at:    future,
+      reason:        'test_active',
+      recovery_hint: 'n/a',
+      trip_count:    1,
+      quarantined:   false,
+    }), 'utf8');
+
+    const activeResult = runCompose(dirActive);
+    assert.equal(activeResult.status, 0, 'must exit 0');
+    let parsedActive;
+    try { parsedActive = JSON.parse(activeResult.stdout); } catch (_) { parsedActive = null; }
+    const hasContextActive = parsedActive && parsedActive.hookSpecificOutput &&
+                              parsedActive.hookSpecificOutput.additionalContext;
+    assert.ok(!hasContextActive,
+      'compose MUST be no-op (no additionalContext) when sentinel is structured JSON ' +
+      'with a future expires_at');
+    assert.ok(fs.existsSync(activeSentinel),
+      'active JSON sentinel MUST remain on disk');
   });
 });
 

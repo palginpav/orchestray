@@ -3,6 +3,25 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.2.1] - 2026-04-27
+
+v2.2.1 fixes three regressions in v2.2.0 that disabled most installs' cache geometry and housekeeper agent. v2.2.1 ships an automatic post-upgrade cleanup so users are healed on first session — no manual action required.
+
+### Fixed
+
+- **Engineered cache geometry was self-disabling permanently.** v2.2.0's invariant validator wrote an `auto-disabled` sentinel on the first false-positive trip with no recovery path; once tripped, cache geometry never came back. v2.2.1 adds a 1-hour TTL and trip-counter; the sentinel re-arms automatically if the invariant recovers, and the post-upgrade migration clears stale v2.2.0 sentinels on first session.
+
+- **Housekeeper agent reported missing for global-scope installs.** v2.2.0's drift hook only looked at one agent path, so installs using the recommended user-scope (`~/.claude/agents/`) saw `agent_file_missing` and quarantined the housekeeper before it ever spawned. v2.2.1 resolves the agent through the same project → user → plugin priority order Claude Code uses, and clears stale quarantine files on first session.
+
+- **`feature_gate_eval` audit events were silently underreporting v2.2.0 gates.** The telemetry walker only knew about top-level `enable_*` keys, so `output_shape.enabled`, `caching.block_z.enabled`, `haiku_routing.enabled`, and five more were invisible in `/orchestray:analytics` snapshots. v2.2.1 walks the config tree for any `<namespace>.enabled` leaf and surfaces all of them.
+
+### Migration notes
+
+- **No action required.** First session post-upgrade auto-clears stale sentinels and quarantine markers. A one-line banner names what was cleared.
+- **No flag changes.** All v2.2.0 default-on flips remain default-on.
+
+---
+
 ## [2.2.0] - 2026-04-27
 
 v2.2.0 is the **"Tokens, not Actions"** release — Orchestray's first major bump in the v2.x line. Nine shipping items reshape how Orchestray pays for the prompt prefix it sends to Claude on every turn: agents narrate less, the PM stops re-reading the largest reference file, stable prefixes anchor in Anthropic's 1-hour cache, and trivial file I/O moves off Opus onto Haiku. Two new agents ship (`haiku-scout` and `orchestray-housekeeper`) plus six new feature areas — every flag default-on, every behavior change with a kill switch. Headline savings: roughly **−18% to −33% per orchestration** (mid-range −22%; multi-round audits land at the upper end). Numbers are directionally correct, magnitude-uncertain until your own telemetry accumulates — see `/orchestray:analytics` for your install. Restart Claude Code after upgrading; agent definitions changed.
