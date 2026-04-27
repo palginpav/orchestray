@@ -321,22 +321,18 @@ describe('AC5 — Validator is advisory only (exit 0)', () => {
 // ---------------------------------------------------------------------------
 
 describe('AC6 — Auto-disable sentinel after 5 violations', () => {
-  // v2.2.1 W2: CLAUDE.md mutations are in the auto-rebaseline allowlist and
-  // therefore do NOT count as invariant violations. Driving the sentinel now
-  // requires drift in a non-allowlisted file (e.g. the schema shadow). This
-  // test uses the schema-shadow path to legitimately exceed the threshold.
+  // v2.2.1 W2 + v2.2.3 P0-2: CLAUDE.md mutations are in the auto-rebaseline
+  // allowlist and the schema shadow is excluded from zone-1 invariant
+  // accounting entirely (P0-2). Driving the sentinel therefore requires
+  // (a) disabling auto-rebaseline so the allowlist is bypassed, AND
+  // (b) mutating a tracked zone-1 source file. We use CLAUDE.md as the
+  // driver and force `auto_rebaseline_enabled: false` so drift counts.
   test('sentinel written after invariant_violation_threshold_24h non-allowlisted violations (JSON body, not bare-string)', () => {
-    const shadow = {
-      _meta: { version: 1 },
-      test_event: { version: 1, required: ['type'], optional: [] },
-    };
     const dir = makeDir({
-      shadow,
       config: {
         block_a_zone_caching: { invariant_violation_threshold_24h: 3 },
-        // Turn off auto-rebaseline so any drift counts (the shadow drift
-        // would already not be auto-rebaselined; turning it off makes the
-        // intent explicit and exercises the disable path too).
+        // Turn off auto-rebaseline so any drift in a zone-1 source counts as
+        // a violation (otherwise CLAUDE.md drift would auto-rebaseline).
         caching: {
           cache_invariant_validator: {
             auto_rebaseline_enabled: false,
@@ -347,18 +343,13 @@ describe('AC6 — Auto-disable sentinel after 5 violations', () => {
     });
     runCompose(dir);
 
-    // Trigger 3 violations against the schema shadow (not in allowlist)
+    // Trigger 3 violations by mutating CLAUDE.md (zone-1 source). With
+    // auto_rebaseline disabled the allowlist short-circuit doesn't apply,
+    // so each mutation registers as a non-allowlisted invariant violation.
     for (let i = 0; i < 3; i++) {
-      const mutated = Object.assign({}, shadow, {
-        ['extra_event_' + i]: { version: 1, required: [], optional: [] },
-      });
-      const crypto = require('node:crypto');
-      const schemaContent = '# Event Schemas\n\ndummy content for hash';
-      const hash = crypto.createHash('sha256').update(schemaContent).digest('hex');
-      const withHash = Object.assign({}, mutated, { _meta: Object.assign({ version: 1 }, { source_hash: hash }) });
       fs.writeFileSync(
-        path.join(dir, 'agents', 'pm-reference', 'event-schemas.shadow.json'),
-        JSON.stringify(withHash),
+        path.join(dir, 'CLAUDE.md'),
+        '# Project Instructions\n\nMutation iteration ' + i + '.',
         'utf8'
       );
       runValidator(dir);
@@ -535,8 +526,12 @@ describe('AC8 — Schema shadow in Zone 1', () => {
       'must still produce additionalContext without shadow');
   });
 
-  test('Zone 1 hashes differ between run-with-shadow and run-without-shadow', () => {
-    // With shadow
+  test('Zone 1 hash is stable across shadow add/remove (v2.2.3 P0-2 invariant)', () => {
+    // v2.2.3 P0-2 inverts the pre-existing assertion: schema-shadow content is
+    // intentionally excluded from the zone-1 invariant hash so that a shadow
+    // regen does NOT invalidate cached zones. The hash must therefore be equal
+    // whether or not the shadow file exists (with all other zone-1 sources
+    // identical between the two runs).
     const shadow = { _meta: { version: 1 }, my_event: { version: 1, required: ['x'], optional: [] } };
     const dirWith = makeDir({ shadow });
     runCompose(dirWith);
@@ -547,7 +542,7 @@ describe('AC8 — Schema shadow in Zone 1', () => {
     runCompose(dirWithout);
     const hashWithout = readZones(dirWithout).zone1_hash;
 
-    assert.notEqual(hashWith, hashWithout, 'Zone 1 hash must differ when shadow is included');
+    assert.equal(hashWith, hashWithout, 'Zone 1 hash MUST be stable across shadow add/remove (P0-2)');
   });
 });
 

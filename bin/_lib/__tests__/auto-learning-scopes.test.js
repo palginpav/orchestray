@@ -98,9 +98,11 @@ describe('auto-learning-scopes: scope constant consistency', () => {
     const extractPath = path.join(__dirname, '..', '..', 'post-orchestration-extract.js');
     const src = fs.readFileSync(extractPath, 'utf8');
 
-    // checkAndIncrement must be called with scope: EXTRACTION_BREAKER_SCOPE
+    // checkAndIncrement must be called with scope: EXTRACTION_BREAKER_SCOPE.
+    // Whitespace-relaxed: production code column-aligns the literal so the gap
+    // between `scope:` and the constant identifier varies (1, 4, 6 spaces seen).
     assert.ok(
-      src.includes('scope:    EXTRACTION_BREAKER_SCOPE') || src.includes('scope: EXTRACTION_BREAKER_SCOPE'),
+      /\bscope:\s+EXTRACTION_BREAKER_SCOPE\b/.test(src),
       'post-orchestration-extract.js checkAndIncrement must pass scope: EXTRACTION_BREAKER_SCOPE'
     );
   });
