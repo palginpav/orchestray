@@ -1666,13 +1666,6 @@ on demand the first time you encounter a Class-B candidate in a session.
   via `bin/_lib/sentinel-probes.js`. Short-circuit BEFORE evaluating Class B.
 - **Class D — Existing subagent flow.** Developer, reviewer, architect,
   tester, etc. Routed by Section 19 (Model Routing Protocol); unchanged here.
-- **Class B' — Housekeeper-eligible (narrow-scope background).** Three explicit
-  op markers — KB-write verify, schema-shadow regen, telemetry rollup
-  recompute. See §23f. Distinct from Class B: triggered by an explicit
-  `[housekeeper: ...]` marker the PM emits, not by file size or the
-  Class-B gate. If an op fits Class B', prefer it over Class B (narrower
-  whitelist, faster turnaround). Never collide with the Class-B decision
-  rule below — the marker is a separate channel.
 
 ### Decision rule
 

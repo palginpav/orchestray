@@ -5921,8 +5921,8 @@ Field notes:
   finding id present in input rows for `round_n` is in this array
   (`bin/__tests__/p31-archive-finding-id-preservation.test.js` is the gate).
 - `mode`: enum `"deterministic" | "haiku"`. v2.2.0 always emits
-  `"deterministic"`; v2.2.1+ may flip to `"haiku"` when the housekeeper
-  promotion gate opens.
+  `"deterministic"`; `"haiku"` is reserved for future routing
+  optimizations.
 - Source: `bin/_lib/audit-round-archive.js`. Backward compat: new
   in v2.2.0, ignore-unknown per R-EVENT-NAMING.
 

@@ -29,7 +29,7 @@
  *     also set `updatedInput.outputConfig.format` to the schema. The
  *     allowlist gates ONLY structured-output schema enforcement; the
  *     addendum + contract suffix are not gated by it.
- *   - Excluded roles (pm, haiku-scout, orchestray-housekeeper,
+ *   - Excluded roles (pm, pm-router, haiku-scout,
  *     pattern-extractor) → `decideShape` returns null → no event,
  *     no prompt mutation.
  *   - Kill switches:
