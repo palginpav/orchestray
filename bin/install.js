@@ -44,7 +44,11 @@ const FRESH_INSTALL_V2017_EXPERIMENTS = {
   __schema_version: 1,
   global_kill_switch: false,
   prompt_caching: 'on',
-  adaptive_verbosity: 'off',
+  // P3-W10 (v2.2.3): flipped 'off' → 'on' so adaptive_verbosity AND-gate
+  // (this flag × adaptive_verbosity.enabled loader default) actually activates
+  // on fresh installs, matching the default-on shipping policy
+  // (feedback_default_on_shipping.md).
+  adaptive_verbosity: 'on',
 };
 
 // Default cache_choreography block for fresh installs.
@@ -848,10 +852,11 @@ function install(targetDir) {
         // D5 (v2.0.16 amendment): cost_budget_reserve TTL (discoverable default)
         cost_budget_reserve: { ttl_minutes: 30 },
       },
-      // D3 (v2.0.16 amendment): cost_budget_enforcement with hard_block:true default.
-      // enabled:false means the gate is opt-in; hard_block:true is the correct default
-      // for operators who enable it (they expect hard blocking, not soft warn).
-      cost_budget_enforcement: { enabled: false, hard_block: true },
+      // D3 (v2.0.16 amendment), updated by P3-W10 (v2.2.3):
+      // enabled:true reflects the default-on shipping policy
+      // (feedback_default_on_shipping.md). hard_block:true is the correct
+      // companion default for fresh installs.
+      cost_budget_enforcement: { enabled: true, hard_block: true },
       // D7 (v2.0.16 amendment): routing_gate.auto_seed_on_miss (discoverable default)
       routing_gate: { auto_seed_on_miss: true },
       // T4 (v2.0.17): v2017 experiment flags — all default off
@@ -875,6 +880,15 @@ function install(targetDir) {
       // R-AIDER-FULL (v2.1.17): Aider-style repo-map seed. See
       // FRESH_INSTALL_REPO_MAP comment above.
       repo_map: FRESH_INSTALL_REPO_MAP,
+      // P3-W10 (v2.2.3): default-on top-level feature gates per
+      // feedback_default_on_shipping.md ("new functionality ships default-on;
+      // regressions fix in next patch, not gated behind opt-in"). These three
+      // gates have no loader-with-default in bin/_lib/config-schema.js;
+      // gate-telemetry.js evaluates them as `config[key] === true`, so the
+      // fresh-install seed is the only flip path.
+      enable_disagreement_protocol: true,
+      enable_outcome_tracking: true,
+      enable_checkpoints: true,
     };
     try {
       fs.mkdirSync(orchStateDir, { recursive: true });

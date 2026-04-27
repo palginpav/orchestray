@@ -992,10 +992,15 @@ function runW1PatternRecordAppSeed(cwd, stateDir, sentinelPath) {
 /**
  * Run the W5 2016 cost_budget_enforcement seed.
  *
- * Adds `cost_budget_enforcement: {enabled: false, hard_block: true}` to
+ * Adds `cost_budget_enforcement: {enabled: true, hard_block: true}` to
  * .orchestray/config.json if the block is absent. This ensures existing installs
  * get the explicit defaults rather than relying on runtime fallback, enabling
  * operators to discover and tune the new config key.
+ *
+ * P3-W10 (v2.2.3): seed flipped from enabled:false → enabled:true to match the
+ * post-flip loader default in DEFAULT_COST_BUDGET_ENFORCEMENT. Without this
+ * change, upgraded installs would land at enabled:false (regressing the
+ * default-on policy) while fresh installs land at enabled:true.
  *
  * hard_block is seeded as true to match the runtime default in
  * DEFAULT_COST_BUDGET_ENFORCEMENT. Operators who prefer soft-warn mode should
@@ -1044,10 +1049,11 @@ function runW5CostBudgetEnforcementSeed(cwd, stateDir, sentinelPath) {
     return;
   }
 
-  // Seed the block with canonical defaults (enabled: false, hard_block: true).
-  // hard_block: true matches DEFAULT_COST_BUDGET_ENFORCEMENT so fresh installs
-  // and migrations both end at the same default unless the operator opts out.
-  parsed.cost_budget_enforcement = { enabled: false, hard_block: true };
+  // Seed the block with canonical defaults (enabled: true, hard_block: true).
+  // P3-W10 (v2.2.3): enabled flipped to true to match the loader default flip
+  // and the fresh-install seed in bin/install.js, so upgraded and fresh installs
+  // end at the same enabled:true default unless the operator opts out.
+  parsed.cost_budget_enforcement = { enabled: true, hard_block: true };
 
   const tmpPath = configPath + '.w5-2016-cbe-tmp';
   try {

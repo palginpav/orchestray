@@ -73,6 +73,11 @@ const EXPLICIT_GATE_KEYS = [
   'enable_agent_teams',
   'auto_review',
   'auto_document',
+  // P3-W10 (v2.2.3): added for symmetry with the other top-level enable_* gates
+  // flipped default-on. Surfaces enable_checkpoints in feature_gate_eval even
+  // when absent from config (matches enable_disagreement_protocol /
+  // enable_outcome_tracking semantics).
+  'enable_checkpoints',
 ];
 
 // Top-level keys whose subtrees are NOT walked for namespaced gates.
