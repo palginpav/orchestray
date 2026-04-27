@@ -7,10 +7,11 @@
  * Tests the bin/inject-output-shape.js PreToolUse:Agent hook in isolation by
  * spawning it as a child process and feeding it a synthesized hook payload on
  * stdin. Asserts:
- *   1. reviewer (hybrid, NOT in staged_flip_allowlist) → updatedInput.prompt
- *      ends with caveman + length-cap + handoff-contract suffix; outputConfig
- *      unset; output_shape_applied event with category=hybrid, caveman=true,
- *      length_cap > 0, structured=false.
+ *   1. reviewer (hybrid, IN default staged_flip_allowlist as of v2.2.3 P3-W1
+ *      A4) → updatedInput.prompt ends with caveman + length-cap + handoff-
+ *      contract suffix; outputConfig.format set to HYBRID_ROLE_SCHEMA;
+ *      output_shape_applied event with category=hybrid, caveman=true,
+ *      length_cap > 0, structured=true.
  *   2. tester (structured-only, IN allowlist) → handoff-contract suffix
  *      injected (no caveman, structured-only roles skip caveman); outputConfig
  *      .format set to TESTER_SCHEMA; event with structured=true.
@@ -130,8 +131,8 @@ const ORIG_PROMPT = '## Task\nReview the changes in src/foo.ts.\n';
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('C2 inject-output-shape hook — reviewer (hybrid, not in allowlist)', () => {
-  test('appends caveman + length cap + contract suffix; no outputConfig', () => {
+describe('C2 inject-output-shape hook — reviewer (hybrid, in default allowlist v2.2.3 P3-W1)', () => {
+  test('appends caveman + length cap + contract suffix; outputConfig.format set', () => {
     const root = makeTmpRoot();
     writeOrchMarker(root, 'orch-c2-reviewer');
 
@@ -157,9 +158,13 @@ describe('C2 inject-output-shape hook — reviewer (hybrid, not in allowlist)', 
     assert.ok(newPrompt.endsWith(HANDOFF_CONTRACT_SUFFIX),
       'handoff-contract suffix is the LAST appended block (D3 Layer 1 fix)');
 
-    // outputConfig must NOT be set — reviewer is not in staged_flip_allowlist.
-    assert.equal(out.hookSpecificOutput.updatedInput.outputConfig, undefined,
-      'reviewer (hybrid) is not in staged_flip_allowlist — no outputConfig');
+    // v2.2.3 P3-W1 A4: reviewer now in default allowlist → outputConfig.format
+    // is the shared HYBRID_ROLE_SCHEMA.
+    const oc = out.hookSpecificOutput.updatedInput.outputConfig;
+    assert.ok(oc && oc.format,
+      'reviewer (hybrid) is in default staged_flip_allowlist as of v2.2.3 P3-W1 A4');
+    assert.deepEqual(oc.format, ROLE_SCHEMA_MAP.reviewer,
+      'reviewer schema matches the shared HYBRID_ROLE_SCHEMA');
 
     // Audit event.
     const evs = readEvents(root);
@@ -169,7 +174,8 @@ describe('C2 inject-output-shape hook — reviewer (hybrid, not in allowlist)', 
     assert.equal(ev.role, 'reviewer');
     assert.equal(ev.category, 'hybrid');
     assert.equal(ev.caveman, true);
-    assert.equal(ev.structured, false);
+    assert.equal(ev.structured, true,
+      'v2.2.3 P3-W1 A4: hybrid roles now report structured=true');
     assert.ok(typeof ev.length_cap === 'number' && ev.length_cap > 0);
     // v2.2.2 Fix #3: version + task_id + session_id required-field hygiene.
     assert.equal(ev.version, 1, 'version must be 1 (Fix #3)');
@@ -346,11 +352,11 @@ describe('C2 inject-output-shape hook — defensive paths', () => {
 });
 
 describe('C2 inject-output-shape hook — D3 Finding #5 regression', () => {
-  test('all hybrid roles get the contract suffix even without staged_flip_allowlist', () => {
-    // The hybrid roles list per output-shape.js ROLE_CATEGORY_MAP. None of
-    // them are in the default staged_flip_allowlist (which is just
-    // ['researcher','tester']). All of them MUST receive the contract
-    // suffix or D3 Finding #5 returns.
+  test('all hybrid roles get the contract suffix and outputConfig (v2.2.3 P3-W1 A4)', () => {
+    // The hybrid roles list per output-shape.js ROLE_CATEGORY_MAP. v2.2.3 P3-W1
+    // (A4) flipped them into the default staged_flip_allowlist; all 8 now
+    // receive the shared HYBRID_ROLE_SCHEMA via outputConfig.format AND the
+    // contract suffix (D3 Finding #5 regression).
     const hybridRoles = [
       'developer', 'debugger', 'reviewer', 'architect',
       'documenter', 'refactorer', 'inventor', 'release-manager',
@@ -366,9 +372,12 @@ describe('C2 inject-output-shape hook — D3 Finding #5 regression', () => {
       const newPrompt = r.parsedStdout.hookSpecificOutput.updatedInput.prompt;
       assert.ok(newPrompt.endsWith(HANDOFF_CONTRACT_SUFFIX),
         role + ': prompt MUST end with handoff-contract suffix (D3 Finding #5 regression)');
-      // outputConfig must remain unset for these roles.
-      assert.equal(r.parsedStdout.hookSpecificOutput.updatedInput.outputConfig, undefined,
-        role + ': not in staged_flip_allowlist → no outputConfig');
+      // v2.2.3 P3-W1 A4: outputConfig.format MUST be set with HYBRID_ROLE_SCHEMA.
+      const oc = r.parsedStdout.hookSpecificOutput.updatedInput.outputConfig;
+      assert.ok(oc && oc.format,
+        role + ': hybrid role now in default staged_flip_allowlist → outputConfig.format set');
+      assert.deepEqual(oc.format, ROLE_SCHEMA_MAP[role],
+        role + ': hybrid schema matches HYBRID_ROLE_SCHEMA from output-shape.js');
     }
   });
 

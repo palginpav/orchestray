@@ -27,9 +27,14 @@
  * `bin/_lib/proposal-validator.js` for the runtime contract.
  *
  * Structured-output enforcement (`output_config.format`) is gated to
- * the `staged_flip_allowlist` config field. v2.2.0 ships with
- * researcher + tester only; hybrid roles are held back per W2 §5.2
- * Risk #2 mitigation until v2.2.1 telemetry confirms zero T15 rejection.
+ * the `staged_flip_allowlist` config field. v2.2.0 shipped with
+ * researcher + tester only; v2.2.3 P3-W1 (A4) expands the allowlist to
+ * include all 8 hybrid roles (developer, debugger, reviewer, architect,
+ * documenter, refactorer, inventor, release-manager). Hybrid roles
+ * receive a SHARED `HYBRID_ROLE_SCHEMA` matching the universal
+ * Handoff Contract (§2 of agents/pm-reference/handoff-contract.md);
+ * role-specific optional fields (per §4) survive via
+ * `additionalProperties: true`.
  *
  * Public API: { decideShape, CAVEMAN_TEXT, ROLE_CATEGORY_MAP, getRoleLengthCap }
  */
@@ -192,9 +197,47 @@ const TESTER_SCHEMA = Object.freeze({
   },
 });
 
+// ---------------------------------------------------------------------------
+// HYBRID_ROLE_SCHEMA — shared schema for the 8 hybrid roles (v2.2.3 P3-W1 A4).
+// Mirrors the universal Handoff Contract §2 required-field set
+// (agents/pm-reference/handoff-contract.md and HANDOFF_REQUIRED_SECTIONS in
+// bin/_lib/handoff-contract-text.js). One schema covers all 8 hybrids; per-role
+// optional fields documented in handoff-contract.md §4 (e.g.
+// architect.design_decisions, developer.tests_passing,
+// reviewer.verdict, refactorer.behavior_preserved, release-manager.version_bumped)
+// pass through via `additionalProperties: true`. Authoring 8 distinct schemas
+// would over-constrain the wide variance in role-specific extensions and
+// turn every contract addition into a breaking change.
+// ---------------------------------------------------------------------------
+
+const HYBRID_ROLE_SCHEMA = Object.freeze({
+  type: 'object',
+  additionalProperties: true,
+  required: ['status', 'summary', 'files_changed', 'files_read', 'issues', 'assumptions'],
+  properties: {
+    status:        { type: 'string', enum: ['success', 'partial', 'failure'] },
+    summary:       { type: 'string' },
+    files_changed: { type: 'array' },
+    files_read:    { type: 'array', items: { type: 'string' } },
+    issues:        { type: 'array' },
+    assumptions:   { type: 'array', items: { type: 'string' } },
+  },
+});
+
 const ROLE_SCHEMA_MAP = Object.freeze({
-  'researcher': RESEARCHER_SCHEMA,
-  'tester':     TESTER_SCHEMA,
+  'researcher':      RESEARCHER_SCHEMA,
+  'tester':          TESTER_SCHEMA,
+  // v2.2.3 P3-W1 A4: the 8 hybrid roles share HYBRID_ROLE_SCHEMA. Reusing one
+  // schema keeps the allowlist additive — adding a 9th hybrid role only needs
+  // a ROLE_CATEGORY_MAP + staged_flip_allowlist entry.
+  'developer':       HYBRID_ROLE_SCHEMA,
+  'debugger':        HYBRID_ROLE_SCHEMA,
+  'reviewer':        HYBRID_ROLE_SCHEMA,
+  'architect':       HYBRID_ROLE_SCHEMA,
+  'documenter':      HYBRID_ROLE_SCHEMA,
+  'refactorer':      HYBRID_ROLE_SCHEMA,
+  'inventor':        HYBRID_ROLE_SCHEMA,
+  'release-manager': HYBRID_ROLE_SCHEMA,
 });
 
 // ---------------------------------------------------------------------------
@@ -207,7 +250,14 @@ const DEFAULT_OUTPUT_SHAPE_CONFIG = Object.freeze({
   caveman_enabled:            true,
   structured_outputs_enabled: true,
   length_cap_enabled:         true,
-  staged_flip_allowlist:      ['researcher', 'tester'],
+  // v2.2.3 P3-W1 A4: expanded from ['researcher','tester'] to include all
+  // 8 hybrid roles. v2.2.0–v2.2.2 telemetry confirmed zero T15 rejection on
+  // the canary roles. Hybrid roles share HYBRID_ROLE_SCHEMA above.
+  staged_flip_allowlist:      [
+    'researcher', 'tester',
+    'developer', 'debugger', 'reviewer', 'architect',
+    'documenter', 'refactorer', 'inventor', 'release-manager',
+  ],
 });
 
 // ---------------------------------------------------------------------------
@@ -431,6 +481,7 @@ module.exports = {
   ROLE_CATEGORY_MAP,
   EXCLUDED_ROLES,
   ROLE_SCHEMA_MAP,
+  HYBRID_ROLE_SCHEMA,
   MODEL_TIER_DEFAULTS,
   ROLE_MODEL_TIER,
   DEFAULT_OUTPUT_SHAPE_CONFIG,

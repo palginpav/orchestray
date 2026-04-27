@@ -160,11 +160,13 @@ describe('Bucket C smoke — two same-type spawns produce expected event sequenc
     assert.equal(shapeApplies.length, 3,
       'output_shape_applied fires on every reviewer + developer spawn');
 
-    // All three are hybrid category.
+    // All three are hybrid category. v2.2.3 P3-W1 A4 flipped hybrid roles
+    // into the default staged_flip_allowlist → structured=true.
     for (const ev of shapeApplies) {
       assert.equal(ev.category, 'hybrid');
       assert.equal(ev.caveman, true);
-      assert.equal(ev.structured, false);
+      assert.equal(ev.structured, true,
+        'v2.2.3 P3-W1 A4: hybrid roles now report structured=true');
     }
 
     // No delegation_delta_skip events (smoke runs on the happy path).

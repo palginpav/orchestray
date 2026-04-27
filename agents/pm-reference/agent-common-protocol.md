@@ -229,11 +229,15 @@ at delegation time and injects (a) the 85-token smart-caveman prompt,
 | `prose-heavy`     | YES     | YES        | NO                           |
 | `none`            | NO      | NO         | NO                           |
 
-¹ v2.2.0 ships `staged_flip_allowlist=["researcher","tester"]` (W2 §5.2 Risk #2
-mitigation). Hybrid roles receive the caveman addendum + length cap from day-1
-but no Anthropic structured-output schema until v2.2.1 telemetry confirms zero
-T15 rejection. The kill-switch list at the bottom of this section names the
-config knob; the in-code source of truth is `output-shape.js` `staged_flip_allowlist`.
+¹ v2.2.0 shipped `staged_flip_allowlist=["researcher","tester"]` (W2 §5.2 Risk
+#2 mitigation: hybrid roles deferred until live telemetry cleared). v2.2.3
+P3-W1 (A4) flipped all 8 hybrid roles into the default allowlist after
+v2.2.0–v2.2.2 telemetry showed zero T15 rejection on the canary roles. Hybrid
+roles share a single `HYBRID_ROLE_SCHEMA` matching the universal Handoff
+Contract §2 (with `additionalProperties: true` so role-specific optional
+fields per §4 survive). The kill-switch list at the bottom of this section
+names the config knob; the in-code source of truth is `output-shape.js`
+`staged_flip_allowlist` and `ROLE_SCHEMA_MAP`.
 
 Per-role assignments (the 14 declaring agent files):
 
@@ -284,7 +288,8 @@ Diagnostic kill switches in `.orchestray/config.json`:
 - `output_shape.caveman_enabled` — disable caveman alone.
 - `output_shape.structured_outputs_enabled` — disable Anthropic
   schema enforcement alone (kept on a per-role staged-flip allow-list
-  even when `true`; v2.2.0 ships `["researcher", "tester"]`).
+  even when `true`; v2.2.3 P3-W1 default is the 8 hybrid roles plus
+  researcher and tester — see footnote¹).
 - `output_shape.length_cap_enabled` — disable caps alone.
 
 The single source of truth for category assignment is
