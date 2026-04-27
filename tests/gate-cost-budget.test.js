@@ -104,10 +104,12 @@ function agentEvent(dir, model = 'sonnet', overrides = {}) {
 
 describe('A: disabled config (default) — no-op', () => {
 
-  test('no config file → exit 0 (fail-open, enforcement disabled by default)', () => {
+  // v2.2.3 P3-W3: default flipped to enabled:true, but with no caps configured
+  // the gate is a no-op (safe-by-default), so this test still asserts exit 0.
+  test('no config file → exit 0 (defaults: enabled=true but no caps → no breach possible)', () => {
     const dir = makeDir();
     const { status, stderr } = run(agentEvent(dir));
-    assert.equal(status, 0, 'No config → enforcement disabled → exit 0');
+    assert.equal(status, 0, 'No config → no caps → exit 0');
     assert.equal(stderr, '');
   });
 
@@ -366,12 +368,13 @@ describe('G: fail-open discipline', () => {
     assert.ok(!stderr.includes('BLOCKED'), 'Must not block on malformed config; got: ' + stderr);
   });
 
-  test('config.json missing → enforcement disabled by default → exit 0', () => {
+  test('config.json missing → defaults active, no caps → exit 0', () => {
     const dir = makeDir();
     // No config file at all — loadCostBudgetEnforcementConfig returns defaults.
-    // Default: enabled=false → fast-path exit 0.
+    // v2.2.3 P3-W3: defaults are now enabled=true, but with no max/daily/weekly
+    // caps in config the gate has nothing to enforce → exit 0 (safe-by-default).
     const { status } = run(agentEvent(dir, 'opus'));
-    assert.equal(status, 0, 'Missing config → defaults → enabled=false → exit 0');
+    assert.equal(status, 0, 'Missing config → defaults → no caps → exit 0');
   });
 
 });

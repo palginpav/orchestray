@@ -632,20 +632,22 @@ function validateCostBudgetCheckConfig(obj) {
 // ---------------------------------------------------------------------------
 // cost_budget_enforcement section defaults and loader (W5 v2.0.16)
 //
-// cost_budget_enforcement.enabled — boolean, default false.
+// cost_budget_enforcement.enabled — boolean, default true (v2.2.3 P3-W3).
 //   When false, the gate-cost-budget.js PreToolUse:Agent hook skips all checks.
-//   Opt-in: set to true to activate the H1 cost gate.
+//   Default flipped to true per `feedback_default_on_shipping.md`. Safe-by-default
+//   because daily/weekly cost limits default to null (no teeth) — enforcement
+//   only blocks when an operator explicitly sets a budget cap. User explicit
+//   `enabled: false` is honored by Object.assign merge order.
 //
 // cost_budget_enforcement.hard_block — boolean, default true (D3 v2.0.16).
 //   When true: exit 2 on breach (hard block). When false: stderr warn + exit 0.
-//   This is LOW-RISK because enforcement is only active when enabled=true (default false).
 //   Operators who explicitly enable enforcement get hard-block by default, which is the
 //   expected behavior for a cost gate. Downgrade to false in config if soft-block is needed.
 //   Post-upgrade-sweep seeds existing explicit 'hard_block: false' values intact.
 // ---------------------------------------------------------------------------
 
 const DEFAULT_COST_BUDGET_ENFORCEMENT = Object.freeze({
-  enabled: false,
+  enabled: true,    // v2.2.3 P3-W3: flipped to default-on per `feedback_default_on_shipping.md`
   hard_block: true,
 });
 
@@ -1647,10 +1649,13 @@ function validateRedoFlowConfig(obj) {
 // ---------------------------------------------------------------------------
 // adaptive_verbosity section defaults and loader (T22 v2.0.17)
 //
-// adaptive_verbosity.enabled — boolean, default false.
+// adaptive_verbosity.enabled — boolean, default true (v2.2.3 P3-W3).
 //   When false, the PM does not inject response-length budgets into delegations.
-//   Opt-in: set to true AND set v2017_experiments.adaptive_verbosity='on' to
-//   activate. Both gates must be open for the feature to apply.
+//   Default flipped to true per `feedback_default_on_shipping.md`. Note this
+//   loader returns `enabled: true`, but the feature ALSO requires
+//   v2017_experiments.adaptive_verbosity='on' — the second gate is owned by the
+//   v2017 experiments seed (FRESH_INSTALL_V2017_EXPERIMENTS in bin/install.js).
+//   See P3-W3 KB artifact for the second-gate flip status.
 //
 // adaptive_verbosity.base_response_tokens — positive integer, default 2000.
 //   Default agent response budget (approximate token count). Passed as
@@ -1663,7 +1668,7 @@ function validateRedoFlowConfig(obj) {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_ADAPTIVE_VERBOSITY = Object.freeze({
-  enabled: false,                 // opt-in; also requires v2017_experiments.adaptive_verbosity='on'
+  enabled: true,                  // v2.2.3 P3-W3: flipped per `feedback_default_on_shipping.md`; also requires v2017_experiments.adaptive_verbosity='on'
   base_response_tokens: 2000,     // default delegation budget in tokens
   reducer_on_late_phase: 0.4,     // multiply budget for phases past midpoint (phase_position >= 0.5)
 });

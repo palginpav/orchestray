@@ -93,8 +93,8 @@ describe('DEFAULT_ADAPTIVE_VERBOSITY defaults', () => {
     assert.ok('reducer_on_late_phase' in DEFAULT_ADAPTIVE_VERBOSITY, 'must have reducer_on_late_phase');
   });
 
-  test('enabled defaults to false (feature is opt-in)', () => {
-    assert.strictEqual(DEFAULT_ADAPTIVE_VERBOSITY.enabled, false);
+  test('enabled defaults to true (v2.2.3 P3-W3 default-on flip per feedback_default_on_shipping.md)', () => {
+    assert.strictEqual(DEFAULT_ADAPTIVE_VERBOSITY.enabled, true);
   });
 
   test('base_response_tokens defaults to 2000', () => {
@@ -126,7 +126,8 @@ describe('loadAdaptiveVerbosityConfig — fail-open contract', () => {
     const tmpDir = makeTmpDir();
     try {
       const cfg = loadAdaptiveVerbosityConfig(tmpDir);
-      assert.strictEqual(cfg.enabled, false);
+      // v2.2.3 P3-W3: default-on flip per `feedback_default_on_shipping.md`
+      assert.strictEqual(cfg.enabled, true);
       assert.strictEqual(cfg.base_response_tokens, 2000);
       assert.strictEqual(cfg.reducer_on_late_phase, 0.4);
     } finally {
@@ -141,7 +142,7 @@ describe('loadAdaptiveVerbosityConfig — fail-open contract', () => {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, 'config.json'), '{ not valid json }');
       const cfg = loadAdaptiveVerbosityConfig(tmpDir);
-      assert.strictEqual(cfg.enabled, false);
+      assert.strictEqual(cfg.enabled, true);
       assert.strictEqual(cfg.base_response_tokens, 2000);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -153,7 +154,7 @@ describe('loadAdaptiveVerbosityConfig — fail-open contract', () => {
     try {
       writeConfig(tmpDir, { some_other_key: true });
       const cfg = loadAdaptiveVerbosityConfig(tmpDir);
-      assert.strictEqual(cfg.enabled, false);
+      assert.strictEqual(cfg.enabled, true);
       assert.strictEqual(cfg.base_response_tokens, 2000);
       assert.strictEqual(cfg.reducer_on_late_phase, 0.4);
     } finally {
@@ -166,7 +167,7 @@ describe('loadAdaptiveVerbosityConfig — fail-open contract', () => {
     try {
       writeConfig(tmpDir, { adaptive_verbosity: 'on' });
       const cfg = loadAdaptiveVerbosityConfig(tmpDir);
-      assert.strictEqual(cfg.enabled, false);
+      assert.strictEqual(cfg.enabled, true);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -177,7 +178,7 @@ describe('loadAdaptiveVerbosityConfig — fail-open contract', () => {
     try {
       writeConfig(tmpDir, { adaptive_verbosity: [true] });
       const cfg = loadAdaptiveVerbosityConfig(tmpDir);
-      assert.strictEqual(cfg.enabled, false);
+      assert.strictEqual(cfg.enabled, true);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
