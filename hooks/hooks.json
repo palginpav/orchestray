@@ -69,6 +69,15 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/calibrate-role-budgets.js --emit-cache --if-stale",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PreToolUse": [
