@@ -102,11 +102,66 @@ function resolveOrchestrationId(cwd) {
 }
 
 // ---------------------------------------------------------------------------
+// v2.2.3 Phase-2 W2 — role-budget baseline lookup.
+//
+// Reads `.orchestray/state/role-budgets.json` for the role's median/p95
+// per-spawn output-token figure. Used as the counter-factual baseline for
+// `output_shape_applied.baseline_output_tokens` so smart-shaping savings can
+// be A/B-evaluated against an observed_output_tokens populated by
+// `bin/observe-output-shape.js` on SubagentStop.
+//
+// Cache shapes accepted (mirrors `bin/_lib/output-shape.js#getRoleLengthCap`):
+//   Flat:    { "<role>": { "p95": <int>, "median": <int>, "budget_tokens": <int>, ... } }
+//   Wrapped: { "role_budgets": { "<role>": { "p95"|"budget_tokens": <int>, ... } } }
+//
+// Source labels surfaced on the event:
+//   - "p95_cache"            — preferred; from `--emit-cache` calibration
+//   - "budget_tokens_cache"  — fallback (v2.1.16 seed values)
+//   - "no_cache"             — file missing or role absent. baseline=null.
+//
+// Fail-open: any read or parse error → { baseline: null, source: 'no_cache' }.
+// ---------------------------------------------------------------------------
+
+function readRoleBaseline(role, cwd) {
+  try {
+    const cachePath = path.join(cwd, '.orchestray', 'state', 'role-budgets.json');
+    const raw = fs.readFileSync(cachePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') {
+      return { baseline: null, source: 'no_cache' };
+    }
+    // Flat form
+    if (parsed[role] && typeof parsed[role] === 'object') {
+      const e = parsed[role];
+      if (typeof e.p95 === 'number')           return { baseline: e.p95, source: 'p95_cache' };
+      if (typeof e.budget_tokens === 'number') return { baseline: e.budget_tokens, source: 'budget_tokens_cache' };
+    }
+    // Wrapped form
+    if (parsed.role_budgets && typeof parsed.role_budgets === 'object') {
+      const e = parsed.role_budgets[role];
+      if (e && typeof e === 'object') {
+        if (typeof e.p95 === 'number')           return { baseline: e.p95, source: 'p95_cache' };
+        if (typeof e.budget_tokens === 'number') return { baseline: e.budget_tokens, source: 'budget_tokens_cache' };
+      }
+    }
+    return { baseline: null, source: 'no_cache' };
+  } catch (_e) {
+    return { baseline: null, source: 'no_cache' };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Audit-event emission (always fail-soft)
 // ---------------------------------------------------------------------------
 
 function emitApplied(cwd, orchestration_id, session_id, role, shape) {
   try {
+    const lengthCap = typeof shape.length_cap === 'number' ? shape.length_cap : null;
+    // v2.2.3 Phase-2 W2: populate baseline + cap fields so the post-spawn
+    // observe-output-shape hook can compute savings = baseline - observed
+    // and cap_respected = (observed <= cap). category=none / structured-only
+    // get baseline=null, source=no_cache when the cache lookup fails.
+    const baselineInfo = readRoleBaseline(role, cwd);
     const payload = {
       version: 1,
       type: 'output_shape_applied',
@@ -120,8 +175,10 @@ function emitApplied(cwd, orchestration_id, session_id, role, shape) {
       category: shape.category,
       caveman: shape.caveman_text != null,
       structured: shape.output_config_format != null,
-      length_cap: typeof shape.length_cap === 'number' ? shape.length_cap : null,
-      baseline_output_tokens: null,
+      length_cap: lengthCap,
+      baseline_output_tokens: baselineInfo.baseline,
+      baseline_source: baselineInfo.source,
+      cap_output_tokens: lengthCap,
       observed_output_tokens: null,
       accuracy_holds: null,
       reason: shape.reason || null,
