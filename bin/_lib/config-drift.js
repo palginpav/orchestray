@@ -170,6 +170,9 @@ const KNOWN_TOP_LEVEL_KEYS = Object.freeze([
   'output_shape',
   'pm_protocol',
 
+  // v2.2.3 P4 W2 A3: PM-router Haiku entry-point gateway. Default-on.
+  'pm_router',
+
   // Meta
   'config_drift_silence',
 ]);

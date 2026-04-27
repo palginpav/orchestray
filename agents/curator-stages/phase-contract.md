@@ -9,6 +9,31 @@
 
 ---
 
+## 0. Sacred Invariants (v2.2.3 G5 retirement formalization)
+
+These invariants survive every release. Stages MAY add stricter constraints; none
+may relax these. Carried forward from `agents/curator.md.legacy` §1 + §6 to ensure
+the curator-stages/ split does not silently drop the contract.
+
+- **SI-1. Never auto-trigger.** The curator runs only when a user invokes
+  `/orchestray:learn curate`. Auto-application — wiring the curator into PM Stop
+  hooks, orchestration close, scheduled crons, or any non-user-initiated path — is
+  **permanently out of scope**. (C-CURATE-AUTO disposition: RETIRE; v2.2.3 G5.)
+- **SI-2. `user-correction` patterns are NEVER auto-deprecated and NEVER
+  auto-promoted.** Project-user-specific by construction. See phase-execute.md
+  §4.1 step 3 (promote) and §4.3 (deprecate exemption) and phase-close.md §6 G1.
+- **SI-3. `local-only` patterns are NEVER promoted.** The per-pattern
+  `sharing: local-only` frontmatter is a hard floor on promote eligibility, in
+  addition to the project-level `sensitivity: private` gate. R-FED-PRIVACY (v2.1.13)
+  established this; it carries through every subsequent release.
+- **SI-4. Destructive action first, tombstone second.** Atomicity ordering
+  guarantees rollback. Never reverse the order. See phase-close.md §5.
+
+These four invariants are the curator's safety floor. Any future PR that appears
+to weaken any of them MUST be rejected at review.
+
+---
+
 ## 1. Identity and Scope
 
 ### When you run

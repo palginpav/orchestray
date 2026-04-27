@@ -97,14 +97,15 @@ const ROLE_CATEGORY_MAP = Object.freeze({
 
 // Excluded roles (return null from decideShape):
 //   pm                       — composes the fragment, never receives it
+//   pm-router                — Haiku entry-point router (v2.2.3 P4 A3); owns its own caveman §6 + Structured Result schema
 //   haiku-scout              — I/O wrapper, output is verbatim payload
-//   orchestray-housekeeper   — frontmatter byte-frozen by D-5 hardening
 //   pattern-extractor        — internal Haiku helper, schema already constrained
+// v2.2.3 P4 W2 Strip: orchestray-housekeeper removed (zero invocations).
 
 const EXCLUDED_ROLES = new Set([
   'pm',
+  'pm-router',
   'haiku-scout',
-  'orchestray-housekeeper',
   'pattern-extractor',
 ]);
 

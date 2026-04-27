@@ -3,6 +3,7 @@
 
 /**
  * Tests for bin/validate-reviewer-scope.js — v2.1.9 Bundle B1 / I-03.
+ * v2.2.3 E3/B7: warn-only → exit-2 hard-block on unscoped reviewer delegation.
  */
 
 const { test, describe } = require('node:test');
@@ -60,9 +61,9 @@ describe('validate-reviewer-scope — shouldValidate', () => {
   });
 });
 
-describe('validate-reviewer-scope — integration (never blocks)', () => {
-  test('warn path: exit 0 but emits reviewer_scope_warn event', () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vrs-warn-'));
+describe('validate-reviewer-scope — integration (v2.2.3 hard-block)', () => {
+  test('block path: exit 2 and emits reviewer_scope_warn event with action=block', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vrs-block-'));
     const res = spawnSync('node', [HOOK], {
       input: JSON.stringify({
         tool_name: 'Agent',
@@ -76,11 +77,17 @@ describe('validate-reviewer-scope — integration (never blocks)', () => {
       encoding: 'utf8',
       timeout: 10_000,
     });
-    assert.equal(res.status, 0, 'reviewer-scope must NEVER block (soft gate v2.1.9)');
+    assert.equal(res.status, 2, 'reviewer-scope MUST hard-block in v2.2.3 (E3/B7)');
+    assert.match(res.stderr, /BLOCK/);
+    // Decision payload must signal block to upstream hook consumer.
+    const stdoutObj = JSON.parse(res.stdout);
+    assert.equal(stdoutObj.continue, false);
+    assert.match(stdoutObj.stopReason || '', /explicit file list/i);
     const auditPath = path.join(tmp, '.orchestray', 'audit', 'events.jsonl');
     assert.ok(fs.existsSync(auditPath));
     const raw = fs.readFileSync(auditPath, 'utf8');
     assert.match(raw, /reviewer_scope_warn/);
+    assert.match(raw, /"action":"block"/);
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -120,6 +127,18 @@ describe('validate-reviewer-scope — integration (never blocks)', () => {
     assert.equal(res.status, 0);
     const auditPath = path.join(tmp, '.orchestray', 'audit', 'events.jsonl');
     assert.ok(!fs.existsSync(auditPath));
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('fail-open: malformed JSON input → exit 0 (never block on parse failure)', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vrs-failopen-'));
+    const res = spawnSync('node', [HOOK], {
+      input: 'this is not json {{',
+      cwd: tmp,
+      encoding: 'utf8',
+      timeout: 10_000,
+    });
+    assert.equal(res.status, 0, 'malformed input must fail-open (exit 0)');
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 });

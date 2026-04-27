@@ -5,7 +5,8 @@
  * v223-haiku-routing-fix.test.js — v2.2.3 P0-1 Haiku-routing fix coverage.
  *
  * Validates three independent fixes:
- *   Fix A1: PM tools allowlist now includes haiku-scout + orchestray-housekeeper
+ *   Fix A1: PM tools allowlist includes haiku-scout (post-v2.2.3 P4 W2 Strip,
+ *           orchestray-housekeeper removed; zero invocations across 7 orchs)
  *           (Claude Code subagent dispatch precondition).
  *   Fix A2: Resolver CANONICAL_AGENTS_ALLOWLIST now includes the four Haiku-default
  *           agents — Stage-2 frontmatter resolution actually fires for them.
@@ -99,17 +100,18 @@ function readEvents(dir) {
 // ---------------------------------------------------------------------------
 
 describe('Fix A1 — PM tools allowlist includes Haiku agents', () => {
-  test('agents/pm.md `tools:` line lists haiku-scout and orchestray-housekeeper', () => {
+  test('agents/pm.md `tools:` line lists haiku-scout (post v2.2.3 P4 W2 strip)', () => {
     const pmContent = fs.readFileSync(path.join(REPO_ROOT, 'agents', 'pm.md'), 'utf8');
     const toolsLine = pmContent.split('\n').find(l => l.startsWith('tools:'));
     assert.ok(toolsLine, 'PM file must have a tools: line');
-    // Both must appear inside the Agent(...) cluster
     const agentMatch = toolsLine.match(/Agent\(([^)]+)\)/);
     assert.ok(agentMatch, 'tools: line must include Agent(...) cluster');
     const agentList = agentMatch[1];
     assert.match(agentList, /\bhaiku-scout\b/, 'haiku-scout must be in PM Agent allowlist');
-    assert.match(agentList, /\borchestray-housekeeper\b/, 'orchestray-housekeeper must be in PM Agent allowlist');
     assert.match(agentList, /\bproject-intent\b/, 'project-intent must remain in PM Agent allowlist');
+    // v2.2.3 P4 W2 Strip: orchestray-housekeeper removed (zero invocations).
+    assert.doesNotMatch(agentList, /\borchestray-housekeeper\b/,
+      'orchestray-housekeeper must be REMOVED from PM Agent allowlist');
   });
 });
 
@@ -118,7 +120,8 @@ describe('Fix A1 — PM tools allowlist includes Haiku agents', () => {
 // ---------------------------------------------------------------------------
 
 describe('Fix A2 — resolver Stage-2 fires for canonical Haiku agents', () => {
-  for (const agentType of ['haiku-scout', 'orchestray-housekeeper', 'project-intent', 'pattern-extractor']) {
+  // v2.2.3 P4 W2 Strip: orchestray-housekeeper removed.
+  for (const agentType of ['haiku-scout', 'project-intent', 'pattern-extractor']) {
     test(agentType + ' resolves to haiku via frontmatter_default', () => {
       const dir = makeOrchDir();
       writeAgentFrontmatter(dir, agentType, 'haiku');
@@ -339,7 +342,8 @@ describe('Fix B — bin/migrate-routing-jsonl.js purges stale entries', () => {
 // ---------------------------------------------------------------------------
 
 describe('Fix D — Haiku agent frontmatter unchanged and correct', () => {
-  for (const agentType of ['haiku-scout', 'orchestray-housekeeper', 'project-intent', 'pattern-extractor']) {
+  // v2.2.3 P4 W2 Strip: orchestray-housekeeper removed.
+  for (const agentType of ['haiku-scout', 'project-intent', 'pattern-extractor']) {
     test(agentType + ' has model: haiku and effort: low', () => {
       const filePath = path.join(REPO_ROOT, 'agents', agentType + '.md');
       const content = fs.readFileSync(filePath, 'utf8');

@@ -37,6 +37,7 @@ budget_warn — pre-spawn context-size budget exceeded (hook, v2.1.15)
 phase_slice_fallback — phase-slice hook degraded path (no orchestration / unknown phase / missing slice file) (hook, v2.1.15 W8)
 phase_slice_injected — phase-slice hook positive path (slice pointer staged into PM additionalContext) (hook, v2.1.16 W9 R-PHASE-INJ)
 repo_map_built / repo_map_parse_failed / repo_map_grammar_load_failed / repo_map_cache_unavailable — Aider-style repo map events (v2.1.17 W8 R-AIDER-FULL)
+pm_router_decision / pm_router_complete / pm_router_solo_complete — PM-router (Haiku entry-point gateway) decision + terminal + solo-only events (hook, v2.2.3 P4 A3)
 
 END CONDITIONAL-LOAD NOTICE -->
 
@@ -2479,9 +2480,10 @@ than one tier.
 **Field notes:**
 - `slug`: The pattern slug that appeared in multiple tiers.
 - `winning_tier`: The tier whose copy of the pattern was returned to the caller.
-  Precedence: `"local"` > `"team"` > `"shared"`. In v2.1.0, `pattern_find` only loads
-  Tier 1 (`"local"`) and Tier 3 (`"shared"`); `"team"` is reserved for the v2.2+ 3-tier
-  wire-in and will not appear in emitted events.
+  Precedence: `"local"` > `"team"` > `"shared"`. As of v2.1.0–v2.2.3, `pattern_find`
+  loads only Tier 1 (`"local"`) and Tier 3 (`"shared"`); `"team"` is reserved for the
+  v2.4+ 3-tier wire-in (R-FED-SYNC flagship; cross-machine federation sync) and will
+  not appear in emitted events on installs through v2.2.3.
 - `losing_tier`: The tier whose copy was discarded. Same `"team"` reservation as above.
 - `context`: Always `"pattern_find"` in v2.1.0. Reserved for future contexts (e.g.,
   a bulk collision scan command).
@@ -2531,8 +2533,10 @@ each item in the returned pattern or artifact list carries a `source` field:
 
 **`source` enum values:**
 - `"local"` — pattern is from `.orchestray/patterns/` (Tier 1, project-local).
-- `"team"` — **reserved for v2.2+ 3-tier wire-in; not emitted by v2.1.0 `pattern_find`.**
-  The `team-patterns/` directory is preserved but not loaded by the MCP tool in v2.1.0.
+- `"team"` — **reserved for v2.4+ 3-tier wire-in (R-FED-SYNC flagship); not emitted by
+  `pattern_find` on installs through v2.2.3.** The `team-patterns/` directory is
+  preserved on disk but not loaded by the MCP tool until cross-machine federation sync
+  ships.
 - `"shared"` — pattern is from `~/.orchestray/shared/patterns/` (Tier 3, user-global advisory).
 
 **Consumer guidance:** the PM MUST propagate the `source` field when citing a pattern
@@ -2540,9 +2544,9 @@ in a decomposition plan or orchestration summary (see §22b-federation source tr
 rule). Analytics consumers can group by `source` to measure shared-tier adoption.
 
 When `federation.shared_dir_enabled: false`, all returned patterns have `source: "local"`.
-In v2.1.0, `pattern_find` populates only `"local"` and `"shared"`; `source: "team"` is
-reserved for v2.2+ per the note above. The `source` field is always present in v2.1.0+
-`pattern_find` results, even when federation is disabled.
+On installs through v2.2.3, `pattern_find` populates only `"local"` and `"shared"`;
+`source: "team"` is reserved for v2.4+ per the note above. The `source` field is always
+present in v2.1.0+ `pattern_find` results, even when federation is disabled.
 
 **Schema stability:** additive only.
 
@@ -4276,8 +4280,9 @@ Field notes:
   - `disabled_by_config`: top-level `enable_repo_map: false` OR
     `repo_map.enabled: false`.
   - `agent_opted_out`: `subagent_type` is on the per-spawn opt-out list
-    (`haiku-scout`, `orchestray-housekeeper`, `project-intent`,
-    `pattern-extractor` — Haiku-default agents on size-bounded scoped tasks).
+    (`haiku-scout`, `pm-router`, `project-intent`, `pattern-extractor`
+    — Haiku-default agents on size-bounded scoped tasks; v2.2.3 P4 W2
+    stripped `orchestray-housekeeper` and added `pm-router`).
   - `size_exceeded`: heading absent AND on-disk
     `.orchestray/kb/facts/repo-map.md` is bigger than
     `repo_map.max_inject_bytes`. Configured but rare.
@@ -5709,198 +5714,134 @@ Schema stability: additive-only.
 
 ---
 
-### `housekeeper_action` event
+### `pm_router_decision` event
 
-Audit row emitted by the `orchestray-housekeeper` subagent's PostToolUse path
-(or by the PM at spawn-time, depending on emit-site choice). One row per
-housekeeper operation. Written via `bin/_lib/audit-event-writer.js` to
-`.orchestray/audit/events.jsonl`. Per Clause 4 of the locked-scope D-5
-hardening contract.
-
-```json
-{
-  "version": 1,
-  "type": "housekeeper_action",
-  "timestamp": "2026-04-26T12:34:56.789Z",
-  "orchestration_id": "orch-1777200000",
-  "session_id": "uuid-or-null",
-  "op_type": "kb-write-verify",
-  "target_bytes": 4096,
-  "savings_claimed_usd": 0.008,
-  "marker_received": "[housekeeper: write /abs/path]"
-}
-```
-
-Field notes:
-
-- `op_type`: one of `kb-write-verify`, `regen-schema-shadow`,
-  `rollup-recompute`. Other values are validation errors and indicate
-  scope drift.
-- `target_bytes`: integer — total bytes the housekeeper Read in this op.
-- `savings_claimed_usd`: PM-computed estimate of $ saved vs inline-Opus
-  equivalent. May be `0` or negative on misclassification.
-- `marker_received`: the literal `[housekeeper: ...]` marker string the PM
-  emitted. Used for drift-from-scope analysis.
-- `orchestration_id`: from `.orchestray/state/current-orchestration.json`;
-  null if no active orchestration.
-
-**Cardinality:** ~3-15 rows per orchestration in mid-load orchestrations.
-The 90-day rolling rollup answers "is this agent still in scope?" by
-counting the distribution of `op_type` values — a non-three-class
-distribution indicates drift requiring investigation.
-
-**Cross-references:** `pm.md §23f` (marker contract), `haiku-routing.md
-§23f` (housekeeper section), `cost-prediction.md §32` (savings math +
-promotion gate).
-
-**Promotion gate:** the v2.2.1+ tool-extension release is gated on ≥ 100
-`housekeeper_action` events with zero `housekeeper_forbidden_tool_blocked`
-events. See `cost-prediction.md §32`.
-
-Schema stability: additive-only.
-
-
----
-
-### `housekeeper_drift_detected` event
-
-Diagnostic event emitted by `bin/audit-housekeeper-drift.js` (SessionStart
-hook) when the current `agents/orchestray-housekeeper.md` SHA-256 OR
-`tools:` line diverges from the baseline pinned in
-`bin/_lib/_housekeeper-baseline.js`. Fires on every SessionStart that
-detects drift (one event per session — the hook runs once at session
-start). Side effect: the hook writes a quarantine sentinel at
-`.orchestray/state/housekeeper-quarantined`; `bin/gate-agent-spawn.js`
-refuses housekeeper spawns until the sentinel is removed. Per Clause 3
-of the locked-scope D-5 hardening contract.
+Observational audit row emitted by `bin/inject-pm-router-decision.js`
+(PreToolUse:Agent hook) on every `Agent(subagent_type="pm-router", ...)`
+spawn. Records the canonical `decideRoute()` predicate's verdict against
+the user's prompt so the post-hoc telemetry pipeline can compare hook-side
+prediction vs the router agent's actual decision (recorded later by
+`pm_router_complete`). Hook is observational — it never blocks the spawn.
+Per v2.2.3 P4 W2 A3 design.
 
 ```json
 {
   "version": 1,
-  "type": "housekeeper_drift_detected",
-  "timestamp": "2026-04-26T12:34:56.789Z",
-  "orchestration_id": "orch-1777200000",
-  "hook": "audit-housekeeper-drift",
-  "previous_sha": "c170f96e...",
-  "current_sha": "deadbeef...",
-  "previous_tools": "tools: [Read, Glob]",
-  "current_tools": "tools: [Read, Glob, Bash]",
-  "reason": "sha_and_tools"
-}
-```
-
-Field notes:
-
-- `previous_sha`: the baseline SHA-256 from `_housekeeper-baseline.js`.
-- `current_sha`: the just-computed SHA of the current agent file.
-  `null` if the agent file is missing.
-- `previous_tools`: the baseline `tools:` line.
-- `current_tools`: the just-extracted `tools:` line. `null` if the agent
-  file is missing.
-- `reason`: one of `sha_only`, `tools_only`, `sha_and_tools`,
-  `agent_file_missing`.
-- `hook`: always `audit-housekeeper-drift` for this event type.
-
-**Cross-references:** Clause 3 of locked-scope D-5,
-`bin/audit-housekeeper-drift.js`, `cost-prediction.md §32` (promotion gate
-requires zero of these for ≥ 60 days).
-
-**Operator response on emission:** investigate the diff between
-`agents/orchestray-housekeeper.md` and the baseline; either revert the
-agent file OR (if the change is sanctioned) update
-`_housekeeper-baseline.js` AND `p33-housekeeper-whitelist-frozen.test.js`
-in a commit tagged `[housekeeper-tools-extension]`. The quarantine
-sentinel (`.orchestray/state/housekeeper-quarantined`) clears
-automatically on the first clean SessionStart post-fix.
-
-Schema stability: additive-only.
-
-
----
-
-### `housekeeper_forbidden_tool_blocked` event
-
-Diagnostic event emitted by `bin/validate-task-completion.js` (TaskCompleted
-/ SubagentStop hook) when the `orchestray-housekeeper` subagent is observed
-calling a forbidden tool (`Edit`, `Write`, `Bash`, or `Grep`). Fires AFTER
-the structural 3-layer enforcement (frontmatter `tools:` whitelist + runtime
-rejection + `p33-housekeeper-whitelist-frozen.test.js` byte-equality check)
-catches the violation. The event records the violation for analytics; the
-hook also exits 2 to block the offending TaskCompleted payload. Per
-Clause 2 layer (b) of the locked-scope D-5 hardening contract.
-
-**Note:** the housekeeper's forbidden set is STRICTER than the scout's — it
-includes `Grep`. Scout permits `Grep`; housekeeper does not. This is
-intentional per Clause 1 of locked-scope D-5.
-
-```json
-{
-  "version": 1,
-  "type": "housekeeper_forbidden_tool_blocked",
-  "timestamp": "2026-04-26T12:34:56.789Z",
-  "orchestration_id": "orch-1777200000",
-  "hook": "validate-task-completion",
-  "agent_role": "orchestray-housekeeper",
-  "forbidden_tools": ["Grep"],
+  "type": "pm_router_decision",
+  "timestamp": "2026-04-27T10:00:00.000Z",
+  "orchestration_id": "pre_orch",
+  "task_id": "router-l9s7q1-x8a4f0",
+  "task_summary": "fix typo in README",
+  "lite_score": 1,
+  "decision": "solo",
+  "reason": "all_signals_simple",
+  "task_word_count": 4,
+  "task_path_count": 1,
+  "model": "haiku",
+  "router_version": "v223-a3",
   "session_id": "uuid-or-null"
 }
 ```
 
 Field notes:
 
-- `agent_role`: always `orchestray-housekeeper` for this event type.
-- `forbidden_tools`: the tool names from `event.tool_calls` that
-  intersected the housekeeper's forbidden set
-  `{Edit, Write, Bash, Grep}`. Tolerant to varied payload shapes.
-- `session_id`: the session id from the hook payload, or null when
-  unavailable.
-- `hook`: always `validate-task-completion` for this event type.
+- `decision`: one of `solo`, `escalate`, `decline`.
+- `reason`: enum — `all_signals_simple`, `keyword_denylist_hit`,
+  `file_count_over_threshold`, `task_too_long`, `multi_step_imperative`,
+  `lite_score_over_threshold`, `control_flow_keyword`, `router_disabled`,
+  `parse_error_fail_safe`, `preview_mode_forced`.
+- `lite_score`: integer 0..12 — sum of file-count, cross-cutting,
+  description-length, and keyword-pattern sub-scores.
+- `task_summary`: ≤80 char preview of the prompt.
+- `router_version`: pinned `v223-a3` so future predicate retunes can be
+  filtered out of historical analytics.
 
-**Cross-references:** Clause 2 layer (b) of locked-scope D-5,
-`bin/validate-task-completion.js` `READ_ONLY_AGENT_FORBIDDEN_TOOLS` map,
-`p33-housekeeper-tool-runtime-rejection.test.js`,
-`cost-prediction.md §32` (zero-violations promotion-gate criterion).
+**Cross-references:** `bin/_lib/pm-router-rule.js` (canonical predicate),
+`agents/pm-router.md` §1 (decision protocol),
+`.orchestray/kb/artifacts/v223-p4-a3-router-design.md` §6.
 
 Schema stability: additive-only.
 
+
 ---
 
-### `housekeeper_baseline_missing` event
+### `pm_router_complete` event
 
-Emitted by `bin/audit-housekeeper-drift.js` (Clause 3 of locked-scope D-5
-hardening contract) on SessionStart when the baseline file
-`bin/_lib/_housekeeper-baseline.js` is missing or unreadable. Fail-CLOSED
-contract: drift detector also writes `.orchestray/state/housekeeper-quarantined`
-sentinel, which `bin/gate-agent-spawn.js` honors to refuse all housekeeper
-spawn attempts until the baseline is restored.
+Terminal audit row emitted by `bin/capture-pm-router-stop.js`
+(SubagentStop hook) when the `pm-router` agent finishes. Parses the
+agent's last assistant message Structured Result for `decision`, `reason`,
+`routing_path`, and `delegation_target_agent_id`. Comparing the hook's
+`pm_router_decision.decision` (planned) against this row's
+`decision_taken` (actual) gives `decision_disagreement` rate — the QA
+signal for prompt/rule divergence.
 
 ```json
 {
-  "type": "housekeeper_baseline_missing",
   "version": 1,
-  "timestamp": "ISO 8601",
-  "orchestration_id": "orch-xxx-or-unknown",
-  "baseline_path": "bin/_lib/_housekeeper-baseline.js",
-  "reason": "missing|unreadable|malformed",
-  "quarantine_sentinel_written": true,
-  "session_id": "uuid-or-null",
-  "hook": "audit-housekeeper-drift"
+  "type": "pm_router_complete",
+  "timestamp": "2026-04-27T10:00:05.000Z",
+  "orchestration_id": "pre_orch",
+  "task_id": "router-l9s7q1-x8a4f0",
+  "decision_taken": "solo",
+  "reason_taken": "all_signals_simple",
+  "routing_path": "router_solo",
+  "escalation_target_orch_id": null,
+  "files_changed_count": 1,
+  "session_id": "uuid-or-null"
 }
 ```
 
 Field notes:
 
-- `reason`: enum — `missing` (file not present), `unreadable` (file present
-  but `require()` threw), `malformed` (file loaded but expected exports
-  `BASELINE_AGENT_SHA` / `BASELINE_TOOLS_LINE` are absent or non-string).
-- `quarantine_sentinel_written`: `true` if the drift detector successfully
-  wrote `.orchestray/state/housekeeper-quarantined`.
-- Paired with `housekeeper_drift_detected` (different trigger — drift
-  compares current vs baseline; this fires when baseline is unavailable).
+- `decision_taken`: copy of the agent's `decision` field (`solo`,
+  `escalate`, `decline`). May be `null` if the Structured Result was
+  malformed (which is itself a signal).
+- `routing_path`: copy of `routing_path` from the Structured Result —
+  `router_solo`, `router_escalated`, or `router_declined`.
+- `escalation_target_orch_id`: the spawned PM's orchestration_id when
+  `decision_taken === "escalate"`; null otherwise.
+- `files_changed_count`: integer — bounded by `pm_router.solo_max_files`
+  on solo paths.
 
-**Cross-references:** Clause 3 of locked-scope D-5,
-`bin/audit-housekeeper-drift.js`, `bin/gate-agent-spawn.js`,
-`p33-housekeeper-baseline-missing.test.js` (fail-CLOSED test).
+**Cross-references:** `pm_router_decision` (paired observational row),
+`pm_router_solo_complete` (fires only on solo path).
+
+Schema stability: additive-only.
+
+
+---
+
+### `pm_router_solo_complete` event
+
+Emitted by `bin/capture-pm-router-stop.js` only when the router's
+Structured Result has `decision === "solo"`. Records the solo-path
+outcome (success/partial/failure) plus the file lists for analytics.
+
+```json
+{
+  "version": 1,
+  "type": "pm_router_solo_complete",
+  "timestamp": "2026-04-27T10:00:05.000Z",
+  "orchestration_id": "pre_orch",
+  "task_id": "router-l9s7q1-x8a4f0",
+  "files_changed": ["README.md"],
+  "files_read": ["README.md"],
+  "solo_outcome": "success",
+  "session_id": "uuid-or-null"
+}
+```
+
+Field notes:
+
+- `solo_outcome`: one of `success`, `partial`, `failure`, `unknown`.
+  Mirrors the agent's `status` field; `unknown` when missing.
+- `files_changed`: the literal array from the Structured Result, bounded
+  by `pm_router.solo_max_files`.
+
+**Cross-references:** `pm_router_complete` (always-emit terminal row;
+this event is the conditional sibling). Promotion gate (none — A3 is
+default-on by design); v2.2.4 may tighten predicate based on aggregate
+`solo_outcome` rate (target ≥85%).
 
 Schema stability: additive-only.
 

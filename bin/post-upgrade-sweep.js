@@ -218,15 +218,11 @@ function emitUpgradePendingWarning(sessionId, cwd) {
       '(haiku_routing.enabled: true, scout_min_bytes: 12288). Per-session opt-out: ' +
       'ORCHESTRAY_HAIKU_ROUTING_DISABLED=1. Permanent disable in .orchestray/config.json.\n'
     );
-    // v2.2.0 P3.3: housekeeper Haiku is enabled by default. Tools FROZEN at
-    // [Read, Glob]; three-layer enforcement (frontmatter + runtime hook + CI test);
-    // drift detector quarantines on any agent-file mutation. Per locked-scope D-5.
-    process.stderr.write(
-      '[orchestray] v2.2.0 migration: orchestray-housekeeper Haiku subagent is enabled ' +
-      'by default (haiku_routing.housekeeper_enabled: true). Tools FROZEN at [Read, Glob]; ' +
-      'drift detector quarantines on any baseline mismatch. Per-session opt-out: ' +
-      'ORCHESTRAY_HOUSEKEEPER_DISABLED=1. Permanent disable in .orchestray/config.json.\n'
-    );
+    // v2.2.3 P4 W2: orchestray-housekeeper subagent removed (zero
+    // invocations across 7 post-v2.2.0 orchs). The corresponding banner
+    // line is dropped; no replacement message is required because the
+    // strip removes a feature rather than introduces one. v2.2.3 P4 A3
+    // (PM-router) has its own banner below.
     // v2.2.0 pre-ship F-003 (cross-phase fix-pass): five additional Phase-1/3
     // default-on flips were unannounced in the original v2.2.0 banner. Per
     // locked-scope §default-on policy, EVERY default-on flip must be visible
@@ -270,6 +266,14 @@ function emitUpgradePendingWarning(sessionId, cwd) {
       '(audit.round_archive.enabled: true). Each verify-fix round closure emits ' +
       'audit_round_closed/audit_round_archived telemetry and writes a per-orchestration digest. ' +
       'No env override; permanent disable: set audit.round_archive.enabled: false in .orchestray/config.json.\n'
+    );
+    // v2.2.3 P4 A3 — PM-router Haiku entry-point gateway.
+    process.stderr.write(
+      '[orchestray] v2.2.3 migration: PM-router (Haiku entry-point gateway) is enabled by ' +
+      'default (pm_router.enabled: true). The /orchestray:run skill now spawns pm-router ' +
+      'first; trivial single-file tasks finish at Haiku rates, complex tasks escalate to ' +
+      'the Opus PM unchanged. Per-session opt-out: ORCHESTRAY_DISABLE_PM_ROUTER=1. ' +
+      'Permanent disable: set pm_router.enabled: false in .orchestray/config.json.\n'
     );
     recordDegradation({
       kind: 'agent_registry_stale',

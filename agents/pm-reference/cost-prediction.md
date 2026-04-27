@@ -91,64 +91,13 @@ owns this gate; reviewers confirm the criteria are met before sign-off.
 
 ---
 
-## Section 32 — Background-housekeeper Haiku (P3.3) cost model + promotion path
+<!--
+v2.2.3 P4 W2 Strip: Section 32 (Background-housekeeper Haiku cost model
++ promotion path) removed. The orchestray-housekeeper subagent shipped
+in v2.2.0 but never fired (0 invocations across 7 post-v2.2.0 orchs).
+Real cost savings: ~$0.05/year — well below noise. Reintroduction (if
+any) will use an explicit MCP tool with verifiable cost telemetry, not
+marker prose. See .orchestray/kb/artifacts/v223-p3-housekeeper-decision.md
+and v223-p4-strip-and-a3-impl.md.
+-->
 
-The v2.2.0 P3.3 design introduces the `orchestray-housekeeper` subagent for
-three narrow-scope background ops (KB-write verification, schema-shadow regen
-diff, telemetry rollup recompute). Tools FROZEN at `[Read, Glob]` ONLY.
-
-### Per-call cost components
-
-| Component | Inline-Opus path | Housekeeper path |
-|---|---|---|
-| File content read | included in PM's own usage | small at $1/M (Haiku input) |
-| System+delegation prompt | n/a | ~$0.001-0.003/spawn at full $1/M input rate |
-| Output tokens | small at $25/M (Opus) | small at $5/M (Haiku) |
-
-**Per-call cost (typical: 5–20 KB Read, structured-result echo back):**
-
-- Inline Opus xhigh: ~$0.005–$0.015 (mostly cache-read).
-- Housekeeper: ~$0.001–$0.003 per spawn.
-- Net savings: ~$0.005–$0.012 per call. Qualitative until P1.1 telemetry lands.
-
-Typical M-orch fires 3–8 housekeeper ops → $0.015–$0.10/orch. Stacked with
-P2.2 scout savings (per §31a) and P2.1 cache geometry (per §6.T).
-
-### v2.2.1+ promotion gate (binding — all four criteria required)
-
-Per locked-scope D-5 contract: "limited tools → proven solid → extend tools
-in future versions." A v2.2.1+ release that broadens the housekeeper's tool
-list (e.g., adds Grep) MUST satisfy ALL FOUR:
-
-1. **≥ 60 days** of zero `housekeeper_drift_detected` events. The drift
-   detector (`bin/audit-housekeeper-drift.js`) has run on every SessionStart
-   for ≥ 60 days without firing → the agent file is stable.
-2. **≥ 100 `housekeeper_action` events** with zero
-   `housekeeper_forbidden_tool_blocked` events. The agent has performed ≥ 100
-   ops without ever attempting a forbidden tool → the read-only contract is
-   genuinely honored.
-3. **Explicit commit tagged `[housekeeper-tools-extension]`** updating BOTH
-   `agents/orchestray-housekeeper.md` AND `bin/_lib/_housekeeper-baseline.js`.
-   Both files MUST update in the same commit; otherwise the drift detector
-   quarantines on the first SessionStart post-merge.
-4. **Updated test row in `bin/__tests__/p33-housekeeper-whitelist-frozen.test.js`**
-   — the new expected `tools:` line. The test fails immediately on the first
-   run after the merge if this is forgotten.
-
-### Reverse path (rollback)
-
-If post-extension telemetry shows `housekeeper_forbidden_tool_blocked`
-firing (drift in the wrong direction), the rollback is identical in shape: a
-commit tagged `[housekeeper-tools-rollback]` reducing the tool list back to
-a previous known-good baseline. The same atomicity rules apply.
-
-### Three-layer enforcement summary
-
-| Layer | Surface | Effect |
-|---|---|---|
-| (a) frontmatter | `tools: [Read, Glob]` in `agents/orchestray-housekeeper.md` | Declarative whitelist. |
-| (b) runtime | `bin/validate-task-completion.js` `READ_ONLY_AGENT_FORBIDDEN_TOOLS` map | Exit-2 + `housekeeper_forbidden_tool_blocked` event on `Edit`/`Write`/`Bash`/`Grep`. |
-| (c) CI | `bin/__tests__/p33-housekeeper-whitelist-frozen.test.js` byte-equality vs `BASELINE_TOOLS_LINE` | Test fails on any unsanctioned mutation. |
-
-The architect (not the reviewer) owns this gate; reviewers confirm the
-criteria are met before sign-off.

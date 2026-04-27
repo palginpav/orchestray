@@ -238,7 +238,7 @@ function upsertSidecar(cwd, orchestrationId, roundN, entry) {
 // `bin/ox.js` uses at `state init`. Any value that contains `..`, `/`,
 // `\`, or other path-significant characters would let `path.join` resolve
 // outside `.orchestray/kb/artifacts/` and overwrite arbitrary `.md` files
-// (e.g., `agents/orchestray-housekeeper.md` — a Clause 1+3 attack).
+// (e.g., `agents/pm.md` — a path-traversal attack).
 // CWE-22 path traversal.
 const ORCH_ID_RE = /^orch-[a-zA-Z0-9_-]+$/;
 

@@ -3,6 +3,13 @@
 > Active during curator decision-making phase (promote, merge, deprecate evaluation).
 > Always load curator-stages/phase-contract.md alongside this file.
 > Input gathering described in (see phase-decomp.md §"2. Inputs You Read Every Run").
+>
+> **Sacred invariants applicable here** (see phase-contract.md §0):
+> - **SI-2** `user-correction` patterns are never auto-promoted (§4.1 step 3) and
+>   never auto-deprecated (§4.3 user-correction exempt clause).
+> - **SI-3** `local-only` patterns are never promoted, regardless of confidence
+>   or `times_applied`. Add this check ahead of §4.1 step 4 ("not already in
+>   shared tier") so the floor is enforced before tier-presence logic runs.
 
 ---
 

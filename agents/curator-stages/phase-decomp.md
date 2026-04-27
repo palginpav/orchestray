@@ -2,6 +2,12 @@
 
 > Active during curator input-gathering phase.
 > Always load curator-stages/phase-contract.md alongside this file.
+>
+> **Sacred invariants applicable here** (see phase-contract.md §0):
+> - **SI-1** Never auto-trigger — input gathering only fires under explicit
+>   `/orchestray:learn curate` invocation.
+> - **SI-3** `local-only` patterns must be flagged at read-time so downstream
+>   stages cannot silently promote them.
 
 ---
 

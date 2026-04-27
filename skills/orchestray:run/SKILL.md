@@ -7,7 +7,7 @@ argument-hint: "[--preview] [task description]"
 
 # Orchestrate Task
 
-You are receiving this because the user invoked `/orchestray:run`. Orchestrate the following task using your multi-agent delegation protocol.
+You are receiving this because the user invoked `/orchestray:run`. v2.2.3 P4 A3 introduced the **`pm-router`** Haiku entry-point gateway: trivial single-file tasks finish at Haiku rates, complex tasks escalate to the Opus PM unchanged.
 
 <!-- W8 v2.0.18: --preview flag handling (UX2)
   If $ARGUMENTS contains the token "--preview" (anywhere in the string):
@@ -22,58 +22,55 @@ You are receiving this because the user invoked `/orchestray:run`. Orchestrate t
 <!-- Strip "--preview" from the raw arguments to get the actual task description. -->
 $ARGUMENTS
 
-## Orchestration Instructions
+## Routing Instructions
 
-Follow this protocol for the task above:
+1. **Read configuration**: Read `.orchestray/config.json` if it exists. Check `pm_router.enabled` (default `true`) and the env var `ORCHESTRAY_DISABLE_PM_ROUTER`.
 
-1. **Check for interrupted orchestration**: Read `.orchestray/state/orchestration.md`. If an interrupted orchestration exists, ask the user whether to resume it or start fresh. (See Section 7 Auto-Detect Resume in your system prompt.)
+2. **Default-on path — invoke `pm-router`**: when `pm_router.enabled` is `true` (or absent) AND `ORCHESTRAY_DISABLE_PM_ROUTER` is unset, spawn:
 
-2. **Read configuration**: Read `.orchestray/config.json` if it exists. Check for `force_orchestrate`, `force_solo`, and `complexity_threshold` overrides.
+   ```
+   Agent(
+     subagent_type="pm-router",
+     model="haiku",
+     effort="low",
+     description="Route /orchestray:run task (haiku/low)",
+     prompt=$ARGUMENTS
+   )
+   ```
 
-3. **Score complexity**: Apply your Complexity Scoring protocol (Section 12) to the task:
-   - Evaluate all 4 signals (file count, cross-cutting concerns, description, keywords)
-   - Calculate total score (0-12)
-   - Apply config overrides if set
-   - Report to user: "Complexity: {level} (score {N}/12) -- {rationale}"
+   The router decides one of three terminal states:
+   - **`solo`** — handles the task itself at Haiku rates and returns its Structured Result.
+   - **`escalate`** — spawns `Agent(subagent_type="pm", model="opus", ...)` with the user task verbatim and forwards the orchestrator's output back.
+   - **`decline`** — refuses with a one-line redirect (e.g., control-flow keywords like `stop`, `abort`).
 
-4. **If Simple (score < threshold)**: Handle the task directly without spawning subagents. Tell the user orchestration is not needed.
+   Return the router's output verbatim to the user.
 
-5. **If Medium or Complex (score >= threshold)**:
-   a. Initialize state and KB: create `.orchestray/state/` directory, write `orchestration.md`. Also initialize KB if missing (Section 10: KB Initialization — create `.orchestray/kb/` with `facts/`, `decisions/`, `artifacts/` subdirectories and `index.json`). Initialize audit trail: Create `.orchestray/audit/` directory, write `current-orchestration.json` with `{"orchestration_id": "orch-{timestamp}", "task": "$ARGUMENTS summary", "started_at": "<ISO timestamp>"}`, and append an `orchestration_start` event to `events.jsonl`. (See PM Section 15, step 1.)
-   b. **Decompose the task**: Apply your Task Decomposition Protocol (Section 13)
-      - Identify 2-6 subtasks with agent assignments
-      - Map dependencies and parallel groups
-      - Assign exclusive file ownership
-      - Write task graph to `.orchestray/state/task-graph.md`
-      - Write individual task files to `.orchestray/state/tasks/`
-   c. **Tell the user** the decomposition: show subtasks, agents, dependencies, parallel groups
-   d. **Execute** following the task graph using the Parallel Execution Protocol (Section 14). For each parallel group, spawn agents with worktree isolation. After group completes, merge sequentially, verify file ownership, and display running costs (Section 15). Continue group by group until all groups complete.
-   e. **Use context handoffs**: For sequential tasks, use KB + diff handoff protocol (Section 11). When delegating to each agent, include the KB write instruction template from Section 10 ("Instructing Agents to Write KB") AND tell subsequent agents which specific KB files to read (by full path, not "check the KB").
-   f. **Handle failures**: Apply Retry Protocol (Section 5)
-   g. **Update state** continuously (Section 7)
+3. **Bypass path — invoke `pm` directly**: when `pm_router.enabled === false` OR `ORCHESTRAY_DISABLE_PM_ROUTER=1`, the router gate (`bin/gate-agent-spawn.js`) blocks any router spawn. In that case, spawn the orchestrator PM directly:
 
-6. **On completion**:
-   - Report results, archive state to history.
-   - Write `orchestration_complete` event to `events.jsonl` with total token usage and cost estimate (See PM Section 15, step 3).
-   - Archive audit trail: move `.orchestray/audit/events.jsonl` to `.orchestray/history/{timestamp}-orchestration/events.jsonl`.
-   - Clean up: delete `.orchestray/audit/current-orchestration.json`.
-   - Include per-agent cost breakdown in the completion summary.
+   ```
+   Agent(
+     subagent_type="pm",
+     model="opus",
+     effort="high",
+     description="Orchestrate /orchestray:run task (opus/high)",
+     prompt=$ARGUMENTS
+   )
+   ```
+
+4. **Other slash commands stay unchanged.** `/orchestray:resume`, `/orchestray:redo`, `/orchestray:issue`, `/orchestray:review-pr`, `/orchestray:feature`, `/orchestray:learn`, `/orchestray:learn-doc` continue to invoke `pm` directly. Only `/orchestray:run` goes through the router.
 
 ## Output
 
-After orchestration completes:
-- Summarize what each agent did and the outcome
-- List all files changed across all agents
-- Report any issues or warnings from agents
-- Archive orchestration state to `.orchestray/history/{timestamp}-orchestration/`
+Return the spawned agent's output verbatim. The router emits its own audit events (`pm_router_decision`, `pm_router_complete`, `pm_router_solo_complete`); the orchestrator PM continues to emit `orchestration_start` / `orchestration_complete` on the escalation path.
 
 ---
 
 <!-- W8 v2.0.18: PREVIEW MODE instruction block (UX2)
 
 If the string "--preview" appeared anywhere in $ARGUMENTS, append the following
-instruction to your invocation prompt. This is the only change --preview makes.
-The PM reads this instruction and halts after decomposition.
+instruction to your invocation prompt. The router detects --preview and ALWAYS
+escalates (preview rendering remains in pm.md), so this block is forwarded
+verbatim through the router to the orchestrator.
 
 PREVIEW MODE — perform decomposition and complexity scoring only. Do the following:
 1. Score the task complexity (Section 12).

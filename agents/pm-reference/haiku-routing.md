@@ -99,43 +99,14 @@ criteria are met before sign-off.
 
 ---
 
-## Section 23f — Background-housekeeper Haiku (narrow-scope op offload, P3.3)
+<!--
+v2.2.3 P4 W2 Strip: §23f Background-housekeeper section removed. The
+orchestray-housekeeper subagent shipped in v2.2.0 with a marker-based
+delegation protocol but never fired (0 invocations across 7 post-v2.2.0
+orchestrations) because the marker→spawn router was never wired. Cost
+upside: ~$0.05/year. Re-introduction (if any) will use an explicit MCP
+tool with verifiable cost telemetry, not marker prose. See
+.orchestray/kb/artifacts/v223-p3-housekeeper-decision.md and
+v223-p4-strip-and-a3-impl.md.
+-->
 
-The `orchestray-housekeeper` subagent (NEW in v2.2.0) handles three deterministic
-background ops the PM would otherwise do inline at Opus rates:
-
-- **KB-write verification.** Read-back of an artifact path the PM just composed.
-  Marker: `[housekeeper: write <abs-path>]`.
-- **Schema-shadow regen diff.** Compares `event-schemas.md` against
-  `event-schemas.shadow.json`. Marker: `[housekeeper: regen-schema-shadow]`.
-- **Telemetry rollup recompute.** Reads `events.jsonl` chunks, returns row
-  counts. Marker: `[housekeeper: rollup-recompute]`.
-
-### Tool whitelist (FROZEN — Clause 1 of locked scope D-5)
-
-`tools: [Read, Glob]` — strictly tighter than the scout's `[Read, Glob, Grep]`.
-Three-layer enforcement: frontmatter declarative (a), runtime exit-2 rejection
-in `bin/validate-task-completion.js` (b), CI test
-`p33-housekeeper-whitelist-frozen.test.js` byte-equality vs baseline (c).
-
-### Kill switches (Clause 5)
-
-- Env (current session): `ORCHESTRAY_HOUSEKEEPER_DISABLED=1`.
-- Config (install): `haiku_routing.housekeeper_enabled: false`.
-- Drift detector quarantine: `.orchestray/state/housekeeper-quarantined` sentinel
-  blocks spawns until the drift is resolved (see Clause 3).
-
-ALL THREE must permit the spawn (env-not-set AND config-true AND sentinel-absent).
-The drift sentinel acts as a third non-user-controlled kill switch — it cannot
-be bypassed by an opt-in user.
-
-### v2.2.1+ promotion path
-
-Tool whitelist may broaden in a future release ONLY when ALL of:
-1. ≥ 60 days of zero `housekeeper_drift_detected` events.
-2. ≥ 100 `housekeeper_action` events with zero `housekeeper_forbidden_tool_blocked`.
-3. Explicit commit tagged `[housekeeper-tools-extension]` updating both the agent
-   file AND `bin/_lib/_housekeeper-baseline.js`.
-4. New row in `p33-housekeeper-whitelist-frozen.test.js` updating the expected line.
-
-See `cost-prediction.md §32` for the full criteria.

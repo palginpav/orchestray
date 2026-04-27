@@ -343,6 +343,9 @@ const cachingSchema = z.object({
 // v2.2.0 P2.2: Haiku scout for PM I/O. Top-level `haiku_routing` block.
 // Default-on; per-session kill switch is ORCHESTRAY_HAIKU_ROUTING_DISABLED=1.
 // Mirrors KNOWN_TOP_LEVEL_KEYS for the cross-ref test (S-004).
+// v2.2.3 P4 W2: housekeeper_enabled removed; the orchestray-housekeeper
+// agent was stripped (zero invocations across 7 post-v2.2.0 orchs). Schema
+// stays passthrough so legacy configs carrying the key validate cleanly.
 const haikuRoutingSchema = z.object({
   enabled:             z.boolean().optional(),
   scout_min_bytes:     z.number().int().min(1).optional(),
@@ -354,6 +357,17 @@ const haikuRoutingSchema = z.object({
   //   "block" — emit inline_read_forced AND block the Read (planned v2.2.4)
   // Per-session bypass: env ORCHESTRAY_SCOUT_BYPASS=1.
   scout_enforcement:   z.enum(['off', 'warn', 'block']).optional(),
+}).passthrough();
+
+// v2.2.3 P4 W2 A3: PM-router (Haiku) entry-point gateway. Default-on.
+// Per-session kill switch: ORCHESTRAY_DISABLE_PM_ROUTER=1.
+// Permanent disable via pm_router.enabled: false. Mirrors
+// KNOWN_TOP_LEVEL_KEYS in bin/_lib/config-drift.js (S-004).
+const pmRouterSchema = z.object({
+  enabled:                          z.boolean().optional(),
+  solo_max_files:                   z.number().int().min(1).max(10).optional(),
+  solo_max_words:                   z.number().int().min(1).max(500).optional(),
+  solo_complexity_threshold_offset: z.number().int().min(-4).max(4).optional(),
 }).passthrough();
 
 // v2.2.0 P1.3 + P3.2: top-level `pm_protocol` block. Holds the chunked
@@ -520,6 +534,8 @@ const configSchema = z.object({
   // post-upgrade-sweep.js banner (S-004).
   caching: cachingSchema.optional(),
   haiku_routing: haikuRoutingSchema.optional(),
+  // v2.2.3 P4 W2 A3: PM-router Haiku gateway. Default-on.
+  pm_router: pmRouterSchema.optional(),
   // v2.2.0 P1.2 / P1.3 / P3.2: output-shape pipeline + tier-2 index +
   // delegation-delta + D-8 full-load-disabled. All four ship default-on
   // and have per-section `enabled: false` (or the boolean flag itself
@@ -569,4 +585,5 @@ module.exports = {
   outputShapeSchema,
   pmProtocolSchema,
   eventSchemasSchema,
+  pmRouterSchema,
 };

@@ -150,7 +150,15 @@ describe('agents/pm.md Block A hash stability', () => {
     // Haiku-default agents. Required for Section-23 scout and §23f
     // housekeeper protocol to actually fire. See
     // .orchestray/kb/artifacts/v223-p1-haiku-routing-rca-and-fix.md.
-    const PINNED_BLOCK_A_HASH = 'bf35359343dd3557';
+    // v2.2.3 P4 W2 (orch-20260427-v223-p4): co-committed Strip + A3.
+    // - Strip: removed orchestray-housekeeper from PM tools allowlist
+    //   (zero invocations across 7 post-v2.2.0 orchs); §23f deletion lives
+    //   outside Block-A so doesn't rotate.
+    // - A3: added a 5-line acknowledgement near top of Section 0 that
+    //   /orchestray:run may now reach the PM via pm-router escalation
+    //   (default-on, Haiku entry-point gateway).
+    // See .orchestray/kb/artifacts/v223-p4-strip-and-a3-impl.md.
+    const PINNED_BLOCK_A_HASH = '2000cd1cec2755e9';
 
     assert.equal(
       actualHash,

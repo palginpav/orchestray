@@ -8,8 +8,9 @@
  * to recover the tier, with a forward-look for not-yet-shipped agents.
  *
  * Resolution order (per W1 P1.1 design §M0.2):
- *   1. Forward-look: 'haiku-scout' / 'orchestray-housekeeper' → 'haiku'
- *      (so v2.2.0 ships clean even before P2.2 / P3.3 land).
+ *   1. Forward-look: 'haiku-scout' / 'pm-router' → 'haiku' (cost-pipeline
+ *      labeling for not-yet-on-disk agents). v2.2.3 P4 W2 stripped
+ *      'orchestray-housekeeper' (zero invocations) and added 'pm-router'.
  *   2. Exact agents/<name>.md frontmatter `model:` field — cached on first scan.
  *   3. 'unknown_team_member' fallback. Treated as Sonnet by `getPricing` but
  *      LABELED so the dashboard can flag rows for follow-up. The caller flips
@@ -25,7 +26,7 @@
 const fs   = require('fs');
 const path = require('path');
 
-const FORWARD_LOOK_HAIKU = ['haiku-scout', 'orchestray-housekeeper'];
+const FORWARD_LOOK_HAIKU = ['haiku-scout', 'pm-router'];
 
 const _cache = new Map();
 let _agentsDirScanned = false;

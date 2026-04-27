@@ -115,7 +115,7 @@ function __rehydrateFromDisk(cwd) {
       // The orch id is everything up to the LAST '-' in the stem; the
       // final segment is the agent_type. This works as long as agent_type
       // names contain no '-', which is true for the standard subagent set.
-      // For agent_type names with '-' (e.g., 'orchestray-housekeeper'),
+      // For agent_type names with '-' (e.g., 'release-manager', 'pm-router'),
       // the last segment captures only the trailing token; we accept the
       // ambiguity because the SHA-recompute is the truth source for the
       // hot-path match — a wrong split just means the seeded entry is

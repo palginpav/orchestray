@@ -4,6 +4,14 @@
 > Always load curator-stages/phase-contract.md alongside this file.
 > Decision protocol is in (see phase-execute.md §"4. Decision Protocol").
 > Input gathering is in (see phase-decomp.md §"2. Inputs You Read Every Run").
+>
+> **Sacred invariants applicable here** (see phase-contract.md §0):
+> - **SI-4** Destructive action FIRST, tombstone row SECOND. §5 atomicity
+>   ordering encodes this; never reverse.
+> - **SI-1** Never auto-trigger. The curator's commit phase MUST NOT enqueue
+>   a follow-up curator run, schedule a future invocation, or write any
+>   "next-run-trigger" marker file. Re-runs are user-initiated only.
+> - **SI-2 / SI-3** Guardrails G1–G6 in §6 enforce these — do not relax.
 
 ---
 

@@ -370,3 +370,56 @@ describe('Test 6: kill switch (curator_slice_loading.enabled: false)', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Test 7 — sacred invariants (v2.2.3 G5 retirement formalization)
+// ---------------------------------------------------------------------------
+
+describe('Test 7: sacred invariants block (G5)', () => {
+  test('phase-contract.md publishes SI-1..SI-4 sacred-invariants block', () => {
+    const contract = fs.readFileSync(
+      path.join(CURATOR_STAGES_DIR, 'phase-contract.md'), 'utf8');
+    assert.match(contract, /Sacred Invariants/i,
+      'phase-contract.md must publish a Sacred Invariants section');
+    assert.match(contract, /SI-1\b[\s\S]*Never auto-trigger/i,
+      'SI-1 (never auto-trigger / C-CURATE-AUTO RETIRE) must be present');
+    assert.match(contract, /SI-2\b[\s\S]*user-correction/i,
+      'SI-2 (user-correction never auto-deprecated/promoted) must be present');
+    assert.match(contract, /SI-3\b[\s\S]*local-only/i,
+      'SI-3 (local-only never promoted) must be present');
+    assert.match(contract, /SI-4\b[\s\S]*[Dd]estructive action/,
+      'SI-4 (action first, tombstone second atomicity) must be present');
+    assert.match(contract, /C-CURATE-AUTO|G5/,
+      'phase-contract.md must cite the C-CURATE-AUTO retirement provenance');
+  });
+
+  test('every other curator stage references the sacred-invariants block', () => {
+    const stages = ['phase-decomp.md', 'phase-execute.md', 'phase-close.md'];
+    for (const f of stages) {
+      const body = fs.readFileSync(path.join(CURATOR_STAGES_DIR, f), 'utf8');
+      assert.match(
+        body,
+        /phase-contract\.md\s*§0|Sacred invariants applicable here/i,
+        `${f} must point to phase-contract.md §0 sacred invariants`
+      );
+    }
+  });
+
+  test('phase-execute.md re-asserts user-correction and local-only floors', () => {
+    const exec = fs.readFileSync(
+      path.join(CURATOR_STAGES_DIR, 'phase-execute.md'), 'utf8');
+    assert.match(exec, /SI-2\b[\s\S]*user-correction/i,
+      'phase-execute.md preamble must restate SI-2');
+    assert.match(exec, /SI-3\b[\s\S]*local-only/i,
+      'phase-execute.md preamble must restate SI-3');
+  });
+
+  test('phase-close.md re-asserts atomicity ordering and never-auto-trigger', () => {
+    const close = fs.readFileSync(
+      path.join(CURATOR_STAGES_DIR, 'phase-close.md'), 'utf8');
+    assert.match(close, /SI-4\b[\s\S]*tombstone|action FIRST/i,
+      'phase-close.md preamble must restate SI-4 atomicity');
+    assert.match(close, /SI-1\b[\s\S]*[Nn]ever auto-trigger/,
+      'phase-close.md preamble must restate SI-1 (never enqueue follow-up)');
+  });
+});

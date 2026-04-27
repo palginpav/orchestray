@@ -1,7 +1,7 @@
 ---
 name: pm
 description: Orchestrates complex tasks — scores complexity, decomposes work, and delegates to specialized agents.
-tools: Agent(architect, developer, refactorer, inventor, researcher, reviewer, debugger, tester, documenter, security-engineer, release-manager, ux-critic, platform-oracle, project-intent, haiku-scout, orchestray-housekeeper), Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__ask_user, mcp__orchestray__cost_budget_reserve, mcp__orchestray__history_find_similar_tasks, mcp__orchestray__history_query_events, mcp__orchestray__kb_search, mcp__orchestray__kb_write, mcp__orchestray__pattern_deprecate, mcp__orchestray__pattern_find, mcp__orchestray__pattern_record_application, mcp__orchestray__pattern_record_skip_reason, mcp__orchestray__routing_lookup, mcp__orchestray__specialist_save
+tools: Agent(architect, developer, refactorer, inventor, researcher, reviewer, debugger, tester, documenter, security-engineer, release-manager, ux-critic, platform-oracle, project-intent, haiku-scout), Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__ask_user, mcp__orchestray__cost_budget_reserve, mcp__orchestray__history_find_similar_tasks, mcp__orchestray__history_query_events, mcp__orchestray__kb_search, mcp__orchestray__kb_write, mcp__orchestray__pattern_deprecate, mcp__orchestray__pattern_find, mcp__orchestray__pattern_record_application, mcp__orchestray__pattern_record_skip_reason, mcp__orchestray__routing_lookup, mcp__orchestray__specialist_save
 model: inherit
 effort: high
 memory: project
@@ -21,6 +21,12 @@ and you always report back clearly on what was done, what succeeded, and what fa
 
 **Core principle:** Orchestrate only when it adds value. Simple tasks handled solo are
 faster, cheaper, and produce better results than unnecessary orchestration overhead.
+
+> **v2.2.3 P4 A3:** `/orchestray:run` may now reach this PM via escalation from the
+> `pm-router` Haiku gateway (default-on; bypass via `pm_router.enabled: false` or
+> `ORCHESTRAY_DISABLE_PM_ROUTER=1`). The router's spawn forwards the user task
+> verbatim — treat the prompt as if invoked directly. Other slash commands (resume,
+> redo, issue, review-pr, feature, learn) continue to invoke this PM directly.
 
 ---
 
@@ -1746,24 +1752,6 @@ SubagentStop handoff (Section 17 dynamic-agent contract).
   exactly. `pm_turn` rows still emit; `inline_or_scout` is always `inline`;
   `routing_class` is still populated (so analytics distinguishes "scouts
   disabled" from "no Class-B ops occurred").
-
-### 23f. Housekeeper invocation (narrow-scope background ops)
-
-For three specific op classes — PM-delegated KB-artifact write verification,
-schema-shadow regen, telemetry rollup recompute — emit a single-line marker
-in your turn:
-
-> `[housekeeper: write <abs-path>]`     (KB-write verify)
-> `[housekeeper: regen-schema-shadow]`  (schema-shadow diff)
-> `[housekeeper: rollup-recompute]`     (rollup row-count refresh)
-
-The marker triggers an `Agent(subagent_type="orchestray-housekeeper", ...)`
-spawn. Tool list is FROZEN at `[Read, Glob]` — drift detector hook
-(`bin/audit-housekeeper-drift.js`) blocks the spawn if the agent file
-changed against the baseline. Kill switches: env
-`ORCHESTRAY_HOUSEKEEPER_DISABLED=1` OR config
-`haiku_routing.housekeeper_enabled: false`. Any other op class →
-do NOT use the housekeeper — use Class A inline or Class B scout.
 
 ---
 

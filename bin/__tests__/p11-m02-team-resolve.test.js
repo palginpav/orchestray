@@ -6,7 +6,7 @@
  *
  * Verifies bin/_lib/team-config-resolve.js:
  *   1. Forward-look: 'haiku-scout' → 'haiku' without disk read.
- *   2. Forward-look: 'orchestray-housekeeper' → 'haiku'.
+ *   2. Forward-look: 'pm-router' → 'haiku'.
  *   3. Frontmatter match: agents/architect.md `model: opus` → 'opus'.
  *   4. 'inherit' frontmatter → 'unknown_team_member'.
  *   5. Integration: SubagentStop with unknown agent_type writes
@@ -57,8 +57,8 @@ test('forward-look: haiku-scout resolves to haiku without disk read', () => {
   assert.equal(resolver.resolveTeammateModel('haiku-scout', tmpDir), 'haiku');
 });
 
-test('forward-look: orchestray-housekeeper resolves to haiku', () => {
-  assert.equal(resolver.resolveTeammateModel('orchestray-housekeeper', tmpDir), 'haiku');
+test('forward-look: pm-router resolves to haiku', () => {
+  assert.equal(resolver.resolveTeammateModel('pm-router', tmpDir), 'haiku');
 });
 
 // W6 S-003: forward-look must be exact match only. A crafted agent_type
@@ -68,10 +68,10 @@ test('forward-look: orchestray-housekeeper resolves to haiku', () => {
 test('forward-look exact-match only: substring containing haiku-scout does NOT resolve to haiku', () => {
   assert.equal(resolver.resolveTeammateModel('evil-haiku-scout-suffix', tmpDir), 'unknown_team_member');
   assert.equal(resolver.resolveTeammateModel('haiku-scout-v2', tmpDir), 'unknown_team_member');
-  assert.equal(resolver.resolveTeammateModel('legacy-orchestray-housekeeper', tmpDir), 'unknown_team_member');
+  assert.equal(resolver.resolveTeammateModel('legacy-pm-router', tmpDir), 'unknown_team_member');
   // Sanity: exact match still works.
   assert.equal(resolver.resolveTeammateModel('haiku-scout', tmpDir), 'haiku');
-  assert.equal(resolver.resolveTeammateModel('orchestray-housekeeper', tmpDir), 'haiku');
+  assert.equal(resolver.resolveTeammateModel('pm-router', tmpDir), 'haiku');
 });
 
 test('frontmatter match: agents/architect.md model:opus → opus', () => {

@@ -6,23 +6,28 @@
  * extended for the pre-ship cross-phase fix-pass to cover all NINE
  * default-on flips.
  *
- * The v2.2.0 release ships NINE default-on flips:
+ * The v2.2.0 release shipped NINE default-on flips. v2.2.3 P4 W2 stripped
+ * orchestray-housekeeper (zero invocations across 7 post-v2.2.0 orchs); the
+ * `haiku_routing.housekeeper_enabled` banner line is dropped. v2.2.3 P4 A3
+ * adds `pm_router.enabled` (PM-router Haiku entry-point gateway). Net post-
+ * v2.2.3 default-on flip count: 9 (8 carried + 1 added).
+ *
  *   P2.1
  *   1. caching.block_z.enabled                  (Block-Z prefix)
  *   2. caching.engineered_breakpoints.enabled   (4-slot manifest)
  *   P2.2
  *   3. haiku_routing.enabled                    (Haiku scout for PM I/O)
- *   P3.3
- *   4. haiku_routing.housekeeper_enabled        (orchestray-housekeeper subagent)
  *   P1.2
- *   5. output_shape.enabled                     (caveman + length cap + structured outputs)
+ *   4. output_shape.enabled                     (caveman + length cap + structured outputs)
  *   P1.3
- *   6. pm_protocol.tier2_index.enabled          (chunked schema lookup)
- *   7. event_schemas.full_load_disabled         (D-8: legacy full Read blocked)
+ *   5. pm_protocol.tier2_index.enabled          (chunked schema lookup)
+ *   6. event_schemas.full_load_disabled         (D-8: legacy full Read blocked)
  *   P3.2
- *   8. pm_protocol.delegation_delta.enabled     (delta spawn-context)
+ *   7. pm_protocol.delegation_delta.enabled     (delta spawn-context)
  *   P3.1
- *   9. audit.round_archive.enabled              (multi-round audit digests)
+ *   8. audit.round_archive.enabled              (multi-round audit digests)
+ *   v2.2.3 P4 A3
+ *   9. pm_router.enabled                        (PM-router Haiku entry-point gateway)
  *
  * Per the locked-scope §default-on policy and feedback_default_on_shipping.md,
  * the post-upgrade sweep MUST emit a one-time stderr banner naming each flip
@@ -206,7 +211,7 @@ describe('v2.2.0 post-upgrade banner (F-003 fix-pass)', () => {
   // drop any of them.
   // -------------------------------------------------------------------------
 
-  test('banner names ALL 9 of 9 default-on v2.2.0 flips on first session post-upgrade', () => {
+  test('banner names ALL 9 of 9 default-on flips on first session post-upgrade', () => {
     const projectDir  = makeTmpProject();
     const sentinelDir = fs.mkdtempSync(path.join(os.tmpdir(), 'v220-banner-sentinel-'));
     cleanup.push(sentinelDir);
@@ -221,16 +226,15 @@ describe('v2.2.0 post-upgrade banner (F-003 fix-pass)', () => {
     assert.equal(result.status, 0,
       'sweep must exit 0 (fail-open). stderr=' + result.stderr);
 
-    // The full 9-flip ledger. Each entry must appear in stderr; the
-    // numbered comment matches the ledger in the file header.
+    // The post-v2.2.3 P4 W2/A3 9-flip ledger. v2.2.3 P4 W2 stripped
+    // haiku_routing.housekeeper_enabled (orchestray-housekeeper agent
+    // removed); v2.2.3 P4 A3 added pm_router.enabled.
     const requiredBannerSignals = [
       // P2.1
       /caching\.block_z\.enabled: true/,
       /caching\.engineered_breakpoints\.enabled: true/,
       // P2.2
       /haiku_routing\.enabled: true/,
-      // P3.3
-      /haiku_routing\.housekeeper_enabled: true/,
       // P1.2
       /output_shape\.enabled: true/,
       // P1.3
@@ -240,6 +244,8 @@ describe('v2.2.0 post-upgrade banner (F-003 fix-pass)', () => {
       /pm_protocol\.delegation_delta\.enabled: true/,
       // P3.1
       /audit\.round_archive\.enabled: true/,
+      // v2.2.3 P4 A3
+      /pm_router\.enabled: true/,
     ];
 
     for (const re of requiredBannerSignals) {

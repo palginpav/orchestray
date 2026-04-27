@@ -127,34 +127,22 @@ process.stdin.on('end', () => {
 
     const orchFile = getCurrentOrchestrationFile(cwd);
 
-    // P3.3 (v2.2.0): orchestray-housekeeper spawn gate — Clause 3 + Clause 5.
-    // Refuse if quarantine sentinel exists (drift detector controlled),
-    // env kill switch is set, or config flag is false. Runs BEFORE the
-    // orchestration check so it applies in any session state.
+    // v2.2.3 P4 W2 A3: PM-router kill switch enforcement. The
+    // /orchestray:run skill spawns `pm-router` first when default-on. If
+    // either `pm_router.enabled: false` in config OR
+    // ORCHESTRAY_DISABLE_PM_ROUTER=1 in env, the gate refuses any
+    // `subagent_type=pm-router` spawn so the skill falls through to direct
+    // `pm` invocation. Atomic rollback: one config flip restores v2.2.2
+    // behavior.
     {
       const earlyToolInput = event.tool_input || {};
       const earlySubagentType = earlyToolInput.subagent_type || '';
-      if (earlySubagentType === 'orchestray-housekeeper') {
-        const sentinelPath = path.join(cwd, '.orchestray', 'state', 'housekeeper-quarantined');
-        if (fs.existsSync(sentinelPath)) {
-          const quarantineMsg =
-            '[orchestray] gate-agent-spawn: orchestray-housekeeper spawn blocked — ' +
-            'quarantine sentinel present. Resolve baseline drift before re-enabling. ' +
-            'See agents/pm-reference/haiku-routing.md §23f.';
-          process.stderr.write(quarantineMsg + '\n');
-          process.stdout.write(JSON.stringify({
-            hookSpecificOutput: {
-              hookEventName: 'PreToolUse',
-              permissionDecision: 'deny',
-              permissionDecisionReason: quarantineMsg,
-            },
-          }));
-          process.exit(2);
-        }
-        if (process.env.ORCHESTRAY_HOUSEKEEPER_DISABLED === '1') {
+      if (earlySubagentType === 'pm-router') {
+        if (process.env.ORCHESTRAY_DISABLE_PM_ROUTER === '1') {
           const envMsg =
-            '[orchestray] gate-agent-spawn: orchestray-housekeeper disabled by env ' +
-            '(ORCHESTRAY_HOUSEKEEPER_DISABLED=1).';
+            '[orchestray] gate-agent-spawn: pm-router disabled by env ' +
+            '(ORCHESTRAY_DISABLE_PM_ROUTER=1). Slash command should bypass ' +
+            'and call pm directly.';
           process.stderr.write(envMsg + '\n');
           process.stdout.write(JSON.stringify({
             hookSpecificOutput: {
@@ -168,11 +156,11 @@ process.stdin.on('end', () => {
         try {
           const cfgRaw = fs.readFileSync(path.join(cwd, '.orchestray', 'config.json'), 'utf8');
           const cfg = JSON.parse(cfgRaw);
-          if (cfg && cfg.haiku_routing &&
-              cfg.haiku_routing.housekeeper_enabled === false) {
+          if (cfg && cfg.pm_router && cfg.pm_router.enabled === false) {
             const cfgMsg =
-              '[orchestray] gate-agent-spawn: orchestray-housekeeper disabled in config ' +
-              '(haiku_routing.housekeeper_enabled = false).';
+              '[orchestray] gate-agent-spawn: pm-router disabled in config ' +
+              '(pm_router.enabled = false). Slash command should bypass and ' +
+              'call pm directly.';
             process.stderr.write(cfgMsg + '\n');
             process.stdout.write(JSON.stringify({
               hookSpecificOutput: {
@@ -183,48 +171,7 @@ process.stdin.on('end', () => {
             }));
             process.exit(2);
           }
-        } catch (_cfgErr) { /* fail-open — default-on per locked-scope D-5 */ }
-
-        // S-009 (v2.2.0 fix-pass): housekeeper marker path-prefix check.
-        // OQ-D1 (in-scope per design) — defence-in-depth against a
-        // misaddressed [housekeeper: write <path>] marker. The housekeeper
-        // tool list (Read, Glob) limits damage to "read sensitive file →
-        // return bytes in Structured Result", but the gate is the cleanest
-        // place to enforce that any `[housekeeper: write <path>]` marker
-        // names a path under `.orchestray/kb/artifacts/`. Reject otherwise.
-        // Non-`write` markers (regen-schema-shadow, rollup-recompute) carry
-        // no path and pass through.
-        const description = (earlyToolInput.description || '');
-        if (typeof description === 'string') {
-          const writeMarker = description.match(/\[housekeeper:\s*write\s+([^\]]+)\]/);
-          if (writeMarker && writeMarker[1]) {
-            const requestedPath = writeMarker[1].trim();
-            const ARTIFACTS_PREFIX = path.join('.orchestray', 'kb', 'artifacts');
-            const artifactsAbs = path.resolve(cwd, ARTIFACTS_PREFIX);
-            const requestedAbs = path.isAbsolute(requestedPath)
-              ? path.resolve(requestedPath)
-              : path.resolve(cwd, requestedPath);
-            const inside = requestedAbs === artifactsAbs ||
-              requestedAbs.startsWith(artifactsAbs + path.sep);
-            if (!inside) {
-              const markerMsg =
-                '[orchestray] gate-agent-spawn: orchestray-housekeeper marker path ' +
-                'outside .orchestray/kb/artifacts/ — refusing to spawn. ' +
-                'Marker path: ' + JSON.stringify(requestedPath) + '. ' +
-                'Per OQ-D1 of locked-scope D-5, write markers MUST stay within ' +
-                'the artifacts directory.';
-              process.stderr.write(markerMsg + '\n');
-              process.stdout.write(JSON.stringify({
-                hookSpecificOutput: {
-                  hookEventName: 'PreToolUse',
-                  permissionDecision: 'deny',
-                  permissionDecisionReason: markerMsg,
-                },
-              }));
-              process.exit(2);
-            }
-          }
-        }
+        } catch (_cfgErr) { /* fail-open — default-on */ }
       }
     }
 
@@ -269,11 +216,15 @@ process.stdin.on('end', () => {
       // can fire for them. Pre-v2.2.3 the resolver silently skipped these four
       // because they were not in the allowlist, falling through to Stage-3 sonnet.
       // See `.orchestray/kb/artifacts/v223-p1-haiku-routing-rca-and-fix.md`.
+      // v2.2.3 P4 W2: orchestray-housekeeper removed (Strip — zero
+      // invocations across 7 post-v2.2.0 orchs). pm-router added (A3 —
+      // Haiku entry-point gateway).
       const CANONICAL_AGENTS_ALLOWLIST = new Set([
         'pm', 'architect', 'developer', 'refactorer', 'inventor', 'researcher', 'reviewer',
         'debugger', 'tester', 'documenter', 'security-engineer',
         'release-manager', 'ux-critic', 'platform-oracle',
-        'haiku-scout', 'orchestray-housekeeper', 'project-intent', 'pattern-extractor',
+        'haiku-scout', 'project-intent', 'pattern-extractor',
+        'pm-router',
         'Explore', 'Plan', 'general-purpose', 'Task',
       ]);
 

@@ -8,8 +8,9 @@
  * model conflicts with the agent's frontmatter `model:` declaration.
  *
  * Background: pre-v2.2.3 the resolver's `CANONICAL_AGENTS_ALLOWLIST` excluded
- * the four Haiku-default agents (haiku-scout, orchestray-housekeeper,
- * project-intent, pattern-extractor). When PM omitted the `model:` parameter,
+ * the Haiku-default agents (haiku-scout, project-intent, pattern-extractor).
+ * v2.2.3 P4 W2 stripped orchestray-housekeeper (zero invocations across 7
+ * post-v2.2.0 orchs) and added pm-router. When PM omitted the `model:` parameter,
  * Stage-1 routing.jsonl missed (no entry yet) → Stage-2 frontmatter read was
  * skipped (allowlist miss) → Stage-3 defaulted to sonnet → auto-seeded
  * routing.jsonl with `sonnet` for that agent_type. Subsequent spawns hit

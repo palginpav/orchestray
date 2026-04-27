@@ -56,15 +56,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/audit-housekeeper-drift.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/migrate-routing-jsonl.js",
             "timeout": 5
           }
@@ -137,6 +128,11 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/inject-output-shape.js",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/inject-pm-router-decision.js",
             "timeout": 5
           }
         ]
@@ -440,7 +436,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/audit-housekeeper-action.js",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/capture-pm-router-stop.js",
             "timeout": 5
           }
         ]

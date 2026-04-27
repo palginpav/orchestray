@@ -240,7 +240,8 @@ describe('B3 — walkNamespacedGates unit behaviour', () => {
 
   test('isGateLeafName recognises enabled, *_enabled, *_disabled', () => {
     assert.equal(isGateLeafNameInChild('enabled'),             true);
-    assert.equal(isGateLeafNameInChild('housekeeper_enabled'), true);
+    // Generic *_enabled regex check — was 'housekeeper_enabled' pre-v2.2.3 P4.
+    assert.equal(isGateLeafNameInChild('something_enabled'),   true);
     assert.equal(isGateLeafNameInChild('full_load_disabled'),  true);
     assert.equal(isGateLeafNameInChild('something_else'),      false);
     assert.equal(isGateLeafNameInChild('disabled'),            false,
@@ -261,19 +262,19 @@ describe('B3 — walkNamespacedGates unit behaviour', () => {
   });
 });
 
-describe('B3.5 — REGRESSION: shipped .orchestray/config.json carries all 8 v2.2.0 gates', () => {
-  // The 8 gates the W4 task spec named explicitly. After the v2.2.1
-  // namespaced walker, all 8 must appear somewhere in gates_true ∪
-  // gates_false when the hook runs against the shipped config.json.
+describe('B3.5 — REGRESSION: shipped .orchestray/config.json carries all required v2.2.x gates', () => {
+  // v2.2.3 P4 W2 Strip: orchestray-housekeeper removed (zero invocations
+  // across 7 post-v2.2.0 orchs); haiku_routing.housekeeper_enabled is no
+  // longer a shipped gate. v2.2.3 P4 A3 added pm_router.enabled.
   const REQUIRED_GATES = [
     'audit.round_archive.enabled',
     'caching.block_z.enabled',
     'caching.engineered_breakpoints.enabled',
     'event_schemas.full_load_disabled',
     'haiku_routing.enabled',
-    'haiku_routing.housekeeper_enabled',
     'output_shape.enabled',
     'pm_protocol.delegation_delta.enabled',
+    'pm_router.enabled',
   ];
 
   test('all 8 named gates appear in gates_true ∪ gates_false against shipped config.json', () => {

@@ -5,19 +5,20 @@
  * validate-reviewer-scope.js — PreToolUse hook (matcher: "Agent").
  *
  * v2.1.9 Bundle B1 / Intervention I-03 (reviewer file-list scope).
+ * v2.2.3 Bucket E3 (B7): warn-only → exit-2 hard-block. 14-day window
+ * elapsed; A4 false-positive heuristic in place; promote per design spec
+ * §5 I-03 trigger ("flip to exit-2 if false-positive rate stays low").
  *
  * Activates only when `tool_input.subagent_type === "reviewer"`. Scans the
  * delegation prompt body for an explicit file list (markers: `files:`,
  * `scope:` section, or a bulleted list of repo-relative paths). If absent,
- * emits a `reviewer_scope_warn` audit event and exits 0 (WARN — NOT block).
- *
- * Per design spec §5 I-03: "warn-only in v2.1.9 (shadow mode for one release);
- * flip to exit-2 in v2.2 if false-positive rate stays low."
+ * emits a `reviewer_scope_warn` audit event AND exits 2 (HARD-BLOCK).
  *
  * Contract:
- *   - exit 0 always (never block)
- *   - emit WARN audit event when scope is broad
- *   - fail-open on any internal error
+ *   - exit 2 (block) when reviewer prompt lacks explicit scope marker
+ *   - exit 0 on pass-through (non-reviewer Agent calls, scoped reviewer prompts)
+ *   - emit `reviewer_scope_warn` audit event on the block path
+ *   - fail-open (exit 0) on any internal error (parse failure, hook input bug)
  */
 
 const fs = require('fs');
@@ -157,14 +158,25 @@ function main() {
           'See agents/pm.md §3.X.',
         evidence: evaluation.evidence,
         session_id: event.session_id || null,
+        action: 'block',
       });
+      // v2.2.3 E3/B7: hard-block on missing explicit file list.
       process.stderr.write(
-        '[orchestray] validate-reviewer-scope: WARN — reviewer delegation lacks an explicit file list ' +
-        '(evidence: ' + evaluation.evidence + '). Not blocking; see agents/pm.md §3.X.\n'
+        '[orchestray] validate-reviewer-scope: BLOCK — reviewer delegation lacks an explicit file list ' +
+        '(evidence: ' + evaluation.evidence + '). Add a `files:` section, `scope:` section, or a ' +
+        '`## Files to read/verify/review` heading with ≥3 bulleted repo-relative paths. ' +
+        'See agents/pm.md §3.X.\n'
       );
+      process.stdout.write(JSON.stringify({
+        continue: false,
+        stopReason:
+          'Reviewer delegation lacks an explicit file list. ' +
+          'Add a `files:` / `scope:` marker or a bulleted list of paths and re-spawn.',
+      }));
+      process.exit(2);
     }
 
-    // Never block — this is a soft gate in v2.1.9.
+    // Pass: scoped reviewer delegation.
     process.stdout.write(JSON.stringify({ continue: true }));
     process.exit(0);
   });

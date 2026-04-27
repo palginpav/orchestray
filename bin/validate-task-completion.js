@@ -72,17 +72,14 @@ const ARTIFACT_PATH_FIELDS = [
 // defense: (a) frontmatter declarative, (b) THIS rejection, (c) the
 // `bin/__tests__/p22-scout-whitelist-frozen.test.js` byte-equality check.
 //
-// P3.3 (v2.2.0): adds `orchestray-housekeeper` with a STRICTER forbidden set
-// that includes `Grep`. Scout permits Grep; housekeeper does NOT. Per Clause 1
-// of the locked-scope D-5 hardening contract. The literal `SCOUT_FORBIDDEN_TOOLS
-// = new Set([...])` declaration is preserved (rather than aliased through the
-// per-agent map) so the p22 frozen-baseline byte-equality test continues to
+// v2.2.3 P4 W2 Strip: orchestray-housekeeper removed entirely (zero
+// invocations across 7 post-v2.2.0 orchs). The READ_ONLY_AGENTS map now
+// only contains haiku-scout. The literal `SCOUT_FORBIDDEN_TOOLS` declaration
+// is preserved so the p22 frozen-baseline byte-equality test continues to
 // regex-match the source.
 const SCOUT_FORBIDDEN_TOOLS = new Set(['Edit', 'Write', 'Bash']);
-const HOUSEKEEPER_FORBIDDEN_TOOLS = new Set(['Edit', 'Write', 'Bash', 'Grep']);
 const READ_ONLY_AGENT_FORBIDDEN_TOOLS = {
-  'haiku-scout':            SCOUT_FORBIDDEN_TOOLS,
-  'orchestray-housekeeper': HOUSEKEEPER_FORBIDDEN_TOOLS,
+  'haiku-scout': SCOUT_FORBIDDEN_TOOLS,
 };
 const READ_ONLY_AGENTS = new Set(Object.keys(READ_ONLY_AGENT_FORBIDDEN_TOOLS));
 
@@ -239,11 +236,10 @@ const KNOWN_EVENT_TYPES = new Set([
   'scout_spawn',
   'scout_forbidden_tool_blocked',
   'scout_files_changed_blocked',
-  // P3.3 (v2.2.0): Background-housekeeper Haiku audit events
-  'housekeeper_action',
-  'housekeeper_drift_detected',
-  'housekeeper_forbidden_tool_blocked',
-  'housekeeper_baseline_missing',
+  // v2.2.3 P4 W2 A3: PM-router (Haiku entry-point gateway) audit events.
+  'pm_router_decision',
+  'pm_router_complete',
+  'pm_router_solo_complete',
   // S-008 (v2.2.0 fix-pass): verify_fix_* trigger events for the P3.1
   // audit-round archive. Without these rows in the allowlist, the
   // schema-emit validator rejected them as unknown -- silently disabling
@@ -699,38 +695,29 @@ function main() {
     const structuredResult = extractStructuredResult(event);
 
     // -- P2.2 (v2.2.0): read-only contract enforcement for haiku-scout.
-    // -- P3.3 (v2.2.0): same enforcement extended to orchestray-housekeeper
-    //    with a STRICTER forbidden set (also rejects Grep). Per-agent map at
-    //    READ_ONLY_AGENT_FORBIDDEN_TOOLS.
+    // v2.2.3 P4 W2 Strip: orchestray-housekeeper removed (zero invocations
+    // across 7 post-v2.2.0 orchs); only haiku-scout remains.
     // Runs BEFORE the structured-result section check so any forbidden tool
     // call short-circuits to exit 2 even when the Structured Result is
     // otherwise well-formed. Two distinct event types so analytics can
-    // distinguish "wrote forbidden tool" from "lied about files_changed",
-    // plus a housekeeper-specific tool-blocked event so promotion-gate
-    // analytics can isolate housekeeper violations from scout violations.
+    // distinguish "wrote forbidden tool" from "lied about files_changed".
     if (agentRole && READ_ONLY_AGENTS.has(agentRole)) {
       const forbiddenSet = READ_ONLY_AGENT_FORBIDDEN_TOOLS[agentRole];
       const forbidden = findForbiddenToolCalls(event.tool_calls, forbiddenSet);
       if (forbidden.length > 0) {
-        const blockedEventType = agentRole === 'orchestray-housekeeper'
-          ? 'housekeeper_forbidden_tool_blocked'
-          : 'scout_forbidden_tool_blocked';
         emitAuditEvent(cwd, {
           timestamp: new Date().toISOString(),
-          type: blockedEventType,
+          type: 'scout_forbidden_tool_blocked',
           hook: 'validate-task-completion',
           orchestration_id: resolveOrchestrationId(cwd),
           agent_role: agentRole,
           forbidden_tools: forbidden,
           session_id: event.session_id || null,
         });
-        const frozenHint = agentRole === 'orchestray-housekeeper'
-          ? ' tools list is FROZEN at [Read, Glob].'
-          : ' tools list (frozen).';
         process.stderr.write(
           '[orchestray] validate-task-completion: read-only contract violation: ' +
           agentRole + ' called forbidden tool(s) ' + forbidden.join(',') + '. ' +
-          'See agents/' + agentRole + '.md' + frozenHint + '\n'
+          'See agents/' + agentRole + '.md tools list (frozen).\n'
         );
         process.stdout.write(JSON.stringify({ continue: false, reason: 'scout_forbidden_tool:' + agentRole }) + '\n');
         process.exit(2);

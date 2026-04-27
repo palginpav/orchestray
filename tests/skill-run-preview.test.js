@@ -192,9 +192,13 @@ describe('skills/orchestray:run/SKILL.md', () => {
 
   test('standard Orchestration Instructions are still present', () => {
     if (!content) content = fs.readFileSync(SKILL_PATH, 'utf8');
+    // v2.2.3 P4 A3: SKILL.md rewritten to invoke pm-router gateway. The full
+    // complexity scoring + decomposition lives behind the router (in pm.md
+    // §12/§13). The PREVIEW MODE block, however, still mentions both. Assert
+    // the canonical phrasing that appears in the rewritten SKILL.md.
     assert.ok(
-      content.includes('Score complexity'),
-      'standard complexity scoring instruction still present'
+      content.includes('Score the task complexity'),
+      'complexity scoring instruction (PREVIEW MODE) still present'
     );
     assert.ok(
       content.includes('Decompose the task'),

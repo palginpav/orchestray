@@ -373,9 +373,12 @@ describe('repo_map_skipped event', () => {
 
   test('opt-out list covers all haiku-default agents', () => {
     assert.ok(REPO_MAP_OPT_OUT_AGENTS.has('haiku-scout'));
-    assert.ok(REPO_MAP_OPT_OUT_AGENTS.has('orchestray-housekeeper'));
+    // v2.2.3 P4 W2: orchestray-housekeeper stripped; pm-router added (A3 gateway).
+    assert.ok(REPO_MAP_OPT_OUT_AGENTS.has('pm-router'));
     assert.ok(REPO_MAP_OPT_OUT_AGENTS.has('project-intent'));
     assert.ok(REPO_MAP_OPT_OUT_AGENTS.has('pattern-extractor'));
+    assert.ok(!REPO_MAP_OPT_OUT_AGENTS.has('orchestray-housekeeper'),
+      'orchestray-housekeeper removed from opt-out list (agent stripped)');
   });
 
   test('fires with size_exceeded when on-disk repo-map exceeds cap', () => {

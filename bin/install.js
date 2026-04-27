@@ -126,6 +126,17 @@ const FRESH_INSTALL_COST_BUDGET_CHECK = {
   last_verified: '2026-04-11',
 };
 
+// v2.2.3 P4 W2 A3: PM-router Haiku entry-point gateway. Default-on per
+// feedback_default_on_shipping.md. Permanent disable via
+// pm_router.enabled: false; per-session env var
+// ORCHESTRAY_DISABLE_PM_ROUTER=1.
+const FRESH_INSTALL_PM_ROUTER = {
+  enabled: true,
+  solo_max_files: 1,
+  solo_max_words: 60,
+  solo_complexity_threshold_offset: 0,
+};
+
 // Parse arguments
 const args = process.argv.slice(2);
 const flags = {
@@ -889,6 +900,8 @@ function install(targetDir) {
       enable_disagreement_protocol: true,
       enable_outcome_tracking: true,
       enable_checkpoints: true,
+      // v2.2.3 P4 W2 A3: PM-router Haiku gateway. Default-on.
+      pm_router: FRESH_INSTALL_PM_ROUTER,
     };
     try {
       fs.mkdirSync(orchStateDir, { recursive: true });

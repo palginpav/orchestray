@@ -82,9 +82,11 @@ const REPO_MAP_HEADING_CACHE_RE = /^## Repository Map \(unchanged this orchestra
  * receiving the map post-v2.2.0, but we still want explicit skip telemetry
  * to distinguish "opted out" from "leaked").
  */
+// v2.2.3 P4 W2: orchestray-housekeeper stripped (zero invocations);
+// pm-router added (A3 — Haiku entry-point gateway, also size-bounded).
 const REPO_MAP_OPT_OUT_AGENTS = new Set([
   'haiku-scout',
-  'orchestray-housekeeper',
+  'pm-router',
   'project-intent',
   'pattern-extractor',
 ]);
