@@ -93,13 +93,52 @@ function loadConfig(cwd) {
 }
 
 function readPhaseFromOrchestration(cwd) {
+  const result = inspectOrchestration(cwd);
+  return result.phase;
+}
+
+/**
+ * v2.2.3 P0-4 (I-PHASE-GATE-SILENT): inspect orchestration.md and return
+ * a structured triage result the caller uses to decide whether to emit a
+ * fallback event or silently no-op.
+ *
+ * Returns:
+ *   { exists: false, phase: null }
+ *     -- `.orchestray/state/orchestration.md` does not exist (or is unreadable).
+ *     Caller MUST silently no-op; no fallback event.
+ *
+ *   { exists: true,  phase: null }
+ *     -- file exists but has no parseable phase line (neither YAML
+ *     `current_phase:` nor the bold-list `- **phase**:` form).
+ *     Caller MUST silently no-op; no fallback event.
+ *     Rationale: an orchestration.md with no phase is the same situation as
+ *     no orchestration at all from the slice hook's perspective — there is
+ *     no slice to inject and the operator has nothing to act on.
+ *
+ *   { exists: true,  phase: '<value>' }
+ *     -- active orchestration with a parsed phase value. Caller uses
+ *     `resolveSliceForPhase(phase)`; if null (unknown phase value) emits
+ *     `phase_slice_fallback{ reason: 'unrecognized_phase' }` (legitimate
+ *     fault signal). If slice resolves but staging fails, emits
+ *     `slice_file_missing:<filename>` (legitimate fault signal).
+ *
+ * Pre-v2.2.3 the handler emitted `phase_slice_fallback{ reason:
+ * 'no_active_orchestration' }` for both null cases above. Telemetry
+ * (W3 §E) showed this dominated the signal at 46/48 fallback events,
+ * obscuring real failures. P0-4 splits the parse outcome from the emit
+ * decision so we keep the legitimate fault signals and drop the noise.
+ */
+function inspectOrchestration(cwd) {
   const orchPath = path.join(cwd, STATE_DIR, ORCH_FILE);
-  if (!fs.existsSync(orchPath)) return null;
+  if (!fs.existsSync(orchPath)) {
+    return { exists: false, phase: null };
+  }
   let text;
   try {
     text = fs.readFileSync(orchPath, 'utf8');
   } catch (_e) {
-    return null;
+    // Unreadable file: treat as absent for gating purposes (silent no-op).
+    return { exists: false, phase: null };
   }
 
   // v2.2.2 Fix A3: parser accepts BOTH formats. The documented YAML
@@ -114,7 +153,10 @@ function readPhaseFromOrchestration(cwd) {
     const fm = fmMatch[1];
     const phaseMatch = fm.match(/^current_phase:\s*([^\n#]+)/m);
     if (phaseMatch) {
-      return phaseMatch[1].trim().toLowerCase().replace(/^["']|["']$/g, '');
+      return {
+        exists: true,
+        phase: phaseMatch[1].trim().toLowerCase().replace(/^["']|["']$/g, ''),
+      };
     }
   }
 
@@ -123,10 +165,13 @@ function readPhaseFromOrchestration(cwd) {
   //   - **current_phase**: execute
   const boldMatch = text.match(/^- \*\*(?:current_)?phase\*\*:\s*([^\n]+)/m);
   if (boldMatch) {
-    return boldMatch[1].trim().toLowerCase().replace(/^["']|["']$/g, '');
+    return {
+      exists: true,
+      phase: boldMatch[1].trim().toLowerCase().replace(/^["']|["']$/g, ''),
+    };
   }
 
-  return null;
+  return { exists: true, phase: null };
 }
 
 function resolveSliceForPhase(phase) {
@@ -230,13 +275,25 @@ function handle(_payload) {
     return;
   }
 
-  // Read current phase from orchestration.md
-  const phase = readPhaseFromOrchestration(cwd);
+  // v2.2.3 P0-4 (I-PHASE-GATE-SILENT): silent no-op when no orchestration
+  // is active or when orchestration.md has no phase line. We emit
+  // `phase_slice_fallback` ONLY for legitimate fault signals
+  // (unrecognized phase value, missing slice file). See inspectOrchestration
+  // doc-comment for the gate rationale; W3 §E telemetry justifying the
+  // change shows 46/48 fallback events were `no_active_orchestration` noise.
+  const orchInfo = inspectOrchestration(cwd);
+  if (!orchInfo.exists || !orchInfo.phase) {
+    process.stdout.write(CONTINUE_RESPONSE + '\n');
+    return;
+  }
+
+  const phase = orchInfo.phase;
   const slice = resolveSliceForPhase(phase);
 
   if (!slice) {
-    // Unparseable / missing phase → contract-only injection (no slice).
-    emitFallbackEvent(cwd, phase ? 'unrecognized_phase' : 'no_active_orchestration');
+    // Active orchestration but phase value is not in PHASE_TO_FILE.
+    // Real fault: somebody wrote an unknown phase string to orchestration.md.
+    emitFallbackEvent(cwd, 'unrecognized_phase');
     process.stdout.write(CONTINUE_RESPONSE + '\n');
     return;
   }
@@ -276,6 +333,8 @@ function handle(_payload) {
 module.exports = {
   resolveSliceForPhase,
   readPhaseFromOrchestration,
+  inspectOrchestration,
   emitInjectedEvent,
+  handle,
   PHASE_TO_FILE,
 };

@@ -5231,13 +5231,20 @@ event is informational; it never blocks the turn.
 
 `reason` field values:
 
-- `no_active_orchestration` — `.orchestray/state/orchestration.md` missing or
-  has no `current_phase` field. Common at session start.
 - `unrecognized_phase` — `current_phase` is set but does not map to any of the
   five phase slices (decomp / execute / verify / close). May indicate a
   mis-spelled phase value.
 - `slice_file_missing:<filename>` — the resolved slice file is not present on
   disk (e.g. someone deleted `phase-execute.md`). Investigate the install.
+- `no_active_orchestration` — *deprecated and no longer emitted as of
+  v2.2.3 P0-4 (I-PHASE-GATE-SILENT)*. Pre-v2.2.3 the hook emitted this
+  reason whenever `.orchestray/state/orchestration.md` was missing or had
+  no `current_phase` field. W3 telemetry showed it dominated the fallback
+  signal (46/48 events) at session start / outside orchestration windows
+  with no actionable content. The hook now silently returns
+  `{continue: true}` in that case. Historical archives of `events.jsonl`
+  may still contain entries with this reason; analytics rollups should
+  treat them as benign noise.
 
 The hook returns `{continue: true}` regardless. Operators monitoring this
 event regularly indicate a slice mis-mapping needing investigation.
