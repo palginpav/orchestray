@@ -21,6 +21,7 @@ resilience_block_triggered / resilience_block_suppressed(_inactive) — compact 
 state_cancel_aborted — cancel sentinel fired (PM)
 mcp_checkpoint_missing / kill_switch_activated / kill_switch_deactivated — enforcement (hook)
 model_auto_resolved — model auto-resolved by gate, warn level (hook, v2.1.11)
+routing_jsonl_migrator_purge — session-start migrator purged stale routing.jsonl entry (hook, v2.2.3 P0-1)
 pre_compact_archive / cite_cache_hit / spec_sketch_generated / repo_map_delta_injected — telemetry (hook)
 tier2_load — Tier-2 pm-reference file loaded (hook, v2.1.12)
 tier2_invoked — Tier-2 feature protocol primary action fired (hook, v2.1.14)
@@ -326,6 +327,59 @@ rows continue to be emitted unchanged. Consumers that currently read
 `routing_outcome` rows are not affected. New consumers SHOULD query
 `routing_lookup` (which returns merged/synthesised rows preferentially) rather
 than scanning `events.jsonl` directly for `routing_outcome`.
+
+---
+
+### `routing_jsonl_migrator_purge` event (v2.2.3 P0-1)
+
+Emitted by `bin/migrate-routing-jsonl.js` once per stale routing.jsonl entry
+purged at session start. The migrator runs at most once per repo (gated by
+the `.routing-jsonl-migrated-v223` sentinel) and removes
+`agent_seeded_with_disagreement` rows whose `seeded_model` no longer matches
+the agent's current frontmatter `model:` field — these are pre-v2.2.3 P0-1
+artifacts that would otherwise pollute `routing_lookup` shortlists. One
+event per purged entry preserves the audit trail of what was removed.
+
+```json
+{
+  "type": "routing_jsonl_migrator_purge",
+  "orchestration_id": "orch-1777200000",
+  "timestamp": "2026-04-27T14:56:12.471Z",
+  "level": "info",
+  "subagent_type": "haiku-scout",
+  "task_id": "SCOUT-1",
+  "seeded_model": "sonnet",
+  "frontmatter_model": "haiku",
+  "original_entry_timestamp": "2026-04-20T08:12:33.123Z",
+  "source": "session_start_migrator"
+}
+```
+
+Field meanings:
+
+- `subagent_type`: agent name from the purged routing.jsonl entry.
+- `task_id`: task id of the purged entry, may be undefined if the original
+  row did not record one.
+- `seeded_model`: model that was actually used (and recorded as a
+  disagreement) by the pre-P0-1 resolver — typically the global
+  `sonnet` default applied incorrectly.
+- `frontmatter_model`: model the agent's frontmatter currently declares.
+  Mismatch with `seeded_model` is what flagged the entry for purge.
+- `original_entry_timestamp`: timestamp of the routing.jsonl row being
+  removed (preserved so analytics can correlate to the original
+  disagreement window).
+- `orchestration_id`: orchestration id from the purged entry, or
+  `"unknown"` if the original row did not record one.
+- `source`: always `"session_start_migrator"` for events from this code
+  path. Reserved for future migrator variants (e.g. manual sweeps).
+
+The migrator atomic-writes the survivors back via tmp+rename. If the write
+itself fails, no events emit and the sentinel is NOT written so the next
+session retries. Audit emission is wrapped in a separate try/catch — if
+emission fails after a successful purge, the migrator logs to stderr but
+does not roll back; the purge is already durable.
+
+Schema stability: additive-only.
 
 ---
 
@@ -5268,7 +5322,7 @@ event is informational; it never blocks the turn.
 {
   "version": 1,
   "type": "phase_slice_fallback",
-  "ts": "2026-04-25T12:34:56.789Z",
+  "timestamp": "2026-04-25T12:34:56.789Z",
   "orchestration_id": "orch-1777200000",
   "reason": "no_active_orchestration"
 }
