@@ -4231,7 +4231,14 @@ Field notes:
   - `size_exceeded`: heading absent AND on-disk
     `.orchestray/kb/facts/repo-map.md` is bigger than
     `repo_map.max_inject_bytes`. Configured but rare.
-  - `error`: heading absent for any other reason — most often a real
+  - `template_drift` (v2.2.3 P2 follow-up): canonical heading absent BUT a
+    near-miss heading is present in the prompt (e.g., `### Repository Map`,
+    lowercase `## repository map`, indented `   ## Repository Map`, or
+    alternate name `## Repo Map`). Indicates PM template drift, NOT an
+    injection-pipeline bug. Detected by case-insensitive regex
+    `/^\s*#{1,6}\s+repo(sitory)?\s*map\b/im`. Distinguished from `error` so
+    analytics do not conflate prose drift with a real leak.
+  - `error`: heading absent AND no near-miss found — most often a real
     injection-pipeline gap (PM forgot to call `injectRepoMap()`).
 - Same kill-switch and config key as `cite_cache_hit` /
   `repo_map_injected`.
@@ -6206,9 +6213,55 @@ applied row carries none either — pairing by role within the
 orchestration is the canonical join. Bounded tail-scan
 (32 KB) of `events.jsonl` finds the match.
 
+**Pairing caveat** (v2.2.3 P2 follow-up): when N>1 spawns of the same
+role occur in one orchestration, only the most-recent prior
+`output_shape_applied` is paired with each `output_shape_observed`;
+older same-role spawns are silently un-paired by simple time-pivot
+rollups. Rollups requiring per-spawn fidelity should join on
+`agent_id` once that field is populated upstream (PreToolUse:Agent
+does not yet surface it). Acknowledged in the W2 design.
+
 Schema stability: additive-only. New event in v2.2.3.
 Backward-compat: ignore-unknown per R-EVENT-NAMING — older
 consumers ignore the row entirely.
+
+Source: `bin/observe-output-shape.js` via `writeEvent`.
+
+---
+
+### `output_shape_observed_pair_missing` event
+
+Emitted by `bin/observe-output-shape.js` (SubagentStop hook) when the
+bounded 32 KB tail-scan of `events.jsonl` finds NO matching
+`output_shape_applied` row for the current `(orchestration_id, role)`
+pair. Surfaces silent pairing failures so analytics can distinguish
+"observed without applied" (tail exhaustion in a busy orchestration)
+from "applied without observed" (real cap-respect signal). v2.2.3
+P2 follow-up.
+
+```json
+{
+  "version": 1,
+  "type": "output_shape_observed_pair_missing",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id>",
+  "role": "developer",
+  "scanned_bytes": 32768
+}
+```
+
+Field notes:
+- `role`: canonical role from the SubagentStop payload's `agent_type`
+  field. Same shape as `output_shape_observed.role`.
+- `scanned_bytes`: bytes the tail-scan actually consumed (capped at
+  `EVENTS_TAIL_BYTES = 32 KB`). When `events.jsonl` is smaller than
+  the cap, this is the file size; when larger, it is exactly 32 768.
+  `0` when the file is missing or unreadable.
+- Cardinality: at most one per non-excluded SubagentStop where the
+  applied row scrolled out of the bounded tail. Expected to be rare
+  in v2.2.3 (output_shape_applied is ~3-8 per orch); if rates climb
+  in production telemetry, the cap should be raised in v2.2.4.
+- Schema stability: additive-only. New event in v2.2.3 P2 follow-up.
 
 Source: `bin/observe-output-shape.js` via `writeEvent`.
 
@@ -6264,6 +6317,14 @@ Field notes:
     attack-input replay. The default fallback when test-environment
     markers (`NODE_TEST_CONTEXT`, `ORCHESTRAY_TEST_SHARED_DIR`,
     `JEST_WORKER_ID`, `npm_lifecycle_event=test`) are present.
+    **Caveat (v2.2.3 P2 follow-up):** any `npm_lifecycle_event` value
+    equal to `test` will be classified as `test_fixture`, including
+    real-orchestration runs invoked from npm scripts whose lifecycle
+    name happens to be `test` (e.g., `npm run test:integration` running
+    against a live orchestration). Rollups filtering on `caller_context`
+    should additionally check the parent `agent_start` event's
+    `subagent_type` to disambiguate; a real spawn carries a non-test
+    role even when the harness env was inherited.
   - `"unknown"` — fallback when no caller signal is available.
     Post-v2.2.3, the distribution should skew strongly away from
     `"unknown"`; non-trivial counts indicate an unmigrated emit site.
