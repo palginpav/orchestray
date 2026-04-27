@@ -1319,6 +1319,56 @@ unknown types per R-EVENT-NAMING.
 
 ---
 
+### `pm_orch_duration_estimated` event
+
+Emitted by the PM at the end of Section 13 task decomposition (step 10), once
+per orchestration (or once per re-plan when adaptive re-planning replaces the
+task graph). Records the duration estimate that drives the cache-breakpoint
+manifest's TTL auto-downgrade rule (`bin/_lib/cache-breakpoint-manifest.js`
+slots 1+2 downgrade from `1h` to `5m` when this value is `< 25`). New in
+v2.2.3 P3 W5/C11 — heals the dormant TTL rule that v2.2.0 shipped without a
+PM-side write site.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "pm_orch_duration_estimated",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id>",
+  "estimated_minutes": 15,
+  "item_count": 5,
+  "parallel_groups": 3,
+  "longest_path_minutes": 15,
+  "method": "calibrated"
+}
+```
+
+Field notes:
+- `estimated_minutes`: positive integer in `[5, 480]`, the same value written
+  to `pm_protocol.estimated_orch_duration_minutes` in
+  `.orchestray/audit/current-orchestration.json`.
+- `item_count`: number of W-items in the finalized task graph (root-and-leaf
+  count, not including the meta task graph itself).
+- `parallel_groups`: count of distinct parallel groups produced by step 7 of
+  the decomposition protocol.
+- `longest_path_minutes`: the longest sequential path through the task graph,
+  in minutes — equal to `estimated_minutes` when the graph is purely
+  sequential, smaller otherwise.
+- `method`: `"calibrated"` when the size × model-tier × parallelism formula
+  was used; `"fallback"` when item sizing was not available and the legacy
+  `5 × pending_task_count` heuristic was used.
+- Source: emitted by the PM directly (no hook script). Written via the same
+  audit-event-writer used for other PM-emitted events.
+
+Backward compatibility: new event type in v2.2.3; older consumers ignore
+unknown types per R-EVENT-NAMING. Pairs with the existing
+`cache_breakpoint_emit { ttl: '5m', ttl_downgrade_applied: true }` event so
+analytics can confirm short-orch downgrades fire end-to-end.
+
+---
+
 ## Invariant Extracted Event
 
 Appended during Section 4 result processing when an architect agent completes and
