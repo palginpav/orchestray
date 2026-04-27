@@ -237,7 +237,7 @@ function emitUpgradePendingWarning(sessionId, cwd) {
       '[orchestray] v2.2.0 migration: Output Shape Pipeline is enabled by default ' +
       '(output_shape.enabled: true; caveman_enabled, length_cap_enabled, structured_outputs_enabled all true). ' +
       'Caveman style + length caps apply to prose-heavy roles; structured outputs flip per ' +
-      'output_shape.staged_flip_allowlist (default ["researcher","tester"] in v2.2.0). ' +
+      'output_shape.staged_flip_allowlist (v2.2.3 P3-W1 A4 expanded the default to all 8 hybrid roles + researcher + tester). ' +
       'No env override; permanent disable per flag in .orchestray/config.json.\n'
     );
     // P1.3 — Pre-Materialized Tier-2 Index (chunked schema lookup).
