@@ -479,8 +479,18 @@ function emitAuditEvent(cwd, eventType, extra) {
  * computes a true `delta_files` (only the paths whose individual sha
  * changed) by diffing against the persisted `zone1_file_hashes` map.
  *
+ * v2.2.3 P0-2: schema shadow is EXCLUDED from the invariant hash. Shadow
+ * is a derived artifact (regenerated from `event-schemas.md` on every
+ * release that adds an event type) — including it caused 38+ false
+ * `cache_invariant_broken` self-trips per release and a 24h cache disable
+ * (see `.orchestray/kb/artifacts/v223-telemetry-token-savings.md`). Cache
+ * prefix continues to include shadow content via `compose-block-a.js` —
+ * only the invariant tracking is decoupled. Shadow content drift is
+ * surfaced via the separate `cache_zone_shadow_regen_observed` event so
+ * release tooling stays observable.
+ *
  * @param {string} cwd
- * @returns {{ hash: string, hashedFiles: string[], fileHashes: Record<string,string> }}
+ * @returns {{ hash: string, hashedFiles: string[], fileHashes: Record<string,string>, shadowHash: (string|null) }}
  */
 function recomputeZone1Hash(cwd) {
   const parts       = [];
@@ -497,7 +507,9 @@ function recomputeZone1Hash(cwd) {
     } catch (_e) {}
   }
 
-  // Schema shadow (must match compose-block-a.js logic)
+  // v2.2.3 P0-2: shadow is loaded ONLY for telemetry (cache_zone_shadow_regen_observed).
+  // It is NOT folded into the invariant hash — see function header above.
+  let shadowHash = null;
   try {
     const { shadow, stale, disabled } = loadShadowWithCheck(cwd, {
       envDisabled:    process.env.ORCHESTRAY_DISABLE_SCHEMA_SHADOW === '1',
@@ -515,16 +527,13 @@ function recomputeZone1Hash(cwd) {
         'Full schema fallback: agents/pm-reference/event-schemas.md (load on miss)',
         '</event-schema-shadow>',
       ].join('\n');
-      parts.push(shadowContent);
-      const shadowKey = 'agents/pm-reference/event-schemas.shadow.json';
-      hashedFiles.push(shadowKey);
-      fileHashes[shadowKey] = crypto.createHash('sha256').update(shadowContent).digest('hex');
+      shadowHash = crypto.createHash('sha256').update(shadowContent).digest('hex');
     }
   } catch (_e) {}
 
   const content = parts.join('\n\n');
   const hash    = crypto.createHash('sha256').update(content).digest('hex');
-  return { hash, hashedFiles, fileHashes };
+  return { hash, hashedFiles, fileHashes, shadowHash };
 }
 
 /**
@@ -561,6 +570,34 @@ function loadStoredHashes(cwd) {
   }
 }
 
+/**
+ * v2.2.3 P0-2: opportunistically persist the current shadow hash to
+ * `block-a-zones.json` under `zone1_shadow_hash` (additive field — does
+ * NOT touch `zone1_hash` or `zone1_file_hashes`). Emits no event;
+ * caller emits `cache_zone_shadow_regen_observed` separately when drift
+ * is observed. Safe no-op on any I/O error.
+ */
+function maybeRefreshShadowHash(cwd, stored, shadowHash) {
+  if (!shadowHash) return false;
+  if (stored && stored.zone1_shadow_hash === shadowHash) return false;
+  try {
+    const stateDir  = path.join(cwd, STATE_DIR);
+    const zonesPath = path.join(stateDir, ZONES_FILE);
+    fs.mkdirSync(stateDir, { recursive: true });
+    const next = Object.assign({}, stored || {}, {
+      zone1_shadow_hash:        shadowHash,
+      zone1_shadow_updated_at:  new Date().toISOString(),
+    });
+    const tmp = zonesPath + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', 'utf8');
+    try { fs.renameSync(tmp, zonesPath); }
+    catch (_e) { fs.writeFileSync(zonesPath, JSON.stringify(next, null, 2) + '\n', 'utf8'); }
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main handler
 // ---------------------------------------------------------------------------
@@ -594,11 +631,27 @@ function handle(event) {
       return;
     }
 
-    const { hash: currentHash, hashedFiles, fileHashes } = recomputeZone1Hash(cwd);
+    const { hash: currentHash, hashedFiles, fileHashes, shadowHash } = recomputeZone1Hash(cwd);
+
+    // v2.2.3 P0-2: emit informational shadow-drift event when shadow content
+    // hash differs from last-seen. Decoupled from the invariant so a shadow
+    // regen never trips zone-1, but release tooling stays observable.
+    if (shadowHash && stored.zone1_shadow_hash && shadowHash !== stored.zone1_shadow_hash) {
+      emitAuditEvent(cwd, 'cache_zone_shadow_regen_observed', {
+        zone:                'zone1',
+        previous_shadow_hash: stored.zone1_shadow_hash.substring(0, 12),
+        current_shadow_hash:  shadowHash.substring(0, 12),
+        note: 'shadow regen excluded from zone-1 invariant per v2.2.3 P0-2',
+      });
+    }
 
     if (currentHash === stored.zone1_hash) {
       // Zone 1 stable — opportunistically clean a legacy/expired sentinel.
+      // Also opportunistically refresh the persisted shadow hash so future
+      // shadow-drift telemetry is accurate (additive — does NOT touch
+      // zone1_hash).
       clearStaleSentinelIfAny(cwd, cfg);
+      maybeRefreshShadowHash(cwd, stored, shadowHash);
       process.exit(0);
       return;
     }
@@ -622,6 +675,11 @@ function handle(event) {
           updated_at:         new Date().toISOString(),
           last_rebaseline_at: new Date().toISOString(),
         });
+        // v2.2.3 P0-2: keep shadow telemetry hash fresh on rebaseline.
+        if (shadowHash) {
+          next.zone1_shadow_hash       = shadowHash;
+          next.zone1_shadow_updated_at = new Date().toISOString();
+        }
         const tmp = zonesPath + '.tmp';
         fs.writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', 'utf8');
         fs.renameSync(tmp, zonesPath);
@@ -815,4 +873,7 @@ module.exports = {
   DEFAULT_DEDUPE_WINDOW_SECONDS,
   DEFAULT_SENTINEL_TTL_HOURS,
   DEFAULT_QUARANTINE_TRIP_THRESHOLD,
+  // v2.2.3 P0-2 shadow-decoupling surface
+  maybeRefreshShadowHash,
+  loadStoredHashes,
 };
