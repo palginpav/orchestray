@@ -5792,7 +5792,9 @@ event on hybrid/prose-heavy spawns indicates the kill switch fired.
   "caveman": true,
   "structured": false,
   "length_cap": 50000,
+  "cap_output_tokens": 50000,
   "baseline_output_tokens": null,
+  "baseline_source": "no_cache",
   "observed_output_tokens": null,
   "accuracy_holds": null,
   "reason": "caveman=on,length_cap=tier_default,structured=staged_off"
@@ -5822,13 +5824,29 @@ Field notes:
 - `length_cap`: integer (output-token cap) or `null` when
   `output_shape.length_cap_enabled: false` OR the role is
   `structured-only`.
-- `baseline_output_tokens`: PM-recorded pre-shape baseline from the
-  `routing_outcome` event for this role, or `null` if unavailable.
-  Populated post-spawn by an audit-event-rewriter pass in v2.2.1
-  (out of scope for v2.2.0 — keep the field nullable).
-- `observed_output_tokens`: actual output tokens used by the spawn.
-  Populated by `bin/collect-agent-metrics.js` once the metrics flow
-  joins (post-P1.1 M0.1 dedupe fix is the gate).
+- `baseline_output_tokens`: counter-factual estimate of the per-spawn
+  output-token volume the role would produce WITHOUT smart shaping.
+  Populated by `bin/inject-output-shape.js` from
+  `.orchestray/state/role-budgets.json` (preferring `p95`, falling back
+  to `budget_tokens`). `null` when the cache is missing or the role
+  has no entry. Always paired with `baseline_source` for debuggability.
+  Wired in v2.2.3 Phase-2 W2.
+- `baseline_source` (added v2.2.3): provenance label for
+  `baseline_output_tokens`. Enum:
+  `"p95_cache"` (preferred, from `--emit-cache` calibration),
+  `"budget_tokens_cache"` (fallback, v2.1.16 seed values),
+  `"no_cache"` (cache file or role entry missing — baseline=null).
+  Required field; emit-site is `bin/inject-output-shape.js`.
+- `cap_output_tokens` (added v2.2.3): the actually-injected cap
+  echoed for join-convenience with `output_shape_observed`. Equal to
+  `length_cap` for non-structured-only roles, `null` for
+  structured-only and category=none. Mirrors `length_cap` so rollups
+  do not need to pivot through both rows.
+- `observed_output_tokens`: legacy field — kept `null` on this row.
+  The post-spawn observation is emitted as a separate
+  `output_shape_observed` row by `bin/observe-output-shape.js`
+  (SubagentStop hook). Rollups join the two rows by
+  `(orchestration_id, role)` most-recent-pair. v2.2.3 Phase-2 W2.
 - `accuracy_holds`: `null` initially. v2.2.1 fills with
   `true|false|null` based on a post-spawn correctness check
   (deferred — schema-stable since the field is nullable).
@@ -5846,6 +5864,72 @@ Schema stability: additive-only. The five `null`-defaulted fields
 (`baseline_output_tokens`, `observed_output_tokens`, `accuracy_holds`,
 plus any v2.2.1 additions) are ignore-unknown-safe per
 R-EVENT-NAMING. Source: PM via `ox events append`.
+
+---
+
+### `output_shape_observed` event
+
+Emitted by `bin/observe-output-shape.js` (SubagentStop hook) once an
+agent stops running. Pairs with the `output_shape_applied` row that
+the PreToolUse:Agent hook wrote at spawn time, closing the
+counter-factual loop: applied row carries the baseline + injected
+cap, observed row carries the realized output token count.
+
+Cardinality: one per non-excluded SubagentStop where a matching
+`output_shape_applied` row exists for the same
+`(orchestration_id, role)`. Rollups join the two by that pair.
+Wired in v2.2.3 Phase-2 W2.
+
+```json
+{
+  "version": 1,
+  "type": "output_shape_observed",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id>",
+  "session_id": "uuid-or-null",
+  "agent_id": "task-N-or-null",
+  "agent_type": "developer",
+  "role": "developer",
+  "observed_output_tokens": 12450,
+  "cap_output_tokens": 50000,
+  "cap_respected": true,
+  "baseline_output_tokens": null
+}
+```
+
+Field notes:
+
+- `agent_id`: passed through from the SubagentStop hook payload
+  (`event.agent_id`). May be `null` for legacy / team event paths.
+- `agent_type` and `role`: identical here — `agent_type` is the
+  Claude Code SubagentStop field name; `role` is the canonical name
+  used by the applied row. Both are emitted so consumers do not
+  have to choose.
+- `observed_output_tokens`: nullable. Preference order at the hook:
+  `event.usage.output_tokens` (fast path), bounded transcript
+  tail-scan summing `usage.output_tokens` across assistant
+  messages, else `null` (transcript missing or unreadable).
+- `cap_output_tokens`: echoed from the matching applied row's
+  `cap_output_tokens` (or `length_cap` when present). `null` for
+  structured-only roles or category=none — those rows never carry
+  a cap.
+- `cap_respected`: `true` when `observed_output_tokens <= cap_output_tokens`,
+  `false` when over, `null` when either side is null (unknown).
+- `baseline_output_tokens`: echoed from the applied row for
+  rollup convenience. Same nullability semantics as on the applied
+  row.
+
+Pairing key: `(orchestration_id, role)`, most-recent prior
+`output_shape_applied`. PreToolUse:Agent has no agent_id, so the
+applied row carries none either — pairing by role within the
+orchestration is the canonical join. Bounded tail-scan
+(32 KB) of `events.jsonl` finds the match.
+
+Schema stability: additive-only. New event in v2.2.3.
+Backward-compat: ignore-unknown per R-EVENT-NAMING — older
+consumers ignore the row entirely.
+
+Source: `bin/observe-output-shape.js` via `writeEvent`.
 
 ---
 

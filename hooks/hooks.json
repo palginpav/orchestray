@@ -396,6 +396,11 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-task-completion.js",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/observe-output-shape.js",
+            "timeout": 5
           }
         ]
       },
