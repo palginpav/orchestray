@@ -51,7 +51,7 @@ v2.2.3 is the **"v2.2.0 was the design; v2.2.3 is the runtime"** release. v2.2.0
 
 ### Changed
 
-- **Reviewer scope validator promoted from observe to warn.** `bin/validate-reviewer-scope.js` shipped in v2.2.2 in observe-only mode after a false-positive fix; a 14-day telemetry window confirmed `reviewer_scope_warn` rate stays under one per 100 reviewer spawns. v2.2.3 promotes the validator from observe to warn (advisory stderr, never blocks). Block (exit-2) mode is the next promotion step in v2.2.4 once warn-mode shipping data confirms the new false-positive floor.
+- **Reviewer scope validator promoted from warn to exit-2 hard-block.** `bin/validate-reviewer-scope.js` shipped in v2.2.2 in observe-only mode after a false-positive fix; a 14-day telemetry window confirmed `reviewer_scope_warn` rate stays under one per 100 reviewer spawns. v2.2.3 promotes the validator straight to **block** mode — reviewer delegations without an explicit file list now hard-block (exit 2) and emit `reviewer_scope_warn` with `action: 'block'`. The PM must always pass a scoped file list (or one of the recognised heading-style markers like `## Verification` / `### Files to verify`) to spawn a reviewer. Disable with `ORCHESTRAY_DISABLE_REVIEWER_SCOPE=1` in env if a regression appears.
 
 ### Migration notes
 
@@ -70,11 +70,11 @@ v2.2.3 is the **"v2.2.0 was the design; v2.2.3 is the runtime"** release. v2.2.0
 
 ### Tests
 
-- **4653 tests / 4652 pass / 1 intentional skip / 0 fail.** Test runtime ~17.6 s.
+- **4664 tests / 4663 pass / 1 intentional skip / 0 fail.** Test runtime ~17.7 s.
 
 ### Not in this release (with triggers)
 
-- **Block-mode promotion of `validate-reviewer-scope.js` and `track-scout-decision.js`.** Both validators ship in warn mode this release. **Trigger:** 14 days of v2.2.3 telemetry showing warn-rate ≤ 1 per 100 spawns and the exempt-path allowlist confirmed exhaustive.
+- **Block-mode promotion of `track-scout-decision.js`.** Scout-decision validator ships in warn mode this release. **Trigger:** 14 days of v2.2.3 telemetry showing warn-rate ≤ 1 per 100 spawns and the exempt-path allowlist confirmed exhaustive.
 - **A8 — Batch API for non-interactive subagents.** **Trigger:** Orchestray gains a "background audit" or "scheduled pattern extraction" workflow that consumes the 50% async discount.
 - **A6 — Aider-style deterministic edit-applier.** **Trigger:** ≥60 days post-v2.2.0 showing Edit whitespace-mismatch retry rate ≥ 20%.
 - **A5 — Adaptive `scout_min_bytes` threshold.** **Trigger:** ≥100 orchestrations of `scout_spawn` telemetry showing distribution bimodality (now collectable post-P0-1).
