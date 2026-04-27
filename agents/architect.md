@@ -11,6 +11,7 @@ effort: xhigh # default: xhigh (Opus 4.7 recommended default per Anthropic). max
 memory: project
 isolation: worktree
 maxTurns: 105
+output_shape: hybrid
 color: blue
 ---
 

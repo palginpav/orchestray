@@ -10,6 +10,7 @@ effort: medium
 memory: project
 isolation: worktree
 maxTurns: 125
+output_shape: hybrid
 color: cyan
 ---
 

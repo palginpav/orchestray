@@ -3,6 +3,67 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.2.0] - 2026-04-27
+
+v2.2.0 is the **"Tokens, not Actions"** release — Orchestray's first major bump in the v2.x line. Nine shipping items reshape how Orchestray pays for the prompt prefix it sends to Claude on every turn: agents narrate less, the PM stops re-reading the largest reference file, stable prefixes anchor in Anthropic's 1-hour cache, and trivial file I/O moves off Opus onto Haiku. Two new agents ship (`haiku-scout` and `orchestray-housekeeper`) plus six new feature areas — every flag default-on, every behavior change with a kill switch. Headline savings: roughly **−18% to −33% per orchestration** (mid-range −22%; multi-round audits land at the upper end). Numbers are directionally correct, magnitude-uncertain until your own telemetry accumulates — see `/orchestray:analytics` for your install. Restart Claude Code after upgrading; agent definitions changed.
+
+### Added
+
+- **Smart output shaping for prose-heavy agents.** Debugger, reviewer, and documenter answers stop hedging and using pad-words; the structured-result JSON they emit is unchanged. On a public April-2026 benchmark this delivered roughly −21% Opus output and −14% Sonnet output with 100% accuracy retained. A short prompt addendum, per-role length caps, and Anthropic's native Structured Outputs compose into a single decision module. Default on; disable with `output_shape.enabled: false`.
+
+- **Chunked schema lookup for the largest reference file.** Orchestray no longer reads the 186 KB event-schemas reference on every orchestration that touches event emission. A small fingerprint replaces the full file, and a new `mcp__orchestray__schema_get` MCP verb returns the specific 200–600-token chunk you need on demand. The full-file Read path is blocked by default; restore legacy behavior with `event_schemas.full_load_disabled: false`.
+
+- **Engineered prompt-cache geometry.** Stable prompt prefixes now anchor on a byte-stable Block-Z header backed by a deterministic 4-slot cache-control manifest with TTL auto-downgrade for short orchestrations. Back-to-back orchestrations within the hour pay 90% less for the shared overhead. Default on; disable with `caching.block_z.enabled: false` or `caching.engineered_breakpoints.enabled: false`.
+
+- **Haiku scout for large file recon.** A new read-only `haiku-scout` agent (Read, Glob, Grep only — no Edit, no Write, no Bash) takes care of file recon at and above the 12 KB threshold. The PM keeps Opus 4.7 for orchestration decisions; the I/O wrapper moves down-tier. Three-layer tool-whitelist enforcement: declarative frontmatter, runtime rejection, and a CI test that fails on any unsanctioned mutation. Default on; disable with `haiku_routing.enabled: false`.
+
+- **Background-housekeeper Haiku.** A new read-only `orchestray-housekeeper` agent (Read, Glob only — stricter than scout) handles three narrow background ops: knowledge-base write verification, schema-shadow regen, and telemetry rollup recompute. Per-action audit telemetry, a drift detector that fails closed on any unsanctioned mutation of the agent's tool whitelist, and three independent kill switches (env var, config flag, and runtime sentinel). Default on; disable with `haiku_routing.housekeeper_enabled: false` or `ORCHESTRAY_HOUSEKEEPER_DISABLED=1`. Promoting the housekeeper to broader tools requires an explicit tagged commit cycle in a future release — the narrow whitelist is intentional.
+
+- **Deterministic helpers replace inline Bash for routine probes.** Five common probes — file-exists, line-count, git-status, schema-validate, hash-compute — now run as a deterministic helper with zero LLM cost, replacing the inline Bash calls the PM used to issue for these checks. The new `ox sentinel` CLI exposes the same helpers for ad-hoc use. No flag; this is a correctness and cost lever, not a behavior change.
+
+- **Audit-round auto-archive for multi-round orchestrations.** When a ship-blocker audit runs three or more rounds, completed rounds are automatically distilled into a compact 500-token digest in the active prompt; the verbatim findings stay in the audit log for replay. Default on; disable with `audit.round_archive.enabled: false`.
+
+- **Delta delegation for repeat agent spawns.** Within an orchestration, the first spawn of an agent gets the full delegation prompt; subsequent spawns of the same agent get a prefix reference plus a small delta block. Hash-anchored re-emission triggers automatically on prefix mismatch so cache misses self-heal. Default on; disable with `pm_protocol.delegation_delta.enabled: false` or `ORCHESTRAY_DISABLE_DELEGATION_DELTA=1`.
+
+### Changed
+
+- **Telemetry truth — three correctness fixes that change what `/orchestray:analytics` shows.** The `agent_metrics.jsonl` file no longer carries the ~59% duplicate rows that v2.1.x cost rollups silently double-counted (cost reports for new orchestrations will be lower because the duplication is gone, not because spending dropped). Agent Teams team-member spawns are now priced at their real model rate instead of defaulting to Sonnet. PM-direct token cost is now visible in the metrics dashboard for the first time. Historical rollups stay at the old values; only new orchestrations reflect the corrected accounting.
+
+- **`event_schemas.full_load_disabled: true` is the new default.** Reading `agents/pm-reference/event-schemas.md` as a single file is blocked from the PM's chunked path. Use `mcp__orchestray__schema_get` for targeted lookups, or set `event_schemas.full_load_disabled: false` to restore legacy full-file Read.
+
+### Migration notes
+
+**Restart Claude Code after upgrading.** Two new agents (`haiku-scout`, `orchestray-housekeeper`) join the registry. Claude Code loads agent definitions at session start and caches them — running sessions will not see the new agents until restart.
+
+**All nine shipping items default on.** A one-time post-upgrade banner names each default-on flip and the kill switch on first session post-upgrade. Every change has a `.enabled` setting in `.orchestray/config.json` and where applicable an `ORCHESTRAY_<NAME>_DISABLED=1` environment-variable override.
+
+**`event_schemas.full_load_disabled: true` is binding by default.** If a downstream agent or skill reads `event-schemas.md` as a whole file today, it will see a structured rejection on first try post-upgrade. Switch to `mcp__orchestray__schema_get` (returns specific chunks) or set `event_schemas.full_load_disabled: false` to restore the legacy Read path.
+
+**Haiku scout and housekeeper are read-only by design.** `haiku-scout` ships with `tools: [Read, Glob, Grep]` only; `orchestray-housekeeper` ships with `tools: [Read, Glob]` only. Both have three-layer tool-whitelist enforcement and a frontmatter-byte-equality CI test that fails on any unsanctioned mutation. Promoting either to broader tools requires an explicit tagged commit cycle — this is the lifecycle the project committed to in v2.2.0 scope.
+
+### Under the hood — hardening / observability
+
+- 21 new audit event types ship in v2.2.0, all carrying `version: 1`. Schema shadow regenerated to **116 event types / 5538 bytes** (was 92 / 4411 in v2.1.17). A new tier-2 sidecar index (`event-schemas.tier2-index.json`) keeps the chunked schema lookup honest at 56 KB / ~3,200 fingerprint tokens — the chunked path is the only path; full-file Read is disabled by default.
+- A pinned Block-A hash (`e068ae0dfab5e752`) anchors the prompt prefix that agents see. Any drift in `agents/pm.md`'s Block A is caught at test time before it can reach Anthropic's cache layer.
+- Three new top-level config blocks (`pm_protocol`, `event_schemas`, `output_shape`) plus the existing `caching`, `haiku_routing`, and `audit.round_archive` blocks are registered in the boot-time config-drift detector. Fresh installs see zero "unknown top-level key" warnings.
+- The post-upgrade banner names all nine default-on flips with their config keys and env-var kill switches; gated by the standard 7-day upgrade-sentinel TTL so the banner does not repeat across sessions.
+- Net **+341 tests** across the release (P1.1: 12, P1.2: 32, P1.3: 41, P1.4: 28, P2.1: 27, P2.2: 24, P3.1: 14, P3.2: 14, P3.3: 23, plus cross-phase fixpass and regression suites).
+
+### Tests
+
+- **4316 tests / 4316 pass / 1 intentional skip / 0 fail.** Test runtime ~17 s.
+
+### Not in this release (with triggers)
+
+- **Adaptive scout-byte threshold.** Today the scout fires at a fixed 12 KB. **Trigger:** 30 days of v2.2.0 telemetry showing the threshold misclassifies more than 5% of Class-B operations.
+- **Repo-map pin per orchestration.** v2.2.0 ships the repo map at session scope; per-orchestration pinning is deferred. **Trigger:** measured cache-thrash on long orchestrations that span multiple feature surfaces.
+- **Haiku PM-router gateway.** The PM's reasoning model stays Opus; only its file I/O wrapper moved down-tier. **Trigger:** v2.2.0 telemetry confirms the Class-B routing rule holds and a measured cost hotspot remains in PM reasoning.
+- **Aider-style deterministic edit-applier.** Strong but it's an output offload, not a token-reduction lever, and conflicts on schedule with v2.2.0 cache geometry. **Trigger:** v2.2.1 schedule.
+- **Batch API for non-interactive subagents.** 50% async discount available, but routing logic is non-trivial. **Trigger:** v2.2.x cycle once the v2.2.0 baseline measurement window closes.
+- **`count_tokens` pre-spawn budget gate.** Hard pre-spawn token caps remain soft-warn in v2.2.0. **Trigger:** measured oversized-spawn rate above the v2.1.16 budget-warn baseline.
+
+---
+
 ## [2.1.17] - 2026-04-26
 
 v2.1.17 is the "discharge the carryover backlog" release. Four items deferred from v2.1.16 ship together: the full Aider-style repo map (replacing the recipe stub from v2.1.16), and three telemetry signals — documenter spawn-frequency, archetype cache hit-rate, and reviewer dimension adoption — that close the measurement loop on three v2.1.16 defaults so v2.1.18 can flip them with evidence rather than guesswork. No user-facing config defaults change behavior; one new default-on config block (`repo_map`) ships pre-configured. 5 R-items shipped. 3975/3975 tests pass.

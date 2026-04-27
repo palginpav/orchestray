@@ -50,13 +50,16 @@ function handle(event) {
   try {
     const cwd = resolveSafeCwd(event && event.cwd);
 
-    // Check if the edited file is event-schemas.md
-    // The PostToolUse payload for Edit has tool_input.file_path
+    // Check if the edited file is the canonical event-schemas.md.
+    // The PostToolUse payload for Edit has tool_input.file_path.
+    // W7 fix-pass L-002 (v2.2.0): match the canonical relative path
+    // (agents/pm-reference/event-schemas.md) rather than any path ending
+    // with the basename — `attacker-event-schemas.md` must NOT trigger.
     const toolInput = (event && event.tool_input) || {};
     const filePath = toolInput.file_path || '';
-
-    // Normalize to check basename or path suffix
-    const isEventSchemas = filePath.endsWith('event-schemas.md');
+    const CANONICAL_REL = path.join('agents', 'pm-reference', 'event-schemas.md').replace(/\\/g, '/');
+    const normalized = String(filePath).replace(/\\/g, '/');
+    const isEventSchemas = normalized.endsWith('/' + CANONICAL_REL) || normalized === CANONICAL_REL;
     if (!isEventSchemas) {
       process.stdout.write(CONTINUE_RESPONSE + '\n');
       process.exit(0);
@@ -74,6 +77,24 @@ function handle(event) {
     } catch (regenErr) {
       // Fail-open: warn but do not block
       process.stderr.write('[regen-schema-shadow-hook] regen failed: ' + regenErr.message + '\n');
+    }
+
+    // v2.2.0 P1.3: also regen the tier2-index sidecar from the same source.
+    // Both outputs share the same source-hash; computing twice in lock-step
+    // keeps the shadow + index from disagreeing on slug coverage. Fail-open
+    // independently of the shadow regen.
+    try {
+      const { buildIndex } = require('./_lib/tier2-index');
+      const index = buildIndex({ cwd });
+      const idxCount = Object.keys(index.events).length;
+      process.stderr.write(
+        '[regen-schema-shadow-hook] auto-regenerated tier2-index: ' + idxCount +
+        ' events, ' + index._meta.index_size_bytes + ' bytes\n'
+      );
+    } catch (idxErr) {
+      process.stderr.write(
+        '[regen-schema-shadow-hook] tier2-index regen failed: ' + idxErr.message + '\n'
+      );
     }
   } catch (_e) {
     process.stderr.write('[regen-schema-shadow-hook] unexpected error: ' + _e.message + '\n');

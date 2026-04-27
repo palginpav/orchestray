@@ -237,6 +237,7 @@ time. Used by Section 3.Y (Turn Budget Calculation) in the main PM prompt.
 | refactorer | 15 | 65 | Refactoring requires careful incremental changes |
 | inventor | 20 | 65 | Novel creation needs the most exploration room |
 | security-engineer | 15 | 45 | Security analysis is thorough and exploratory |
+| haiku-scout (P2.2) | 3 | 5 | Read-only I/O worker; haiku/low; one Read/Glob/Grep per spawn |
 
 The "Frontmatter Ceiling" column reflects the default values in each agent's
 frontmatter `maxTurns` field. These can be **overridden per-agent** via the

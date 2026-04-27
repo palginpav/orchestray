@@ -154,6 +154,22 @@ const KNOWN_TOP_LEVEL_KEYS = Object.freeze([
   // mirrored here so the bidirectional cross-ref test stays green.
   'repo_map',
 
+  // v2.2.0 P2.1 + P2.2: Block-Z + engineered-breakpoint manifest +
+  // Haiku scout for PM I/O. Both blocks ship default-on; registered here
+  // so the boot-time drift detector stops emitting "unknown config key"
+  // warnings on fresh v2.2.0 installs (S-004).
+  'caching',
+  'haiku_routing',
+
+  // v2.2.0 P1.2 (output shape pipeline) + P1.3 (tier-2 chunked index +
+  // D-8 full-load disabled) + P3.2 (delegation-delta). Three additional
+  // top-level blocks ship default-on in .orchestray/config.json; registered
+  // here so fresh v2.2.0 installs do not emit "unknown top-level key"
+  // drift warnings on first boot (F-001 v2.2.0 pre-ship cross-phase fix).
+  'event_schemas',
+  'output_shape',
+  'pm_protocol',
+
   // Meta
   'config_drift_silence',
 ]);

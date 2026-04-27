@@ -154,6 +154,53 @@ function handle(event) {
       return;
     }
 
+    // v2.2.0 P1.3 D-8 enforcement: when event_schemas.full_load_disabled is
+    // true (default), emit an observability event whenever event-schemas.md
+    // is Read in full. This is the third enforcement layer per the design
+    // (declarative dispatch + mechanical getChunk + observability here).
+    // Fail-open: the Read itself is not blocked here, only telemetry.
+    try {
+      const normalizedForBasename = filePath.replace(/\\/g, '/');
+      const basename = normalizedForBasename.split('/').pop() || '';
+      if (basename === 'event-schemas.md') {
+        let fullLoadDisabled = true; // default per locked scope
+        try {
+          const configPath = path.join(cwd, '.orchestray', 'config.json');
+          const raw = fs.readFileSync(configPath, 'utf8');
+          const parsed = JSON.parse(raw);
+          if (
+            parsed &&
+            parsed.event_schemas &&
+            typeof parsed.event_schemas === 'object' &&
+            parsed.event_schemas.full_load_disabled === false
+          ) {
+            fullLoadDisabled = false;
+          }
+        } catch (_cfgErr) { /* default true */ }
+
+        if (fullLoadDisabled) {
+          let oid = 'unknown';
+          try {
+            const orchFile = getCurrentOrchestrationFile(cwd);
+            const orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
+            if (orchData && orchData.orchestration_id) oid = orchData.orchestration_id;
+          } catch (_e) { /* keep unknown */ }
+
+          try {
+            writeEvent({
+              version: 1,
+              timestamp: new Date().toISOString(),
+              type: 'event_schemas_full_load_blocked',
+              orchestration_id: oid,
+              file_path: filePath,
+              agent_role: (event && event.agent_type) || null,
+              source: 'hook',
+            }, { cwd });
+          } catch (_e) { /* fail-open */ }
+        }
+      }
+    } catch (_e) { /* fail-open */ }
+
     // Read orchestration_id from current-orchestration.json.
     let orchestrationId = 'unknown';
     try {

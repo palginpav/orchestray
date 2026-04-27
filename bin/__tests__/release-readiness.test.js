@@ -354,6 +354,10 @@ describe('release-readiness: JSON output format', () => {
     assert.ok(typeof output.summary.passed === 'number');
     assert.ok(typeof output.summary.failed === 'number');
     assert.ok(typeof output.summary.skipped === 'number');
-    assert.strictEqual(output.results.length, 5, 'should have 5 check results');
+    // F-014 (v2.2.0 pre-ship cross-phase fix-pass): added check (f) for
+    // schema-sidecar source_hash freshness. Total raised from 5 to 6.
+    assert.strictEqual(output.results.length, 6, 'should have 6 check results');
+    const checkF = output.results.find((r) => r.id === 'f');
+    assert.ok(checkF, 'check (f) sidecar coherence must appear in results');
   });
 });

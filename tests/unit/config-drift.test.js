@@ -376,3 +376,63 @@ describe('config-drift — renamed-key warning end-to-end', () => {
     assert.equal(res.renamed[0].to, 'federation.sensitivity');
   });
 });
+
+// ---------------------------------------------------------------------------
+// F-001 (v2.2.0 pre-ship cross-phase fix-pass): pm_protocol / event_schemas /
+// output_shape — three top-level blocks introduced by P1.2/P1.3/P3.2 must NOT
+// produce "unknown top-level key" boot-time drift warnings on fresh installs.
+// ---------------------------------------------------------------------------
+
+describe('config-drift — v2.2.0 P1.2/P1.3/P3.2 top-level keys are registered', () => {
+  let tmp;
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-drift-v220-'));
+  });
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('detectDrift() flags none of pm_protocol/event_schemas/output_shape as unknown', () => {
+    const res = detectDrift({
+      pm_protocol: { delegation_delta: { enabled: true }, tier2_index: { enabled: true } },
+      event_schemas: { full_load_disabled: true },
+      output_shape: {
+        enabled: true,
+        caveman_enabled: true,
+        structured_outputs_enabled: true,
+        length_cap_enabled: true,
+        staged_flip_allowlist: ['researcher', 'tester'],
+      },
+    });
+    assert.deepEqual(res.unknown, [], 'all three v2.2.0 keys must be in KNOWN_TOP_LEVEL_KEYS');
+    assert.deepEqual(res.renamed, []);
+  });
+
+  test('boot-validate-config emits ZERO unknown_top_level_key warnings for the three v2.2.0 blocks', () => {
+    seed(tmp, '.orchestray/config.json', JSON.stringify({
+      pm_protocol: { delegation_delta: { enabled: true }, tier2_index: { enabled: true } },
+      event_schemas: { full_load_disabled: true },
+      output_shape: {
+        enabled: true,
+        caveman_enabled: true,
+        structured_outputs_enabled: true,
+        length_cap_enabled: true,
+        staged_flip_allowlist: ['researcher', 'tester'],
+      },
+    }));
+    const r = runBoot(tmp);
+    assert.equal(r.status, 0, 'boot must exit 0 on a clean v2.2.0 config; stderr=' + r.stderr);
+    assert.doesNotMatch(
+      r.stderr, /unknown top-level key "(pm_protocol|event_schemas|output_shape)"/,
+      'F-001 regression: boot must NOT warn about pm_protocol/event_schemas/output_shape; ' +
+      'observed stderr=\n' + r.stderr,
+    );
+  });
+
+  test('the three v2.2.0 keys appear in KNOWN_TOP_LEVEL_KEYS by name', () => {
+    const known = new Set(KNOWN_TOP_LEVEL_KEYS);
+    assert.ok(known.has('pm_protocol'),    'KNOWN_TOP_LEVEL_KEYS missing pm_protocol');
+    assert.ok(known.has('event_schemas'),  'KNOWN_TOP_LEVEL_KEYS missing event_schemas');
+    assert.ok(known.has('output_shape'),   'KNOWN_TOP_LEVEL_KEYS missing output_shape');
+  });
+});

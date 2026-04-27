@@ -217,6 +217,84 @@ function checkSpecialistsExist(root) {
  * (e) A recent agent_metrics.jsonl entry contains structural_score.
  *     Skipped if the file has fewer than 5 entries.
  */
+/**
+ * (f) F-014 (v2.2.0 pre-ship cross-phase fix-pass): the
+ * agents/pm-reference/event-schemas.shadow.json and
+ * agents/pm-reference/event-schemas.tier2-index.json sidecars MUST both
+ * declare a `_meta.source_hash` that matches the SHA-256 of the live
+ * agents/pm-reference/event-schemas.md. Mismatch means the chunked-only
+ * lookup path returns `{found:false, error:'stale_index'}` for every
+ * `schema_get` call on a fresh install. With D-8 default-on, the PM has
+ * NO fallback — the path is structurally dormant on day-1.
+ *
+ * Recovery: `node bin/regen-schema-shadow.js` regenerates the shadow;
+ * the PostToolUse(Edit) hook also regens the tier2-index sidecar via
+ * `bin/_lib/tier2-index.js::buildIndex`. Both must be re-staged before
+ * tagging.
+ */
+function checkSchemaSidecarsFresh(root) {
+  try {
+    const crypto = require('node:crypto');
+    const sourcePath  = path.join(root, 'agents', 'pm-reference', 'event-schemas.md');
+    const shadowPath  = path.join(root, 'agents', 'pm-reference', 'event-schemas.shadow.json');
+    const sidecarPath = path.join(root, 'agents', 'pm-reference', 'event-schemas.tier2-index.json');
+
+    if (!fs.existsSync(sourcePath)) {
+      // Skip in fixtures / non-orchestray repos that don't ship the
+      // schema source. Real orchestray installs always have this file;
+      // a missing source on a real repo will fail an upstream check.
+      return {
+        pass: true,
+        skipped: true,
+        note: 'event-schemas.md not present — skipping (non-orchestray fixture)',
+      };
+    }
+    const sourceBuf = fs.readFileSync(sourcePath);
+    const sourceSha = crypto.createHash('sha256').update(sourceBuf).digest('hex');
+
+    const mismatches = [];
+    for (const [label, p] of [['shadow', shadowPath], ['tier2-index', sidecarPath]]) {
+      if (!fs.existsSync(p)) {
+        mismatches.push(label + ': missing on disk (' + p + ')');
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+        const declared = parsed && parsed._meta && parsed._meta.source_hash;
+        if (!declared) {
+          mismatches.push(label + ': _meta.source_hash absent');
+          continue;
+        }
+        if (declared !== sourceSha) {
+          mismatches.push(
+            label + ': source_hash mismatch (declared ' + declared.slice(0, 12) +
+            '..., expected ' + sourceSha.slice(0, 12) + '...)',
+          );
+        }
+      } catch (err) {
+        mismatches.push(label + ': parse error — ' + err.message);
+      }
+    }
+
+    if (mismatches.length === 0) {
+      return {
+        pass: true,
+        note: 'shadow + tier2-index source_hash match event-schemas.md (' + sourceSha.slice(0, 12) + '...)',
+      };
+    }
+    return {
+      pass: false,
+      note: 'STALE SIDECAR(S) detected — fresh install would break chunked schema lookup. ' +
+        mismatches.join('; ') + '. Recovery: node bin/regen-schema-shadow.js && ' +
+        'node -e "require(\'./bin/_lib/tier2-index\').buildIndex({cwd:process.cwd()})" ' +
+        '&& git add agents/pm-reference/event-schemas.shadow.json ' +
+        'agents/pm-reference/event-schemas.tier2-index.json',
+    };
+  } catch (err) {
+    return { pass: false, note: 'error checking schema sidecars: ' + err.message };
+  }
+}
+
 function checkStructuralScoreLive(root) {
   try {
     const metricsPath = path.join(root, '.orchestray', 'metrics', 'agent_metrics.jsonl');
@@ -283,6 +361,11 @@ const checks = [
     id:    'e',
     label: 'structural_score present in agent_metrics.jsonl (B4 live)',
     run:   () => checkStructuralScoreLive(projectRoot),
+  },
+  {
+    id:    'f',
+    label: 'event-schemas.{shadow,tier2-index} _meta.source_hash matches live source SHA (F-014)',
+    run:   () => checkSchemaSidecarsFresh(projectRoot),
   },
 ];
 

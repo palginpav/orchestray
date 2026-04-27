@@ -267,6 +267,56 @@ function emitRollup(cwd, orchestrationId) {
   }
 
   // -------------------------------------------------------------------------
+  // P2.2 (v2.2.0): routing_class_breakdown + scout_spawn aggregates.
+  // Computed from pm_turn rows (P1.1 schema_v2 fields populated by the
+  // marker-parser in bin/capture-pm-turn.js) and from scout_spawn audit
+  // events (emitted at PM-side decision time). Tolerant to missing data:
+  // when no pm_turn rows or scout_spawn events exist (e.g., kill switch on,
+  // or pre-P1.1 install), the breakdown is all zeros and analytics renders
+  // "no scout activity" — never throws.
+  // -------------------------------------------------------------------------
+  const routingBreakdown = {
+    A_inline: 0,
+    B_inline: 0,
+    B_scout:  0,
+    C_inline: 0,
+    D_inline: 0,
+    unknown:  0,
+  };
+  for (const r of pmTurnRows) {
+    const cls = r.routing_class;
+    const ios = r.inline_or_scout;
+    const k = (cls && /^[ABCD]$/.test(cls) ? cls : null);
+    if (k === 'B' && ios === 'scout') {
+      routingBreakdown.B_scout += 1;
+    } else if (k === 'B' && ios === 'inline') {
+      routingBreakdown.B_inline += 1;
+    } else if (k === 'A') {
+      routingBreakdown.A_inline += 1;
+    } else if (k === 'C') {
+      routingBreakdown.C_inline += 1;
+    } else if (k === 'D') {
+      routingBreakdown.D_inline += 1;
+    } else {
+      routingBreakdown.unknown += 1;
+    }
+  }
+
+  const scoutSpawnEvents = orchEvents.filter(ev => ev.type === 'scout_spawn');
+  const scoutSpawnCount  = scoutSpawnEvents.length;
+  // S-003 (v2.2.0 fix-pass): the prior `Number(x) || 0` short-circuit
+  // accepts Infinity/-Infinity, so `Infinity + (-Infinity) = NaN` poisons
+  // the running total and JSON.stringify writes `null`. Number.isFinite
+  // guards both `Infinity` and `NaN` inputs (CWE-1339).
+  const scoutEstimatedSavingsTotal = scoutSpawnEvents.reduce(
+    (sum, e) => {
+      const n = Number(e.scout_estimated_savings_usd);
+      return sum + (Number.isFinite(n) ? n : 0);
+    },
+    0
+  );
+
+  // -------------------------------------------------------------------------
   // R-FPM (AC-02): fields_projected count-by-tool summary.
   // Aggregate fields_projected observations from events.jsonl.
   // Zero counts are elided per spec.
@@ -326,6 +376,10 @@ function emitRollup(cwd, orchestrationId) {
     model_auto_resolved_summary:     modelAutoResolvedSummary || undefined,
     // R-FPM (AC-02): fields_projected count-by-tool summary line.
     fields_projected_summary:        fieldsProjSummary || undefined,
+    // P2.2 (v2.2.0): inline-vs-scout routing breakdown + scout spawn totals.
+    routing_class_breakdown:         routingBreakdown,
+    scout_spawn_count:               scoutSpawnCount,
+    scout_estimated_savings_usd_total: Math.round(scoutEstimatedSavingsTotal * 1_000_000) / 1_000_000,
   };
 
   // Write rollup row.

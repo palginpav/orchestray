@@ -127,6 +127,107 @@ process.stdin.on('end', () => {
 
     const orchFile = getCurrentOrchestrationFile(cwd);
 
+    // P3.3 (v2.2.0): orchestray-housekeeper spawn gate — Clause 3 + Clause 5.
+    // Refuse if quarantine sentinel exists (drift detector controlled),
+    // env kill switch is set, or config flag is false. Runs BEFORE the
+    // orchestration check so it applies in any session state.
+    {
+      const earlyToolInput = event.tool_input || {};
+      const earlySubagentType = earlyToolInput.subagent_type || '';
+      if (earlySubagentType === 'orchestray-housekeeper') {
+        const sentinelPath = path.join(cwd, '.orchestray', 'state', 'housekeeper-quarantined');
+        if (fs.existsSync(sentinelPath)) {
+          const quarantineMsg =
+            '[orchestray] gate-agent-spawn: orchestray-housekeeper spawn blocked — ' +
+            'quarantine sentinel present. Resolve baseline drift before re-enabling. ' +
+            'See agents/pm-reference/haiku-routing.md §23f.';
+          process.stderr.write(quarantineMsg + '\n');
+          process.stdout.write(JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'deny',
+              permissionDecisionReason: quarantineMsg,
+            },
+          }));
+          process.exit(2);
+        }
+        if (process.env.ORCHESTRAY_HOUSEKEEPER_DISABLED === '1') {
+          const envMsg =
+            '[orchestray] gate-agent-spawn: orchestray-housekeeper disabled by env ' +
+            '(ORCHESTRAY_HOUSEKEEPER_DISABLED=1).';
+          process.stderr.write(envMsg + '\n');
+          process.stdout.write(JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'deny',
+              permissionDecisionReason: envMsg,
+            },
+          }));
+          process.exit(2);
+        }
+        try {
+          const cfgRaw = fs.readFileSync(path.join(cwd, '.orchestray', 'config.json'), 'utf8');
+          const cfg = JSON.parse(cfgRaw);
+          if (cfg && cfg.haiku_routing &&
+              cfg.haiku_routing.housekeeper_enabled === false) {
+            const cfgMsg =
+              '[orchestray] gate-agent-spawn: orchestray-housekeeper disabled in config ' +
+              '(haiku_routing.housekeeper_enabled = false).';
+            process.stderr.write(cfgMsg + '\n');
+            process.stdout.write(JSON.stringify({
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'deny',
+                permissionDecisionReason: cfgMsg,
+              },
+            }));
+            process.exit(2);
+          }
+        } catch (_cfgErr) { /* fail-open — default-on per locked-scope D-5 */ }
+
+        // S-009 (v2.2.0 fix-pass): housekeeper marker path-prefix check.
+        // OQ-D1 (in-scope per design) — defence-in-depth against a
+        // misaddressed [housekeeper: write <path>] marker. The housekeeper
+        // tool list (Read, Glob) limits damage to "read sensitive file →
+        // return bytes in Structured Result", but the gate is the cleanest
+        // place to enforce that any `[housekeeper: write <path>]` marker
+        // names a path under `.orchestray/kb/artifacts/`. Reject otherwise.
+        // Non-`write` markers (regen-schema-shadow, rollup-recompute) carry
+        // no path and pass through.
+        const description = (earlyToolInput.description || '');
+        if (typeof description === 'string') {
+          const writeMarker = description.match(/\[housekeeper:\s*write\s+([^\]]+)\]/);
+          if (writeMarker && writeMarker[1]) {
+            const requestedPath = writeMarker[1].trim();
+            const ARTIFACTS_PREFIX = path.join('.orchestray', 'kb', 'artifacts');
+            const artifactsAbs = path.resolve(cwd, ARTIFACTS_PREFIX);
+            const requestedAbs = path.isAbsolute(requestedPath)
+              ? path.resolve(requestedPath)
+              : path.resolve(cwd, requestedPath);
+            const inside = requestedAbs === artifactsAbs ||
+              requestedAbs.startsWith(artifactsAbs + path.sep);
+            if (!inside) {
+              const markerMsg =
+                '[orchestray] gate-agent-spawn: orchestray-housekeeper marker path ' +
+                'outside .orchestray/kb/artifacts/ — refusing to spawn. ' +
+                'Marker path: ' + JSON.stringify(requestedPath) + '. ' +
+                'Per OQ-D1 of locked-scope D-5, write markers MUST stay within ' +
+                'the artifacts directory.';
+              process.stderr.write(markerMsg + '\n');
+              process.stdout.write(JSON.stringify({
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  permissionDecision: 'deny',
+                  permissionDecisionReason: markerMsg,
+                },
+              }));
+              process.exit(2);
+            }
+          }
+        }
+      }
+    }
+
     // Not in an orchestration — no gating, allow freely
     if (!fs.existsSync(orchFile)) {
       process.exit(0);

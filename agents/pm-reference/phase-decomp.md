@@ -153,6 +153,18 @@ If a workflow is matched, Section 38 (adversarial review, in `agents/pm-referenc
 9. **Write task graph**: Create the task graph document and individual task files in
    `.orchestray/state/tasks/`.
 
+10. **Estimate orchestration duration (P2.1, v2.2.0).** After the task graph is finalized,
+    write `pm_protocol.estimated_orch_duration_minutes` (a positive integer) into the
+    orchestration JSON at `.orchestray/state/orchestration.md`'s frontmatter (or the
+    equivalent metadata write site already used for `orchestration_id`). Heuristic:
+    `5 × pending_task_count` minutes, clamped to `[5, 480]`. Floor at 5 prevents
+    division-by-zero in the TTL helper; ceiling at 480 is a sanity bound. This single
+    field powers the cache-breakpoint manifest's TTL auto-downgrade (`bin/_lib/
+    cache-breakpoint-manifest.js:146-150`): orchestrations expected to finish in under
+    25 minutes get Slot 1/Slot 2 written with TTL `5m` instead of `1h`, eliminating the
+    1h-write tax on short orchestrations. Fall-through: if the field is missing or
+    non-numeric, the helper assumes "long orch" and uses 1h TTL — safe but suboptimal.
+
 ### Task Graph Format
 
 Write a task graph as a markdown document with YAML frontmatter. Store it as

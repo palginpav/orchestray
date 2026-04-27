@@ -212,3 +212,82 @@ it MUST:
 
 4. **Advisories are informational, not blocking.** The spawn has already been allowed;
    this is guidance, not a veto.
+
+---
+
+## Output Shape Declarations (P1.2, v2.2.0)
+
+Each agent's frontmatter declares `output_shape:` from one of four
+values. The PM consults this declaration via `bin/_lib/output-shape.js`
+at delegation time and injects (a) the 85-token smart-caveman prompt,
+(b) Anthropic `output_config.format`, and/or (c) a per-role length cap.
+
+| Category          | Caveman | Length cap | Structured outputs           |
+|-------------------|---------|------------|------------------------------|
+| `structured-only` | NO      | NO         | YES (full schema)            |
+| `hybrid`          | YES     | YES        | Staged (allowlist; footnote¹) |
+| `prose-heavy`     | YES     | YES        | NO                           |
+| `none`            | NO      | NO         | NO                           |
+
+¹ v2.2.0 ships `staged_flip_allowlist=["researcher","tester"]` (W2 §5.2 Risk #2
+mitigation). Hybrid roles receive the caveman addendum + length cap from day-1
+but no Anthropic structured-output schema until v2.2.1 telemetry confirms zero
+T15 rejection. The kill-switch list at the bottom of this section names the
+config knob; the in-code source of truth is `output-shape.js` `staged_flip_allowlist`.
+
+Per-role assignments (the 14 declaring agent files):
+
+| Role               | output_shape       |
+|--------------------|--------------------|
+| researcher         | `structured-only`  |
+| tester             | `structured-only`  |
+| developer          | `hybrid`           |
+| debugger           | `hybrid`           |
+| reviewer           | `hybrid`           |
+| architect          | `hybrid`           |
+| documenter         | `hybrid`           |
+| refactorer         | `hybrid`           |
+| inventor           | `hybrid`           |
+| release-manager    | `hybrid`           |
+| security-engineer  | `prose-heavy`      |
+| ux-critic          | `prose-heavy`      |
+| platform-oracle    | `none`             |
+| project-intent     | `none`             |
+
+Caveman applies ONLY to the prose body. Structured Result JSON blocks,
+code fences, and tool-call payloads MUST stay full English — see
+`bin/_lib/proposal-validator.js` for the runtime check.
+
+Length caps come from `bin/calibrate-role-budgets.js` recommendations,
+cached at `.orchestray/state/role-budgets.json`. v2.2.0 reads the cache
+directly via `bin/_lib/output-shape.js` `getRoleLengthCap()` — preferring
+`p95` when present, otherwise `budget_tokens` (the v2.1.16 R-BUDGET-WIRE
+fallback). Roles below the `--min-samples` threshold fall back to
+model-tier defaults (haiku 30K / sonnet 50K / opus 80K) and the
+`output_shape_applied.reason` field records `length_cap=tier_default`.
+
+Operators refresh the cache by running:
+
+```bash
+node bin/calibrate-role-budgets.js --emit-cache
+```
+
+The `--emit-cache` flag (added in v2.2.0 W7 fix-pass) writes the wrapped
+form `{ "role_budgets": { "<role>": { "p95": …, "budget_tokens": …, … } } }`
+that `output-shape.js` consumes. Without the flag, the tool prints to
+stdout only and the operator hand-edits `config.json` `role_budgets` —
+the v2.1.16 path.
+
+Diagnostic kill switches in `.orchestray/config.json`:
+
+- `output_shape.enabled` — master switch (default `true`).
+- `output_shape.caveman_enabled` — disable caveman alone.
+- `output_shape.structured_outputs_enabled` — disable Anthropic
+  schema enforcement alone (kept on a per-role staged-flip allow-list
+  even when `true`; v2.2.0 ships `["researcher", "tester"]`).
+- `output_shape.length_cap_enabled` — disable caps alone.
+
+The single source of truth for category assignment is
+`ROLE_CATEGORY_MAP` in `bin/_lib/output-shape.js`. The frontmatter
+declaration above is the human-readable cross-reference; CI drift
+detection (`tests/kb-refs-sweep.test.js` extension) fails any divergence.

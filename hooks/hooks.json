@@ -56,6 +56,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/audit-housekeeper-drift.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/inject-active-phase-slice.js",
             "timeout": 5
           }
@@ -276,6 +285,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-cache-invariant.js --manifest",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/compose-block-a.js",
             "timeout": 5
           }
@@ -377,6 +395,24 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-task-completion.js",
             "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/audit-round-archive-hook.js",
+            "timeout": 8
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/audit-housekeeper-action.js",
+            "timeout": 5
           }
         ]
       }

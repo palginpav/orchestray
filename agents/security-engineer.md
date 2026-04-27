@@ -9,6 +9,7 @@ effort: high
 memory: project
 isolation: worktree
 maxTurns: 105
+output_shape: prose-heavy
 color: magenta
 ---
 

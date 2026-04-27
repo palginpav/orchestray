@@ -570,3 +570,91 @@ describe('emitRollup — fail-open on malformed JSONL', () => {
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// S-003 (v2.2.0 fix-pass): scout_estimated_savings_usd_total guards against
+// Infinity / NaN inputs (CWE-1339).
+// ---------------------------------------------------------------------------
+
+describe('emitRollup — S-003 Infinity/NaN guard on scout_estimated_savings_usd_total', () => {
+
+  test('Infinity + (-Infinity) inputs do not poison the running total', () => {
+    const tmpDir = makeTmpDir();
+
+    writeMetrics(tmpDir, [
+      makeSpawnRow('orch-s003', 'developer', 1000, 400, 0, 0.010),
+    ]);
+    // Simulate a poisoned/malformed scout_spawn pair.
+    writeEvents(tmpDir, [
+      makeCompleteEvent('orch-s003'),
+      {
+        type: 'scout_spawn',
+        orchestration_id: 'orch-s003',
+        timestamp: new Date().toISOString(),
+        scout_estimated_savings_usd: Infinity,
+      },
+      {
+        type: 'scout_spawn',
+        orchestration_id: 'orch-s003',
+        timestamp: new Date().toISOString(),
+        scout_estimated_savings_usd: -Infinity,
+      },
+      {
+        type: 'scout_spawn',
+        orchestration_id: 'orch-s003',
+        timestamp: new Date().toISOString(),
+        scout_estimated_savings_usd: 0.005,
+      },
+    ]);
+
+    try {
+      const result = emitRollup(tmpDir, 'orch-s003');
+      assert.equal(result.written, true);
+
+      const row = readRollupRows(tmpDir)[0];
+      assert.equal(row.scout_spawn_count, 3);
+      // Without the Number.isFinite guard, this total would be NaN (which
+      // JSON.stringify writes as null) — a silent telemetry corruption.
+      assert.equal(row.scout_estimated_savings_usd_total, 0.005,
+        'Infinity/NaN inputs must be ignored; only the finite 0.005 should sum');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('NaN scout savings input is ignored (does not corrupt total)', () => {
+    const tmpDir = makeTmpDir();
+
+    writeMetrics(tmpDir, [
+      makeSpawnRow('orch-s003-nan', 'developer', 1000, 400, 0, 0.010),
+    ]);
+    writeEvents(tmpDir, [
+      makeCompleteEvent('orch-s003-nan'),
+      {
+        type: 'scout_spawn',
+        orchestration_id: 'orch-s003-nan',
+        timestamp: new Date().toISOString(),
+        scout_estimated_savings_usd: NaN,
+      },
+      {
+        type: 'scout_spawn',
+        orchestration_id: 'orch-s003-nan',
+        timestamp: new Date().toISOString(),
+        scout_estimated_savings_usd: 0.012,
+      },
+    ]);
+
+    try {
+      const result = emitRollup(tmpDir, 'orch-s003-nan');
+      assert.equal(result.written, true);
+
+      const row = readRollupRows(tmpDir)[0];
+      assert.equal(row.scout_estimated_savings_usd_total, 0.012,
+        'NaN input must be ignored (was already handled by `|| 0` short-circuit, ' +
+        'but Number.isFinite makes the contract explicit)');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+});

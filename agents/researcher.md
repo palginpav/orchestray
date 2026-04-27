@@ -11,6 +11,7 @@ model: inherit
 effort: medium
 memory: project
 maxTurns: 75
+output_shape: structured-only
 color: cyan
 ---
 

@@ -160,7 +160,10 @@ describe('emit-tier2-load.js integration (AC-05 R-TEL)', () => {
     assert.equal(result.status, 0, 'hook must exit 0');
     assert.ok(result.stdout.includes('"continue"'), 'must emit continue:true');
 
-    const events = readEvents(dir);
+    // v2.2.0 P1.3: a Read on event-schemas.md may also emit
+    // event_schemas_full_load_blocked when full_load_disabled defaults to true.
+    // Filter to tier2_load only for this AC-05 assertion.
+    const events = readEvents(dir).filter(e => e.type === 'tier2_load');
     assert.equal(events.length, 1, 'should emit exactly one tier2_load event');
     const ev = events[0];
     assert.equal(ev.type, 'tier2_load');

@@ -42,6 +42,59 @@ Written by `bin/collect-agent-metrics.js` on every SubagentStop and TaskComplete
 
 ---
 
+#### `pm_turn` rows
+
+Written by `bin/capture-pm-turn.js` on every Stop hook event (the parent PM
+session's own turns). Required for PM-direct cost visibility — without these
+rows, the rollup's `pm_total_*_tokens` fields (see
+`bin/emit-orchestration-rollup.js:170-180`) are zero.
+
+| Field | Type | Description |
+|---|---|---|
+| `row_type` | `"pm_turn"` | Discriminator |
+| `schema_version` | `number` | Schema version (currently `2` — bumped in v2.2.0 from `1` to add `routing_class` and `inline_or_scout`) |
+| `timestamp` | ISO-8601 string | Wall-clock time of the assistant turn |
+| `orchestration_id` | string \| null | Active orchestration ID, or `null` outside an orchestration |
+| `session_id` | string \| null | Claude Code session ID |
+| `model_used` | string \| null | Resolved model (e.g. `"claude-opus-4-7"`) |
+| `usage` | object | Same shape as `agent_spawn.usage` |
+| `routing_class` | `"A_pm_only"` \| `"B_scout"` \| `"C_deterministic"` \| `"D_subagent"` \| `null` | Reserved for P2.2 (Haiku scout); `null` in v2.2.0 |
+| `inline_or_scout` | `"inline"` \| `"scout"` \| `null` | Reserved for P2.2; `null` in v2.2.0 |
+
+**v1 → v2 compatibility.** Rows written before v2.2.0 have `schema_version: 1`
+and lack the `routing_class` / `inline_or_scout` fields. Consumers MUST tolerate
+their absence (treat as `null`). Verified consumer: `bin/emit-orchestration-rollup.js`
+reads only `row.usage`, so the bump is forward- and backward-compatible. In
+addition, the side-effect at `bin/capture-pm-turn.js` writes session token
+totals into `.orchestray/state/context-telemetry-cache.json` via `updateCache`;
+this consumer reads from the in-memory `extracted` object, not the persisted
+row, so it tolerates the schema bump trivially.
+
+---
+
+#### `dropped-duplicates.jsonl` rows
+
+Written by `bin/collect-agent-metrics.js` (`appendDroppedDuplicate`) when the
+M0.1 dedupe predicate suppresses a Variant-C row OR the per-process metrics
+seen-set catches a future regression that would have appended a colliding row.
+Consumers may read this file to compute the false-positive rate of the dedupe
+gate.
+
+| Field | Type | Description |
+|---|---|---|
+| `ts` | ISO-8601 string | Wall-clock time of the suppression |
+| `reason_code` | `"variant_c_suppressed"` \| `"metrics_dedup_collision"` | Which gate fired |
+| `row` | object | The full metrics row that would have been written |
+
+**File path:** `.orchestray/state/dropped-duplicates.jsonl`.
+**Rotation:** managed by the same `appendJsonlWithRotation` policy used for
+other JSONL audit files in `.orchestray/state/`.
+**Schema stability:** v1 in v2.2.0; future entries may add fields per
+R-EVENT-NAMING. `row` carries whatever the `agent_spawn` / `routing_outcome`
+schema version dictated at write time.
+
+---
+
 #### `structural_score` rows
 
 Written by `bin/_lib/scorer-structural.js` via `appendStructuralScore()` after each

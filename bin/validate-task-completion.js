@@ -60,6 +60,28 @@ const ARTIFACT_PATH_FIELDS = [
   'prototype_location',
 ];
 
+// P2.2 (v2.2.0): read-only contract enforcement for the haiku-scout agent
+// (and any future read-only-tier agent). Per
+// `~/.claude/projects/-home-palgin-orchestray/memory/feedback_explore_agent_readonly.md`:
+// tool drift on read-only roles must be observable. The forbidden-tool set
+// enforces the frontmatter `tools:` whitelist at runtime — three-layer
+// defense: (a) frontmatter declarative, (b) THIS rejection, (c) the
+// `bin/__tests__/p22-scout-whitelist-frozen.test.js` byte-equality check.
+//
+// P3.3 (v2.2.0): adds `orchestray-housekeeper` with a STRICTER forbidden set
+// that includes `Grep`. Scout permits Grep; housekeeper does NOT. Per Clause 1
+// of the locked-scope D-5 hardening contract. The literal `SCOUT_FORBIDDEN_TOOLS
+// = new Set([...])` declaration is preserved (rather than aliased through the
+// per-agent map) so the p22 frozen-baseline byte-equality test continues to
+// regex-match the source.
+const SCOUT_FORBIDDEN_TOOLS = new Set(['Edit', 'Write', 'Bash']);
+const HOUSEKEEPER_FORBIDDEN_TOOLS = new Set(['Edit', 'Write', 'Bash', 'Grep']);
+const READ_ONLY_AGENT_FORBIDDEN_TOOLS = {
+  'haiku-scout':            SCOUT_FORBIDDEN_TOOLS,
+  'orchestray-housekeeper': HOUSEKEEPER_FORBIDDEN_TOOLS,
+};
+const READ_ONLY_AGENTS = new Set(Object.keys(READ_ONLY_AGENT_FORBIDDEN_TOOLS));
+
 // Patterns that indicate the agent returned a placeholder instead of a real path.
 const PLACEHOLDER_PATTERNS = [
   /^none\b/i,
@@ -209,6 +231,23 @@ const KNOWN_EVENT_TYPES = new Set([
   // R-HCAP (v2.1.14): handoff body cap events
   'handoff_body_warn',
   'handoff_body_block',
+  // P2.2 (v2.2.0): Haiku scout audit events
+  'scout_spawn',
+  'scout_forbidden_tool_blocked',
+  'scout_files_changed_blocked',
+  // P3.3 (v2.2.0): Background-housekeeper Haiku audit events
+  'housekeeper_action',
+  'housekeeper_drift_detected',
+  'housekeeper_forbidden_tool_blocked',
+  'housekeeper_baseline_missing',
+  // S-008 (v2.2.0 fix-pass): verify_fix_* trigger events for the P3.1
+  // audit-round archive. Without these rows in the allowlist, the
+  // schema-emit validator rejected them as unknown — silently disabling
+  // P3.1 in default installs.
+  'verify_fix_start',
+  'verify_fix_pass',
+  'verify_fix_fail',
+  'verify_fix_oscillation',
 ]);
 
 /**
@@ -377,10 +416,57 @@ function identifyAgentRole(event) {
   ];
   for (const c of candidates) {
     if (typeof c === 'string' && c.length > 0) {
-      return c.toLowerCase();
+      // S-001 (v2.2.0 fix-pass): trim whitespace AND strip embedded NUL/zero-width
+      // bytes so a near-equivalent like 'haiku-scout ' or 'haiku-scout '
+      // does not silently bypass READ_ONLY_AGENTS strict-equality Set membership.
+      // Defensive against future Claude Code payload-shape changes (CWE-178).
+      // S-001 (v2.2.0 fix-pass round 2): NFKC-normalize first, then strip
+      //   - \s             ASCII whitespace (incl. tab, LF, CR, FF, VT, space),
+      //   - \x00-\x1F      ASCII control bytes including NUL,
+      //   - \u00A0         non-breaking space,
+      //   - \u200B-\u200F  zero-width chars + LRM/RLM,
+      //   - \u202A-\u202E  bidi override controls,
+      //   - \u2060-\u206F  word joiner / invisible-times family,
+      //   - \uFEFF         BOM / ZWNBSP.
+      // The earlier `replace(/\x00/g, '').trim()` only stripped ASCII NUL
+      // and the comment overstated coverage (CWE-178). This is what the
+      // comment promised: defence-in-depth against future Claude Code
+      // payload-shape changes that might pad subagent_type with
+      // mojibake-friendly invisibles.
+      return c
+        .normalize('NFKC')
+        .replace(/[\s\x00-\x1F\u00A0\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, '')
+        .toLowerCase();
     }
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// P2.2 (v2.2.0): read-only contract helpers for haiku-scout
+// ---------------------------------------------------------------------------
+
+/**
+ * Walk the event's `tool_calls` array (when present) and return any tool
+ * names that are in the forbidden set. Tolerant to varied payload shapes.
+ *
+ * @param {Array} transcriptToolCalls
+ * @param {Set<string>} forbiddenSet
+ * @returns {string[]} Forbidden tool names found, in transcript order. Empty
+ *                     when none found (including when input is missing).
+ */
+function findForbiddenToolCalls(transcriptToolCalls, forbiddenSet) {
+  const found = [];
+  if (!Array.isArray(transcriptToolCalls)) return found;
+  for (const tc of transcriptToolCalls) {
+    if (!tc) continue;
+    // Tolerate {name}, {tool_name}, {type, name} shapes.
+    const name = (typeof tc === 'string' ? tc : (tc.name || tc.tool_name || ''));
+    if (typeof name === 'string' && name && forbiddenSet.has(name)) {
+      found.push(name);
+    }
+  }
+  return found;
 }
 
 // ---------------------------------------------------------------------------
@@ -604,6 +690,65 @@ function main() {
     const agentRole = identifyAgentRole(event);
     const structuredResult = extractStructuredResult(event);
 
+    // ── P2.2 (v2.2.0): read-only contract enforcement for haiku-scout.
+    // ── P3.3 (v2.2.0): same enforcement extended to orchestray-housekeeper
+    //    with a STRICTER forbidden set (also rejects Grep). Per-agent map at
+    //    READ_ONLY_AGENT_FORBIDDEN_TOOLS.
+    // Runs BEFORE the structured-result section check so any forbidden tool
+    // call short-circuits to exit 2 even when the Structured Result is
+    // otherwise well-formed. Two distinct event types so analytics can
+    // distinguish "wrote forbidden tool" from "lied about files_changed",
+    // plus a housekeeper-specific tool-blocked event so promotion-gate
+    // analytics can isolate housekeeper violations from scout violations.
+    if (agentRole && READ_ONLY_AGENTS.has(agentRole)) {
+      const forbiddenSet = READ_ONLY_AGENT_FORBIDDEN_TOOLS[agentRole];
+      const forbidden = findForbiddenToolCalls(event.tool_calls, forbiddenSet);
+      if (forbidden.length > 0) {
+        const blockedEventType = agentRole === 'orchestray-housekeeper'
+          ? 'housekeeper_forbidden_tool_blocked'
+          : 'scout_forbidden_tool_blocked';
+        emitAuditEvent(cwd, {
+          timestamp: new Date().toISOString(),
+          type: blockedEventType,
+          hook: 'validate-task-completion',
+          orchestration_id: resolveOrchestrationId(cwd),
+          agent_role: agentRole,
+          forbidden_tools: forbidden,
+          session_id: event.session_id || null,
+        });
+        const frozenHint = agentRole === 'orchestray-housekeeper'
+          ? ' tools list is FROZEN at [Read, Glob].'
+          : ' tools list (frozen).';
+        process.stderr.write(
+          '[orchestray] validate-task-completion: read-only contract violation: ' +
+          agentRole + ' called forbidden tool(s) ' + forbidden.join(',') + '. ' +
+          'See agents/' + agentRole + '.md' + frozenHint + '\n'
+        );
+        process.stdout.write(JSON.stringify({ continue: false, reason: 'scout_forbidden_tool:' + agentRole }) + '\n');
+        process.exit(2);
+      }
+      // Non-empty files_changed is also a contract violation for read-only roles.
+      const fc = (structuredResult && structuredResult.files_changed) || [];
+      if (Array.isArray(fc) && fc.length > 0) {
+        emitAuditEvent(cwd, {
+          timestamp: new Date().toISOString(),
+          type: 'scout_files_changed_blocked',
+          hook: 'validate-task-completion',
+          orchestration_id: resolveOrchestrationId(cwd),
+          agent_role: agentRole,
+          files_changed: fc,
+          session_id: event.session_id || null,
+        });
+        process.stderr.write(
+          '[orchestray] validate-task-completion: ' + agentRole +
+          ' returned non-empty files_changed (' + fc.length + ' entries). ' +
+          'Read-only agents must always return [].\n'
+        );
+        process.stdout.write(JSON.stringify({ continue: false, reason: 'scout_files_changed:' + agentRole }) + '\n');
+        process.exit(2);
+      }
+    }
+
     if (agentRole && (HARD_TIER.has(agentRole) || WARN_TIER.has(agentRole))) {
       const check = validateStructuredResult(structuredResult);
       if (!check.valid) {
@@ -791,6 +936,9 @@ module.exports = {
   HARD_TIER,
   WARN_TIER,
   REQUIRED_SECTIONS,
+  READ_ONLY_AGENTS,
+  READ_ONLY_AGENT_FORBIDDEN_TOOLS,
+  SCOUT_FORBIDDEN_TOOLS,
   // R-HCAP (v2.1.14): body-size cap exports
   estimateTokens,
   checkArtifactBodySizes,

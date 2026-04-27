@@ -6,6 +6,7 @@ description: Haiku-powered project-intent generator (R-RCPT-V2, v2.1.13). Reads 
 model: haiku
 effort: low
 tools: Read
+output_shape: none
 color: cyan
 ---
 

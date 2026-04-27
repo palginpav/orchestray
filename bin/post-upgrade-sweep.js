@@ -199,6 +199,78 @@ function emitUpgradePendingWarning(sessionId, cwd) {
       '.orchestray/config.json AND CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 in your environment, ' +
       'then read agents/pm-reference/agent-teams-decision.md before using team mode.\n'
     );
+    // v2.2.0 P2.1 + P2.2: name the three default-on flips on first session
+    // post-upgrade so a regression-detecting user knows which switch to flip
+    // (per locked-scope §default-on policy and feedback_default_on_shipping.md).
+    // F-003 (v2.2.0 fix-pass).
+    process.stderr.write(
+      '[orchestray] v2.2.0 migration: Block-Z prefix is enabled by default ' +
+      '(caching.block_z.enabled: true). To opt out for the current session, ' +
+      'set ORCHESTRAY_DISABLE_BLOCK_Z=1. Permanent disable in .orchestray/config.json.\n'
+    );
+    process.stderr.write(
+      '[orchestray] v2.2.0 migration: 4-slot cache-breakpoint manifest is enabled by ' +
+      'default (caching.engineered_breakpoints.enabled: true; strict_invariant stays ' +
+      'false in v2.2.0). Kill switch: ORCHESTRAY_DISABLE_ENGINEERED_BREAKPOINTS=1.\n'
+    );
+    process.stderr.write(
+      '[orchestray] v2.2.0 migration: Haiku scout for PM I/O is enabled by default ' +
+      '(haiku_routing.enabled: true, scout_min_bytes: 12288). Per-session opt-out: ' +
+      'ORCHESTRAY_HAIKU_ROUTING_DISABLED=1. Permanent disable in .orchestray/config.json.\n'
+    );
+    // v2.2.0 P3.3: housekeeper Haiku is enabled by default. Tools FROZEN at
+    // [Read, Glob]; three-layer enforcement (frontmatter + runtime hook + CI test);
+    // drift detector quarantines on any agent-file mutation. Per locked-scope D-5.
+    process.stderr.write(
+      '[orchestray] v2.2.0 migration: orchestray-housekeeper Haiku subagent is enabled ' +
+      'by default (haiku_routing.housekeeper_enabled: true). Tools FROZEN at [Read, Glob]; ' +
+      'drift detector quarantines on any baseline mismatch. Per-session opt-out: ' +
+      'ORCHESTRAY_HOUSEKEEPER_DISABLED=1. Permanent disable in .orchestray/config.json.\n'
+    );
+    // v2.2.0 pre-ship F-003 (cross-phase fix-pass): five additional Phase-1/3
+    // default-on flips were unannounced in the original v2.2.0 banner. Per
+    // locked-scope §default-on policy, EVERY default-on flip must be visible
+    // at upgrade time so a regression-detecting user knows which switch to
+    // flip. The five below complete the 9-flip set.
+    // P1.2 — Output Shape Pipeline (caveman + length cap + structured outputs).
+    process.stderr.write(
+      '[orchestray] v2.2.0 migration: Output Shape Pipeline is enabled by default ' +
+      '(output_shape.enabled: true; caveman_enabled, length_cap_enabled, structured_outputs_enabled all true). ' +
+      'Caveman style + length caps apply to prose-heavy roles; structured outputs flip per ' +
+      'output_shape.staged_flip_allowlist (default ["researcher","tester"] in v2.2.0). ' +
+      'No env override; permanent disable per flag in .orchestray/config.json.\n'
+    );
+    // P1.3 — Pre-Materialized Tier-2 Index (chunked schema lookup).
+    process.stderr.write(
+      '[orchestray] v2.2.0 migration: Tier-2 chunked schema index is enabled by default ' +
+      '(pm_protocol.tier2_index.enabled: true). The PM uses mcp__orchestray__schema_get for ' +
+      'event-schemas.md instead of full-file Reads. ' +
+      'No env override; permanent disable: set pm_protocol.tier2_index.enabled: false in .orchestray/config.json.\n'
+    );
+    // P1.3 D-8 — full-file Read of event-schemas.md is BLOCKED (most user-impacting).
+    process.stderr.write(
+      '[orchestray] v2.2.0 migration: legacy full-file Read of event-schemas.md is BLOCKED by ' +
+      'default (event_schemas.full_load_disabled: true). Reads emit ' +
+      'event_schemas_full_load_blocked advisory and the PM is expected to use ' +
+      'mcp__orchestray__schema_get for chunked lookup. ' +
+      'To restore legacy full-file Read, set event_schemas.full_load_disabled: false ' +
+      'in .orchestray/config.json. No env override.\n'
+    );
+    // P3.2 — delegation-delta spawn-context active.
+    process.stderr.write(
+      '[orchestray] v2.2.0 migration: delegation-delta spawn-context is enabled by default ' +
+      '(pm_protocol.delegation_delta.enabled: true). Subsequent spawns within the same ' +
+      'orchestration receive only the delta against the prior delegation prompt. ' +
+      'Per-session opt-out: ORCHESTRAY_DISABLE_DELEGATION_DELTA=1. ' +
+      'Permanent disable: set pm_protocol.delegation_delta.enabled: false in .orchestray/config.json.\n'
+    );
+    // P3.1 — multi-round audit digests.
+    process.stderr.write(
+      '[orchestray] v2.2.0 migration: multi-round audit digests are enabled by default ' +
+      '(audit.round_archive.enabled: true). Each verify-fix round closure emits ' +
+      'audit_round_closed/audit_round_archived telemetry and writes a per-orchestration digest. ' +
+      'No env override; permanent disable: set audit.round_archive.enabled: false in .orchestray/config.json.\n'
+    );
     recordDegradation({
       kind: 'agent_registry_stale',
       severity: 'warn',

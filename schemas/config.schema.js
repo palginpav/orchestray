@@ -324,6 +324,66 @@ const repoMapSchema = z.object({
   cold_init_async: z.boolean().optional(),
 }).passthrough();
 
+// v2.2.0 P2.1: Block-Z + engineered-breakpoint manifest. Top-level `caching`
+// block with two sub-sections (`block_z`, `engineered_breakpoints`). Both
+// ship default-on; kill switches are env vars (ORCHESTRAY_DISABLE_BLOCK_Z=1,
+// ORCHESTRAY_DISABLE_ENGINEERED_BREAKPOINTS=1) and the per-section
+// `enabled: false`. Schema mirrors KNOWN_TOP_LEVEL_KEYS entry in
+// bin/_lib/config-drift.js for the bidirectional cross-ref test (S-004).
+const cachingSchema = z.object({
+  block_z: z.object({
+    enabled: z.boolean().optional(),
+  }).passthrough().optional(),
+  engineered_breakpoints: z.object({
+    enabled: z.boolean().optional(),
+    strict_invariant: z.boolean().optional(),
+  }).passthrough().optional(),
+}).passthrough();
+
+// v2.2.0 P2.2: Haiku scout for PM I/O. Top-level `haiku_routing` block.
+// Default-on; per-session kill switch is ORCHESTRAY_HAIKU_ROUTING_DISABLED=1.
+// Mirrors KNOWN_TOP_LEVEL_KEYS for the cross-ref test (S-004).
+const haikuRoutingSchema = z.object({
+  enabled:             z.boolean().optional(),
+  scout_min_bytes:     z.number().int().min(1).optional(),
+  scout_blocked_ops:   z.array(z.string()).optional(),
+  scout_blocked_paths: z.array(z.string()).optional(),
+}).passthrough();
+
+// v2.2.0 P1.3 + P3.2: top-level `pm_protocol` block. Holds the chunked
+// tier-2 index switch (P1.3) and the delegation-delta switch (P3.2).
+// Both ship default-on; per-section `enabled: false` is the kill switch.
+// F-001 (v2.2.0 pre-ship cross-phase fix-pass): mirrors KNOWN_TOP_LEVEL_KEYS.
+const pmProtocolSchema = z.object({
+  delegation_delta: z.object({
+    enabled: z.boolean().optional(),
+  }).passthrough().optional(),
+  tier2_index: z.object({
+    enabled: z.boolean().optional(),
+  }).passthrough().optional(),
+}).passthrough();
+
+// v2.2.0 P1.3 D-8: top-level `event_schemas` block. Carries the
+// `full_load_disabled` flag that blocks legacy full-file Reads of
+// agents/pm-reference/event-schemas.md (chunked-only enforcement).
+// Default-on. F-001 (v2.2.0 pre-ship cross-phase fix-pass).
+const eventSchemasSchema = z.object({
+  full_load_disabled: z.boolean().optional(),
+}).passthrough();
+
+// v2.2.0 P1.2: top-level `output_shape` block. Caveman + length-cap +
+// structured-outputs pipeline applied to prose-heavy roles. Default-on.
+// `staged_flip_allowlist` is the list of role names that pre-flip
+// structured outputs in v2.2.0; the rest stay on the legacy free-form
+// shape. F-001 (v2.2.0 pre-ship cross-phase fix-pass).
+const outputShapeSchema = z.object({
+  enabled: z.boolean().optional(),
+  caveman_enabled: z.boolean().optional(),
+  structured_outputs_enabled: z.boolean().optional(),
+  length_cap_enabled: z.boolean().optional(),
+  staged_flip_allowlist: z.array(z.string()).optional(),
+}).passthrough();
+
 // v2.1.16 W14-fix F-W14-001: declarations for v2.1.14/v2.1.15 carryover sections
 // that ship in .orchestray/config.json but were never registered in the schema.
 // Closes the bidirectional cross-ref test gap (KNOWN_TOP_LEVEL_KEYS vs schema).
@@ -448,6 +508,20 @@ const configSchema = z.object({
   review_dimension_scoping: reviewDimensionScopingSchema.optional(),
   // R-AIDER-FULL (v2.1.17 W8): Aider-style repo-map kill switch + knobs.
   repo_map: repoMapSchema.optional(),
+  // v2.2.0 P2.1 / P2.2: Block-Z + engineered-breakpoint manifest +
+  // Haiku scout for PM I/O. Both ship default-on; per-session env-var
+  // kill switches and per-section `enabled: false` documented in
+  // post-upgrade-sweep.js banner (S-004).
+  caching: cachingSchema.optional(),
+  haiku_routing: haikuRoutingSchema.optional(),
+  // v2.2.0 P1.2 / P1.3 / P3.2: output-shape pipeline + tier-2 index +
+  // delegation-delta + D-8 full-load-disabled. All four ship default-on
+  // and have per-section `enabled: false` (or the boolean flag itself
+  // for event_schemas) as kill switches. F-001 (v2.2.0 pre-ship
+  // cross-phase fix-pass).
+  output_shape: outputShapeSchema.optional(),
+  pm_protocol: pmProtocolSchema.optional(),
+  event_schemas: eventSchemasSchema.optional(),
   // v2.1.16 W14-fix F-W14-001: declare v2.1.14/15 carryover sections so the
   // bidirectional cross-ref test (KNOWN_TOP_LEVEL_KEYS == schema fields) holds
   // and fresh-install boot stops emitting "unknown config key" drift warnings.
@@ -485,4 +559,8 @@ module.exports = {
   shieldSchema,
   phaseSliceLoadingSchema,
   repoMapSchema,
+  // v2.2.0 P1.2 / P1.3 / P3.2 — F-001 cross-phase fix.
+  outputShapeSchema,
+  pmProtocolSchema,
+  eventSchemasSchema,
 };

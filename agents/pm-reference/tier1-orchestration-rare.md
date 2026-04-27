@@ -158,13 +158,21 @@ When the invocation prompt contains the text "PREVIEW MODE", the PM MUST:
    | W  | Title | Agent | Model/Effort | Size | Est. Cost | Depends on |
    | -- | ----- | ----- | ------------ | ---- | --------- | ---------- |
    ```
-   Cost formula: `estimate = base_cost(size) × model_multiplier`
+   Cost formula (PREVIEW DISPLAY ONLY): `estimate = base_cost(size) × model_multiplier`
    - `base_cost`: XS=$0.25, S=$0.45, M=$0.70, L=$1.20, XL=$2.50
    - `model_multiplier`: haiku/low=0.35, sonnet/medium=1.0, opus/high=2.97
-   - Note: the opus multiplier was recalibrated from 2.2 to 2.97 (2.2 × 1.35) in v2.1.8
-     (calibrated 2026-04-20) to account for Opus 4.7's new tokenizer, which consumes up to
-     35% more tokens than 4.6 for the same text. Per-token pricing is unchanged; only the
-     effective token count increases.
+   - **Scope:** these multipliers exist ONLY to render the preview table above.
+     They are NOT consulted by any production billing path. The authoritative
+     pricing table is `bin/_lib/cost-helpers.js:33-37` (`BUILTIN_PRICING_TABLE`,
+     haiku $1/$5, sonnet $3/$15, opus $5/$25 per 1M tokens) plus the cache
+     multipliers at `bin/collect-agent-metrics.js:114-123` (cache-read 0.1×,
+     cache-create 1.25×). When Anthropic changes per-token pricing, update
+     `cost-helpers.js`; this preview table is downstream and self-contained.
+   - **Tokenizer caveat:** the opus multiplier was recalibrated from 2.2 to 2.97
+     (2.2 × 1.35) in v2.1.8 to account for Opus 4.7's new tokenizer, which
+     consumes up to 35% more tokens than 4.6 for the same text. Per-token
+     pricing in `cost-helpers.js` is UNCHANGED; only the effective token count
+     for preview-display purposes increases.
 3. Do NOT write any state files (no `orchestration.md`, `task-graph.md`, `tasks/`,
    audit files).
 4. Do NOT spawn any subagents.

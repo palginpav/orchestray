@@ -7,6 +7,8 @@ release-manager, tester, debugger, refactorer, documenter) and advanced injectio
 review, adaptive verbosity), see `delegation-templates-detailed.md`.
 
 > Additional delegation templates for specialised agents are in `delegation-templates-detailed.md`. PM dispatches on the trigger below.
+>
+> The `haiku-scout` (P2.2, v2.2.0) is read-only I/O reconnaissance — its spawn shape and decision rule live in `agents/pm.md` §23 and `agents/pm-reference/haiku-routing.md`, NOT in the delegation templates here.
 
 ---
 
@@ -410,3 +412,90 @@ When any trigger fires, emit `delta_handoff_fallback` before fetching:
 Target fetch rate: 10–30% over a cohort of re-delegations. Rates above 30% indicate
 hedge-phrase creep in reviewer summaries (tighten in v2.1.16). Rates below 10% may
 indicate under-fetching (loosen trigger 1 in v2.1.16).
+
+---
+
+## Section 13: Delegation Static-vs-Per-Spawn Boundary (R-DELEG-DELTA, v2.2.0)
+
+`bin/_lib/spawn-context-delta.js` computes a hash-anchored delta after the first
+spawn of each `(orchestration_id, agent_type)` pair. The split point is structural:
+the PM wraps the static portion in `<!-- delta:static-begin -->` …
+`<!-- delta:static-end -->` and the per-spawn portion in
+`<!-- delta:per-spawn-begin -->` … `<!-- delta:per-spawn-end -->`.
+
+### Static portion (cacheable — sha256-hashed)
+
+These sections are byte-stable across spawns of the same `agent_type` within one
+orchestration. Wrap in `<!-- delta:static-begin -->` … `<!-- delta:static-end -->`:
+
+| # | Section | Source | Why static |
+|---|---------|--------|------------|
+| 1 | Handoff contract reference | `pm.md` §3 (handoff-contract pointer) | Identical text every spawn; references the contract file path verbatim. |
+| 2 | Rubric format pointer | `pm.md` §3 (rubric format reference) | Boilerplate; the rubric BODY is per-spawn but the format pointer is invariant. |
+| 3 | Exploration-discipline boilerplate | `delegation-templates.md` §3 | Verbatim block per Section 3. |
+| 4 | Model+effort routing template | `pm.md` §3 (model+effort field-set) | Per-agent-type fixed; values change but the field-set is invariant. |
+| 5 | Pre-flight checklist (per-agent) | `delegation-templates.md` "Per-Agent Pre-Flight Checklists" | Per-agent fixed; items are invariant within one role. |
+| 6 | Repository Map header line | `pm.md` §3 (`## Repository Map` heading) | Heading is invariant; body is per-spawn. |
+| 7 | Project persona block | `adaptive-personas.md` §42c | Per-agent-type fixed; doesn't change across spawns of the same agent. |
+| 8 | Aider-style repo map BODY | `repo-map-protocol.md` | Stable within a session for the same agent_type. (If repo changes mid-orch, the hash mismatch path re-anchors automatically.) |
+
+### Per-spawn portion (always re-emitted)
+
+These sections change every spawn. Wrap in `<!-- delta:per-spawn-begin -->` …
+`<!-- delta:per-spawn-end -->`:
+
+| # | Section | Why per-spawn |
+|---|---------|---------------|
+| 1 | Task description | Different per subtask. |
+| 2 | Files to touch / Files to review | Different per subtask. |
+| 3 | Context from prior agent (SpecSketch or prose) | Specific to this spawn's predecessor. |
+| 4 | Acceptance Rubric BODY (the YAML criteria) | Architect-synthesised per task. |
+| 5 | Correction patterns (Section 30 hits) | Match-set varies per task. |
+| 6 | User correction patterns (Section 34f hits) | Match-set varies per task. |
+| 7 | Git diff (reviewer spawns) | Diff is per-spawn. |
+| 8 | Dimensions to Apply block (reviewer spawns) | Classifier output per spawn. |
+| 9 | `context_size_hint` field | Numeric, per-spawn. |
+| 10 | `task_subject` description | Per-spawn. |
+
+### Marker placement rules
+
+1. The `<!-- delta:static-begin -->` marker MUST be the FIRST line of the
+   delegation prompt. No leading whitespace, no preamble.
+2. The `<!-- delta:static-end -->` marker is followed immediately (with one
+   `\n` separator) by `<!-- delta:per-spawn-begin -->`. No prose between.
+3. The `<!-- delta:per-spawn-end -->` marker is the LAST line of the
+   delegation prompt.
+4. The four markers MUST appear EXACTLY ONCE each. `splitStaticAndPerSpawn`
+   rejects multi-match input by returning `null`, which yields `type='full'`
+   with `reason='markers_missing'`.
+
+### Worked example — second `developer` spawn in the same orch
+
+```
+<!-- delta:reference prefix_hash="abc123…" prefix_path=".orchestray/state/spawn-prefix-cache/orch-2026…-developer.txt" prefix_bytes=8842 -->
+<!-- delta:per-spawn-begin -->
+## Task
+Fix the failing reviewer-found issues in src/api/tasks.ts:
+- ISSUE-1: validateInput throws on null instead of returning 400
+- ISSUE-2: missing test for empty body case
+
+## Files to Touch
+- src/api/tasks.ts (modify validateInput)
+- src/api/__tests__/tasks.test.ts (add empty-body test)
+
+## Context from Previous Agent
+[SpecSketch from reviewer pass-1, ≤140 tokens]
+
+context_size_hint: { system: 12000, tier2: 800, handoff: 350 }
+<!-- delta:per-spawn-end -->
+```
+
+The full prompt the developer SEES at the API level is the prefix-cache file's
+contents prepended to this delta block — Slot-4 cache pinning ensures the prefix
+is read at 0.1× input rate, not re-uploaded.
+
+### Fallback — markers absent
+
+If the PM omits the markers (legacy spawn, fallback orchestration, dynamic
+agent that bypasses Section 3), `computeDelta` returns `type='full'` with
+`reason='markers_missing'`. The spawn proceeds with today's full prompt.

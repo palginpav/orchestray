@@ -9,6 +9,7 @@ effort: medium
 memory: project
 isolation: worktree
 maxTurns: 115
+output_shape: structured-only
 color: yellow
 ---
 

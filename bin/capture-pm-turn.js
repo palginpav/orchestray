@@ -23,7 +23,7 @@ const { resolveSafeCwd }           = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES }          = require('./_lib/constants');
 const { appendJsonlWithRotation }  = require('./_lib/jsonl-rotate');
-const { extractLastAssistantUsage } = require('./_lib/transcript-usage');
+const { extractLastAssistantUsage, extractLastAssistantBody } = require('./_lib/transcript-usage');
 const { safeRealpath, isInsideAllowed, encodeProjectPath } = require('./_lib/path-containment');
 const { updateCache }              = require('./_lib/context-telemetry-cache');
 const { lookupModel, resolveContextWindow } = require('./_lib/models');
@@ -34,6 +34,15 @@ const { runJanitor }               = require('./_lib/subagent-janitor');
 // with a synthetic in-memory transcript and exits 0 on success.
 if (process.argv.includes('--self-test')) {
   runSelfTest();
+  process.exit(0);
+}
+
+// ── Diagnose mode (P1.1 M0.3) ─────────────────────────────────────────────────
+// `node bin/capture-pm-turn.js --diagnose` prints an outcome histogram from
+// .orchestray/state/stop-hook.jsonl plus the last 5 entries verbatim. Used to
+// identify why pm_turn rows are not flowing in a live install.
+if (process.argv.includes('--diagnose')) {
+  runDiagnose(resolveSafeCwd(process.cwd()));
   process.exit(0);
 }
 
@@ -63,7 +72,10 @@ function logStopHookFire(cwd, event, outcome) {
       payload_keys:   Object.keys(event || {}).sort(),
       outcome:        outcome,
     };
-    fs.appendFileSync(auditPath, JSON.stringify(row) + '\n', 'utf8');
+    // Use rotation-aware append so the file does not grow unboundedly on
+    // long-lived installs (W6 S-006). P1.1's --diagnose mode reads this
+    // file; rotation prevents diagnostic noise from accumulating.
+    appendJsonlWithRotation(auditPath, row);
   } catch (_e) {
     // Diagnostic is best-effort; never block Stop on audit failure.
   }
@@ -128,6 +140,58 @@ function updateSessionTelemetry(cwd, extracted, event) {
 
 // Janitor implementation lives in bin/_lib/subagent-janitor.js (extracted v2.0.21)
 // so collect-context-telemetry.js stop can run it too. Imported as `runJanitor` above.
+
+// ── Diagnose ──────────────────────────────────────────────────────────────────
+/**
+ * Print an outcome histogram from the Stop-hook audit log (P1.1 M0.3).
+ *
+ * Reads `.orchestray/state/stop-hook.jsonl`, counts rows by `outcome`,
+ * prints the histogram and the last 5 entries verbatim, and emits a verdict
+ * line summarising whether pm_turn rows are flowing.
+ *
+ * @param {string} cwd
+ */
+function runDiagnose(cwd) {
+  const auditPath = path.join(cwd, '.orchestray', 'state', 'stop-hook.jsonl');
+  if (!fs.existsSync(auditPath)) {
+    process.stdout.write('[diagnose] no stop-hook audit log yet — Stop hook has not fired\n');
+    return;
+  }
+  let raw;
+  try {
+    raw = fs.readFileSync(auditPath, 'utf8');
+  } catch (err) {
+    process.stdout.write('[diagnose] could not read audit log: ' + String(err) + '\n');
+    return;
+  }
+  const lines = raw.split('\n').filter(Boolean);
+  const counts = {};
+  for (const ln of lines) {
+    try {
+      const r = JSON.parse(ln);
+      const k = r.outcome || 'unknown';
+      counts[k] = (counts[k] || 0) + 1;
+    } catch (_e) { /* skip malformed */ }
+  }
+  process.stdout.write(`[diagnose] total Stop fires: ${lines.length}\n`);
+  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  for (const [k, v] of sorted) {
+    process.stdout.write(`  ${k}: ${v}\n`);
+  }
+  process.stdout.write('[diagnose] last 5 entries:\n');
+  for (const ln of lines.slice(-5)) {
+    process.stdout.write('  ' + ln + '\n');
+  }
+  const success = counts.success || 0;
+  if (success === 0) {
+    const dominant = sorted.length ? sorted[0][0] : 'unknown';
+    process.stdout.write(
+      `[diagnose] VERDICT: pm_turn rows are NOT flowing. Dominant outcome: ${dominant}\n`
+    );
+  } else {
+    process.stdout.write(`[diagnose] VERDICT: ${success} successful pm_turn rows captured\n`);
+  }
+}
 
 // ── Self-test ─────────────────────────────────────────────────────────────────
 function runSelfTest() {
@@ -228,14 +292,38 @@ process.stdin.on('end', () => {
       orchestrationId = orchData.orchestration_id || null;
     } catch (_e) { /* no active orchestration or file missing — that's fine */ }
 
+    // P1.1 M0.3: schema_version bumps from 1 to 2 to add the two nullable
+    // fields `routing_class` and `inline_or_scout`. Both default null in
+    // v2.2.0; P2.2 (Haiku scout) will populate them. v1 consumers tolerate
+    // the new fields (they only read row.usage); downstream rollup verified
+    // schema-tolerant — see emit-orchestration-rollup.js:170-180.
+    //
+    // P2.2: parse the `[routing: <ABCD>/(inline|scout)]` marker the PM emits
+    // in its turn body to populate the schema_v2 fields. Fail-open: regex
+    // miss leaves both fields null. Walking the same transcript a second
+    // time is cheap (it's a TAIL_BYTES read), and decoupling marker-parse
+    // from usage-extract keeps the existing extractor's contract clean.
+    let routingClass = null;
+    let inlineOrScout = null;
+    try {
+      const body = extractLastAssistantBody(transcriptPath) || '';
+      const m = body.match(/\[routing:\s*([ABCD])\/(inline|scout)\]/);
+      if (m) {
+        routingClass = m[1];
+        inlineOrScout = m[2];
+      }
+    } catch (_e) { /* fail-open */ }
+
     const row = {
       row_type:         'pm_turn',
-      schema_version:   1,
+      schema_version:   2,
       timestamp:        extracted.timestamp,
       orchestration_id: orchestrationId,
       session_id:       event.session_id || null,
       model_used:       extracted.model_used,
       usage:            extracted.usage,
+      routing_class:    routingClass,
+      inline_or_scout:  inlineOrScout,
     };
 
     const metricsPath = path.join(cwd, '.orchestray', 'metrics', 'agent_metrics.jsonl');

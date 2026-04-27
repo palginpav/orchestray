@@ -38,6 +38,11 @@ const fs     = require('fs');
 const path   = require('path');
 const crypto = require('crypto');
 
+// v2.2.0 P1.3: parser extracted to bin/_lib/event-schemas-parser.js so the
+// shadow generator and the new tier2-index generator never disagree about
+// which slugs the source declares.
+const _parser = require('./_lib/event-schemas-parser');
+
 const MAX_SHADOW_BYTES = 8192; // 8 KB hard ceiling — raised from 4096 in v2.1.16
                                 // W12-fix F-005 to absorb v2.1.17 event-schema
                                 // additions without forcing per-event field
@@ -57,150 +62,19 @@ function parseCwd() {
 }
 
 // ---------------------------------------------------------------------------
-// Event-type extraction
+// Event-type extraction (delegated to bin/_lib/event-schemas-parser.js)
 // ---------------------------------------------------------------------------
+//
+// The actual section-walk + JSON-fence parser lives in event-schemas-parser.js
+// so the new tier2-index generator can re-use the exact same logic. Re-export
+// the same surface (`parseEventSchemas`, `extractFields`,
+// `computeEnumDialectHash`) here for callers that previously imported from
+// this module.
 
-/**
- * Heuristic section boundaries for event types in event-schemas.md.
- *
- * We recognize two header patterns:
- *   ### `<slug>` ...          — backtick-wrapped slug (most common)
- *   ### <slug> event ...      — bare slug followed by "event" or "Event"
- *   ### archetype_cache_*     — no backticks, underscore slugs
- *
- * For each matched section we look downward for the first JSON code fence and
- * extract the "type" field value from the sample object (ground truth). If no
- * code fence is found, we skip the section (may be a doc-only section).
- */
-
-const HEADER_RE = /^### [`]?([a-z][a-z0-9_.-]*)(?:[`]| event| Event)/m;
-const SECTION_RE = /^### [`]?([a-z][a-z0-9_.-]*)(?:[`]| event| Event)/mg;
-
-/**
- * Extract fields from a JSON sample block.
- * Returns { required: string[], optional: string[], version: number }
- *
- * "required" = keys that appear without a "?" comment; we use a heuristic:
- * keys with a value that is NOT "..." or undefined-ish → required.
- * "optional" = keys whose value or description says "optional" or has "?"
- *
- * Since the schema samples use hand-written JSON-like text, we parse
- * conservatively: accept any key whose value is a non-empty string or number.
- */
-function extractFields(jsonBlock) {
-  const required = [];
-  const optional = [];
-  let version = 1;
-
-  // Split into lines, skip fence markers
-  const lines = jsonBlock.split('\n').filter(l => !l.match(/^```/));
-
-  // Build a map of key → value_text for all top-level keys
-  // Matches:   "key": "value"  or  "key": <number>  or  "key": null  etc.
-  const KEY_VALUE_RE = /^\s+"([^"]+)"\s*:\s*(.+?)(?:,\s*)?$/;
-
-  for (const line of lines) {
-    const m = line.match(KEY_VALUE_RE);
-    if (!m) continue;
-    const key = m[1];
-    const valText = m[2].trim();
-
-    // Skip 'type' itself — it's the discriminator, not a payload field
-    if (key === 'type') continue;
-
-    // version field
-    if (key === 'version') {
-      const v = parseInt(valText, 10);
-      if (!isNaN(v)) version = v;
-      required.push(key);
-      continue;
-    }
-
-    // Determine if optional: value is "<...optional...>" or comment says optional
-    const isOptional = /optional|null|undefined|\?/.test(valText) ||
-      valText === 'null' ||
-      (valText.startsWith('"') && valText.includes('optional'));
-
-    if (isOptional) {
-      optional.push(key);
-    } else {
-      required.push(key);
-    }
-  }
-
-  return { required, optional, version };
-}
-
-/**
- * Compute a short hash of enum-like field values within a JSON block.
- * Used as enum_dialect_hash: changes when enum lists drift.
- */
-function computeEnumDialectHash(jsonBlock) {
-  // Extract array values from enum-like fields
-  // Pattern: "field": ["val1", "val2", ...]
-  const ARRAY_RE = /"[^"]+"\s*:\s*\[([^\]]+)\]/g;
-  const parts = [];
-  let m;
-  while ((m = ARRAY_RE.exec(jsonBlock)) !== null) {
-    parts.push(m[1].replace(/\s+/g, ''));
-  }
-  if (parts.length === 0) return 'none';
-  return crypto.createHash('sha256').update(parts.join('|')).digest('hex').slice(0, 8);
-}
-
-/**
- * Parse event-schemas.md content and return an array of:
- *   { slug, version, required, optional, enum_dialect_hash }
- */
-function parseEventSchemas(content) {
-  const events = [];
-  const seenSlugs = new Set();
-
-  // Split content into sections at each ### ... header
-  // We scan for all section header positions
-  const sectionStarts = [];
-  let m;
-  SECTION_RE.lastIndex = 0;
-  while ((m = SECTION_RE.exec(content)) !== null) {
-    sectionStarts.push({ index: m.index, slug: m[1] });
-  }
-
-  for (let i = 0; i < sectionStarts.length; i++) {
-    const { slug } = sectionStarts[i];
-    const sectionEnd = (i + 1 < sectionStarts.length)
-      ? sectionStarts[i + 1].index
-      : content.length;
-    const sectionContent = content.slice(sectionStarts[i].index, sectionEnd);
-
-    // Look for a JSON code fence in this section
-    const fenceStart = sectionContent.indexOf('```json');
-    if (fenceStart === -1) continue;
-    const fenceContentStart = fenceStart + '```json'.length;
-    const fenceEnd = sectionContent.indexOf('```', fenceContentStart);
-    if (fenceEnd === -1) continue;
-
-    const jsonBlock = sectionContent.slice(fenceContentStart, fenceEnd);
-
-    // Verify the JSON block actually has a "type" field matching this slug
-    // (filters out non-event-type JSON blocks like config samples)
-    const typeMatch = jsonBlock.match(/"type"\s*:\s*"([^"]+)"/);
-    const effectiveSlug = typeMatch ? typeMatch[1] : slug;
-
-    // Skip duplicates (some event types have multiple variant sections)
-    if (seenSlugs.has(effectiveSlug)) continue;
-    seenSlugs.add(effectiveSlug);
-
-    // Only process event types with underscore-or-dot slug shapes
-    if (!/^[a-z][a-z0-9_.-]*$/.test(effectiveSlug)) continue;
-
-    const { required, optional, version } = extractFields(jsonBlock);
-    const enum_dialect_hash = computeEnumDialectHash(jsonBlock);
-
-    events.push({ slug: effectiveSlug, version, required, optional, enum_dialect_hash });
-  }
-
-  return events;
-}
+const SECTION_RE          = _parser.SECTION_RE;
+const extractFields       = _parser.extractFields;
+const computeEnumDialectHash = _parser.computeEnumDialectHash;
+const parseEventSchemas   = _parser.parseEventSchemas;
 
 // ---------------------------------------------------------------------------
 // Main

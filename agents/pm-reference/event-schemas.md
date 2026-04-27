@@ -55,11 +55,44 @@ timestamps. Audit-trail rows are never rewritten after emission.
 
 ## Section 19: Routing Outcome Event
 
-`routing_outcome` events come in **three variants**: a hook-emitted partial written
-automatically by the `PostToolUse:Agent` hook at `bin/emit-routing-outcome.js`
-immediately after `Agent()` is spawned; a PM-supplemented full form written later
-during Section 4 result processing; and an auto-emitted completion-time supplement
-written by `bin/collect-agent-metrics.js` on every `SubagentStop`/`TaskCompleted`.
+### `routing_outcome` event
+
+Spawn-and-completion lifecycle record for `Agent()` invocations. Emitted by
+`bin/emit-routing-outcome.js` (Variant A, spawn-time) and by
+`bin/collect-agent-metrics.js` (Variant C, completion-time supplement). The
+canonical schema below covers all variants — variant-specific field
+populations are documented under "Variants" further down this section.
+
+```json
+{
+  "type": "routing_outcome",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx",
+  "agent_type": "developer",
+  "tool_name": "Agent|Explore|Task",
+  "model_assigned": "sonnet|opus|haiku|null",
+  "effort_assigned": "low|medium|high|xhigh|max|null",
+  "description": "First 200 chars of Agent() prompt or description",
+  "score": null,
+  "source": "hook|pm|subagent_stop"
+}
+```
+
+Field notes:
+- `source: "hook"` (Variant A) — written at spawn time by the
+  `PostToolUse:Agent` hook. Has `score: null` and lacks PM-derived fields.
+- `source: "pm"` (Variant B, optional) — written later by the PM during
+  Section 4 result processing if it chooses to supplement.
+- `source: "subagent_stop"` (Variant C) — written at completion by
+  `bin/collect-agent-metrics.js`. Auto-emitted unless the dedupe gate
+  (`hasExistingRoutingOutcome`) detects an existing Variant A/B for the
+  same `(orchestration_id, agent_type)`. Suppression introduced in
+  v2.2.0 P1.1 (`ORCHESTRAY_DISABLE_VARIANT_C_DEDUP=1` reverts).
+- Per-variant detailed schemas and consumer guidance follow in the
+  "Variants" subsections below.
+
+#### Variants
 
 ### Variant A — Hook-emitted (spawn-time, partial)
 
@@ -422,7 +455,9 @@ Appended when a specialist from the registry is reused for a subtask:
 
 ---
 
-## Pattern Skip Enriched Event (W11 LL1)
+### `pattern_skip_enriched` event
+
+<!-- W11 LL1 -->
 
 Appended by `mcp__orchestray__pattern_record_skip_reason` when the PM records a
 structured skip decision for a pattern returned by `pattern_find`. This event is emitted
@@ -736,13 +771,16 @@ Field notes:
 
 ---
 
-## Agent Stop Event
+### `agent_stop` event
 
-Appended when an agent finishes execution (used in audit trail and cost tracking):
+Appended when an agent finishes execution (used in audit trail and cost
+tracking). Emitted by `bin/collect-agent-metrics.js` on `SubagentStop` and
+`TaskCompleted` hooks.
 
 ```json
 {
   "type": "agent_stop",
+  "version": 1,
   "timestamp": "ISO 8601",
   "orchestration_id": "orch-xxx",
   "agent_id": "agent-xxx",
@@ -751,13 +789,386 @@ Appended when an agent finishes execution (used in audit trail and cost tracking
   "last_message_preview": "First 200 chars...",
   "usage": { "input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0 },
   "usage_source": "transcript|event_payload|estimated",
+  "cost_confidence": "measured|estimated",
   "estimated_cost_usd": 0.123,
   "estimated_cost_opus_baseline_usd": 0.456,
   "transcript_path": "/path/to/transcript.jsonl",
-  "model_used": "sonnet|opus|haiku|null",
+  "model_used": "sonnet|opus|haiku|null|unknown_team_member",
   "turns_used": 12
 }
 ```
+
+Field notes:
+- `cost_confidence` *(v2.2.0 P1.1)*: `"measured"` when `model_used` was
+  resolved via a matching `routing_outcome` event in `events.jsonl`;
+  `"estimated"` when the resolver fell through to
+  `bin/_lib/team-config-resolve.js` or to `unknown_team_member`.
+  Dashboards SHOULD surface the share of `estimated` rows so silent-default
+  pricing never accumulates unobserved.
+- `model_used = "unknown_team_member"` *(v2.2.0 P1.1)*: explicit label when
+  the team-config resolver cannot find a known model. Replaces the prior
+  silent default to Sonnet pricing. Paired with `cost_confidence: "estimated"`.
+
+---
+
+### `task_created` event
+
+Appended on every Agent Teams `TaskCreated` hook by `bin/audit-team-event.js`.
+Records the spawn-time identity of a teammate task in an active team
+orchestration. Mode-tagged `"teams"` to distinguish from non-team subagent
+spawns.
+
+```json
+{
+  "type": "task_created",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx",
+  "mode": "teams",
+  "task_id": "task-xxx",
+  "task_subject": "First-200-char subject",
+  "task_description": "Full description provided to teammate",
+  "teammate_name": "developer|reviewer|<lead-defined>",
+  "team_name": "team-xxx",
+  "session_id": "uuid"
+}
+```
+
+Field notes:
+- `mode: "teams"` distinguishes Agent Teams events from the `Agent()`
+  subagent path (which emits `agent_start`/`agent_stop` instead). Always
+  the literal string `"teams"`.
+- `task_id`, `team_name`, `teammate_name`: copied from the `TaskCreated`
+  hook payload; may be `null` on malformed payloads (the writer is
+  fail-open).
+- `task_subject`: provided by the lead at task creation time; null when
+  not specified (T15 hook `bin/validate-task-completion.js` enforces it
+  for hard-tier teammates).
+- The wrapper at `bin/audit-team-event.js` accepts a positional CLI arg
+  (`audit-team-event.js created`) for future extensibility but currently
+  only the event type is differentiated. Paired with `task_completed` /
+  `task_validation_failed` events on team-task lifecycle close.
+
+---
+
+### `delegation_delta_emit` event
+
+Emitted by `agents/pm.md` Section 3 (R-DELEG-DELTA, v2.2.0) once per `Agent()`
+spawn during orchestration. Pairs with P2.1 `cache_breakpoint_emit[slot=4]`
+rollups to compute delta-mode hit rate and full-bytes-avoided per orchestration.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "delegation_delta_emit",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id>",
+  "agent_type": "<developer | reviewer | architect | …>",
+  "spawn_n": 2,
+  "type_emitted": "delta",
+  "prefix_hash": "<sha256 hex of the static prefix>",
+  "prefix_bytes": 8842,
+  "delta_bytes": 612,
+  "full_bytes_avoided": 8230,
+  "reason": null,
+  "post_compact_resume": false
+}
+```
+
+Field notes:
+
+- `agent_type`: the subagent role. Used to scope the prefix cache; spawns of
+  different agent types in the same orch carry different prefix hashes.
+- `spawn_n`: 1-indexed sequence number within the
+  `(orchestration_id, agent_type)` pair. `spawn_n: 1` is always
+  `type_emitted: "full"`.
+- `type_emitted`: `"full"` or `"delta"`. `"full"` means the entire assembled
+  delegation prompt was passed to `Agent()`. `"delta"` means only the small
+  per-spawn delta block was passed.
+- `prefix_hash`: SHA-256 hex of the static portion of the delegation prompt.
+  `cache_breakpoint_emit[slot=4]` carries the same hex for cross-correlation.
+- `prefix_bytes`: utf-8 byte length of the static prefix.
+- `delta_bytes`: utf-8 byte length of the per-spawn delta block. `null` when
+  `type_emitted === "full"`.
+- `full_bytes_avoided`: bytes NOT re-emitted on this spawn (i.e.,
+  `prefix_bytes` when `type_emitted === "delta"`; `0` when `"full"`). Rollup
+  metric for the v2.2.0 P3.2 savings claim.
+- `reason`: `null` on the happy delta path; otherwise one of `"first_spawn"`,
+  `"hash_mismatch"`, `"post_compact_resume"`, `"markers_missing"`,
+  `"empty_prompt"`, `"disk_write_failed"`, `"disabled"`. Used by operators
+  for diagnosis.
+- `post_compact_resume`: `true` only on the first spawn after a `/compact`
+  recovery (Section 7.C in pm.md). `false` otherwise. Surfaces post-compact
+  re-anchoring in dashboards separately from genuine `hash_mismatch`.
+
+Backward compatibility: new event type in v2.2.0; older consumers ignore
+unknown types per R-EVENT-NAMING. Schema stability: additive-only.
+
+---
+
+### `scout_spawn` event
+
+Audit row emitted at the moment the PM's Section 23 decision rule returns
+`True` (i.e., the PM is about to spawn a `haiku-scout`). One row per spawn.
+Written via `bin/_lib/audit-event-writer.js` to
+`.orchestray/audit/events.jsonl`.
+
+```json
+{
+  "type": "scout_spawn",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx | null",
+  "session_id": "uuid | null",
+  "target_bytes": 22000,
+  "scout_min_bytes": 12288,
+  "op": "Read | Glob | Grep",
+  "path": "/abs/path/to/target",
+  "scout_estimated_inline_cost_usd": 0.015,
+  "scout_estimated_scout_cost_usd": 0.005,
+  "scout_estimated_savings_usd": 0.010,
+  "decision_reason": "exceeds_12kb"
+}
+```
+
+Field notes:
+- `target_bytes`: `fs.statSync(target_path).size` at spawn time.
+- `scout_min_bytes`: the configured threshold at spawn time (default 12288).
+  Captured per row so threshold flips are auditable post-hoc.
+- `op`: one of `Read`, `Glob`, `Grep`. Other values are validation errors.
+- `scout_estimated_*_usd`: PM-computed inline-Opus baseline vs Haiku-scout
+  cost (overhead + content). `scout_estimated_savings_usd =
+  scout_estimated_inline_cost_usd − scout_estimated_scout_cost_usd`. May
+  be negative on misclassification — telemetry surface for the v2.2.1
+  promotion gate.
+- `decision_reason`: free-form short tag (e.g., `exceeds_12kb`,
+  `forced_inline_path`). Used in v2.2.1 promotion-gate analytics.
+- Two paired diagnostic events (`scout_forbidden_tool_blocked`,
+  `scout_files_changed_blocked`, defined below) are emitted by
+  `bin/validate-task-completion.js` when a `haiku-scout` transcript breaks
+  the read-only contract. They are distinct event types with their own
+  schema rows — they are NOT folded into `scout_spawn`.
+
+Cross-references: `pm.md §23` (decision rule), `haiku-routing.md §23a`
+(Class B), `cost-prediction.md §31a` (savings math + promotion gate).
+
+**Promotion gate:** the v2.2.1 release is gated on ≥ 100 `scout_spawn`
+events showing (a) cache-read ratio ≥ 30% on repeated invocations within
+5-min and (b) mean `scout_estimated_savings_usd` > 0. See
+`cost-prediction.md §31a`.
+
+---
+
+### `scout_forbidden_tool_blocked` event
+
+Diagnostic event emitted by `bin/validate-task-completion.js` (TaskCompleted
+hook) when a read-only-tier agent (today: `haiku-scout`) is observed calling
+a forbidden tool (`Edit`, `Write`, or `Bash`). Fires AFTER the structural
+3-layer enforcement (frontmatter `tools:` whitelist + runtime rejection +
+`p22-scout-whitelist-frozen.test.js` byte-equality check) catches the
+violation. The event records the violation for analytics; the hook also
+exits 2 to block the offending TaskCompleted payload.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "scout_forbidden_tool_blocked",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "hook": "validate-task-completion",
+  "agent_role": "haiku-scout",
+  "forbidden_tools": ["Edit"],
+  "session_id": "<session uuid or null>"
+}
+```
+
+Field notes:
+- `agent_role`: the read-only-tier role that violated the contract
+  (lower-cased, trimmed). The `READ_ONLY_AGENTS` set in
+  `bin/validate-task-completion.js` is the authoritative list.
+- `forbidden_tools`: the tool names from `event.tool_calls` that
+  intersected `SCOUT_FORBIDDEN_TOOLS = {Edit, Write, Bash}`. Tolerant to
+  varied payload shapes (`{name}`, `{tool_name}`, raw string).
+- `session_id`: the session id from the hook payload, or null when
+  unavailable.
+- `hook`: always `validate-task-completion` for this event type.
+- Source: emitted by `bin/validate-task-completion.js:656-664`.
+
+---
+
+### `scout_files_changed_blocked` event
+
+Diagnostic event emitted by `bin/validate-task-completion.js` (TaskCompleted
+hook) when a read-only-tier agent returns a Structured Result whose
+`files_changed` array is non-empty. Read-only agents must always return
+`files_changed: []`. Fires alongside the exit-2 block; complementary to
+`scout_forbidden_tool_blocked` (forbidden-tool-call vs lying-in-result).
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "scout_files_changed_blocked",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "hook": "validate-task-completion",
+  "agent_role": "haiku-scout",
+  "files_changed": ["agents/pm.md"],
+  "session_id": "<session uuid or null>"
+}
+```
+
+Field notes:
+- `agent_role`: the read-only-tier role that violated the contract.
+- `files_changed`: the array the agent returned in its Structured Result.
+  Recorded verbatim (entries are the agent-supplied path strings).
+- `session_id`: the session id from the hook payload, or null when
+  unavailable.
+- `hook`: always `validate-task-completion` for this event type.
+- Source: emitted by `bin/validate-task-completion.js:676-684`.
+
+---
+
+### `sentinel_probe` event
+
+Appended on every `runProbe` call from `bin/_lib/sentinel-probes.js` (P1.4,
+v2.2.0). The five class-C deterministic probes the PM uses in place of
+inline Bash. Pre-materialized telemetry feeds the v2.2.0 §6.T cost rollup
+and proves the post-sentinel baseline narrows the variance described in
+`v220-scope-locked.md` line 148.
+
+```json
+{
+  "type": "sentinel_probe",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx",
+  "op": "fileExists | lineCount | gitStatus | schemaValidate | hashCompute",
+  "target": "<truncated 200-char identifier — file path, event type, or 'multi'>",
+  "duration_ms": 12,
+  "result_type": "ok | fail_soft | over_cap | invalid_path",
+  "source": "cli | require"
+}
+```
+
+Field notes:
+- `op`: one of the five whitelisted operations. Future ops MUST add their
+  literal to this enum and to `_ALLOWED_OPS` in `sentinel-probes.js` in the
+  same commit.
+- `target`: human-readable identifier of what was probed; truncated to
+  200 chars to bound row size. For `gitStatus({paths:[…]})` the target uses
+  the literal prefix `multi:` plus the count.
+- `duration_ms`: integer milliseconds from the runProbe entry to the result
+  object. Used for the perf-budget assertion in tests and the rollup.
+- `result_type`: stable categorical for analytics. `ok` ↔ `result.ok===true`;
+  `fail_soft` ↔ `result.ok===false` with a known `reason`; `over_cap` is the
+  specialization for `lineCount`/`hashCompute` byte-cap and `args_too_large`
+  hits; `invalid_path` is the security-guard reject case.
+- `source`: `cli` when invoked via `bin/sentinel-probe.js`; `require` when
+  invoked via direct `require('./_lib/sentinel-probes')` from another
+  Node-side script.
+
+Backward compatibility: new event type in v2.2.0; older consumers ignore
+unknown types per R-EVENT-NAMING. Schema-shadow (R-SHDW) regeneration is
+required at release time — `bin/regen-schema-shadow.js` picks the row up
+automatically from this section.
+
+---
+
+### `block_z_emit` event
+
+Emitted by `bin/compose-block-a.js` (UserPromptSubmit hook) once per turn when
+Block-Z (P2.1, v2.2.0) is built. The event is the observable signal that
+Block-Z is being composed — pair with `cache_creation_input_tokens` and
+`cache_read_input_tokens` rollups to compute hit-rate over the Block-Z region.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "block_z_emit",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "project_hash": "<sha256 hex of cwd>",
+  "pm_md_hash": "<sha256 hex of agents/pm.md bytes>",
+  "claude_md_hash": "<sha256 hex of CLAUDE.md bytes>",
+  "handoff_contract_hash": "<sha256 hex of handoff-contract.md bytes>",
+  "phase_contract_hash": "<sha256 hex of phase-contract.md bytes>",
+  "block_z_hash": "<sha256 hex of the assembled Block-Z body>",
+  "prefix_token_estimate": 40100,
+  "byte_length": 160574,
+  "error": null
+}
+```
+
+Field notes:
+- `project_hash`: `sha256(resolveSafeCwd(cwd))` — anonymises the absolute path
+  while preserving cross-orchestration linkability for analytics.
+- `pm_md_hash`, `claude_md_hash`, `handoff_contract_hash`, `phase_contract_hash`:
+  full hex of each component file's raw bytes. `null` when the corresponding
+  component was missing or `error !== null`.
+- `block_z_hash`: full hex of the assembled Block-Z body (excluding the
+  fingerprint comment, which is derived from this hash). `null` on error.
+- `prefix_token_estimate`: chars/4 rough estimate; reviewer should multiply by
+  ~1.35 to get the Opus 4.7 tokenizer count.
+- `byte_length`: utf-8 byte length of the assembled Block-Z body.
+- `error`: `null` on happy path; `"missing_input"` if any of the four component
+  files was missing; `"component_oversize"` if any file exceeded 1 MB; or
+  `"disabled"` when the kill switch is active.
+- Source: emitted by `bin/compose-block-a.js` after `buildBlockZ()` returns.
+
+Backward compatibility: new event type in v2.2.0; older consumers ignore
+unknown types per R-EVENT-NAMING.
+
+---
+
+### `cache_breakpoint_emit` event
+
+Emitted by `bin/compose-block-a.js` (UserPromptSubmit hook) once per slot, per
+turn (P2.1, v2.2.0). With the 4-slot manifest, this means up to 4 events per
+turn. Pair with `cache_creation_input_tokens` and `cache_read_input_tokens`
+rollups to compute hit-rate per slot.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "cache_breakpoint_emit",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "slot": 1,
+  "ttl": "1h",
+  "marker_byte_offset": 160574,
+  "prefix_hash": "<sha256 hex of the bytes before the marker>",
+  "prefix_token_estimate": 40100,
+  "ttl_downgrade_applied": false
+}
+```
+
+Field notes:
+- `slot`: `1`, `2`, `3`, or `4` per the 4-slot manifest definition.
+- `ttl`: `"1h"` or `"5m"`. Slots 1 and 2 default to `"1h"`; downgrade to `"5m"`
+  when `pm_protocol.estimated_orch_duration_minutes < 25`. Slots 3 and 4 are
+  always `"5m"`.
+- `marker_byte_offset`: byte position in the assembled `additionalContext`
+  payload where the cache_control marker for this slot would land.
+- `prefix_hash`: SHA-256 hex of the bytes BEFORE the marker (i.e., the
+  cacheable region for this slot).
+- `prefix_token_estimate`: chars/4 estimate of the prefix length.
+- `ttl_downgrade_applied`: `true` only on slots 1 and 2 when the short-orch
+  downgrade triggered. Always `false` on slots 3 and 4.
+- Source: emitted by `bin/compose-block-a.js` after `buildManifest()` returns,
+  one event per slot.
+
+Backward compatibility: new event type in v2.2.0; older consumers ignore
+unknown types per R-EVENT-NAMING.
 
 ---
 
@@ -4187,7 +4598,9 @@ Schema version: 1
   "zone1_hash": "<sha256 prefix of Zone 1 content>",
   "zone2_hash": "<sha256 prefix of Zone 2 content or 'empty'>",
   "zone3_bytes": 42,
-  "cache_breakpoints": 3
+  "cache_breakpoints": 4,
+  "block_z_hash": "<sha256 hex of assembled Block-Z body, or null>",
+  "manifest_slot_count": 4
 }
 ```
 
@@ -4198,22 +4611,49 @@ Field notes:
 - `zone2_hash`: SHA-256 hash of Zone 2 content, or `"empty"` if no active
   orchestration.
 - `zone3_bytes`: Byte length of Zone 3 content (mutable, uncached).
-- `cache_breakpoints`: Always 3 in v1 (Zone 1, Zone 2, tools array).
+- `cache_breakpoints`: Number of cache breakpoints emitted on this turn.
+  `4` when both Block-Z and the engineered-breakpoints manifest are enabled
+  and healthy (v2.2.0 default); `3` on fallback (Zone 1, Zone 2, tools
+  array — v2.1.x layout, e.g. when `caching.block_z.enabled: false` or
+  `caching.engineered_breakpoints.enabled: false`, or when either input
+  failed to assemble).
+- `block_z_hash` (v2.2.0+): SHA-256 hex of the assembled Block-Z body
+  (the four Tier-0 component files joined with header markers). `null`
+  when Block-Z is disabled, when any component is `missing_input`, or
+  when `caching.block_z.enabled: false`.
+- `manifest_slot_count` (v2.2.0+): Number of slots in the
+  cache-breakpoint manifest. `4` when the engineered-breakpoints feature
+  is enabled and the manifest computed cleanly; `0` when the feature is
+  disabled, when the manifest helper rejected the offset layout, or
+  when Block-Z assembly failed.
 - Source: emitted by `bin/compose-block-a.js`.
 
 ---
 
 ### `cache_invariant_broken` event
 
-Emitted by `bin/validate-cache-invariant.js` (PreToolUse hook) when the
-recomputed Zone 1 hash differs from the stored hash in
-`.orchestray/state/block-a-zones.json`. Indicates an unintended Zone 1
-mutation occurred (e.g., CLAUDE.md was edited without calling
-`bin/invalidate-block-a-zone1.js`).
+Emitted by `bin/validate-cache-invariant.js` (PreToolUse hook) when an
+invariant for the cached prefix is violated. Two emission modes share this
+event type:
+
+1. **Zone 1 mode (`zone: "zone1"`):** the recomputed Zone 1 hash differs
+   from the stored hash in `.orchestray/state/block-a-zones.json`.
+   Indicates an unintended Zone 1 mutation occurred (e.g., CLAUDE.md was
+   edited without calling `bin/invalidate-block-a-zone1.js`).
+2. **Manifest mode (`zone: "manifest"`, v2.2.0+):** the 4-slot
+   cache-breakpoint manifest computed by
+   `bin/_lib/cache-breakpoint-manifest.js` failed an invariant check. The
+   `reason` field carries the specific failure code; `expected_hash` /
+   `actual_hash` are reused to carry diagnostic strings (`"manifest"` and
+   the reason code respectively). Always advisory in v2.2.0 even when
+   `caching.engineered_breakpoints.strict_invariant: true` — strict mode
+   is reserved for v2.2.1 after observation.
 
 This event is advisory. The tool call is never blocked.
 
 Schema version: 1
+
+Zone 1 example:
 
 ```json
 {
@@ -4228,15 +4668,44 @@ Schema version: 1
 }
 ```
 
+Manifest example (v2.2.0+):
+
+```json
+{
+  "version": 1,
+  "type": "cache_invariant_broken",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "zone": "manifest",
+  "expected_hash": "manifest",
+  "actual_hash": "non_monotonic_offsets",
+  "reason": "non_monotonic_offsets",
+  "delta_files": []
+}
+```
+
 Field notes:
-- `zone`: Always `"zone1"` in v1. Zone 2 and Zone 3 are not invariant-checked.
-- `expected_hash`: First 12 hex characters of the hash stored at last compose.
-- `actual_hash`: First 12 hex characters of the freshly recomputed hash.
+- `zone`: One of `"zone1"` (Zone 1 hash mismatch) or `"manifest"`
+  (cache-breakpoint manifest invariant failure, v2.2.0+). Zone 2 and
+  Zone 3 are not invariant-checked.
+- `expected_hash`: First 12 hex characters of the hash stored at last
+  compose (Zone 1 mode); literal string `"manifest"` (manifest mode).
+- `actual_hash`: First 12 hex characters of the freshly recomputed hash
+  (Zone 1 mode); the manifest reason code (manifest mode).
+- `reason` (manifest mode only): one of
+  `slot_count_mismatch | non_monotonic_offsets | invalid_ttl |
+  invalid_hash | manifest_missing`. Absent for Zone 1 emissions.
+  `manifest_missing` is always advisory regardless of strict mode (a
+  legitimate first-turn-after-fresh-install state).
 - `delta_files`: Array of source file paths that were hashed in Zone 1 (used
-  to narrow down which file changed).
+  to narrow down which file changed). Empty array in manifest mode.
 - Source: emitted by `bin/validate-cache-invariant.js`.
-- Recovery: run `node bin/invalidate-block-a-zone1.js [reason]` to mint a
-  fresh Zone 1 breakpoint.
+- Recovery (Zone 1): run `node bin/invalidate-block-a-zone1.js [reason]`
+  to mint a fresh Zone 1 breakpoint.
+- Recovery (manifest): the manifest is regenerated automatically on the
+  next `compose-block-a.js` run; if the failure persists, set
+  `caching.engineered_breakpoints.enabled: false` to fall back to the
+  3-breakpoint v2.1.x layout.
 
 ---
 
@@ -4256,7 +4725,9 @@ Schema version: 1
   "orchestration_id": "<current orch id or 'unknown'>",
   "reason": "<user-supplied reason string>",
   "prior_hash": "<12-char prefix of the cleared hash>",
-  "sentinel_cleared": false
+  "sentinel_cleared": false,
+  "block_z_invalidated": false,
+  "block_z_components_changed": []
 }
 ```
 
@@ -4265,6 +4736,15 @@ Field notes:
 - `prior_hash`: First 12 hex characters of the hash that was cleared.
 - `sentinel_cleared`: `true` if the auto-disable sentinel was also removed,
   re-enabling zone caching.
+- `block_z_invalidated` (v2.2.0+): `true` when `--watch-pm-md` was passed
+  and one of the four Block-Z components (`agents/pm.md`, `CLAUDE.md`,
+  `agents/pm-reference/handoff-contract.md`,
+  `agents/pm-reference/phase-contract.md`) drifted relative to the prior
+  composed hash; `false` otherwise. Always `false` when invoked without
+  `--watch-pm-md`.
+- `block_z_components_changed` (v2.2.0+): Array of changed Block-Z
+  component names (e.g. `["agents/pm.md"]`) when `block_z_invalidated`
+  is `true`; empty array otherwise.
 - Source: emitted by `bin/invalidate-block-a-zone1.js`.
 
 ---
@@ -4792,5 +5272,591 @@ so a degraded audit pipeline cannot itself block the spawn.
 Schema changelog:
 
 - v1 — initial (v2.1.17 W11-fix F-W11-07).
+
+Schema stability: additive-only.
+
+
+---
+
+### `housekeeper_action` event
+
+Audit row emitted by the `orchestray-housekeeper` subagent's PostToolUse path
+(or by the PM at spawn-time, depending on emit-site choice). One row per
+housekeeper operation. Written via `bin/_lib/audit-event-writer.js` to
+`.orchestray/audit/events.jsonl`. Per Clause 4 of the locked-scope D-5
+hardening contract.
+
+```json
+{
+  "version": 1,
+  "type": "housekeeper_action",
+  "timestamp": "2026-04-26T12:34:56.789Z",
+  "orchestration_id": "orch-1777200000",
+  "session_id": "uuid-or-null",
+  "op_type": "kb-write-verify",
+  "target_bytes": 4096,
+  "savings_claimed_usd": 0.008,
+  "marker_received": "[housekeeper: write /abs/path]"
+}
+```
+
+Field notes:
+
+- `op_type`: one of `kb-write-verify`, `regen-schema-shadow`,
+  `rollup-recompute`. Other values are validation errors and indicate
+  scope drift.
+- `target_bytes`: integer — total bytes the housekeeper Read in this op.
+- `savings_claimed_usd`: PM-computed estimate of $ saved vs inline-Opus
+  equivalent. May be `0` or negative on misclassification.
+- `marker_received`: the literal `[housekeeper: ...]` marker string the PM
+  emitted. Used for drift-from-scope analysis.
+- `orchestration_id`: from `.orchestray/state/current-orchestration.json`;
+  null if no active orchestration.
+
+**Cardinality:** ~3-15 rows per orchestration in mid-load orchestrations.
+The 90-day rolling rollup answers "is this agent still in scope?" by
+counting the distribution of `op_type` values — a non-three-class
+distribution indicates drift requiring investigation.
+
+**Cross-references:** `pm.md §23f` (marker contract), `haiku-routing.md
+§23f` (housekeeper section), `cost-prediction.md §32` (savings math +
+promotion gate).
+
+**Promotion gate:** the v2.2.1+ tool-extension release is gated on ≥ 100
+`housekeeper_action` events with zero `housekeeper_forbidden_tool_blocked`
+events. See `cost-prediction.md §32`.
+
+Schema stability: additive-only.
+
+
+---
+
+### `housekeeper_drift_detected` event
+
+Diagnostic event emitted by `bin/audit-housekeeper-drift.js` (SessionStart
+hook) when the current `agents/orchestray-housekeeper.md` SHA-256 OR
+`tools:` line diverges from the baseline pinned in
+`bin/_lib/_housekeeper-baseline.js`. Fires on every SessionStart that
+detects drift (one event per session — the hook runs once at session
+start). Side effect: the hook writes a quarantine sentinel at
+`.orchestray/state/housekeeper-quarantined`; `bin/gate-agent-spawn.js`
+refuses housekeeper spawns until the sentinel is removed. Per Clause 3
+of the locked-scope D-5 hardening contract.
+
+```json
+{
+  "version": 1,
+  "type": "housekeeper_drift_detected",
+  "timestamp": "2026-04-26T12:34:56.789Z",
+  "orchestration_id": "orch-1777200000",
+  "hook": "audit-housekeeper-drift",
+  "previous_sha": "c170f96e...",
+  "current_sha": "deadbeef...",
+  "previous_tools": "tools: [Read, Glob]",
+  "current_tools": "tools: [Read, Glob, Bash]",
+  "reason": "sha_and_tools"
+}
+```
+
+Field notes:
+
+- `previous_sha`: the baseline SHA-256 from `_housekeeper-baseline.js`.
+- `current_sha`: the just-computed SHA of the current agent file.
+  `null` if the agent file is missing.
+- `previous_tools`: the baseline `tools:` line.
+- `current_tools`: the just-extracted `tools:` line. `null` if the agent
+  file is missing.
+- `reason`: one of `sha_only`, `tools_only`, `sha_and_tools`,
+  `agent_file_missing`.
+- `hook`: always `audit-housekeeper-drift` for this event type.
+
+**Cross-references:** Clause 3 of locked-scope D-5,
+`bin/audit-housekeeper-drift.js`, `cost-prediction.md §32` (promotion gate
+requires zero of these for ≥ 60 days).
+
+**Operator response on emission:** investigate the diff between
+`agents/orchestray-housekeeper.md` and the baseline; either revert the
+agent file OR (if the change is sanctioned) update
+`_housekeeper-baseline.js` AND `p33-housekeeper-whitelist-frozen.test.js`
+in a commit tagged `[housekeeper-tools-extension]`. The quarantine
+sentinel (`.orchestray/state/housekeeper-quarantined`) clears
+automatically on the first clean SessionStart post-fix.
+
+Schema stability: additive-only.
+
+
+---
+
+### `housekeeper_forbidden_tool_blocked` event
+
+Diagnostic event emitted by `bin/validate-task-completion.js` (TaskCompleted
+/ SubagentStop hook) when the `orchestray-housekeeper` subagent is observed
+calling a forbidden tool (`Edit`, `Write`, `Bash`, or `Grep`). Fires AFTER
+the structural 3-layer enforcement (frontmatter `tools:` whitelist + runtime
+rejection + `p33-housekeeper-whitelist-frozen.test.js` byte-equality check)
+catches the violation. The event records the violation for analytics; the
+hook also exits 2 to block the offending TaskCompleted payload. Per
+Clause 2 layer (b) of the locked-scope D-5 hardening contract.
+
+**Note:** the housekeeper's forbidden set is STRICTER than the scout's — it
+includes `Grep`. Scout permits `Grep`; housekeeper does not. This is
+intentional per Clause 1 of locked-scope D-5.
+
+```json
+{
+  "version": 1,
+  "type": "housekeeper_forbidden_tool_blocked",
+  "timestamp": "2026-04-26T12:34:56.789Z",
+  "orchestration_id": "orch-1777200000",
+  "hook": "validate-task-completion",
+  "agent_role": "orchestray-housekeeper",
+  "forbidden_tools": ["Grep"],
+  "session_id": "uuid-or-null"
+}
+```
+
+Field notes:
+
+- `agent_role`: always `orchestray-housekeeper` for this event type.
+- `forbidden_tools`: the tool names from `event.tool_calls` that
+  intersected the housekeeper's forbidden set
+  `{Edit, Write, Bash, Grep}`. Tolerant to varied payload shapes.
+- `session_id`: the session id from the hook payload, or null when
+  unavailable.
+- `hook`: always `validate-task-completion` for this event type.
+
+**Cross-references:** Clause 2 layer (b) of locked-scope D-5,
+`bin/validate-task-completion.js` `READ_ONLY_AGENT_FORBIDDEN_TOOLS` map,
+`p33-housekeeper-tool-runtime-rejection.test.js`,
+`cost-prediction.md §32` (zero-violations promotion-gate criterion).
+
+Schema stability: additive-only.
+
+---
+
+### `housekeeper_baseline_missing` event
+
+Emitted by `bin/audit-housekeeper-drift.js` (Clause 3 of locked-scope D-5
+hardening contract) on SessionStart when the baseline file
+`bin/_lib/_housekeeper-baseline.js` is missing or unreadable. Fail-CLOSED
+contract: drift detector also writes `.orchestray/state/housekeeper-quarantined`
+sentinel, which `bin/gate-agent-spawn.js` honors to refuse all housekeeper
+spawn attempts until the baseline is restored.
+
+```json
+{
+  "type": "housekeeper_baseline_missing",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx-or-unknown",
+  "baseline_path": "bin/_lib/_housekeeper-baseline.js",
+  "reason": "missing|unreadable|malformed",
+  "quarantine_sentinel_written": true,
+  "session_id": "uuid-or-null",
+  "hook": "audit-housekeeper-drift"
+}
+```
+
+Field notes:
+
+- `reason`: enum — `missing` (file not present), `unreadable` (file present
+  but `require()` threw), `malformed` (file loaded but expected exports
+  `BASELINE_AGENT_SHA` / `BASELINE_TOOLS_LINE` are absent or non-string).
+- `quarantine_sentinel_written`: `true` if the drift detector successfully
+  wrote `.orchestray/state/housekeeper-quarantined`.
+- Paired with `housekeeper_drift_detected` (different trigger — drift
+  compares current vs baseline; this fires when baseline is unavailable).
+
+**Cross-references:** Clause 3 of locked-scope D-5,
+`bin/audit-housekeeper-drift.js`, `bin/gate-agent-spawn.js`,
+`p33-housekeeper-baseline-missing.test.js` (fail-CLOSED test).
+
+Schema stability: additive-only.
+
+---
+
+### `audit_round_closed` event
+
+Emitted by `bin/audit-round-archive-hook.js` (SubagentStop hook, P3.1,
+v2.2.0) once per audit round when the hook detects that a verify-fix
+round has just closed (i.e. one of `verify_fix_pass | verify_fix_fail
+| verify_fix_oscillation` was emitted by the PM since the previous
+`audit_round_closed`). This is an internal Orchestray event — Claude
+Code itself does not emit it. The event is the **trigger** for
+`audit_round_archived`; if the archive flag is off, this event is
+still emitted (so observability of round-cadence survives the kill
+switch).
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "audit_round_closed",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id>",
+  "round_n": 2,
+  "outcome": "pass",
+  "finding_count": 3,
+  "task_id": "<task-N or null>"
+}
+```
+
+Field notes:
+- `round_n`: matches `round` from `verify_fix_*` rows
+  (`agents/pm-reference/phase-verify.md:286-302`).
+- `outcome`: enum `"pass" | "fail" | "oscillation"`.
+- `finding_count`: count of finding-bearing rows scanned.
+- `task_id`: `"task-N"` or `null` when not associated with a single task.
+- Source: `bin/audit-round-archive-hook.js`. Backward compat: new
+  in v2.2.0, ignore-unknown per R-EVENT-NAMING.
+
+---
+
+### `audit_round_archived` event
+
+Emitted by `bin/_lib/audit-round-archive.js::archiveRound()` (P3.1,
+v2.2.0) after a round's verbatim findings have been distilled into a
+digest. Pair with the next turn's `cache_read_input_tokens` rollup to
+prove the round-N+1 PM turn re-uses the cache rather than re-hydrating
+the verbatim transcript.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "audit_round_archived",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id>",
+  "round_n": 2,
+  "full_transcript_bytes": 30182,
+  "digest_bytes": 487,
+  "ratio": 0.0162,
+  "digest_path": ".orchestray/kb/artifacts/<orch>-round-<n>-digest.md",
+  "finding_ids": ["3.1.task-12.verify_fix_pass", "..."],
+  "mode": "deterministic"
+}
+```
+
+Field notes:
+- `round_n`: matches `audit_round_closed.round_n`.
+- `full_transcript_bytes` / `digest_bytes`: utf-8 byte counts.
+- `ratio`: `digest_bytes / full_transcript_bytes`; headline KPI,
+  target ≤ 0.10.
+- `digest_path`: relative to project cwd.
+- `finding_ids`: full enumeration. **Hard invariant**: every
+  finding id present in input rows for `round_n` is in this array
+  (`bin/__tests__/p31-archive-finding-id-preservation.test.js` is the gate).
+- `mode`: enum `"deterministic" | "haiku"`. v2.2.0 always emits
+  `"deterministic"`; v2.2.1+ may flip to `"haiku"` when the housekeeper
+  promotion gate opens.
+- Source: `bin/_lib/audit-round-archive.js`. Backward compat: new
+  in v2.2.0, ignore-unknown per R-EVENT-NAMING.
+
+---
+
+### `verify_fix_start` event
+
+Emitted by the PM at the start of each verify-fix loop round
+(`agents/pm-reference/phase-verify.md §5.f`). Documents the round
+counter and the error count at round-start. Per S-008 (v2.2.0 fix-pass)
+the schema row exists so `bin/_lib/schema-emit-validator.js` accepts
+the event type and the event lands in `events.jsonl`. Without this
+row the schema-emit validator rejected the event with a
+`schema_shadow_validation_block` surrogate, which silently disabled
+the P3.1 audit-round auto-archive feature.
+
+```json
+{
+  "version": 1,
+  "type": "verify_fix_start",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id>",
+  "task_id": "task-N",
+  "round": 1,
+  "error_count": 3
+}
+```
+
+Field notes:
+- `task_id`: the task whose verify-fix loop just opened (string).
+- `round`: 1-indexed round counter.
+- `error_count`: number of error-severity issues from the most-recent
+  reviewer pass at round start.
+- Source: PM via `ox events append`. Backward compat: new in v2.2.0,
+  ignore-unknown per R-EVENT-NAMING.
+
+---
+
+### `verify_fix_pass` event
+
+Emitted by the PM when a verify-fix loop exits successfully (errors
+cleared) per `phase-verify.md §5.f`. This is one of the three trigger
+events that close an audit round and fire the P3.1 auto-archive flow.
+
+```json
+{
+  "version": 1,
+  "type": "verify_fix_pass",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id>",
+  "task_id": "task-N",
+  "round": 2,
+  "rounds_total": 2
+}
+```
+
+Field notes:
+- `task_id`: the task whose verify-fix loop just closed.
+- `round`: the round counter at the successful exit (1-indexed).
+- `rounds_total`: same as `round` for `pass` (the loop exited at this
+  round); included for symmetry with `verify_fix_fail`.
+- Triggers `audit_round_closed` with `outcome: "pass"`.
+- Source: PM via `ox events append`. Backward compat: new in v2.2.0,
+  ignore-unknown per R-EVENT-NAMING.
+
+---
+
+### `verify_fix_fail` event
+
+Emitted by the PM when the verify-fix loop reaches `verify_fix_max_rounds`
+without converging (`phase-verify.md §5.f`). Documents the residual
+error count for downstream escalation. Triggers `audit_round_closed`
+with `outcome: "fail"`.
+
+```json
+{
+  "version": 1,
+  "type": "verify_fix_fail",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id>",
+  "task_id": "task-N",
+  "round": 3,
+  "remaining_errors": 2
+}
+```
+
+Field notes:
+- `round`: the cap-reaching round (typically `verify_fix_max_rounds`).
+- `remaining_errors`: number of unresolved error-severity issues.
+- Source: PM via `ox events append`. Backward compat: new in v2.2.0,
+  ignore-unknown per R-EVENT-NAMING.
+
+---
+
+### `verify_fix_oscillation` event
+
+Emitted by the PM when the oscillation detector trips
+(`phase-verify.md §"Regression Prevention"`): round N has the same or
+more errors than round N-1, signaling that fixing one issue
+reintroduces another. Triggers `audit_round_closed` with
+`outcome: "oscillation"`.
+
+```json
+{
+  "version": 1,
+  "type": "verify_fix_oscillation",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id>",
+  "task_id": "task-N",
+  "round": 2,
+  "errors_current": 3,
+  "errors_previous": 2
+}
+```
+
+Field notes:
+- `errors_current`: error count for the just-completed round.
+- `errors_previous`: error count for the prior round.
+- The oscillation detector treats `errors_current >= errors_previous`
+  as the trip condition.
+- Source: PM via `ox events append`. Backward compat: new in v2.2.0,
+  ignore-unknown per R-EVENT-NAMING.
+
+---
+
+### `output_shape_applied` event
+
+Emitted by the PM at delegation time, immediately after the `Agent()`
+spawn for any agent whose `decideShape()` result is non-null AND
+`category !== "none"`. Documents which P1.2 levers fired for this
+spawn so the v2.2.0 dashboard can roll up output-token reduction per
+role. Per locked scope `.orchestray/kb/decisions/v220-scope-locked.md`
+line 107: `output_shape.enabled` defaults to `true`; absence of this
+event on hybrid/prose-heavy spawns indicates the kill switch fired.
+
+```json
+{
+  "version": 1,
+  "type": "output_shape_applied",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id>",
+  "session_id": "uuid-or-null",
+  "task_id": "task-N",
+  "role": "developer",
+  "category": "hybrid",
+  "caveman": true,
+  "structured": false,
+  "length_cap": 50000,
+  "baseline_output_tokens": null,
+  "observed_output_tokens": null,
+  "accuracy_holds": null,
+  "reason": "caveman=on,length_cap=tier_default,structured=staged_off"
+}
+```
+
+Field notes:
+
+- `role`: canonical role name (matches `ROLE_MODEL_TIER` in
+  `bin/_lib/output-shape.js`).
+- `category`: enum from `ROLE_CATEGORY_MAP` —
+  `structured-only|hybrid|prose-heavy|none`. The `none` category
+  never emits this event (silenced at `decideShape()`).
+- `caveman`: `true` if the 85-token addendum was injected; `false`
+  otherwise (e.g., when `output_shape.caveman_enabled: false`).
+- `structured`: `true` if `output_config.format` was passed on the
+  `Agent()` call; `false` otherwise.
+- `length_cap`: integer (output-token cap) or `null` when
+  `output_shape.length_cap_enabled: false` OR the role is
+  `structured-only`.
+- `baseline_output_tokens`: PM-recorded pre-shape baseline from the
+  `routing_outcome` event for this role, or `null` if unavailable.
+  Populated post-spawn by an audit-event-rewriter pass in v2.2.1
+  (out of scope for v2.2.0 — keep the field nullable).
+- `observed_output_tokens`: actual output tokens used by the spawn.
+  Populated by `bin/collect-agent-metrics.js` once the metrics flow
+  joins (post-P1.1 M0.1 dedupe fix is the gate).
+- `accuracy_holds`: `null` initially. v2.2.1 fills with
+  `true|false|null` based on a post-spawn correctness check
+  (deferred — schema-stable since the field is nullable).
+- `reason`: comma-separated diagnostic string mirroring
+  `decideShape().reason`. Useful for "why was caveman off on this
+  spawn?" queries.
+
+Cardinality: ~3-8 rows per orchestration (one per non-PM, non-`none`
+spawn). 90-day rollup is the savings dashboard for P1.2.
+
+Cross-references: `bin/_lib/output-shape.js` (decision module);
+delegation injection point is `agents/pm.md` step 9.7 inside Block A.
+
+Schema stability: additive-only. The five `null`-defaulted fields
+(`baseline_output_tokens`, `observed_output_tokens`, `accuracy_holds`,
+plus any v2.2.1 additions) are ignore-unknown-safe per
+R-EVENT-NAMING. Source: PM via `ox events append`.
+
+---
+
+### `tier2_index_lookup` event
+
+Emitted by `bin/_lib/tier2-index.js` (via the `schema_get` MCP verb or
+the PM's fingerprint read) every time the PM resolves an event_type via
+the chunked Tier-2 path instead of a full-file Read. Provides the
+measurement signal needed to verify P1.3 effectiveness.
+
+```json
+{
+  "version": 1,
+  "type": "tier2_index_lookup",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id, or 'unknown' if none active>",
+  "file": "event-schemas.md",
+  "event_type": "<the slug looked up>",
+  "fingerprint_only_bytes": 1024,
+  "full_file_bytes_avoided": 186058,
+  "found": true,
+  "source": "fingerprint"
+}
+```
+
+Field notes:
+- `file`: basename of the indexed source file. Always
+  `"event-schemas.md"` in v2.2.0 — additional indexed files would
+  introduce new values.
+- `event_type`: the slug the PM resolved, or `"<unknown>"` on miss.
+- `fingerprint_only_bytes`: bytes of the fingerprint string the PM
+  consumed when this lookup was a fingerprint-scan (~1024).
+- `full_file_bytes_avoided`: `_meta.source_bytes` from the sidecar — the
+  number of bytes the PM did NOT have to read. Used to compute
+  cumulative savings.
+- `found`: `false` when the slug is not in the index. When
+  `event_schemas.full_load_disabled: true`, the lookup terminates
+  with `found: false` — no full-file fallback per the P1.3 D-8 contract.
+- `source`: `"fingerprint"` if the PM read the fingerprint section;
+  `"mcp_schema_get"` if the resolution went through the MCP verb.
+- Schema stability: additive only. New fields will only be added as
+  optional. Backward compat: new in v2.2.0; ignore-unknown per
+  R-EVENT-NAMING. Source: `bin/mcp-server/tools/schema_get.js` or
+  `ox events append` from the PM.
+
+---
+
+### `event_schemas_full_load_blocked` event
+
+Emitted by `bin/emit-tier2-load.js` (PostToolUse:Read hook) whenever a
+Read tool call targets `agents/pm-reference/event-schemas.md` while
+`event_schemas.full_load_disabled: true` is in effect. This is the
+observability half of the P1.3 D-8 contract: even when the PM
+misroutes through Read instead of `schema_get`, telemetry surfaces the
+slip so the next audit catches it. The hook is fail-open and does NOT
+block the Read at the OS level — it only emits the event.
+
+```json
+{
+  "version": 1,
+  "type": "event_schemas_full_load_blocked",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id, or 'unknown' if none active>",
+  "file_path": "agents/pm-reference/event-schemas.md",
+  "agent_role": "pm",
+  "source": "hook"
+}
+```
+
+Field notes:
+- `file_path`: the absolute or repo-relative path the Read targeted, as
+  reported by the PostToolUse hook payload.
+- `agent_role`: the role attribute from the hook event envelope, or
+  `null` when unavailable.
+- `source`: always `"hook"` — only the PostToolUse:Read hook is
+  authorised to emit this event.
+- Schema stability: additive only. Backward compat: new in v2.2.0;
+  ignore-unknown per R-EVENT-NAMING. Source:
+  `bin/emit-tier2-load.js`.
+
+---
+
+### `schema_get_call` event
+
+Emitted by `bin/mcp-server/tools/schema_get.js` on every invocation of
+the `mcp__orchestray__schema_get` MCP tool (P1.3, v2.2.0). Mirrors the
+`mcp_tool_call` pattern but carries the specific `event_type` argument
+so analytics can rank which event_types are looked up most often.
+Fail-open: if the audit-event-writer is unavailable, the schema_get
+call still proceeds.
+
+```json
+{
+  "type": "schema_get_call",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "tool": "schema_get",
+  "event_type": "agent_stop",
+  "orchestration_id": "orch-xxx-or-unknown"
+}
+```
+
+Field notes:
+
+- `event_type`: the literal string the PM passed to `mcp__orchestray__schema_get`.
+  Slug pattern enforced by the tool's input schema (`^[a-z][a-z0-9_.-]*$`),
+  so this is always a safe slug — never user-prose.
+- `orchestration_id`: read from `.orchestray/audit/current-orchestration.json`
+  if present; falls back to `'unknown'` (orphan invocations are still
+  recorded for unbiased rollups).
+- This event is paired with `tier2_index_lookup` (different signal —
+  `schema_get_call` records the *invocation*, `tier2_index_lookup`
+  records the *outcome* including `full_file_bytes_avoided`). Both are
+  emitted on every `schema_get` call.
 
 Schema stability: additive-only.

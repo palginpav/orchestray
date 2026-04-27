@@ -108,12 +108,13 @@ describe('agents/pm.md sentinel presence', () => {
 describe('agents/pm.md Block A hash stability', () => {
 
   /**
-   * EXPECTED_BLOCK_A_HASH is pinned when tests are first run.
-   * To regenerate: UPDATE_BLOCK_A_HASH=1 node --test tests/pm-md-prefix-stability.test.js
+   * PINNED_BLOCK_A_HASH is the single source of truth for the expected Block A
+   * hash. It is pinned inline below.
    *
-   * This value must be updated intentionally whenever Block A is deliberately changed.
+   * To regenerate after a deliberate Block A change:
+   *   UPDATE_BLOCK_A_HASH=1 node --test tests/pm-md-prefix-stability.test.js
+   * Then update PINNED_BLOCK_A_HASH below to the value the run prints.
    */
-  const EXPECTED_HASH_FILE = path.join(repoRoot, 'tests', '.block-a-hash-expected');
 
   test('Block A hash matches pinned expected value', () => {
     assert.ok(pmContent !== null, 'pm.md must be readable');
@@ -126,39 +127,33 @@ describe('agents/pm.md Block A hash stability', () => {
 
     const actualHash = hashHex16(blockA);
 
-    // UPDATE mode: write the current hash as the new expected value
+    // UPDATE mode: print the current hash; the developer copies it into the
+    // PINNED_BLOCK_A_HASH literal below in the same commit.
     if (process.env.UPDATE_BLOCK_A_HASH === '1') {
-      fs.writeFileSync(EXPECTED_HASH_FILE, actualHash + '\n', 'utf8');
-      console.log(`[pm-md-prefix-stability] Block A hash updated to: ${actualHash}`);
+      console.log(`[pm-md-prefix-stability] Block A hash is now: ${actualHash}`);
+      console.log(`[pm-md-prefix-stability] Update PINNED_BLOCK_A_HASH in this test to that value.`);
       return; // pass
     }
 
-    // Normal mode: compare against pinned value
-    let expectedHash;
-    try {
-      expectedHash = fs.readFileSync(EXPECTED_HASH_FILE, 'utf8').trim();
-    } catch (_) {
-      // No pinned hash yet — generate it and fail with instructions
-      fs.writeFileSync(EXPECTED_HASH_FILE, actualHash + '\n', 'utf8');
-      // First run: pin the hash and pass so CI is not broken on first setup
-      console.log(
-        `[pm-md-prefix-stability] No pinned Block A hash found. ` +
-        `Pinned current value (${actualHash}) to ${EXPECTED_HASH_FILE}. ` +
-        `Commit this file to lock in the expected hash.`
-      );
-      return;
-    }
+    // Normal mode: compare against the inline pinned value.
+    // v2.2.0 P1.4 §3.S sentinel-preference instruction insertion (orch-20260426T172424Z).
+    // Re-pinned during the same orchestration's W7 fix-pass: §3.S body
+    // gained exit-2 documentation (F-007) and apostrophe-quoting guidance
+    // (F-009).
+    // v2.2.0 P3.2 R-DELEG-DELTA insertion (orch-20260426T193005Z)
+    // v2.2.0 P1.2 step 9.7 output-shape inject (orch-20260427T041926Z)
+    const PINNED_BLOCK_A_HASH = 'e068ae0dfab5e752';
 
     assert.equal(
       actualHash,
-      expectedHash,
+      PINNED_BLOCK_A_HASH,
       `Block A hash mismatch!\n` +
-      `  Expected: ${expectedHash}\n` +
+      `  Expected: ${PINNED_BLOCK_A_HASH}\n` +
       `  Actual:   ${actualHash}\n\n` +
       `This means agents/pm.md Block A content changed unexpectedly.\n` +
       `If this change was intentional (and approved), regenerate the pin with:\n` +
       `  UPDATE_BLOCK_A_HASH=1 node --test tests/pm-md-prefix-stability.test.js\n` +
-      `Then commit the updated tests/.block-a-hash-expected file.`
+      `then update PINNED_BLOCK_A_HASH inline in this test.`
     );
   });
 

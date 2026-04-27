@@ -667,10 +667,22 @@ describe('pricing and cost estimation', () => {
 
 describe('cost_confidence field', () => {
 
+  // Option A: intent is "verify cost_confidence stays 'measured' for a known-model
+  // spawn whose tokens come from the transcript". Seed a Variant-A routing_outcome
+  // so resolveModelUsed succeeds (P1.1 M0.2 — otherwise the resolver flips to
+  // unknown_team_member and cost_confidence becomes 'estimated').
   test('cost_confidence is "measured" when tokens come from transcript', () => {
     const tmpDir = makeTmpDir();
     const auditDir = path.join(tmpDir, '.orchestray', 'audit');
     writeOrchestrationId(auditDir, 'orch-conf-001');
+
+    const eventsPath = path.join(auditDir, 'events.jsonl');
+    fs.writeFileSync(eventsPath, JSON.stringify({
+      type: 'routing_outcome',
+      orchestration_id: 'orch-conf-001',
+      agent_type: 'developer',
+      model_assigned: 'sonnet',
+    }) + '\n');
 
     const transcriptPath = path.join(tmpDir, 'transcript.jsonl');
     fs.writeFileSync(transcriptPath, JSON.stringify({
@@ -695,10 +707,21 @@ describe('cost_confidence field', () => {
     }
   });
 
+  // Option A: intent is "verify cost_confidence stays 'measured' for a known-model
+  // spawn whose tokens come from the event payload". Seed a Variant-A routing_outcome
+  // so the P1.1 M0.2 unknown_team_member fallback does not fire.
   test('cost_confidence is "measured" when tokens come from event payload', () => {
     const tmpDir = makeTmpDir();
     const auditDir = path.join(tmpDir, '.orchestray', 'audit');
     writeOrchestrationId(auditDir, 'orch-conf-002');
+
+    const eventsPath = path.join(auditDir, 'events.jsonl');
+    fs.writeFileSync(eventsPath, JSON.stringify({
+      type: 'routing_outcome',
+      orchestration_id: 'orch-conf-002',
+      agent_type: 'developer',
+      model_assigned: 'sonnet',
+    }) + '\n');
 
     try {
       const input = JSON.stringify({
@@ -748,10 +771,23 @@ describe('cost_confidence field', () => {
     }
   });
 
+  // Option A: intent is "verify cost_confidence is present and 'measured' on
+  // TaskCompleted team events with transcript-sourced tokens". The team-event
+  // resolver derives agent_type from event.teammate_name (default 'teammate'),
+  // so seed a routing_outcome for that label to avoid the P1.1 M0.2
+  // unknown_team_member fallback.
   test('cost_confidence is present on team events (TaskCompleted)', () => {
     const tmpDir = makeTmpDir();
     const auditDir = path.join(tmpDir, '.orchestray', 'audit');
     writeOrchestrationId(auditDir, 'orch-conf-team');
+
+    const eventsPath = path.join(auditDir, 'events.jsonl');
+    fs.writeFileSync(eventsPath, JSON.stringify({
+      type: 'routing_outcome',
+      orchestration_id: 'orch-conf-team',
+      agent_type: 'teammate',
+      model_assigned: 'sonnet',
+    }) + '\n');
 
     const transcriptPath = path.join(tmpDir, 'team-transcript.jsonl');
     fs.writeFileSync(transcriptPath, JSON.stringify({

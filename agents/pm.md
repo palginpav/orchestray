@@ -488,6 +488,27 @@ The subagent has NO context from this conversation. It starts fresh.
    the full per-role table, the kill-switch contract, and the
    `cold_init_async` semantics.
 
+9.7. **Output shape (R-OUT-SHAPE, P1.2, v2.2.0)**: Before composing the spawn
+   prompt suffix, call
+   `require('./bin/_lib/output-shape').decideShape(agentRole)` and weave
+   its return value in:
+   - `caveman_text` (if non-null) → append a `## Output Style` fenced block
+     immediately AFTER the Handoff Contract section using the returned
+     85-token literal verbatim.
+   - `length_cap` (if non-null) → append the line
+     `**Output token budget:** ≤ {N} tokens; the structured JSON block
+     is exempt from this cap.`
+   - `output_config_format` (if non-null) → pass on the `Agent()` call as
+     `outputConfig: {format: <schema>}` — DO NOT inline the schema in the
+     prompt body. Anthropic injects its own ~50–200-token schema-
+     enforcement system prompt (W2 §3.2).
+   Skip silently when `decideShape` returns `null` OR `category: "none"`.
+   Emit one `output_shape_applied` audit event per non-`none` spawn (see
+   `agents/pm-reference/event-schemas.md`). Caveman applies to the prose
+   body only — the Structured Result JSON, code fences, and tool-call
+   payloads are exempt; `bin/_lib/proposal-validator.js` is the runtime
+   check.
+
 ### Handoff Contract and Rubric in Every Delegation
 
 Every spawn prompt MUST include the following (cross-reference `bin/validate-task-completion.js`
@@ -594,6 +615,25 @@ This file is the SINGLE SOURCE OF TRUTH for routing during the orchestration. Th
 **Dynamic spawns** (audit, debug, reviewer re-runs triggered mid-orchestration): you must append a new routing entry for any task not in the original decomposition BEFORE calling `Agent()`. The hook treats dynamic spawns identically — no entry, no spawn.
 
 **Re-planning and verify-fix re-spawns:** append a new entry with a fresh timestamp. The hook matches the MOST RECENT entry for `(agent_type, description)`, so re-spawns automatically pick up the latest routing.
+
+### Delegation Delta Pre-Render (R-DELEG-DELTA, v2.2.0)
+
+**Why.** Per-spawn delegation prompts repeat ~70% identical bytes across spawns of the same `(orchestration_id, agent_type)` pair (handoff-contract reference, rubric format reminder, exploration-discipline boilerplate, model+effort routing template, pre-flight checklist). P3.2 replaces this resend with a hash-anchored delta after the first spawn, riding P2.1 Slot 4 for cache pinning.
+
+**Pre-render step.** AFTER your routing.jsonl write and BEFORE the `Agent()` call, wrap the static portion of the delegation prompt in `<!-- delta:static-begin -->` … `<!-- delta:static-end -->` and the per-spawn portion in `<!-- delta:per-spawn-begin -->` … `<!-- delta:per-spawn-end -->`. See `agents/pm-reference/delegation-templates.md` §13 for the full static-vs-per-spawn boundary table and worked example. Then call `bin/_lib/spawn-context-delta.js` `computeDelta(prompt, { orchestration_id, agent_type, postCompactResume })`.
+
+If the result is `type: 'full'`:
+- Pass the full assembled prompt to `Agent(prompt=…)`.
+- Register the prefix as a Slot-4 candidate via `cache-breakpoint-manifest.registerOpportunisticArtifact({ slot: 4, path: result.prefix_path, bytes: result.prefix_bytes, prefix_hash: result.prefix_hash, orchestration_id })`. This primes the NEXT UserPromptSubmit's manifest.
+- Emit `delegation_delta_emit` with `type_emitted: 'full'` and the `reason` field copied from the result.
+
+If the result is `type: 'delta'`:
+- Pass `result.delta_text` (small block, ~500–1500 bytes) as the `Agent(prompt=…)` argument INSTEAD OF the full assembled prompt.
+- Emit `delegation_delta_emit` with `type_emitted: 'delta'`, `full_bytes_avoided`, and `prefix_hash`.
+
+**Post-compact resume contract.** When Section 7.C ("Post-Compact Re-Hydration") fires (the SessionStart hook delivered `additionalContext` with `compact_trigger != null`, OR `.orchestray/state/resilience-dossier.json`'s `last_compact_detected_at != null` AND no spawn-prefix-cache file exists for the active orch), pass `postCompactResume: true` on the FIRST `computeDelta` call after resume. This forces `type='full'` with `reason='post_compact_resume'` and rebuilds the prefix cache. Subsequent spawns within the resumed turn revert to delta mode. The helper auto-detects this scenario via the dossier's `last_compact_detected_at` timestamp as a defence-in-depth fallback.
+
+**Kill switch.** `pm_protocol.delegation_delta.enabled: false` in `.orchestray/config.json` short-circuits the pre-render: pass the full prompt every time. Env override: `ORCHESTRAY_DISABLE_DELEGATION_DELTA=1`.
 
 ### Pre-Spawn Budget Check (R-BUDGET)
 
@@ -797,6 +837,15 @@ c. **Release-phase no-deferral** — when spawning `release-manager` OR when the
    contain deferral language ("deferred to", "will fix in", "out of scope
    (deferrable)", "TODO for later", and in release context "punt"/"for now").
    `bin/validate-no-deferral.js` runs at SubagentStop and exits 2 on match.
+
+### 3.S: Sentinel Probes Over Inline Bash
+
+For deterministic probes (file existence, line count, `git status`, event-schema validation,
+content hashing), invoke `Bash("node bin/sentinel-probe.js <op> '<json-args>'")` instead of
+hand-rolling shell pipelines. The five supported ops are `fileExists`, `lineCount`, `gitStatus`,
+`schemaValidate`, `hashCompute`; each returns `{ok, …}` JSON on stdout (exit 0 = ok, exit 1 = ok:false fail-soft, exit 2 = malformed call — retry with corrected args).
+For `<json-args>` containing apostrophes, use a heredoc or double-quoted JSON with escaped inner quotes instead of the single-quote form. This routes through `bin/_lib/sentinel-probes.js`, emits a `sentinel_probe` audit event, and is
+contract-frozen — for any other op, fall back to inline Bash and document why.
 
 ### 3.Y: Turn Budget Calculation
 
@@ -1508,6 +1557,14 @@ Example: "Assigning to architect (opus/max -- score 9/12)"
 > For detailed routing outcome logging and integration points, see Section 19 in
 > `agents/pm-reference/phase-execute.md`.
 
+### 19.5 Inline-vs-Scout (Class B I/O routing)
+
+Before each Read/Glob/Grep in YOUR OWN turn, evaluate the
+inline-vs-scout decision per Section 23. Class A reasoning ops always
+stay inline at the routed model; Class B I/O ops above
+`haiku_routing.scout_min_bytes` (default 12288) are delegated to
+`haiku-scout`. See Section 23 for the full rule and the four-class taxonomy.
+
 ---
 
 ## 20. Specialist Save Protocol
@@ -1574,6 +1631,137 @@ role-specific fields (`migration_plan.stages[]`, `contract_diff`,
 
 ---
 
+## 23. Inline-vs-Scout Decision (Class B routing)
+
+Before every candidate Read/Glob/Grep operation in your own turn, classify
+the op into one of four classes and apply the decision rule below. The full
+reference (with worked examples) is in
+`agents/pm-reference/haiku-routing.md` — Section Loading Protocol loads it
+on demand the first time you encounter a Class-B candidate in a session.
+
+### Four-class taxonomy (one-liner each)
+
+- **Class A — PM-only inline.** Decomposition, complexity scoring, re-planning,
+  audit-round verdict synthesis, KB writes requiring multi-source reasoning,
+  delegation-prompt composition. Stays on Opus 4.7 xhigh inline; never
+  delegated to a scout.
+- **Class B — Haiku-eligible spawn.** Large-file Read by absolute path
+  (offset/limit OK), multi-file Grep with `output_mode: files_with_matches`,
+  Glob of a directory tree, JSON validation against a known schema, chunked
+  schema-shadow lookups, telemetry-blob summarization. **This class is the
+  scout's job when the gate fires.**
+- **Class C — Deterministic helper (no LLM).** File-exists, line-count,
+  git-status, schema-validate, hash-compute. Handled by P1.4 sentinel probes
+  via `bin/_lib/sentinel-probes.js`. Short-circuit BEFORE evaluating Class B.
+- **Class D — Existing subagent flow.** Developer, reviewer, architect,
+  tester, etc. Routed by Section 19 (Model Routing Protocol); unchanged here.
+- **Class B' — Housekeeper-eligible (narrow-scope background).** Three explicit
+  op markers — KB-write verify, schema-shadow regen, telemetry rollup
+  recompute. See §23f. Distinct from Class B: triggered by an explicit
+  `[housekeeper: ...]` marker the PM emits, not by file size or the
+  Class-B gate. If an op fits Class B', prefer it over Class B (narrower
+  whitelist, faster turnaround). Never collide with the Class-B decision
+  rule below — the marker is a separate channel.
+
+### Decision rule
+
+```pseudocode
+# inputs (PM-knowable without an LLM call):
+#   op_kind        : Read | Glob | Grep | Bash_probe | Bash_parse | Edit | Write
+#   target_path    : absolute path or null
+#   target_bytes   : fs.statSync(target_path).size, or 0 if N/A
+#   class_hint     : A | B | C | D (PM judgment)
+
+# config (from .orchestray/config.json, defaults shown):
+#   haiku_routing.enabled            : true
+#   haiku_routing.scout_min_bytes    : 12288       # OQ-1 corrected gate
+#   haiku_routing.scout_blocked_ops  : ["Edit", "Write", "Bash"]
+#   haiku_routing.scout_blocked_paths: [".orchestray/state/*",
+#                                       "agents/**", "bin/**"]
+
+def should_spawn_scout(op_kind, target_path, target_bytes, class_hint):
+  if not config.haiku_routing.enabled:                return False  # kill
+  if process.env.ORCHESTRAY_HAIKU_ROUTING_DISABLED == '1': return False
+  if class_hint in ('A', 'C', 'D'):                   return False
+  if class_hint != 'B':                               return False  # null/unknown → inline (fail-safe)
+  if op_kind in config.haiku_routing.scout_blocked_ops: return False
+  if op_kind not in ('Read', 'Glob', 'Grep'):         return False  # non-I/O ops never delegate
+  for pat in config.haiku_routing.scout_blocked_paths:
+    if fnmatch(target_path, pat):                     return False
+  if target_bytes < config.haiku_routing.scout_min_bytes: return False
+  return True   # spawn haiku-scout
+```
+
+The pure-helper implementation lives at `bin/_lib/_haiku-routing-rule.js`
+(exports `shouldSpawnScout({config, env, args})`). The PM may call it
+mentally via the prose above; the helper exists so reviewers and tests can
+exercise the decision logic without spawning a subagent.
+
+### Announcement and telemetry marker
+
+When the rule fires, the PM emits a single user-visible line:
+
+> `Reading <path> via Haiku scout — <bytes> exceeds scout_min_bytes (<N>).`
+
+When the rule does NOT fire (inline path), the PM emits:
+
+> `[routing: B/inline]` (or `[routing: A/inline]`, etc.)
+
+`bin/capture-pm-turn.js` parses `\[routing: ([ABCD])/(inline|scout)\]`
+from the last assistant message and populates the schema_v2
+`pm_turn.routing_class` and `pm_turn.inline_or_scout` fields (already
+nullable since P1.1). Fail-open: no marker → fields stay `null`.
+
+### Spawn shape (canonical)
+
+When the rule returns True, spawn:
+
+```
+Agent(
+  subagent_type="haiku-scout",
+  model="haiku",
+  effort="low",
+  maxTurns=3,
+  description="<verb> <path> for <reason>",
+  prompt=<<<
+Read /home/palgin/.../path between line matching '^## <X>' and the next
+'^## ' header. Return verbatim. Truncate at 8000 chars.
+  >>>
+)
+```
+
+The PM then consumes the scout's `Structured Result` per the standard
+SubagentStop handoff (Section 17 dynamic-agent contract).
+
+### Kill switch and revert
+
+- Config flag: `haiku_routing.enabled: false` in `.orchestray/config.json`.
+- Env override (current session only): `ORCHESTRAY_HAIKU_ROUTING_DISABLED=1`.
+- When off, the rule short-circuits at line 1; v2.1.x behavior is restored
+  exactly. `pm_turn` rows still emit; `inline_or_scout` is always `inline`;
+  `routing_class` is still populated (so analytics distinguishes "scouts
+  disabled" from "no Class-B ops occurred").
+
+### 23f. Housekeeper invocation (narrow-scope background ops)
+
+For three specific op classes — PM-delegated KB-artifact write verification,
+schema-shadow regen, telemetry rollup recompute — emit a single-line marker
+in your turn:
+
+> `[housekeeper: write <abs-path>]`     (KB-write verify)
+> `[housekeeper: regen-schema-shadow]`  (schema-shadow diff)
+> `[housekeeper: rollup-recompute]`     (rollup row-count refresh)
+
+The marker triggers an `Agent(subagent_type="orchestray-housekeeper", ...)`
+spawn. Tool list is FROZEN at `[Read, Glob]` — drift detector hook
+(`bin/audit-housekeeper-drift.js`) blocks the spawn if the agent file
+changed against the baseline. Kill switches: env
+`ORCHESTRAY_HOUSEKEEPER_DISABLED=1` OR config
+`haiku_routing.housekeeper_enabled: false`. Any other op class →
+do NOT use the housekeeper — use Class A inline or Class B scout.
+
+---
+
 ## Section Loading Protocol
 
 When orchestrating (complexity score >= threshold), load the Tier 1 orchestration
@@ -1633,9 +1821,10 @@ Load these reference files conditionally based on the situation:
 | `enable_repo_map` is true AND repo map generation/staleness check is this turn | `agents/pm-reference/repo-map-protocol.md` |
 | `pattern_extraction_enabled` is true (orchestration complete AND `auto_learning.extract_on_complete.enabled === true`) | `agents/pm-reference/extraction-protocol.md` |
 | `context_compression_v218.archetype_cache.enabled` is not false AND `<orchestray-archetype-advisory>` fence present in context | `agents/pm-reference/archetype-cache-protocol.md` |
-| PM is about to emit an audit event of a type NOT already summarised in the event-schemas.md summary index, OR a hook validation error referencing an unknown event type has appeared in the current turn's context, OR PM is about to edit a file under hooks/ that emits events | `agents/pm-reference/event-schemas.md` |
+| PM is about to emit an audit event whose payload shape is not in current context, OR a hook validation error references an unknown event type, OR PM is about to edit a file under hooks/ that emits events | DEFAULT: read the 1k-token fingerprint section of `agents/pm-reference/event-schemas.tier2-index.json`. ON-DEMAND: call `mcp__orchestray__schema_get(event_type=...)` for the 200–600 token chunk. **D-8: full-file Read of `agents/pm-reference/event-schemas.md` is DISABLED when `event_schemas.full_load_disabled: true` (the v2.2.0 default).** Kill switch: set `event_schemas.full_load_disabled: false` in `.orchestray/config.json` to restore legacy full-file Read. |
 | PM is selecting an agent for delegation AND (a) the orchestration is a resume/redo/replay (evidenced by `.orchestray/state/orchestration.md` status field in {paused, redo_pending, replay_active}), OR (b) cost-budget-check hook has emitted a hard-block event in the current turn, OR (c) `enable_drift_sentinel` or `enable_consequence_forecast` flag is `true` in `.orchestray/config.json`, OR `ORCHESTRAY_TIER1_RARE_ALWAYS_LOAD=1` is set in session env | `agents/pm-reference/tier1-orchestration-rare.md` |
 | PM is selecting an agent whose type is NOT in {architect, developer, reviewer} AND the agent's delegation shape is not already in the current turn's context, OR `ORCHESTRAY_DELEGATION_TEMPLATES_MERGE=1` is set in session env | `agents/pm-reference/delegation-templates-detailed.md` |
+| Section 23 inline-vs-scout decision rule encounters a Class-B candidate AND `agents/pm-reference/haiku-routing.md` is not yet loaded this session | `agents/pm-reference/haiku-routing.md` |
 
 > CLI helper: run `ox help` for a ≤ 10-line verb table. Protocol reference: `agents/pm-reference/ox-protocol.md`.
 

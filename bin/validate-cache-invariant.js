@@ -13,13 +13,28 @@
  *   - If violations >= threshold in 24h, writes auto-disable sentinel.
  *   - Exits 0 (advisory only — does NOT block the tool call).
  *
+ * v2.2.0 (P2.1) extension — UserPromptSubmit-mounted manifest invariant.
+ *   Invoked with `--manifest` (or `--mode=manifest`) the script asserts the
+ *   persisted 4-slot cache-breakpoint manifest is well-formed:
+ *     - exactly 4 slots, slot[i].slot === i+1
+ *     - marker_byte_offset is monotonically non-decreasing
+ *     - ttl ∈ {'1h', '5m'}
+ *     - prefix_hash is 64-char hex; prefix_token_estimate is non-negative int
+ *
+ *   Default behaviour is ADVISORY (exit 0 + emit `cache_invariant_broken`
+ *   with `zone: 'manifest'`). Strict mode is enabled when
+ *   `caching.engineered_breakpoints.strict_invariant === true`; in that
+ *   mode, a malformed manifest exits 2. v2.2.0 ships strict_invariant=false
+ *   for safety (UserPromptSubmit exit-2 hard-blocks the user typing); v2.2.1
+ *   may flip the default after telemetry confirms zero false positives.
+ *
  * Kill switches (any one → no-op):
  *   - process.env.ORCHESTRAY_DISABLE_BLOCK_A_ZONES === '1'
  *   - config.block_a_zone_caching.enabled === false
  *   - sentinel: .orchestray/state/.block-a-zone-caching-disabled exists
  *
  * Input:  JSON on stdin (Claude Code PreToolUse hook payload)
- * Output: exit 0 always (advisory hook, never blocks)
+ * Output: exit 0 always (advisory PreToolUse path; manifest mode may exit 2 in strict)
  */
 
 const fs     = require('fs');
@@ -39,6 +54,7 @@ const STATE_DIR        = path.join('.orchestray', 'state');
 const ZONES_FILE       = 'block-a-zones.json';
 const VIOLATIONS_FILE  = 'block-a-zone-violations.jsonl';
 const SENTINEL_FILE    = '.block-a-zone-caching-disabled';
+const MANIFEST_FILE    = 'cache-breakpoint-manifest.json';
 const VIOLATION_WINDOW = 24 * 60 * 60 * 1000; // 24 hours in ms
 
 // Zone 1 source files (must match compose-block-a.js ZONE1_SOURCES)
@@ -51,25 +67,58 @@ const ZONE1_SOURCES = [
 ];
 
 // ---------------------------------------------------------------------------
-// Stdin reader
+// CLI dispatch — only runs when the script is invoked directly. When required
+// (e.g. by tests) the module exports the pure helpers without attaching
+// stdin listeners.
 // ---------------------------------------------------------------------------
 
-let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => process.exit(0));
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.exit(0);
+if (require.main === module) {
+  const _argv = process.argv.slice(2);
+  const _manifestMode = _argv.includes('--manifest') || _argv.includes('--mode=manifest');
+
+  if (_manifestMode) {
+    // Read stdin if available (UserPromptSubmit hook payload), but tolerate empty.
+    let manifestInput = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('error', () => runManifestInvariantFromStdin(''));
+    process.stdin.on('data', (chunk) => {
+      manifestInput += chunk;
+      if (manifestInput.length > MAX_INPUT_BYTES) {
+        runManifestInvariantFromStdin(manifestInput);
+      }
+    });
+    process.stdin.on('end', () => runManifestInvariantFromStdin(manifestInput));
+  } else {
+    // Original PreToolUse advisory path
+    let input = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('error', () => process.exit(0));
+    process.stdin.on('data', (chunk) => {
+      input += chunk;
+      if (input.length > MAX_INPUT_BYTES) {
+        process.exit(0);
+      }
+    });
+    process.stdin.on('end', () => {
+      try {
+        handle(JSON.parse(input || '{}'));
+      } catch (_e) {
+        process.exit(0);
+      }
+    });
   }
-});
-process.stdin.on('end', () => {
+}
+
+function runManifestInvariantFromStdin(raw) {
   try {
-    handle(JSON.parse(input || '{}'));
+    let event = {};
+    try { event = JSON.parse(raw || '{}') || {}; } catch (_e) {}
+    handleManifestMode(event);
   } catch (_e) {
+    // Fail-open
     process.exit(0);
   }
-});
+}
 
 // ---------------------------------------------------------------------------
 // Config loader
@@ -322,3 +371,127 @@ function handle(event) {
     process.exit(0);
   }
 }
+
+// ---------------------------------------------------------------------------
+// P2.1 (v2.2.0) manifest invariant — UserPromptSubmit-mounted check
+// ---------------------------------------------------------------------------
+
+const HEX_64_RE = /^[0-9a-f]{64}$/;
+const VALID_TTLS = new Set(['1h', '5m']);
+
+/**
+ * Validate the persisted 4-slot manifest. Returns { valid, reason }.
+ *
+ * @param {string} cwd
+ * @returns {{ valid: boolean, reason: string|null, manifest: object|null }}
+ */
+function recomputeManifestInvariant(cwd) {
+  const manifestPath = path.join(cwd, STATE_DIR, MANIFEST_FILE);
+  let manifest;
+  try {
+    if (!fs.existsSync(manifestPath)) {
+      return { valid: false, reason: 'manifest_missing', manifest: null };
+    }
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch (_e) {
+    return { valid: false, reason: 'manifest_missing', manifest: null };
+  }
+  if (!manifest || !Array.isArray(manifest.slots)) {
+    return { valid: false, reason: 'slot_count_mismatch', manifest };
+  }
+  const slots = manifest.slots;
+  if (slots.length !== 4) {
+    return { valid: false, reason: 'slot_count_mismatch', manifest };
+  }
+  for (let i = 0; i < 4; i++) {
+    const s = slots[i] || {};
+    if (s.slot !== i + 1) return { valid: false, reason: 'slot_count_mismatch', manifest };
+    if (!VALID_TTLS.has(s.ttl)) return { valid: false, reason: 'invalid_ttl', manifest };
+    if (typeof s.marker_byte_offset !== 'number' || s.marker_byte_offset < 0) {
+      return { valid: false, reason: 'non_monotonic_offsets', manifest };
+    }
+    if (i > 0 && s.marker_byte_offset < slots[i - 1].marker_byte_offset) {
+      return { valid: false, reason: 'non_monotonic_offsets', manifest };
+    }
+    if (typeof s.prefix_hash !== 'string' || !HEX_64_RE.test(s.prefix_hash)) {
+      return { valid: false, reason: 'invalid_hash', manifest };
+    }
+    if (typeof s.prefix_token_estimate !== 'number' || s.prefix_token_estimate < 0 || !Number.isFinite(s.prefix_token_estimate)) {
+      return { valid: false, reason: 'invalid_hash', manifest };
+    }
+  }
+  return { valid: true, reason: null, manifest };
+}
+
+/**
+ * UserPromptSubmit handler for manifest invariant. Advisory by default;
+ * exits 2 only when caching.engineered_breakpoints.strict_invariant === true.
+ */
+function handleManifestMode(event) {
+  try {
+    const cwd = resolveSafeCwd(event && event.cwd);
+
+    // Kill switches: same suite as Zone 1 advisory, plus the caching.* knobs.
+    if (process.env.ORCHESTRAY_DISABLE_BLOCK_A_ZONES === '1') { process.exit(0); return; }
+    if (process.env.ORCHESTRAY_DISABLE_ENGINEERED_BREAKPOINTS === '1') { process.exit(0); return; }
+
+    const cfg = loadBlockAConfig(cwd);
+    if (cfg.enabled === false) { process.exit(0); return; }
+    if (isSentinelActive(cwd)) { process.exit(0); return; }
+
+    // Read engineered_breakpoints.* knobs from config (this loader does NOT
+    // include them — read raw config to avoid duplicating logic).
+    let strictInvariant = false;
+    let breakpointsEnabled = true;
+    try {
+      const configPath = path.join(cwd, '.orchestray', 'config.json');
+      const parsed     = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (parsed && parsed.caching && parsed.caching.engineered_breakpoints) {
+        if (typeof parsed.caching.engineered_breakpoints.enabled === 'boolean') {
+          breakpointsEnabled = parsed.caching.engineered_breakpoints.enabled;
+        }
+        if (typeof parsed.caching.engineered_breakpoints.strict_invariant === 'boolean') {
+          strictInvariant = parsed.caching.engineered_breakpoints.strict_invariant;
+        }
+      }
+    } catch (_e) { /* defaults */ }
+
+    if (breakpointsEnabled === false) { process.exit(0); return; }
+
+    const result = recomputeManifestInvariant(cwd);
+    if (result.valid) {
+      process.exit(0);
+      return;
+    }
+
+    // Emit the cache_invariant_broken event with zone='manifest' + reason.
+    emitAuditEvent(cwd, 'cache_invariant_broken', {
+      zone:          'manifest',
+      reason:        result.reason,
+      expected_hash: 'manifest',
+      actual_hash:   result.reason,
+      delta_files:   [],
+    });
+
+    // Strict mode: exit 2 (blocks user prompt). Default: exit 0 (advisory).
+    // Manifest-missing is ALWAYS advisory regardless of strict mode — the
+    // first turn after a fresh install legitimately has no manifest yet.
+    if (strictInvariant && result.reason !== 'manifest_missing') {
+      process.stderr.write(
+        '[validate-cache-invariant] manifest invariant broken (' + result.reason +
+        '). Run: node bin/invalidate-block-a-zone1.js --watch-pm-md\n'
+      );
+      process.exit(2);
+      return;
+    }
+    process.exit(0);
+  } catch (_e) {
+    // Fail-open — never block the user prompt on internal errors.
+    process.exit(0);
+  }
+}
+
+// Expose manifest helpers for tests.
+module.exports = {
+  recomputeManifestInvariant,
+};

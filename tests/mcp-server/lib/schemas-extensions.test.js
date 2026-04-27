@@ -139,6 +139,83 @@ describe('validateAgainstSchema - string', () => {
     assert.equal(result.ok, false);
   });
 
+  // W7 fix-pass M-001 (v2.2.0): pattern keyword must be enforced so
+  // MCP tools that declare `pattern: '...'` get defense-in-depth at the
+  // input-schema gate (not just deeper regex re-checks).
+  test('accepts string matching pattern', () => {
+    const schema = { type: 'string', pattern: '^[a-z][a-z0-9_.-]*$' };
+    assert.deepEqual(
+      validateAgainstSchema('agent_stop', schema),
+      { ok: true },
+    );
+  });
+
+  test('rejects string not matching pattern (path-traversal slug)', () => {
+    const schema = { type: 'string', pattern: '^[a-z][a-z0-9_.-]*$' };
+    const result = validateAgainstSchema('../../etc/passwd', schema);
+    assert.equal(result.ok, false);
+    assert.ok(
+      result.errors.some((e) => /must match pattern/.test(e)),
+      'error must mention "must match pattern"; got ' + JSON.stringify(result.errors),
+    );
+  });
+
+  test('rejects string not matching pattern (uppercase slug)', () => {
+    const schema = { type: 'string', pattern: '^[a-z][a-z0-9_.-]*$' };
+    const result = validateAgainstSchema('BadCase', schema);
+    assert.equal(result.ok, false);
+  });
+
+  test('pattern combines with minLength/maxLength/enum', () => {
+    const schema = {
+      type: 'string',
+      pattern: '^[a-z]+$',
+      minLength: 2,
+      maxLength: 10,
+    };
+    assert.deepEqual(validateAgainstSchema('hello', schema), { ok: true });
+    const r1 = validateAgainstSchema('a', schema);   // too short
+    assert.equal(r1.ok, false);
+    const r2 = validateAgainstSchema('he11o', schema); // pattern fail
+    assert.equal(r2.ok, false);
+  });
+
+  test('pattern enforced at the schema_get tool gate (integration with property)', () => {
+    const objectSchema = {
+      type: 'object',
+      required: ['event_type'],
+      properties: {
+        event_type: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 200,
+          pattern: '^[a-z][a-z0-9_.-]*$',
+        },
+      },
+    };
+    // Hit
+    assert.deepEqual(
+      validateAgainstSchema({ event_type: 'agent_stop' }, objectSchema),
+      { ok: true },
+    );
+    // Miss — path traversal slug
+    const r = validateAgainstSchema({ event_type: '../../etc/passwd' }, objectSchema);
+    assert.equal(r.ok, false);
+    assert.ok(
+      r.errors.some((e) => /event_type.*must match pattern/.test(e)),
+      'object property pattern violation must surface in errors',
+    );
+  });
+
+  test('invalid regex in pattern is treated as non-fatal (skipped)', () => {
+    // Defensive: if a tool author writes a malformed pattern, we should not
+    // crash — we should silently skip the constraint. Tools should still ship
+    // valid patterns; this guards future authors.
+    const schema = { type: 'string', pattern: '[unclosed' };
+    const result = validateAgainstSchema('anything', schema);
+    assert.deepEqual(result, { ok: true });
+  });
+
 });
 
 // ---------------------------------------------------------------------------

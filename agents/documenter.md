@@ -8,6 +8,7 @@ model: inherit
 effort: low
 memory: project
 maxTurns: 105
+output_shape: hybrid
 color: white
 ---
 

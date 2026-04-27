@@ -9,6 +9,7 @@
  * Exported API:
  *   extractLastAssistantUsage(transcriptPath) → { usage, model_used, timestamp } | null
  *   extractFirstAssistantModel(transcriptPath) → string | null
+ *   extractLastAssistantBody(transcriptPath) → string | null
  */
 
 const fs = require('fs');
@@ -82,6 +83,10 @@ function extractLastAssistantUsage(transcriptPath) {
     return null;
   }
 
+  // P1.1 M0.3 (W3 open-question 1 resolution): this loop already walks
+  // backward AND _parseAssistantLine returns null when `usage` is absent, so
+  // the very-last assistant entry without usage is skipped and the most
+  // recent usage-bearing entry wins. No further hardening needed.
   const lines = content.split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
     const parsed = _parseAssistantLine(lines[i]);
@@ -136,4 +141,71 @@ function extractFirstAssistantModel(transcriptPath) {
   return null;
 }
 
-module.exports = { extractLastAssistantUsage, extractFirstAssistantModel };
+/**
+ * Read the body text of the LAST assistant message in a transcript JSONL.
+ * Used by P2.2 (`bin/capture-pm-turn.js`) to parse the
+ * `[routing: <ABCD>/(inline|scout)]` marker the PM emits.
+ *
+ * Strategy: tail-read the last 64 KB, walk lines in reverse, return the
+ * first assistant entry whose `content` (or `message.content`) yields a
+ * string. Tolerates the two transcript shapes the parsers above already
+ * handle (`role: 'assistant'` flat OR `type: 'assistant'` with nested
+ * `message`). When `content` is an array of blocks (Anthropic SDK shape),
+ * concatenate the `text` fields of `text`-typed blocks.
+ *
+ * Returns the joined body string, or null if no assistant message with body
+ * content can be found.
+ *
+ * @param {string} transcriptPath
+ * @returns {string|null}
+ */
+function extractLastAssistantBody(transcriptPath) {
+  let content;
+  try {
+    const stat = fs.statSync(transcriptPath);
+    if (stat.size === 0) return null;
+
+    if (stat.size <= TAIL_BYTES) {
+      content = fs.readFileSync(transcriptPath, 'utf8');
+    } else {
+      const fd = fs.openSync(transcriptPath, 'r');
+      const buf = Buffer.alloc(TAIL_BYTES);
+      fs.readSync(fd, buf, 0, TAIL_BYTES, stat.size - TAIL_BYTES);
+      fs.closeSync(fd);
+      content = buf.toString('utf8');
+    }
+  } catch (_e) {
+    return null;
+  }
+
+  const lines = content.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) continue;
+
+    let entry;
+    try { entry = JSON.parse(trimmed); } catch (_e) { continue; }
+
+    const role = entry.role || entry.type || (entry.message && entry.message.role);
+    if (role !== 'assistant') continue;
+
+    const body = entry.content !== undefined
+      ? entry.content
+      : (entry.message && entry.message.content);
+
+    if (typeof body === 'string') return body;
+    if (Array.isArray(body)) {
+      const parts = [];
+      for (const block of body) {
+        if (block && typeof block === 'object' && (block.type === 'text' || !block.type)) {
+          if (typeof block.text === 'string') parts.push(block.text);
+        }
+      }
+      if (parts.length > 0) return parts.join('\n');
+    }
+    // Skip entries without a usable body — keep walking.
+  }
+  return null;
+}
+
+module.exports = { extractLastAssistantUsage, extractFirstAssistantModel, extractLastAssistantBody };

@@ -13,12 +13,13 @@ const fs     = require('fs');
 const path   = require('path');
 const crypto = require('crypto');
 
-const SHADOW_REL_PATH  = path.join('agents', 'pm-reference', 'event-schemas.shadow.json');
-const SCHEMA_REL_PATH  = path.join('agents', 'pm-reference', 'event-schemas.md');
-const STATE_DIR        = path.join('.orchestray', 'state');
-const MISSES_FILE      = 'schema-shadow-misses.jsonl';
-const SENTINEL_FILE    = '.schema-shadow-disabled';
-const MISS_WINDOW_MS   = 24 * 60 * 60 * 1000; // 24 hours
+const SHADOW_REL_PATH      = path.join('agents', 'pm-reference', 'event-schemas.shadow.json');
+const SCHEMA_REL_PATH      = path.join('agents', 'pm-reference', 'event-schemas.md');
+const TIER2_INDEX_REL_PATH = path.join('agents', 'pm-reference', 'event-schemas.tier2-index.json');
+const STATE_DIR            = path.join('.orchestray', 'state');
+const MISSES_FILE          = 'schema-shadow-misses.jsonl';
+const SENTINEL_FILE        = '.schema-shadow-disabled';
+const MISS_WINDOW_MS       = 24 * 60 * 60 * 1000; // 24 hours
 
 /**
  * Load the shadow JSON from disk.
@@ -158,14 +159,70 @@ function loadShadowWithCheck(cwd, opts) {
   return { shadow, stale: false, disabled: false };
 }
 
+/**
+ * Load the v2.2.0 P1.3 tier2-index sidecar from disk.
+ * Returns null on read/parse failure (fail-open).
+ *
+ * @param {string} cwd - Project root directory.
+ * @returns {object|null}
+ */
+function loadTier2Index(cwd) {
+  const indexPath = path.join(cwd, TIER2_INDEX_REL_PATH);
+  try {
+    const raw = fs.readFileSync(indexPath, 'utf8');
+    return JSON.parse(raw);
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
+ * Load the tier2-index with staleness + kill-switch detection.
+ *
+ * Returns { index, stale, disabled } where:
+ *   index    — parsed sidecar object, or null
+ *   stale    — true if source_hash mismatch detected
+ *   disabled — true if env/config kill switch is active
+ *
+ * D-8 contract (v2.2.0 P1.3): when the caller detects `stale: true` it MUST
+ * NOT fall back to a full-file Read; the regen hook is responsible for
+ * refreshing the sidecar. The PM should treat staleness as transient and
+ * retry next turn.
+ *
+ * @param {string} cwd
+ * @param {object} [opts]
+ * @param {boolean} [opts.envDisabled]    - True if env kill switch is set.
+ * @param {boolean} [opts.configDisabled] - True if config kill switch is set.
+ * @returns {{ index: object|null, stale: boolean, disabled: boolean }}
+ */
+function loadTier2IndexWithCheck(cwd, opts) {
+  const o = opts || {};
+  if (o.envDisabled || o.configDisabled) {
+    return { index: null, stale: false, disabled: true };
+  }
+  const index = loadTier2Index(cwd);
+  if (!index) {
+    return { index: null, stale: false, disabled: false };
+  }
+  const storedHash  = index._meta && index._meta.source_hash;
+  const currentHash = computeSourceHash(cwd);
+  if (storedHash && currentHash && storedHash !== currentHash) {
+    return { index, stale: true, disabled: false };
+  }
+  return { index, stale: false, disabled: false };
+}
+
 module.exports = {
   loadShadow,
   loadShadowWithCheck,
   computeSourceHash,
   isSentinelActive,
   recordMiss,
+  loadTier2Index,
+  loadTier2IndexWithCheck,
   SHADOW_REL_PATH,
   SCHEMA_REL_PATH,
+  TIER2_INDEX_REL_PATH,
   SENTINEL_FILE,
   MISSES_FILE,
 };

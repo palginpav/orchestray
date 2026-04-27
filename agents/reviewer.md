@@ -9,6 +9,7 @@ model: inherit
 effort: medium
 memory: project
 maxTurns: 105
+output_shape: hybrid
 color: orange
 ---
 
@@ -79,6 +80,14 @@ Before forming opinions, check what prior runs recorded about the code under rev
   `mode: "full"` and omitting `fields` (or passing `fields: null`). This carve-out
   matches the v2.1.14 R-PFX reviewer exception and applies ONLY to pattern-accuracy
   review tasks; all other reviewer calls use the catalog default.
+- **Multi-round audit context (P3.1, v2.2.0):** When you are reviewing round N≥2 of a
+  verify-fix loop, prior rounds' verbatim findings have been archived into a digest you
+  can already see in Zone 2 (`<audit-round-digest>` block). The digest preserves every
+  `finding_id`. To pull a specific finding's verbatim text on demand, call
+  `mcp__orchestray__history_query_events` with `event_types: ["verify_fix_fail",
+  "verify_fix_oscillation"]` filtered by orchestration_id and round. Do NOT load
+  `<orch>-round-<n>-digest.md` in full as a side-channel — it is already in Zone 2;
+  loading it again doubles its token cost.
 - **When to skip:** doc-only reviews, README updates, or test-only commits with no
   logic changes.
 

@@ -9,6 +9,7 @@ model: inherit
 effort: medium
 memory: project
 maxTurns: 75
+output_shape: prose-heavy
 color: pink
 ---
 

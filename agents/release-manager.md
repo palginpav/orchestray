@@ -9,6 +9,7 @@ model: inherit
 effort: medium
 memory: project
 maxTurns: 95
+output_shape: hybrid
 color: brightblue
 ---
 

@@ -11,6 +11,77 @@ const { loadCostBudgetCheckConfig } = require('./_lib/config-schema');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { appendJsonlWithRotation } = require('./_lib/jsonl-rotate');
 const { normalizeEvent } = require('./read-event');
+const { resolveTeammateModel } = require('./_lib/team-config-resolve');
+
+// ---------------------------------------------------------------------------
+// P1.1 M0.1 — Variant-C duplicate-emit dedupe (W1 design §1.1).
+//
+// The same SubagentStop / TaskCompleted hook invocation writes BOTH an
+// `agent_stop` row AND a Variant-C `routing_outcome` supplement. Downstream
+// rollup conflated them as duplicates. Fix: gate Variant-C on the absence of
+// any earlier Variant-A or Variant-B routing_outcome row for this
+// (orchestration_id, agent_type). Variant A's hook (emit-routing-outcome.js)
+// does NOT carry agent_id (verified W3 open-question 2 — read at
+// emit-routing-outcome.js:191-202), so the dedupe predicate uses
+// (orchestration_id, agent_type) only.
+//
+// Kill switch: ORCHESTRAY_DISABLE_VARIANT_C_DEDUP=1 disables the gate (Variant-C
+// re-emits double, the v2.1.x status quo) for emergency rollback.
+// ---------------------------------------------------------------------------
+
+/**
+ * Does any Variant-A / Variant-B routing_outcome row already cover this spawn?
+ *
+ * @param {Array}  routingOutcomes  - Already-loaded routing_outcome events.
+ * @param {string} orchestrationId
+ * @param {string} agentType
+ * @returns {boolean}
+ */
+function hasExistingRoutingOutcome(routingOutcomes, orchestrationId, agentType) {
+  if (!Array.isArray(routingOutcomes) || !orchestrationId || !agentType) return false;
+  for (const ev of routingOutcomes) {
+    if (
+      ev &&
+      ev.orchestration_id === orchestrationId &&
+      ev.agent_type === agentType &&
+      ev.source !== 'subagent_stop'  // Variant-C rows do not gate themselves
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Per-process seen-set for metrics-row dedupe.
+// Key: `${orchestrationId}|${agent_id}|${ts}`. Each hook invocation appends one
+// row, so this set is always empty in normal flow — guard catches future
+// regressions where someone adds a second appendJsonlWithRotation call.
+const _seenMetricsKeys = new Set();
+
+/**
+ * Append a dropped row to `.orchestray/state/dropped-duplicates.jsonl` for
+ * post-hoc audit. Fail-open — any error is swallowed. Uses
+ * appendJsonlWithRotation (W3 open-question 3 resolution: yes, rotate, same
+ * 50 MB / 5-generation policy as other JSONL files in the system).
+ *
+ * @param {string} cwd
+ * @param {object} row
+ * @param {string} reasonCode  - 'variant_c_suppressed' | 'metrics_dedup_collision'
+ */
+function appendDroppedDuplicate(cwd, row, reasonCode) {
+  try {
+    const stateDir = path.join(cwd, '.orchestray', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const droppedPath = path.join(stateDir, 'dropped-duplicates.jsonl');
+    appendJsonlWithRotation(droppedPath, {
+      ts: new Date().toISOString(),
+      reason_code: reasonCode,
+      row,
+    });
+  } catch (_e) {
+    // Fail-open audit channel.
+  }
+}
 
 // Module-level fallback pricing per 1M tokens (current Anthropic rates as of 2026).
 // Used ONLY when loadCostBudgetCheckConfig() fails (fail-open contract).
@@ -376,11 +447,18 @@ process.stdin.on('end', () => {
       // events.jsonl unavailable -- routingOutcomes stays empty
     }
 
-    // Resolve model_used from routing_outcome events (NOT from hook payload)
+    // Resolve model_used from routing_outcome events (NOT from hook payload).
+    // P1.1 M0.2: when the routing_outcome lookup misses, fall back to the
+    // agents/<name>.md frontmatter resolver so teammates and unknown agent
+    // types are LABELED ('unknown_team_member' for total miss) instead of
+    // silently priced as Sonnet.
     const agentType = isTeamEvent
       ? (event.teammate_name || 'teammate')
       : (event.agent_type || null);
-    const resolvedModel = resolveModelUsed(routingOutcomes, orchestrationId, agentType);
+    let resolvedModel = resolveModelUsed(routingOutcomes, orchestrationId, agentType);
+    if (!resolvedModel && agentType) {
+      resolvedModel = resolveTeammateModel(agentType, cwd);
+    }
 
     // DEF-2: detect escalation by counting routing_outcome events for this
     // (orch_id, agent_type). 2+ means the agent was re-routed mid-run, so the
@@ -402,6 +480,13 @@ process.stdin.on('end', () => {
     }
     if (routingCapHit && !modelResolutionNote) {
       modelResolutionNote = 'routing scan skipped: events.jsonl exceeds scan cap (' + MAX_EVENTS_BYTES + ' bytes); cost falls back to agent_type heuristic';
+    }
+
+    // P1.1 M0.2: when the resolver hit the unknown-team-member fallback,
+    // flip cost_confidence so /orchestray:analytics surfaces these rows.
+    // The pricing path itself is unchanged (Sonnet rates), per W1 §M0.2.
+    if (resolvedModel === 'unknown_team_member') {
+      costConfidence = 'estimated';
     }
 
     // Load pricing table from config (single source of truth per §W3).
@@ -500,7 +585,25 @@ process.stdin.on('end', () => {
           source: 'subagent_stop',
         };
 
-        writeEvent(variantCEvent, { cwd });
+        // P1.1 M0.1: gate Variant-C on the absence of an earlier Variant-A/B
+        // routing_outcome row for this (orch, agent_type). The W7 baseline
+        // showed 59% of historical events.jsonl rows were Variant-A + Variant-C
+        // pairs being double-counted downstream. Kill switch:
+        // ORCHESTRAY_DISABLE_VARIANT_C_DEDUP=1 reverts to the v2.1.x behavior.
+        const dedupDisabled = process.env.ORCHESTRAY_DISABLE_VARIANT_C_DEDUP === '1';
+        let suppress = false;
+        if (!dedupDisabled) {
+          try {
+            suppress = hasExistingRoutingOutcome(routingOutcomes, orchestrationId, agentType);
+          } catch (_dedupErr) {
+            suppress = false; // Fail-open: better a duplicate than a missing row.
+          }
+        }
+        if (suppress) {
+          appendDroppedDuplicate(cwd, variantCEvent, 'variant_c_suppressed');
+        } else {
+          writeEvent(variantCEvent, { cwd });
+        }
 
         // LL6: write a pending entry to routing-pending.jsonl so that when
         // PostToolUse:Agent fires (after SubagentStop) it can correlate the
@@ -567,7 +670,20 @@ process.stdin.on('end', () => {
         };
         if (modelResolutionNote) metricsRow.model_resolution_note = modelResolutionNote;
 
-        appendJsonlWithRotation(metricsPath, metricsRow);
+        // P1.1 M0.1: defence-in-depth metrics-row dedupe. Per-process seen-set
+        // is empty in normal flow (one append per hook invocation by
+        // construction); guards against future regressions where someone adds
+        // a second appendJsonlWithRotation call to this code path.
+        // Use JSON.stringify to compose the key so attacker-controlled
+        // components (agent_id, etc.) cannot alias via injected `|`
+        // separators (W6 S-005).
+        const dedupKey = JSON.stringify([orchestrationId, auditEvent.agent_id, auditEvent.timestamp]);
+        if (_seenMetricsKeys.has(dedupKey)) {
+          appendDroppedDuplicate(cwd, metricsRow, 'metrics_dedup_collision');
+        } else {
+          _seenMetricsKeys.add(dedupKey);
+          appendJsonlWithRotation(metricsPath, metricsRow);
+        }
 
         // B4 Eval Layer 1: score the Structured Result the agent just emitted
         // and append a `row_type: structural_score` row alongside the spawn row.

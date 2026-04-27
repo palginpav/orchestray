@@ -20,16 +20,23 @@
  *
  * Usage:
  *   node bin/calibrate-role-budgets.js [--window-days N] [--cwd /path/to/project]
+ *   node bin/calibrate-role-budgets.js --emit-cache [--window-days N] [--cwd ...]
  *
  * Options:
  *   --window-days N    Look back N days of events (default: 14)
  *   --cwd /path        Project root (default: process.cwd())
  *   --min-samples N    Minimum sample count per role before making recommendation
  *                      (default: 10; roles below threshold get model-tier default)
+ *   --emit-cache       Write the recommendations to
+ *                      .orchestray/state/role-budgets.json in the wrapped form
+ *                      that bin/_lib/output-shape.js consumes (W7 F-003 fix,
+ *                      v2.2.0). Without this flag the tool prints to stdout only.
  *
  * Output:
- *   A recommendation table printed to stdout. No files are written.
- *   Exit 0 on success; exit 1 on unrecoverable error (missing events file, etc.).
+ *   A recommendation table printed to stdout. No files are written unless
+ *   --emit-cache is supplied (in which case role-budgets.json is overwritten
+ *   atomically). Exit 0 on success; exit 1 on unrecoverable error
+ *   (missing events file, etc.).
  *
  * Telemetry source:
  *   Reads `event_type: "budget_warn"` rows from events.jsonl. For roles that
@@ -70,6 +77,7 @@ function hasFlag(flag) {
 const windowDays  = parseInt(getArg('--window-days', '14'), 10);
 const minSamples  = parseInt(getArg('--min-samples', '10'), 10);
 const cwdArg      = getArg('--cwd', process.cwd());
+const emitCache   = hasFlag('--emit-cache');
 
 if (hasFlag('--help') || hasFlag('-h')) {
   process.stdout.write(`
@@ -84,9 +92,13 @@ Options:
   --window-days N    Look back N days of events (default: 14)
   --cwd /path        Project root (default: cwd)
   --min-samples N    Min samples per role before recommending (default: 10)
+  --emit-cache       Write .orchestray/state/role-budgets.json from the
+                     recommendations (wrapped form consumed by
+                     bin/_lib/output-shape.js getRoleLengthCap()).
   --help             Show this help
 
 Output: recommendation table to stdout. Does NOT write to config.json.
+With --emit-cache, also writes role-budgets.json (atomic replace).
 `);
   process.exit(0);
 }
@@ -252,6 +264,65 @@ function main() {
   }
 
   process.stdout.write(`\nThis script does NOT write to config.json. Operator must commit the changes.\n`);
+
+  // --emit-cache: write the wrapped form consumed by bin/_lib/output-shape.js.
+  // Atomic replace via temp-file + rename so a partial write cannot corrupt
+  // the cache. Roles that fell back to tier defaults still emit a row (with
+  // budget_tokens = tier_default) so getRoleLengthCap() returns a real value
+  // for every role rather than mixing cache hits with tier_default fallbacks.
+  if (emitCache) {
+    const stateDir   = path.join(cwd, '.orchestray', 'state');
+    const cachePath  = path.join(stateDir, 'role-budgets.json');
+    const tmpPath    = path.join(stateDir, 'role-budgets.json.tmp');
+    if (!fs.existsSync(stateDir)) {
+      fs.mkdirSync(stateDir, { recursive: true });
+    }
+
+    const role_budgets = {};
+    for (const r of rows) {
+      const budgetTokens = r.recommended !== null ? r.recommended : r.tier_default;
+      const source = r.recommended !== null
+        ? r.source
+        : (r.n === 0 ? 'no_data_model_tier_default' : 'thin_telemetry_n' + r.n + '_model_tier_default');
+      const entry = {
+        budget_tokens: budgetTokens,
+        source,
+        calibrated_at: today,
+      };
+      if (r.p95 !== null) entry.p95 = r.p95;
+      if (r.p75 !== null) entry.p75 = r.p75;
+      if (r.p50 !== null) entry.p50 = r.p50;
+      if (typeof r.n === 'number') entry.n = r.n;
+      role_budgets[r.role] = entry;
+    }
+
+    const cacheBody = {
+      _comment: 'Written by bin/calibrate-role-budgets.js --emit-cache. ' +
+                'Consumed by bin/_lib/output-shape.js getRoleLengthCap(). ' +
+                'Wrapped form: prefer cache.role_budgets[role].p95 over budget_tokens.',
+      calibrated_at: today,
+      window_days: windowDays,
+      min_samples: minSamples,
+      source: 'calibrate-role-budgets.js --emit-cache',
+      role_budgets,
+    };
+
+    fs.writeFileSync(tmpPath, JSON.stringify(cacheBody, null, 2) + '\n', 'utf8');
+    fs.renameSync(tmpPath, cachePath);
+    process.stdout.write('\n[--emit-cache] wrote ' + cachePath + ' (' +
+      Object.keys(role_budgets).length + ' roles).\n');
+  }
 }
 
-main();
+// Allow programmatic invocation (tests, follow-on tools). When the file is
+// imported (require.main !== module) the CLI does NOT auto-run.
+module.exports = {
+  MODEL_TIER_DEFAULTS,
+  ROLE_MODEL_TIER,
+  percentile,
+  main,
+};
+
+if (require.main === module) {
+  main();
+}

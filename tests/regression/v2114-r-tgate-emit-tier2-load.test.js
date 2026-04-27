@@ -75,8 +75,11 @@ describe('emit-tier2-load: v2.1.14 R-TGATE additions', () => {
     const result = run(dir, { file_path: filePath });
 
     assert.equal(result.status, 0, 'Hook must exit 0');
-    const events = readEvents(dir);
-    assert.equal(events.length, 1, 'Must emit exactly one event');
+    // v2.2.0 P1.3: a Read on event-schemas.md may also emit
+    // event_schemas_full_load_blocked when full_load_disabled is true. Filter
+    // to the tier2_load event for the v2.1.14 R-TGATE assertions.
+    const events = readEvents(dir).filter(e => e.type === 'tier2_load');
+    assert.equal(events.length, 1, 'Must emit exactly one tier2_load event');
     const ev = events[0];
     assert.equal(ev.type, 'tier2_load');
     assert.equal(ev.version, 1, 'version must be 1');
@@ -87,7 +90,7 @@ describe('emit-tier2-load: v2.1.14 R-TGATE additions', () => {
     const filePath = path.join(dir, 'agents', 'pm-reference', 'event-schemas.md');
     run(dir, { file_path: filePath });
 
-    const events = readEvents(dir);
+    const events = readEvents(dir).filter(e => e.type === 'tier2_load');
     assert.equal(events.length, 1);
     const ev = events[0];
     assert.ok(ev.bytes !== undefined, 'bytes field must be present');
@@ -100,7 +103,7 @@ describe('emit-tier2-load: v2.1.14 R-TGATE additions', () => {
     const filePath = path.join(dir, 'agents', 'pm-reference', 'event-schemas.md');
     run(dir, { file_path: filePath });
 
-    const events = readEvents(dir);
+    const events = readEvents(dir).filter(e => e.type === 'tier2_load');
     assert.equal(events.length, 1);
     const ev = events[0];
     assert.ok('turn_number' in ev, 'turn_number field must be present');
@@ -112,7 +115,7 @@ describe('emit-tier2-load: v2.1.14 R-TGATE additions', () => {
     const filePath = path.join(dir, 'agents', 'pm-reference', 'event-schemas.md');
     run(dir, { file_path: filePath });
 
-    const events = readEvents(dir);
+    const events = readEvents(dir).filter(e => e.type === 'tier2_load');
     assert.equal(events.length, 1);
     const ev = events[0];
     // Should be relative path like 'agents/pm-reference/event-schemas.md'

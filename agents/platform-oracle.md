@@ -10,6 +10,7 @@ model: inherit
 effort: medium
 memory: project
 maxTurns: 50
+output_shape: none
 color: brightcyan
 ---
 

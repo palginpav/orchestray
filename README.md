@@ -8,6 +8,22 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 
 **Simple prompts** pass through to normal Claude Code behavior. **Complex prompts** get the full treatment.
 
+### What's new in v2.2.0 ("Tokens, not Actions")
+
+The v2.2.0 release reshapes how Orchestray pays for the prompt prefix it sends to Claude on every turn. Nine shipping items, every flag default-on, every behavior change with a kill switch. Headline savings: roughly **−18% to −33% per orchestration** (mid-range −22%; multi-round audits land at the upper end).
+
+- **Smart output shaping** trims hedging and pad-words from prose-heavy agents (debugger, reviewer, documenter) — roughly −21% Opus output / −14% Sonnet on a public April-2026 benchmark with 100% accuracy retained. Default on; `output_shape.enabled: false` to disable.
+- **Chunked schema lookup** replaces the 186 KB event-schemas reload with a small fingerprint plus a new `mcp__orchestray__schema_get` MCP verb that returns the chunk you need. Default on; full-file Read is blocked.
+- **Engineered cache geometry** anchors stable prompt prefixes in a byte-stable Block-Z header backed by a 4-slot cache-control manifest with TTL auto-downgrade. Back-to-back orchestrations within the hour pay 90% less for shared overhead.
+- **Haiku scout** (new agent: `haiku-scout`) takes Read/Glob/Grep recon at and above 12 KB off Opus. Three-layer tool-whitelist enforcement; default on.
+- **Background-housekeeper Haiku** (new agent: `orchestray-housekeeper`) handles three narrow background ops (KB-write verify, schema-shadow regen, telemetry rollup recompute) at Read+Glob only — stricter than scout. Per-action audit telemetry, drift detector that fails closed on tool-whitelist mutation, three independent kill switches.
+- **Deterministic sentinel probes** replace inline Bash for five common checks (file-exists, line-count, git-status, schema-validate, hash-compute) with zero LLM cost.
+- **Audit-round auto-archive** distills completed rounds of multi-round audits into compact 500-token digests. Verbatim findings stay in the audit log.
+- **Delta delegation for repeat agent spawns** — first spawn gets the full prompt; subsequent spawns get a prefix reference plus a small delta block, hash-anchored so cache misses self-heal.
+- **Telemetry truth** — fixed the ~59% duplicate-row bug in `agent_metrics.jsonl`, the silent-default-to-Sonnet bug for team-member rows, and made PM-direct token cost visible in the metrics dashboard for the first time.
+
+**Restart Claude Code after upgrading**: the two new agents (`haiku-scout`, `orchestray-housekeeper`) require a session restart to load.
+
 ### Key features
 
 - **Upgrade restart prompt** — after `/orchestray:update`, any open Claude Code session sees a one-time stderr reminder on the next user message to restart so the refreshed agent registry takes effect; driven by a schema-v2 sentinel (`~/.claude/.orchestray-upgrade-pending`) written by install.js and consumed by `post-upgrade-sweep.js`'s 4-case state machine (TTL: 7 days)
@@ -201,6 +217,8 @@ Use `/orchestray:feature status` to see demand counts, and `/orchestray:feature 
 | **Platform Oracle** | Authoritative answers to Claude Code / Anthropic SDK / API / MCP questions via WebFetch + cited URLs; labels each claim with a stability tier (stable / experimental / community) |
 | **Curator** | AI-driven pattern curation — promotes, merges, and deprecates patterns with tombstone rollback; invoked via `/orchestray:learn curate` |
 | **Project Intent** | Lightweight Haiku agent — reads `README.md`, `CLAUDE.md`, and `AGENTS.md` once per session and stages a project-intent block that every downstream agent receives for free. Read-only; invoked automatically by the PM on fresh repos. |
+| **Haiku Scout (v2.2.0+)** | Read-only Haiku agent — handles Read/Glob/Grep operations at and above the 12 KB threshold so the PM keeps Opus for orchestration decisions. Tools restricted to `[Read, Glob, Grep]`; three-layer tool-whitelist enforcement (declarative frontmatter, runtime rejection, frozen-byte CI test). Disable with `haiku_routing.enabled: false`. |
+| **Orchestray Housekeeper (v2.2.0+)** | Read-only Haiku agent — handles three narrow background ops: knowledge-base write verification, schema-shadow regen, and telemetry rollup recompute. Tools restricted to `[Read, Glob]` (stricter than scout). Per-action audit telemetry, drift detector fails closed on tool-whitelist mutation, three independent kill switches (`haiku_routing.housekeeper_enabled: false`, `ORCHESTRAY_HOUSEKEEPER_DISABLED=1`, runtime sentinel). Promotion to broader tools requires explicit tagged commit cycle. |
 | **Specialists** | Plugin-shipped templates at `specialists/` (translator, ui-ux-designer, database-migration, api-contract-designer, error-message-writer); project-local overrides saved to `.orchestray/specialists/` by the PM when dynamic agents succeed |
 
 ### Shipped specialists (v2.1.9)
@@ -460,6 +478,53 @@ repo_map.cache_dir          On-disk cache location, keyed on git blob SHA + gram
                             (default: ".orchestray/state/repo-map-cache"; gitignored).
 repo_map.cold_init_async    On first run after install, build the cache asynchronously so the
                             first orchestration is not blocked on parse (default: true).
+
+# v2.2.0 keys
+
+output_shape.enabled                    Smart output shaping for prose-heavy agents (caveman
+                                        addendum + per-role length caps + Anthropic Structured
+                                        Outputs on report-mode roles). Default: true. Disable
+                                        to restore unconstrained agent prose.
+
+event_schemas.full_load_disabled        Block the legacy full-file Read of `event-schemas.md`;
+                                        the chunked path via `mcp__orchestray__schema_get`
+                                        becomes the only path. Default: true. Set false to
+                                        restore the legacy Read path (not recommended).
+
+pm_protocol.tier2_index.enabled         Enable the pre-materialized Tier-2 schema index
+                                        (~3,200-token fingerprint plus chunk-on-demand verb).
+                                        Default: true.
+
+pm_protocol.delegation_delta.enabled    Send first agent spawn full delegation prompt; send
+                                        subsequent spawns a prefix reference + delta block
+                                        with hash-anchored re-emission on cache mismatch.
+                                        Default: true. Env override:
+                                        ORCHESTRAY_DISABLE_DELEGATION_DELTA=1.
+
+caching.block_z.enabled                 Anchor the prompt prefix in a byte-stable Block-Z
+                                        header so 1-hour TTL writes land where they pay back.
+                                        Default: true.
+
+caching.engineered_breakpoints.enabled  Use the deterministic 4-slot cache-control manifest
+                                        with TTL auto-downgrade for short orchestrations.
+                                        Default: true.
+
+haiku_routing.enabled                   Enable the read-only Haiku scout for Class-B file
+                                        operations at and above 12 KB. Default: true.
+
+haiku_routing.scout_min_bytes           File-size threshold above which the PM hands Read/
+                                        Glob/Grep operations to the scout instead of doing
+                                        them inline. Default: 12288 (12 KB). Per OQ-1 verdict.
+
+haiku_routing.housekeeper_enabled       Enable the background-housekeeper Haiku agent for
+                                        narrow background ops (KB-write verify, schema-shadow
+                                        regen, telemetry rollup recompute). Default: true.
+                                        Env override: ORCHESTRAY_HOUSEKEEPER_DISABLED=1.
+
+audit.round_archive.enabled             Distill completed rounds of multi-round audit
+                                        orchestrations into compact 500-token digests in the
+                                        active prompt; verbatim findings stay in the audit
+                                        log. Default: true.
 ```
 
 ### Emergency kill switches (v2.1.15)
@@ -477,6 +542,22 @@ All v2.1.15 features have kill switches. To roll back any feature immediately, s
 | Reviewer scoping (v2.1.16) | `review_dimension_scoping.enabled: false` | All 7 dimensions on every review |
 | Agent Teams (v2.1.16) | `agent_teams.enabled: false` (default) | Teams cannot spawn |
 | Aider repo map (v2.1.17) | `repo_map.enabled: false` | Code-touching spawns receive no symbol map |
+
+### Emergency kill switches (v2.2.0)
+
+All nine v2.2.0 shipping items default on. Each has a dedicated kill switch; where applicable, an environment-variable override is provided for in-session opt-out without touching `config.json`.
+
+| Feature | Kill switch | Env override | Effect |
+|---|---|---|---|
+| Smart output shaping | `output_shape.enabled: false` | — | Prose-heavy agents revert to unconstrained output |
+| Chunked schema lookup | `event_schemas.full_load_disabled: false` | — | Restores legacy full-file Read of event-schemas.md |
+| Pre-materialized Tier-2 index | `pm_protocol.tier2_index.enabled: false` | — | Falls back to per-turn Read of the schema reference |
+| Engineered Block-Z prefix | `caching.block_z.enabled: false` | — | Prompt prefix reverts to non-anchored composition |
+| 4-slot cache-control manifest | `caching.engineered_breakpoints.enabled: false` | — | Cache-control falls back to inherited defaults |
+| Haiku scout | `haiku_routing.enabled: false` | — | All Class-B file ops run inline at PM model rate |
+| Background housekeeper | `haiku_routing.housekeeper_enabled: false` | `ORCHESTRAY_HOUSEKEEPER_DISABLED=1` | Three background ops run inline |
+| Audit-round auto-archive | `audit.round_archive.enabled: false` | — | Multi-round audits keep verbatim findings in the active prompt |
+| Delta delegation | `pm_protocol.delegation_delta.enabled: false` | `ORCHESTRAY_DISABLE_DELEGATION_DELTA=1` | All agent spawns receive the full delegation prompt |
 
 No session restart is needed for any of these kill switches.
 
@@ -576,6 +657,18 @@ All orchestration state lives in `.orchestray/` (gitignored):
 Agent Teams features (TaskCreated / TaskCompleted / TeammateIdle hooks) require Claude Code v2.1.32+ with the experimental flag `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` set in the environment or `settings.json`. Without the flag, these hooks are installed but dormant — nothing breaks, they simply never fire.
 
 ## Troubleshooting
+
+### Scout or housekeeper disabled but Class-B file ops still occur (v2.2.0+)
+
+If you have set `haiku_routing.enabled: false` (or `haiku_routing.housekeeper_enabled: false`) but `/orchestray:analytics` still shows Class-B Read/Glob/Grep operations running at the PM's model rate, this is **expected**: the kill switch tells the PM to do the I/O inline rather than delegating it to Haiku. The "forgone savings" line in `/orchestray:analytics` reports how much you would have saved if the scout had been on for those operations — useful as a one-glance signal of whether to flip the kill switch back.
+
+To re-enable scout routing without restarting the session, set `haiku_routing.enabled: true` in `.orchestray/config.json`; the next Class-B op picks up the new setting.
+
+### `mcp__orchestray__schema_get` returns `{found: false, error: 'stale_index'}` (v2.2.0+)
+
+The chunked schema lookup keys on a SHA-256 of `agents/pm-reference/event-schemas.md`. If you edit the file directly without running the regen hook, the sidecar index lags one regen behind and returns `stale_index` until the hook fires.
+
+Fix: run `node bin/regen-schema-shadow.js` followed by `node -e "require('./bin/_lib/tier2-index').buildIndex({cwd: process.cwd()})"`. The PostToolUse(Edit) hook normally does this automatically; manual regen is the recovery path when the hook was bypassed.
 
 ### Gate blocks first spawn after upgrade
 

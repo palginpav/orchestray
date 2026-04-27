@@ -19,34 +19,69 @@ the experiment flag is active.
 
 ---
 
-## 2. Block A / B / C Mental Model
+## 2. Cache geometry (v2.2.0 — engineered breakpoints)
 
-`agents/pm.md` is divided into three logical regions. Claude Code's automatic prompt
-caching rewards a stable prefix — if the prefix is identical across turns, the cached
-version is reused. If it changes, the cache miss covers the entire prefix.
+`agents/pm.md` and the assembled `additionalContext` payload form a layered
+prefix. Claude Code's automatic prompt caching rewards a stable prefix — if the
+prefix is identical across turns, the cached version is reused. If it changes,
+the cache miss covers the entire prefix.
+
+v2.2.0 (P2.1) introduces a 4-slot manifest geometry built on top of the
+existing zone discipline:
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  BLOCK A — Immutable prefix                         │
-│  Frontmatter + CLAUDE.md content + Tier-0 body      │
-│  (sections 0–11, stable across all orchestrations)  │
-│  <!-- cache_breakpoint --> sentinel                  │
-├─────────────────────────────────────────────────────┤
-│  BLOCK B — Orchestration-stable context             │
-│  Task description + decomposition + task graph      │
-│  (set once at orchestration start; unchanged after) │
-├─────────────────────────────────────────────────────┤
-│  BLOCK C — Variable tail                            │
-│  Agent history, tool results, conversation turns    │
-│  (changes every turn; never cached across turns)   │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  BLOCK-Z — Tier-0 immutable (Slot 1, TTL 1h)             │
+│  pm.md + CLAUDE.md + handoff-contract.md + phase-contract│
+│  Byte-stable across sessions. Changes only on releases.  │
+├──────────────────────────────────────────────────────────┤
+│  ZONE 1 — Frozen Tier-0 sidecar                          │
+│  schema-shadow + (already-counted contract files)        │
+├──────────────────────────────────────────────────────────┤
+│  ZONE 2 — Per-orch (Slot 2, TTL 1h)                      │
+│  orchestration-header + decomposition-summary            │
+├──────────────────────────────────────────────────────────┤
+│  ZONE 3 head — Per-turn boundary (Slot 3, TTL 5m)        │
+│  Marker anchors before per-turn delta                    │
+├──────────────────────────────────────────────────────────┤
+│  ZONE 3 — Mutable (Slot 4 candidate region, TTL 5m)      │
+│  Per-turn artifacts ≥ 1 KB (P3.2 / P3.1 fillers)         │
+└──────────────────────────────────────────────────────────┘
 ```
 
 **Key property:** Claude Code controls where it places `cache_control` breakpoints
-internally. Orchestray cannot inject explicit breakpoints through frontmatter fields
-or CLAUDE.md directives (see §6 below). Block A's value is therefore *stability*, not
-marker placement. An unchanged Block A means Claude Code's automatic caching can reuse
-it. A mutated Block A means a full cache miss regardless of intent.
+internally. Orchestray cannot inject explicit `cache_control` markers through
+frontmatter fields or CLAUDE.md directives (see §6 below). The 4-slot manifest
+is therefore a *byte-discipline* mechanism — it persists `marker_byte_offset`s
+that Anthropic's automatic placement WILL land near, AND those offsets are
+asserted monotonic by the validator. An unchanged Block-Z means automatic
+caching can reuse it; a mutated one is a full cache miss regardless of intent.
+
+## 2.5 TTL auto-downgrade for short orchestrations
+
+Slot 1 and Slot 2 default to `1h` TTL. The 1h cache write costs 2× the base
+input rate (W1 §Q4); the 5m write costs 1.25×. Break-even on the 1h vs 5m
+write is at roughly 6.6 reads — meaning a short orchestration (<25 minutes,
+typically ~3–5 PM turns) NEVER amortises the 1h penalty.
+
+`bin/_lib/cache-breakpoint-manifest.js` reads
+`pm_protocol.estimated_orch_duration_minutes` from the current orchestration
+JSON and downgrades Slot 1 and Slot 2 to TTL `5m` when duration < 25 minutes.
+Long orchestrations (default behaviour) keep `1h` TTL. The downgrade emits
+`cache_breakpoint_emit { ttl: '5m', slot: 1, ttl_downgrade_applied: true }` so
+it is observable in `events.jsonl`.
+
+This protects against W7-dossier P2.1 Risk #2 (1h writes net-lose money on
+short orchestrations).
+
+### Legacy Block A / B / C model (pre-v2.2.0)
+
+Pre-v2.2.0 documentation framed the prefix as three regions (Block A
+immutable / Block B per-orch / Block C variable). The 4-slot manifest
+supersedes this framing — Block A maps onto Block-Z + Zone 1, Block B onto
+Zone 2, and Block C onto Zone 3. The legacy `<!-- ORCHESTRAY_BLOCK_A_END -->`
+sentinel and `cache-prefix-lock.js` drift detector remain in place as a
+parallel guard.
 
 ---
 
@@ -74,7 +109,7 @@ These rules prevent Block A drift during an orchestration:
 
 - **The Block A boundary is SENTINEL-based.** `cache-prefix-lock.js` and
   `tests/pm-md-prefix-stability.test.js` both hash everything from start-of-file
-  through (and including) the `<!-- ORCHESTRAY_BLOCK_A_END -->` sentinel. The Block A boundary is checked by the `<!-- ORCHESTRAY_BLOCK_A_END -->` sentinel (currently at pm.md line ~909). Keep the sentinel close to the end of the stable Tier-0 core so the cache prefix stays small; do not move it without re-pinning the hash in the same commit.
+  through (and including) the `<!-- ORCHESTRAY_BLOCK_A_END -->` sentinel. The Block A boundary is checked by the `<!-- ORCHESTRAY_BLOCK_A_END -->` sentinel (currently near pm.md line 1328 — verify with `grep -n ORCHESTRAY_BLOCK_A_END agents/pm.md`). Keep the sentinel close to the end of the stable Tier-0 core so the cache prefix stays small; do not move it without re-pinning the hash in the same commit.
 
 ---
 
@@ -132,12 +167,27 @@ Read this before drawing conclusions from cache metrics:
   headroom to improve. S1 / this protocol is *defensive hygiene*, not a
   cost-reduction mechanism.
 
-- **Caller-side `cache_control` markers are IGNORED by Claude Code.** The OQ-1
-  investigation (`.orchestray/kb/artifacts/v2017-oq1-probe.md`) established that
-  `cache_control_marker` is not a supported frontmatter field. Claude Code silently
-  drops unknown frontmatter fields before they reach the API request. The
+- **Caller-side `cache_control` markers are not API-injectable from a UserPromptSubmit
+  hook.** Claude Code's `additionalContext` output is plain text; the Messages API
+  `cache_control` JSON blocks cannot be embedded by a hook. This was verified at
+  v2.0.17 (`.orchestray/kb/artifacts/v2017-oq1-probe.md`). The
   `<!-- cache_breakpoint -->` sentinel in `agents/pm.md` is a discipline landmark
   for human reviewers, not a mechanical API breakpoint.
+
+- **What v2.2.0 adds is BYTE-DISCIPLINE, not marker injection.** The
+  `bin/_lib/cache-breakpoint-manifest.js` module computes a 4-slot manifest of
+  byte offsets where Anthropic's automatic placement WILL land near, and
+  `bin/validate-cache-invariant.js --manifest` enforces that those offsets stay
+  monotonically-stable across turns. The XML wrapper tags
+  (`<block-z>`, `<block-a-zone-1>`, etc.) emitted by `bin/compose-block-a.js`
+  are landmarks for that byte discipline, not API breakpoints.
+
+- **Env kill switches.** Two new env vars short-circuit P2.1 in-session:
+  `ORCHESTRAY_DISABLE_BLOCK_Z=1` (compose-block-a falls through to today's
+  3-zone payload) and `ORCHESTRAY_DISABLE_ENGINEERED_BREAKPOINTS=1` (manifest
+  computation is skipped; the new UserPromptSubmit invariant becomes a no-op).
+  Persistent disable: flip `caching.block_z.enabled` /
+  `caching.engineered_breakpoints.enabled` to `false` in `.orchestray/config.json`.
 
 - **Claude Code manages caching automatically.** It places its own `cache_control`
   breakpoints internally. A stable Block A prefix is rewarded by this automatic
@@ -304,3 +354,8 @@ requirement. No user-visible version bump is required for v2.1.10.
 - `v2017_experiments.prompt_caching` flag in `.orchestray/config.json`
 - `agents/pm-reference/event-schemas.md` — `prefix_drift` event schema
 - `/orchestray:analytics` — **Cache Performance** section for drift event counts
+- `bin/_lib/block-z.js` — Block-Z deterministic prefix builder (P2.1, v2.2.0)
+- `bin/_lib/cache-breakpoint-manifest.js` — 4-slot manifest builder with TTL
+  auto-downgrade (P2.1, v2.2.0)
+- `.orchestray/state/cache-breakpoint-manifest.json` — persisted manifest read
+  by the manifest invariant validator (P2.1, v2.2.0)

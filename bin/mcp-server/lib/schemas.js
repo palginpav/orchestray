@@ -448,6 +448,21 @@ function _validate(value, schema, pathStr, errors) {
         );
       }
     }
+    // W7 fix-pass M-001 (security): honour `pattern` so MCP tool input
+    // schemas that declare `pattern: '...'` actually enforce it. Previously
+    // the keyword was silently dropped, leaving deeper regex checks (e.g.
+    // schema_get's getChunk slug guard) as the only barrier — fine for the
+    // current tool but cosmetic for any future tool that adds a pattern.
+    if (typeof schema.pattern === 'string') {
+      let re;
+      try { re = new RegExp(schema.pattern); } catch (_e) { re = null; }
+      if (re && !re.test(value)) {
+        errors.push(
+          _pathLabel(pathStr) + ': must match pattern ' + schema.pattern +
+          ' (got "' + value + '")'
+        );
+      }
+    }
     return;
   }
 
