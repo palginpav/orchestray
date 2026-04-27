@@ -41,6 +41,10 @@ const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { recordDegradation } = require('./_lib/degraded-journal');
 const { loadHandoffBodyCapConfig } = require('./_lib/config-schema');
+// v2.2.2 Fix #7: REQUIRED_SECTIONS shares its source with the C2 hook's
+// HANDOFF_CONTRACT_SUFFIX so the agent-side prompt and the hook-side
+// enforcement can never drift apart.
+const { HANDOFF_REQUIRED_SECTIONS } = require('./_lib/handoff-contract-text');
 
 // ---------------------------------------------------------------------------
 // R-DX2 (v2.1.11): Artifact-path fields and placeholder rejection
@@ -301,7 +305,11 @@ const WARN_TIER = new Set([
 // Per v2.1.9 design-spec §5 I-12 item (c): `assumptions` is required even when
 // empty — the section must appear in every Structured Result so downstream
 // consumers can distinguish "no assumptions made" from "assumptions omitted".
-const REQUIRED_SECTIONS = ['status', 'summary', 'files_changed', 'files_read', 'issues', 'assumptions'];
+//
+// v2.2.2 Fix #7: sourced from bin/_lib/handoff-contract-text.js so the
+// agent-prompt suffix (HANDOFF_CONTRACT_SUFFIX) and this hook-side enforcement
+// list cannot drift apart. Edit there, not here.
+const REQUIRED_SECTIONS = HANDOFF_REQUIRED_SECTIONS;
 
 /**
  * Try several strategies to extract a Structured Result JSON object from the

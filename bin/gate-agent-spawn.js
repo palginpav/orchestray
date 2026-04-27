@@ -340,7 +340,14 @@ process.stdin.on('end', () => {
       }
 
       // -----------------------------------------------------------------------
-      // Stage 2: per-agent frontmatter default_model (S01-protected)
+      // Stage 2: per-agent frontmatter `model:` (S01-protected)
+      //
+      // v2.2.2 Fix A2: read the canonical `model:` field name (was
+      // `default_model:`, which never appeared in any agent file — Stage 2
+      // always missed and the cascade collapsed to Stage 3 global default).
+      // `inherit` is treated as miss (parent session model is invisible to
+      // hook process). Concrete model tokens (haiku/sonnet/opus) and full
+      // model IDs resolve normally.
       // -----------------------------------------------------------------------
       if (!resolvedModel) {
         try {
@@ -361,13 +368,13 @@ process.stdin.on('end', () => {
               );
             } else if (fs.existsSync(candidatePath)) {
               const agentFileContent = fs.readFileSync(candidatePath, 'utf8');
-              // Parse the YAML frontmatter for default_model field.
+              // Parse the YAML frontmatter for the `model:` field.
               const fmMatch = agentFileContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
               if (fmMatch) {
                 const fmBlock = fmMatch[1];
-                const defaultModelMatch = fmBlock.match(/^default_model:\s*(.+)$/m);
-                if (defaultModelMatch) {
-                  const fmModel = defaultModelMatch[1].trim();
+                const modelMatch = fmBlock.match(/^model:\s*(.+)$/m);
+                if (modelMatch) {
+                  const fmModel = modelMatch[1].trim();
                   // S02: re-run isValidModel() on the frontmatter value.
                   if (fmModel && isValidModel(fmModel) && fmModel !== 'inherit') {
                     resolvedModel = fmModel;

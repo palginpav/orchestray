@@ -142,12 +142,25 @@ describe('P2.1 manifest invariant (validate-cache-invariant.js --manifest)', () 
     assert.equal(broken[0].reason, 'invalid_ttl');
   });
 
-  test('missing manifest → reason=manifest_missing, ALWAYS advisory even in strict mode', () => {
+  test('missing manifest → cache_manifest_bootstrap (NOT cache_invariant_broken), advisory exit 0 even in strict mode', () => {
+    // v2.2.2 Fix A1: a missing manifest on the first UserPromptSubmit after a
+    // fresh install is a cold-start bootstrap, NOT an invariant violation —
+    // compose-block-a.js seeds it in the same UserPromptSubmit batch
+    // milliseconds later. The validator now emits a distinct
+    // `cache_manifest_bootstrap` info event instead of `cache_invariant_broken`,
+    // keeping the bootstrap path observable without polluting the violation
+    // rollup.
     const cwd = makeRepo({ strictInvariant: true });
     // Do NOT write manifest
     const r = runManifestMode(cwd);
     assert.equal(r.status, 0, 'missing manifest must always be advisory exit 0');
-    const broken = readEvents(cwd).filter(e => e.type === 'cache_invariant_broken');
-    assert.equal(broken[0].reason, 'manifest_missing');
+    const events = readEvents(cwd);
+    const broken = events.filter(e => e.type === 'cache_invariant_broken');
+    assert.equal(broken.length, 0, 'no cache_invariant_broken event for bootstrap case');
+    const bootstrap = events.filter(e => e.type === 'cache_manifest_bootstrap');
+    assert.equal(bootstrap.length, 1, 'exactly one cache_manifest_bootstrap event');
+    assert.equal(bootstrap[0].slot_count_expected, 4);
+    assert.ok(typeof bootstrap[0].note === 'string' && bootstrap[0].note.length > 0,
+      'note field present and non-empty');
   });
 });

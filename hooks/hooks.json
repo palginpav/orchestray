@@ -60,15 +60,6 @@
             "timeout": 5
           }
         ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/inject-active-phase-slice.js",
-            "timeout": 5
-          }
-        ]
       }
     ],
     "PreToolUse": [
@@ -118,6 +109,16 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/warn-isolation-omitted.js",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/inject-delegation-delta.js",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/inject-output-shape.js",
             "timeout": 5
           }
         ]

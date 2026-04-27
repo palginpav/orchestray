@@ -761,6 +761,22 @@ function handleManifestMode(event) {
       return;
     }
 
+    // v2.2.2 Fix A1: `manifest_missing` on the first UserPromptSubmit after a
+    // fresh install is a cold-start bootstrap, NOT an invariant violation —
+    // `bin/compose-block-a.js` is the sole writer of cache-breakpoint-manifest.json
+    // and runs in the SAME UserPromptSubmit batch (slot AFTER this validator,
+    // see hooks/hooks.json). Emit a distinct `cache_manifest_bootstrap` info
+    // event so the bootstrap path remains visible (and counted) without
+    // polluting the `cache_invariant_broken` rollup with non-violations.
+    if (result.reason === 'manifest_missing') {
+      emitAuditEvent(cwd, 'cache_manifest_bootstrap', {
+        slot_count_expected: 4,
+        note: 'compose-block-a will seed manifest in same UserPromptSubmit batch',
+      });
+      process.exit(0);
+      return;
+    }
+
     emitAuditEvent(cwd, 'cache_invariant_broken', {
       zone:          'manifest',
       reason:        result.reason,

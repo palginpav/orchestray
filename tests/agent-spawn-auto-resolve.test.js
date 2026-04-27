@@ -195,9 +195,11 @@ describe('Test 3: routing row with invalid model falls through Stage 1', () => {
 // ---------------------------------------------------------------------------
 
 describe('Test 4: frontmatter_default path', () => {
-  test('no routing + agents/developer.md has default_model: sonnet → frontmatter resolved', () => {
+  test('no routing + agents/developer.md has model: sonnet → frontmatter resolved', () => {
+    // v2.2.2 Fix A2: Stage 2 reads `model:` (was `default_model:` which never
+    // appeared in any agent file). Frontmatter resolves now.
     const dir = makeDir();
-    writeAgentFile(dir, 'developer', 'default_model: sonnet\n');
+    writeAgentFile(dir, 'developer', 'model: sonnet\n');
     const { status, stderr } = run(agentPayload(dir));
     assert.equal(status, 0, 'Expected exit 0 but got ' + status + '. stderr: ' + stderr);
     assert.match(stderr, /auto-resolved from agents\/developer\.md frontmatter/, 'Expected frontmatter_default warning');
@@ -354,8 +356,9 @@ describe('Test 12: warning stderr format matches character-exact templates', () 
   });
 
   test('frontmatter_default warning starts with [orchestray] gate-agent-spawn: prefix', () => {
+    // v2.2.2 Fix A2: Stage 2 reads `model:` (was `default_model:`).
     const dir = makeDir();
-    writeAgentFile(dir, 'developer', 'default_model: sonnet\n');
+    writeAgentFile(dir, 'developer', 'model: sonnet\n');
     const { stderr } = run(agentPayload(dir));
     assert.match(stderr, /\[orchestray\] gate-agent-spawn: Agent\(\) model missing; auto-resolved from agents\/developer\.md frontmatter: "sonnet"/,
       'Warning must match frontmatter_default template exactly');
@@ -376,9 +379,10 @@ describe('Test 12: warning stderr format matches character-exact templates', () 
 
 describe('AC-11 (S02 closure): routing inherit-bypass prevented', () => {
   test('routing row model=inherit is discarded at Stage 1 (not accepted as-is)', () => {
+    // v2.2.2 Fix A2: Stage 2 reads `model:` (was `default_model:`).
     const dir = makeDir();
     writeRoutingEntry(dir, { model: 'inherit', task_id: 'DEV-1', agent_type: 'developer' });
-    writeAgentFile(dir, 'developer', 'default_model: haiku\n');
+    writeAgentFile(dir, 'developer', 'model: haiku\n');
     const { stderr } = run(agentPayload(dir));
     // Stage 1 rejects inherit (S02); Stage 2 resolves to haiku from frontmatter.
     // The critical assertion: Stage 1 did NOT accept inherit from routing.jsonl.

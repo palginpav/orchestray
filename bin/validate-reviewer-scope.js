@@ -35,12 +35,20 @@ const FILE_MARKERS = [
   /(^|\n)\s*in[-_ ]?scope\s*:/i,     // in-scope:
   /(^|\n)\s*review\s*:/i,            // review: (next line lists files)
   /(^|\n)\s*file[-_ ]?list\s*:/i,    // file-list:
+  // v2.2.2 Fix A4: project's heading style for file-scoped reviewer prompts —
+  // matches `## Verification`, `### Files to verify`, `## Files to read`, etc.
+  /(^|\n)\s*#{1,3}\s*(verification|files?\s+to\s+(?:verify|read|review|check))\b/i,
 ];
 
 // Count bulleted list items that look like repo paths. Three or more is
 // accepted as evidence of an explicit file list (the common case is a bullet
 // list of 3+ files under the review heading).
-const BULLET_PATH_RE = /(?:^|\n)[\t ]*[-*][\t ]+[\w./-]+\.[a-z0-9]{1,6}\b/gi;
+//
+// v2.2.2 Fix A4: optional backticks on each side of the path token. The
+// project's house style wraps paths in backticks (e.g. `` - `src/foo.ts` ``).
+// Without this tolerance the regex matched 0 bullets in well-scoped operator
+// prompts (false-positive rate was empirically 100% in v2.2.1 telemetry).
+const BULLET_PATH_RE = /(?:^|\n)[\t ]*[-*][\t ]+`?[\w./-]+\.[a-z0-9]{1,6}`?(?:\b|$)/gi;
 const BULLET_PATH_THRESHOLD = 3;
 
 /**

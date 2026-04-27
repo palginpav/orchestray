@@ -12,14 +12,14 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 
 The v2.2.0 release reshapes how Orchestray pays for the prompt prefix it sends to Claude on every turn. Nine shipping items, every flag default-on, every behavior change with a kill switch. Headline savings: roughly **−18% to −33% per orchestration** (mid-range −22%; multi-round audits land at the upper end).
 
-- **Smart output shaping** trims hedging and pad-words from prose-heavy agents (debugger, reviewer, documenter) — roughly −21% Opus output / −14% Sonnet on a public April-2026 benchmark with 100% accuracy retained. Default on; `output_shape.enabled: false` to disable.
+- **Smart output shaping** trims hedging and pad-words from prose-heavy agents (debugger, reviewer, documenter) — roughly −21% Opus output / −14% Sonnet on a public April-2026 benchmark with 100% accuracy retained. Default on; `output_shape.enabled: false` or `ORCHESTRAY_DISABLE_OUTPUT_SHAPE=1` to disable. (v2.2.2: the addendum is now applied by a `PreToolUse:Agent` hook on every spawn, so it no longer depends on the orchestrator remembering to inject it.)
 - **Chunked schema lookup** replaces the 186 KB event-schemas reload with a small fingerprint plus a new `mcp__orchestray__schema_get` MCP verb that returns the chunk you need. Default on; full-file Read is blocked.
 - **Engineered cache geometry** anchors stable prompt prefixes in a byte-stable Block-Z header backed by a 4-slot cache-control manifest with TTL auto-downgrade. Back-to-back orchestrations within the hour pay 90% less for shared overhead. (v2.2.1: the auto-disable sentinel now carries a 1-hour TTL and a trip-counter so transient false positives no longer disable cache geometry permanently.)
 - **Haiku scout** (new agent: `haiku-scout`) takes Read/Glob/Grep recon at and above 12 KB off Opus. Three-layer tool-whitelist enforcement; default on.
 - **Background-housekeeper Haiku** (new agent: `orchestray-housekeeper`) handles three narrow background ops (KB-write verify, schema-shadow regen, telemetry rollup recompute) at Read+Glob only — stricter than scout. Per-action audit telemetry, drift detector that fails closed on tool-whitelist mutation, three independent kill switches.
 - **Deterministic sentinel probes** replace inline Bash for five common checks (file-exists, line-count, git-status, schema-validate, hash-compute) with zero LLM cost.
 - **Audit-round auto-archive** distills completed rounds of multi-round audits into compact 500-token digests. Verbatim findings stay in the audit log.
-- **Delta delegation for repeat agent spawns** — first spawn gets the full prompt; subsequent spawns get a prefix reference plus a small delta block, hash-anchored so cache misses self-heal.
+- **Delta delegation for repeat agent spawns** — first spawn gets the full prompt; subsequent spawns get a prefix reference plus a small delta block, hash-anchored so cache misses self-heal. (v2.2.2: composed by a `PreToolUse:Agent` hook on every spawn, so the delta event fires deterministically rather than depending on orchestrator-side prompt composition.)
 - **Telemetry truth** — fixed the ~59% duplicate-row bug in `agent_metrics.jsonl`, the silent-default-to-Sonnet bug for team-member rows, and made PM-direct token cost visible in the metrics dashboard for the first time.
 
 **Restart Claude Code after upgrading**: the two new agents (`haiku-scout`, `orchestray-housekeeper`) require a session restart to load.
@@ -484,7 +484,8 @@ repo_map.cold_init_async    On first run after install, build the cache asynchro
 output_shape.enabled                    Smart output shaping for prose-heavy agents (caveman
                                         addendum + per-role length caps + Anthropic Structured
                                         Outputs on report-mode roles). Default: true. Disable
-                                        to restore unconstrained agent prose.
+                                        to restore unconstrained agent prose. Env override:
+                                        ORCHESTRAY_DISABLE_OUTPUT_SHAPE=1 (added in v2.2.2).
 
 event_schemas.full_load_disabled        Block the legacy full-file Read of `event-schemas.md`;
                                         the chunked path via `mcp__orchestray__schema_get`
@@ -549,7 +550,7 @@ All nine v2.2.0 shipping items default on. Each has a dedicated kill switch; whe
 
 | Feature | Kill switch | Env override | Effect |
 |---|---|---|---|
-| Smart output shaping | `output_shape.enabled: false` | — | Prose-heavy agents revert to unconstrained output |
+| Smart output shaping | `output_shape.enabled: false` | `ORCHESTRAY_DISABLE_OUTPUT_SHAPE=1` | Prose-heavy agents revert to unconstrained output |
 | Chunked schema lookup | `event_schemas.full_load_disabled: false` | — | Restores legacy full-file Read of event-schemas.md |
 | Pre-materialized Tier-2 index | `pm_protocol.tier2_index.enabled: false` | — | Falls back to per-turn Read of the schema reference |
 | Engineered Block-Z prefix | `caching.block_z.enabled: false` | — | Prompt prefix reverts to non-anchored composition |

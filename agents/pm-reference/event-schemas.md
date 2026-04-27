@@ -28,6 +28,7 @@ feature_gate_eval — Feature gate state snapshot at PM turn start (hook, v2.1.1
 mcp_checkpoint_recorded.fields_used — fields_used + response_bytes augmentation (hook, v2.1.14)
 block_a_zone_composed — Block A zone assembly (hook, v2.1.14)
 cache_invariant_broken — Zone 1 hash mismatch detected (hook, v2.1.14)
+cache_manifest_bootstrap — first-prompt manifest cold-start (hook, v2.2.2)
 block_a_zone1_invalidated — Zone 1 manual invalidation (hook, v2.1.14)
 delta_handoff_fallback — developer full-artifact fetch decision in delta mode (PM, v2.1.15)
 budget_warn — pre-spawn context-size budget exceeded (hook, v2.1.15)
@@ -905,6 +906,52 @@ Field notes:
 
 Backward compatibility: new event type in v2.2.0; older consumers ignore
 unknown types per R-EVENT-NAMING. Schema stability: additive-only.
+
+---
+
+### `delegation_delta_skip` event
+
+Emitted by `bin/inject-delegation-delta.js` (`PreToolUse:Agent` hook,
+v2.2.2) on any path where the hook does NOT mutate the prompt AND does
+NOT emit a `delegation_delta_emit`. Distinguishes intentional skips
+(kill switch, no orchestration active, markers missing) from errors
+(`compute_delta` threw). Lets the v2.2.x dashboard separate "feature
+disabled by operator" from "feature broken" without parsing per-
+event reasons.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "delegation_delta_skip",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id> | null",
+  "agent_type": "<developer | reviewer | …> | null",
+  "reason": "kill_switch_env",
+  "error_class": null
+}
+```
+
+Field notes:
+
+- `orchestration_id`: `null` when the hook fired before an
+  orchestration was active (e.g., bare `Agent()` calls from the user).
+- `agent_type`: `null` when the spawn payload was malformed (no
+  `subagent_type` field).
+- `reason`: enum — one of:
+    - `kill_switch_env` — `ORCHESTRAY_DISABLE_DELEGATION_DELTA=1`
+    - `kill_switch_config` — `pm_protocol.delegation_delta.enabled: false`
+    - `kill_switch_helper` — helper's own kill switch fired (defence-in-depth)
+    - `no_orchestration_active` — no `current-orchestration.json` marker
+    - `empty_prompt` — `tool_input.prompt` was empty
+    - `markers_missing` — prompt did not carry the static/per-spawn marker pair
+    - `compute_delta_threw` — helper raised an unexpected exception
+- `error_class`: present only when `reason === 'compute_delta_threw'`;
+  the constructor name of the thrown exception (e.g., `'TypeError'`).
+
+Backward compatibility: new event type in v2.2.2; older consumers
+ignore unknown types per R-EVENT-NAMING. Schema stability: additive-only.
 
 ---
 
@@ -4709,6 +4756,52 @@ Field notes:
 
 ---
 
+### `cache_manifest_bootstrap` event
+
+Emitted by `bin/validate-cache-invariant.js` (PreToolUse hook, v2.2.2)
+on the first UserPromptSubmit after a fresh install when the
+cache-breakpoint manifest does not yet exist. This is a cold-start
+bootstrap state — `bin/compose-block-a.js` is the sole writer of
+`.orchestray/state/cache-breakpoint-manifest.json` and runs in the
+SAME UserPromptSubmit batch (slot AFTER this validator, see
+`hooks/hooks.json`). The manifest will exist by the end of the batch.
+
+Distinct from `cache_invariant_broken{reason: "manifest_missing"}` so
+the rollup can separate "fresh install bootstrap" (informational, this
+event) from "manifest disappeared mid-orchestration" (anomaly,
+`cache_invariant_broken`). Always advisory — never blocks the tool
+call. Replaces what would have been a spurious
+`cache_invariant_broken` row on every fresh install.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "cache_manifest_bootstrap",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "slot_count_expected": 4,
+  "note": "compose-block-a will seed manifest in same UserPromptSubmit batch"
+}
+```
+
+Field notes:
+- `slot_count_expected`: the number of slots `bin/compose-block-a.js`
+  will populate in the manifest on this same UserPromptSubmit batch.
+  Always `4` in v2.2.2 (the engineered-breakpoints layout).
+- `note`: human-readable reminder of where the manifest comes from.
+  Useful in dashboards to clarify why no remediation action is needed.
+- Source: emitted by `bin/validate-cache-invariant.js`.
+- Recovery: none required. The next `compose-block-a.js` run (same
+  UserPromptSubmit batch) will write the manifest.
+
+Backward compatibility: new event type in v2.2.2; older consumers
+ignore unknown types per R-EVENT-NAMING. Schema stability:
+additive-only.
+
+---
+
 ### `block_a_zone1_invalidated` event
 
 Emitted by `bin/invalidate-block-a-zone1.js` when a Zone 1 hash is manually
@@ -5693,7 +5786,7 @@ event on hybrid/prose-heavy spawns indicates the kill switch fired.
   "timestamp": "<ISO 8601>",
   "orchestration_id": "<current orch id>",
   "session_id": "uuid-or-null",
-  "task_id": "task-N",
+  "task_id": "task-N-or-null",
   "role": "developer",
   "category": "hybrid",
   "caveman": true,
@@ -5708,6 +5801,15 @@ event on hybrid/prose-heavy spawns indicates the kill switch fired.
 
 Field notes:
 
+- `task_id`: PM-issued task identifier when emitted from the in-prose
+  protocol (PM Section 9.7). The `bin/inject-output-shape.js` hook
+  (v2.2.2 Bucket C2) does NOT have access to a task_id at the
+  PreToolUse:Agent boundary (the `Agent` tool signature carries
+  `description` but no task_id), so the hook always emits `null` here.
+  Nullable since v2.2.2.
+- `session_id`: Claude Code session UUID when available on the hook
+  payload; `null` otherwise (e.g., when the in-prose PM emit fires
+  outside a hook context).
 - `role`: canonical role name (matches `ROLE_MODEL_TIER` in
   `bin/_lib/output-shape.js`).
 - `category`: enum from `ROLE_CATEGORY_MAP` —

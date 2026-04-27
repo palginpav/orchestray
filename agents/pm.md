@@ -488,7 +488,8 @@ The subagent has NO context from this conversation. It starts fresh.
    the full per-role table, the kill-switch contract, and the
    `cold_init_async` semantics.
 
-9.7. **Output shape (R-OUT-SHAPE, P1.2, v2.2.0)**: Before composing the spawn
+9.7. **Output shape (R-OUT-SHAPE, P1.2, v2.2.0)**: <!-- v2.2.2: also enforced by bin/inject-output-shape.js (PreToolUse:Agent hook). PM does not need to run this step manually; prose retained as the behavior contract and for the kill-switch reference. -->
+   Before composing the spawn
    prompt suffix, call
    `require('./bin/_lib/output-shape').decideShape(agentRole)` and weave
    its return value in:
@@ -510,6 +511,8 @@ The subagent has NO context from this conversation. It starts fresh.
    check.
 
 ### Handoff Contract and Rubric in Every Delegation
+
+<!-- v2.2.2: §a (handoff contract reference) is also enforced by bin/inject-output-shape.js (PreToolUse:Agent hook); the suffix is appended to every Agent() spawn prompt with a non-`none` output-shape category, so the PM does not need to inject it manually. Prose retained as the behavior contract. §b and §c remain PM-only responsibilities. -->
 
 Every spawn prompt MUST include the following (cross-reference `bin/validate-task-completion.js`
 REQUIRED_SECTIONS when writing spawn prompts so the agent emits what the hook enforces):
@@ -617,6 +620,8 @@ This file is the SINGLE SOURCE OF TRUTH for routing during the orchestration. Th
 **Re-planning and verify-fix re-spawns:** append a new entry with a fresh timestamp. The hook matches the MOST RECENT entry for `(agent_type, description)`, so re-spawns automatically pick up the latest routing.
 
 ### Delegation Delta Pre-Render (R-DELEG-DELTA, v2.2.0)
+
+<!-- v2.2.2: this protocol is also enforced by bin/inject-delegation-delta.js (PreToolUse:Agent hook). The hook calls computeDelta and rewrites tool_input.prompt automatically on every Agent() spawn, so the PM does not need to run this step manually. Prose retained as the behavior contract and for the kill-switch reference. -->
 
 **Why.** Per-spawn delegation prompts repeat ~70% identical bytes across spawns of the same `(orchestration_id, agent_type)` pair (handoff-contract reference, rubric format reminder, exploration-discipline boilerplate, model+effort routing template, pre-flight checklist). P3.2 replaces this resend with a hash-anchored delta after the first spawn, riding P2.1 Slot 4 for cache pinning.
 

@@ -465,16 +465,34 @@ process.stdin.on('end', () => {
     // resolved model reflects the LAST assignment and pre-escalation tokens
     // are billed at post-escalation rates. Flag the event so downstream
     // reporting can display a disclaimer.
+    //
+    // v2.2.2 Fix B1: detect escalation as "the same agent_id appears in 2+
+    // routing_outcome rows" — that is, mid-run re-routing of a single spawn.
+    // Two INDEPENDENT spawns of the same role (e.g. reviewer in W2 and
+    // reviewer in W3, two distinct agent_ids) are NOT an escalation — they
+    // are two separate tasks. The pre-A2 implementation counted events by
+    // agent_type and falsely flagged the W3 reviewer as escalated solely
+    // because W2's reviewer had emitted an earlier row.
+    //
+    // Algorithm: count occurrences per agent_id. If any single id appears
+    // 2+ times, escalation. Legacy rows without agent_id fall back to a
+    // synthetic key from the event timestamp so historical scans behave
+    // sensibly: identical timestamps for the same agent_type collapse to
+    // one synthetic key (interpreted as one spawn re-emitting twice =
+    // escalation), distinct timestamps collapse to distinct keys (treated
+    // as separate spawns = no escalation).
     let modelResolutionNote = null;
     if (orchestrationId && agentType) {
-      let routingOutcomeCount = 0;
+      const idCounts = new Map();
+      let escalation = false;
       for (const ev of routingOutcomes) {
-        if (ev.agent_type === agentType) {
-          routingOutcomeCount++;
-          if (routingOutcomeCount >= 2) break;
-        }
+        if (ev.agent_type !== agentType) continue;
+        const key = ev.agent_id || ('legacy::' + (ev.timestamp || ''));
+        const next = (idCounts.get(key) || 0) + 1;
+        idCounts.set(key, next);
+        if (next >= 2) { escalation = true; break; }
       }
-      if (routingOutcomeCount >= 2) {
+      if (escalation) {
         modelResolutionNote = 'cost is upper bound: agent was escalated; pre-escalation tokens billed at post-escalation rate';
       }
     }

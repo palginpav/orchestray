@@ -142,7 +142,10 @@ describe('agents/pm.md Block A hash stability', () => {
     // (F-009).
     // v2.2.0 P3.2 R-DELEG-DELTA insertion (orch-20260426T193005Z)
     // v2.2.0 P1.2 step 9.7 output-shape inject (orch-20260427T041926Z)
-    const PINNED_BLOCK_A_HASH = 'e068ae0dfab5e752';
+    // v2.2.2 Bucket C hook-enforcement markers added to §9.7, §12.a, and
+    // Delegation Delta Pre-Render heading (orch-1777291253) — prose retained
+    // as the behavior contract; the hooks now do the runtime enforcement.
+    const PINNED_BLOCK_A_HASH = '7f43a0b52d169d1b';
 
     assert.equal(
       actualHash,

@@ -101,13 +101,32 @@ function readPhaseFromOrchestration(cwd) {
   } catch (_e) {
     return null;
   }
-  // Pull current_phase from YAML frontmatter
+
+  // v2.2.2 Fix A3: parser accepts BOTH formats. The documented YAML
+  // frontmatter (`current_phase:`) per phase-contract.md, AND the bold-list
+  // format the PM actually writes today (`- **phase**: <value>` or
+  // `- **current_phase**: <value>`). Old YAML archives still parse via the
+  // first strategy; live PM-written files parse via the second.
+
+  // Strategy 1: YAML frontmatter (documented in phase-contract.md)
   const fmMatch = text.match(/^---\n([\s\S]*?)\n---/);
-  if (!fmMatch) return null;
-  const fm = fmMatch[1];
-  const phaseMatch = fm.match(/^current_phase:\s*([^\n#]+)/m);
-  if (!phaseMatch) return null;
-  return phaseMatch[1].trim().toLowerCase().replace(/^["']|["']$/g, '');
+  if (fmMatch) {
+    const fm = fmMatch[1];
+    const phaseMatch = fm.match(/^current_phase:\s*([^\n#]+)/m);
+    if (phaseMatch) {
+      return phaseMatch[1].trim().toLowerCase().replace(/^["']|["']$/g, '');
+    }
+  }
+
+  // Strategy 2: bold-list (what the PM actually writes today)
+  //   - **phase**: execute
+  //   - **current_phase**: execute
+  const boldMatch = text.match(/^- \*\*(?:current_)?phase\*\*:\s*([^\n]+)/m);
+  if (boldMatch) {
+    return boldMatch[1].trim().toLowerCase().replace(/^["']|["']$/g, '');
+  }
+
+  return null;
 }
 
 function resolveSliceForPhase(phase) {

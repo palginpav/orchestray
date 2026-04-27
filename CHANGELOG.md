@@ -3,6 +3,51 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.2.2] - 2026-04-27
+
+v2.2.2 fixes eight telemetry regressions a real-orchestration test surfaced after v2.2.1 shipped. Two new pre-spawn hooks make the smart-output-shaping addendum and the mandatory handoff-contract suffix fire automatically on every `Agent()` spawn — they no longer rely on the orchestrator remembering to inject them. Four parser and regex fixes restore four telemetry signals that were silently broken since v2.2.0. One hook-registration fix removes a 2× duplicate emission on three high-frequency event types. All flags default-on; one new env-var kill switch.
+
+### Fixed
+
+- **Smart output shaping and the handoff contract now fire on every spawn.** In v2.2.0 and v2.2.1, the smart-caveman addendum, the per-role token budget, and the mandatory `## Structured Result` JSON contract suffix were injected by the orchestrator at delegation time. When the orchestrator skipped that step (operator-typed prompts, dense workloads, post-compact recovery), all three silently dropped — and downstream hooks counted the resulting agent responses as contract violations. v2.2.2 moves both injectors into the pre-spawn hook chain so they fire deterministically before every `Agent()` call, regardless of who composed the prompt. Disable with `output_shape.enabled: false`, `pm_protocol.delegation_delta.enabled: false`, `ORCHESTRAY_DISABLE_OUTPUT_SHAPE=1`, or `ORCHESTRAY_DISABLE_DELEGATION_DELTA=1`.
+
+- **Phase-aware reference loading was matching no orchestration files.** The hook that injects the active phase reference into PM turns expected YAML frontmatter, but the orchestrator writes a bold-list format — so every PM turn fell back to the legacy full-file path and the positive-path `phase_slice_injected` event never fired. v2.2.2 teaches the parser both formats; the positive-path event will start firing on your next orchestration.
+
+- **Reviewer scope check was rejecting the project's own house style.** The `reviewer_scope_warn` audit event was firing on every reviewer spawn because the validator's bullet-path regex did not accept paths wrapped in backticks — which is how the orchestrator and operator prompts have always written file references. v2.2.2 makes the backticks optional and recognizes `## Verification` / `### Files to verify` heading-style markers so well-scoped prompts no longer trip the warn.
+
+- **Per-agent model defaults were always falling through to the global default.** The runtime model resolver looked for the wrong frontmatter field name on agent files, so every spawn resolved by the global-default fallback (Sonnet) and `/orchestray:analytics` showed `model_auto_resolved.source` as 100% `global_default_sonnet`. v2.2.2 reads the correct field so per-agent defaults take effect — your Haiku-routed scout and housekeeper spawns now actually run on Haiku.
+
+- **Three high-frequency events were being recorded twice per turn.** v2.2.1 close-out telemetry surfaced apparent 2× inflation on `phase_slice_fallback`, `agent_start`, and `routing_outcome`. The audit-event writer itself was clean; the duplicates came from the phase-slice injector being registered on both `SessionStart` and `UserPromptSubmit` chains and so running twice on every prompt that opened a session. v2.2.2 drops the redundant `SessionStart` registration; only the `UserPromptSubmit` registration remains. **Audit-log comparison gotcha**: pre-v2.2.2 archives are inflated only for those three event types — divide them by 2 when comparing. All other event-type counts in your archive are accurate as recorded.
+
+- **Cost rollup mistook independent re-spawns for mid-run model escalation.** When the same agent role ran two independent tasks in one orchestration (e.g., reviewer in two audit rounds), the cost rollup flagged the second run as a mid-run escalation and tagged the cost as upper-bound. v2.2.2 distinguishes "different spawns of the same role" from "same spawn re-routed mid-run" by deduping on agent ID, not agent type.
+
+- **Cold-start cache validation no longer reports a violation it immediately fixes.** On the first user prompt after a fresh install, the cache-geometry validator ran milliseconds before the cache-geometry writer in the same `UserPromptSubmit` batch and emitted a noisy `cache_invariant_broken` event for a manifest that was about to be created. v2.2.2 emits a distinct `cache_manifest_bootstrap` info event for this case so the rollup no longer counts a non-violation. Cache geometry now self-heals on first session post-install instead of emitting a noisy violation event.
+
+### Migration notes
+
+- **No action required.** All fixes are runtime; no config schema changes; no agent file changes. Restart Claude Code after upgrading per the standard plugin restart protocol.
+- **One new env kill switch** (`ORCHESTRAY_DISABLE_OUTPUT_SHAPE=1`) mirrors the existing `ORCHESTRAY_DISABLE_DELEGATION_DELTA=1` for parity.
+- **Audit-log comparison gotcha:** the dup-emit pattern affected ONLY three event types (`phase_slice_fallback`, `agent_start`, `routing_outcome`) — not "most events" as initially suspected. The audit-event writer was clean; the dups came from a duplicate hook registration. For fair comparison of pre-v2.2.2 archives against v2.2.2 onward, divide pre-v2.2.2 counts of those three event types by 2; all other event-type counts are accurate as-recorded.
+
+### Under the hood — hardening / observability
+
+- 2 new audit event types ship in v2.2.2: `cache_manifest_bootstrap` and `delegation_delta_skip` — both `version: 1`. Schema shadow regenerated to **118 event types / 5660 bytes** (was 116 / 5538 in v2.2.0; v2.2.1 added zero event types). The Tier-2 schema sidecar index is regenerated alongside.
+- Two new `PreToolUse:Agent` hook scripts move the smart-output-shaping addendum and the delegation-delta payload off the orchestrator's prompt-composition path and into the deterministic hook chain. Both follow the established `permissionDecision: allow` + `updatedInput` pattern, and both are fail-open (any hook error passes the original prompt through unchanged).
+- The handoff-contract suffix and required-section list are now sourced from a single in-source constant, eliminating drift risk between the three sites that consumed the previously inlined literal.
+- A new regression test pins the audit-event writer's per-call contract (1 `writeEvent` call → 1 line) so any future multi-registration regression is caught at unit-test time. Both new injector tests copy the real `event-schemas.md` into their tmpdir and assert that no validation-surrogate events fire.
+- **PM prompt prefix hash rotates** from `e068ae0dfab5e752` to `7f43a0b52d169d1b` due to three v2.2.2 marker comments added to `agents/pm.md` (sections 9.7, 12.a, and the Delegation Delta Pre-Render heading) noting that those protocols are now hook-enforced. Expect one cold cache fetch on the first orchestration after upgrade; the engineered breakpoints re-warm normally afterward.
+
+### Tests
+
+- **4424 tests / 4424 pass / 1 intentional skip / 0 fail.**
+
+### Not in this release (with triggers)
+
+- **Delete the v2.2.0 PM prose for the three protocols now hook-enforced (sections 9.7 / 12.a / Delegation Delta Pre-Render).** The prose stays in place as the behavior contract until 14 days of orchestration telemetry confirm the hooks fire on 100% of eligible `Agent()` spawns. **Trigger:** `output_shape_applied` count matches eligible-spawn count AND `delegation_delta_emit` count matches the expected first-spawn-vs-delta distribution across a 14-day window.
+- **Promote `validate-reviewer-scope.js` from warn to exit-2.** The fix in this release lowers the false-positive rate but cannot prove the new floor without telemetry. **Trigger:** 14 days of v2.2.2 telemetry showing `reviewer_scope_warn` rate ≤ 1 per 100 reviewer spawns.
+
+---
+
 ## [2.2.1] - 2026-04-27
 
 v2.2.1 fixes three regressions in v2.2.0 that disabled most installs' cache geometry and housekeeper agent. v2.2.1 ships an automatic post-upgrade cleanup so users are healed on first session — no manual action required.
