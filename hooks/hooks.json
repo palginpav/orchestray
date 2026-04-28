@@ -431,6 +431,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/audit-promised-events.js",
+            "timeout": 8
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/post-orchestration-extract-on-stop.js",
             "timeout": 60
           }
@@ -496,6 +505,15 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/loop-continue.js",
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/release-manager/subagentstop-changelog-gate.js",
+            "timeout": 12
           }
         ]
       }

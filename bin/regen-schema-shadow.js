@@ -128,9 +128,16 @@ function main(cwd) {
 
   for (const ev of events) {
     // Compact entry: v=version, r=required_count, o=optional_count, h=enum_dialect_hash
+    // F3 (v2.2.9): f=1 marker when the source MD declares `feature_optional: true`
+    // in its Field-notes block. Consumed by `bin/audit-promised-events.js` to
+    // skip events that are legitimately dark (opt-in slash commands, negative-
+    // path guards, untriggered failure-recovery paths).
     const entry = { v: ev.version, r: ev.required.length, o: ev.optional.length };
     if (ev.enum_dialect_hash !== 'none') {
       entry.h = ev.enum_dialect_hash;
+    }
+    if (ev.feature_optional === true) {
+      entry.f = 1;
     }
     shadow[ev.slug] = entry;
   }

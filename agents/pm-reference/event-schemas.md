@@ -1044,6 +1044,7 @@ Field notes:
   unavailable.
 - `hook`: always `validate-task-completion` for this event type.
 - Source: emitted by `bin/validate-task-completion.js:656-664`.
+- feature_optional: true (negative-path guard; legitimately dark per W4 RCA-10. Excluded from the F3 promised-event tracker so it does not alarm.)
 
 ---
 
@@ -1078,6 +1079,7 @@ Field notes:
   unavailable.
 - `hook`: always `validate-task-completion` for this event type.
 - Source: emitted by `bin/validate-task-completion.js:676-684`.
+- feature_optional: true (negative-path guard; legitimately dark per W4 RCA-10. Excluded from the F3 promised-event tracker so it does not alarm.)
 
 ---
 
@@ -5525,6 +5527,8 @@ Field notes:
 
 Schema stability: additive-only.
 
+- feature_optional: true (negative-path guard; legitimately dark per W4 RCA-10. Excluded from the F3 promised-event tracker so it does not alarm.)
+
 ---
 
 ### `housekeeper_baseline_missing` event
@@ -6356,6 +6360,7 @@ Emitted by `bin/compose-block-a.js` when the Block-Z sentinel was recently auto-
 Field notes:
 - `recovery_attempts` increments per re-trip within a 1-hour window.
 - Kill switch: existing `caching.block_z.enabled: false`.
+- feature_optional: true (untriggered failure-recovery path; legitimately dark per W4 RCA-4. Excluded from the F3 promised-event tracker so it does not alarm.)
 
 ### `block_z_drift_unresolved` event
 
@@ -6375,6 +6380,7 @@ Emitted by `bin/compose-block-a.js` when zone1 hash drift produces ≥3 sentinel
 
 Field notes:
 - After this event fires, a permanent-style sentinel `.block-a-zone-caching-disabled-permanent` is written.
+- feature_optional: true (untriggered failure-recovery path; legitimately dark per W4 RCA-4. Excluded from the F3 promised-event tracker so it does not alarm.)
 
 ### `context_pin_applied` event
 
@@ -6535,6 +6541,9 @@ Emitted by the `/orchestray:loop` skill when a tight-loop primitive is initializ
 }
 ```
 
+Field notes:
+- feature_optional: true (opt-in `/orchestray:loop` slash command; legitimately dark per W4 RCA-8 when the user does not invoke the loop. Excluded from the F3 promised-event tracker so it does not alarm.)
+
 ### `loop_iteration` event
 
 Emitted by `bin/loop-continue.js` (SubagentStop) when a loop iteration completes without meeting the completion promise.
@@ -6550,6 +6559,9 @@ Emitted by `bin/loop-continue.js` (SubagentStop) when a loop iteration completes
   "last_output_excerpt": "..."
 }
 ```
+
+Field notes:
+- feature_optional: true (opt-in `/orchestray:loop` slash command; legitimately dark per W4 RCA-8 when the user does not invoke the loop. Excluded from the F3 promised-event tracker so it does not alarm.)
 
 ### `loop_completed` event
 
@@ -6569,6 +6581,7 @@ Emitted by `bin/loop-continue.js` when a loop ends.
 
 Field notes:
 - `completion_reason` ∈ `{promise_met, max_iterations, cost_cap, user_cancel}`.
+- feature_optional: true (opt-in `/orchestray:loop` slash command; legitimately dark per W4 RCA-8 when the user does not invoke the loop. Excluded from the F3 promised-event tracker so it does not alarm.)
 
 ### `spawn_requested` event
 
@@ -6686,3 +6699,72 @@ Field notes:
 - Idempotent: skipped silently when `<archive_dir>/.archived` exists.
 - Kill switch: `ORCHESTRAY_ORCH_ARCHIVE_DISABLED=1`.
 - Unblocks downstream: `replay-last-n.sh`, `watch-events.js`, `audit-default-true-flags.js`, `mcp-server/lib/history_scan.js`, `pattern-roi-aggregate.js`, `_lib/archetype-cache.js`, `verify-fix-coverage.js`.
+
+### `event_promised_but_dark` event
+
+Emitted by `bin/audit-promised-events.js` (Stop hook, after `archive-orch-events.js`) when a registered event-type in `event-schemas.shadow.json` has fired ZERO times across the live audit log + per-orch archives, has been registered for more than 7 days, and is NOT marked `feature_optional: true` in its `event-schemas.md` Field notes block. Catches the v2.2.8 class of "CHANGELOG promises an event nobody emits" silent failure (W4 §E.1, RCA-1/2/5/6). Each registered dark event-type emits at most ONE `event_promised_but_dark` row per 24h per type — debounced via `.orchestray/state/promised-event-tracker.last-run.json`.
+
+```json
+{
+  "type": "event_promised_but_dark",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "event_type": "housekeeper_action",
+  "days_dark": 8,
+  "first_seen_in_shadow_at": "ISO 8601",
+  "total_fire_count": 0
+}
+```
+
+Field notes:
+- `event_type`: the dark event-type whose schema entry has zero fires (NOT the type of this row, which is always `event_promised_but_dark`).
+- `days_dark`: integer days since `first_seen_in_shadow_at` (floor).
+- `first_seen_in_shadow_at`: best-effort ISO 8601 timestamp of when the tracker first recorded the event-type as registered. Sourced from a tracker-managed registry at `.orchestray/state/promised-event-registry.json`; falls back to the shadow's `_meta.generated_at` when no registry entry exists yet.
+- `total_fire_count`: always 0 by construction (the tracker only emits when the count is zero).
+- Debounced: at most one fire per (event_type, 24h window).
+- Kill switch: `ORCHESTRAY_PROMISED_EVENT_TRACKER_DISABLED=1`.
+- `feature_optional: true` opt-out: events legitimately dark for opt-in / negative-path / failure-recovery reasons are excluded by the `feature_optional: true` Field-notes flag (parsed by `bin/_lib/event-schemas-parser.js` into the `f` shadow column).
+
+### `event_promised_but_dark_scan_truncated` event
+
+Emitted when `bin/audit-promised-events.js` exhausts its 5-second wall-clock budget before scanning every registered event-type. Carries the partial result count so analytics can flag a tracker that's outgrown its budget.
+
+```json
+{
+  "type": "event_promised_but_dark_scan_truncated",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "partial_count": 23,
+  "total_event_types": 147,
+  "elapsed_ms": 5012
+}
+```
+
+Field notes:
+- `partial_count`: number of event-types fully scanned before the budget tripped.
+- `total_event_types`: number of registered event-types in `event-schemas.shadow.json` at scan-start.
+- `elapsed_ms`: wall-clock time at truncation (must be ≥ 5000).
+- The tracker exits 0 (never fail-closes a Stop hook) on truncation.
+
+### `changelog_naming_drift_detected` event
+
+Emitted by `bin/release-manager/changelog-event-name-check.js` when a backtick-quoted event-name token in the unreleased / topmost CHANGELOG section is not present as a key in `agents/pm-reference/event-schemas.shadow.json`. Catches the v2.2.8 `snapshot_taken` (typo for `snapshot_captured`) and `loop_complete` (typo for `loop_completed`) drift classes mechanically. The firewall script writes this event BEFORE exiting 2 so analytics see the drift even when the release commit is blocked.
+
+```json
+{
+  "type": "changelog_naming_drift_detected",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "missing_tokens": ["snapshot_taken", "loop_complete"],
+  "changelog_section": "[2.2.8] - 2026-04-28"
+}
+```
+
+Field notes:
+- `missing_tokens`: array of backtick-quoted event-name tokens (regex `/^[a-z][a-z0-9_]+$/` with at least one underscore) that appeared in the CHANGELOG section but are NOT keys in `event-schemas.shadow.json`.
+- `changelog_section`: the section header line as it appears in CHANGELOG.md (e.g. `[2.2.9] - 2026-04-28` or `Unreleased`).
+- Kill switch: `ORCHESTRAY_CHANGELOG_FIREWALL_DISABLED=1` — honored ONLY for non-release commits. Release commits (subject starting `release:`) cannot opt out.
+- The script exits 2 after emitting this event; the calling pre-commit / SubagentStop gate aborts the commit.

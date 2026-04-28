@@ -87,6 +87,29 @@ function extractFields(jsonBlock) {
 }
 
 /**
+ * F3 (v2.2.9) — detect the `feature_optional: true` flag in a section's
+ * Field-notes block. Used by `bin/audit-promised-events.js` to skip events
+ * that are legitimately dark (opt-in slash commands, negative-path guards,
+ * untriggered failure-recovery paths).
+ *
+ * The flag is conventional Field-notes text:
+ *   `- feature_optional: true (...)`
+ * The leading bullet marker, surrounding whitespace, and trailing parenthesised
+ * justification are all optional. Only `true` triggers; `false` or missing
+ * leaves the event subject to the F3 dark-surface alarm.
+ *
+ * @param {string} sectionText — the raw markdown of one event-section.
+ * @returns {boolean}
+ */
+function parseFeatureOptional(sectionText) {
+  if (typeof sectionText !== 'string' || sectionText.length === 0) return false;
+  // Match a line like:  - feature_optional: true (...)
+  // Allow leading whitespace, optional bullet, and trailing prose.
+  const re = /^\s*[-*]?\s*feature_optional\s*:\s*true\b/m;
+  return re.test(sectionText);
+}
+
+/**
  * Compute a short hash of enum-like field values within a JSON block.
  * Used as enum_dialect_hash: changes when enum lists drift.
  */
@@ -164,8 +187,9 @@ function parseEventSchemas(content) {
 
     const { required, optional, version } = extractFields(jsonBlock);
     const enum_dialect_hash = computeEnumDialectHash(jsonBlock);
+    const feature_optional  = parseFeatureOptional(sectionContent);
 
-    events.push({ slug: effectiveSlug, version, required, optional, enum_dialect_hash });
+    events.push({ slug: effectiveSlug, version, required, optional, enum_dialect_hash, feature_optional });
   }
 
   return events;
@@ -215,6 +239,7 @@ function parseEventSchemasWithRanges(content) {
 
     const { required, optional, version } = extractFields(jsonBlock);
     const enum_dialect_hash = computeEnumDialectHash(jsonBlock);
+    const feature_optional  = parseFeatureOptional(sectionContent);
 
     const startLine = _offsetToLine(content, startOffset);
     // endLine is the line of the last byte of the section (excluding the next
@@ -247,6 +272,7 @@ function parseEventSchemasWithRanges(content) {
       required,
       optional,
       enum_dialect_hash,
+      feature_optional,
       line_range: [startLine, endLine],
       short_doc: shortDoc,
       section_text: sectionContent,
@@ -260,6 +286,7 @@ module.exports = {
   SECTION_RE,
   extractFields,
   computeEnumDialectHash,
+  parseFeatureOptional,
   parseEventSchemas,
   parseEventSchemasWithRanges,
 };
