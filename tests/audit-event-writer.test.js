@@ -98,11 +98,25 @@ describe('audit-event-writer (R-SHDW-EMIT gateway)', () => {
       assert.equal(result.event_type, 'schema_shadow_hit');
       assert.deepEqual(result.errors, [], 'errors should be empty');
 
+      // v2.2.9 F1: when timestamp + orchestration_id are autofilled from
+      // the schema's required list, an audit_event_autofilled advisory
+      // accompanies the original event. The original is written first.
       const lines = readEventsJsonl(tmpDir);
-      assert.equal(lines.length, 1, 'exactly one line should be appended');
-      assert.equal(lines[0].type, 'schema_shadow_hit');
-      assert.ok(lines[0].timestamp, 'timestamp auto-filled');
-      assert.equal(lines[0].orchestration_id, 'unknown', 'orchestration_id auto-filled');
+      const originals = lines.filter((e) => e.type === 'schema_shadow_hit');
+      const advisories = lines.filter((e) => e.type === 'audit_event_autofilled');
+      assert.equal(originals.length, 1, 'exactly one original line');
+      assert.equal(advisories.length, 1, 'exactly one F1 advisory');
+      assert.equal(originals[0].type, 'schema_shadow_hit');
+      assert.ok(originals[0].timestamp, 'timestamp auto-filled');
+      assert.equal(originals[0].orchestration_id, 'unknown', 'orchestration_id auto-filled');
+      assert.equal(advisories[0].event_type, 'schema_shadow_hit',
+        'advisory references the underlying event-type');
+      assert.ok(
+        Array.isArray(advisories[0].fields_autofilled) &&
+        advisories[0].fields_autofilled.includes('timestamp') &&
+        advisories[0].fields_autofilled.includes('orchestration_id'),
+        'advisory lists the autofilled fields'
+      );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

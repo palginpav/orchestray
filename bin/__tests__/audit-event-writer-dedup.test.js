@@ -77,7 +77,15 @@ describe('audit-event-writer dedup (v2.2.2 B2)', () => {
     const tmpDir = makeTmpRepo();
     try {
       // schema_shadow_hit has just type+version+event_type required.
-      const lines = callWriteEventN(tmpDir, { type: 'schema_shadow_hit', version: 1, event_type: 'tier2_load' }, 1);
+      // v2.2.9 F1: provide all required fields (timestamp+orchestration_id
+      // included) so the autofill telemetry advisory does not fire.
+      const lines = callWriteEventN(tmpDir, {
+        type: 'schema_shadow_hit',
+        version: 1,
+        timestamp: '2026-04-28T18:00:00.000Z',
+        orchestration_id: 'orch-test',
+        event_type: 'tier2_load',
+      }, 1);
       assert.equal(lines.length, 1, 'exactly one line appended; got: ' + lines.length);
       assert.equal(lines[0].type, 'schema_shadow_hit');
     } finally {
@@ -88,9 +96,13 @@ describe('audit-event-writer dedup (v2.2.2 B2)', () => {
   test('2. schema_shadow_miss known event — single call yields one line', () => {
     const tmpDir = makeTmpRepo();
     try {
+      // v2.2.9 F1: provide all required fields so the autofill advisory
+      // does not fire.
       const lines = callWriteEventN(tmpDir, {
         type: 'schema_shadow_miss',
         version: 1,
+        timestamp: '2026-04-28T18:00:00.000Z',
+        orchestration_id: 'orch-test',
         event_type: 'tier2_load',
         miss_count_24h: 1,
         source_hash: 'abc123',
@@ -163,7 +175,16 @@ describe('audit-event-writer dedup (v2.2.2 B2)', () => {
   test('7. Stress — 100 sequential calls produce exactly 100 lines', () => {
     const tmpDir = makeTmpRepo();
     try {
-      const lines = callWriteEventN(tmpDir, { type: 'schema_shadow_hit', version: 1, event_type: 'tier2_load' }, 100);
+      // v2.2.9 F1: provide all required fields so the autofill advisory
+      // does not fire — the dedup invariant is "1 line per writeEvent
+      // when the payload is complete".
+      const lines = callWriteEventN(tmpDir, {
+        type: 'schema_shadow_hit',
+        version: 1,
+        timestamp: '2026-04-28T18:00:00.000Z',
+        orchestration_id: 'orch-test',
+        event_type: 'tier2_load',
+      }, 100);
       assert.equal(lines.length, 100, 'exactly 100 lines; got: ' + lines.length);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });

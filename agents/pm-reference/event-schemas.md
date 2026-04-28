@@ -6632,3 +6632,33 @@ Emitted by `bin/process-spawn-requests.js` when a spawn request fails the cost c
 Field notes:
 - `reason` ∈ `{above_threshold, quota_exhausted, max_depth_exceeded, user_explicit}`.
 - Max-depth default: 2 (a reactive-spawned agent cannot itself reactive-spawn).
+
+### `audit_event_autofilled` event
+
+Emitted by `bin/_lib/audit-event-writer.js` (F1, v2.2.9) whenever the writer
+populates one or more required fields on an emitted event because the caller
+omitted them. Closes the v2.2.8 silent-drop class (W4 RCA-9: 64/74 = 86% of
+`agent_stop` rows lost because `version: 1` was omitted).
+
+```json
+{
+  "type": "audit_event_autofilled",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx",
+  "event_type": "agent_stop",
+  "fields_autofilled": ["version", "session_id"]
+}
+```
+
+Field notes:
+- `event_type`: the type of the underlying event whose fields were autofilled
+  (NOT the type of this telemetry row, which is always `audit_event_autofilled`).
+- `fields_autofilled`: ordered list of field names the writer populated.
+  Caller-provided values are NEVER reported here — only fields the writer
+  filled from the F1 allowlist (`version`, `timestamp`, `orchestration_id`,
+  `session_id`).
+- Recursion-guarded: this telemetry row never re-triggers itself, even if its
+  own emit goes through the schema-unreadable or skipValidation path.
+- Kill switch: `ORCHESTRAY_AUDIT_AUTOFILL_DISABLED=1` reverts the writer to
+  the pre-F1 two-field behavior, which suppresses this event entirely.

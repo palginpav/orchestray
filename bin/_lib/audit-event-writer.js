@@ -42,7 +42,7 @@ const { atomicAppendJsonl }            = require('./atomic-append');
 const { resolveSafeCwd }               = require('./resolve-project-cwd');
 const { getCurrentOrchestrationFile }  = require('./orchestration-state');
 const { MAX_INPUT_BYTES }              = require('./constants');
-const { validateEvent }                = require('./schema-emit-validator');
+const { validateEvent, getSchemas }    = require('./schema-emit-validator');
 const {
   isSentinelActive,
   recordMiss,
@@ -54,6 +54,7 @@ const {
 // ---------------------------------------------------------------------------
 
 let _inGuardEmit       = false;  // recursion guard for surrogate emission
+let _inAutofillEmit    = false;  // recursion guard for audit_event_autofilled emit
 let _circuitWarnedThisProcess = false;
 let _schemaWarnedThisProcess  = false;
 
@@ -103,11 +104,71 @@ function resolveEventsPath(cwd, eventsPathOverride) {
 }
 
 /**
- * Auto-fill timestamp + orchestration_id on the event if absent.
- * version is NOT auto-filled — explicit emit-site responsibility.
+ * Resolve a best-effort session_id from env. Returns null when neither
+ * `CLAUDE_SESSION_ID` nor `ORCHESTRAY_SESSION_ID` is set — F1 deliberately
+ * does NOT fall back to the pid here. A fabricated session_id would mask
+ * the very emit-side bugs the autofill is meant to surface, so callers
+ * that genuinely have no session context still drop on the missing-field
+ * validation path.
+ */
+function resolveSessionId() {
+  const sid = process.env.CLAUDE_SESSION_ID || process.env.ORCHESTRAY_SESSION_ID;
+  if (sid && typeof sid === 'string' && sid.length > 0) return sid;
+  return null;
+}
+
+/**
+ * F1 (v2.2.9) — explicit allowlist of fields safe to autofill.
+ *
+ * Per `feedback_default_on_shipping.md` + `feedback_mechanical_over_prose.md`,
+ * the autofill closes the v2.2.8 bombshell (W4 RCA-9: 64/74 = 86% of
+ * `agent_stop` rows silently dropped because emitters omitted `version: 1`).
+ * The allowlist is deliberately small — fields outside the allowlist still
+ * drop+surrogate so genuinely-missing payload data does not get masked.
+ *
+ * Each entry is `{ resolve(payload, cwd, schema) -> value | undefined }`.
+ * A resolver returning `undefined` means "no autofill for this field on this
+ * emit" (e.g. session_id with no env present, or version with no schema
+ * declared default). A resolved value of `null` is allowed and counts as a
+ * successful autofill.
+ */
+const AUTOFILL_ALLOWLIST = {
+  version: function (_payload, _cwd, schema) {
+    if (schema && typeof schema.version === 'number') return schema.version;
+    return 1; // hardcoded fallback — every event-schemas.md entry uses v1 by convention
+  },
+  timestamp: function () {
+    return new Date().toISOString();
+  },
+  orchestration_id: function (_payload, cwd) {
+    return resolveOrchestrationId(cwd);
+  },
+  session_id: function () {
+    return resolveSessionId();
+  },
+};
+
+/**
+ * Auto-fill required fields when the emitter omits them.
+ *
+ * History: pre-v2.2.9 this only filled `timestamp` and `orchestration_id`.
+ * v2.2.9 F1 extended the allowlist with `version` (the bombshell fix) and
+ * `session_id` (best-effort env-derived). The expansion is gated by the
+ * schema's declared `required` set — fields outside the allowlist are
+ * untouched even when the schema requires them, so the surrogate path keeps
+ * surfacing genuinely-missing data.
+ *
+ * Kill switch: `ORCHESTRAY_AUDIT_AUTOFILL_DISABLED=1` reverts to the v2.2.8
+ * two-field behavior (`timestamp` + `orchestration_id` only) for paranoid
+ * debug.
+ *
+ * Returns `{ filled, autofilled }` where `autofilled` is the array of field
+ * names this call populated (caller-provided values are NEVER counted).
  */
 function withAutofill(event, cwd) {
   const out = Object.assign({}, event);
+  const autofilled = [];
+
   // Legacy field-name compatibility: pre-v2.1.15 emit code used `event_type`
   // and `schema_version` field names in some sites (e.g. cache-prefix-lock,
   // kill-switch-event, project-intent-fallback). The gateway/validator expect
@@ -122,13 +183,116 @@ function withAutofill(event, cwd) {
   if (typeof out.version === 'number' && typeof out.schema_version !== 'number') {
     out.schema_version = out.version;
   }
-  if (!out.timestamp) out.timestamp = new Date().toISOString();
-  // Only autofill orchestration_id when the field is genuinely absent.
-  // Explicit `null` from the caller is a deliberate "no orchestration active"
-  // marker (see cache-prefix-lock orchestration_id-null behavior) and must
-  // not be replaced.
-  if (!('orchestration_id' in out)) out.orchestration_id = resolveOrchestrationId(cwd);
-  return out;
+
+  const killSwitchOn = process.env.ORCHESTRAY_AUDIT_AUTOFILL_DISABLED === '1';
+
+  if (killSwitchOn) {
+    // v2.2.8-equivalent fallback: only timestamp + orchestration_id.
+    if (!out.timestamp) out.timestamp = new Date().toISOString();
+    if (!('orchestration_id' in out)) out.orchestration_id = resolveOrchestrationId(cwd);
+    return { filled: out, autofilled: [] };
+  }
+
+  // v2.2.9 F1: schema-aware allowlist autofill.
+  //
+  // Look up the schema for this event-type so we can (a) source `version`
+  // from the schema's declared default and (b) only autofill fields that
+  // the schema actually requires (no point filling an optional field).
+  let schema = null;
+  try {
+    const schemas = getSchemas(cwd);
+    if (schemas && out.type) schema = schemas.get(out.type) || null;
+  } catch (_e) { /* fail-open — schema unreadable, fall through */ }
+
+  // The set of required field-names per schema. When schema is unreadable
+  // we still fill timestamp + orchestration_id (preserves v2.2.8 behavior
+  // for the schema-unreadable path) but skip the schema-gated extras.
+  const requiredFields = (schema && Array.isArray(schema.required))
+    ? new Set(schema.required)
+    : null;
+
+  // Iterate the allowlist deterministically (ordered keys).
+  for (const field of Object.keys(AUTOFILL_ALLOWLIST)) {
+    // Caller-provided value wins always — `in` honours explicit `null`/`undefined`
+    // (cache-prefix-lock orchestration_id-null marker, etc.).
+    if (field in out) continue;
+
+    // Schema gating: when we know the schema, only autofill fields the
+    // schema declares as required. timestamp + orchestration_id are filled
+    // unconditionally below to preserve v2.2.8 surface on unknown event-types.
+    if (field !== 'timestamp' && field !== 'orchestration_id') {
+      if (requiredFields && !requiredFields.has(field)) continue;
+      // No schema available → skip schema-gated extras (avoid masking new bugs).
+      if (!requiredFields && field !== 'session_id') continue;
+      // session_id is special: skip when env not present even if schema requires it
+      // (resolver returns undefined and the for-loop continues).
+    }
+
+    const resolver = AUTOFILL_ALLOWLIST[field];
+    let value;
+    try {
+      value = resolver(out, cwd, schema);
+    } catch (_e) {
+      value = undefined;
+    }
+    // `undefined` AND `null` both mean "no autofill on this emit". Returning
+    // `null` would mask the missing-data signal F1 is meant to surface
+    // (session_id is the canonical case — absent env means we genuinely do
+    // not know the session).
+    if (value === undefined || value === null) continue;
+    out[field] = value;
+    autofilled.push(field);
+  }
+
+  // Mirror canonical/legacy version names again post-autofill so the validator
+  // and consumers see both shapes.
+  if (typeof out.version === 'number' && typeof out.schema_version !== 'number') {
+    out.schema_version = out.version;
+  }
+
+  return { filled: out, autofilled };
+}
+
+/**
+ * Compatibility shim for callers that only need the filled payload.
+ * Pre-v2.2.9 callers used the bare object return; v2.2.9 expanded the return
+ * shape. New code should call withAutofill() directly and consume the
+ * `autofilled` list when it needs to emit observability.
+ */
+function withAutofillObject(event, cwd) {
+  return withAutofill(event, cwd).filled;
+}
+
+/**
+ * Emit `audit_event_autofilled` observability row when one or more fields were
+ * autofilled on the just-written event. Recursion-guarded so the telemetry
+ * emit cannot itself trigger a cascade (a self-emit would have an empty
+ * `autofilled` list anyway, but the guard is belt-and-braces).
+ *
+ * The telemetry emit goes through `writeEvent` itself with skipValidation:
+ * the event-type is registered in event-schemas.md (added by F1) so it must
+ * pass schema validation, but we skip the validator to avoid lock-step
+ * recursion across the schema-unreadable path. Failures are swallowed —
+ * observability must never break the underlying write.
+ */
+function emitAutofillTelemetry(eventType, fields, cwd, eventsPath) {
+  if (!fields || fields.length === 0) return;
+  if (_inAutofillEmit) return;
+  if (_inGuardEmit) return; // surrogate path — never emit telemetry from there
+  _inAutofillEmit = true;
+  try {
+    const telemetry = {
+      version:           1,
+      type:              'audit_event_autofilled',
+      event_type:        eventType || 'unknown',
+      fields_autofilled: fields.slice(),
+    };
+    try {
+      writeEvent(telemetry, { cwd, eventsPath, skipValidation: true });
+    } catch (_e) { /* fail-open */ }
+  } finally {
+    _inAutofillEmit = false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +329,7 @@ function writeEvent(eventPayload, opts) {
   // -------------------------------------------------------------------------
   if (opts.skipValidation === true) {
     try {
-      const filled = withAutofill(eventPayload || {}, cwd);
+      const { filled } = withAutofill(eventPayload || {}, cwd);
       atomicAppendJsonl(eventsPath, filled);
       return {
         written:    true,
@@ -206,7 +370,7 @@ function writeEvent(eventPayload, opts) {
       } catch (_e) { /* ignore stderr write failures */ }
     }
     try {
-      const filled = withAutofill(eventPayload || {}, cwd);
+      const { filled } = withAutofill(eventPayload || {}, cwd);
       atomicAppendJsonl(eventsPath, filled);
       return {
         written:    true,
@@ -226,9 +390,11 @@ function writeEvent(eventPayload, opts) {
 
   // -------------------------------------------------------------------------
   // Validation (run on the autofilled payload — required fields like
-  // `timestamp` and `orchestration_id` are auto-populated when absent)
+  // `timestamp`, `orchestration_id`, `version`, and best-effort `session_id`
+  // are auto-populated when absent per F1 (v2.2.9, W4 RCA-9 fix).
   // -------------------------------------------------------------------------
-  const filledPayload = withAutofill(eventPayload || {}, cwd);
+  const { filled: filledPayload, autofilled: autofilledFields } =
+    withAutofill(eventPayload || {}, cwd);
   let validation;
   try {
     validation = validateEvent(cwd, filledPayload);
@@ -258,6 +424,12 @@ function writeEvent(eventPayload, opts) {
     }
     try {
       atomicAppendJsonl(eventsPath, filledPayload);
+      // Schema-unreadable path: F1 deliberately suppresses the autofill
+      // telemetry here. Without the schema we cannot know which fields the
+      // event-type actually requires, so the autofill list is dominated by
+      // the legacy timestamp + orchestration_id pre-fills (which were
+      // silent in v2.2.8). Emitting telemetry on this branch produces
+      // spurious signal in CI environments that stub the schema.
       return {
         written:    true,
         reason:     'ok',
@@ -337,7 +509,7 @@ function writeEvent(eventPayload, opts) {
         );
       } catch (_e) { /* ignore */ }
       try {
-        const rawSurrogate = withAutofill({
+        const { filled: rawSurrogate } = withAutofill({
           version: 1,
           type:    'schema_shadow_validation_block',
           blocked_event_type: validation.event_type || 'unknown',
@@ -394,6 +566,7 @@ function writeEvent(eventPayload, opts) {
   // -------------------------------------------------------------------------
   try {
     atomicAppendJsonl(eventsPath, filledPayload);
+    emitAutofillTelemetry(validation.event_type, autofilledFields, cwd, eventsPath);
     return {
       written:    true,
       reason:     'ok',

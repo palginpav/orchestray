@@ -125,7 +125,13 @@ test('routing-outcome-schema-fix: emit missing required field produces schema_sh
       return m ? m[1] : null;
     }).filter(Boolean);
 
-    assert.ok(missingFields.includes('version'), 'version must be listed as missing');
+    // v2.2.9 F1: version is now autofilled by audit-event-writer's allowlist,
+    // so it is NO LONGER reported as missing. The test focus shifts to the
+    // remaining required fields the writer cannot fabricate (tool_name,
+    // description) — these still drop into the surrogate path, preserving
+    // the v2.2.6 contract for non-allowlisted fields.
+    assert.ok(!missingFields.includes('version'),
+      'version must NOT be listed as missing (F1 autofills it)');
     assert.ok(missingFields.includes('tool_name'), 'tool_name must be listed as missing');
     assert.ok(missingFields.includes('description'), 'description must be listed as missing');
   } finally {
