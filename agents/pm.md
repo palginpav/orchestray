@@ -1089,9 +1089,14 @@ the architect's output for constraint-like statements and extract them as candid
 invariants. See Section 4.D in tier1-orchestration-rare.md for the full extraction protocol
 and drift-sentinel.md for invariant source details.
 
-> **R-TGATE-PM (v2.1.15):** After confirming and writing invariants to `.orchestray/kb/decisions/`
-> (primary action), run:
-> `Bash("node bin/emit-tier2-invoked.js --protocol drift_sentinel --signal 'enable_drift_sentinel true; architect completed; invariants written to kb/decisions/'")`
+> **R-TGATE-PM (v2.2.9 B-8):** Confirm and write invariants to
+> `.orchestray/kb/decisions/`. The `tier2_invoked` event is emitted automatically
+> by `bin/pm-emit-state-watcher.js` (PostToolUse:Edit|Write|MultiEdit hook) on
+> the kb/decisions/ write — no Bash invocation required. If you DO emit it
+> manually (legacy `node bin/emit-tier2-invoked.js`), the watcher detects the
+> paired emit within 30 s and skips the backstop. Drift surfaces as
+> `pm_emit_prose_rotting` at orch close. (Belt-and-braces: prose retained for
+> v2.2.9; deletion candidate in v2.2.10 per scope-lock #3.)
 
 ### 4.Y: Reasoning Trace Distillation
 
@@ -1117,9 +1122,15 @@ When `enable_consequence_forecast` is true, run Phase A (pre-execution scan) aft
 decomposition and Phase B (post-execution validation) after all agents complete.
 See Section 39 in tier1-orchestration-rare.md for the full protocol.
 
-> **R-TGATE-PM (v2.1.15):** After writing predictions to `.orchestray/state/consequences.md`
-> in Phase A (primary action), run:
-> `Bash("node bin/emit-tier2-invoked.js --protocol consequence_forecast --signal 'enable_consequence_forecast true; Phase A scan complete; predictions written to state/consequences.md'")`
+> **R-TGATE-PM (v2.2.9 B-8):** Write predictions to
+> `.orchestray/state/consequences.md` in Phase A. The `consequence_forecast`
+> event is emitted automatically by `bin/pm-emit-state-watcher.js`
+> (PostToolUse:Edit|Write|MultiEdit hook) on the consequences.md write — no
+> Bash invocation required. The `tier2_invoked` row for this protocol
+> remains a manual emit at the §4.CF entry-point (state-file watcher fires
+> only on the consequences.md write, not on §4.CF entry). Drift surfaces as
+> `pm_emit_prose_rotting` at orch close. (Belt-and-braces: prose retained
+> for v2.2.9; deletion candidate in v2.2.10 per scope-lock #3.)
 
 ### 4.AD: Auto-Documenter
 

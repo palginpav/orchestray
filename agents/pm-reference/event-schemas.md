@@ -7135,3 +7135,71 @@ Field notes:
 - `source_hash` / `target_hash` — SHA-256 hex of the canonical (`bin/`) and installed (`.claude/orchestray/bin/`) copies respectively. `null` when the file is missing on that side (orphans always have `source_hash: null`).
 - `feature_optional: false` — this event is REQUIRED to fire on every dual-install divergence; F3's promised-event tracker SHOULD alarm if dark across releases.
 - Kill switch: `ORCHESTRAY_DUAL_INSTALL_CHECK_DISABLED=1` is honored only for non-release SubagentStop invocations. Releases (subagent_type === `release-manager`) always parity-check (scope-lock #3).
+
+### `pm_emit_backstop_engaged`
+
+Emitted by `bin/pm-emit-state-watcher.js` (PostToolUse:Edit|Write|MultiEdit hook,
+v2.2.9 B-8) whenever the watcher had to fire one of 4 prose-only PM emits on
+the PM's behalf because the PM did not emit it within the recent-emit window
+(30 s) of mutating the corresponding state file. Pairs 1:1 with the
+backstop-emitted underlying event (`tier2_invoked`, `pattern_roi_snapshot`,
+`verify_fix_start`, or `consequence_forecast`) — both rows are written in the
+same hook invocation.
+
+```json
+{
+  "version": 1,
+  "type": "pm_emit_backstop_engaged",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id>",
+  "original_event_type": "tier2_invoked | pattern_roi_snapshot | verify_fix_start | consequence_forecast",
+  "source_state_file": ".orchestray/...",
+  "finding_ref": "F-PM-7 | F-PM-9 | F-PM-12 | F-PM-21"
+}
+```
+
+Field notes:
+- `original_event_type`: the event the PM was supposed to emit. The watcher
+  ALSO writes that event with `source: "state_watcher_backstop"` — query for
+  paired rows to reconstruct the missed-emit context.
+- `source_state_file`: project-relative path that triggered the watcher.
+- `finding_ref`: W1 finding slug (`F-PM-7` / `F-PM-9` / `F-PM-12` / `F-PM-21`)
+  for traceability back to the v2.2.9 mechanisation plan.
+
+Kill switch: `ORCHESTRAY_PM_EMIT_WATCHER_DISABLED=1`. Schema stability:
+additive-only.
+
+---
+
+### `pm_emit_prose_rotting`
+
+Emitted by `bin/audit-pm-emit-coverage.js` (Stop hook tail, v2.2.9 B-8.2) at
+orchestration close, ONCE per watched event-type for which backstop emits
+outnumbered PM-prose emits over the threshold (`backstop_count / total >
+0.5`, with a floor of 2 total emits to avoid alarming on a single
+backstop). Tells the operator that a section of pm.md has decayed below
+"good enough" and the prose half of the dual prose-AND-mechanism block
+should be deleted in the next release.
+
+```json
+{
+  "version": 1,
+  "type": "pm_emit_prose_rotting",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id>",
+  "event_type": "tier2_invoked | pattern_roi_snapshot | verify_fix_start | consequence_forecast",
+  "pm_count": 1,
+  "backstop_count": 4,
+  "ratio": 0.8
+}
+```
+
+Field notes:
+- `pm_count`: number of rows of `event_type` for this orch where
+  `source !== "state_watcher_backstop"`.
+- `backstop_count`: number of rows where `source === "state_watcher_backstop"`.
+- `ratio`: `backstop_count / (pm_count + backstop_count)` rounded to floating
+  point. Always > 0.5 when the row is emitted.
+
+Kill switch: `ORCHESTRAY_PM_EMIT_WATCHER_DISABLED=1`. Schema stability:
+additive-only.
