@@ -297,6 +297,36 @@ function emitSkip(cwd, orchestration_id, agent_type, reason, extra) {
   } catch (_e) { /* swallow — advisory hook never crashes */ }
 }
 
+/**
+ * v2.2.9 B-4.3: emit `delegation_delta_marker_missing` when an Agent tool call
+ * carries a non-empty prompt but no delta markers — i.e., the PM forgot to
+ * wrap the delegation. Distinguishes "PM should have emitted markers but
+ * didn't" from "intentionally skipped" (empty prompt, kill switch, etc.).
+ * Fires alongside the existing `delegation_delta_skip(markers_missing)` so
+ * legacy consumers are unaffected.
+ *
+ * Kill switch: ORCHESTRAY_DELEGATION_DELTA_MARKER_TRACK_DISABLED=1 (default-on).
+ *
+ * @param {string} cwd
+ * @param {string} orchestration_id
+ * @param {string} agent_type
+ * @param {string|null} spawn_id
+ */
+function emitMarkerMissing(cwd, orchestration_id, agent_type, spawn_id) {
+  if (process.env.ORCHESTRAY_DELEGATION_DELTA_MARKER_TRACK_DISABLED === '1') return;
+  try {
+    writeEvent({
+      version:           1,
+      schema_version:    1,
+      type:              'delegation_delta_marker_missing',
+      timestamp:         new Date().toISOString(),
+      orchestration_id:  orchestration_id || null,
+      spawn_target_agent: agent_type || null,
+      spawn_id:          spawn_id || null,
+    }, { cwd });
+  } catch (_e) { /* swallow */ }
+}
+
 function emitFromResult(cwd, orchestration_id, agent_type, result) {
   try {
     const type_emitted = result.type === 'delta' ? 'delta' : 'full';
@@ -530,6 +560,9 @@ process.stdin.on('end', () => {
         } else {
           // Retry still failed (should be rare — e.g., injection produced
           // malformed markers). Fall back to skip.
+          // v2.2.9 B-4.3: PM forgot markers AND mechanical injection failed —
+          // observable as marker_missing for an Agent spawn.
+          emitMarkerMissing(cwd, orchestration_id, agent_type, toolInput.spawn_id || null);
           emitSkip(cwd, orchestration_id, agent_type, 'markers_missing');
           emitContinue();
           process.exit(0);
@@ -538,6 +571,9 @@ process.stdin.on('end', () => {
       } else {
         // Injection returned null (guard tripped or prompt already has markers).
         // Fall back to original skip behavior.
+        // v2.2.9 B-4.3: PM forgot markers AND injection guard rejected the
+        // prompt — observable as marker_missing for an Agent spawn.
+        emitMarkerMissing(cwd, orchestration_id, agent_type, toolInput.spawn_id || null);
         emitSkip(cwd, orchestration_id, agent_type, 'markers_missing');
         emitContinue();
         process.exit(0);
