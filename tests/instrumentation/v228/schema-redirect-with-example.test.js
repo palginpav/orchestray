@@ -135,6 +135,7 @@ test('deny message contains worked example with mcp__orchestray__schema_get slug
 
   const payload = {
     tool_name: 'Read',
+    agent_type: 'developer',
     cwd: dir,
     session_id: 'v228-test-1',
     turn_number: 1,
