@@ -7203,3 +7203,106 @@ Field notes:
 
 Kill switch: `ORCHESTRAY_PM_EMIT_WATCHER_DISABLED=1`. Schema stability:
 additive-only.
+
+### `t15_role_schema_violation` event
+
+Emitted by `bin/validate-task-completion.js` when an agent's Structured Result is
+missing a **role-specific required field** (v2.2.9 B-2.1). Hard-reject (exit 2) for
+all 14 roles by default. Per-role kill switch:
+`ORCHESTRAY_T15_<ROLE>_HARD_DISABLED=1`.
+
+```json
+{
+  "version": 1,
+  "type": "t15_role_schema_violation",
+  "timestamp": "<ISO-8601>",
+  "hook": "validate-task-completion",
+  "orchestration_id": "<orch-id>",
+  "agent_role": "<role>",
+  "violations": ["missing_field:design_doc_path"],
+  "role_schema_violation": true,
+  "session_id": "<session-id|null>"
+}
+```
+
+Field notes:
+- `violations` — violation strings. Prefixes: `missing_field:`, `enum_violation:`,
+  `min_count:`, `output_regex:`, `critic_evidence:`, `issues_required:`.
+- `role_schema_violation: true` — distinguishes per-role violations from base-field failures.
+
+---
+
+### `reviewer_scope_blocked` event
+
+Emitted by `bin/validate-reviewer-scope.js` when a reviewer is spawned without an
+explicit file list (v2.2.9 B-2.3). Hard-reject (exit 2) by default.
+Kill switch: `ORCHESTRAY_REVIEWER_SCOPE_HARD_DISABLED=1`.
+
+```json
+{
+  "version": 1,
+  "type": "reviewer_scope_blocked",
+  "timestamp": "<ISO-8601>",
+  "hook": "validate-reviewer-scope",
+  "spawn_target": "reviewer",
+  "missing_block": "## Files to Review",
+  "evidence": "<why scope was judged unbound>",
+  "hard_disabled": false,
+  "session_id": "<session-id|null>"
+}
+```
+
+Field notes:
+- `evidence` — why the scope was judged unbound (e.g. `"no files:/scope: marker, <3 bullet paths"`).
+- `hard_disabled: true` → event type emitted is `reviewer_scope_warn` instead.
+
+---
+
+### `role_write_path_blocked` event
+
+Emitted by `bin/gate-role-write-paths.js` (PreToolUse:Write|Edit|MultiEdit) when a
+write-gated role attempts to write outside its allowlist (v2.2.9 B-2.4).
+Kill switch: `ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1`.
+
+```json
+{
+  "version": 1,
+  "type": "role_write_path_blocked",
+  "timestamp": "<ISO-8601>",
+  "hook": "gate-role-write-paths",
+  "agent_role": "<role>",
+  "attempted_path": "<relative-path>",
+  "allowlist_matched": false,
+  "allowlist": ["..."],
+  "session_id": "<session-id|null>"
+}
+```
+
+Field notes:
+- Gated roles: `reviewer`, `tester`, `documenter`, `release-manager`, `debugger`.
+- `allowlist_matched` is always `false` when this event fires.
+
+---
+
+### `developer_git_violation` event
+
+Emitted by `bin/gate-developer-git.js` (PreToolUse:Bash) when the developer role
+attempts a forbidden git command (v2.2.9 B-2.5).
+Kill switch: `ORCHESTRAY_GIT_GATE_DISABLED=1`.
+
+```json
+{
+  "version": 1,
+  "type": "developer_git_violation",
+  "timestamp": "<ISO-8601>",
+  "hook": "gate-developer-git",
+  "agent_role": "developer",
+  "command": "<first 200 chars of the bash command>",
+  "violation_type": "force_push | hard_reset_origin | release_commit",
+  "description": "<human-readable explanation>",
+  "session_id": "<session-id|null>"
+}
+```
+
+Field notes:
+- `violation_type` ∈ `{force_push, hard_reset_origin, release_commit}`.

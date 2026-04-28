@@ -36,6 +36,8 @@
 const fs = require('fs');
 const path = require('path');
 const { writeEvent } = require('./_lib/audit-event-writer');
+// v2.2.9 B-2.1: per-role schema map (16/38 W2 findings collapse here).
+const { validateRoleSchema, isRoleHardDisabled } = require('./_lib/role-schemas');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
@@ -284,6 +286,10 @@ function validateAuditEventType(event) {
 // v2.1.9 I-12 agent tiers (§5 I-12 tier table).
 // ---------------------------------------------------------------------------
 
+// v2.2.9 B-2.1: 6 prior warn-tier roles (researcher, debugger, inventor,
+// security-engineer, ux-critic, platform-oracle) promoted to hard-tier.
+// Per-role kill switches (`ORCHESTRAY_T15_<ROLE>_HARD_DISABLED=1`) demote a
+// single role back to warn behavior for emergency pinning. No grace flag.
 const HARD_TIER = new Set([
   'developer',
   'architect',
@@ -292,15 +298,15 @@ const HARD_TIER = new Set([
   'tester',
   'release-manager',
   'documenter',
-]);
-const WARN_TIER = new Set([
   'researcher',
   'debugger',
   'inventor',
   'security-engineer',
   'ux-critic',
   'platform-oracle',
+  'project-intent',
 ]);
+const WARN_TIER = new Set([]);
 
 // Per v2.1.9 design-spec §5 I-12 item (c): `assumptions` is required even when
 // empty — the section must appear in every Structured Result so downstream
@@ -926,6 +932,34 @@ function main() {
             '[orchestray] validate-task-completion: WARN — ' + agentRole +
             ' Structured Result missing: ' + check.missing.join(', ') + ' (warn-tier, not blocking).\n'
           );
+        }
+      }
+
+      // v2.2.9 B-2.1: per-role schema validation (16/38 W2 findings collapse here).
+      // Runs AFTER the generic-section check above so missing-section rejections take
+      // precedence. Applies role-specific required fields, enums, regex, sections,
+      // and `files_changed_implies` cross-checks from `bin/_lib/role-schemas.js`.
+      if (agentRole && !isRoleHardDisabled(agentRole, process.env)) {
+        const rawAgentText = [event.result, event.output, event.agent_output]
+          .find(v => typeof v === 'string' && v.length > 0) || '';
+        const violations = validateRoleSchema(agentRole, structuredResult, rawAgentText);
+        if (violations.length > 0) {
+          emitAuditEvent(cwd, {
+            timestamp: new Date().toISOString(),
+            type: 't15_role_schema_violation',
+            hook: 'validate-task-completion',
+            orchestration_id: resolveOrchestrationId(cwd),
+            agent_role: agentRole,
+            violations: violations.map(v => ({ field: v.field, reason: v.reason })),
+            session_id: event.session_id || null,
+          });
+          process.stderr.write(
+            '[orchestray] validate-task-completion: ROLE-SCHEMA violation for ' + agentRole + ':\n' +
+            violations.map(v => '  - ' + v.field + ': ' + v.reason).join('\n') + '\n' +
+            'See bin/_lib/role-schemas.js for the per-role contract.\n'
+          );
+          process.stdout.write(JSON.stringify({ continue: false, reason: 't15_role_schema_violation:' + agentRole }));
+          process.exit(2);
         }
       }
 

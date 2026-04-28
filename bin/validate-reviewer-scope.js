@@ -9,14 +9,14 @@
  * Activates only when `tool_input.subagent_type === "reviewer"`. Scans the
  * delegation prompt body for an explicit file list (markers: `files:`,
  * `scope:` section, or a bulleted list of repo-relative paths). If absent,
- * emits a `reviewer_scope_warn` audit event and exits 0 (WARN — NOT block).
+ * emits a `reviewer_scope_blocked` audit event and exits 2 (BLOCK).
  *
- * Per design spec §5 I-03: "warn-only in v2.1.9 (shadow mode for one release);
- * flip to exit-2 in v2.2 if false-positive rate stays low."
+ * v2.2 promise fulfilled — flipped to exit-2 in v2.2.9 (B-2.3).
+ * Kill switch: ORCHESTRAY_REVIEWER_SCOPE_HARD_DISABLED=1 → reverts to warn-only.
  *
  * Contract:
- *   - exit 0 always (never block)
- *   - emit WARN audit event when scope is broad
+ *   - exit 2 when scope is unbound (hard block, default-on)
+ *   - exit 0 when scope is bounded or kill switch is active
  *   - fail-open on any internal error
  */
 
@@ -147,24 +147,43 @@ function main() {
     const evaluation = evaluateScope(promptBody);
 
     if (!evaluation.scoped) {
+      // v2.2.9 B-2.3: hard-reject unless kill switch is active.
+      const hardDisabled = process.env.ORCHESTRAY_REVIEWER_SCOPE_HARD_DISABLED === '1';
+
       emitAuditEvent(cwd, {
         timestamp: new Date().toISOString(),
-        type: 'reviewer_scope_warn',
+        type: hardDisabled ? 'reviewer_scope_warn' : 'reviewer_scope_blocked',
         hook: 'validate-reviewer-scope',
+        spawn_target: event.tool_input && event.tool_input.subagent_type || 'reviewer',
+        missing_block: '## Files to Review',
         guidance:
-          'Reviewer spawned without an explicit file list. Include a `files:` ' +
-          'section or a bulleted list of paths in the delegation prompt to bound the review scope. ' +
+          'Reviewer spawned without an explicit file list. Include a `## Files to Review` ' +
+          'section or a `files:` key in the delegation prompt to bound the review scope. ' +
           'See agents/pm.md §3.X.',
         evidence: evaluation.evidence,
+        hard_disabled: hardDisabled,
         session_id: event.session_id || null,
       });
+
+      if (hardDisabled) {
+        process.stderr.write(
+          '[orchestray] validate-reviewer-scope: WARN (kill switch active) — reviewer delegation lacks an explicit file list ' +
+          '(evidence: ' + evaluation.evidence + '). Not blocking (ORCHESTRAY_REVIEWER_SCOPE_HARD_DISABLED=1).\n'
+        );
+        process.stdout.write(JSON.stringify({ continue: true }));
+        process.exit(0);
+      }
+
       process.stderr.write(
-        '[orchestray] validate-reviewer-scope: WARN — reviewer delegation lacks an explicit file list ' +
-        '(evidence: ' + evaluation.evidence + '). Not blocking; see agents/pm.md §3.X.\n'
+        '[orchestray] validate-reviewer-scope: BLOCKED — reviewer delegation lacks an explicit file list ' +
+        '(evidence: ' + evaluation.evidence + '). ' +
+        'Add a `## Files to Review` section or `files:` key to the delegation prompt. ' +
+        'Kill switch: ORCHESTRAY_REVIEWER_SCOPE_HARD_DISABLED=1\n'
       );
+      process.stdout.write(JSON.stringify({ continue: false, reason: 'reviewer_scope_missing_file_list' }));
+      process.exit(2);
     }
 
-    // Never block — this is a soft gate in v2.1.9.
     process.stdout.write(JSON.stringify({ continue: true }));
     process.exit(0);
   });

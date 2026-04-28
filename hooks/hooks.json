@@ -205,6 +205,26 @@
           }
         ],
         "matcher": "Write|Edit|MultiEdit|mcp__orchestray__kb_write"
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/gate-role-write-paths.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/gate-developer-git.js",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [
