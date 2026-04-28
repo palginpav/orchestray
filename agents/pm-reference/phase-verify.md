@@ -283,19 +283,28 @@ verify_fix:
 
 **g. Audit logging:**
 
-For each round, append events to `.orchestray/audit/events.jsonl` using `ox events append`:
+For each round, append events to `.orchestray/audit/events.jsonl` using `ox events append`.
+The **`verify_fix_start` event** is **also** emitted automatically by
+`bin/pm-emit-state-watcher.js` (PostToolUse hook) every time you update the
+`verify_fix.round_history` block in `.orchestray/state/tasks/<task-N>.md` —
+the watcher synthesises round/error_count from the latest YAML entry. If you
+emit it manually below, the watcher detects the paired emit within 30 s and
+skips the backstop. **`verify_fix_pass` and `verify_fix_fail` are NOT
+auto-backstopped** — those still require the explicit `ox events append`
+calls below. (v2.2.9 B-8; belt-and-braces prose retained for v2.2.9, full
+auto-coverage candidate in v2.2.10.)
 
-- **Round start:**
+- **Round start (auto-backstopped via watcher; manual emit optional):**
   ```bash
   ox events append --type=verify_fix_start --task-id=<task-N> --extra='{"round":1,"error_count":3}'
   ```
 
-- **Round pass (loop exits successfully):**
+- **Round pass (loop exits successfully) — manual emit REQUIRED:**
   ```bash
   ox events append --type=verify_fix_pass --task-id=<task-N> --extra='{"round":2,"rounds_total":2}'
   ```
 
-- **Round fail (cap reached):**
+- **Round fail (cap reached) — manual emit REQUIRED:**
   ```bash
   ox events append --type=verify_fix_fail --task-id=<task-N> --extra='{"round":3,"remaining_errors":2}'
   ```

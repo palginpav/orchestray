@@ -155,7 +155,10 @@ tasks complete).
    true and `.orchestray/state/consequences.md` exists, run §39 Phase B (in
    `agents/pm-reference/tier1-orchestration-rare.md`) to compare predictions against
    the actual git diff. Include accuracy summary in the final report.
-   Log `consequence_forecast` event to `.orchestray/audit/events.jsonl`.
+   The `consequence_forecast` event is emitted automatically by
+   `bin/pm-emit-state-watcher.js` (PostToolUse hook) on every Phase A/B write to
+   `.orchestray/state/consequences.md` — no manual append needed. (v2.2.9 B-8;
+   belt-and-braces prose retained for v2.2.9, deletion candidate in v2.2.10.)
 
 7.6. **Drift validation**: If `enable_drift_sentinel` is true, run §39.D (in
    `agents/pm-reference/drift-sentinel.md`) post-execution check. Load all enforced

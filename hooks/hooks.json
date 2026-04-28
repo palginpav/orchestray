@@ -266,6 +266,16 @@
           }
         ],
         "matcher": "mcp__orchestray__kb_write|Edit|Write"
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/pm-emit-state-watcher.js",
+            "timeout": 5
+          }
+        ],
+        "matcher": "Edit|Write|MultiEdit"
       }
     ],
     "UserPromptSubmit": [
@@ -424,6 +434,15 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/post-orchestration-extract-on-stop.js",
             "timeout": 60
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/audit-pm-emit-coverage.js",
+            "timeout": 8
           }
         ]
       }
