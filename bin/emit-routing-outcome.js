@@ -25,6 +25,7 @@ const { writeEvent } = require('./_lib/audit-event-writer');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
+const { requireGuard } = require('./_lib/double-fire-guard');
 
 // ---------------------------------------------------------------------------
 // Per-model output token caps used to compute completion_volume_ratio.
@@ -180,6 +181,30 @@ process.stdin.on('end', () => {
     } catch (_e) { /* use default */ }
 
     const toolInput = event.tool_input || {};
+
+    // v2.2.8 Item 4: generalized double-fire guard. Catches dual-install
+    // duplicate registrations. Skip when orchestration_id is unknown
+    // (avoids false positives on non-orchestration spawns).
+    if (orchestrationId !== 'unknown') {
+      const stateDir = path.join(cwd, '.orchestray', 'state');
+      const agentDiscriminator = toolInput.subagent_type || toolInput.agent_type || 'unknown';
+      const dedupKey = orchestrationId + ':' + agentDiscriminator + ':routing';
+      const guard = requireGuard({
+        guardName:       'emit-routing-outcome',
+        dedupKey,
+        ttlMs:           100, // spawn-scoped
+        stateDir,
+        callerPath:      __filename,
+        orchestrationId,
+      });
+      if (!guard.shouldFire) {
+        if (guard.doubleFireEvent) {
+          try { writeEvent(guard.doubleFireEvent, { cwd }); } catch (_e) { /* fail-open */ }
+        }
+        process.stdout.write(JSON.stringify({ continue: true }));
+        process.exit(0);
+      }
+    }
 
     const rawModel = toolInput.model || null;
     const normalizedModel = normalizeModel(rawModel);

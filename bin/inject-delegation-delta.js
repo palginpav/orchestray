@@ -52,6 +52,7 @@ const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { writeEvent }     = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
+const { requireGuard }   = require('./_lib/double-fire-guard');
 
 const PREFIX_CACHE_DIR_REL = path.join('.orchestray', 'state', 'spawn-prefix-cache');
 const DOSSIER_REL          = path.join('.orchestray', 'state', 'resilience-dossier.json');
@@ -421,6 +422,31 @@ process.stdin.on('end', () => {
       emitContinue();
       process.exit(0);
       return;
+    }
+
+    // v2.2.8 Item 4: generalized double-fire guard. Catches dual-install
+    // duplicate registrations where the same hook fires from both the
+    // global ~/.claude/orchestray/bin/ install and the project-local
+    // .claude/orchestray/bin/ install for the same Agent() spawn.
+    {
+      const stateDir = path.join(cwd, '.orchestray', 'state');
+      const dedupKey = orchestration_id + ':' + agent_type + ':delta';
+      const guard = requireGuard({
+        guardName:       'inject-delegation-delta',
+        dedupKey,
+        ttlMs:           100, // spawn-scoped: a legitimate second fire within 100ms is a dual-install
+        stateDir,
+        callerPath:      __filename,
+        orchestrationId: orchestration_id,
+      });
+      if (!guard.shouldFire) {
+        if (guard.doubleFireEvent) {
+          try { writeEvent(guard.doubleFireEvent, { cwd }); } catch (_e) { /* fail-open */ }
+        }
+        emitContinue();
+        process.exit(0);
+        return;
+      }
     }
 
     const prompt = typeof toolInput.prompt === 'string' ? toolInput.prompt : '';
