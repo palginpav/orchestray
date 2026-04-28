@@ -351,7 +351,22 @@ process.stdin.on('end', () => {
       cache = { session_id: null, session: null, active_subagents: [] };
     }
 
-    const line = render(cache, payload, config);
+    let line = render(cache, payload, config);
+
+    // v2.2.8 Item 10: append [loop N/max] segment when /orchestray:loop is active.
+    // Read .orchestray/state/loop.json (best-effort; absent → no-op).
+    try {
+      const _path = require('node:path');
+      const _fs = require('node:fs');
+      const loopPath = _path.join(projectDir, '.orchestray', 'state', 'loop.json');
+      if (_fs.existsSync(loopPath)) {
+        const loop = JSON.parse(_fs.readFileSync(loopPath, 'utf8'));
+        if (loop && typeof loop.iter_count === 'number' && typeof loop.max_iterations === 'number') {
+          line = line + ' [loop ' + loop.iter_count + '/' + loop.max_iterations + ']';
+        }
+      }
+    } catch (_e) { /* fail-open: no loop segment on any error */ }
+
     process.stdout.write(line + '\n');
   } catch (_err) {
     // Strict fail-open: never a stack trace, never multi-line.
