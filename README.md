@@ -8,20 +8,13 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 
 **Simple prompts** pass through to normal Claude Code behavior. **Complex prompts** get the full treatment.
 
-### What's new in v2.2.6
+### What's new in v2.2.7
 
-**v2.2.6 fixes four real bugs in Tokenwright (the prompt compressor that shipped in v2.2.5) and adds the missing telemetry that makes the compressor's behavior visible end-to-end.** Before this release, Tokenwright ran but you couldn't tell — the post-spawn "did we actually save tokens?" event almost never fired, so `/orchestray:analytics` showed a blank where realized savings should be. v2.2.6 makes Tokenwright honest about what it's doing on every spawn.
+**v2.2.7 is a hotfix for v2.2.6.** If you upgraded to v2.2.6, please upgrade to v2.2.7 right away. The v2.2.6 installer had a bug that removed the Tokenwright hook entries from your `~/.claude/settings.json` instead of just deduplicating real duplicates, leaving Tokenwright with nowhere to fire on the next session. v2.2.7 reverts the auto-dedup pass; re-running the installer puts the entries back.
 
-What changes in practice:
+**Everything else from v2.2.6 still ships in v2.2.7** — the four bug fixes (realized-savings event now fires every spawn via transcript-first token resolution, pending-journal cleanup actually removes entries, runtime double-fire guard, journal stays bounded) and the eight new audit events (skip, invariant violation, estimation drift, coverage rollup, double-fire detection, journal truncation, self-probe, realized-unknown).
 
-- **Realized savings now show up in `/orchestray:analytics`.** The hook reads the agent's transcript file directly (same source the cost tracker uses), so the after-the-fact savings event lands every time. When token counts genuinely can't be resolved, the event still fires with `realized_status: "unknown"` and a paired `tokenwright_realized_unknown` row explaining why. Silent skips are gone.
-- **Stop-hook stops firing twice on installs that have both a global and a project-local copy.** The installer now removes the duplicate Tokenwright registrations from your settings.json on every install — no other plugin's hooks are touched.
-- **The pending-entry journal is actually cleaned up.** A reference-equality bug in v2.2.5 meant entries never left; the file grew forever. New code uses key-tuple matching plus a 24-hour TTL, a 100-entry cap, and a 10 KB byte cap. If any cap trips, you see a `tokenwright_journal_truncated` event.
-- **A self-probe runs once on the first session after upgrade** and tells you whether Tokenwright is wired correctly. Hooks de-duplicated, transcript reader works, synthetic compression actually compresses, both events emit. One `tokenwright_self_probe` row in your audit log; stderr banner if any step failed.
-
-New telemetry — eight new audit events make every previously silent path observable: skip events for each kill-switch, an invariant violation event that fires (and falls back to the original prompt) if compression would have dropped a load-bearing section, a drift event when the byte-count estimate diverges from actual tokens by >15%, an end-of-orchestration coverage rollup, and a runtime double-fire guard. The existing `prompt_compression` event also carries per-section drop counts now (`dedup_drop_by_heading`), so analytics readers can see which section types compress effectively.
-
-Default-on. No config required. Restart Claude Code after upgrading.
+What you do: re-run `npx orchestray --global` (or your usual upgrade flow), then restart Claude Code. The hooks are back where they should be.
 
 ### Key features
 

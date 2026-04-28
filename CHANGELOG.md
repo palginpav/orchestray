@@ -3,6 +3,26 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.2.7] - 2026-04-28
+
+v2.2.7 is a hotfix for a regression introduced in v2.2.6. If you upgraded to v2.2.6, **please upgrade to v2.2.7 right away** — the v2.2.6 installer had a bug that removed the Tokenwright hook entries from your `~/.claude/settings.json` instead of just deduplicating real duplicates, leaving Tokenwright with nowhere to fire. v2.2.7 reverts the auto-dedup pass and re-installs the hooks correctly.
+
+### Fixed
+
+- **The installer no longer removes Tokenwright hooks during install.** v2.2.6's "remove duplicate hook registrations" pass compared your `~/.claude/settings.json` against the source-repo plugin manifest, decided the matching entries were duplicates, and stripped them. Because Orchestray does not copy that manifest to the installed plugin location, settings.json is actually the only place those hook registrations live — so removing them silenced Tokenwright entirely. v2.2.7 stops auto-running that dedup pass at install time. The helper script and the runtime double-fire guard remain available for users who genuinely have duplicate registrations from a hand-edited config.
+
+### Migration notes
+
+- **Re-run the installer to restore the hooks.** Run `npx orchestray --global` (or your usual upgrade flow) and the Tokenwright entries will be re-merged into `~/.claude/settings.json` automatically.
+- **Restart Claude Code.** New hook registrations only take effect after a session restart.
+- **No config changes.** All v2.2.6 features (eight new audit events, self-probe, per-section drop tally, B1–B4 fixes) ship unchanged in v2.2.7. Only the installer behavior is reverted.
+
+### Tests
+
+- v2.2.6's 4643 tests + 0 new = **4643 tests passing**, 1 intentional skip, 0 failures. The dedup helper itself still has its tests (3 cases including the quoted-command regression); they continue to pass.
+
+---
+
 ## [2.2.6] - 2026-04-28
 
 v2.2.6 fixes four real bugs in last week's Tokenwright (v2.2.5) and adds the missing telemetry that makes the compressor's behavior observable end-to-end. Before this release, Tokenwright ran but you couldn't tell — the post-spawn "did we actually save tokens?" event almost never fired, so `/orchestray:analytics` showed a blank where realized savings should be. v2.2.6 makes Tokenwright honest about what it's doing on every spawn, and gives operators a one-shot install probe that says "yes, it's wired up correctly" the first time you open a session after upgrading.

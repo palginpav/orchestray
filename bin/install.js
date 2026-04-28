@@ -778,27 +778,16 @@ function install(targetDir) {
   mergeHooks(targetDir);
   console.log(`  \x1b[32m✓\x1b[0m Configured hooks`);
 
-  // 4a. v2.2.6 B3: dedup-plugin-hooks pass — removes hook entries from BOTH
-  // global (~/.claude/settings.json) and local (<project>/.claude/settings.json)
-  // that duplicate scripts already registered in hooks/hooks.json (the canonical
-  // plugin manifest). Per feedback_update_both_installs.md, both installs must
-  // be swept regardless of the --global / --local flag on this invocation.
-  // Idempotent: re-running is a no-op if entries are already absent.
-  try {
-    const { dedupPluginHooks } = require('./_lib/dedup-plugin-hooks');
-    const dedupResult = dedupPluginHooks({
-      globalSettingsPath:  path.join(os.homedir(), '.claude', 'settings.json'),
-      projectSettingsPath: path.join(process.cwd(), '.claude', 'settings.json'),
-      pluginManifestPath:  path.join(pkgRoot, 'hooks', 'hooks.json'),
-    });
-    console.log(
-      `  \x1b[32m✓\x1b[0m dedup-plugin-hooks: removed ${dedupResult.globalEntriesRemoved} global + ` +
-      `${dedupResult.projectEntriesRemoved} project duplicate entries`
-    );
-  } catch (_e) {
-    // Non-fatal — dedup failure must never abort the install.
-    console.log('  \x1b[33m⚠\x1b[0m dedup-plugin-hooks skipped: ' + (_e && _e.message ? _e.message : String(_e)));
-  }
+  // 4a. (v2.2.7) The v2.2.6 auto-dedup pass was REMOVED here. Orchestray
+  // does NOT copy `hooks/hooks.json` to the install location, so the user's
+  // `~/.claude/settings.json` is the *only* place hook registrations live
+  // in a working install. The v2.2.6 dedup compared settings.json against
+  // the source-repo manifest, decided the entries were duplicates, and
+  // removed them — leaving Tokenwright (and only Tokenwright) with nowhere
+  // to fire. The helper at `bin/_lib/dedup-plugin-hooks.js` and the runtime
+  // double-fire guard remain as utilities; users with a hand-edited duplicate
+  // registration can run the helper directly. Auto-invocation at install
+  // time is gone.
 
   // 4b. Register MCP servers with Claude Code (global: ~/.claude.json,
   // local: ./.mcp.json). Tracks names in manifest for clean uninstall.
