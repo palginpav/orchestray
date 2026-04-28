@@ -44,6 +44,8 @@ const { MAX_INPUT_BYTES }   = require('./_lib/constants');
 const { emitTier2Invoked }  = require('./_lib/tier2-invoked-emitter');
 const { runCoverageProbe }  = require('./_lib/tokenwright/coverage-probe');
 const { emitTokenwrightSpawnCoverage } = require('./_lib/tokenwright/emit');
+const { runVerifyFixCoverageProbe } = require('./_lib/verify-fix-coverage');
+const { writeEvent } = require('./_lib/audit-event-writer');
 
 /** Only consider history archives newer than this (ms). 15 minutes. */
 const FRESH_ARCHIVE_WINDOW_MS = 15 * 60 * 1000;
@@ -207,6 +209,49 @@ function processStop(projectRoot) {
     } catch (e) {
       // Fail-safe: don't block the stop hook
       console.error('[post-orch] coverage probe failed:', e && e.message ? e.message : String(e));
+    }
+  }
+
+  // v2.2.8 Item 2: verify-fix coverage report.
+  // Reads archived events.jsonl, counts developer/refactorer agent_starts vs
+  // verify_fix_start events, and emits `verify_fix_coverage_report`.
+  // Kill-switches honored:
+  //   env:    ORCHESTRAY_DISABLE_VERIFY_FIX_COVERAGE=1
+  //   config: verify_fix.coverage_report.enabled === false
+  if (fresh.orchId) {
+    try {
+      if (process.env.ORCHESTRAY_DISABLE_VERIFY_FIX_COVERAGE !== '1') {
+        let vfEnabled = true;
+        try {
+          const cfgPath = path.join(projectRoot, '.orchestray', 'config.json');
+          if (fs.existsSync(cfgPath)) {
+            const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+            if (
+              cfg &&
+              cfg.verify_fix &&
+              cfg.verify_fix.coverage_report &&
+              cfg.verify_fix.coverage_report.enabled === false
+            ) {
+              vfEnabled = false;
+            }
+          }
+        } catch (_e) { /* config unreadable — proceed */ }
+
+        if (vfEnabled) {
+          const vfReport = runVerifyFixCoverageProbe({
+            orchestrationId: fresh.orchId,
+            eventsPath:      fresh.eventsPath,
+          });
+          try {
+            writeEvent(vfReport);
+          } catch (we) {
+            console.error('[post-orch] verify-fix coverage emit failed:', we && we.message ? we.message : String(we));
+          }
+        }
+      }
+    } catch (e) {
+      // Fail-safe: don't block the stop hook
+      console.error('[post-orch] verify-fix coverage probe failed:', e && e.message ? e.message : String(e));
     }
   }
 }

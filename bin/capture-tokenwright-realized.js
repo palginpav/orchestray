@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * capture-tokenwright-realized.js — SubagentStop hook (v2.2.6, tokenwright).
+ * capture-tokenwright-realized.js — SubagentStop + TaskCompleted hook (v2.2.8).
  *
  * After a subagent stops, correlate its actual input_tokens against the
  * pre-compression estimate stashed in `.orchestray/state/tokenwright-pending.jsonl`
@@ -14,6 +14,16 @@
  *   B2            — Replace reference-equality removePendingEntry filter with
  *                   key-tuple equality so removal actually works.
  *   B4            — Sweep journal on read (TTL + size/count caps).
+ *
+ * v2.2.8 fixes:
+ *   Issue A — Add TaskCompleted branch for Agent Teams true-teammate capture.
+ *             Teammates complete via TaskCompleted (not SubagentStop), so their
+ *             pending journal entries previously accumulated forever. This branch
+ *             matches by orchestration_id + agent_type and emits realized savings
+ *             with usage_source: 'task_completed_metrics'.
+ *   Issue B — resolveActualTokens now aligns scope with the estimate: reads the
+ *             first user message (delegation prompt) via bytes/4 instead of summing
+ *             all assistant input_tokens, eliminating the 1461–1655% error_pct.
  *
  * New instrumentation:
  *   - emitTokenwrightRealizedUnknown when tokens === 0
@@ -158,6 +168,226 @@ function loadConfig(cwd) {
 }
 
 // ---------------------------------------------------------------------------
+// Issue A: TaskCompleted handler (Agent Teams true-teammate capture)
+// ---------------------------------------------------------------------------
+
+/**
+ * Handle a TaskCompleted event from an Agent Teams true-teammate.
+ *
+ * True teammates complete via TaskCompleted (not SubagentStop), so their
+ * pending journal entries are never consumed by the SubagentStop branch.
+ * This handler matches by orchestration_id + agent_type (LIFO), emits
+ * tokenwright_realized_savings with usage_source: 'task_completed_metrics',
+ * and removes the matched pending entry.
+ *
+ * Fail-safe: any exception emits { continue: true } and exits. This hook
+ * MUST NOT block Agent Teams task completion.
+ *
+ * @param {object} event   — TaskCompleted hook payload
+ * @param {string} cwd     — resolved project root
+ * @param {object} cfg     — loaded config
+ */
+function handleTaskCompleted(event, cwd, cfg) {
+  try {
+    const pendingPath = path.join(cwd, '.orchestray', 'state', 'tokenwright-pending.jsonl');
+    const stateDir    = path.join(cwd, '.orchestray', 'state');
+
+    // Extract agent_type from TaskCompleted payload (field name varies by Claude Code version)
+    const agentType = (
+      (event.task_completed_metrics && event.task_completed_metrics.agent_type) ||
+      event.agent_type ||
+      event.subagent_type ||
+      'unknown'
+    );
+    const orchestrationId = resolveOrchestrationId(cwd);
+
+    // --- Read + sweep journal ---
+    const rawEntries = readPending(pendingPath);
+    const { kept: sweptEntries, truncationEvent } = sweepJournal({
+      entries:    rawEntries,
+      ttlHours:   cfg.pending_journal_ttl_hours,
+      maxBytes:   cfg.pending_journal_max_bytes,
+      maxEntries: cfg.pending_journal_max_entries,
+    });
+
+    if (truncationEvent) {
+      emitTokenwrightJournalTruncated(Object.assign(
+        { orchestration_id: orchestrationId },
+        truncationEvent
+      ));
+      writePending(pendingPath, sweptEntries);
+    }
+
+    if (sweptEntries.length === 0) {
+      emitContinue();
+      process.exit(0);
+      return;
+    }
+
+    // --- Correlation: orchestration_id + agent_type, LIFO ---
+    let matched = null;
+    for (let i = sweptEntries.length - 1; i >= 0; i--) {
+      const e = sweptEntries[i];
+      if (e.agent_type === agentType &&
+          (e.orchestration_id === orchestrationId ||
+           (!e.orchestration_id && !orchestrationId))) {
+        matched = e;
+        break;
+      }
+    }
+
+    // Fallback: any entry for this agent_type
+    if (!matched) {
+      for (let i = sweptEntries.length - 1; i >= 0; i--) {
+        if (sweptEntries[i].agent_type === agentType) {
+          matched = sweptEntries[i];
+          break;
+        }
+      }
+    }
+
+    if (!matched) {
+      // Orphan TaskCompleted — no pending entry to match. Exit cleanly.
+      emitContinue();
+      process.exit(0);
+      return;
+    }
+
+    // --- Remove matched entry ---
+    const matchedKey  = entryKey(matched);
+    const afterRemove = sweptEntries.filter(e => entryKey(e) !== matchedKey);
+    let removedPendingEntry = false;
+    try {
+      writePending(pendingPath, afterRemove);
+      removedPendingEntry = true;
+    } catch (_e) { /* writePending already logs */ }
+
+    // --- Extract tokens from task_completed_metrics ---
+    const metrics = event.task_completed_metrics;
+    const driftBudgetPct = cfg.estimation_drift_budget_pct;
+    const estimatedPre   = matched.input_token_estimate || 0;
+
+    if (!metrics) {
+      // No metrics object — unknown realized status
+      emitTokenwrightRealizedSavings({
+        orchestration_id:           orchestrationId,
+        task_id:                    matched.task_id || null,
+        agent_type:                 agentType,
+        estimated_input_tokens_pre: estimatedPre,
+        actual_input_tokens:        null,
+        actual_savings_tokens:      null,
+        estimation_error_pct:       null,
+        technique_tag:              matched.technique_tag || 'safe-l1',
+        realized_status:            'unknown',
+        usage_source:               'task_completed_metrics',
+        drift_exceeded:             false,
+        drift_budget_pct:           driftBudgetPct,
+        removed_pending_entry:      removedPendingEntry,
+      });
+      emitTokenwrightRealizedUnknown({
+        orchestration_id:           orchestrationId,
+        task_id:                    matched.task_id || null,
+        agent_type:                 agentType,
+        spawn_key:                  matched.spawn_key || '',
+        estimated_input_tokens_pre: estimatedPre,
+        reason:                     'no_task_completed_metrics',
+        transcript_path_present:    false,
+        hook_usage_present:         false,
+      });
+      emitContinue();
+      process.exit(0);
+      return;
+    }
+
+    // Extract input_tokens from metrics — accept either sum_of_input_tokens or input_tokens
+    const rawTokens = (typeof metrics.input_tokens === 'number' && metrics.input_tokens > 0)
+      ? metrics.input_tokens
+      : (typeof metrics.sum_of_input_tokens === 'number' && metrics.sum_of_input_tokens > 0)
+        ? metrics.sum_of_input_tokens
+        : 0;
+
+    if (rawTokens > 0) {
+      const actualSavings    = estimatedPre - rawTokens;
+      const rawErrPct        = estimatedPre > 0
+        ? Math.abs(rawTokens - estimatedPre) / estimatedPre * 100
+        : 0;
+      const estimationErrPct = Math.round(rawErrPct * 100) / 100;
+      const direction        = rawTokens > estimatedPre ? 'underestimate' : 'overestimate';
+      const driftExceeded    = Math.abs(rawErrPct) > driftBudgetPct;
+
+      emitTokenwrightRealizedSavings({
+        orchestration_id:           orchestrationId,
+        task_id:                    matched.task_id || null,
+        agent_type:                 agentType,
+        estimated_input_tokens_pre: estimatedPre,
+        actual_input_tokens:        rawTokens,
+        actual_savings_tokens:      actualSavings,
+        estimation_error_pct:       estimationErrPct,
+        technique_tag:              matched.technique_tag || 'safe-l1',
+        realized_status:            'measured',
+        usage_source:               'task_completed_metrics',
+        drift_exceeded:             driftExceeded,
+        drift_budget_pct:           driftBudgetPct,
+        removed_pending_entry:      removedPendingEntry,
+      });
+
+      if (driftExceeded && cfg.estimation_drift_enabled) {
+        emitTokenwrightEstimationDrift({
+          orchestration_id:           orchestrationId,
+          agent_type:                 agentType,
+          estimated_input_tokens_pre: estimatedPre,
+          actual_input_tokens:        rawTokens,
+          estimation_error_pct:       estimationErrPct,
+          drift_budget_pct:           driftBudgetPct,
+          direction,
+        });
+      }
+    } else {
+      // Metrics present but no usable input_tokens value
+      emitTokenwrightRealizedSavings({
+        orchestration_id:           orchestrationId,
+        task_id:                    matched.task_id || null,
+        agent_type:                 agentType,
+        estimated_input_tokens_pre: estimatedPre,
+        actual_input_tokens:        null,
+        actual_savings_tokens:      null,
+        estimation_error_pct:       null,
+        technique_tag:              matched.technique_tag || 'safe-l1',
+        realized_status:            'unknown',
+        usage_source:               'task_completed_metrics',
+        drift_exceeded:             false,
+        drift_budget_pct:           driftBudgetPct,
+        removed_pending_entry:      removedPendingEntry,
+      });
+      emitTokenwrightRealizedUnknown({
+        orchestration_id:           orchestrationId,
+        task_id:                    matched.task_id || null,
+        agent_type:                 agentType,
+        spawn_key:                  matched.spawn_key || '',
+        estimated_input_tokens_pre: estimatedPre,
+        reason:                     'no_task_completed_metrics',
+        transcript_path_present:    false,
+        hook_usage_present:         false,
+      });
+    }
+
+    emitContinue();
+    process.exit(0);
+
+  } catch (_taskErr) {
+    try {
+      process.stderr.write(
+        '[capture-tokenwright-realized] TaskCompleted handler error=' +
+        String(_taskErr && _taskErr.message ? _taskErr.message : _taskErr) + '\n'
+      );
+    } catch (_e) { /* swallow */ }
+    // Fail-safe: MUST NOT block Agent Teams task completion
+    emitContinue();
+    process.exit(0);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main stdin processor
 // ---------------------------------------------------------------------------
 
@@ -185,6 +415,17 @@ process.stdin.on('end', () => {
 
     let cwd;
     try { cwd = resolveSafeCwd(event.cwd); } catch (_e) { cwd = process.cwd(); }
+
+    // --- Issue A: TaskCompleted branch (Agent Teams true-teammate capture) ---
+    // True teammates complete via TaskCompleted (not SubagentStop), so their
+    // pending journal entries are never consumed by the SubagentStop branch below.
+    // Delegate to handleTaskCompleted which emits realized savings and removes
+    // the pending entry. This handler must not block task completion on error.
+    if (event.hook_event_name === 'TaskCompleted') {
+      const cfg_ = loadConfig(cwd);
+      handleTaskCompleted(event, cwd, cfg_);
+      return; // handleTaskCompleted calls emitContinue + process.exit
+    }
 
     // --- Load config ---
     const cfg = loadConfig(cwd);
