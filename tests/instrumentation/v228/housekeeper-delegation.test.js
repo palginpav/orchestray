@@ -254,63 +254,15 @@ test('inject: no sentinel present → passthrough (continue: true, no updatedInp
     'no updatedInput when no sentinel');
 });
 
-test('inject: sentinel present + non-housekeeper spawn → prompt prepended, sentinel cleared', (t) => {
-  const dir = makeTmpDir(t);
-  scaffoldProject(dir);
+// v2.2.9 B-1.1: inject-housekeeper-pending.js was demoted to a one-release
+// deprecation shim. The prose-nudge-into-prompt mechanism has been replaced
+// by mechanical spawn-queue insertion in spawn-housekeeper-on-trigger.js.
+// These two tests assert the old v2.2.8 behavior that no longer exists; the
+// new behavior is covered by bin/__tests__/v229-housekeeper-auto-spawn.test.js.
+// v2.2.10 will delete the shim entirely and remove these test stubs.
+test.skip('inject: sentinel present + non-housekeeper spawn → prompt prepended, sentinel cleared (v2.2.9 B-1.1: superseded)', () => {});
 
-  // Write sentinel manually.
-  const sp = sentinelPath(dir);
-  fs.writeFileSync(sp, JSON.stringify({
-    trigger_type:     'kb_write',
-    source_file:      'facts/test.md',
-    orchestration_id: 'orch-test-hk-v228',
-    ts:               new Date().toISOString(),
-  }), 'utf8');
-
-  const result = runInjectScript(dir, makeAgentSpawnPayload(dir, 'developer', 'build it'));
-  assert.equal(result.status, 0, `stderr: ${result.stderr}`);
-
-  const out = JSON.parse(result.stdout);
-  assert.equal(out.continue, true);
-
-  // updatedInput.prompt should start with the pending note.
-  assert.ok(out.hookSpecificOutput, 'hookSpecificOutput should be present');
-  assert.ok(out.hookSpecificOutput.updatedInput, 'updatedInput should be present');
-  const prompt = out.hookSpecificOutput.updatedInput.prompt;
-  assert.ok(prompt.startsWith('## Pending housekeeper trigger'),
-    `prompt should start with pending note, got: ${prompt.slice(0, 80)}`);
-  assert.ok(prompt.includes('kb_write'), 'prompt should mention trigger type');
-  assert.ok(prompt.includes('build it'), 'original prompt should be preserved in output');
-
-  // Sentinel should be cleared.
-  assert.ok(!fs.existsSync(sp), 'sentinel should be cleared after inject');
-});
-
-test('inject: sentinel present + housekeeper spawn → sentinel cleared, no prompt mutation', (t) => {
-  const dir = makeTmpDir(t);
-  scaffoldProject(dir);
-
-  const sp = sentinelPath(dir);
-  fs.writeFileSync(sp, JSON.stringify({
-    trigger_type:     'kb_write',
-    source_file:      'facts/test.md',
-    orchestration_id: 'orch-test-hk-v228',
-    ts:               new Date().toISOString(),
-  }), 'utf8');
-
-  const result = runInjectScript(dir, makeAgentSpawnPayload(dir, 'orchestray-housekeeper', 'verify kb'));
-  assert.equal(result.status, 0, `stderr: ${result.stderr}`);
-
-  const out = JSON.parse(result.stdout);
-  assert.equal(out.continue, true);
-
-  // No prompt mutation for housekeeper spawns.
-  const updatedInput = out.hookSpecificOutput && out.hookSpecificOutput.updatedInput;
-  assert.ok(!updatedInput, 'no updatedInput mutation for housekeeper spawn');
-
-  // Sentinel cleared.
-  assert.ok(!fs.existsSync(sp), 'sentinel should be cleared when housekeeper spawns');
-});
+test.skip('inject: sentinel present + housekeeper spawn → sentinel cleared, no prompt mutation (v2.2.9 B-1.1: superseded)', () => {});
 
 test('inject: corrupted sentinel → cleared, passthrough (fail-open)', (t) => {
   const dir = makeTmpDir(t);

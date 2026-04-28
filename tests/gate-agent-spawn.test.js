@@ -50,18 +50,27 @@ function makeDir({ withOrch = false } = {}) {
   return dir;
 }
 
-/** Run the hook script with the given event payload on stdin. */
-function run(payload) {
+/** Run the hook script with the given event payload on stdin.
+ *  Optional `env` overrides allow tests to opt into B-7.4 hard-block (default
+ *  behavior in v2.2.9) or out of it via `ORCHESTRAY_STRICT_MODEL_REQUIRED=0`. */
+function run(payload, { env } = {}) {
   const result = spawnSync(process.execPath, [SCRIPT], {
     input: typeof payload === 'string' ? payload : JSON.stringify(payload),
     encoding: 'utf8',
     timeout: 10000,
+    env: Object.assign({}, process.env, env || {}),
   });
   return {
     stdout: result.stdout || '',
     stderr: result.stderr || '',
     status: result.status,
   };
+}
+
+/** v2.2.9 B-7.4: default is hard-block on missing model. R-DX1 auto-resolve
+ *  tests must opt out via ORCHESTRAY_STRICT_MODEL_REQUIRED=0. */
+function runAutoResolve(payload) {
+  return run(payload, { env: { ORCHESTRAY_STRICT_MODEL_REQUIRED: '0' } });
 }
 
 // ---------------------------------------------------------------------------
@@ -96,7 +105,7 @@ describe('tool filtering', () => {
   // Missing model auto-resolves to sonnet (exit 0) instead of hard-blocking (exit 2).
   test('Task tool_name inside orchestration without model auto-resolves (R-DX1)', () => {
     const dir = makeDir({ withOrch: true });
-    const { status, stderr } = run({ tool_name: 'Task', cwd: dir, tool_input: {} });
+    const { status, stderr } = runAutoResolve({ tool_name: 'Task', cwd: dir, tool_input: {} });
     assert.equal(status, 0);
     assert.match(stderr, /defaulting to "sonnet"/);
   });
@@ -140,7 +149,7 @@ describe('tool filtering', () => {
   // Updated for 2.1.11 (R-DX1): missing model no longer hard-blocks; auto-resolve applies.
   test('missing tool_name but tool_input.tool="Agent" — auto-resolves model (R-DX1)', () => {
     const dir = makeDir({ withOrch: true });
-    const { status, stderr } = run({
+    const { status, stderr } = runAutoResolve({
       cwd: dir,
       tool_input: { tool: 'Agent' /* no model — auto-resolved via R-DX1 */ },
     });
@@ -183,7 +192,7 @@ describe('D3 Fix 2 — Explore dispatch allowlist', () => {
   // Updated for 2.1.11 (R-DX1): missing model auto-resolves to sonnet (exit 0).
   test('Explore inside orchestration with no model auto-resolves (R-DX1)', () => {
     const dir = makeDir({ withOrch: true });
-    const { status, stderr } = run({ tool_name: 'Explore', cwd: dir, tool_input: {} });
+    const { status, stderr } = runAutoResolve({ tool_name: 'Explore', cwd: dir, tool_input: {} });
     assert.equal(status, 0);
     assert.match(stderr, /defaulting to "sonnet"/);
   });
@@ -531,7 +540,7 @@ describe('inside orchestration — block paths', () => {
   // Use ORCHESTRAY_STRICT_MODEL_REQUIRED=1 to restore the old blocking behavior.
   test('missing model parameter auto-resolves to sonnet (R-DX1)', () => {
     const dir = makeDir({ withOrch: true });
-    const { status, stderr } = run({
+    const { status, stderr } = runAutoResolve({
       tool_name: 'Agent',
       cwd: dir,
       tool_input: {},
@@ -542,7 +551,7 @@ describe('inside orchestration — block paths', () => {
 
   test('null model auto-resolves to sonnet (R-DX1)', () => {
     const dir = makeDir({ withOrch: true });
-    const { status, stderr } = run({
+    const { status, stderr } = runAutoResolve({
       tool_name: 'Agent',
       cwd: dir,
       tool_input: { model: null },
@@ -553,7 +562,7 @@ describe('inside orchestration — block paths', () => {
 
   test('empty string model auto-resolves to sonnet (R-DX1)', () => {
     const dir = makeDir({ withOrch: true });
-    const { status, stderr } = run({
+    const { status, stderr } = runAutoResolve({
       tool_name: 'Agent',
       cwd: dir,
       tool_input: { model: '' },
@@ -694,7 +703,7 @@ describe('failure modes — fail open', () => {
     // The script does: const toolInput = event.tool_input || {};
     // then const model = toolInput.model; => undefined => R-DX1 auto-resolve → sonnet.
     const dir = makeDir({ withOrch: true });
-    const { status, stderr } = run({ tool_name: 'Agent', cwd: dir });
+    const { status, stderr } = runAutoResolve({ tool_name: 'Agent', cwd: dir });
     // R-DX1: auto-resolve to global_default_sonnet → exit 0.
     assert.equal(status, 0);
     assert.match(stderr, /defaulting to "sonnet"/);

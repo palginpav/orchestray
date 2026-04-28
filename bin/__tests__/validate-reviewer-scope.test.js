@@ -60,9 +60,12 @@ describe('validate-reviewer-scope — shouldValidate', () => {
   });
 });
 
-describe('validate-reviewer-scope — integration (never blocks)', () => {
-  test('warn path: exit 0 but emits reviewer_scope_warn event', () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vrs-warn-'));
+describe('validate-reviewer-scope — integration (hard blocks on unscoped prompt)', () => {
+  // v2.2.9 B-2.3: reviewer-scope gate flipped from soft (warn+exit-0) to hard
+  // (exit-2) by default. ORCHESTRAY_REVIEWER_SCOPE_HARD_DISABLED=1 restores
+  // warn-only behavior. The suite name is updated to reflect the new behavior.
+  test('block path: exit 2 and emits reviewer_scope_blocked event (B-2.3 hard gate)', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vrs-block-'));
     const res = spawnSync('node', [HOOK], {
       input: JSON.stringify({
         tool_name: 'Agent',
@@ -76,11 +79,11 @@ describe('validate-reviewer-scope — integration (never blocks)', () => {
       encoding: 'utf8',
       timeout: 10_000,
     });
-    assert.equal(res.status, 0, 'reviewer-scope must NEVER block (soft gate v2.1.9)');
+    assert.equal(res.status, 2, 'reviewer-scope must BLOCK when scope is unbound (hard gate v2.2.9 B-2.3)');
     const auditPath = path.join(tmp, '.orchestray', 'audit', 'events.jsonl');
     assert.ok(fs.existsSync(auditPath));
     const raw = fs.readFileSync(auditPath, 'utf8');
-    assert.match(raw, /reviewer_scope_warn/);
+    assert.match(raw, /reviewer_scope_blocked/);
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 

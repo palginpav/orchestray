@@ -152,7 +152,8 @@ describe('agents/pm.md Block A hash stability', () => {
     //     directing PM (and downstream agents) to use mcp__orchestray__schema_get
     //   - housekeeper delegation: Section 23f rewritten with explicit Agent() call
     //     syntax, trigger conditions table, and routing.jsonl requirement
-    const PINNED_BLOCK_A_HASH = '7ebdac801de71799';
+    // v2.2.9 B-1/B-4/B-7.4: prose deletions in pm.md shifted Block A hash.
+    const PINNED_BLOCK_A_HASH = '8244ca6bfc587791';
 
     assert.equal(
       actualHash,

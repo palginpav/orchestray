@@ -560,20 +560,25 @@ describe('R-DX2 artifact-path validation — validateArtifactPaths unit tests', 
   test('TC11: ORCHESTRAY_ARTIFACT_PATH_ENFORCEMENT=warn with placeholder — integration test', () => {
     // This is tested via the CLI integration (subprocess) since the env var
     // affects process.exit() behavior at runtime.
+    // v2.2.9 B-2.1: reviewer now requires verdict, rubric_scores, always_on_dimensions.
+    // Include them so the role-schema check passes and only the artifact-path warn fires.
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'rdx2-warn-'));
     try {
       const payload = JSON.stringify({
         hook_event_name: 'SubagentStop',
         subagent_type: 'reviewer',
-        output: JSON.stringify({
+        output: '## Structured Result\n```json\n' + JSON.stringify({
           status: 'success',
           summary: 'done',
           files_changed: [],
           files_read: [],
           issues: [],
           assumptions: [],
+          verdict: 'approve',
+          rubric_scores: { correctness: 'pass' },
+          always_on_dimensions: ['correctness'],
           report_path: 'none (returned as text)',
-        }),
+        }) + '\n```\n',
         cwd,
       });
       const result = spawnSync(process.execPath, [SCRIPT], {

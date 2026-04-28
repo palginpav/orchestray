@@ -467,6 +467,8 @@ describe('kill flag', () => {
       input: JSON.stringify(payload),
       encoding: 'utf8',
       timeout: 10000,
+      // v2.2.9 B-7.4: opt out of strict-model hard-block to exercise R-DX1 auto-resolve path.
+      env: Object.assign({}, process.env, { ORCHESTRAY_STRICT_MODEL_REQUIRED: '0' }),
     });
     // R-DX1: auto-resolve to global_default_sonnet → exit 0.
     // Kill flag only disables advisory logic — gate still processes the spawn.

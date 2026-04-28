@@ -101,11 +101,23 @@ describe('P2.2 — validate-task-completion rejects forbidden scout tool calls',
     // `haiku-scout` agent_type. Developer payloads still pass through the
     // T15 pre-done checklist, so a fully valid Structured Result is required
     // for the test to land at exit 0 without being blocked by THAT path.
+    // v2.2.9 B-2.1: developer now requires self_check_passed, tests_added_or_existing
+    // in addition to the 5 base fields — include them so role-schema passes.
+    const developerResult = {
+      status: 'success',
+      summary: 'implemented the feature',
+      files_changed: ['src/foo.js'],
+      files_read: ['src/foo.js'],
+      issues: [],
+      assumptions: [],
+      self_check_passed: true,
+      tests_added_or_existing: true,
+    };
     const r = runHook({
       hook_event_name: 'SubagentStop',
       subagent_type: 'developer',
       tool_calls: [{ name: 'Edit' }],
-      output: '## Structured Result\n```json\n' + JSON.stringify(VALID_RESULT) + '\n```\n',
+      output: '## Structured Result\n```json\n' + JSON.stringify(developerResult) + '\n```\n',
     });
     assert.equal(r.status, 0, 'developer should not be blocked by scout rule; stderr=' + r.stderr);
     const events = readEvents(r.tmp);

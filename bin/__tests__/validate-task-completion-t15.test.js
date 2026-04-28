@@ -129,17 +129,20 @@ describe('validate-task-completion — integration (T15)', () => {
     fs.rmSync(r.tmp, { recursive: true, force: true });
   });
 
-  test('warn path: warn-tier agent with malformed result exits 0', () => {
+  // v2.2.9 B-2.1: researcher promoted from warn-tier to hard-tier.
+  // WARN_TIER is now empty — all known roles are hard-tier. The test is
+  // updated to verify researcher now hard-blocks (exit 2) on missing sections.
+  test('hard path: researcher (promoted to hard-tier in B-2.1) exits 2 on missing sections', () => {
     const r = runHook({
       hook_event_name: 'TaskCompleted',
       subagent_type: 'researcher',
       output: '## Structured Result\n```json\n{"status":"success"}\n```\n',
     });
-    assert.equal(r.status, 0);
+    assert.equal(r.status, 2, 'researcher is hard-tier as of v2.2.9 B-2.1 — must block');
     const auditPath = path.join(r.tmp, '.orchestray', 'audit', 'events.jsonl');
     assert.ok(fs.existsSync(auditPath));
     const content = fs.readFileSync(auditPath, 'utf8');
-    assert.match(content, /task_completion_warn/);
+    assert.match(content, /pre_done_checklist_failed/);
     fs.rmSync(r.tmp, { recursive: true, force: true });
   });
 
@@ -148,7 +151,9 @@ describe('validate-task-completion — integration (T15)', () => {
       hook_event_name: 'TaskCompleted',
       subagent_type: 'developer',
       output: '## Structured Result\n```json\n' + JSON.stringify({
+        // v2.2.9 B-2.1: developer requires `self_check_passed` and `tests_added_or_existing`.
         status: 'success', summary: 'ok', files_changed: [], files_read: [], issues: [], assumptions: [],
+        self_check_passed: true, tests_added_or_existing: true,
       }) + '\n```\n',
     });
     assert.equal(r.status, 0);
@@ -193,7 +198,9 @@ describe('validate-task-completion — integration (T15)', () => {
       hook_event_name: 'SubagentStop',
       subagent_type: 'developer',
       output: '## Structured Result\n```json\n' + JSON.stringify({
+        // v2.2.9 B-2.1: developer requires `self_check_passed` and `tests_added_or_existing`.
         status: 'success', summary: 'ok', files_changed: [], files_read: [], issues: [], assumptions: [],
+        self_check_passed: true, tests_added_or_existing: true,
       }) + '\n```\n',
     });
     assert.equal(r.status, 0);
@@ -203,18 +210,21 @@ describe('validate-task-completion — integration (T15)', () => {
   test('SubagentStop bypasses Agent-Teams task_id/task_subject gate', () => {
     // SubagentStop events never carry task_id/task_subject — must not be
     // misclassified as a malformed Agent-Teams event.
+    // v2.2.9 B-2.1: researcher promoted to hard-tier with `sources_cited` >= 3.
+    // Use a fully-compliant researcher payload to confirm the SubagentStop bypass
+    // path executes without tripping any gate.
     const r = runHook({
       hook_event_name: 'SubagentStop',
-      subagent_type: 'researcher', // warn-tier: missing assumptions → warn, not block
+      subagent_type: 'researcher',
       output: '## Structured Result\n```json\n' + JSON.stringify({
-        status: 'success', summary: 'ok', files_changed: [], files_read: [], issues: [],
+        status: 'success', summary: 'ok', files_changed: [], files_read: [], issues: [], assumptions: [],
+        sources_cited: ['https://a.example', 'https://b.example', 'https://c.example'],
       }) + '\n```\n',
     });
-    assert.equal(r.status, 0, 'warn-tier should exit 0, not 2 via teams gate');
+    assert.equal(r.status, 0, 'fully-compliant researcher payload should pass T15');
     const auditPath = path.join(r.tmp, '.orchestray', 'audit', 'events.jsonl');
     const content = fs.existsSync(auditPath) ? fs.readFileSync(auditPath, 'utf8') : '';
     assert.doesNotMatch(content, /missing task_id/, 'must not trip teams gate');
-    assert.match(content, /task_completion_warn/);
     fs.rmSync(r.tmp, { recursive: true, force: true });
   });
 
@@ -279,11 +289,16 @@ describe('validate-task-completion — PRE_DONE_ENFORCEMENT kill-switch', () => 
   });
 
   test('PRE_DONE_ENFORCEMENT=warn still lets valid payloads pass', () => {
+    // v2.2.9 B-2.1: developer now requires files_read, self_check_passed,
+    // tests_added_or_existing in addition to the 5 base fields. Include them
+    // so the role-schema check passes alongside the PRE_DONE_ENFORCEMENT test.
     const validPayload = {
       hook_event_name: 'SubagentStop',
       subagent_type: 'developer',
       output: '## Structured Result\n```json\n' + JSON.stringify({
-        status: 'success', summary: 'ok', files_changed: [], files_read: [], issues: [], assumptions: [],
+        status: 'success', summary: 'ok', files_changed: [], files_read: ['src/foo.js'],
+        issues: [], assumptions: [],
+        self_check_passed: true, tests_added_or_existing: true,
       }) + '\n```\n',
     };
     const r = runHookWithEnv(validPayload, { PRE_DONE_ENFORCEMENT: 'warn' });

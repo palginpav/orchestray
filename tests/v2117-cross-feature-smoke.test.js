@@ -313,13 +313,15 @@ describe('v2.1.17 cross-feature — schema shadow integrity', () => {
     ROOT, 'agents', 'pm-reference', 'event-schemas.shadow.json'
   );
 
-  test('shadow file exists and is under the 8192-byte cap', () => {
+  test('shadow file exists and is under the 12288-byte cap', () => {
     assert.ok(fs.existsSync(SHADOW_PATH),
       'event-schemas.shadow.json must exist');
     const stat = fs.statSync(SHADOW_PATH);
     assert.ok(stat.size > 0, 'shadow must be non-empty');
-    assert.ok(stat.size <= 8192,
-      `shadow size must be <= 8192 bytes; got ${stat.size}`);
+    // v2.2.9: MAX_SHADOW_BYTES bumped from 8192 → 12288 to accommodate
+    // B-2.1 per-role schema entries and new event types in this release.
+    assert.ok(stat.size <= 12288,
+      `shadow size must be <= 12288 bytes; got ${stat.size}`);
   });
 
   test('shadow includes all four v2.1.17 R-AIDER-FULL event types', () => {
