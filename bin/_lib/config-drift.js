@@ -178,6 +178,13 @@ const KNOWN_TOP_LEVEL_KEYS = Object.freeze([
   // Mirrors reactiveSpawnSchema in schemas/config.schema.js.
   'reactive_spawn',
 
+  // v2.2.9 B-7: numeric thresholds out of prose. Mirrors spawnSchema,
+  // repoMapThresholdsSchema, and the auto_trigger_ttl_seconds top-level key
+  // in schemas/config.schema.js.
+  'spawn',
+  'repo_map_thresholds',
+  'auto_trigger_ttl_seconds',
+
   // Meta
   'config_drift_silence',
 ]);

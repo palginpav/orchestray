@@ -190,6 +190,16 @@
           }
         ],
         "matcher": "Write|Edit|MultiEdit"
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-kb-index.js",
+            "timeout": 5
+          }
+        ],
+        "matcher": "Write|Edit|MultiEdit|mcp__orchestray__kb_write"
       }
     ],
     "PostToolUse": [
@@ -269,6 +279,15 @@
       }
     ],
     "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/expire-auto-trigger.js",
+            "timeout": 3
+          }
+        ]
+      },
       {
         "hooks": [
           {
@@ -424,6 +443,15 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/post-orchestration-extract-on-stop.js",
             "timeout": 60
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/scan-cite-labels.js",
+            "timeout": 3
           }
         ]
       }

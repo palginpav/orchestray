@@ -6632,3 +6632,116 @@ Emitted by `bin/process-spawn-requests.js` when a spawn request fails the cost c
 Field notes:
 - `reason` ∈ `{above_threshold, quota_exhausted, max_depth_exceeded, user_explicit}`.
 - Max-depth default: 2 (a reactive-spawned agent cannot itself reactive-spawn).
+
+### `agent_max_turns_violation` event
+
+Emitted by `bin/gate-agent-spawn.js` (PreToolUse:Agent) when an `Agent()` spawn requests `maxTurns` greater than `spawn.max_turns_hard_cap` (default 200). Spawn is hard-blocked.
+
+```json
+{
+  "type": "agent_max_turns_violation",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "spawn_target": "developer",
+  "requested_turns": 999,
+  "hard_cap": 200
+}
+```
+
+Field notes:
+- v2.2.9 B-7.1 (W1 F-PM-18): mechanises the prose-only base_turns table at pm.md:872-885 by enforcing a single hard ceiling read from `.orchestray/config.json`.
+- Operator override: raise `spawn.max_turns_hard_cap` in config (no env kill switch — per-call permission is the escape hatch).
+
+### `repo_map_threshold_drift` event
+
+Emitted by `bin/_lib/repo-map-drift-detector.js` (called from periodic validation) when a numeric threshold cited in pm.md / phase-*.md prose disagrees with `.orchestray/config.json` `repo_map_thresholds.*`.
+
+```json
+{
+  "type": "repo_map_threshold_drift",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "config_value": 96,
+  "pm_prose_value": 64,
+  "source_pm_line": 247
+}
+```
+
+Field notes:
+- v2.2.9 B-7.2 (W1 F-PM-11, F-PM-19): warn-only in v2.2.9 (`repo_map_thresholds.shadow_mode: true`); flips to hard-error in v2.2.10.
+- `source_pm_line` may be in `pm.md`, `phase-execute.md`, `phase-decomp.md`, or `phase-close.md`.
+
+### `kb_index_invalid` event
+
+Emitted by `bin/validate-kb-index.js` (PreToolUse:Edit|Write|mcp__orchestray__kb_write) when `.orchestray/kb/index.json` fails structural validation. The triggering write is hard-blocked.
+
+```json
+{
+  "type": "kb_index_invalid",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "index_path": "/abs/.orchestray/kb/index.json",
+  "reason": "parse_error"
+}
+```
+
+Field notes:
+- v2.2.9 B-7.3 (W1 F-PM-26): mechanises the prose-only "update index.json" KB-write protocol.
+- `reason` enum: `parse_error`, `root_not_object`, `entries_not_array`, `entry_<i>_bad_id`, `entry_<i>_bad_path`, `entry_<i>_path_unsafe`, `entry_<i>_duplicate_id_<id>`, `bucket_<name>_not_array`, `read_error`.
+
+### `agent_model_unspecified_blocked` event
+
+Emitted by `bin/gate-agent-spawn.js` when an `Agent()` spawn omits the `model` parameter and the v2.2.9 default hard-block is active (`ORCHESTRAY_STRICT_MODEL_REQUIRED != '0'`).
+
+```json
+{
+  "type": "agent_model_unspecified_blocked",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "spawn_target": "developer"
+}
+```
+
+Field notes:
+- v2.2.9 B-7.4 (W1 F-PM-17, locked per scope-lock #4): default hard-block. Set `ORCHESTRAY_STRICT_MODEL_REQUIRED=0` to disable the gate and restore the legacy auto-resolve cascade.
+- The pm.md:1879 soft-mode prose has been deleted in this release.
+
+### `cite_unlabelled_detected` event
+
+Emitted by `bin/scan-cite-labels.js` (Stop) when assistant output contains an `@orchestray:pattern://<slug>` URL that lacks a `[label]` (e.g., `[local]`, `[shared]`, `[team]`) immediately after.
+
+```json
+{
+  "type": "cite_unlabelled_detected",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "pattern_url": "@orchestray:pattern://retry-on-flake",
+  "surrounding_text": "...we apply @orchestray:pattern://retry-on-flake here..."
+}
+```
+
+Field notes:
+- v2.2.9 B-7.5 (W1 F-PM-27): warn-tier — never blocks the spawn or stop. Promotes to hard-block in a future release.
+- `surrounding_text` truncated to 200 chars for log hygiene.
+
+### `auto_trigger_expired` event
+
+Emitted by `bin/_lib/auto-trigger-ttl.js` (called from `bin/expire-auto-trigger.js`, UserPromptSubmit early-tail) when `.orchestray/auto-trigger.json` is older than `auto_trigger_ttl_seconds` (default 3600) and gets unlinked.
+
+```json
+{
+  "type": "auto_trigger_expired",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "age_seconds": 7400,
+  "file_path": "/abs/.orchestray/auto-trigger.json"
+}
+```
+
+Field notes:
+- v2.2.9 B-7.6 (W1 F-PM-25, folded from defer list per scope-lock #1): mechanises the prose-only "DELETE the auto-trigger.json file immediately" lifecycle invariant.
+- TTL is reset every UserPromptSubmit; a marker that survives one TTL window is treated as orphaned.
