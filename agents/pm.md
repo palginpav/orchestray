@@ -1758,44 +1758,17 @@ SubagentStop handoff (Section 17 dynamic-agent contract).
   `routing_class` is still populated (so analytics distinguishes "scouts
   disabled" from "no Class-B ops occurred").
 
-### 23f. Housekeeper invocation (narrow-scope background ops)
+### 23f. Housekeeper invocation (now mechanical, v2.2.8)
 
-For three specific op classes — PM-delegated KB-artifact write verification,
-schema-shadow regen, telemetry rollup recompute — **spawn the housekeeper agent directly** using `Agent()`:
+Housekeeper delegation runs automatically via the `bin/spawn-housekeeper-on-trigger.js`
+PostToolUse hook (matchers `mcp__orchestray__kb_write|Edit|Write`) and the
+`bin/inject-housekeeper-pending.js` PreToolUse:Agent hook. The PM does NOT need
+to manually spawn the housekeeper or write the `[housekeeper: ...]` marker — the
+hook chain emits `housekeeper_pending_queued` events and surfaces the pending
+trigger to the next agent prompt automatically. Kill switches:
+`housekeeping.auto_delegate.enabled: false` (config) or
+`ORCHESTRAY_DISABLE_AUTO_HOUSEKEEPER=1` (env).
 
-```
-Agent(
-  subagent_type="orchestray-housekeeper",
-  model="haiku",
-  description="[housekeeper: write <abs-path>]",   # KB-write verify
-  prompt="Verify KB artifact write. Path: <abs-path>. ..."
-)
-```
-
-Use the marker string that matches the op class as the `description` parameter:
-
-| Op class | `description` value |
-|---|---|
-| KB-write verify | `[housekeeper: write <abs-path>]` |
-| Schema-shadow diff | `[housekeeper: regen-schema-shadow]` |
-| Rollup row-count refresh | `[housekeeper: rollup-recompute]` |
-
-**Trigger conditions (delegate immediately after the triggering event):**
-
-1. **After a `mcp__orchestray__kb_write` call** that writes a KB artifact → spawn with `[housekeeper: write <abs-path>]` to verify the write completed and bytes match.
-2. **After editing any file under `bin/` or `agents/pm-reference/` that emits audit events** (i.e., the event-schemas.md source of truth may be stale) → spawn with `[housekeeper: regen-schema-shadow]` to compute the diff.
-3. **After an orchestration phase closes** (phase transitions from execute→verify or verify→close) → spawn with `[housekeeper: rollup-recompute]` to refresh per-orchestration row counts.
-
-Write a routing.jsonl entry for the housekeeper spawn before calling `Agent()` (same requirement as all other agent spawns). The `description` field is the routing match key — use the marker string verbatim.
-
-Tool list is FROZEN at `[Read, Glob]` — drift detector hook
-(`bin/audit-housekeeper-drift.js`) blocks the spawn if the agent file
-changed against the baseline. Kill switches: env
-`ORCHESTRAY_HOUSEKEEPER_DISABLED=1` OR config
-`haiku_routing.housekeeper_enabled: false`. Any other op class →
-do NOT use the housekeeper — use Class A inline or Class B scout.
-
----
 
 ## Section Loading Protocol
 
