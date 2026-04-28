@@ -6923,3 +6923,79 @@ Field notes:
 - `spawn_id` is `null` when the PM did not include one in the spawn payload.
 - Kill switch: `ORCHESTRAY_DELEGATION_DELTA_MARKER_TRACK_DISABLED=1` (default-on).
 - Healthy ratio: `delegation_delta_marker_missing` ≪ `delegation_delta_emit` indicates the PM is wrapping prompts. A high ratio means F-PM-1 prose has rotted.
+
+### `spawn_escalation_hint_seen` event
+
+Emitted by `bin/validate-task-completion.js` (TaskCompleted/SubagentStop, v2.2.9 B-5.1) when a write-capable specialist agent (developer, refactorer, security-engineer) returns with a transcript containing an escalation-hint pattern (e.g. "TODO escalate to <role>", "needs <role> review", "should be reviewed by <role>") but did NOT call `mcp__orchestray__spawn_agent` to spawn the suggested helper. Pure observability — does not block the agent. Distinguishes "agent surfaced follow-up" from "agent escalated mechanically".
+
+```json
+{
+  "type": "spawn_escalation_hint_seen",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "requester_agent": "developer",
+  "suggested_agent": "security-engineer",
+  "regex_match": "TODO: escalate to security-engineer for crypto review"
+}
+```
+
+Field notes:
+- `requester_agent` ∈ `{developer, refactorer, security-engineer}` — the targeted write-capable specialists.
+- `suggested_agent` ∈ `{reviewer, architect, security-engineer, tester, documenter, debugger, refactorer, developer, researcher, inventor, ux-critic, platform-oracle, release-manager}`.
+- `regex_match`: ≤ 200 chars of the matched substring for diagnostic context.
+- Optional fields: `session_id`, `hook` (always `validate-task-completion`).
+- **`feature_optional: true`** — only fires when the regex catches something. A zero-fire baseline does NOT mean broken telemetry.
+- Kill switch: `ORCHESTRAY_SPAWN_ESCALATION_HINT_TRACK_DISABLED=1` (default-on).
+- Pairs with `spawn_requested` (the mechanical escalation): when `spawn_escalation_hint_seen` fires but no `spawn_requested` follows for the same `orchestration_id`, the escalation was identified but not actioned.
+
+### `schema_redirect_bypassed` event
+
+Emitted by `bin/context-shield.js` (PreToolUse:Read, v2.2.9 B-5.2) when a Read of `agents/pm-reference/event-schemas.md` would have triggered the redirect-to-`mcp__orchestray__schema_get` gate but bypassed it via the `FULL_READ_ALLOWED_AGENTS` allowlist (architect, release-manager, documenter) or via the null-agent-type fall-through (orchestrator/PM). Pure observability — does NOT change bypass behavior. Lets operators audit whether the allowlist is too permissive.
+
+```json
+{
+  "type": "schema_redirect_bypassed",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "agent_type": "architect",
+  "file_path": "agents/pm-reference/event-schemas.md",
+  "bypass_reason": "allowlist"
+}
+```
+
+Field notes:
+- `agent_type` ∈ `{architect, release-manager, documenter, null}` (the literal string `"null"` when `agent_type` was null/absent on the hook payload).
+- `bypass_reason` ∈ `{allowlist, null_agent}`. `allowlist` covers the three named roles; `null_agent` covers orchestrator/PM reads.
+- `file_path`: the resolved path being read (always under `agents/pm-reference/event-schemas.md`).
+- Kill switch: `ORCHESTRAY_SCHEMA_REDIRECT_BYPASS_TELEMETRY_DISABLED=1` suppresses this event ONLY; the bypass itself remains active.
+- **`feature_optional: false`** — required for v2.2.9 W3 G-3b coverage. Zero fires across an active orchestration suggests the bypass path is dead and the allowlist can be tightened.
+
+### `group_boundary_violation` event
+
+Emitted by `bin/gate-agent-spawn.js` (PreToolUse:Agent, v2.2.9 B-5.3 / W1 F-PM-13) when a PM `Agent()` spawn targets a task in a group that is STRICTLY AFTER the orchestration's `current_group`. With the gate active (default-on) the spawn is blocked with exit 2; with the kill switch on (`ORCHESTRAY_GROUP_BOUNDARY_GATE_DISABLED=1`) the spawn is permitted but the violation is STILL emitted so the violation count remains observable.
+
+```json
+{
+  "type": "group_boundary_violation",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "spawn_target": "B-5.3",
+  "current_group": "A1",
+  "target_group": "B",
+  "agent_role": "developer",
+  "kill_switch_active": false
+}
+```
+
+Field notes:
+- `spawn_target`: the task identifier resolved from the spawn payload (`tool_input.task_id`, then a regex over `description`/`prompt`).
+- `current_group`: read from `**current_group**: <id>` in `.orchestray/state/orchestration.md`.
+- `target_group`: read from `.orchestray/state/task-graph.md` (heading-delimited groups OR inline `[group: X]` markers).
+- `agent_role`: `tool_input.subagent_type` (specialist role name).
+- `kill_switch_active`: `true` when the gate is bypassed via `ORCHESTRAY_GROUP_BOUNDARY_GATE_DISABLED=1`. The event still emits in this case (observability preserved).
+- Fail-open: when either state file is missing/unparseable OR the target task is not in the graph, NO violation is emitted (gate is permissive — no scope to enforce).
+- Group ordering: leading-letter compare (A < B < C ...), then trailing numeric (A1 < A2 < A3). Groups that share a letter prefix but differ only by suffix are ordered by suffix.
+- Default-on. Kill switch documented above.

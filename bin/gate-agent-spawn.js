@@ -48,17 +48,21 @@ function isValidModel(model) {
   return VALID_TIERS.some(tier => m.includes(tier));
 }
 
-let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => { process.exit(0); });
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[orchestray] hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+// v2.2.9 B-5.3: gate stdin reader behind require.main check so test imports
+// of helper exports (computeGroupBoundaryViolation, parseTaskGraphGroups,
+// compareGroupOrder) don't block on stdin.
+if (require.main === module) {
+  let input = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('error', () => { process.exit(0); });
+  process.stdin.on('data', (chunk) => {
+    input += chunk;
+    if (input.length > MAX_INPUT_BYTES) {
+      process.stderr.write('[orchestray] hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
+      process.exit(0);
+    }
+  });
+  process.stdin.on('end', () => {
   try {
     const event = JSON.parse(input);
 
@@ -231,6 +235,74 @@ process.stdin.on('end', () => {
     // Not in an orchestration — no gating, allow freely
     if (!fs.existsSync(orchFile)) {
       process.exit(0);
+    }
+
+    // -----------------------------------------------------------------------
+    // v2.2.9 B-5.3 — Group-boundary discipline gate.
+    //
+    // Per W1 F-PM-13: PM may spawn an agent for a task in a future group while
+    // the current group has incomplete tasks. v2.2.8 had this as prose-only.
+    // Mechanical replacement: read .orchestray/state/orchestration.md for
+    // current_group, read .orchestray/state/task-graph.md for the group→task
+    // mapping, and reject any spawn whose target task_id lives in a STRICTLY
+    // LATER group while the current group has any non-completed task.
+    //
+    // Default-on. Kill switch: ORCHESTRAY_GROUP_BOUNDARY_GATE_DISABLED=1.
+    // When the kill switch is ON, the gate is permissive but a
+    // `group_boundary_violation` is STILL emitted on detected boundary jumps
+    // so the violation count is observable.
+    //
+    // Fail-open: if either state file is missing/unparseable, exit 0 (no scope
+    // to check).
+    // -----------------------------------------------------------------------
+    {
+      try {
+        const earlyToolInput = event.tool_input || {};
+        const groupCheck = computeGroupBoundaryViolation(cwd, earlyToolInput);
+        if (groupCheck && groupCheck.violation) {
+          // Always emit the observability event (even when permissive).
+          let oidForGB = 'unknown';
+          try {
+            const oc = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
+            if (oc && oc.orchestration_id) oidForGB = oc.orchestration_id;
+          } catch (_e) { /* fail-open */ }
+          try {
+            writeEvent({
+              type:           'group_boundary_violation',
+              version:        1,
+              schema_version: 1,
+              timestamp:      new Date().toISOString(),
+              orchestration_id: oidForGB,
+              spawn_target:   groupCheck.spawn_target,
+              current_group:  groupCheck.current_group,
+              target_group:   groupCheck.target_group,
+              agent_role:     groupCheck.agent_role,
+              kill_switch_active: process.env.ORCHESTRAY_GROUP_BOUNDARY_GATE_DISABLED === '1',
+            }, { cwd });
+          } catch (_e) { /* fail-open */ }
+
+          // Only block when kill switch is OFF.
+          if (process.env.ORCHESTRAY_GROUP_BOUNDARY_GATE_DISABLED !== '1') {
+            const gbMsg =
+              "[orchestray] gate-agent-spawn: group-boundary violation — " +
+              "spawn target task '" + groupCheck.spawn_target + "' is in Group " +
+              groupCheck.target_group + "; current group is " + groupCheck.current_group +
+              ". Complete current-group merges first, or set " +
+              "ORCHESTRAY_GROUP_BOUNDARY_GATE_DISABLED=1 to bypass.";
+            process.stderr.write(gbMsg + '\n');
+            process.stdout.write(JSON.stringify({
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'deny',
+                permissionDecisionReason: gbMsg,
+              },
+            }));
+            process.exit(2);
+          }
+        }
+      } catch (_gbErr) {
+        // Fail-open: any error → no boundary check, fall through.
+      }
     }
 
     // Inside an orchestration — enforce model parameter
@@ -1100,7 +1172,8 @@ process.stdin.on('end', () => {
     process.stderr.write('[orchestray] gate-agent-spawn: unexpected error (' + (_e && _e.message) + '); failing open\n');
     process.exit(0);
   }
-});
+  });
+} // end if (require.main === module)
 
 // ---------------------------------------------------------------------------
 // W12: Anti-pattern pre-spawn advisory gate implementation
@@ -1447,3 +1520,153 @@ function runAntiPatternAdvisoryGate(cwd, toolInput, orchFile) {
     decayed_confidence: top.decayedConfidence,
   };
 }
+
+// ---------------------------------------------------------------------------
+// v2.2.9 B-5.3 — Group-boundary check helper.
+//
+// Returns { violation, spawn_target, current_group, target_group, agent_role }
+// when the spawn targets a strictly-later group, or null otherwise.
+//
+// State sources (fail-open on any read/parse error → null):
+//   - .orchestray/state/orchestration.md  → "**current_group**: <id>" line
+//   - .orchestray/state/task-graph.md     → group→task ownership
+//
+// Task-id resolution from spawn input (precedence):
+//   1. tool_input.task_id (explicit)
+//   2. First [A-Z][A-Z0-9-]+ token in tool_input.description
+//   3. First [A-Z][A-Z0-9-]+ token in tool_input.prompt[0..120]
+// ---------------------------------------------------------------------------
+
+function computeGroupBoundaryViolation(cwd, toolInput) {
+  if (!toolInput || typeof toolInput !== 'object') return null;
+
+  // 1. Resolve current_group from orchestration.md.
+  let orchText;
+  try {
+    orchText = fs.readFileSync(
+      path.join(cwd, '.orchestray', 'state', 'orchestration.md'),
+      'utf8'
+    );
+  } catch (_e) { return null; /* no scope */ }
+
+  const cgMatch = orchText.match(/^[ \t-]*\*\*current_group\*\*\s*:\s*([A-Za-z0-9._-]+)/m);
+  if (!cgMatch) return null; /* no current_group declared */
+  const currentGroup = cgMatch[1].trim();
+
+  // 2. Resolve task-graph for group→task mapping.
+  let graphText;
+  try {
+    graphText = fs.readFileSync(
+      path.join(cwd, '.orchestray', 'state', 'task-graph.md'),
+      'utf8'
+    );
+  } catch (_e) { return null; /* no graph → fail-open */ }
+
+  const groupOf = parseTaskGraphGroups(graphText);
+  if (!groupOf || groupOf.size === 0) return null;
+
+  // 3. Resolve target task_id from spawn input.
+  let targetTaskId = (toolInput.task_id && String(toolInput.task_id).trim()) || '';
+  // Match `F1`, `B-5`, `B-5.3`. Require at least one digit OR one separator
+  // so single-letter tokens like 'A' aren't false-positives.
+  const TASK_ID_RE = /\b([A-Z][A-Z0-9]*(?:[-.][A-Z0-9]+)+|[A-Z][A-Z0-9]*[0-9])\b/;
+  if (!targetTaskId && typeof toolInput.description === 'string') {
+    const m = toolInput.description.match(TASK_ID_RE);
+    if (m) targetTaskId = m[1];
+  }
+  if (!targetTaskId && typeof toolInput.prompt === 'string') {
+    const m = toolInput.prompt.substring(0, 200).match(TASK_ID_RE);
+    if (m) targetTaskId = m[1];
+  }
+  if (!targetTaskId) return null; /* cannot determine target → fail-open */
+
+  const targetGroup = groupOf.get(targetTaskId);
+  if (!targetGroup) return null; /* unknown task in graph → fail-open */
+
+  // 4. Compare groups; violation when target is STRICTLY AFTER current.
+  if (compareGroupOrder(targetGroup, currentGroup) <= 0) return null;
+
+  return {
+    violation: true,
+    spawn_target: targetTaskId,
+    current_group: currentGroup,
+    target_group: targetGroup,
+    agent_role: String(toolInput.subagent_type || ''),
+  };
+}
+
+/**
+ * Parse a Map<task_id, group_id> from task-graph.md.
+ *
+ * Supports two shapes (chosen for robustness, both seen in v2.2.x state files):
+ *
+ *   Shape A — heading-delimited blocks:
+ *     ### Group A1
+ *     - F1 — developer ...
+ *     - F2 — developer ...
+ *     ### Group B
+ *     - B-1.1 ...
+ *
+ *   Shape B — inline `[group: X]` markers in a flat list:
+ *     - F1 [group: A1] — developer ...
+ *
+ * Task-id token: `^- ([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*(?:\.[0-9]+)?)`.
+ * Group-id token: alphanumeric word after `Group ` heading or `[group: X]`.
+ */
+function parseTaskGraphGroups(text) {
+  const m = new Map();
+  if (typeof text !== 'string' || !text) return m;
+
+  const lines = text.split('\n');
+  let currentHeadingGroup = null;
+  const HEADING_RE = /^#{2,4}\s+Group\s+([A-Za-z0-9._-]+)/;
+  // Task-id token: leading uppercase letter, then alphanum, then optional
+  // dash- or dot-separated suffix(es). Matches both `F1` and `B-5.1`.
+  const TASK_LINE_RE = /^\s*-\s+([A-Z][A-Z0-9]*(?:[-.][A-Z0-9]+)*)\b/;
+  const INLINE_GROUP_RE = /\[group:\s*([A-Za-z0-9._-]+)\s*\]/i;
+
+  for (const line of lines) {
+    const h = line.match(HEADING_RE);
+    if (h) { currentHeadingGroup = h[1].trim(); continue; }
+
+    const t = line.match(TASK_LINE_RE);
+    if (!t) continue;
+    const taskId = t[1];
+    const inline = line.match(INLINE_GROUP_RE);
+    const grp = inline ? inline[1].trim() : currentHeadingGroup;
+    if (grp && !m.has(taskId)) m.set(taskId, grp);
+  }
+  return m;
+}
+
+/**
+ * Compare two group identifiers for ordering.
+ *
+ * Convention (matches v2.2.x sequencing): groups are alphanumeric tokens
+ * (`A`, `A1`, `B`, `C`, `D`). Compare by leading letter (A < B < C ...) then
+ * by trailing numeric suffix (A1 < A2). Returns:
+ *   < 0 if a is BEFORE b
+ *   = 0 if same
+ *   > 0 if a is AFTER b
+ */
+function compareGroupOrder(a, b) {
+  if (a === b) return 0;
+  const re = /^([A-Za-z]+)(\d+)?/;
+  const ma = re.exec(String(a)) || [a, a, ''];
+  const mb = re.exec(String(b)) || [b, b, ''];
+  const la = (ma[1] || '').toUpperCase();
+  const lb = (mb[1] || '').toUpperCase();
+  if (la !== lb) return la < lb ? -1 : 1;
+  const na = ma[2] ? parseInt(ma[2], 10) : 0;
+  const nb = mb[2] ? parseInt(mb[2], 10) : 0;
+  if (na !== nb) return na - nb;
+  // Tie-break: full string lex.
+  return String(a) < String(b) ? -1 : (String(a) > String(b) ? 1 : 0);
+}
+
+// Export helpers for test access.
+module.exports = Object.assign(module.exports || {}, {
+  computeGroupBoundaryViolation,
+  parseTaskGraphGroups,
+  compareGroupOrder,
+});

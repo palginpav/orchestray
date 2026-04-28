@@ -114,19 +114,55 @@ const FULL_READ_ALLOWED_AGENTS = new Set([
  *
  * Bypass roles: agentType in FULL_READ_ALLOWED_AGENTS, or null/absent.
  *
+ * v2.2.9 B-5.2: when bypass triggers (allowlist or null-agent-type), emit
+ * `schema_redirect_bypassed` so operators can observe whether the bypass-by-
+ * agent-type list is too permissive. Pure observability — does NOT change
+ * bypass behavior. Kill switch: ORCHESTRAY_SCHEMA_REDIRECT_BYPASS_TELEMETRY_DISABLED=1.
+ *
  * @param {object} toolInput - Raw tool_input from the hook payload.
  * @param {object|null} rawConfig - Parsed config.json (may be null on read failure).
  * @param {string|null} agentType - Calling agent role (null for orchestrator).
+ * @param {string} cwd - Project root for emit context.
  * @returns {{ reason: string, slug: string }|null}
  */
-function shouldRedirectEventSchemasRead(toolInput, rawConfig, agentType) {
+function shouldRedirectEventSchemasRead(toolInput, rawConfig, agentType, cwd) {
   // Honor opt-out: if config.event_schemas.full_load_disabled === false, skip.
   const disabled = !(rawConfig && rawConfig.event_schemas && rawConfig.event_schemas.full_load_disabled === false);
   if (!disabled) return null;
 
+  // v2.2.9 B-5.2 — pre-check bypass conditions and emit observability event.
+  // Only emit when the read would have been redirect-target (agents/pm-reference/event-schemas.md)
+  // so we don't flood on unrelated reads.
+  const fpForBypass = toolInput.file_path || toolInput.path || '';
+  let isRedirectTarget = false;
+  if (fpForBypass) {
+    const normCheck = String(fpForBypass).replace(/\\/g, '/');
+    const baseCheck = normCheck.split('/').pop() || '';
+    isRedirectTarget = baseCheck === 'event-schemas.md' && normCheck.includes('agents/pm-reference/');
+  }
+
   // Roles that need the full file pass through. Includes the orchestrator
   // (no agent_type) so the user's main Claude Code session is not blocked.
-  if (!agentType || FULL_READ_ALLOWED_AGENTS.has(agentType)) return null;
+  if (!agentType || FULL_READ_ALLOWED_AGENTS.has(agentType)) {
+    if (isRedirectTarget) {
+      try {
+        if (process.env.ORCHESTRAY_SCHEMA_REDIRECT_BYPASS_TELEMETRY_DISABLED !== '1') {
+          const oid = resolveOrchestrationId(cwd);
+          writeEvent({
+            type:           'schema_redirect_bypassed',
+            version:        1,
+            schema_version: 1,
+            timestamp:      new Date().toISOString(),
+            orchestration_id: oid,
+            agent_type:     agentType || 'null',
+            file_path:      fpForBypass,
+            bypass_reason:  agentType ? 'allowlist' : 'null_agent',
+          }, { cwd });
+        }
+      } catch (_e) { /* fail-open */ }
+    }
+    return null;
+  }
 
   const fp = toolInput.file_path || toolInput.path || '';
   if (!fp) return null;
@@ -256,7 +292,7 @@ process.stdin.on('end', () => {
     // Pass through the calling agent_type so the orchestrator (null) and
     // architect/release-manager/documenter roles bypass the redirect.
     const agentType = event.agent_type || null;
-    const redirectResult = shouldRedirectEventSchemasRead(toolInput, rawConfig, agentType);
+    const redirectResult = shouldRedirectEventSchemasRead(toolInput, rawConfig, agentType, cwd);
     if (redirectResult) {
       const oid = resolveOrchestrationId(cwd);
       // Backward-compat: emit event_schemas_full_load_blocked(source: 'pretool-deny')

@@ -87,8 +87,11 @@ For each task in a parallel group:
    `orchestray/<orch-id>/task-<N>` (e.g., `orchestray/orch-1712345678/task-3`).
    The `<orch-id>` comes from the orchestration metadata in `.orchestray/state/orchestration.md`.
 
-4. **Spawn all agents in the group**, then wait for all to complete. Do NOT spawn agents
-   from the next group until the current group is fully merged.
+4. **Spawn all agents in the group**, then wait for all to complete. Group-boundary
+   discipline is mechanically enforced by `bin/gate-agent-spawn.js` (v2.2.9 B-5.3) —
+   any spawn whose target task lives in a strictly-later group is rejected with
+   `group_boundary_violation`. See agents/pm-reference/event-schemas.md for the event
+   shape and `ORCHESTRAY_GROUP_BOUNDARY_GATE_DISABLED=1` for the kill switch.
 
 5. **Post-spawn branch verification (MANDATORY when using worktree isolation):** After each
    agent completes, read its Structured Result `branch` field.

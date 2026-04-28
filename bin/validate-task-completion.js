@@ -318,6 +318,95 @@ const REQUIRED_SECTIONS = HANDOFF_REQUIRED_SECTIONS;
  * @param {object} event
  * @returns {object|null}
  */
+/**
+ * v2.2.9 B-5.1 — escalation-hint detector.
+ *
+ * Scans the agent's transcript text for "TODO escalate to <role>" /
+ * "needs <role> review" / "should be reviewed by <role>" / "follow-up:
+ * <role>" patterns. When detected, signals that the agent identified a
+ * follow-up task requiring another specialist but did NOT call
+ * `mcp__orchestray__spawn_agent` to escalate.
+ *
+ * Returns the highest-confidence match: { regex_match, suggested_agent }
+ * or null.
+ *
+ * Kill switch: ORCHESTRAY_SPAWN_ESCALATION_HINT_TRACK_DISABLED=1.
+ *
+ * @param {string|null} rawText - The agent's full output transcript.
+ * @param {object|null} structuredResult
+ * @returns {{ regex_match: string, suggested_agent: string }|null}
+ */
+const ESCALATION_AGENT_ROLES = [
+  'reviewer', 'architect', 'security-engineer', 'tester', 'documenter',
+  'debugger', 'refactorer', 'developer', 'researcher', 'inventor',
+  'ux-critic', 'platform-oracle', 'release-manager',
+];
+
+function detectEscalationHint(rawText, structuredResult) {
+  if (process.env.ORCHESTRAY_SPAWN_ESCALATION_HINT_TRACK_DISABLED === '1') return null;
+
+  // Prefer structuredResult.summary + .issues[].description for narrow scan.
+  const haystacks = [];
+  if (structuredResult && typeof structuredResult === 'object') {
+    if (typeof structuredResult.summary === 'string') haystacks.push(structuredResult.summary);
+    if (Array.isArray(structuredResult.issues)) {
+      for (const iss of structuredResult.issues) {
+        if (iss && typeof iss === 'object') {
+          if (typeof iss.description === 'string') haystacks.push(iss.description);
+          if (typeof iss.recommendation === 'string') haystacks.push(iss.recommendation);
+        }
+      }
+    }
+    if (Array.isArray(structuredResult.recommendations)) {
+      for (const r of structuredResult.recommendations) {
+        if (typeof r === 'string') haystacks.push(r);
+      }
+    }
+  }
+  if (typeof rawText === 'string' && rawText) {
+    // Last 8 KB of raw text — escalation hints are usually near the end.
+    haystacks.push(rawText.slice(-8192));
+  }
+
+  if (haystacks.length === 0) return null;
+
+  // Patterns (ordered by specificity — first match wins).
+  const ROLE_RE = new RegExp(
+    '(' + ESCALATION_AGENT_ROLES.map(r => r.replace(/-/g, '\\-')).join('|') + ')',
+    'i'
+  );
+  const PATTERNS = [
+    new RegExp('TODO[: ]\\s*escalate\\s+to\\s+' + ROLE_RE.source, 'i'),
+    new RegExp('escalat\\w*\\s+to\\s+' + ROLE_RE.source, 'i'),
+    new RegExp('needs?\\s+' + ROLE_RE.source + '\\s+(review|audit|inspection)', 'i'),
+    new RegExp('should\\s+be\\s+(reviewed|audited|inspected)\\s+by\\s+' + ROLE_RE.source, 'i'),
+    new RegExp('follow[- ]up\\s*:\\s*(spawn\\s+)?' + ROLE_RE.source, 'i'),
+    new RegExp('hand\\s+off\\s+to\\s+' + ROLE_RE.source, 'i'),
+  ];
+
+  for (const text of haystacks) {
+    for (const re of PATTERNS) {
+      const m = text.match(re);
+      if (m) {
+        // Find the role group — different patterns put it in different positions.
+        let suggestedAgent = null;
+        for (let i = 1; i < m.length; i++) {
+          if (m[i] && ESCALATION_AGENT_ROLES.indexOf(m[i].toLowerCase()) !== -1) {
+            suggestedAgent = m[i].toLowerCase();
+            break;
+          }
+        }
+        if (!suggestedAgent) continue;
+        return {
+          regex_match: m[0].slice(0, 200),
+          suggested_agent: suggestedAgent,
+        };
+      }
+    }
+  }
+  return null;
+}
+
 function extractStructuredResult(event) {
   if (!event) return null;
 
@@ -698,6 +787,34 @@ function main() {
     const agentRole = identifyAgentRole(event);
     const structuredResult = extractStructuredResult(event);
 
+    // ── v2.2.9 B-5.1 — escalation-hint backstop.
+    // Scan transcript for "TODO escalate to <role>" / "needs <role> review"
+    // patterns when the agent is a write-capable specialist (developer,
+    // refactorer, security-engineer). Emits `spawn_escalation_hint_seen`
+    // when detected — non-blocking observability so operators see when an
+    // agent surfaced a follow-up but did NOT call mcp__orchestray__spawn_agent.
+    try {
+      const ESCALATION_TARGETED = new Set(['developer', 'refactorer', 'security-engineer']);
+      if (agentRole && ESCALATION_TARGETED.has(agentRole)) {
+        const rawText = [event.result, event.output, event.agent_output]
+          .find(v => typeof v === 'string' && v.length > 0) || '';
+        const hint = detectEscalationHint(rawText, structuredResult);
+        if (hint) {
+          emitAuditEvent(cwd, {
+            version: 1,
+            timestamp: new Date().toISOString(),
+            type: 'spawn_escalation_hint_seen',
+            hook: 'validate-task-completion',
+            orchestration_id: resolveOrchestrationId(cwd),
+            requester_agent: agentRole,
+            suggested_agent: hint.suggested_agent,
+            regex_match: hint.regex_match,
+            session_id: event.session_id || null,
+          });
+        }
+      }
+    } catch (_eh) { /* fail-open — observability never blocks */ }
+
     // ── P2.2 (v2.2.0): read-only contract enforcement for haiku-scout.
     // ── P3.3 (v2.2.0): same enforcement extended to orchestray-housekeeper
     //    with a STRICTER forbidden set (also rejects Grep). Per-agent map at
@@ -953,6 +1070,9 @@ module.exports = {
   estimateTokens,
   checkArtifactBodySizes,
   BODY_SIZE_FIELDS,
+  // v2.2.9 B-5.1: escalation-hint detector
+  detectEscalationHint,
+  ESCALATION_AGENT_ROLES,
 };
 
 if (require.main === module) {
