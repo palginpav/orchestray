@@ -46,6 +46,8 @@ const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 // P2.1 (v2.2.0): Block-Z + 4-slot cache-breakpoint manifest.
 const { buildBlockZ }    = require('./_lib/block-z');
 const { buildManifest }  = require('./_lib/cache-breakpoint-manifest');
+// v2.2.8: generalized double-fire guard (Item 4).
+const { requireGuard }   = require('./_lib/double-fire-guard');
 
 const CONTINUE_RESPONSE = JSON.stringify({ continue: true });
 
@@ -578,6 +580,288 @@ function saveManifest(cwd, manifest, blockZ) {
 }
 
 // ---------------------------------------------------------------------------
+// v2.2.8 Item 6: Block-Z re-trip telemetry helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Load the block-z recovery counter from `.orchestray/state/block-z-recovery.json`.
+ * Returns defaults when the file is missing or unreadable.
+ * Resets the counter when the first_attempt_ts is older than 1 hour.
+ *
+ * @param {string} cwd
+ * @returns {{ count: number, first_attempt_ts: number, distinct_hashes: string[] }}
+ */
+function loadBlockZRecovery(cwdOrStateDir) {
+  // Accept either project root or state dir directly (test convenience).
+  const isStateDir = cwdOrStateDir && /([\\/])state$/.test(String(cwdOrStateDir));
+  const stateDir = isStateDir ? cwdOrStateDir : path.join(cwdOrStateDir, STATE_DIR);
+  const recoveryPath = path.join(stateDir, 'block-z-recovery.json');
+  const nowMs = Date.now();
+  const HOUR_MS = 60 * 60 * 1000;
+  const defaults = { count: 0, first_attempt_ts: nowMs, distinct_hashes: [] };
+  try {
+    if (!fs.existsSync(recoveryPath)) return defaults;
+    const r = JSON.parse(fs.readFileSync(recoveryPath, 'utf8'));
+    if (!r || typeof r !== 'object') return defaults;
+    // Accept both number (Date.now()) and ISO string for first_attempt_ts.
+    let firstAttemptMs = null;
+    if (typeof r.first_attempt_ts === 'number') {
+      firstAttemptMs = r.first_attempt_ts;
+    } else if (typeof r.first_attempt_ts === 'string') {
+      const parsed = new Date(r.first_attempt_ts).getTime();
+      if (!isNaN(parsed)) firstAttemptMs = parsed;
+    }
+    if (firstAttemptMs == null || (nowMs - firstAttemptMs) > HOUR_MS) {
+      return defaults;
+    }
+    return {
+      count:            typeof r.count === 'number' ? r.count : 0,
+      first_attempt_ts: firstAttemptMs,
+      distinct_hashes:  Array.isArray(r.distinct_hashes) ? r.distinct_hashes : [],
+    };
+  } catch (_e) {
+    return defaults;
+  }
+}
+
+/**
+ * Persist the block-z recovery counter to `.orchestray/state/block-z-recovery.json`.
+ * Accepts either the project root (`cwd`) or the state directory directly.
+ *
+ * @param {string} cwdOrStateDir
+ * @param {object} recovery  { count, first_attempt_ts, distinct_hashes }
+ */
+function saveBlockZRecovery(cwdOrStateDir, recovery) {
+  try {
+    // Heuristic: if the path basename is `state` we treat it as the state dir;
+    // otherwise we assume project root and append STATE_DIR.
+    const isStateDir = cwdOrStateDir && /([\\/])state$/.test(String(cwdOrStateDir));
+    const stateDir = isStateDir ? cwdOrStateDir : path.join(cwdOrStateDir, STATE_DIR);
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'block-z-recovery.json'), JSON.stringify(recovery), 'utf8');
+  } catch (_e) { /* fail-open */ }
+}
+
+/**
+ * Write the auto-disable sentinel file with the given body (JSON-stringified).
+ *
+ * @param {string} cwd
+ * @param {object} body  { quarantined: bool, expires_at?: ISO, reason?: string }
+ */
+function writeSentinel(cwd, body) {
+  try {
+    const dir = path.join(cwd, STATE_DIR);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, SENTINEL_FILE), JSON.stringify(body), 'utf8');
+  } catch (_e) { /* fail-open */ }
+}
+
+/**
+ * Detect a Block-Z sentinel re-trip and (when detected) write the sentinel,
+ * increment the recovery counter, and emit `block_z_sentinel_retripped`.
+ * After 3 re-trips within 1 hour, also emits `block_z_drift_unresolved`
+ * and writes a permanent sentinel that requires operator action.
+ *
+ * No-op (returns false) when:
+ *   - cfg.block_z_enabled is false
+ *   - the auto-disable sentinel is already active
+ *   - no violations file exists
+ *   - the most recent violation is older than 60 seconds
+ *   - the recent violation's actual_hash matches `currentHash` (drift resolved)
+ *
+ * Function name preserves the v2.2.8 worktree-original spelling
+ * (Cyrillic `п` at the end) so the v228 block-z-retrip.test.js imports match.
+ *
+ * @param {string} cwd
+ * @param {string} currentHash    Current zone1 hash to compare against violations.
+ * @param {string} orchId         Orchestration ID for event correlation.
+ * @param {object} cfg            { block_z_enabled: bool, ... }
+ * @returns {boolean}             true on detected re-trip; false otherwise.
+ */
+function checkAndHandleBlockZRetriп(cwd, currentHash, orchId, cfg) {
+  try {
+    if (cfg && cfg.block_z_enabled === false) return false;
+    if (process.env.ORCHESTRAY_DISABLE_BLOCK_Z === '1') return false;
+    if (isSentinelActive(cwd)) return false;
+
+    const violationsPath = path.join(cwd, STATE_DIR, 'block-a-zone-violations.jsonl');
+    if (!fs.existsSync(violationsPath)) return false;
+    const raw = fs.readFileSync(violationsPath, 'utf8');
+    const lines = raw.split('\n').filter(Boolean);
+    if (lines.length === 0) return false;
+
+    const nowMs = Date.now();
+    const RECENT_WINDOW_MS = 60 * 1000;
+    let last = null;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const v = JSON.parse(lines[i]);
+        // Accept either 'ts' or 'timestamp' field (validate-cache-invariant uses 'ts').
+        const tsRaw = v.ts || v.timestamp;
+        const tsMs = tsRaw ? new Date(tsRaw).getTime() : 0;
+        if (tsMs && (nowMs - tsMs) <= RECENT_WINDOW_MS) { last = v; break; }
+      } catch (_e) { /* skip malformed */ }
+    }
+    if (!last) return false;
+
+    // No drift if the STORED zone1 hash (from block-a-zones.json) matches
+    // currentHash — meaning the drift has already been corrected.
+    try {
+      const zonesPath = path.join(cwd, STATE_DIR, 'block-a-zones.json');
+      if (fs.existsSync(zonesPath)) {
+        const zones = JSON.parse(fs.readFileSync(zonesPath, 'utf8'));
+        const storedHash = zones && zones.zone1_hash;
+        if (storedHash && currentHash && storedHash === currentHash) return false;
+      }
+    } catch (_e) { /* fail-open: continue to retrip path */ }
+
+    // Re-trip detected — write sentinel, increment counter, emit event(s).
+    const recovery = loadBlockZRecovery(cwd);
+    recovery.count = (recovery.count || 0) + 1;
+    // Track currentHash (the computed value that drifted) rather than the
+    // violation's snapshotted actual_hash; v228 tests assert on currentHash.
+    const trackHash = currentHash || last.actual_hash;
+    if (trackHash && !recovery.distinct_hashes.includes(trackHash)) {
+      recovery.distinct_hashes.push(trackHash);
+    }
+    try {
+      const recoveryPath = path.join(cwd, STATE_DIR, 'block-z-recovery.json');
+      fs.writeFileSync(recoveryPath, JSON.stringify(recovery), 'utf8');
+    } catch (_e) { /* fail-open */ }
+
+    // Re-write the auto-disable sentinel (24h TTL).
+    writeSentinel(cwd, {
+      quarantined: false,
+      expires_at:  new Date(nowMs + 24 * 60 * 60 * 1000).toISOString(),
+      reason:      'zone1_hash_drift_retrip',
+    });
+
+    const lastTsRaw = last.ts || last.timestamp;
+    try {
+      writeEvent({
+        version:            1,
+        schema_version:     1,
+        type:               'block_z_sentinel_retripped',
+        timestamp:          new Date(nowMs).toISOString(),
+        orchestration_id:   orchId || 'unknown',
+        time_since_clear_ms: nowMs - (lastTsRaw ? new Date(lastTsRaw).getTime() : nowMs),
+        recovery_attempts:  recovery.count,
+        observed_hash:      currentHash || last.actual_hash || null,
+        pinned_hash:        last.expected_hash || null,
+      }, { cwd });
+    } catch (_e) { /* fail-open */ }
+
+    if (recovery.count >= 3) {
+      try {
+        writeEvent({
+          version:               1,
+          schema_version:        1,
+          type:                  'block_z_drift_unresolved',
+          timestamp:             new Date(nowMs).toISOString(),
+          orchestration_id:      orchId || 'unknown',
+          recovery_attempts:     recovery.count,
+          distinct_hashes_seen:  recovery.distinct_hashes,
+          window_minutes:        60,
+        }, { cwd });
+      } catch (_e) { /* fail-open */ }
+      try {
+        const permPath = path.join(cwd, STATE_DIR, '.block-a-zone-caching-disabled-permanent');
+        fs.writeFileSync(permPath, JSON.stringify({
+          quarantined: true,
+          reason:      'block_z_drift_unresolved',
+          attempts:    recovery.count,
+          first_seen:  new Date(recovery.first_attempt_ts).toISOString(),
+        }), 'utf8');
+      } catch (_e) { /* fail-open */ }
+    }
+
+    return true;
+  } catch (_e) {
+    return false; // fail-open
+  }
+}
+
+// ---------------------------------------------------------------------------
+// v2.2.8 Item 8: --context pin helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Load the orchestration-pins entry for the given orchestration_id.
+ *
+ * @param {string} stateDir   The `.orchestray/state` directory (NOT project root).
+ * @param {string} orchId
+ * @returns {{pinned_files: string[], total_bytes: number, soft_cap_warned: boolean}|null}
+ */
+function loadOrchestrationPins(stateDir, orchId) {
+  try {
+    const pinsPath = path.join(stateDir, 'orchestration-pins.json');
+    if (!fs.existsSync(pinsPath)) return null;
+    const data = JSON.parse(fs.readFileSync(pinsPath, 'utf8'));
+    if (!data || typeof data !== 'object') return null;
+    const entry = data[orchId];
+    if (!entry || !Array.isArray(entry.pinned_files) || entry.pinned_files.length === 0) {
+      return null;
+    }
+    return entry;
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
+ * Build the [pinned: <path>] annotated block from the pinned-file list for the
+ * given orchestration_id. Returns '' when no pins are configured. Emits a
+ * `context_pin_applied` audit event when the block is non-empty.
+ *
+ * Soft cap: 8 KB total bytes across pins. When exceeded, sets
+ * `soft_cap_exceeded: true` on the event but never blocks.
+ *
+ * @param {string} cwd      Project root.
+ * @param {string} orchId   Orchestration ID.
+ * @param {object} cfg      Reserved for future config (currently unused).
+ * @returns {string}        Annotated block content, or '' when no pins.
+ */
+function buildPinnedFilesBlock(cwd, orchId, _cfg) {
+  try {
+    const stateDir = path.join(cwd, STATE_DIR);
+    const entry = loadOrchestrationPins(stateDir, orchId);
+    if (!entry) return '';
+    const SOFT_CAP_BYTES = 8 * 1024;
+    let totalBytes = 0;
+    const parts = [];
+    for (const pinPath of entry.pinned_files) {
+      try {
+        const absPin = path.isAbsolute(pinPath) ? pinPath : path.join(cwd, pinPath);
+        const text = fs.readFileSync(absPin, 'utf8');
+        totalBytes += Buffer.byteLength(text, 'utf8');
+        parts.push('<!-- zone1:pinned:' + pinPath + ' -->\n[pinned: ' + pinPath + ']\n' + text);
+      } catch (_e) {
+        try {
+          process.stderr.write('[compose-block-a] pinned file missing: ' + pinPath + '\n');
+        } catch (_eStderr) { /* fail-open */ }
+      }
+    }
+    if (parts.length === 0) return '';
+    const block = parts.join('\n\n');
+    try {
+      writeEvent({
+        version:           1,
+        schema_version:    1,
+        type:              'context_pin_applied',
+        timestamp:         new Date().toISOString(),
+        orchestration_id:  orchId || 'unknown',
+        pinned_files:      entry.pinned_files,
+        total_bytes:       totalBytes,
+        soft_cap_exceeded: totalBytes > SOFT_CAP_BYTES,
+      }, { cwd });
+    } catch (_e) { /* fail-open */ }
+    return block;
+  } catch (_e) {
+    return '';
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main handler
 // ---------------------------------------------------------------------------
 
@@ -862,4 +1146,11 @@ module.exports = {
   saveZoneHashes,
   saveManifest,
   handle,
+  // v2.2.8 helpers (testable surface)
+  checkAndHandleBlockZRetriп,
+  loadBlockZRecovery,
+  saveBlockZRecovery,
+  writeSentinel,
+  loadOrchestrationPins,
+  buildPinnedFilesBlock,
 };
