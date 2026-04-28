@@ -891,12 +891,40 @@ function handle(event) {
       return;
     }
 
-    // v2.2.8 Item 6: Block-Z sentinel re-trip detection. If the sentinel was
-    // recently auto-cleared (TTL expired) AND a violation landed within the
-    // last 60 seconds, this is a re-trip — the underlying drift didn't
-    // resolve. Emit `block_z_sentinel_retripped`. After 3 such re-trips
-    // within a 1-hour window, emit `block_z_drift_unresolved` and write a
-    // permanent sentinel that requires operator action to clear.
+    // v2.2.8 Item 4: generalized double-fire guard for compose-block-a.
+    // Catches dual-install duplicate registrations.
+    try {
+      let oid = 'unknown';
+      try {
+        const orchFile = getCurrentOrchestrationFile(cwd);
+        const orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
+        if (orchData && orchData.orchestration_id) oid = orchData.orchestration_id;
+      } catch (_e) { /* keep unknown */ }
+      if (oid !== 'unknown') {
+        const stateDir = path.join(cwd, STATE_DIR);
+        const turnId = (event && event.session_id) || 'unknown-turn';
+        const dedupKey = oid + ':' + turnId + ':block_a';
+        const guard = requireGuard({
+          guardName:       'compose-block-a',
+          dedupKey,
+          ttlMs:           60 * 1000, // turn-scoped
+          stateDir,
+          callerPath:      __filename,
+          orchestrationId: oid,
+        });
+        if (!guard.shouldFire) {
+          if (guard.doubleFireEvent) {
+            try { writeEvent(guard.doubleFireEvent, { cwd }); } catch (_e) { /* fail-open */ }
+          }
+          process.stdout.write(CONTINUE_RESPONSE + '\n');
+          process.exit(0);
+          return;
+        }
+      }
+    } catch (_e) { /* fail-open: any guard error must not block compose */ }
+
+    // v2.2.8 Item 6 — Legacy inline retrip block (will be replaced by
+    // checkAndHandleBlockZRetriп helper call once currentHash is computed).
     try {
       const violationsPath = path.join(cwd, STATE_DIR, 'block-a-zone-violations.jsonl');
       if (fs.existsSync(violationsPath)) {
