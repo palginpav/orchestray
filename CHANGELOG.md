@@ -3,6 +3,60 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.2.6] - 2026-04-28
+
+v2.2.6 fixes four real bugs in last week's Tokenwright (v2.2.5) and adds the missing telemetry that makes the compressor's behavior observable end-to-end. Before this release, Tokenwright ran but you couldn't tell — the post-spawn "did we actually save tokens?" event almost never fired, so `/orchestray:analytics` showed a blank where realized savings should be. v2.2.6 makes Tokenwright honest about what it's doing on every spawn, and gives operators a one-shot install probe that says "yes, it's wired up correctly" the first time you open a session after upgrading.
+
+Default-on. No config changes required to benefit. Restart Claude Code after upgrading.
+
+### Fixed
+
+- **Realized-savings event now fires on every spawn.** v2.2.5's post-spawn hook silently exited when Claude Code's hook payload reported `usage.input_tokens=0` — which is what the payload actually delivers for most spawn types in this environment. The hook now reads the agent's transcript file directly (the same source `/orchestray:analytics` uses for cost tracking), so `tokenwright_realized_savings` lands every time. When no token source can be resolved, it still emits — with `realized_status: "unknown"` and a paired `tokenwright_realized_unknown` event explaining why. No more silent skips.
+
+- **Pending-journal entries are actually removed.** v2.2.5's cleanup function compared object references after re-reading the journal file, so the comparison always failed and entries were never removed. The journal grew forever. The new code matches by composite key (spawn id + orchestration id + timestamp), so removed entries actually leave.
+
+- **Stop hook no longer fires twice on installs that have both a global and a project-local copy.** v2.2.5 registered the Tokenwright hook in both `hooks/hooks.json` (the plugin manifest) and the user's `~/.claude/settings.json`, so every spawn produced two compression events. The installer now removes the duplicate registration on every install, and the hook itself detects same-token double-fires within a 60-second window and logs them rather than running twice.
+
+- **Pending journal stays bounded.** Three caps: a 24-hour TTL on individual entries, a 100-entry count cap, and a 10 KB byte cap. Whichever trips first emits a `tokenwright_journal_truncated` event so anomalous growth is visible.
+
+### Added
+
+- **Eight new audit events surface what was previously silent.** `compression_skipped` makes every kill-switch and edge-case bypass observable (one event per orchestration per reason). `compression_invariant_violated` fires if a load-bearing section of your delegation prompt — handoff contract, structured-result schema, repo map, project-intent block, immutable Block-A prefix — would have been dropped by compression; in that case Tokenwright falls back to the original prompt and you see why. `tokenwright_estimation_drift` fires when actual input tokens diverge from the byte-count estimate by more than 15% (configurable). `tokenwright_spawn_coverage` rolls up "compression fired on N of M spawns" at the end of every orchestration, surfaced in `/orchestray:analytics`. Three more events cover the runtime double-fire guard, journal truncation, and the install-time self-probe described below.
+
+- **Self-probe runs once on the first session after upgrade and tells you whether Tokenwright is wired correctly.** It checks: hook registrations are de-duplicated, the compression block in your config (if present) isn't disabled, the transcript-token reader can find a real transcript file, a synthetic compression actually ran, and both the pre-spawn and post-spawn events emitted. Result lands as a single `tokenwright_self_probe` row in your audit log; the operator sees a stderr banner if any step failed. If you've already restarted before upgrading, you can re-run it with `node bin/_lib/tokenwright/self-probe.js --force`.
+
+- **Per-section drop tally on every compression event.** `prompt_compression` events now carry `sections_total`, `sections_dedup_eligible`, `eligibility_rate`, and a per-heading drop count (`dedup_drop_by_heading`). This lets analytics readers see which section types compress effectively vs. which ones never get touched, without re-reading prompts. The legacy `dropped_sections` array (a list of headings) stays valid; the new shape is additive.
+
+- **Fourteen new compression config gates and seven matching env-var kill switches**, all default-on. Operators can disable any individual instrument without touching the rest. Defaults match the user's "ship default-on" preference — clean configs work without edits.
+
+- **One hundred-percent paired-event invariant.** Every `prompt_compression` is now followed by exactly one realized-status event for the same spawn (`measured`, `unknown`, or a skip event explaining why compression didn't run). The coverage probe at orchestration close verifies this and reports any gaps.
+
+### Migration notes
+
+- **Restart Claude Code after upgrading** so the new hook code loads.
+- **The installer cleans duplicate Tokenwright hook entries** from your global and project settings.json on first install — non-Tokenwright hooks (yours or other plugins') are untouched.
+- **No config schema breaks.** All new gates are optional and additive. Old `compression: {}` blocks continue to work.
+- **Old events are still readable.** v2.2.5 events without the new fields parse normally; `dropped_sections` accepts both the legacy heading-array and the new object-array shapes.
+
+### Tests
+
+- 4555 prior + 88 new (covering the four bug fixes, the eight new events, schema additions, default-on invariant, and a 50ms latency budget for the inject hook) = **4643 tests passing**, 1 intentional skip, 0 failures.
+
+### Under the hood
+
+Tokenwright extensions live alongside the v2.2.5 code:
+- `bin/_lib/tokenwright/resolve-actual-tokens.js` (transcript-first token resolver, mirrors the `collect-agent-metrics.js` pattern with the same containment guard).
+- `bin/_lib/tokenwright/verify-load-bearing.js` (post-compression invariant check).
+- `bin/_lib/tokenwright/double-fire-guard.js` (60-second TTL dedup at `.orchestray/state/tokenwright-dedup.jsonl`).
+- `bin/_lib/tokenwright/journal-sweep.js` (pure-function TTL/count/bytes sweep).
+- `bin/_lib/tokenwright/coverage-probe.js` (orchestration-close rollup, bounded 5MB tail-scan of the audit log).
+- `bin/_lib/tokenwright/self-probe.js` (CLI + library; library mode used by `bin/post-upgrade-sweep.js`).
+- `bin/_lib/dedup-plugin-hooks.js` (narrow allowlist: `inject-tokenwright.js`, `capture-tokenwright-realized.js`).
+
+Schema shadow regenerated to **128 event types** (was 120). All new events stamp `version: 1` explicitly per the v2.2.2 audit-event-writer contract.
+
+---
+
 ## [2.2.5] - 2026-04-28
 
 v2.2.5 ships Tokenwright, Orchestray's first native prompt compressor — a new Layer 1 deduplication pass that removes redundant blocks from delegation prompts before they reach the model, cutting real cost on KB-attachment-heavy orchestrations. It also fixes a long-standing installer bug where hooks for scripts that no longer exist accumulate silently across upgrades and rollbacks. This release replaces v2.2.3 and v2.2.4, which have been rolled back: those releases shipped a routing gateway that reported orchestration savings it never actually delivered, and are replaced by a compressor that produces verifiable, auditable savings instead. The version arc skips 2.2.3 and 2.2.4 — those tags remain in git history but their code does not ship.

@@ -42,6 +42,8 @@ const { resolveSafeCwd }   = require('./_lib/resolve-project-cwd');
 const { recordDegradation } = require('./_lib/degraded-journal');
 const { MAX_INPUT_BYTES }   = require('./_lib/constants');
 const { emitTier2Invoked }  = require('./_lib/tier2-invoked-emitter');
+const { runCoverageProbe }  = require('./_lib/tokenwright/coverage-probe');
+const { emitTokenwrightSpawnCoverage } = require('./_lib/tokenwright/emit');
 
 /** Only consider history archives newer than this (ms). 15 minutes. */
 const FRESH_ARCHIVE_WINDOW_MS = 15 * 60 * 1000;
@@ -170,6 +172,42 @@ function processStop(projectRoot) {
     try {
       fs.writeFileSync(fresh.markerPath, new Date().toISOString() + '\n', 'utf8');
     } catch {}
+  }
+
+  // v2.2.6: tokenwright spawn coverage probe.
+  // Reads the archived events.jsonl for this orchestration, computes coverage
+  // metrics, and emits a `tokenwright_spawn_coverage` event to the live audit log.
+  // This runs AFTER extraction to avoid any ordering conflicts with the extract pass.
+  // Kill-switches honored: config compression.coverage_probe_enabled === false
+  // or ORCHESTRAY_DISABLE_COVERAGE_PROBE=1.
+  if (fresh.orchId) {
+    try {
+      // Kill-switch: env var
+      if (process.env.ORCHESTRAY_DISABLE_COVERAGE_PROBE !== '1') {
+        // Kill-switch: config
+        let coverageEnabled = true;
+        try {
+          const cfgPath = path.join(projectRoot, '.orchestray', 'config.json');
+          if (fs.existsSync(cfgPath)) {
+            const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+            if (cfg && cfg.compression && cfg.compression.coverage_probe_enabled === false) {
+              coverageEnabled = false;
+            }
+          }
+        } catch (_e) { /* config unreadable — proceed */ }
+
+        if (coverageEnabled) {
+          const coverage = runCoverageProbe({
+            orchestrationId: fresh.orchId,
+            eventsPath:      fresh.eventsPath,
+          });
+          emitTokenwrightSpawnCoverage(coverage);
+        }
+      }
+    } catch (e) {
+      // Fail-safe: don't block the stop hook
+      console.error('[post-orch] coverage probe failed:', e && e.message ? e.message : String(e));
+    }
   }
 }
 

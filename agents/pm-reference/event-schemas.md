@@ -6013,6 +6013,20 @@ Field notes:
   explicitly (the v2.2.2 audit-event-writer does NOT autofill the
   `version` field).
 
+#### v2.2.6 additive fields
+
+All fields below are additive (schema_version stays 1). Readers on v2.2.5 tolerate unknown fields.
+
+- `sections_total` `{number}` — total parsed section count from the prompt.
+- `sections_dedup_eligible` `{number}` — count of sections classified as `kind === 'dedup-eligible'`.
+- `sections_score_eligible` `{number}` — count of sections classified as `kind === 'score-eligible'`.
+- `sections_preserve` `{number}` — count of sections classified as `kind === 'preserve'`.
+- `eligibility_rate` `{number}` — `(sections_dedup_eligible + sections_score_eligible) / sections_total`, or `0` when total is 0.
+- `dedup_drop_by_heading` `{Record<string, number>}` — every heading in `DEDUP_ELIGIBLE_HEADINGS` gets a key; value is the count of dropped sections with that heading in this spawn. Headings with 0 drops still appear with value `0`.
+- `compression_skipped_path` `{string|null}` — name of the skip path if compression was effectively a no-op (mirrors `compression_skipped.reason`); `null` when compression actually ran. Set to `"invariant_violation_fallback"` when invariant check caused fallback to original.
+- `tokenwright_version` `{string}` — `"2.2.6-l1"` literal; distinguishes layer mix; rolls forward when L2 ships.
+- `dropped_sections` backward-compat note: v2.2.5 emitted as `string[]` of headings; v2.2.6 emits as `Array<{heading: string|null, kind: string, body_bytes: number, dropped_reason: string}>`. Analytics readers MUST accept both shapes — legacy `string[]` rows from older events remain valid. Normalize via `normalizeDroppedSections(field)` helper in analytics readers.
+
 ---
 
 ### `tokenwright_realized_savings` event
@@ -6056,3 +6070,222 @@ Field notes:
   promoting `aggressive` to default.
 - Schema stability: additive-only. Source:
   `bin/capture-tokenwright-realized.js` via `bin/_lib/tokenwright/emit.js`.
+
+#### v2.2.6 additive fields
+
+All fields below are additive (schema_version stays 1).
+
+- `realized_status` `{"measured"|"unknown"}` — `"measured"` when actual tokens > 0; `"unknown"` when no token source was resolved (B1 fix). Required in v2.2.6+.
+- `actual_input_tokens` `{number|null}` — now nullable (was non-null in v2.2.5). `null` when `realized_status === "unknown"`.
+- `actual_savings_tokens` `{number|null}` — now nullable. `null` when no actual token count.
+- `estimation_error_pct` `{number|null}` — now nullable. `null` when actual tokens unavailable.
+- `usage_source` `{"transcript"|"hook_event"|"tool_response"|"unknown"}` — provenance of the actual token count. `"transcript"` is the primary source (B1 fix); others are fallbacks.
+- `drift_exceeded` `{boolean}` — `true` when `|estimation_error_pct| > drift_budget_pct`.
+- `drift_budget_pct` `{number}` — echoes config `compression.estimation_drift_budget_pct` (default 15).
+- `removed_pending_entry` `{boolean}` — `true` confirms the B2 key-tuple equality fix worked and the matched pending entry was successfully removed from the journal.
+
+---
+
+## v2.2.6 additions
+
+New event types added in v2.2.6 for end-to-end tokenwright instrumentation. All are routed through `bin/_lib/tokenwright/emit.js`. All fail-safe (emit-only, no caller disruption). All use `version: 1`, `schema_version: 1`.
+
+### `tokenwright_realized_unknown` event
+
+Emitted by `bin/capture-tokenwright-realized.js` when a pending journal entry is matched but no actual-token source could be resolved. Lower-cardinality alarm signal for dashboards — every emission means a compression event went unpaired with real token data.
+
+```json
+{
+  "type": "tokenwright_realized_unknown",
+  "version": 1,
+  "timestamp": "2026-04-28T08:42:00.000Z",
+  "orchestration_id": "orch-20260428T084117Z-v226-tokenwright-verify",
+  "task_id": null,
+  "agent_type": "researcher",
+  "spawn_key": "researcher:0a1b2c3d",
+  "estimated_input_tokens_pre": 1136,
+  "reason": "no_token_source",
+  "transcript_path_present": false,
+  "hook_usage_present": false
+}
+```
+
+Field notes:
+- `spawn_key`: sha256-prefix key from the pending journal entry; links back to the `prompt_compression` event.
+- `reason` ∈ `{no_token_source, transcript_unreadable, transcript_outside_containment, parse_failure}`. `no_token_source` means all three sources (transcript, hook event, tool_response) returned 0 or were absent.
+- `transcript_path_present`: `true` if `event.agent_transcript_path` was non-empty in the hook payload.
+- `hook_usage_present`: `true` if `event.usage.input_tokens` was present and non-zero.
+
+### `compression_invariant_violated` event
+
+Emitted by `bin/inject-tokenwright.js` when post-compression verification finds that a load-bearing section was dropped or modified. Should be zero in healthy runs. On violation, the original (uncompressed) prompt is used instead (defensive fallback when `compression.invariant_check_fallback_to_original` is true).
+
+```json
+{
+  "type": "compression_invariant_violated",
+  "version": 1,
+  "timestamp": "2026-04-28T08:42:00.000Z",
+  "orchestration_id": "orch-...",
+  "agent_type": "developer",
+  "violated_section": "## Structured Result",
+  "violation_kind": "load_bearing_dropped",
+  "input_bytes_pre": 12345,
+  "input_bytes_post": 9876,
+  "load_bearing_set": ["## Structured Result", "## Repository Map", "## Project Intent", "## Acceptance Rubric", "## Output Style"]
+}
+```
+
+Field notes:
+- `violated_section`: the heading that was absent or modified in the compressed output.
+- `violation_kind` ∈ `{load_bearing_dropped, block_a_sentinel_missing, prefix_byte_drift}`.
+- `load_bearing_set`: the full set of headings checked; useful for diagnosing false-positive trips if the list is misconfigured.
+- When emitted alongside a `prompt_compression` event, `prompt_compression.compression_skipped_path` is set to `"invariant_violation_fallback"` and the prompt shipped to the model is the original.
+
+### `tokenwright_estimation_drift` event
+
+Emitted by `bin/capture-tokenwright-realized.js` when `|estimation_error_pct|` exceeds the configured drift budget (default 15%). Emitted alongside (not replacing) `tokenwright_realized_savings`. Signals that the 4-bytes-per-token estimator is systematically off for a particular spawn context (e.g., heavy emoji or CJK content).
+
+```json
+{
+  "type": "tokenwright_estimation_drift",
+  "version": 1,
+  "timestamp": "2026-04-28T08:42:00.000Z",
+  "orchestration_id": "orch-...",
+  "agent_type": "developer",
+  "estimated_input_tokens_pre": 1136,
+  "actual_input_tokens": 1542,
+  "estimation_error_pct": 35.7,
+  "drift_budget_pct": 15,
+  "direction": "underestimate"
+}
+```
+
+Field notes:
+- `direction` ∈ `{underestimate, overestimate}`. `underestimate` means actual > estimated; `overestimate` means estimated > actual.
+- `drift_budget_pct`: echoes config `compression.estimation_drift_budget_pct` (default 15). Why 15%: Opus 4.7 tokenizer can consume up to 35% more tokens than the 4-bytes-per-token approximation; 15% allows normal variance while catching actionable drift.
+- `estimation_error_pct`: `|actual - estimated| / actual * 100`.
+
+### `tokenwright_spawn_coverage` event
+
+Emitted once per orchestration at close time by `bin/_lib/tokenwright/coverage-probe.js` (called from `bin/post-orchestration-extract-on-stop.js`). Summarizes how many agent spawns produced paired compression/realized events. Primary input to the 14-day observation gate.
+
+```json
+{
+  "type": "tokenwright_spawn_coverage",
+  "version": 1,
+  "timestamp": "2026-04-28T08:42:30.000Z",
+  "orchestration_id": "orch-...",
+  "agent_starts_total": 12,
+  "prompt_compression_emits": 11,
+  "realized_savings_emits": 9,
+  "realized_unknown_emits": 2,
+  "compression_skipped_emits": 1,
+  "coverage_compression_pct": 91.7,
+  "coverage_realized_pct": 81.8,
+  "missing_pairs": [
+    {"agent_type": "developer", "spawn_key": "developer:abc123", "missing_event": "tokenwright_realized_savings"}
+  ]
+}
+```
+
+Field notes:
+- `coverage_compression_pct`: `prompt_compression_emits / agent_starts_total * 100`.
+- `coverage_realized_pct`: `(realized_savings_emits + realized_unknown_emits) / prompt_compression_emits * 100`.
+- `missing_pairs`: list of spawns that have a `prompt_compression` but no matching `tokenwright_realized_savings` or `tokenwright_realized_unknown`. Each entry has `agent_type`, `spawn_key`, `missing_event`.
+- Source: tail-scan of `events.jsonl` for the orchestration window using the `orchestration_id` key.
+
+### `compression_skipped` event
+
+Emitted by `bin/inject-tokenwright.js` for every silent no-op path (kill-switch, missing prompt, oversize stdin, parse failure, exception). Replaces all previously silent exits so every compression decision is observable. In-memory skip cache suppresses duplicate emits within the same script invocation (process-local; cross-invocation dedup not required in v2.2.6).
+
+```json
+{
+  "type": "compression_skipped",
+  "version": 1,
+  "timestamp": "2026-04-28T08:42:00.000Z",
+  "orchestration_id": "orch-...",
+  "agent_type": "developer",
+  "reason": "kill_switch_env",
+  "skip_path": "ORCHESTRAY_DISABLE_COMPRESSION=1"
+}
+```
+
+Field notes:
+- `reason` ∈ `{kill_switch_env, kill_switch_config, level_off, level_debug_passthrough, no_prompt_field, oversize_stdin, parse_failure, runtime_exception, agent_type_excluded}`.
+- `skip_path`: human-readable detail about the skip path — e.g. the env var name, the config path that triggered it, or a truncated error message (max 200 chars) for `runtime_exception`.
+- Kill switch: `ORCHESTRAY_DISABLE_SKIP_EVENT=1` or `compression.skip_event_enabled: false` suppresses all `compression_skipped` events (restores silent behavior; debug only).
+
+### `compression_double_fire_detected` event
+
+Emitted by `bin/inject-tokenwright.js` or `bin/capture-tokenwright-realized.js` when the same `dedup_token` is seen twice within the 100ms detection window. Indicates double hook registration (B3 bug). One event per detection per orchestration; subsequent detections are suppressed.
+
+```json
+{
+  "type": "compression_double_fire_detected",
+  "version": 1,
+  "timestamp": "2026-04-28T08:42:00.000Z",
+  "orchestration_id": "orch-...",
+  "agent_type": "researcher",
+  "dedup_token": "researcher:0a1b:1745832120000",
+  "delta_ms": 12,
+  "first_caller": "/home/palgin/.claude/orchestray/bin/inject-tokenwright.js",
+  "second_caller": "/home/palgin/orchestray/.claude/orchestray/bin/inject-tokenwright.js"
+}
+```
+
+Field notes:
+- `dedup_token`: sha256 prefix of `prompt + agentType + spawnTimestamp` (first 16 hex chars); identifies the specific spawn.
+- `delta_ms`: milliseconds between first and second fire.
+- `first_caller` / `second_caller`: `__filename` from each invocation, allowing identification of which install path fired.
+- Kill switch: `ORCHESTRAY_DISABLE_DOUBLE_FIRE_GUARD=1` or `compression.double_fire_guard_enabled: false`.
+
+### `tokenwright_journal_truncated` event
+
+Emitted by `bin/inject-tokenwright.js` when the pending journal is truncated by TTL sweep or hard cap. Should be zero in healthy runs — any emission indicates the B4 fix is actively catching runaway growth (or the B1/B2 fixes were insufficient).
+
+```json
+{
+  "type": "tokenwright_journal_truncated",
+  "version": 1,
+  "timestamp": "2026-04-28T08:42:00.000Z",
+  "orchestration_id": "orch-...",
+  "entries_before": 287,
+  "entries_after": 100,
+  "bytes_before": 14523,
+  "bytes_after": 5050,
+  "trigger": "size_cap_10kb"
+}
+```
+
+Field notes:
+- `trigger` ∈ `{size_cap_10kb, ttl_sweep, count_cap_100}`. `size_cap_10kb` fires when journal exceeds 10 KB; `count_cap_100` fires when entry count exceeds 100; `ttl_sweep` fires when expired entries are removed on a normal write path.
+- Config controls: `compression.pending_journal_ttl_hours` (default 24), `compression.pending_journal_max_bytes` (default 10240), `compression.pending_journal_max_entries` (default 100).
+
+### `tokenwright_self_probe` event
+
+Emitted once on first session post-v2.2.6 install by `bin/_lib/tokenwright/self-probe.js` (invoked from `bin/post-upgrade-sweep.js`). Verifies the full instrumentation stack is wired correctly. Triggered by sentinel `.orchestray/state/tokenwright-self-probe-needed`; deleted after run. Re-trigger via `node bin/_lib/tokenwright/self-probe.js --force`.
+
+```json
+{
+  "type": "tokenwright_self_probe",
+  "version": 1,
+  "timestamp": "2026-04-28T08:42:00.000Z",
+  "version_installed": "2.2.6",
+  "global_install_present": true,
+  "local_install_present": true,
+  "hook_dedup_clean": true,
+  "compression_block_in_config": true,
+  "transcript_token_path_resolves": true,
+  "fixture_compression_ran": true,
+  "fixture_emitted_prompt_compression": true,
+  "fixture_emitted_realized_savings": true,
+  "result": "pass",
+  "failures": []
+}
+```
+
+Field notes:
+- `result` ∈ `{pass, fail, skipped}`. `pass` means all boolean checks were true. `fail` means at least one check failed — see `failures[]` for which ones. `skipped` means the probe was suppressed by kill switch.
+- `failures`: list of flag names that resolved to `false` (e.g. `["hook_dedup_clean", "transcript_token_path_resolves"]`).
+- Kill switch: `ORCHESTRAY_DISABLE_TOKENWRIGHT_SELF_PROBE=1` or `compression.self_probe_enabled: false`.
+- Detection from analytics: `/orchestray:analytics` reads `tokenwright_self_probe` with `result: fail` and surfaces a banner in the next session.

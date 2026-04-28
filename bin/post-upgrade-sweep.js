@@ -2422,6 +2422,93 @@ function touchSilent(sentinelPath, stateDir) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// v2.2.6: tokenwright self-probe trigger
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * If `.orchestray/state/tokenwright-self-probe-needed` exists, run the
+ * tokenwright self-probe, emit the result, then delete the sentinel.
+ *
+ * Kill-switches (checked before running):
+ *   - config compression.self_probe_enabled === false  → skip
+ *   - ORCHESTRAY_DISABLE_TOKENWRIGHT_SELF_PROBE=1      → skip
+ *
+ * Fail-open: any error is caught and silently ignored.
+ *
+ * @param {string} cwd      - Project root (absolute)
+ * @param {string} stateDir - Absolute path to .orchestray/state/
+ */
+function runTokenwrightSelfProbeIfNeeded(cwd, stateDir) {
+  try {
+    const sentinelPath = path.join(stateDir, 'tokenwright-self-probe-needed');
+    if (!existsSilent(sentinelPath)) return;
+
+    // Kill-switch: env var
+    if (process.env.ORCHESTRAY_DISABLE_TOKENWRIGHT_SELF_PROBE === '1') {
+      // Sentinel consumed — delete so we don't keep checking
+      try { fs.unlinkSync(sentinelPath); } catch (_e) { /* ignore */ }
+      return;
+    }
+
+    // Kill-switch: config
+    try {
+      const cfgPath = path.join(cwd, '.orchestray', 'config.json');
+      if (existsSilent(cfgPath)) {
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+        if (cfg && cfg.compression && cfg.compression.self_probe_enabled === false) {
+          try { fs.unlinkSync(sentinelPath); } catch (_e) { /* ignore */ }
+          return;
+        }
+      }
+    } catch (_e) { /* config unreadable — proceed */ }
+
+    // Load helpers. These are resolved relative to the installed orchestray bin
+    // tree (same directory as this script lives in after install). Both require
+    // paths use the already-installed _lib so they work from global and local.
+    const { runSelfProbe } = require('./_lib/tokenwright/self-probe');
+    const { emitTokenwrightSelfProbe } = require('./_lib/tokenwright/emit');
+
+    // Run the probe with force:true — our wrapper already verified the sentinel,
+    // so we bypass self-probe's internal sentinel check (which looks at PKG_ROOT,
+    // a different path than cwd when installed globally).
+    const payload = runSelfProbe({ force: true });
+
+    // Emit the audit event.
+    try {
+      emitTokenwrightSelfProbe(payload);
+    } catch (_e) { /* emit failure must not block */ }
+
+    // Belt-and-suspenders: write the last-result file (self-probe.js also does
+    // this internally, but we do it here too for resilience if self-probe threw).
+    try {
+      const lastPath = path.join(stateDir, 'tokenwright-self-probe-last.json');
+      const summary = {
+        timestamp: new Date().toISOString(),
+        result:    payload ? payload.result   : 'unknown',
+        failures:  payload ? payload.failures : [],
+      };
+      fs.writeFileSync(lastPath, JSON.stringify(summary, null, 2) + '\n', 'utf8');
+    } catch (_e) { /* non-fatal */ }
+
+    // Delete the sentinel so the probe doesn't re-run on the next prompt.
+    try { fs.unlinkSync(sentinelPath); } catch (_e) { /* ignore */ }
+
+    // If the probe failed, emit a visible stderr banner so the operator notices.
+    if (payload && payload.result === 'fail') {
+      const failList = Array.isArray(payload.failures) && payload.failures.length
+        ? payload.failures.join(', ')
+        : 'unknown';
+      process.stderr.write(
+        '[orchestray v2.2.6] tokenwright self-probe FAILED: ' + failList +
+        '. Run /orchestray:diagnose for details.\n'
+      );
+    }
+  } catch (_e) {
+    // Fail-open — self-probe failure must never block the user prompt.
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Main entry point
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -2462,6 +2549,12 @@ function main() {
       // so fresh users don't see the notice. Kill-switch reminder is valuable
       // either way, but only surprising on an upgrade.
       emitResilienceLiveNotice(cwd, sessionId);
+
+      // ── v2.2.6: tokenwright self-probe (once per install) ──────────────────
+      // install.js writes `.orchestray/state/tokenwright-self-probe-needed` on
+      // every install. If present, run the self-probe and delete the sentinel.
+      // Honor kill-switch config and env var. Fail-open: never block the prompt.
+      runTokenwrightSelfProbeIfNeeded(cwd, stateDir);
 
       // ── Session lock: fast-path — once per session ──────────────────────────
       const lockPath = path.join(os.tmpdir(), `orchestray-sweep-${sessionId}.lock`);

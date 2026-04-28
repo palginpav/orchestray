@@ -389,6 +389,21 @@ const compressionSchema = z.object({
   preserve_sections: z.array(z.string()).optional(),
   sliding_window_size: z.number().int().min(0).optional(),
   minhash_jaccard_threshold: z.number().min(0).max(1).optional(),
+  // v2.2.6: tokenwright instrumentation extensions
+  realized_savings_no_silent_skip: z.boolean().optional(),
+  invariant_check_enabled: z.boolean().optional(),
+  invariant_check_fallback_to_original: z.boolean().optional(),
+  estimation_drift_enabled: z.boolean().optional(),
+  estimation_drift_budget_pct: z.number().optional(),
+  coverage_probe_enabled: z.boolean().optional(),
+  skip_event_enabled: z.boolean().optional(),
+  double_fire_guard_enabled: z.boolean().optional(),
+  pending_journal_ttl_hours: z.number().optional(),
+  pending_journal_max_bytes: z.number().int().optional(),
+  pending_journal_max_entries: z.number().int().optional(),
+  self_probe_enabled: z.boolean().optional(),
+  transcript_token_resolution_enabled: z.boolean().optional(),
+  load_bearing_sections: z.array(z.string()).optional(),
 }).passthrough();
 
 // v2.2.0 P1.2: top-level `output_shape` block. Caveman + length-cap +

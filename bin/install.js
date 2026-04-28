@@ -778,6 +778,28 @@ function install(targetDir) {
   mergeHooks(targetDir);
   console.log(`  \x1b[32m✓\x1b[0m Configured hooks`);
 
+  // 4a. v2.2.6 B3: dedup-plugin-hooks pass — removes hook entries from BOTH
+  // global (~/.claude/settings.json) and local (<project>/.claude/settings.json)
+  // that duplicate scripts already registered in hooks/hooks.json (the canonical
+  // plugin manifest). Per feedback_update_both_installs.md, both installs must
+  // be swept regardless of the --global / --local flag on this invocation.
+  // Idempotent: re-running is a no-op if entries are already absent.
+  try {
+    const { dedupPluginHooks } = require('./_lib/dedup-plugin-hooks');
+    const dedupResult = dedupPluginHooks({
+      globalSettingsPath:  path.join(os.homedir(), '.claude', 'settings.json'),
+      projectSettingsPath: path.join(process.cwd(), '.claude', 'settings.json'),
+      pluginManifestPath:  path.join(pkgRoot, 'hooks', 'hooks.json'),
+    });
+    console.log(
+      `  \x1b[32m✓\x1b[0m dedup-plugin-hooks: removed ${dedupResult.globalEntriesRemoved} global + ` +
+      `${dedupResult.projectEntriesRemoved} project duplicate entries`
+    );
+  } catch (_e) {
+    // Non-fatal — dedup failure must never abort the install.
+    console.log('  \x1b[33m⚠\x1b[0m dedup-plugin-hooks skipped: ' + (_e && _e.message ? _e.message : String(_e)));
+  }
+
   // 4b. Register MCP servers with Claude Code (global: ~/.claude.json,
   // local: ./.mcp.json). Tracks names in manifest for clean uninstall.
   const mcpServerNames = mergeMcpServers(pluginJson, targetDir, flags.local);
@@ -978,6 +1000,22 @@ function install(targetDir) {
     }
     fs.writeFileSync(sentinelPath, JSON.stringify(sentinelData) + '\n', 'utf8');
   } catch (_e) { /* fail-open */ }
+
+  // v2.2.6: write a sentinel so the first UserPromptSubmit after this install
+  // triggers the tokenwright self-probe (post-upgrade-sweep.js picks this up).
+  // The sentinel lives in .orchestray/state/ which is project-local; stateDir
+  // was already created above by the config seed step (mkdirSync recursive).
+  try {
+    const orchStateDir226 = path.join(process.cwd(), '.orchestray', 'state');
+    fs.mkdirSync(orchStateDir226, { recursive: true });
+    const selfProbeSentinel = path.join(orchStateDir226, 'tokenwright-self-probe-needed');
+    const pkg = require('../package.json');
+    fs.writeFileSync(
+      selfProbeSentinel,
+      JSON.stringify({ created: new Date().toISOString(), version: pkg.version }) + '\n',
+      'utf8'
+    );
+  } catch (_e) { /* tolerate — probe is best-effort */ }
 
   // v2.1.0: emit a one-time advisory on first install of this major feature version.
   // Only fires when upgrading from v2.0.x (prevVersion starts with "2.0.") or on a

@@ -8,27 +8,20 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 
 **Simple prompts** pass through to normal Claude Code behavior. **Complex prompts** get the full treatment.
 
-### What's new in v2.2.5
+### What's new in v2.2.6
 
-**Tokenwright** — Layer 1 prompt compression — ships default-on in v2.2.5. Before each agent spawn, Orchestray now runs a near-duplicate deduplication pass over the delegation prompt and removes redundant blocks (repeated KB attachments, duplicate prior-findings context, accumulated background sections) while leaving all load-bearing content — the handoff contract, structured-result schema, repo map, project-intent block, and immutable prompt prefix — byte-identical. Savings are auditable per-spawn via two new telemetry events visible in `/orchestray:analytics`. Default policy is `safe` (Layer 1 only); additional layers ship in a later release. Kill switches: `compression.enabled: false` in config or `ORCHESTRAY_DISABLE_COMPRESSION=1` env var. The installer also fixes a long-standing bug where hooks pointing at scripts that no longer exist silently accumulate across upgrades, producing noisy `MODULE_NOT_FOUND` errors in Claude Code's hook runner — the installer now sweeps and removes stale entries at install time.
+**v2.2.6 fixes four real bugs in Tokenwright (the prompt compressor that shipped in v2.2.5) and adds the missing telemetry that makes the compressor's behavior visible end-to-end.** Before this release, Tokenwright ran but you couldn't tell — the post-spawn "did we actually save tokens?" event almost never fired, so `/orchestray:analytics` showed a blank where realized savings should be. v2.2.6 makes Tokenwright honest about what it's doing on every spawn.
 
-v2.2.3 and v2.2.4 have been rolled back and are not present in v2.2.5. Those releases shipped a routing gateway that was designed to reduce token overhead on simple slash commands by intercepting them before the PM. Audit-log forensics showed the gateway was narrating orchestration outcomes rather than running them — no specialist-spawn events fired across any run. The gateway has been removed; slash commands route directly to the PM as in v2.2.2. Tokenwright is the actual compression that pm-router was supposed to enable, implemented where its effects are verifiable. Restart Claude Code after upgrading.
+What changes in practice:
 
-### What's new in v2.2.0 ("Tokens, not Actions")
+- **Realized savings now show up in `/orchestray:analytics`.** The hook reads the agent's transcript file directly (same source the cost tracker uses), so the after-the-fact savings event lands every time. When token counts genuinely can't be resolved, the event still fires with `realized_status: "unknown"` and a paired `tokenwright_realized_unknown` row explaining why. Silent skips are gone.
+- **Stop-hook stops firing twice on installs that have both a global and a project-local copy.** The installer now removes the duplicate Tokenwright registrations from your settings.json on every install — no other plugin's hooks are touched.
+- **The pending-entry journal is actually cleaned up.** A reference-equality bug in v2.2.5 meant entries never left; the file grew forever. New code uses key-tuple matching plus a 24-hour TTL, a 100-entry cap, and a 10 KB byte cap. If any cap trips, you see a `tokenwright_journal_truncated` event.
+- **A self-probe runs once on the first session after upgrade** and tells you whether Tokenwright is wired correctly. Hooks de-duplicated, transcript reader works, synthetic compression actually compresses, both events emit. One `tokenwright_self_probe` row in your audit log; stderr banner if any step failed.
 
-The v2.2.0 release reshapes how Orchestray pays for the prompt prefix it sends to Claude on every turn. Nine shipping items, every flag default-on, every behavior change with a kill switch. Headline savings: roughly **−18% to −33% per orchestration** (mid-range −22%; multi-round audits land at the upper end).
+New telemetry — eight new audit events make every previously silent path observable: skip events for each kill-switch, an invariant violation event that fires (and falls back to the original prompt) if compression would have dropped a load-bearing section, a drift event when the byte-count estimate diverges from actual tokens by >15%, an end-of-orchestration coverage rollup, and a runtime double-fire guard. The existing `prompt_compression` event also carries per-section drop counts now (`dedup_drop_by_heading`), so analytics readers can see which section types compress effectively.
 
-- **Smart output shaping** trims hedging and pad-words from prose-heavy agents (debugger, reviewer, documenter) — roughly −21% Opus output / −14% Sonnet on a public April-2026 benchmark with 100% accuracy retained. Default on; `output_shape.enabled: false` or `ORCHESTRAY_DISABLE_OUTPUT_SHAPE=1` to disable. (v2.2.2: the addendum is now applied by a `PreToolUse:Agent` hook on every spawn, so it no longer depends on the orchestrator remembering to inject it.)
-- **Chunked schema lookup** replaces the 186 KB event-schemas reload with a small fingerprint plus a new `mcp__orchestray__schema_get` MCP verb that returns the chunk you need. Default on; full-file Read is blocked.
-- **Engineered cache geometry** anchors stable prompt prefixes in a byte-stable Block-Z header backed by a 4-slot cache-control manifest with TTL auto-downgrade. Back-to-back orchestrations within the hour pay 90% less for shared overhead. (v2.2.1: the auto-disable sentinel now carries a 1-hour TTL and a trip-counter so transient false positives no longer disable cache geometry permanently.)
-- **Haiku scout** (new agent: `haiku-scout`) takes Read/Glob/Grep recon at and above 12 KB off Opus. Three-layer tool-whitelist enforcement; default on.
-- **Background-housekeeper Haiku** (new agent: `orchestray-housekeeper`) handles three narrow background ops (KB-write verify, schema-shadow regen, telemetry rollup recompute) at Read+Glob only — stricter than scout. Per-action audit telemetry, drift detector that fails closed on tool-whitelist mutation, three independent kill switches.
-- **Deterministic sentinel probes** replace inline Bash for five common checks (file-exists, line-count, git-status, schema-validate, hash-compute) with zero LLM cost.
-- **Audit-round auto-archive** distills completed rounds of multi-round audits into compact 500-token digests. Verbatim findings stay in the audit log.
-- **Delta delegation for repeat agent spawns** — first spawn gets the full prompt; subsequent spawns get a prefix reference plus a small delta block, hash-anchored so cache misses self-heal. (v2.2.2: composed by a `PreToolUse:Agent` hook on every spawn, so the delta event fires deterministically rather than depending on orchestrator-side prompt composition.)
-- **Telemetry truth** — fixed the ~59% duplicate-row bug in `agent_metrics.jsonl`, the silent-default-to-Sonnet bug for team-member rows, and made PM-direct token cost visible in the metrics dashboard for the first time.
-
-**Restart Claude Code after upgrading**: the two new agents (`haiku-scout`, `orchestray-housekeeper`) require a session restart to load.
+Default-on. No config required. Restart Claude Code after upgrading.
 
 ### Key features
 

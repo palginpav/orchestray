@@ -2,24 +2,24 @@
 'use strict';
 
 /**
- * capture-tokenwright-realized.js — SubagentStop hook (v2.2.5, tokenwright).
+ * capture-tokenwright-realized.js — SubagentStop hook (v2.2.6, tokenwright).
  *
- * After a subagent stops, correlate its actual input_tokens (from hook payload
- * or transcript) against the pre-compression estimate stashed in
- * `.orchestray/state/tokenwright-pending.jsonl` by inject-tokenwright.js.
+ * After a subagent stops, correlate its actual input_tokens against the
+ * pre-compression estimate stashed in `.orchestray/state/tokenwright-pending.jsonl`
+ * by inject-tokenwright.js.
  *
- * Correlation key: spawn_key = agentType + ':' + sha256(originalPrompt)[0..32].
- * Because the hook receives the compressed prompt (not the original), correlation
- * falls back to orchestration_id + agent_type when no spawn_key match is found
- * (picks the most-recent unmatched entry for that pair).
+ * v2.2.6 fixes:
+ *   B1 (CRITICAL) — Replace silent zero-token skip with transcript-first
+ *                   resolveActualTokens(); always emit a paired event.
+ *   B2            — Replace reference-equality removePendingEntry filter with
+ *                   key-tuple equality so removal actually works.
+ *   B4            — Sweep journal on read (TTL + size/count caps).
  *
- * Emits a `tokenwright_realized_savings` audit event with:
- *   estimated_input_tokens_pre  — from pending journal
- *   actual_input_tokens         — from SubagentStop hook payload
- *   actual_savings_tokens       — estimated - actual
- *   estimation_error_pct        — |actual - estimated| / actual * 100
- *
- * Removes the matched entry from the pending journal (rewrite-without-matched).
+ * New instrumentation:
+ *   - emitTokenwrightRealizedUnknown when tokens === 0
+ *   - emitTokenwrightEstimationDrift when |err| > budget
+ *   - emitCompressionDoubleFireDetected via double-fire guard
+ *   - emitTokenwrightJournalTruncated when sweep triggers truncation
  *
  * Fail-safe contract: any exception → stderr only; always emit { continue: true }.
  * routing.jsonl is never opened, read, or written by this hook.
@@ -28,10 +28,19 @@
 const fs   = require('fs');
 const path = require('path');
 
-const { resolveSafeCwd }     = require('./_lib/resolve-project-cwd');
-const { MAX_INPUT_BYTES }    = require('./_lib/constants');
-const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
-const { emitTokenwrightRealizedSavings } = require('./_lib/tokenwright/emit');
+const { resolveSafeCwd }               = require('./_lib/resolve-project-cwd');
+const { MAX_INPUT_BYTES }              = require('./_lib/constants');
+const { getCurrentOrchestrationFile }  = require('./_lib/orchestration-state');
+const {
+  emitTokenwrightRealizedSavings,
+  emitTokenwrightRealizedUnknown,
+  emitTokenwrightEstimationDrift,
+  emitCompressionDoubleFireDetected,
+  emitTokenwrightJournalTruncated,
+} = require('./_lib/tokenwright/emit');
+const { resolveActualTokens }          = require('./_lib/tokenwright/resolve-actual-tokens');
+const { sweepJournal }                 = require('./_lib/tokenwright/journal-sweep');
+const { checkDoubleFire }              = require('./_lib/tokenwright/double-fire-guard');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -52,6 +61,8 @@ function resolveOrchestrationId(cwd) {
 
 /**
  * Read + parse pending journal. Returns [] on any error.
+ * Does NOT re-read inside removal — callers pass the already-read entries.
+ *
  * @param {string} pendingPath
  * @returns {object[]}
  */
@@ -65,14 +76,14 @@ function readPending(pendingPath) {
 }
 
 /**
- * Rewrite the pending journal without the matched entry.
- * Fail-open: if rewrite fails, the journal accumulates stale entries
- * (harmless — realized-savings hook just won't find another match).
+ * Write kept entries back to the journal.
+ * Fail-open: on error, journal accumulates stale entries (harmless).
+ *
+ * @param {string}   pendingPath
+ * @param {object[]} kept
  */
-function removePendingEntry(pendingPath, matchedEntry) {
+function writePending(pendingPath, kept) {
   try {
-    const entries = readPending(pendingPath);
-    const kept = entries.filter(e => e !== matchedEntry);
     const content = kept.map(e => JSON.stringify(e)).join('\n') + (kept.length ? '\n' : '');
     fs.writeFileSync(pendingPath, content, 'utf8');
   } catch (_e) {
@@ -83,23 +94,67 @@ function removePendingEntry(pendingPath, matchedEntry) {
 }
 
 /**
- * Extract actual input_tokens from SubagentStop hook payload.
- * Claude Code passes usage in the top-level `usage` field of the hook event.
- * Fallback: event.tool_response.usage (variant seen in some versions).
- * Returns 0 if not found (caller will skip emit for zero).
+ * B2 fix: key-tuple equality for pending entry removal.
+ * Computes a stable string key from identity fields.
+ *
+ * @param {object} e
+ * @returns {string}
  */
-function resolveActualTokens(event) {
-  // Primary: top-level usage (matches collect-agent-metrics.js line 389)
-  const topUsage = event.usage;
-  if (topUsage && (topUsage.input_tokens || topUsage.input_tokens === 0)) {
-    return Number(topUsage.input_tokens) || 0;
-  }
-  // Secondary: tool_response.usage (some Claude Code variants)
+function entryKey(e) {
+  return `${e.spawn_key || ''}|${e.orchestration_id || ''}|${e.agent_type || ''}|${e.timestamp || ''}`;
+}
+
+/**
+ * Load config gates for this script.
+ * All gates default-on per feedback_default_on_shipping.md.
+ *
+ * @param {string} cwd
+ * @returns {object}
+ */
+function loadConfig(cwd) {
+  const defaults = {
+    realized_savings_no_silent_skip:   true,
+    estimation_drift_enabled:          true,
+    estimation_drift_budget_pct:       15,
+    pending_journal_ttl_hours:         24,
+    pending_journal_max_bytes:         10240,
+    pending_journal_max_entries:       100,
+    transcript_token_resolution_enabled: true,
+    double_fire_guard_enabled:         true,
+  };
+
+  // Env-var kill switches override config
+  const envOverrides = {
+    realized_savings_no_silent_skip:   process.env.ORCHESTRAY_DISABLE_REALIZED_NO_SKIP !== '1',
+    estimation_drift_enabled:          process.env.ORCHESTRAY_DISABLE_DRIFT_DETECT !== '1',
+    double_fire_guard_enabled:         process.env.ORCHESTRAY_DISABLE_DOUBLE_FIRE_GUARD !== '1',
+  };
+
+  let fileConfig = {};
   try {
-    const trUsage = event.tool_response && event.tool_response.usage;
-    if (trUsage && trUsage.input_tokens) return Number(trUsage.input_tokens) || 0;
-  } catch (_e) { /* fall through */ }
-  return 0;
+    const cfgPath = path.join(cwd, '.orchestray', 'config.json');
+    if (fs.existsSync(cfgPath)) {
+      const raw = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+      const compression = (raw && typeof raw.compression === 'object' && raw.compression) || {};
+      fileConfig = {
+        realized_savings_no_silent_skip:     compression.realized_savings_no_silent_skip,
+        estimation_drift_enabled:            compression.estimation_drift_enabled,
+        estimation_drift_budget_pct:         compression.estimation_drift_budget_pct,
+        pending_journal_ttl_hours:           compression.pending_journal_ttl_hours,
+        pending_journal_max_bytes:           compression.pending_journal_max_bytes,
+        pending_journal_max_entries:         compression.pending_journal_max_entries,
+        transcript_token_resolution_enabled: compression.transcript_token_resolution_enabled,
+        double_fire_guard_enabled:           compression.double_fire_guard_enabled,
+      };
+      // Strip undefined keys so Object.assign works correctly
+      Object.keys(fileConfig).forEach(k => {
+        if (fileConfig[k] === undefined) delete fileConfig[k];
+      });
+    }
+  } catch (_e) { /* fall through to defaults */ }
+
+  // Merge: defaults < file config < env overrides
+  return Object.assign({}, defaults, fileConfig, envOverrides);
 }
 
 // ---------------------------------------------------------------------------
@@ -131,25 +186,47 @@ process.stdin.on('end', () => {
     let cwd;
     try { cwd = resolveSafeCwd(event.cwd); } catch (_e) { cwd = process.cwd(); }
 
+    // --- Load config ---
+    const cfg = loadConfig(cwd);
+
     const pendingPath = path.join(cwd, '.orchestray', 'state', 'tokenwright-pending.jsonl');
-    const entries     = readPending(pendingPath);
-    if (entries.length === 0) {
-      // No pending entries — this spawn wasn't compressed (or journal was cleared).
+    const stateDir    = path.join(cwd, '.orchestray', 'state');
+
+    // --- Read + sweep journal (B4) ---
+    const rawEntries = readPending(pendingPath);
+    const { kept: sweptEntries, truncationEvent } = sweepJournal({
+      entries:    rawEntries,
+      ttlHours:   cfg.pending_journal_ttl_hours,
+      maxBytes:   cfg.pending_journal_max_bytes,
+      maxEntries: cfg.pending_journal_max_entries,
+    });
+
+    // Emit truncation event if sweep removed entries
+    if (truncationEvent) {
+      const orchIdForTrunc = resolveOrchestrationId(cwd);
+      emitTokenwrightJournalTruncated(Object.assign(
+        { orchestration_id: orchIdForTrunc },
+        truncationEvent
+      ));
+      // Write swept result immediately so we don't re-process expired entries
+      writePending(pendingPath, sweptEntries);
+    }
+
+    if (sweptEntries.length === 0) {
+      // No pending entries — spawn wasn't compressed (or journal was cleared).
       emitContinue();
       process.exit(0);
       return;
     }
 
-    const agentType       = typeof event.subagent_type === 'string' ? event.subagent_type
-                          : (event.agent_type || 'unknown');
-    const orchestrationId = resolveOrchestrationId(cwd);
+    const agentType        = typeof event.subagent_type === 'string' ? event.subagent_type
+                           : (event.agent_type || 'unknown');
+    const orchestrationId  = resolveOrchestrationId(cwd);
 
-    // Attempt correlation 1: orchestration_id + agent_type (most reliable since
-    // inject-tokenwright.js doesn't have access to the compressed prompt to re-hash).
+    // --- Correlation: orchestration_id + agent_type, LIFO ---
     let matched = null;
-    // Prefer the most-recent entry for this orch+agent pair (LIFO).
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const e = entries[i];
+    for (let i = sweptEntries.length - 1; i >= 0; i--) {
+      const e = sweptEntries[i];
       if (e.agent_type === agentType &&
           (e.orchestration_id === orchestrationId ||
            (!e.orchestration_id && !orchestrationId))) {
@@ -158,51 +235,148 @@ process.stdin.on('end', () => {
       }
     }
 
-    // Fallback: any unmatched entry for this agent_type (last resort).
+    // Fallback: any entry for this agent_type (last resort)
     if (!matched) {
-      for (let i = entries.length - 1; i >= 0; i--) {
-        if (entries[i].agent_type === agentType) { matched = entries[i]; break; }
+      for (let i = sweptEntries.length - 1; i >= 0; i--) {
+        if (sweptEntries[i].agent_type === agentType) {
+          matched = sweptEntries[i];
+          break;
+        }
       }
     }
 
     if (!matched) {
-      // No match — this subagent either wasn't compressed or used a different type key.
+      // No match — not a tokenwright-compressed spawn or different type key.
       emitContinue();
       process.exit(0);
       return;
     }
 
-    const actualInputTokens = resolveActualTokens(event);
+    // --- Double-fire guard (B3) ---
+    if (cfg.double_fire_guard_enabled) {
+      const dedupToken = `${agentType}:${matched.spawn_key || ''}:${matched.timestamp || ''}`;
+      const { shouldFire, doubleFireEvent } = checkDoubleFire({
+        dedupToken,
+        callerPath:      __filename,
+        stateDir,
+        orchestrationId: orchestrationId || 'unknown',
+      });
 
-    // Don't emit if we have no actual token data — would produce misleading savings.
-    if (actualInputTokens === 0) {
-      // Still remove the pending entry to avoid stale accumulation.
-      removePendingEntry(pendingPath, matched);
-      emitContinue();
-      process.exit(0);
-      return;
+      if (!shouldFire) {
+        if (doubleFireEvent) {
+          emitCompressionDoubleFireDetected(Object.assign(
+            { agent_type: agentType },
+            doubleFireEvent
+          ));
+        }
+        emitContinue();
+        process.exit(0);
+        return;
+      }
     }
 
-    const estimatedPre      = matched.input_token_estimate || 0;
-    const actualSavings     = estimatedPre - actualInputTokens;
-    const estimationErrPct  = actualInputTokens > 0
-      ? Math.abs(actualInputTokens - estimatedPre) / actualInputTokens * 100
-      : 0;
+    // --- Resolve actual tokens (B1 fix) ---
+    const { tokens, source } = resolveActualTokens(event, cwd);
 
-    // Emit realized-savings event (fail-safe internally via emit.js).
-    emitTokenwrightRealizedSavings({
-      orchestration_id:            orchestrationId,
-      task_id:                     matched.task_id || null,
-      agent_type:                  agentType,
-      estimated_input_tokens_pre:  estimatedPre,
-      actual_input_tokens:         actualInputTokens,
-      actual_savings_tokens:       actualSavings,
-      estimation_error_pct:        Math.round(estimationErrPct * 100) / 100,
-      technique_tag:               matched.technique_tag || 'safe-l1',
-    });
+    const estimatedPre   = matched.input_token_estimate || 0;
+    const driftBudgetPct = cfg.estimation_drift_budget_pct;
 
-    // Remove matched entry from the pending journal.
-    removePendingEntry(pendingPath, matched);
+    // --- B2 fix: key-tuple removal ---
+    const matchedKey  = entryKey(matched);
+    const afterRemove = sweptEntries.filter(e => entryKey(e) !== matchedKey);
+    let removedPendingEntry = false;
+    try {
+      writePending(pendingPath, afterRemove);
+      removedPendingEntry = true;
+    } catch (_e) {
+      // writePending already logs; removedPendingEntry stays false
+    }
+
+    // --- Branch on token count ---
+    if (tokens > 0) {
+      // --- tokens > 0: measured path ---
+      const actualSavings     = estimatedPre - tokens;
+      const rawErrPct         = estimatedPre > 0
+        ? Math.abs(tokens - estimatedPre) / estimatedPre * 100
+        : 0;
+      const estimationErrPct  = Math.round(rawErrPct * 100) / 100;
+      const direction         = tokens > estimatedPre ? 'underestimate' : 'overestimate';
+      const driftExceeded     = Math.abs(rawErrPct) > driftBudgetPct;
+
+      emitTokenwrightRealizedSavings({
+        orchestration_id:           orchestrationId,
+        task_id:                    matched.task_id || null,
+        agent_type:                 agentType,
+        estimated_input_tokens_pre: estimatedPre,
+        actual_input_tokens:        tokens,
+        actual_savings_tokens:      actualSavings,
+        estimation_error_pct:       estimationErrPct,
+        technique_tag:              matched.technique_tag || 'safe-l1',
+        realized_status:            'measured',
+        usage_source:               source,
+        drift_exceeded:             driftExceeded,
+        drift_budget_pct:           driftBudgetPct,
+        removed_pending_entry:      removedPendingEntry,
+      });
+
+      if (driftExceeded && cfg.estimation_drift_enabled) {
+        emitTokenwrightEstimationDrift({
+          orchestration_id:           orchestrationId,
+          agent_type:                 agentType,
+          estimated_input_tokens_pre: estimatedPre,
+          actual_input_tokens:        tokens,
+          estimation_error_pct:       estimationErrPct,
+          drift_budget_pct:           driftBudgetPct,
+          direction,
+        });
+      }
+
+    } else {
+      // --- tokens === 0 path ---
+
+      if (cfg.realized_savings_no_silent_skip) {
+        // B1 fix: always emit, even with no token source
+        emitTokenwrightRealizedSavings({
+          orchestration_id:           orchestrationId,
+          task_id:                    matched.task_id || null,
+          agent_type:                 agentType,
+          estimated_input_tokens_pre: estimatedPre,
+          actual_input_tokens:        null,
+          actual_savings_tokens:      null,
+          estimation_error_pct:       null,
+          technique_tag:              matched.technique_tag || 'safe-l1',
+          realized_status:            'unknown',
+          usage_source:               source,
+          drift_exceeded:             false,
+          drift_budget_pct:           driftBudgetPct,
+          removed_pending_entry:      removedPendingEntry,
+        });
+
+        // Determine reason for dashboard visibility
+        let reason = 'no_token_source';
+        if (source === 'transcript') {
+          // Transcript was read but produced 0 tokens — parse succeeded but no assistant usage
+          reason = 'parse_failure';
+        } else if (typeof event.agent_transcript_path === 'string' && event.agent_transcript_path) {
+          // Path was present but not usable (containment rejection or unreadable)
+          reason = 'transcript_unreadable';
+        }
+
+        emitTokenwrightRealizedUnknown({
+          orchestration_id:           orchestrationId,
+          task_id:                    matched.task_id || null,
+          agent_type:                 agentType,
+          spawn_key:                  matched.spawn_key || '',
+          estimated_input_tokens_pre: estimatedPre,
+          reason,
+          transcript_path_present:    !!(event.agent_transcript_path),
+          hook_usage_present:         !!(event.usage && event.usage.input_tokens),
+        });
+
+      }
+      // else: legacy v2.2.5 silent-skip mode (ORCHESTRAY_DISABLE_REALIZED_NO_SKIP=1)
+      // pending entry already removed above — no emit
+    }
 
     emitContinue();
     process.exit(0);
