@@ -489,6 +489,15 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/release-manager/dual-install-parity-check.js",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "TaskCreated": [

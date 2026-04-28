@@ -6632,3 +6632,26 @@ Emitted by `bin/process-spawn-requests.js` when a spawn request fails the cost c
 Field notes:
 - `reason` ∈ `{above_threshold, quota_exhausted, max_depth_exceeded, user_explicit}`.
 - Max-depth default: 2 (a reactive-spawned agent cannot itself reactive-spawn).
+
+### `dual_install_divergence_detected` event
+
+Emitted by `bin/release-manager/dual-install-parity-check.js` (v2.2.9 B-6.1, SubagentStop on the release-manager agent and on manual CLI invocation) once per divergent file when canonical `bin/` and installed `.claude/orchestray/bin/` disagree. Replaces the prior prose-only "release-manager must verify dual-install parity" convention.
+
+```json
+{
+  "type": "dual_install_divergence_detected",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "file_path": "relative/path/from/bin.js",
+  "divergence_type": "orphan",
+  "source_hash": null,
+  "target_hash": "sha256-hex"
+}
+```
+
+Field notes:
+- `divergence_type` ∈ `{orphan, content_mismatch}`. `orphan` = file present in `.claude/orchestray/bin/` but not in `bin/` (a stale installer artefact). `content_mismatch` = same relative path in both but different SHA-256 (dedup pass dropped a hook update; install ran on a divergent branch; etc.).
+- `source_hash` / `target_hash` — SHA-256 hex of the canonical (`bin/`) and installed (`.claude/orchestray/bin/`) copies respectively. `null` when the file is missing on that side (orphans always have `source_hash: null`).
+- `feature_optional: false` — this event is REQUIRED to fire on every dual-install divergence; F3's promised-event tracker SHOULD alarm if dark across releases.
+- Kill switch: `ORCHESTRAY_DUAL_INSTALL_CHECK_DISABLED=1` is honored only for non-release SubagentStop invocations. Releases (subagent_type === `release-manager`) always parity-check (scope-lock #3).
