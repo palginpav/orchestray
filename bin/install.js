@@ -1070,6 +1070,44 @@ function mergeHooks(targetDir) {
   }
   if (!settings.hooks) settings.hooks = {};
 
+  // Forward-compat: prune hooks pointing at scripts THIS install would have
+  // produced but does not ship now. Catches rollback / upgrade-removal: a
+  // prior install registered hooks for scripts that the current install
+  // does not ship; without this sweep every fire produces a non-blocking
+  // MODULE_NOT_FOUND. Scoped to OUR install's target bin/ — hooks under
+  // any other path (other plugins, other orchestray installs on the same
+  // machine, fictitious test paths) are left untouched.
+  {
+    const ourBinPrefix = path.join(targetDir, 'orchestray', 'bin') + path.sep;
+    let pruned = 0;
+    for (const [event, entries] of Object.entries(settings.hooks)) {
+      if (!Array.isArray(entries)) continue;
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const entry = entries[i];
+        if (!Array.isArray(entry.hooks)) continue;
+        for (let j = entry.hooks.length - 1; j >= 0; j--) {
+          const cmd = entry.hooks[j].command || '';
+          const m = cmd.match(/"([^"]+\.js)"/);
+          if (!m) continue;
+          const scriptPath = m[1];
+          if (!scriptPath.startsWith(ourBinPrefix)) continue;
+          if (!fs.existsSync(scriptPath)) {
+            entry.hooks.splice(j, 1);
+            pruned++;
+          }
+        }
+        if (entry.hooks.length === 0) entries.splice(i, 1);
+      }
+      if (entries.length === 0) delete settings.hooks[event];
+    }
+    if (pruned > 0) {
+      console.log(
+        '  \x1b[32m✓\x1b[0m Pruned ' + pruned + ' stale hook' +
+        (pruned === 1 ? '' : 's') + ' pointing to deleted scripts.'
+      );
+    }
+  }
+
   let srcData = {};
   if (fs.existsSync(srcHooksFile)) {
     try { srcData = JSON.parse(fs.readFileSync(srcHooksFile, 'utf8')); } catch {}
