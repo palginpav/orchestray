@@ -5962,3 +5962,97 @@ Field notes:
   emitted on every `schema_get` call.
 
 Schema stability: additive-only.
+
+---
+
+### `prompt_compression` event
+
+Emitted by `bin/inject-tokenwright.js` (PreToolUse:Agent hook) on every
+spawn whose delegation prompt passed through the tokenwright compressor
+at policy level other than `off`. Captures pre/post byte counts plus the
+list of dropped sections so analytics can attribute savings and detect
+when the classifier becomes too aggressive.
+
+```json
+{
+  "type": "prompt_compression",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx-or-unknown",
+  "task_id": "task-xxx-or-null",
+  "agent_type": "developer | architect | ...",
+  "technique_tag": "safe-l1 | aggressive-l1l2 | experimental-l1l2l3 | debug-passthrough",
+  "input_bytes": 12345,
+  "output_bytes": 9876,
+  "ratio": 0.8,
+  "input_token_estimate": 3086,
+  "output_token_estimate": 2469,
+  "dropped_sections": [{"heading": "## Prior Findings", "kind": "dedup-eligible"}],
+  "layer1_dedup_blocks_dropped": 2
+}
+```
+
+Field notes:
+- `technique_tag`: maps from policy level — `safe` → `safe-l1`,
+  `aggressive` → `aggressive-l1l2`, `experimental` → `experimental-l1l2l3`,
+  `debug-passthrough` → `debug-passthrough`. The `off` level emits no
+  event.
+- `ratio`: `output_bytes / input_bytes`. Sentinel value `1.0` indicates
+  no compression occurred (parser found nothing to dedup).
+- `input_token_estimate` and `output_token_estimate`: byte-count-divided-
+  by-4 approximations. The realized token count comes from the paired
+  `tokenwright_realized_savings` event written at SubagentStop (which
+  uses the actual usage from the model's response).
+- `dropped_sections`: only populated when at least one section was
+  removed; empty array when all sections were kept.
+- `layer1_dedup_blocks_dropped`: count of blocks removed by MinHash dedup
+  in Layer 1. Other layer-counts are added when their layers ship in
+  later releases.
+- Schema stability: additive-only. Source: `bin/inject-tokenwright.js`
+  via the `bin/_lib/tokenwright/emit.js` helper which stamps `version: 1`
+  explicitly (the v2.2.2 audit-event-writer does NOT autofill the
+  `version` field).
+
+---
+
+### `tokenwright_realized_savings` event
+
+Emitted by `bin/capture-tokenwright-realized.js` (SubagentStop hook) for
+every spawn that previously emitted a `prompt_compression` event. Pairs
+the compression-time estimate with the actual input-token count from
+the model's response so analytics can compute estimation error and
+detect token-counting drift.
+
+```json
+{
+  "type": "tokenwright_realized_savings",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx",
+  "task_id": "task-xxx-or-null",
+  "agent_type": "developer | architect | ...",
+  "estimated_input_tokens_pre": 3086,
+  "actual_input_tokens": 3201,
+  "actual_savings_tokens": -115,
+  "quality_signal_status": "success | partial | failure",
+  "estimation_error_pct": 3.7
+}
+```
+
+Field notes:
+- `estimated_input_tokens_pre`: the `input_token_estimate` from the
+  paired `prompt_compression` event (pre-compression byte count / 4).
+- `actual_input_tokens`: the `usage.input_tokens` value from the
+  spawn's `agent_stop` row. Captured via the same metrics path as
+  cost-tracker; never compressed.
+- `actual_savings_tokens`: `estimated_input_tokens_pre - actual_input_tokens`.
+  May be negative if the byte-count estimate underestimated the true
+  token count (Claude's tokenizer is not strictly 4-bytes-per-token).
+- `quality_signal_status`: mirrors `agent_stop.status` so the analytics
+  rollup can detect quality regression in the compressed cohort vs the
+  uncompressed baseline.
+- `estimation_error_pct`: `|actual - estimated| / actual * 100`. Used
+  by the 14-day observation gate to verify estimation accuracy before
+  promoting `aggressive` to default.
+- Schema stability: additive-only. Source:
+  `bin/capture-tokenwright-realized.js` via `bin/_lib/tokenwright/emit.js`.

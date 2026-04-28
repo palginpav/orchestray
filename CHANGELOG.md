@@ -3,6 +3,41 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.2.5] - 2026-04-28
+
+v2.2.5 ships Tokenwright, Orchestray's first native prompt compressor — a new Layer 1 deduplication pass that removes redundant blocks from delegation prompts before they reach the model, cutting real cost on KB-attachment-heavy orchestrations. It also fixes a long-standing installer bug where hooks for scripts that no longer exist accumulate silently across upgrades and rollbacks. This release replaces v2.2.3 and v2.2.4, which have been rolled back: those releases shipped a routing gateway that reported orchestration savings it never actually delivered, and are replaced by a compressor that produces verifiable, auditable savings instead. The version arc skips 2.2.3 and 2.2.4 — those tags remain in git history but their code does not ship.
+
+### Added
+
+- **Layer 1 prompt compression (Tokenwright), default on.** Before each agent spawn, a new compression pass scans the delegation prompt and removes near-duplicate section blocks — repeated KB attachments, redundant prior-findings context, and duplicate background sections that accumulate in long orchestrations. Everything load-bearing is preserved unchanged: the handoff contract, the structured-result schema, the output-shape addendum, the repo map, the project-intent block, and the immutable Block-A prefix. Layer 1 uses MinHash near-duplicate deduplication and only touches sections that opt in to dedup eligibility; all other content passes through byte-identical. Five policy levels: `off`, `safe` (Layer 1, the default), `aggressive` (Layer 2, ships later), `experimental` (Layer 3), and `debug-passthrough`. Two kill switches: set `compression.enabled: false` in your config file, or set the environment variable `ORCHESTRAY_DISABLE_COMPRESSION=1` for an in-session opt-out without touching config. A separate `ORCHESTRAY_COMPRESSION_LEVEL` env var overrides the policy level at runtime.
+
+- **Two new audit events for compression telemetry.** Every spawn now records a `prompt_compression` event (input size, output size, compression ratio, sections dropped, technique tag) and, on spawn completion, a `tokenwright_realized_savings` event (estimated vs. actual input tokens consumed, estimation error). Both events stamp `version: 1` explicitly so the audit-event writer accepts them on first emit. Operators can watch savings accumulate in `/orchestray:analytics` across orchestrations.
+
+### Fixed
+
+- **Stale hook registrations no longer accumulate across upgrades or rollbacks.** After rolling back from v2.2.3/2.2.4 — or upgrading from any version that registered hooks for scripts the current version no longer carries — every file-edit and agent-spawn triggered a non-blocking `MODULE_NOT_FOUND` error from Claude Code's hook runner. This was invisible to most users but noisy in logs. The installer now sweeps `settings.json` at install time and removes any hook entry pointing at a script that does not exist in the current install's bin/ directory. Hooks belonging to other plugins or other Orchestray installs on the same machine are untouched.
+
+### Changed
+
+- **Slash commands route directly to PM again, no router-level gateway.** v2.2.3 and v2.2.4 introduced a pm-router agent as a Haiku-tier gateway that was supposed to reduce token overhead on simple commands before handing off to specialists. Audit-log forensics after rollback showed zero specialist-spawn events across all runs — the gateway was summarising what orchestration would have happened rather than running it. The pm-router and its supporting files have been removed. All slash commands now route directly to the PM as in v2.2.2 and earlier. The actual prompt savings that pm-router was supposed to enable ship in this release as Tokenwright (see Added above), operating in the hook chain where its effects are auditable per-spawn.
+
+### Migration notes
+
+- Restart Claude Code after upgrading. Agent definitions changed; the new compression hook only loads after a session restart.
+- No new env vars required for default behavior; Tokenwright runs at the `safe` policy level automatically.
+- New env kill switches: `ORCHESTRAY_DISABLE_COMPRESSION=1` (disable entirely) and `ORCHESTRAY_COMPRESSION_LEVEL=<level>` (override policy level).
+- The version arc skips 2.2.3 and 2.2.4. Those tags exist in git history but the work they shipped was rolled back and is not present in v2.2.5.
+
+### Tests
+
+- 4547 baseline + 124 new tokenwright / install / regression tests = **4671 tests, all passing**.
+
+### Under the hood
+
+Tokenwright lives in `bin/_lib/tokenwright/` — the MinHash engine, section-block parser, eligibility classifier, and policy resolver. `bin/inject-tokenwright.js` is the `PreToolUse:Agent` hook entry point; it reads the compression policy from config, runs the Layer 1 pass, and emits the `prompt_compression` audit event before the prompt reaches the model. `bin/capture-tokenwright-realized.js` is the `SubagentStop` hook entry point; it reads the spawn's input-token count and emits `tokenwright_realized_savings`. Both new event schemas are registered in `agents/pm-reference/event-schemas.md` with `version: 1`. The compression policy block is declared in `schemas/config.schema.js`. The stale-hook sweep is in `bin/install.js` and runs unconditionally at the end of every install; it scans `settings.json` hooks entries against `bin/` and removes any that point at non-existent scripts, logging each removal.
+
+---
+
 ## [2.2.2] - 2026-04-27
 
 v2.2.2 fixes eight telemetry regressions a real-orchestration test surfaced after v2.2.1 shipped. Two new pre-spawn hooks make the smart-output-shaping addendum and the mandatory handoff-contract suffix fire automatically on every `Agent()` spawn — they no longer rely on the orchestrator remembering to inject them. Four parser and regex fixes restore four telemetry signals that were silently broken since v2.2.0. One hook-registration fix removes a 2× duplicate emission on three high-frequency event types. All flags default-on; one new env-var kill switch.

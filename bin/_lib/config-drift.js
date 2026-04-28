@@ -170,6 +170,10 @@ const KNOWN_TOP_LEVEL_KEYS = Object.freeze([
   'output_shape',
   'pm_protocol',
 
+  // v2.2.5 W1+W2: tokenwright (per-spawn delegation-prompt compressor).
+  // Mirrors compressionSchema in schemas/config.schema.js.
+  'compression',
+
   // Meta
   'config_drift_silence',
 ]);

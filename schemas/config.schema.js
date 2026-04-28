@@ -371,6 +371,26 @@ const eventSchemasSchema = z.object({
   full_load_disabled: z.boolean().optional(),
 }).passthrough();
 
+// v2.2.5 W1+W2: top-level `compression` block (tokenwright). Layered
+// per-spawn delegation-prompt compressor. Layer 1 (MinHash dedup) ships
+// in v2.2.5 default-on at level "safe"; Layer 2 (Haiku block-scoring)
+// and Layer 3 (map-reduce summary) come in later releases gated by the
+// preserve_sections list and the cost cap. Per project rule
+// `feedback_default_on_shipping.md`, defaults on. Env kill switches:
+// ORCHESTRAY_DISABLE_COMPRESSION=1 (full bypass),
+// ORCHESTRAY_COMPRESSION_LEVEL=off|safe|aggressive|experimental|debug-passthrough.
+const compressionSchema = z.object({
+  enabled: z.boolean().optional(),
+  level: z.enum(['off', 'safe', 'aggressive', 'experimental', 'debug-passthrough']).optional(),
+  bm25_prefilter: z.boolean().optional(),
+  bm25_top_k: z.number().min(0).max(1).optional(),
+  keep_threshold: z.number().min(0).max(1).optional(),
+  haiku_score_max_cost_usd_per_orchestration: z.number().min(0).optional(),
+  preserve_sections: z.array(z.string()).optional(),
+  sliding_window_size: z.number().int().min(0).optional(),
+  minhash_jaccard_threshold: z.number().min(0).max(1).optional(),
+}).passthrough();
+
 // v2.2.0 P1.2: top-level `output_shape` block. Caveman + length-cap +
 // structured-outputs pipeline applied to prose-heavy roles. Default-on.
 // `staged_flip_allowlist` is the list of role names that pre-flip
@@ -522,6 +542,8 @@ const configSchema = z.object({
   output_shape: outputShapeSchema.optional(),
   pm_protocol: pmProtocolSchema.optional(),
   event_schemas: eventSchemasSchema.optional(),
+  // v2.2.5 W1+W2: tokenwright (per-spawn delegation-prompt compressor).
+  compression: compressionSchema.optional(),
   // v2.1.16 W14-fix F-W14-001: declare v2.1.14/15 carryover sections so the
   // bidirectional cross-ref test (KNOWN_TOP_LEVEL_KEYS == schema fields) holds
   // and fresh-install boot stops emitting "unknown config key" drift warnings.
@@ -563,4 +585,6 @@ module.exports = {
   outputShapeSchema,
   pmProtocolSchema,
   eventSchemasSchema,
+  // v2.2.5 W1+W2: tokenwright compressor.
+  compressionSchema,
 };

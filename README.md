@@ -8,6 +8,12 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 
 **Simple prompts** pass through to normal Claude Code behavior. **Complex prompts** get the full treatment.
 
+### What's new in v2.2.5
+
+**Tokenwright** — Layer 1 prompt compression — ships default-on in v2.2.5. Before each agent spawn, Orchestray now runs a near-duplicate deduplication pass over the delegation prompt and removes redundant blocks (repeated KB attachments, duplicate prior-findings context, accumulated background sections) while leaving all load-bearing content — the handoff contract, structured-result schema, repo map, project-intent block, and immutable prompt prefix — byte-identical. Savings are auditable per-spawn via two new telemetry events visible in `/orchestray:analytics`. Default policy is `safe` (Layer 1 only); additional layers ship in a later release. Kill switches: `compression.enabled: false` in config or `ORCHESTRAY_DISABLE_COMPRESSION=1` env var. The installer also fixes a long-standing bug where hooks pointing at scripts that no longer exist silently accumulate across upgrades, producing noisy `MODULE_NOT_FOUND` errors in Claude Code's hook runner — the installer now sweeps and removes stale entries at install time.
+
+v2.2.3 and v2.2.4 have been rolled back and are not present in v2.2.5. Those releases shipped a routing gateway that was designed to reduce token overhead on simple slash commands by intercepting them before the PM. Audit-log forensics showed the gateway was narrating orchestration outcomes rather than running them — no specialist-spawn events fired across any run. The gateway has been removed; slash commands route directly to the PM as in v2.2.2. Tokenwright is the actual compression that pm-router was supposed to enable, implemented where its effects are verifiable. Restart Claude Code after upgrading.
+
 ### What's new in v2.2.0 ("Tokens, not Actions")
 
 The v2.2.0 release reshapes how Orchestray pays for the prompt prefix it sends to Claude on every turn. Nine shipping items, every flag default-on, every behavior change with a kill switch. Headline savings: roughly **−18% to −33% per orchestration** (mid-range −22%; multi-round audits land at the upper end).
