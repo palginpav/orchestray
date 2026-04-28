@@ -66,28 +66,34 @@ function isContained(resolvedPath, cwd) {
 }
 
 /**
- * Sum all input token fields across all `assistant` entries in a JSONL transcript.
+ * Return the input token count for the FIRST `assistant` entry in a JSONL transcript.
  *
- * BUG FIX (W1, orch-20260428T115457Z-w226-fix-all): The original implementation
- * summed only `usage.input_tokens`, which is typically 1–10 tokens (the uncached
- * portion of the prompt). The full context a subagent receives is split across
- * three fields:
- *   - input_tokens            — uncached tokens billed at full rate
- *   - cache_creation_input_tokens — tokens written to the prompt cache this turn
- *   - cache_read_input_tokens     — tokens read from the prompt cache
+ * SINGLE-TURN ALIGNMENT FIX (W1, orch-20260428T123030Z-w226-mechanical-redo):
  *
- * The sum of all three equals the actual input context size, matching the billing
- * denominator for the pre-compression estimate (bytes/4). Excluding cache fields
- * caused ~96% estimation_error_pct because the actual side was ~2 instead of
- * ~22000+ tokens for a typical delegation prompt.
+ * The estimated side (`estimated_input_tokens_pre`) is computed at delegation time
+ * from the byte length of the outbound delegation prompt (bytes/4). It captures
+ * exactly ONE delegation → ONE model turn. The actual side must measure the same
+ * scope: the input tokens the model received for that first response.
  *
- * This mirrors the reference pattern in collect-agent-metrics.js lines 365–371:
- *   totalUsage.input_tokens               += usage.input_tokens
- *   totalUsage.cache_read_input_tokens    += usage.cache_read_input_tokens
- *   totalUsage.cache_creation_input_tokens += usage.cache_creation_input_tokens
+ * Prior attempt (commit 7bf1da1) summed cache tokens across ALL assistant turns,
+ * which made things worse: on a 189-turn agent the cumulative total was 22,492,865
+ * while the estimate was ~37,500 → 60,469% error vs. the original 96% error.
+ * See `regression: cumulative-7bf1da1` test case.
  *
- * Reads at most MAX_TRANSCRIPT_BYTES from the file to bound latency.
- * Returns `null` on any read or parse failure.
+ * The first assistant turn's usage reflects exactly the delegation prompt the model
+ * received. It carries all three input-token fields:
+ *   - input_tokens                 — uncached tokens billed at full rate
+ *   - cache_creation_input_tokens  — tokens written to the prompt cache this turn
+ *   - cache_read_input_tokens      — tokens read from the prompt cache
+ *
+ * Summing these three fields for ONLY the first assistant turn keeps the actual
+ * denominator on the same footing as the estimate.
+ *
+ * Reads at most MAX_TRANSCRIPT_BYTES from the beginning of the file. The first
+ * assistant turn appears early in every transcript, so this is cheap even for
+ * large multi-turn agents.
+ *
+ * Returns `null` on any read or parse failure, or if no assistant entry exists.
  *
  * @param {string} transcriptPath
  * @returns {number|null}
@@ -100,8 +106,8 @@ function readTranscriptTokens(transcriptPath) {
     const fileSize = stat.size;
     const readBytes = Math.min(fileSize, MAX_TRANSCRIPT_BYTES);
 
-    // Read from the beginning. With MAX_TRANSCRIPT_BYTES set to 2 MB this covers
-    // all observed subagent transcript sizes (largest ~600 KB in practice).
+    // Read from the beginning. The first assistant entry always appears early;
+    // 2 MB is ample even for the largest observed subagent transcripts (~600 KB).
     const fd = fs.openSync(transcriptPath, 'r');
     let content;
     try {
@@ -113,8 +119,6 @@ function readTranscriptTokens(transcriptPath) {
     }
 
     const lines = content.split('\n');
-    let total = 0;
-    let foundAny = false;
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -128,24 +132,24 @@ function readTranscriptTokens(transcriptPath) {
         const usage = entry.usage || (entry.message && entry.message.usage);
         if (!usage) continue;
 
-        // Sum all three input token fields — this is the correct denominator.
-        // Do not filter on > 0 before summing: a turn may have zero uncached
-        // tokens but nonzero cache tokens, and we must not skip it.
-        const inputTokens          = Number(usage.input_tokens)                    || 0;
-        const cacheCreateTokens    = Number(usage.cache_creation_input_tokens)     || 0;
-        const cacheReadTokens      = Number(usage.cache_read_input_tokens)         || 0;
-        const turnTotal            = inputTokens + cacheCreateTokens + cacheReadTokens;
+        // Sum the three input-token fields for THIS turn only (first assistant turn).
+        // Each field defaults to 0 if absent. A turn may have zero uncached tokens
+        // but nonzero cache tokens (typical after the first spawn), so we must not
+        // skip turns where input_tokens === 0.
+        const inputTokens       = Number(usage.input_tokens)                || 0;
+        const cacheCreateTokens = Number(usage.cache_creation_input_tokens) || 0;
+        const cacheReadTokens   = Number(usage.cache_read_input_tokens)     || 0;
+        const firstTurnTotal    = inputTokens + cacheCreateTokens + cacheReadTokens;
 
-        if (turnTotal > 0) {
-          total    += turnTotal;
-          foundAny  = true;
-        }
+        // Return immediately — we only want the FIRST assistant turn.
+        // Do not accumulate across turns; that is the 7bf1da1 regression.
+        return firstTurnTotal > 0 ? firstTurnTotal : null;
       } catch (_e) {
-        // Skip malformed lines
+        // Skip malformed lines; keep scanning for the first valid assistant entry
       }
     }
 
-    return foundAny ? total : null;
+    return null; // No assistant entry found
   } catch (_e) {
     return null;
   }

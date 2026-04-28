@@ -194,23 +194,33 @@ describe('Bucket C smoke — output_shape_applied lands for every reviewer/debug
   });
 });
 
-describe('Bucket C smoke — delegation_delta_skip emitted on markers_missing path', () => {
-  test('orchestrator-typed prompt (no markers) → skip event lands', () => {
+describe('Bucket C smoke — markers_missing path uses mechanical injection (W3 fix)', () => {
+  // W3 fix: the hook now injects delta markers heuristically when the PM omits them.
+  // Prompts starting with a per-spawn boundary heading (## Task, ## Files to, etc.)
+  // get an empty static portion + full content as per-spawn.  The hook emits
+  // delegation_delta_emit(reason='markers_injected') and writes the prefix cache;
+  // no delegation_delta_skip is emitted.
+  test('orchestrator-typed prompt (no markers) → injection fires, prefix cached, no skip', () => {
     const root = makeRoot();
     writeOrchMarker(root, 'orch-c-smoke-3');
 
-    // Operator-typed prompt with NO delta markers.
+    // Operator-typed prompt with NO delta markers — starts with ## Task heading.
     chainSpawn(root, 'reviewer', '## Task\nreview src/bar.ts (no markers)');
 
     const evs = readEvents(root);
+    // No skip event — W3 fix injects markers mechanically.
     const skip = evs.find((e) => e.type === 'delegation_delta_skip');
-    assert.ok(skip, 'markers-missing path must emit a skip event');
-    assert.equal(skip.reason, 'markers_missing');
-    assert.equal(skip.agent_type, 'reviewer');
-    assert.equal(skip.orchestration_id, 'orch-c-smoke-3');
+    assert.equal(skip, undefined, 'W3 fix: no delegation_delta_skip when injection succeeds');
+
+    // delegation_delta_emit is emitted with reason=markers_injected.
+    const emit = evs.find((e) => e.type === 'delegation_delta_emit');
+    assert.ok(emit, 'delegation_delta_emit must be emitted after injection');
+    assert.equal(emit.reason, 'markers_injected');
+    assert.equal(emit.agent_type, 'reviewer');
+    assert.equal(emit.orchestration_id, 'orch-c-smoke-3');
 
     // Output-shape still fires (independent hook).
     const sh = evs.find((e) => e.type === 'output_shape_applied');
-    assert.ok(sh, 'output_shape_applied still fires when delta path skips');
+    assert.ok(sh, 'output_shape_applied still fires when delta path uses injection');
   });
 });

@@ -592,8 +592,11 @@ process.stdin.on('end', () => {
         const variantCEvent = {
           timestamp: new Date().toISOString(),
           type: 'routing_outcome',
+          version: 1,                   // required by schema; fixed at 1
           orchestration_id: orchestrationId,
           agent_type: agentType,
+          tool_name: null,              // required key; Variant C fires at stop-time — tool name unknown; use null sentinel
+          description: null,            // required key; Variant C has no access to original prompt; use null sentinel
           agent_id: isTeamEvent ? (event.task_id || null) : (event.agent_id || null),
           model_assigned: resolvedModel || null,
           result: variantCResult,

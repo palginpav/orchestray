@@ -43,6 +43,13 @@ const crypto = require('crypto');
 // which slugs the source declares.
 const _parser = require('./_lib/event-schemas-parser');
 
+// v2.2.7 zone1-stability fix: after a successful regen the shadow content
+// changes, which will cause validate-cache-invariant.js to detect a mismatch
+// on the very next tool call (stored hash was computed without the new shadow).
+// Nulling zone1_hash here lets compose-block-a.js re-pin with the correct hash
+// on the next UserPromptSubmit, avoiding a spurious violation → sentinel trip.
+const { invalidateZone1Hash } = require('./_lib/invalidate-block-a-zone1');
+
 const MAX_SHADOW_BYTES = 8192; // 8 KB hard ceiling — raised from 4096 in v2.1.16
                                 // W12-fix F-005 to absorb v2.1.17 event-schema
                                 // additions without forcing per-event field
@@ -172,6 +179,10 @@ if (require.main === module) {
       '[regen-schema-shadow] OK — ' + count + ' event types, ' +
       shadow._meta.shadow_size_bytes + ' bytes → agents/pm-reference/event-schemas.shadow.json\n'
     );
+    // v2.2.7 zone1-stability fix: null out zone1_hash so the next compose-block-a
+    // run re-pins with the freshly-regenerated shadow included. Fail-open: if
+    // invalidation throws, warn to stderr and continue — the regen itself succeeded.
+    invalidateZone1Hash(cwd, { reason: 'shadow_regenerated', caller: 'regen-schema-shadow' });
     process.exit(0);
   } catch (err) {
     process.stderr.write('[regen-schema-shadow] ERROR: ' + err.message + '\n');

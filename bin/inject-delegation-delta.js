@@ -58,6 +58,101 @@ const DOSSIER_REL          = path.join('.orchestray', 'state', 'resilience-dossi
 const CONFIG_REL           = path.join('.orchestray', 'config.json');
 
 // ---------------------------------------------------------------------------
+// W3 fix: mechanical marker injection (orch-20260428T123030Z-w226-mechanical-redo)
+//
+// When the PM produces a delegation prompt without delta markers, inject them
+// mechanically using heading-based heuristics so `computeDelta` can proceed.
+//
+// The split boundary is the FIRST heading that is definitionally per-spawn
+// (task-specific). Everything before it is treated as static (cache-stable);
+// everything from that heading onward is the per-spawn portion.
+//
+// Per-spawn boundary headings (ordered by priority — first match wins):
+//   ## Task            — the subtask description
+//   ## Files to        — file ownership list (varies per task)
+//   ## Context from    — prior-agent handoff (varies per spawn)
+//   ## Acceptance Rubric — arch-synthesised per task
+//   ## Correction Patterns — match-set varies
+//   ## User Correction   — user-specific, varies
+//
+// If no boundary heading is found (the prompt contains no per-spawn sections)
+// the entire prompt is wrapped as static with an empty per-spawn section.
+// This is a valid degenerate case: first spawn treats the whole prompt as
+// static, caches it, and subsequent spawns (which must also lack markers)
+// get a full-prompt pass-through — no regression from the pre-fix behaviour.
+//
+// Returns { markedPrompt: string } on success, null on failure.
+// ---------------------------------------------------------------------------
+
+const PER_SPAWN_BOUNDARY_HEADINGS = [
+  /^## Task(\b|:|\s)/im,
+  /^## Files to/im,
+  /^## Context from/im,
+  /^## Acceptance Rubric/im,
+  /^## Correction Pattern/im,
+  /^## User Correction/im,
+];
+
+const MARK_STATIC_BEGIN    = '<!-- delta:static-begin -->';
+const MARK_STATIC_END      = '<!-- delta:static-end -->';
+const MARK_PER_SPAWN_BEGIN = '<!-- delta:per-spawn-begin -->';
+const MARK_PER_SPAWN_END   = '<!-- delta:per-spawn-end -->';
+
+/**
+ * Attempt to inject delta markers into a prompt that lacks them.
+ *
+ * @param {string} prompt — raw delegation prompt without markers
+ * @returns {string|null} marked prompt, or null if injection is not applicable
+ */
+function injectMarkersHeuristically(prompt) {
+  if (typeof prompt !== 'string' || !prompt) return null;
+
+  // Bail immediately if markers are already present (no-op guard).
+  if (prompt.includes(MARK_STATIC_BEGIN)) return null;
+
+  const lines = prompt.split('\n');
+
+  // Find the first per-spawn boundary heading.
+  let splitLineIndex = -1;
+  outer:
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    for (const re of PER_SPAWN_BOUNDARY_HEADINGS) {
+      if (re.test(line)) {
+        splitLineIndex = i;
+        break outer;
+      }
+    }
+  }
+
+  let staticPortion;
+  let perSpawnPortion;
+
+  if (splitLineIndex <= 0) {
+    // No per-spawn boundary found (or it's the very first line).
+    // Treat entire prompt as static; per-spawn is empty.
+    staticPortion  = prompt;
+    perSpawnPortion = '';
+  } else {
+    // Split at the boundary line; boundary line starts the per-spawn section.
+    staticPortion   = lines.slice(0, splitLineIndex).join('\n');
+    perSpawnPortion = lines.slice(splitLineIndex).join('\n');
+    // Trim trailing newline from static to avoid double-newline in the
+    // assembled prompt (the marker template adds its own newlines).
+    staticPortion = staticPortion.replace(/\n+$/, '');
+  }
+
+  return (
+    MARK_STATIC_BEGIN + '\n' +
+    staticPortion + '\n' +
+    MARK_STATIC_END + '\n' +
+    MARK_PER_SPAWN_BEGIN + '\n' +
+    perSpawnPortion + '\n' +
+    MARK_PER_SPAWN_END
+  );
+}
+
+// ---------------------------------------------------------------------------
 // stdout helpers
 // ---------------------------------------------------------------------------
 
@@ -368,14 +463,60 @@ process.stdin.on('end', () => {
       return;
     }
 
-    // Markers missing → emit skip (caller produced an unstructured prompt;
-    // the helper returned type='full' with reason='markers_missing'). Pass
-    // through unchanged.
+    // Markers missing → attempt mechanical injection (W3 fix).
+    //
+    // The PM did not wrap the delegation with delta markers. Rather than
+    // silently skipping, inject them heuristically so computeDelta can build
+    // the prefix cache — even though we always pass the ORIGINAL (unmarked)
+    // prompt to the model. This preserves cache-pinning benefits without
+    // exposing marker syntax to the spawned agent.
+    //
+    // Contract for injected spawns:
+    //   - The marked prompt is used ONLY for prefix-cache computation.
+    //   - The model always receives the original prompt unchanged (type='full').
+    //   - Emits delegation_delta_emit with type_emitted='full' and
+    //     reason='markers_injected' so telemetry distinguishes this path
+    //     from a genuine PM-authored first_spawn.
+    //   - On injection failure, falls back to delegation_delta_skip(markers_missing).
     if (result.type === 'full' && result.reason === 'markers_missing') {
-      emitSkip(cwd, orchestration_id, agent_type, 'markers_missing');
-      emitContinue();
-      process.exit(0);
-      return;
+      const markedPrompt = injectMarkersHeuristically(prompt);
+      if (markedPrompt) {
+        let retryResult;
+        try {
+          const { computeDelta } = require('./_lib/spawn-context-delta');
+          retryResult = computeDelta(markedPrompt, {
+            cwd,
+            orchestration_id,
+            agent_type,
+            postCompactResume,
+          });
+        } catch (_e) {
+          retryResult = null;
+        }
+        if (retryResult && retryResult.reason !== 'markers_missing' && retryResult.reason !== 'disabled') {
+          // computeDelta processed the marked prompt successfully.
+          // Override reason to signal the injection path for telemetry.
+          result = Object.assign({}, retryResult, {
+            type: 'full',  // Always pass original prompt to the model (not delta_text).
+            reason: 'markers_injected',
+          });
+          // Fall through to the standard type='full' dispatch below.
+        } else {
+          // Retry still failed (should be rare — e.g., injection produced
+          // malformed markers). Fall back to skip.
+          emitSkip(cwd, orchestration_id, agent_type, 'markers_missing');
+          emitContinue();
+          process.exit(0);
+          return;
+        }
+      } else {
+        // Injection returned null (guard tripped or prompt already has markers).
+        // Fall back to original skip behavior.
+        emitSkip(cwd, orchestration_id, agent_type, 'markers_missing');
+        emitContinue();
+        process.exit(0);
+        return;
+      }
     }
 
     // Helper kill-switch tripped (defence-in-depth: helper short-circuited

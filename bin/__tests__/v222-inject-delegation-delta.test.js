@@ -264,8 +264,12 @@ describe('C1 inject-delegation-delta hook — hash mismatch', () => {
   });
 });
 
-describe('C1 inject-delegation-delta hook — markers missing', () => {
-  test('prompt without markers → skip event with reason=markers_missing', () => {
+describe('C1 inject-delegation-delta hook — markers missing (W3 mechanical injection)', () => {
+  // W3 fix: instead of skipping, the hook now injects markers heuristically.
+  // For prompts without per-spawn boundary headings the whole prompt is treated
+  // as static; a delegation_delta_emit (type_emitted='full', reason='markers_injected')
+  // is emitted and the prefix cache is written — no skip, no prompt mutation.
+  test('prompt without markers → mechanical injection, delegation_delta_emit with reason=markers_injected', () => {
     const root = makeTmpRoot();
     writeOrchMarker(root, 'orch-c1-marker');
 
@@ -276,18 +280,51 @@ describe('C1 inject-delegation-delta hook — markers missing', () => {
     assert.equal(r.status, 0);
     const out = r.parsedStdout;
     assert.equal(out.continue, true);
+    // Original prompt is passed through unchanged (no updatedInput).
     assert.equal(out.hookSpecificOutput, undefined,
-      'markers-missing path passes prompt through unchanged');
+      'markers_injected path passes original prompt through unchanged');
 
     const evs = readEvents(root);
-    assertNoValidationSurrogates(evs, 'markers missing skip');
+    assertNoValidationSurrogates(evs, 'markers_injected emit');
+    // No skip event — the hook processed the prompt via injection.
     const skips = evs.filter((e) => e.type === 'delegation_delta_skip');
-    assert.equal(skips.length, 1);
-    assert.equal(skips[0].reason, 'markers_missing');
-    assert.equal(skips[0].agent_type, 'developer');
-    assert.equal(skips[0].orchestration_id, 'orch-c1-marker');
-    // v2.2.2 Fix #2: skip events must also carry version=1.
-    assert.equal(skips[0].version, 1, 'skip event must carry version=1 (Fix #2)');
+    assert.equal(skips.length, 0, 'no skip event emitted when injection succeeds');
+    // A delegation_delta_emit is emitted.
+    const emits = evs.filter((e) => e.type === 'delegation_delta_emit');
+    assert.equal(emits.length, 1, 'one delegation_delta_emit emitted');
+    assert.equal(emits[0].type_emitted, 'full');
+    assert.equal(emits[0].reason, 'markers_injected');
+    assert.equal(emits[0].agent_type, 'developer');
+    assert.equal(emits[0].orchestration_id, 'orch-c1-marker');
+    assert.equal(emits[0].version, 1, 'emit carries version=1');
+    // Prefix cache file must be written.
+    const cacheFile = path.join(root,
+      '.orchestray', 'state', 'spawn-prefix-cache',
+      'orch-c1-marker-developer.txt');
+    assert.ok(fs.existsSync(cacheFile),
+      'prefix cache file must be written even for injected-marker prompts');
+  });
+
+  test('unstructured prompt with per-spawn boundary heading → injection splits at heading', () => {
+    const root = makeTmpRoot();
+    writeOrchMarker(root, 'orch-c1-marker2');
+    // Prompt with a ## Task heading — injection should split there.
+    const prompt = '## Context\nsome static context\n\n## Task\ndo thing X\n';
+
+    const r = runHook({
+      tool_name: 'Agent', cwd: root,
+      tool_input: { subagent_type: 'developer', prompt },
+    });
+    assert.equal(r.status, 0);
+    const out = r.parsedStdout;
+    assert.equal(out.continue, true);
+    assert.equal(out.hookSpecificOutput, undefined, 'original prompt passed through');
+
+    const evs = readEvents(root);
+    assertNoValidationSurrogates(evs, 'split injection');
+    const emits = evs.filter((e) => e.type === 'delegation_delta_emit');
+    assert.equal(emits.length, 1);
+    assert.equal(emits[0].reason, 'markers_injected');
   });
 });
 

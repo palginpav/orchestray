@@ -1,11 +1,18 @@
 'use strict';
 
 /**
- * Test B1: Transcript-first token resolution.
+ * Test B1: Transcript-first token resolution — single-turn alignment fix.
  *
  * Verifies that resolveActualTokens:
- *   1. Returns {tokens: 1500, source: 'transcript'} when transcript has usage entries.
- *   2. Returns {tokens: 0, source: 'unknown'} when transcript is empty and hook payload is zero.
+ *   1. Returns the FIRST assistant turn's token sum (not cumulative across all turns).
+ *   2. Includes all three input-token fields from that first turn.
+ *   3. Falls back correctly when transcript is absent / empty.
+ *
+ * Background: The estimated side (estimated_input_tokens_pre) is computed from
+ * the byte length of a single delegation prompt. To keep the comparison meaningful,
+ * the actual side must also reflect a single turn (the first assistant response to
+ * the delegation). Summing across all turns (commit 7bf1da1 regression) inflates
+ * the actual by 100–600× on long agents, producing 60,469% error vs. 96% original.
  */
 
 const test  = require('node:test');
@@ -25,18 +32,17 @@ function makeTmpDir(t) {
 }
 
 // ---------------------------------------------------------------------------
-// Happy-path: transcript with two assistant usage entries summing to 1500
-// (uncached tokens only — legacy shape still works)
+// Happy-path: multi-turn transcript — only the FIRST assistant turn is returned.
+//
+// Transcript has two assistant turns (800 and 700 tokens). The fix must return
+// 800 (first turn only), not 1500 (cumulative).
 // ---------------------------------------------------------------------------
-test('resolveActualTokens: returns tokens=1500 and source=transcript from fixture JSONL', (t) => {
+test('resolveActualTokens: returns first-turn tokens only (800), not cumulative (1500)', (t) => {
   const tmpDir = makeTmpDir(t);
 
-  // Stage a minimal transcript JSONL in a path that passes the containment guard.
-  // resolveActualTokens checks path against cwd OR ~/.claude, so we use tmpDir as cwd.
   const transcriptPath = path.join(tmpDir, 'session.jsonl');
-
   const entries = [
-    { role: 'user',      content: 'hello'                                },
+    { role: 'user',      content: 'delegation prompt'                     },
     { role: 'assistant', usage: { input_tokens: 800, output_tokens: 100 } },
     { role: 'assistant', usage: { input_tokens: 700, output_tokens: 200 } },
   ];
@@ -46,30 +52,25 @@ test('resolveActualTokens: returns tokens=1500 and source=transcript from fixtur
   const result = resolveActualTokens(event, tmpDir);
 
   assert.equal(result.source, 'transcript', 'source must be transcript');
-  assert.equal(result.tokens, 1500, 'tokens must sum to 1500');
+  // First turn only: 800. Must NOT be 1500 (cumulative).
+  assert.equal(result.tokens, 800,
+    'must return first-turn tokens (800), not cumulative sum (1500)');
 });
 
 // ---------------------------------------------------------------------------
-// Regression: cache tokens must be included in the sum.
-//
-// This test would have caught the v2.2.6 bug where only `input_tokens` was
-// summed, ignoring `cache_creation_input_tokens` and `cache_read_input_tokens`.
+// Cache-token inclusion: first turn must sum all three input fields.
 //
 // Real subagent transcripts (observed 2026-04-28) look like:
 //   Turn 1: input_tokens=2, cache_creation_input_tokens=22252, cache_read_input_tokens=0
 //   Turn 2: input_tokens=3, cache_creation_input_tokens=2515, cache_read_input_tokens=22252
 //
-// Old code returned 5 (sum of input_tokens only).
-// Correct code must return 49024 (2+22252+0 + 3+2515+22252).
-// The estimated side uses prompt_bytes/4 ≈ 22000+ tokens, so returning 5
-// caused ~96% estimation_error_pct.
+// The fix must return 22254 (turn 1 only: 2+22252+0), not 5 (input_tokens-only
+// original bug) and not 49024 (cumulative 7bf1da1 regression).
 // ---------------------------------------------------------------------------
-test('resolveActualTokens: includes cache_creation and cache_read tokens (regression for 96% error bug)', (t) => {
+test('resolveActualTokens: includes cache fields but from first turn only (22254, not 5 or 49024)', (t) => {
   const tmpDir = makeTmpDir(t);
   const transcriptPath = path.join(tmpDir, 'subagent.jsonl');
 
-  // Mirrors real subagent transcript shape: mostly-cached prompt,
-  // tiny uncached slice, plus growing cache_read on later turns.
   const entries = [
     { role: 'user', content: 'task delegation prompt' },
     {
@@ -98,16 +99,60 @@ test('resolveActualTokens: includes cache_creation and cache_read tokens (regres
 
   assert.equal(result.source, 'transcript', 'source must be transcript');
 
-  // Expected: (2+22252+0) + (3+2515+22252) = 22254 + 24770 = 49024
-  const expected = (2 + 22252 + 0) + (3 + 2515 + 22252);
-  assert.equal(result.tokens, expected,
-    `tokens must include cache fields; expected ${expected}, got ${result.tokens}. ` +
-    'If this fails with a small number (~5) the cache-token fix is missing.');
+  // Expected: first turn only = 2 + 22252 + 0 = 22254
+  const expectedFirstTurn = 2 + 22252 + 0;
+  const cumulativeAll     = (2 + 22252 + 0) + (3 + 2515 + 22252); // 49024 — wrong
+  const inputTokensOnly   = 2 + 3; // 5 — also wrong (original bug)
 
-  // Confirm the old code would have returned a much smaller number (just input_tokens sum=5)
-  // so this test distinguishes correct from buggy behaviour.
-  assert.ok(result.tokens > 100,
-    'tokens must be >> input_tokens-only sum (~5); cache fields must contribute');
+  assert.equal(result.tokens, expectedFirstTurn,
+    `expected first-turn sum ${expectedFirstTurn}, got ${result.tokens}. ` +
+    `cumulative would be ${cumulativeAll}, input_tokens-only would be ${inputTokensOnly}.`);
+  assert.notEqual(result.tokens, cumulativeAll,
+    'must NOT return cumulative sum across all turns (7bf1da1 regression)');
+  assert.notEqual(result.tokens, inputTokensOnly,
+    'must NOT return input_tokens-only (original 96% error bug)');
+});
+
+// ---------------------------------------------------------------------------
+// regression: cumulative-7bf1da1
+//
+// Documents the regression introduced in commit 7bf1da1 which summed cache tokens
+// across ALL assistant turns. On a 189-turn agent observed 2026-04-28:
+//   T1  (first turn)   =     39,648
+//   T_all (cumulative) = 22,492,865
+//
+// With estimate ~37,500 (delegation_bytes/4), the cumulative actual produced
+// estimation_error_pct = 60,469% vs. the original ~96% error. The fix (single-turn)
+// should produce near-0% error for the fixture below.
+// ---------------------------------------------------------------------------
+test('regression: cumulative-7bf1da1 — multi-turn fixture must not return cumulative sum', (t) => {
+  const tmpDir = makeTmpDir(t);
+  const transcriptPath = path.join(tmpDir, 'multi-turn.jsonl');
+
+  // Simulate a moderate agent: first turn ~1500 tokens, subsequent turns add ~5000 more.
+  // The estimate for this agent would have been ~1500 (delegation_bytes/4).
+  // Cumulative (7bf1da1) returns 6500 → 333% error. Single-turn (fix) returns 1500 → 0%.
+  const entries = [
+    { type: 'user',      message: { role: 'user', content: 'delegation' }                                      },
+    { type: 'assistant', message: { usage: { input_tokens: 500, cache_creation_input_tokens: 1000 } }          },
+    { type: 'user',      message: { role: 'user', content: 'tool result' }                                     },
+    { type: 'assistant', message: { usage: { cache_read_input_tokens: 5000 } }                                 },
+  ];
+  fs.writeFileSync(transcriptPath, entries.map(e => JSON.stringify(e)).join('\n') + '\n', 'utf8');
+
+  const event = { agent_transcript_path: transcriptPath };
+  const result = resolveActualTokens(event, tmpDir);
+
+  assert.equal(result.source, 'transcript');
+
+  const firstTurnExpected = 500 + 1000; // 1500
+  const cumulativeWrong   = 500 + 1000 + 5000; // 6500
+
+  assert.equal(result.tokens, firstTurnExpected,
+    `regression guard: expected ${firstTurnExpected} (first turn), got ${result.tokens}. ` +
+    `If ${cumulativeWrong} is returned, the 7bf1da1 cumulative regression is present.`);
+  assert.notEqual(result.tokens, cumulativeWrong,
+    'must not return cumulative 6500 — that is the 7bf1da1 regression');
 });
 
 // ---------------------------------------------------------------------------

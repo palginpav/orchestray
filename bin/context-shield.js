@@ -38,6 +38,8 @@ const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { loadShieldConfig } = require('./_lib/config-schema');
 const { RULES } = require('./_lib/shield-rules');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
+const { writeEvent } = require('./_lib/audit-event-writer');
+const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 
 // Env-var escape hatch: set ORCHESTRAY_SHIELD_DISABLED=1 for zero-overhead exit
 // when the shield is permanently disabled (avoids even one config readFileSync).
@@ -62,6 +64,46 @@ function denyDecision(reason) {
       permissionDecisionReason: reason,
     },
   });
+}
+
+// ---------------------------------------------------------------------------
+// New v2.2.x: redirect Reads of event-schemas.md to mcp__orchestray__schema_get.
+// PostToolUse:emit-tier2-load.js was advisory-only; this PreToolUse:Read deny
+// is the mechanical enforcement that converts intent to behavior.
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns a redirect reason string when the given toolInput targets
+ * agents/pm-reference/event-schemas.md and the config gate is active,
+ * or null when the Read should be allowed through.
+ *
+ * Honor opt-out: config.event_schemas.full_load_disabled === false bypasses.
+ * Default (no config key present): disabled === true → redirect.
+ *
+ * @param {object} toolInput - Raw tool_input from the hook payload.
+ * @param {object|null} rawConfig - Parsed config.json (may be null on read failure).
+ * @returns {string|null}
+ */
+function shouldRedirectEventSchemasRead(toolInput, rawConfig) {
+  // Honor opt-out: if config.event_schemas.full_load_disabled === false, skip.
+  const disabled = !(rawConfig && rawConfig.event_schemas && rawConfig.event_schemas.full_load_disabled === false);
+  if (!disabled) return null;
+
+  const fp = toolInput.file_path || toolInput.path || '';
+  if (!fp) return null;
+
+  const normalized = String(fp).replace(/\\/g, '/');
+  const basename = normalized.split('/').pop() || '';
+  if (basename !== 'event-schemas.md') return null;
+  if (!normalized.includes('agents/pm-reference/')) return null;
+
+  return (
+    'Read of agents/pm-reference/event-schemas.md is disabled. ' +
+    'Use the chunked-load MCP tool instead: mcp__orchestray__schema_get(event_type="<name>"). ' +
+    'It returns the schema for the event you need without loading the full 200KB+ file. ' +
+    'To restore the legacy full-file Read, set event_schemas.full_load_disabled: false ' +
+    'in .orchestray/config.json.'
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +152,43 @@ process.stdin.on('end', () => {
 
     // Stat the target file so rules can check mtime for cache invalidation.
     const toolInput = event.tool_input || {};
+
+    // Load raw config for event_schemas gate (fail-open: null on any error).
+    let rawConfig = null;
+    try {
+      const configPath = path.join(cwd, '.orchestray', 'config.json');
+      rawConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    } catch (_e) {
+      // Config absent or malformed — rawConfig stays null (default-on).
+    }
+
+    // Check event-schemas.md redirect BEFORE R14 dedup.
+    const redirectReason = shouldRedirectEventSchemasRead(toolInput, rawConfig);
+    if (redirectReason) {
+      // Emit a distinct event so analytics can separate this from the
+      // advisory PostToolUse path (emit-tier2-load.js source: 'hook').
+      let oid = 'unknown';
+      try {
+        const orchFile = getCurrentOrchestrationFile(cwd);
+        const orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
+        if (orchData && orchData.orchestration_id) oid = orchData.orchestration_id;
+      } catch (_e) { /* keep unknown */ }
+
+      try {
+        writeEvent({
+          version: 1,
+          timestamp: new Date().toISOString(),
+          type: 'event_schemas_full_load_blocked',
+          orchestration_id: oid,
+          file_path: toolInput.file_path || toolInput.path,
+          agent_role: event.agent_type || null,
+          source: 'pretool-deny',
+        }, { cwd });
+      } catch (_e) { /* fail-open */ }
+
+      process.stdout.write(denyDecision(redirectReason));
+      process.exit(0);
+    }
     const filePath = toolInput.file_path || toolInput.path || '';
     let fileStat = null;
     if (filePath) {
