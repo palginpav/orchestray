@@ -2,7 +2,7 @@
 name: run
 description: Trigger multi-agent orchestration on a task
 disable-model-invocation: true
-argument-hint: "[--preview] [task description]"
+argument-hint: "[--preview] [--context <file>] [task description]"
 ---
 
 # Orchestrate Task
@@ -17,9 +17,36 @@ You are receiving this because the user invoked `/orchestray:run`. Orchestrate t
   If "--preview" is NOT present: proceed normally with the standard protocol.
 -->
 
+<!-- v2.2.8 Item 8: --context <file> flag parsing.
+  If $ARGUMENTS contains one or more `--context <file>` tokens (repeatable):
+    1. Strip every `--context <path>` token pair from $ARGUMENTS to get the
+       clean task description.
+    2. Resolve each path: relative paths against current cwd, absolute paths
+       used as-is, `~/...` expanded against $HOME. Files that don't exist
+       must be reported but do not abort.
+    3. Initialize state directory if missing, then update
+       `.orchestray/state/orchestration-pins.json` keyed by the
+       orchestration_id you initialize in step 5a of the protocol below:
+         {
+           "<orch-id>": {
+             "pinned_files": ["abs/path/one", "abs/path/two"],
+             "total_bytes": <int>,
+             "soft_cap_warned": false
+           }
+         }
+    4. Soft cap: 8 KB total bytes across pins. If exceeded, warn the user
+       inline (single line) but never block — set `soft_cap_warned: true`.
+    5. The compose-block-a hook reads this file and prepends the pinned-file
+       contents to Zone 1 with a `[pinned: <path>]` annotation. The hook
+       emits a `context_pin_applied` audit event when the prepend lands.
+    6. Pinned-file bytes are EXCLUDED from the repo-map token budget — they
+       are additive context, not subtracted from any zone budget.
+  If $ARGUMENTS contains no `--context` tokens: skip pin handling.
+-->
+
 ## Task
 
-<!-- Strip "--preview" from the raw arguments to get the actual task description. -->
+<!-- Strip "--preview" and `--context <file>` tokens from the raw arguments to get the actual task description. -->
 $ARGUMENTS
 
 ## Orchestration Instructions
