@@ -6632,3 +6632,46 @@ Emitted by `bin/process-spawn-requests.js` when a spawn request fails the cost c
 Field notes:
 - `reason` ∈ `{above_threshold, quota_exhausted, max_depth_exceeded, user_explicit}`.
 - Max-depth default: 2 (a reactive-spawned agent cannot itself reactive-spawn).
+
+### `housekeeper_trigger_debounced` event
+
+Emitted by `bin/spawn-housekeeper-on-trigger.js` (PostToolUse, v2.2.9 B-1.1) whenever a fresh trigger collapses against an already-pending system housekeeper request for the same orchestration. The debounce limit is one pending system-housekeeper row in `.orchestray/state/spawn-requests.jsonl` per orchestration_id; when a duplicate would be enqueued, the trigger is suppressed and this row makes the collapse observable.
+
+```json
+{
+  "type": "housekeeper_trigger_debounced",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "trigger_reason": "kb_write",
+  "debounced_count": 1
+}
+```
+
+Field notes:
+- `trigger_reason` ∈ `{kb_write, schema_edit, phase_transition}`. Mirrors the `justification` field on the synthetic `spawn_requested` row that survived the debounce.
+- `debounced_count`: number of system-housekeeper requests already pending for this orchestration_id at the moment the duplicate trigger fired. With the v2.2.9 N=1 cap this is always `1`; the field is preserved for forward compatibility if the cap loosens.
+- Kill switch: same as the upstream trigger (`ORCHESTRAY_HOUSEKEEPER_AUTO_SPAWN_DISABLED=1`, `ORCHESTRAY_DISABLE_AUTO_HOUSEKEEPER=1`, or `housekeeping.auto_delegate.enabled: false`).
+
+### `housekeeper_trigger_orphaned` event
+
+Emitted by `bin/audit-housekeeper-orphan.js` (Stop hook tail, v2.2.9 B-1.2) when a synthetic `spawn_requested` row queued by `bin/spawn-housekeeper-on-trigger.js` has no matching `spawn_approved` or `spawn_denied` event within 60 seconds. Indicates that the trigger fell through the spawn-queue handoff and surfaces the failure mode mechanically rather than via prose inspection.
+
+```json
+{
+  "type": "housekeeper_trigger_orphaned",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "request_id": "uuid",
+  "trigger_reason": "kb_write",
+  "age_seconds": 73
+}
+```
+
+Field notes:
+- `request_id`: the `request_id` of the orphaned `spawn_requested` row in `.orchestray/state/spawn-requests.jsonl` and `events.jsonl`.
+- `trigger_reason`: copied verbatim from the orphaned request's `justification` field; nullable when the source row predates field coverage.
+- `age_seconds`: integer seconds between the orphaned request's timestamp and the moment this row was emitted (always ≥ 60).
+- Idempotent: a request_id already reported as orphaned in the same orchestration's events archive is not re-emitted on subsequent Stop fires.
+- No kill switch — pure observability per `feedback_default_on_shipping.md`.

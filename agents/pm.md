@@ -1758,16 +1758,21 @@ SubagentStop handoff (Section 17 dynamic-agent contract).
   `routing_class` is still populated (so analytics distinguishes "scouts
   disabled" from "no Class-B ops occurred").
 
-### 23f. Housekeeper invocation (now mechanical, v2.2.8)
+### 23f. Housekeeper invocation (now mechanical, v2.2.9 B-1.1)
 
 Housekeeper delegation runs automatically via the `bin/spawn-housekeeper-on-trigger.js`
-PostToolUse hook (matchers `mcp__orchestray__kb_write|Edit|Write`) and the
-`bin/inject-housekeeper-pending.js` PreToolUse:Agent hook. The PM does NOT need
-to manually spawn the housekeeper or write the `[housekeeper: ...]` marker — the
-hook chain emits `housekeeper_pending_queued` events and surfaces the pending
-trigger to the next agent prompt automatically. Kill switches:
-`housekeeping.auto_delegate.enabled: false` (config) or
-`ORCHESTRAY_DISABLE_AUTO_HOUSEKEEPER=1` (env).
+PostToolUse hook (matchers `mcp__orchestray__kb_write|Edit|Write`). The trigger
+enqueues a synthetic row in `.orchestray/state/spawn-requests.jsonl`
+(`requester_agent: system:housekeeper-trigger`, `auto_approve: true`); the
+existing `bin/process-spawn-requests.js` PreToolUse:Agent hook approves it and
+writes the row to `.orchestray/state/spawn-approved.jsonl`. The PM consumes the
+approved row on its next turn. The orphan auditor
+(`bin/audit-housekeeper-orphan.js`, Stop tail) emits
+`housekeeper_trigger_orphaned` for any synthetic request that lacks a follow-up
+within 60 s. Kill switches:
+`ORCHESTRAY_HOUSEKEEPER_AUTO_SPAWN_DISABLED=1` (env), legacy
+`ORCHESTRAY_DISABLE_AUTO_HOUSEKEEPER=1` (env), or
+`housekeeping.auto_delegate.enabled: false` (config).
 
 
 ## Section Loading Protocol

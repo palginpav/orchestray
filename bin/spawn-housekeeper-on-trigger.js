@@ -2,28 +2,42 @@
 'use strict';
 
 /**
- * spawn-housekeeper-on-trigger.js — PostToolUse hook (v2.2.8 Item 1).
+ * spawn-housekeeper-on-trigger.js — PostToolUse hook (v2.2.9 B-1.1).
  *
- * Mechanical housekeeper delegation — replaces the prose-based
- * §23f directive in agents/pm.md that was never reliably followed.
+ * Mechanical housekeeper delegation — converts a triggering tool call (KB
+ * write, schema edit) into a synthetic row in
+ * `.orchestray/state/spawn-requests.jsonl`. The downstream
+ * `bin/process-spawn-requests.js` PreToolUse:Agent hook drains the queue,
+ * marks system housekeeper rows `auto_approve: true` as approved, and
+ * surfaces the approved entries via `.orchestray/state/spawn-approved.jsonl`
+ * for the PM to consume on its next turn.
  *
- * On each PostToolUse event, checks whether the completed tool call
- * is a housekeeper-triggering event. When it is, writes a sentinel
- * at `.orchestray/state/housekeeper-pending.json` so the next
- * PreToolUse:Agent hook (inject-housekeeper-pending.js) can queue
- * the housekeeper spawn.
+ * Why this changed (v2.2.8 → v2.2.9 B-1.1):
+ *   v2.2.8 wrote a sentinel at `.orchestray/state/housekeeper-pending.json`
+ *   that the next PreToolUse:Agent hook (`inject-housekeeper-pending.js`)
+ *   converted into a *prose nudge* prepended to the PM prompt. Per W3 G-1
+ *   and W4 RCA-1 the prose nudge produced ZERO `housekeeper_action` events
+ *   across 5 v2.2.8 orchestrations (canonical "prose-only auto-delegation"
+ *   anti-pattern). v2.2.9 routes the trigger through the reactive-spawn
+ *   queue used by the `mcp__orchestray__spawn_agent` MCP tool — a real
+ *   mechanism the PM cannot ignore.
  *
  * Trigger events:
- *   mcp__orchestray__kb_write → trigger_type: 'kb_write'
- *   Edit (if file matches event-schemas.md or schemas/*.js) → 'schema_edit'
- *   Write (same condition) → 'schema_edit'
+ *   mcp__orchestray__kb_write      → trigger_type: 'kb_write'
+ *   Edit  on event-schemas.md or schemas/*.js → 'schema_edit'
+ *   Write on event-schemas.md or schemas/*.js → 'schema_edit'
  *
- * Debounce: one sentinel per trigger_type per 60-second window.
- * If a sentinel already exists for that type and is < 60 s old, skip.
+ * Debounce (per spec): N=1 pending request per orchestration_id at a time.
+ *   When a previous synthetic housekeeper request for the SAME
+ *   orchestration_id is still pending in spawn-requests.jsonl, this hook
+ *   does NOT enqueue a duplicate. Instead it emits
+ *   `housekeeper_trigger_debounced` with `{trigger_reason, debounced_count}`
+ *   so the collapse is observable.
  *
  * Kill switches (any one disables):
- *   process.env.ORCHESTRAY_DISABLE_AUTO_HOUSEKEEPER === '1'
- *   config.housekeeping.auto_delegate.enabled === false
+ *   process.env.ORCHESTRAY_HOUSEKEEPER_AUTO_SPAWN_DISABLED === '1'   (B-1.1)
+ *   process.env.ORCHESTRAY_DISABLE_AUTO_HOUSEKEEPER === '1'          (legacy)
+ *   config.housekeeping.auto_delegate.enabled === false              (legacy)
  *
  * Fail-open: any error → log to stderr, exit 0. Never block Claude Code.
  *
@@ -32,25 +46,25 @@
  * Output: { continue: true } on stdout, always.
  */
 
-const fs   = require('fs');
-const path = require('path');
+const fs     = require('fs');
+const path   = require('path');
+const crypto = require('crypto');
 
-const { resolveSafeCwd }               = require('./_lib/resolve-project-cwd');
-const { getCurrentOrchestrationFile }  = require('./_lib/orchestration-state');
-const { MAX_INPUT_BYTES }              = require('./_lib/constants');
-
-// ---------------------------------------------------------------------------
-// Sentinel path
-// ---------------------------------------------------------------------------
-const SENTINEL_REL = path.join('.orchestray', 'state', 'housekeeper-pending.json');
+const { resolveSafeCwd }              = require('./_lib/resolve-project-cwd');
+const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
+const { writeEvent }                  = require('./_lib/audit-event-writer');
+const { MAX_INPUT_BYTES }             = require('./_lib/constants');
 
 // ---------------------------------------------------------------------------
-// Debounce TTL (milliseconds)
+// Constants
 // ---------------------------------------------------------------------------
-const DEBOUNCE_MS = 60 * 1000;
+const REQUESTS_REL = path.join('.orchestray', 'state', 'spawn-requests.jsonl');
+const HOUSEKEEPER_AGENT  = 'orchestray-housekeeper';
+const REQUESTER_SYSTEM   = 'system:housekeeper-trigger';
+const HOUSEKEEPER_MAX_COST_USD = 0.50;
 
 // ---------------------------------------------------------------------------
-// Tool → trigger type mapping
+// Tool → trigger reason mapping
 // ---------------------------------------------------------------------------
 const TOOL_TRIGGER = {
   'mcp__orchestray__kb_write': 'kb_write',
@@ -58,9 +72,6 @@ const TOOL_TRIGGER = {
   'Write': 'schema_edit',
 };
 
-// File-path patterns that qualify Edit/Write as schema_edit triggers.
-// A path is qualifying if it ends with event-schemas.md or matches
-// schemas/*.js (relative or absolute).
 function isSchemaFile(filePath) {
   if (!filePath || typeof filePath !== 'string') return false;
   const normalised = filePath.replace(/\\/g, '/');
@@ -73,9 +84,8 @@ function isSchemaFile(filePath) {
 // Config / kill-switch check
 // ---------------------------------------------------------------------------
 function isDisabled(cwd) {
-  // Env kill switch.
+  if (process.env.ORCHESTRAY_HOUSEKEEPER_AUTO_SPAWN_DISABLED === '1') return true;
   if (process.env.ORCHESTRAY_DISABLE_AUTO_HOUSEKEEPER === '1') return true;
-  // Config kill switch.
   try {
     const cfg = JSON.parse(
       fs.readFileSync(path.join(cwd, '.orchestray', 'config.json'), 'utf8')
@@ -102,26 +112,44 @@ function resolveOrchestrationId(cwd) {
 }
 
 // ---------------------------------------------------------------------------
-// Debounce check: return true if we should skip (already have a fresh sentinel)
+// Read pending housekeeper requests for a given orchestration.
+// Returns the array (may be empty) of pending rows whose requester is the
+// system housekeeper-trigger AND orchestration_id matches.
 // ---------------------------------------------------------------------------
-function isDebounced(sentinelPath, triggerType) {
-  try {
-    const existing = JSON.parse(fs.readFileSync(sentinelPath, 'utf8'));
-    if (!existing || existing.trigger_type !== triggerType) return false;
-    const age = Date.now() - new Date(existing.ts).getTime();
-    return age < DEBOUNCE_MS;
-  } catch (_e) { return false; }
+function readPendingHousekeeperRequests(cwd, orchId) {
+  const filePath = path.join(cwd, REQUESTS_REL);
+  let raw;
+  try { raw = fs.readFileSync(filePath, 'utf8'); }
+  catch (_e) { return []; }
+  const pending = [];
+  for (const line of raw.split('\n')) {
+    const l = line.trim();
+    if (!l) continue;
+    let parsed;
+    try { parsed = JSON.parse(l); }
+    catch (_e) { continue; }
+    if (!parsed || typeof parsed !== 'object') continue;
+    if (parsed.status !== 'pending') continue;
+    if (parsed.orchestration_id !== orchId) continue;
+    if (parsed.requester_agent !== REQUESTER_SYSTEM) continue;
+    if (parsed.requested_agent !== HOUSEKEEPER_AGENT) continue;
+    pending.push(parsed);
+  }
+  return pending;
 }
 
 // ---------------------------------------------------------------------------
-// Write sentinel
+// Append a synthetic spawn request row.
 // ---------------------------------------------------------------------------
-function writeSentinel(sentinelPath, payload) {
-  const dir = path.dirname(sentinelPath);
-  fs.mkdirSync(dir, { recursive: true });
-  const tmp = sentinelPath + '.tmp.' + process.pid;
-  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), 'utf8');
-  fs.renameSync(tmp, sentinelPath);
+function appendSpawnRequest(cwd, request) {
+  const filePath = path.join(cwd, REQUESTS_REL);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.appendFileSync(filePath, JSON.stringify(request) + '\n', 'utf8');
+}
+
+function newRequestId() {
+  return (crypto.randomUUID && crypto.randomUUID())
+    || crypto.randomBytes(16).toString('hex');
 }
 
 // ---------------------------------------------------------------------------
@@ -165,34 +193,110 @@ process.stdout.write(JSON.stringify({ continue: true }));  // always emit early
       if (!isSchemaFile(filePath)) return;
     }
 
-    // Kill-switch check.
     if (isDisabled(cwd)) return;
 
-    const triggerType  = TOOL_TRIGGER[toolName];
-    const sentinelPath = path.join(cwd, SENTINEL_REL);
-
-    // Debounce.
-    if (isDebounced(sentinelPath, triggerType)) return;
-
-    const sourceFile = (
+    const triggerReason = TOOL_TRIGGER[toolName];
+    const sourceFile    = (
       (event.tool_input && (event.tool_input.path || event.tool_input.file_path)) || ''
     );
-    const orchestrationId = resolveOrchestrationId(cwd);
+    const orchId = resolveOrchestrationId(cwd);
+    if (!orchId) return; // no active orchestration → no queue context
 
-    const payload = {
-      trigger_type:     triggerType,
-      source_file:      sourceFile,
-      orchestration_id: orchestrationId,
+    // Debounce: one pending system-housekeeper request per orchestration.
+    const pending = readPendingHousekeeperRequests(cwd, orchId);
+    if (pending.length >= 1) {
+      // Emit collapse-observability event.
+      try {
+        writeEvent({
+          type:             'housekeeper_trigger_debounced',
+          version:          1,
+          orchestration_id: orchId,
+          trigger_reason:   triggerReason,
+          debounced_count:  pending.length,
+        }, { cwd });
+      } catch (_e) { /* fail-open */ }
+      return;
+    }
+
+    // Build and append the synthetic spawn request.
+    const requestId = newRequestId();
+    const request = {
+      request_id:       requestId,
+      orchestration_id: orchId,
+      requester_agent:  REQUESTER_SYSTEM,
+      requested_agent:  HOUSEKEEPER_AGENT,
+      justification:    triggerReason,
+      prompt:           buildHousekeeperPrompt(triggerReason, sourceFile),
+      max_cost_usd:     HOUSEKEEPER_MAX_COST_USD,
+      auto_approve:     true,
+      spawn_depth:      0,
+      status:           'pending',
       ts:               new Date().toISOString(),
     };
+    appendSpawnRequest(cwd, request);
 
-    writeSentinel(sentinelPath, payload);
+    // Emit `spawn_requested` so downstream observers (and the
+    // process-spawn-requests hook on the next PreToolUse:Agent) can correlate.
+    try {
+      writeEvent({
+        type:             'spawn_requested',
+        version:          1,
+        orchestration_id: orchId,
+        request_id:       requestId,
+        requester_agent:  REQUESTER_SYSTEM,
+        requested_agent:  HOUSEKEEPER_AGENT,
+        justification:    triggerReason,
+        max_cost_usd:     HOUSEKEEPER_MAX_COST_USD,
+      }, { cwd });
+    } catch (_e) { /* fail-open */ }
+
+    // Compatibility shim: also write the legacy sentinel so any session
+    // running the v2.2.8 inject-housekeeper-pending.js code path still
+    // sees a trigger. The shim is removed in v2.2.10.
+    try {
+      const legacyPath = path.join(cwd, '.orchestray', 'state', 'housekeeper-pending.json');
+      const tmp = legacyPath + '.tmp.' + process.pid;
+      fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
+      fs.writeFileSync(tmp, JSON.stringify({
+        trigger_type:     triggerReason,
+        source_file:      sourceFile,
+        orchestration_id: orchId,
+        request_id:       requestId,
+        ts:               new Date().toISOString(),
+      }, null, 2), 'utf8');
+      fs.renameSync(tmp, legacyPath);
+    } catch (_e) { /* legacy sentinel is best-effort */ }
 
   } catch (err) {
-    // Fail-open — never let this hook break Claude Code.
     process.stderr.write(
       '[spawn-housekeeper-on-trigger] unexpected error: ' +
       (err && err.message ? err.message : String(err)) + '\n'
     );
   }
 })();
+
+// ---------------------------------------------------------------------------
+// Prompt builder
+// ---------------------------------------------------------------------------
+function buildHousekeeperPrompt(triggerReason, sourceFile) {
+  const target = sourceFile || '(unspecified)';
+  return (
+    'Housekeeper run auto-triggered by ' + triggerReason + '.\n' +
+    'Source file: ' + target + '.\n' +
+    'Perform the appropriate narrow-scope housekeeping operation per ' +
+    'agents/orchestray-housekeeper.md (kb-write-verify | regen-schema-shadow | ' +
+    'rollup-recompute) and emit the [housekeeper: ...] marker in your output.'
+  );
+}
+
+module.exports = {
+  isSchemaFile,
+  isDisabled,
+  resolveOrchestrationId,
+  readPendingHousekeeperRequests,
+  appendSpawnRequest,
+  buildHousekeeperPrompt,
+  REQUESTER_SYSTEM,
+  HOUSEKEEPER_AGENT,
+  HOUSEKEEPER_MAX_COST_USD,
+};

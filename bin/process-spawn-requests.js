@@ -276,8 +276,17 @@ function run() {
     const maxCost = typeof req.max_cost_usd === 'number' ? req.max_cost_usd : 0;
     let approved = false;
     let denyReason = 'above_threshold';
+    let approveReason = 'below_threshold';
 
-    if (budget.remaining_usd !== null) {
+    // Fast path: system-initiated requests that carry `auto_approve: true`
+    // bypass the cost-vs-budget gate entirely. This is reserved for hook-
+    // generated synthetic requests (e.g. `spawn-housekeeper-on-trigger.js`
+    // queueing a housekeeper run after a KB write) where user approval is
+    // not appropriate. Quota and max-depth checks above still apply.
+    if (req && req.auto_approve === true) {
+      approved = true;
+      approveReason = 'system_auto_approve';
+    } else if (budget.remaining_usd !== null) {
       const threshold = budget.remaining_usd * thresholdPct;
       approved = maxCost < threshold;
     } else {
@@ -287,7 +296,7 @@ function run() {
     }
 
     if (approved) {
-      entries[idx] = Object.assign({}, req, { status: 'approved', decided_at: new Date().toISOString(), reason: 'below_threshold' });
+      entries[idx] = Object.assign({}, req, { status: 'approved', decided_at: new Date().toISOString(), reason: approveReason });
       changed = true;
       spawnRequestedCount++; // track locally for subsequent iterations
       emitEvent(cwd, {
@@ -297,7 +306,7 @@ function run() {
         orchestration_id: orchId,
         request_id: req.request_id,
         decision_source: 'auto',
-        reason: 'below_threshold',
+        reason: approveReason,
       });
       // Write to spawn-approved.jsonl for PM consumption.
       appendApproved(cwd, entries[idx]);
