@@ -6632,3 +6632,27 @@ Emitted by `bin/process-spawn-requests.js` when a spawn request fails the cost c
 Field notes:
 - `reason` ∈ `{above_threshold, quota_exhausted, max_depth_exceeded, user_explicit}`.
 - Max-depth default: 2 (a reactive-spawned agent cannot itself reactive-spawn).
+
+### `orchestration_events_archived` event
+
+Emitted by `bin/archive-orch-events.js` (Stop hook, before `post-orchestration-extract-on-stop.js`) every time the live `.orchestray/audit/events.jsonl` is filtered by the active `orchestration_id` and written atomically (tmp+rename) to `.orchestray/history/<orch_id>/events.jsonl`. The archive is mutable until the orchestration is officially complete; on the Stop fire that follows the `orchestration_complete` event, a sibling `.archived` marker is written and subsequent fires become idempotent no-ops.
+
+```json
+{
+  "type": "orchestration_events_archived",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "event_count": 42,
+  "byte_size": 18432,
+  "archive_path": "/abs/path/.orchestray/history/orch-.../events.jsonl"
+}
+```
+
+Field notes:
+- `event_count`: number of JSONL lines copied to the archive on this fire (filtered by `orchestration_id`).
+- `byte_size`: archive payload size in bytes (post-write, equals on-disk size of `archive_path`).
+- `archive_path`: absolute path to the canonical archive file (post-rename).
+- Idempotent: skipped silently when `<archive_dir>/.archived` exists.
+- Kill switch: `ORCHESTRAY_ORCH_ARCHIVE_DISABLED=1`.
+- Unblocks downstream: `replay-last-n.sh`, `watch-events.js`, `audit-default-true-flags.js`, `mcp-server/lib/history_scan.js`, `pattern-roi-aggregate.js`, `_lib/archetype-cache.js`, `verify-fix-coverage.js`.
