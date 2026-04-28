@@ -95,6 +95,15 @@ function guessSlug(toolInput) {
   return 'agent_start';
 }
 
+// Roles that legitimately need the full event-schemas.md file (schema design,
+// release prep, documentation). They bypass the redirect and Read directly.
+// `null`/absent agent_type (the parent orchestrator session) also bypasses.
+const FULL_READ_ALLOWED_AGENTS = new Set([
+  'architect',
+  'release-manager',
+  'documenter',
+]);
+
 /**
  * Returns a redirect reason string when the given toolInput targets
  * agents/pm-reference/event-schemas.md and the config gate is active,
@@ -103,14 +112,21 @@ function guessSlug(toolInput) {
  * Honor opt-out: config.event_schemas.full_load_disabled === false bypasses.
  * Default (no config key present): disabled === true → redirect.
  *
+ * Bypass roles: agentType in FULL_READ_ALLOWED_AGENTS, or null/absent.
+ *
  * @param {object} toolInput - Raw tool_input from the hook payload.
  * @param {object|null} rawConfig - Parsed config.json (may be null on read failure).
+ * @param {string|null} agentType - Calling agent role (null for orchestrator).
  * @returns {{ reason: string, slug: string }|null}
  */
-function shouldRedirectEventSchemasRead(toolInput, rawConfig) {
+function shouldRedirectEventSchemasRead(toolInput, rawConfig, agentType) {
   // Honor opt-out: if config.event_schemas.full_load_disabled === false, skip.
   const disabled = !(rawConfig && rawConfig.event_schemas && rawConfig.event_schemas.full_load_disabled === false);
   if (!disabled) return null;
+
+  // Roles that need the full file pass through. Includes the orchestrator
+  // (no agent_type) so the user's main Claude Code session is not blocked.
+  if (!agentType || FULL_READ_ALLOWED_AGENTS.has(agentType)) return null;
 
   const fp = toolInput.file_path || toolInput.path || '';
   if (!fp) return null;
@@ -237,10 +253,26 @@ process.stdin.on('end', () => {
     }
 
     // Check event-schemas.md redirect BEFORE R14 dedup.
-    const redirectResult = shouldRedirectEventSchemasRead(toolInput, rawConfig);
+    // Pass through the calling agent_type so the orchestrator (null) and
+    // architect/release-manager/documenter roles bypass the redirect.
+    const agentType = event.agent_type || null;
+    const redirectResult = shouldRedirectEventSchemasRead(toolInput, rawConfig, agentType);
     if (redirectResult) {
       const oid = resolveOrchestrationId(cwd);
-      const agentType = event.agent_type || null;
+      // Backward-compat: emit event_schemas_full_load_blocked(source: 'pretool-deny')
+      // alongside schema_redirect_emitted so v2.2.7 tests / analytics still work.
+      try {
+        writeEvent({
+          version: 1,
+          schema_version: 1,
+          timestamp: new Date().toISOString(),
+          type: 'event_schemas_full_load_blocked',
+          orchestration_id: oid,
+          file_path: toolInput.file_path || toolInput.path,
+          agent_role: agentType,
+          source: 'pretool-deny',
+        }, { cwd });
+      } catch (_e) { /* fail-open */ }
       emitRedirectEmitted(cwd, oid, toolInput.file_path || toolInput.path || '', agentType, redirectResult.slug);
       process.stdout.write(denyDecision(redirectResult.reason));
       process.exit(0);
