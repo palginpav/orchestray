@@ -67,10 +67,33 @@ function denyDecision(reason) {
 }
 
 // ---------------------------------------------------------------------------
-// New v2.2.x: redirect Reads of event-schemas.md to mcp__orchestray__schema_get.
-// PostToolUse:emit-tier2-load.js was advisory-only; this PreToolUse:Read deny
-// is the mechanical enforcement that converts intent to behavior.
+// v2.2.8: redirect Reads of event-schemas.md to mcp__orchestray__schema_get,
+// with a worked example in the deny message and conversion tracking via
+// schema_redirect_emitted / schema_redirect_followed events.
 // ---------------------------------------------------------------------------
+
+/**
+ * Guess a slug from a tool input or context string.
+ * Looks for snake_case tokens that end with common event-type suffixes.
+ * Falls back to 'agent_start' as a generic example slug.
+ *
+ * @param {object} toolInput
+ * @returns {string}
+ */
+function guessSlug(toolInput) {
+  const candidates = [
+    toolInput.file_path || '',
+    toolInput.path || '',
+  ];
+  const EVENT_SUFFIX_RE = /\b([a-z][a-z0-9]*(?:_[a-z0-9]+)*(?:_emit|_call|_blocked|_action|_start|_stop|_outcome|_savings|_followed|_emitted))\b/g;
+  for (const str of candidates) {
+    const matches = Array.from(String(str).matchAll(EVENT_SUFFIX_RE));
+    if (matches.length > 0) {
+      return matches[0][1];
+    }
+  }
+  return 'agent_start';
+}
 
 /**
  * Returns a redirect reason string when the given toolInput targets
@@ -82,26 +105,12 @@ function denyDecision(reason) {
  *
  * @param {object} toolInput - Raw tool_input from the hook payload.
  * @param {object|null} rawConfig - Parsed config.json (may be null on read failure).
- * @returns {string|null}
+ * @returns {{ reason: string, slug: string }|null}
  */
-// Roles that legitimately need the full event-schemas.md file (schema design,
-// release prep, PM orchestration). They bypass the redirect and Read directly.
-// Subagents not in this list are redirected to the chunked MCP tool.
-// `null`/absent agent_type (the parent Claude Code session / orchestrator) also bypasses.
-const FULL_READ_ALLOWED_AGENTS = new Set([
-  'architect',
-  'release-manager',
-  'documenter',
-]);
-
-function shouldRedirectEventSchemasRead(toolInput, rawConfig, agentType) {
+function shouldRedirectEventSchemasRead(toolInput, rawConfig) {
   // Honor opt-out: if config.event_schemas.full_load_disabled === false, skip.
   const disabled = !(rawConfig && rawConfig.event_schemas && rawConfig.event_schemas.full_load_disabled === false);
   if (!disabled) return null;
-
-  // Roles that need the full file pass through. Includes the orchestrator
-  // (no agent_type) so the user's main Claude Code session is not blocked.
-  if (!agentType || FULL_READ_ALLOWED_AGENTS.has(agentType)) return null;
 
   const fp = toolInput.file_path || toolInput.path || '';
   if (!fp) return null;
@@ -111,14 +120,74 @@ function shouldRedirectEventSchemasRead(toolInput, rawConfig, agentType) {
   if (basename !== 'event-schemas.md') return null;
   if (!normalized.includes('agents/pm-reference/')) return null;
 
-  return (
-    'Read of agents/pm-reference/event-schemas.md is disabled for this agent role. ' +
-    'Use the chunked-load MCP tool instead: mcp__orchestray__schema_get(event_type="<name>"). ' +
-    'It returns the schema for the event you need without loading the full 200KB+ file. ' +
-    'Roles that bypass this redirect: architect, release-manager, documenter, and the orchestrator. ' +
-    'To restore the legacy full-file Read globally, set event_schemas.full_load_disabled: false ' +
-    'in .orchestray/config.json.'
-  );
+  const slug = guessSlug(toolInput);
+
+  const reason = [
+    'Read of agents/pm-reference/event-schemas.md is disabled. Use the chunked-load MCP tool instead.',
+    '',
+    "Example: `mcp__orchestray__schema_get(slug='" + slug + "')`",
+    '',
+    'The slug is the event_type field of the event you want. Common slugs: `agent_start`, `agent_stop`,',
+    '`routing_outcome`, `tokenwright_realized_savings`, `prompt_compression`. Full list: call',
+    "`mcp__orchestray__schema_get(slug='_index')`.",
+    '',
+    'To restore the legacy full-file Read, set event_schemas.full_load_disabled: false in .orchestray/config.json.',
+  ].join('\n');
+
+  return { reason, slug };
+}
+
+/**
+ * Resolve the current orchestration_id from state, fail-open to 'unknown'.
+ * @param {string} cwd
+ * @returns {string}
+ */
+function resolveOrchestrationId(cwd) {
+  try {
+    const orchFile = getCurrentOrchestrationFile(cwd);
+    const orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
+    if (orchData && orchData.orchestration_id) return orchData.orchestration_id;
+  } catch (_e) { /* keep unknown */ }
+  return 'unknown';
+}
+
+/**
+ * Write a schema_redirect_emitted event and a pending sentinel for follow-through
+ * detection. Both are best-effort; errors are swallowed (fail-open).
+ *
+ * @param {string} cwd
+ * @param {string} oid
+ * @param {string} filePath
+ * @param {string} agentType
+ * @param {string} slug
+ */
+function emitRedirectEmitted(cwd, oid, filePath, agentType, slug) {
+  try {
+    writeEvent({
+      version: 1,
+      schema_version: 1,
+      timestamp: new Date().toISOString(),
+      type: 'schema_redirect_emitted',
+      orchestration_id: oid,
+      blocking_path: filePath,
+      suggested_tool: 'mcp__orchestray__schema_get',
+      suggested_slug: slug,
+    }, { cwd });
+  } catch (_e) { /* fail-open */ }
+
+  // Write sentinel for PostToolUse follow-through detection.
+  try {
+    const sentinelDir = path.join(cwd, '.orchestray', 'state');
+    const sentinelPath = path.join(sentinelDir, 'schema-redirect-pending.jsonl');
+    const record = JSON.stringify({
+      orchestration_id: oid,
+      agent_type: agentType || null,
+      ts: new Date().toISOString(),
+      suggested_slug: slug,
+    }) + '\n';
+    fs.mkdirSync(sentinelDir, { recursive: true });
+    fs.appendFileSync(sentinelPath, record, 'utf8');
+  } catch (_e) { /* fail-open */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -156,16 +225,6 @@ process.stdin.on('end', () => {
     // returns defaults on parse failure).
     const shieldConfig = loadShieldConfig(cwd);
 
-    // If R14 is disabled via config, allow everything through.
-    if (!shieldConfig.r14_dedup_reads || !shieldConfig.r14_dedup_reads.enabled) {
-      process.stdout.write(allowDecision());
-      process.exit(0);
-    }
-
-    // Resolve the session_id.
-    const sessionId = event.session_id || 'unknown';
-
-    // Stat the target file so rules can check mtime for cache invalidation.
     const toolInput = event.tool_input || {};
 
     // Load raw config for event_schemas gate (fail-open: null on any error).
@@ -178,34 +237,23 @@ process.stdin.on('end', () => {
     }
 
     // Check event-schemas.md redirect BEFORE R14 dedup.
-    // Pass through the calling agent_type so the orchestrator (no agent_type) and
-    // architect/release-manager/documenter roles bypass the redirect.
-    const redirectReason = shouldRedirectEventSchemasRead(toolInput, rawConfig, event.agent_type || null);
-    if (redirectReason) {
-      // Emit a distinct event so analytics can separate this from the
-      // advisory PostToolUse path (emit-tier2-load.js source: 'hook').
-      let oid = 'unknown';
-      try {
-        const orchFile = getCurrentOrchestrationFile(cwd);
-        const orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
-        if (orchData && orchData.orchestration_id) oid = orchData.orchestration_id;
-      } catch (_e) { /* keep unknown */ }
-
-      try {
-        writeEvent({
-          version: 1,
-          timestamp: new Date().toISOString(),
-          type: 'event_schemas_full_load_blocked',
-          orchestration_id: oid,
-          file_path: toolInput.file_path || toolInput.path,
-          agent_role: event.agent_type || null,
-          source: 'pretool-deny',
-        }, { cwd });
-      } catch (_e) { /* fail-open */ }
-
-      process.stdout.write(denyDecision(redirectReason));
+    const redirectResult = shouldRedirectEventSchemasRead(toolInput, rawConfig);
+    if (redirectResult) {
+      const oid = resolveOrchestrationId(cwd);
+      const agentType = event.agent_type || null;
+      emitRedirectEmitted(cwd, oid, toolInput.file_path || toolInput.path || '', agentType, redirectResult.slug);
+      process.stdout.write(denyDecision(redirectResult.reason));
       process.exit(0);
     }
+
+    // If R14 is disabled via config, allow everything through.
+    if (!shieldConfig.r14_dedup_reads || !shieldConfig.r14_dedup_reads.enabled) {
+      process.stdout.write(allowDecision());
+      process.exit(0);
+    }
+
+    // Resolve the session_id.
+    const sessionId = event.session_id || 'unknown';
     const filePath = toolInput.file_path || toolInput.path || '';
     let fileStat = null;
     if (filePath) {
