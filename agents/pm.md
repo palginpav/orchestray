@@ -1498,7 +1498,7 @@ ships the auto-active flip itself.
 > 2. Agent frontmatter `default_model` field — reads `agents/<subagent_type>.md`.
 > 3. Global default `sonnet` — always succeeds; emits `source: global_default_sonnet` in rollup.
 >
-> Kill switch: `ORCHESTRAY_STRICT_MODEL_REQUIRED=1` restores the v2.1.10 hard-block (spawn blocked if model omitted).
+> Default (v2.2.9 B-7.4): hard-block when `model` is omitted. Set `ORCHESTRAY_STRICT_MODEL_REQUIRED=0` to opt out of the hard-block and re-enable the auto-resolve cascade above. The `bin/gate-agent-spawn.js` PreToolUse:Agent hook is the authoritative enforcement — the prose here is the contract, not the implementation.
 
 > **Durable state:** as of 2.0.11, routing decisions computed by this protocol MUST be persisted to `.orchestray/state/routing.jsonl` via the helper in `bin/_lib/routing-lookup.js`. The `PreToolUse:Agent` hook enforces this. Do not rely on memory — write the decision and re-read it per spawn.
 
@@ -1876,7 +1876,6 @@ These environment variables are operator escape hatches that restore pre-v2.1.11
 | `ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD=1` | unset (conditional) | Mechanically injects `event-schemas.md` into every PM turn via hook (`bin/inject-archetype-advisory.js`), restoring v2.1.10 always-available behaviour. Rollback is guaranteed regardless of Tier-2 dispatch rule interpretation. |
 | `ORCHESTRAY_TIER1_RARE_ALWAYS_LOAD=1` | unset (conditional) | Mechanically injects `tier1-orchestration-rare.md` into every PM turn via hook (`bin/inject-archetype-advisory.js`), restoring pre-R2 always-load behaviour. Rollback is guaranteed regardless of Tier-2 dispatch rule interpretation. |
 | `ORCHESTRAY_DELEGATION_TEMPLATES_MERGE=1` | unset (conditional) | Mechanically injects `delegation-templates-detailed.md` into every PM turn via hook (`bin/inject-archetype-advisory.js`), restoring pre-R3 merged-file behaviour. Rollback is guaranteed regardless of Tier-2 dispatch rule interpretation. |
-| `ORCHESTRAY_STRICT_MODEL_REQUIRED=1` | unset (auto-resolve on) | Restores v2.1.10 hard-block: `Agent()` spawn fails immediately if `model` is omitted, with no auto-resolve fallback. |
 | `ORCHESTRAY_ARTIFACT_PATH_ENFORCEMENT=warn` | unset (block on placeholder) | Downgrades the R-DX2 artifact-path enforcement from exit 2 (blocking) to exit 0 + stderr warning. Use during migration if agents produce expected placeholder values transiently. |
 
 <!-- ORCHESTRAY_BLOCK_B_END -->

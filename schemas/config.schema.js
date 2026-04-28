@@ -310,6 +310,27 @@ const reactiveSpawnSchema = z.object({
   per_orchestration_quota: z.number().int().min(1).optional(),
 }).passthrough();
 
+// v2.2.9 B-7.1 (W1 F-PM-18): Agent() maxTurns hard cap. Mechanises the
+// prose-only base_turns table at pm.md:872-885. The hook
+// (bin/gate-agent-spawn.js) blocks any spawn whose maxTurns parameter
+// exceeds `max_turns_hard_cap` and emits `agent_max_turns_violation`.
+// Operator override: raise the cap in config (no env kill switch — per-call
+// permission is the only escape hatch).
+const spawnSchema = z.object({
+  max_turns_hard_cap: z.number().int().min(1).optional(),
+}).passthrough();
+
+// v2.2.9 B-7.2 (W1 F-PM-11, F-PM-19): repo-map drift validator. Numeric
+// thresholds documented in pm.md / phase-*.md prose are scanned and
+// compared against `max_size_kb`; any drift emits
+// `repo_map_threshold_drift`. v2.2.9 ships in shadow-mode (warn-only);
+// v2.2.10 will flip `shadow_mode` to false. Distinct from the existing
+// `repo_map` block which owns languages/cache_dir/cold_init_async.
+const repoMapThresholdsSchema = z.object({
+  max_size_kb: z.number().int().min(1).optional(),
+  shadow_mode: z.boolean().optional(),
+}).passthrough();
+
 // R-PHASE-INJ (v2.1.16): phase-slice loader knobs. F-004 (W12-fix) added the
 // `telemetry_enabled` documented kill switch declared in
 // bin/inject-active-phase-slice.js. Schema is passthrough so older configs
@@ -583,6 +604,12 @@ const configSchema = z.object({
   config_drift_silence: configDriftSilenceSchema.optional(),
   // v2.2.8 Item 5 (L): reactive worker-initiated agent spawning.
   reactive_spawn: reactiveSpawnSchema.optional(),
+  // v2.2.9 B-7.1: hard cap on Agent() maxTurns parameter (default 200).
+  spawn: spawnSchema.optional(),
+  // v2.2.9 B-7.2: repo-map drift validator (default shadow-mode true; flips false in v2.2.10).
+  repo_map_thresholds: repoMapThresholdsSchema.optional(),
+  // v2.2.9 B-7.6: TTL for `.orchestray/auto-trigger.json` (seconds; default 3600).
+  auto_trigger_ttl_seconds: z.number().int().min(1).optional(),
 }).passthrough(); // R-CONFIG-DRIFT (W9) owns unknown-key warnings; this schema tolerates them.
 
 module.exports = {
@@ -619,4 +646,7 @@ module.exports = {
   compressionSchema,
   // v2.2.8 Item 5 (L): reactive spawning.
   reactiveSpawnSchema,
+  // v2.2.9 B-7: numeric thresholds out of prose (single config schema).
+  spawnSchema,
+  repoMapThresholdsSchema,
 };

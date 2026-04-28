@@ -309,14 +309,69 @@ if (require.main === module) {
     const toolInput = event.tool_input || {};
     const model = toolInput.model;
 
+    // -----------------------------------------------------------------------
+    // v2.2.9 B-7.1 (W1 F-PM-18): hard-cap maxTurns. The base_turns table
+    // formerly lived in pm.md prose at lines 872-885. The numeric ceiling now
+    // lives in `.orchestray/config.json` `spawn.max_turns_hard_cap`
+    // (default 200). Spawn calls requesting more get blocked here.
+    // -----------------------------------------------------------------------
+    {
+      const requestedTurns = toolInput.maxTurns ?? toolInput.max_turns;
+      if (typeof requestedTurns === 'number' && Number.isFinite(requestedTurns)) {
+        let hardCap = 200;
+        try {
+          const _nt = require('./_lib/numeric-thresholds');
+          hardCap = _nt.loadMaxTurnsHardCap(cwd);
+        } catch (_thresErr) { /* fail-open to documented default */ }
+        if (requestedTurns > hardCap) {
+          const turnsMsg =
+            "[orchestray] gate-agent-spawn: Agent() maxTurns=" + requestedTurns +
+            " exceeds spawn.max_turns_hard_cap=" + hardCap +
+            ". Lower the maxTurns parameter or raise the cap in .orchestray/config.json.";
+          try {
+            writeEvent({
+              type: 'agent_max_turns_violation',
+              version: 1,
+              timestamp: new Date().toISOString(),
+              spawn_target: toolInput.subagent_type || toolName || 'unknown',
+              requested_turns: requestedTurns,
+              hard_cap: hardCap,
+            }, { cwd });
+          } catch (_evErr) { /* fail-open on emit */ }
+          process.stderr.write(turnsMsg + '\n');
+          process.stdout.write(JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'deny',
+              permissionDecisionReason: turnsMsg,
+            },
+          }));
+          process.exit(2);
+        }
+      }
+    }
+
     if (model === undefined || model === null || model === '') {
-      // R-DX1 (v2.1.11): Kill switch — ORCHESTRAY_STRICT_MODEL_REQUIRED=1 restores
-      // the v2.1.10 hard-block for users who want the old strict gate.
-      if (process.env.ORCHESTRAY_STRICT_MODEL_REQUIRED === '1') {
+      // v2.2.9 B-7.4 (locked per scope-lock #4): ORCHESTRAY_STRICT_MODEL_REQUIRED
+      // semantics flipped. Default = hard-block on missing model.
+      // ORCHESTRAY_STRICT_MODEL_REQUIRED=0 disables the hard-block (the only opt-out
+      // path) and restores the legacy auto-resolve cascade.
+      // The pm.md:1879 soft-mode prose has been DELETED in this release
+      // (the hook is now the authoritative source).
+      if (process.env.ORCHESTRAY_STRICT_MODEL_REQUIRED !== '0') {
+        try {
+          writeEvent({
+            type: 'agent_model_unspecified_blocked',
+            version: 1,
+            timestamp: new Date().toISOString(),
+            spawn_target: toolInput.subagent_type || toolName || 'unknown',
+          }, { cwd });
+        } catch (_evErr) { /* fail-open on emit */ }
         const strictMsg =
           "[orchestray] Agent() call missing required 'model' parameter. " +
-          "Per Section 19, every orchestration spawn must route to haiku/sonnet/opus. " +
-          "(ORCHESTRAY_STRICT_MODEL_REQUIRED=1 — auto-resolve disabled.)";
+          "Per Section 19 and v2.2.9 B-7.4 (default hard-block), every spawn must " +
+          "route to haiku/sonnet/opus explicitly. " +
+          "Set ORCHESTRAY_STRICT_MODEL_REQUIRED=0 to restore the legacy auto-resolve cascade.";
         process.stderr.write(strictMsg + '\n');
         process.stdout.write(JSON.stringify({
           hookSpecificOutput: {
