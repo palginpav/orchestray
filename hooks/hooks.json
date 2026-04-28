@@ -422,6 +422,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/archive-orch-events.js",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/post-orchestration-extract-on-stop.js",
             "timeout": 60
           }
