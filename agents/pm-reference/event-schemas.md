@@ -6811,3 +6811,52 @@ Field notes:
 - `age_seconds`: integer seconds between the orphaned request's timestamp and the moment this row was emitted (always ≥ 60).
 - Idempotent: a request_id already reported as orphaned in the same orchestration's events archive is not re-emitted on subsequent Stop fires.
 - No kill switch — pure observability per `feedback_default_on_shipping.md`.
+
+### `dossier_injection_skipped`
+
+Emitted by `bin/inject-resilience-dossier.js` (UserPromptSubmit and SessionStart hooks) on every silent-skip / early-return branch, so operators can distinguish "inject ran and succeeded" from "inject ran and silently bailed at branch X". Introduced in v2.2.9 B-3 to fix the v2.2.8 regression where `dossier_written: 64` but `dossier_injected: 0` because every skip path was unobservable.
+
+```json
+{
+  "type": "dossier_injection_skipped",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "<id | null>",
+  "skip_reason": "kill_switch_set",
+  "dossier_path": ".orchestray/state/resilience-dossier.json"
+}
+```
+
+Field notes:
+- `skip_reason` ∈ `{not_session_start, dossier_file_missing, dossier_file_corrupt, dossier_stale, no_orchestration_active, additional_context_already_present, kill_switch_set, unknown_skip}`.
+- `kill_switch_set` covers env kill switch, config disabled, config kill_switch, configured `max_inject_turns` exhaustion, and `shadow_mode` — all are operator-configured suppressions, not bugs.
+- `not_session_start` covers UPS turns where no `compact-signal.lock` is present (i.e. the turn isn't a post-compact recovery turn).
+- `dossier_file_corrupt` covers lock-parse failure, dossier-read failure, dossier-parse failure, and fence-collision detection.
+- `dossier_stale` covers `dossier.status === 'completed'` (the orchestration already finished).
+- `unknown_skip` is a fallback for un-categorised exceptions — treat as TODO; v2.2.10 should categorise.
+- Optional fields: `trigger` (`UserPromptSubmit | SessionStart`), `sub_reason` (free-text refinement), and per-branch detail fields (`err_code`, `parse_reason`, `bytes_would_inject`, `lock_source`, `counter`, `max`, `offending_field`).
+- **`feature_optional: false`** — required for fail-closed observability. The orphan auditor (`bin/audit-dossier-orphan.js`) consumes this stream to decide whether a `dossier_written` row had a paired outcome; if both `dossier_injected` AND `dossier_injection_skipped` are absent for the same orchestration, `dossier_write_without_inject_detected` fires.
+- Kill switch: `ORCHESTRAY_DOSSIER_INJECT_TELEMETRY_DISABLED=1` suppresses this telemetry only; the inject mechanism itself stays working.
+
+### `dossier_write_without_inject_detected`
+
+Emitted by `bin/audit-dossier-orphan.js` (Stop-hook tail, post-orchestration) when at least one `dossier_written` event landed in an orchestration without any paired `dossier_injected` OR operator-relevant `dossier_injection_skipped` event. Catches the v2.2.8 regression class: writes happening, injects silently dropping.
+
+```json
+{
+  "type": "dossier_write_without_inject_detected",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "<id>",
+  "write_count": 3,
+  "inject_count": 0
+}
+```
+
+Field notes:
+- `write_count`: number of `dossier_written` rows for this `orchestration_id`.
+- `inject_count`: number of `dossier_injected` rows for this `orchestration_id`.
+- A row with `write_count > 0` AND `inject_count == 0` AND no `dossier_injection_skipped(skip_reason ≠ kill_switch_set)` means the inject side is dark — operator must investigate.
+- Skips with `skip_reason == kill_switch_set` are NOT counted as orphans because the operator deliberately suppressed inject.
+- Optional fields: `skip_count` (count of paired `dossier_injection_skipped` rows), `kill_switch_skip_count`, `archive_source` (`per_orch_archive | live_events_filter`).
+- **`feature_optional: false`** — required for the v2.2.9 anti-regression invariant.

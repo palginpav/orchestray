@@ -66,6 +66,56 @@ const NATIVE_ENVELOPE_MAX_CHARS = 10000;
 const TRUNCATION_MARKER = '\n\n[TRUNCATED — dossier exceeded 10KB envelope cap; see .orchestray/state/resilience-dossier.json]';
 
 /**
+ * v2.2.9 B-3 — fail-closed skip-reason telemetry.
+ *
+ * Every silent-skip / early-return branch in handleUserPromptSubmit and
+ * handleSessionStart now emits exactly one `dossier_injection_skipped` event
+ * with a categorised `skip_reason` BEFORE returning. This eliminates the
+ * v2.2.8 regression class where `dossier_written: 64` but `dossier_injected: 0`
+ * because operators had no way to distinguish "inject ran and succeeded" from
+ * "inject ran and silently bailed at branch X".
+ *
+ * Skip reasons are categorical so the orphan auditor (audit-dossier-orphan.js)
+ * can decide which skips count as a "legitimate inject suppression" vs an
+ * "operator-relevant write-without-inject" pair.
+ *
+ * Kill switch: ORCHESTRAY_DOSSIER_INJECT_TELEMETRY_DISABLED=1 suppresses the
+ * skip telemetry only. The inject mechanism itself stays working with or
+ * without telemetry.
+ */
+const SKIP_REASON = {
+  NOT_SESSION_START: 'not_session_start',
+  DOSSIER_FILE_MISSING: 'dossier_file_missing',
+  DOSSIER_FILE_CORRUPT: 'dossier_file_corrupt',
+  DOSSIER_STALE: 'dossier_stale',
+  NO_ORCHESTRATION_ACTIVE: 'no_orchestration_active',
+  ADDITIONAL_CONTEXT_ALREADY_PRESENT: 'additional_context_already_present',
+  KILL_SWITCH_SET: 'kill_switch_set',
+  UNKNOWN_SKIP: 'unknown_skip',
+};
+
+/**
+ * Emit a `dossier_injection_skipped` event. Honours the
+ * ORCHESTRAY_DOSSIER_INJECT_TELEMETRY_DISABLED kill switch.
+ *
+ * @param {string} cwd - Project root.
+ * @param {string} skipReason - One of SKIP_REASON values.
+ * @param {object} [extra] - Additional fields (trigger, orchestration_id, sub_reason, etc.).
+ */
+function _emitInjectionSkipped(cwd, skipReason, extra) {
+  if (process.env.ORCHESTRAY_DOSSIER_INJECT_TELEMETRY_DISABLED === '1') return;
+  try {
+    const payload = Object.assign({
+      type: 'dossier_injection_skipped',
+      version: 1,
+      skip_reason: skipReason,
+      dossier_path: '.orchestray/state/resilience-dossier.json',
+    }, extra || {});
+    _audit(cwd, payload);
+  } catch (_e) { /* fail-open */ }
+}
+
+/**
  * Core handler — returns the structured hook output. Never throws.
  *
  * @param {object} event - UserPromptSubmit payload.
@@ -85,12 +135,23 @@ function handleUserPromptSubmit(event) {
   const nop = { continue: true };
   try {
     if (process.env.ORCHESTRAY_RESILIENCE_DISABLED === '1') {
+      // SKIP-1: env kill switch. Pre-cwd-resolve so we use a best-effort cwd.
+      const cwd = resolveSafeCwd(event && event.cwd);
+      _emitInjectionSkipped(cwd, SKIP_REASON.KILL_SWITCH_SET, {
+        trigger: 'UserPromptSubmit',
+        sub_reason: 'env_kill_switch',
+      });
       return { output: nop, action: 'skipped_kill_switch', reason: 'env_kill_switch' };
     }
 
     const cwd = resolveSafeCwd(event && event.cwd);
     const cfg = loadResilienceConfig(cwd);
     if (!cfg.enabled || cfg.kill_switch) {
+      // SKIP-2: config disabled / config kill_switch.
+      _emitInjectionSkipped(cwd, SKIP_REASON.KILL_SWITCH_SET, {
+        trigger: 'UserPromptSubmit',
+        sub_reason: cfg.kill_switch ? 'config_kill_switch' : 'config_disabled',
+      });
       return { output: nop, action: 'skipped_config', reason: 'disabled' };
     }
 
@@ -102,6 +163,12 @@ function handleUserPromptSubmit(event) {
       _audit(cwd, {
         type: 'rehydration_skipped_clean',
         reason: 'no-lock',
+        orchestration_id: null,
+      });
+      // SKIP-3: no compact-signal.lock — UPS turn is not a post-compact recovery turn.
+      _emitInjectionSkipped(cwd, SKIP_REASON.NOT_SESSION_START, {
+        trigger: 'UserPromptSubmit',
+        sub_reason: 'no_lock',
         orchestration_id: null,
       });
       return { output: nop, action: 'skipped_no_lock' };
@@ -124,6 +191,11 @@ function handleUserPromptSubmit(event) {
       });
       // Remove the unreadable lock so we don't loop forever on it.
       try { fs.unlinkSync(lockPath); } catch (_e) {}
+      // SKIP-4: lock file unreadable / unparseable.
+      _emitInjectionSkipped(cwd, SKIP_REASON.DOSSIER_FILE_CORRUPT, {
+        trigger: 'UserPromptSubmit',
+        sub_reason: 'lock_parse_failed',
+      });
       return { output: nop, action: 'skipped_corrupt', reason: 'lock_parse_failed' };
     }
 
@@ -141,6 +213,13 @@ function handleUserPromptSubmit(event) {
         counter: counterBefore,
         max: maxInjections,
       });
+      // SKIP-5: configured max_inject_turns reached — semantically a kill-switch.
+      _emitInjectionSkipped(cwd, SKIP_REASON.KILL_SWITCH_SET, {
+        trigger: 'UserPromptSubmit',
+        sub_reason: 'counter_exhausted',
+        counter: counterBefore,
+        max: maxInjections,
+      });
       return { output: nop, action: 'skipped_counter', counter_before: counterBefore };
     }
 
@@ -149,6 +228,11 @@ function handleUserPromptSubmit(event) {
       _audit(cwd, {
         type: 'rehydration_skipped_clean',
         reason: 'no-dossier',
+        lock_source: lock.source || null,
+      });
+      // SKIP-6: dossier file does not exist on disk.
+      _emitInjectionSkipped(cwd, SKIP_REASON.DOSSIER_FILE_MISSING, {
+        trigger: 'UserPromptSubmit',
         lock_source: lock.source || null,
       });
       return { output: nop, action: 'skipped_no_dossier' };
@@ -167,6 +251,12 @@ function handleUserPromptSubmit(event) {
           err_code: (err && err.code) || 'read_failed',
           dedup_key: 'dossier_inject_failed|read',
         },
+      });
+      // SKIP-7: dossier file present but unreadable (fs error).
+      _emitInjectionSkipped(cwd, SKIP_REASON.DOSSIER_FILE_CORRUPT, {
+        trigger: 'UserPromptSubmit',
+        sub_reason: 'read_failed',
+        err_code: (err && err.code) || 'read_failed',
       });
       return { output: nop, action: 'skipped_corrupt', reason: 'read_failed' };
     }
@@ -190,6 +280,12 @@ function handleUserPromptSubmit(event) {
           sha256_prefix: sha256Prefix,
           dedup_key: 'dossier_corrupt|' + parsed.reason,
         },
+      });
+      // SKIP-8: dossier on disk failed schema parse (corrupt JSON / version mismatch).
+      _emitInjectionSkipped(cwd, SKIP_REASON.DOSSIER_FILE_CORRUPT, {
+        trigger: 'UserPromptSubmit',
+        sub_reason: 'parse_failed',
+        parse_reason: parsed.reason,
       });
       return { output: nop, action: 'skipped_corrupt', reason: parsed.reason };
     }
@@ -217,6 +313,13 @@ function handleUserPromptSubmit(event) {
         orchestration_id: dossier.orchestration_id || null,
         offending_field: fenceCheck.offending_field || null,
       });
+      // SKIP-9: fence-collision in raw dossier — semantically a corrupt/unsafe file.
+      _emitInjectionSkipped(cwd, SKIP_REASON.DOSSIER_FILE_CORRUPT, {
+        trigger: 'UserPromptSubmit',
+        sub_reason: 'fence_collision',
+        orchestration_id: dossier.orchestration_id || null,
+        offending_field: fenceCheck.offending_field || null,
+      });
       return { output: nop, action: 'skipped_corrupt', reason: 'fence_collision' };
     }
 
@@ -237,6 +340,12 @@ function handleUserPromptSubmit(event) {
           dedup_key: 'dossier_stale|completed|' + (dossier.orchestration_id || 'x'),
         },
       });
+      // SKIP-10: dossier present but orchestration is already completed.
+      _emitInjectionSkipped(cwd, SKIP_REASON.DOSSIER_STALE, {
+        trigger: 'UserPromptSubmit',
+        orchestration_id: dossier.orchestration_id || null,
+        sub_reason: 'completed',
+      });
       return {
         output: nop,
         action: 'skipped_stale',
@@ -254,6 +363,13 @@ function handleUserPromptSubmit(event) {
       _audit(cwd, {
         type: 'rehydration_skipped_clean',
         reason: 'shadow_mode',
+        orchestration_id: dossier.orchestration_id || null,
+        bytes_would_inject: bytesInjected,
+      });
+      // SKIP-11: shadow_mode config — semantically a kill-switch (suppresses inject).
+      _emitInjectionSkipped(cwd, SKIP_REASON.KILL_SWITCH_SET, {
+        trigger: 'UserPromptSubmit',
+        sub_reason: 'shadow_mode',
         orchestration_id: dossier.orchestration_id || null,
         bytes_would_inject: bytesInjected,
       });
@@ -294,6 +410,7 @@ function handleUserPromptSubmit(event) {
 
     _audit(cwd, {
       type: 'dossier_injected',
+      version: 1,
       orchestration_id: dossier.orchestration_id || null,
       written_at: dossier.written_at || null,
       ingested_counter_before: counterBefore,
@@ -337,6 +454,12 @@ function handleUserPromptSubmit(event) {
           err_msg: String(err && err.message || err).slice(0, 80),
           dedup_key: 'dossier_inject_failed|exception',
         },
+      });
+      // SKIP-12: unexpected throw inside the handler — un-categorised.
+      _emitInjectionSkipped(resolveSafeCwd(event && event.cwd), SKIP_REASON.UNKNOWN_SKIP, {
+        trigger: 'UserPromptSubmit',
+        sub_reason: 'exception',
+        err_code: (err && err.code) || 'throw',
       });
     } catch (_e) { /* swallow */ }
     return { output: nop, action: 'skipped_corrupt', reason: 'exception' };
@@ -435,12 +558,22 @@ function handleSessionStart(event) {
   const nop = { continue: true };
   try {
     if (process.env.ORCHESTRAY_RESILIENCE_DISABLED === '1') {
+      // SKIP-13: env kill switch (SessionStart path).
+      _emitInjectionSkipped(resolveSafeCwd(event && event.cwd), SKIP_REASON.KILL_SWITCH_SET, {
+        trigger: 'SessionStart',
+        sub_reason: 'env_kill_switch',
+      });
       return { output: nop, action: 'skipped_kill_switch', reason: 'env_kill_switch' };
     }
 
     const cwd = resolveSafeCwd(event && event.cwd);
     const cfg = loadResilienceConfig(cwd);
     if (!cfg.enabled || cfg.kill_switch) {
+      // SKIP-14: config disabled / config kill_switch (SessionStart path).
+      _emitInjectionSkipped(cwd, SKIP_REASON.KILL_SWITCH_SET, {
+        trigger: 'SessionStart',
+        sub_reason: cfg.kill_switch ? 'config_kill_switch' : 'config_disabled',
+      });
       return { output: nop, action: 'skipped_config', reason: 'disabled' };
     }
 
@@ -448,6 +581,10 @@ function handleSessionStart(event) {
     const dossierPath = path.join(stateDir, 'resilience-dossier.json');
 
     if (!_exists(dossierPath)) {
+      // SKIP-15: dossier file missing (SessionStart cold-start).
+      _emitInjectionSkipped(cwd, SKIP_REASON.DOSSIER_FILE_MISSING, {
+        trigger: 'SessionStart',
+      });
       return { output: nop, action: 'skipped_no_dossier' };
     }
 
@@ -464,6 +601,12 @@ function handleSessionStart(event) {
           trigger: 'SessionStart',
           dedup_key: 'dossier_inject_failed|session_start_read',
         },
+      });
+      // SKIP-16: dossier file present but unreadable (SessionStart path).
+      _emitInjectionSkipped(cwd, SKIP_REASON.DOSSIER_FILE_CORRUPT, {
+        trigger: 'SessionStart',
+        sub_reason: 'read_failed',
+        err_code: (err && err.code) || 'read_failed',
       });
       return { output: nop, action: 'skipped_corrupt', reason: 'read_failed' };
     }
@@ -485,6 +628,12 @@ function handleSessionStart(event) {
           dedup_key: 'dossier_corrupt|session_start|' + parsed.reason,
         },
       });
+      // SKIP-17: dossier on disk failed schema parse (SessionStart path).
+      _emitInjectionSkipped(cwd, SKIP_REASON.DOSSIER_FILE_CORRUPT, {
+        trigger: 'SessionStart',
+        sub_reason: 'parse_failed',
+        parse_reason: parsed.reason,
+      });
       return { output: nop, action: 'skipped_corrupt', reason: parsed.reason };
     }
 
@@ -497,6 +646,12 @@ function handleSessionStart(event) {
         reason: 'completed',
         trigger: 'SessionStart',
         orchestration_id: dossier.orchestration_id || null,
+      });
+      // SKIP-18: dossier present but orchestration is already completed (SessionStart path).
+      _emitInjectionSkipped(cwd, SKIP_REASON.DOSSIER_STALE, {
+        trigger: 'SessionStart',
+        orchestration_id: dossier.orchestration_id || null,
+        sub_reason: 'completed',
       });
       return { output: nop, action: 'skipped_stale', orchestration_id: dossier.orchestration_id || null };
     }
@@ -513,11 +668,19 @@ function handleSessionStart(event) {
         orchestration_id: dossier.orchestration_id || null,
         bytes_would_inject: bytesInjected,
       });
+      // SKIP-19: shadow_mode config (SessionStart path).
+      _emitInjectionSkipped(cwd, SKIP_REASON.KILL_SWITCH_SET, {
+        trigger: 'SessionStart',
+        sub_reason: 'shadow_mode',
+        orchestration_id: dossier.orchestration_id || null,
+        bytes_would_inject: bytesInjected,
+      });
       return { output: nop, action: 'shadow_dry_run', orchestration_id: dossier.orchestration_id || null };
     }
 
     _audit(cwd, {
       type: 'dossier_injected',
+      version: 1,
       trigger: 'SessionStart',
       orchestration_id: dossier.orchestration_id || null,
       written_at: dossier.written_at || null,
@@ -558,6 +721,12 @@ function handleSessionStart(event) {
           trigger: 'SessionStart',
           dedup_key: 'dossier_inject_failed|session_start_exception',
         },
+      });
+      // SKIP-20: unexpected throw inside the SessionStart handler.
+      _emitInjectionSkipped(resolveSafeCwd(event && event.cwd), SKIP_REASON.UNKNOWN_SKIP, {
+        trigger: 'SessionStart',
+        sub_reason: 'exception',
+        err_code: (err && err.code) || 'throw',
       });
     } catch (_e) { /* swallow */ }
     return { output: nop, action: 'skipped_corrupt', reason: 'exception' };
@@ -631,4 +800,6 @@ module.exports = {
   NATIVE_ENVELOPE_MAX_CHARS,
   TRUNCATION_MARKER,
   _buildAdditionalContext,
+  SKIP_REASON,
+  _emitInjectionSkipped,
 };
