@@ -76,6 +76,7 @@ const mcpServerSchema = z.object({
     cost_budget_reserve: z.boolean().optional(),
     pattern_deprecate: z.boolean().optional(),
     metrics_query: z.boolean().optional(),
+    spawn_agent: z.boolean().optional(),
   }).passthrough().optional(),
   cost_budget_check: z.object({
     pricing_table: z.record(
@@ -295,6 +296,18 @@ const configDriftSilenceSchema = z.array(z.string());
 // `enable_agent_teams` boolean (kept for one release as a deprecated fallback).
 const agentTeamsSchema = z.object({
   enabled: z.boolean().optional(),
+}).passthrough();
+
+// v2.2.8 Item 5 (L): reactive worker-initiated agent spawning. Ships default-on.
+// Kill switches: ORCHESTRAY_DISABLE_REACTIVE_SPAWN=1 (env) or enabled: false.
+// per_orchestration_quota: max reactive spawns per orchestration run (default 5).
+// auto_approve_threshold_pct: fraction of remaining budget for auto-approve (default 0.20).
+// max_depth: max spawn chain depth — 1 means only top-level workers can spawn, etc. (default 2).
+const reactiveSpawnSchema = z.object({
+  enabled: z.boolean().optional(),
+  auto_approve_threshold_pct: z.number().min(0).max(1).optional(),
+  max_depth: z.number().int().min(1).optional(),
+  per_orchestration_quota: z.number().int().min(1).optional(),
 }).passthrough();
 
 // R-PHASE-INJ (v2.1.16): phase-slice loader knobs. F-004 (W12-fix) added the
@@ -568,6 +581,8 @@ const configSchema = z.object({
   budget_enforcement: budgetEnforcementSchema.optional(),
   curator_slice_loading: curatorSliceLoadingSchema.optional(),
   config_drift_silence: configDriftSilenceSchema.optional(),
+  // v2.2.8 Item 5 (L): reactive worker-initiated agent spawning.
+  reactive_spawn: reactiveSpawnSchema.optional(),
 }).passthrough(); // R-CONFIG-DRIFT (W9) owns unknown-key warnings; this schema tolerates them.
 
 module.exports = {
@@ -602,4 +617,6 @@ module.exports = {
   eventSchemasSchema,
   // v2.2.5 W1+W2: tokenwright compressor.
   compressionSchema,
+  // v2.2.8 Item 5 (L): reactive spawning.
+  reactiveSpawnSchema,
 };

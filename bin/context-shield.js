@@ -84,10 +84,24 @@ function denyDecision(reason) {
  * @param {object|null} rawConfig - Parsed config.json (may be null on read failure).
  * @returns {string|null}
  */
-function shouldRedirectEventSchemasRead(toolInput, rawConfig) {
+// Roles that legitimately need the full event-schemas.md file (schema design,
+// release prep, PM orchestration). They bypass the redirect and Read directly.
+// Subagents not in this list are redirected to the chunked MCP tool.
+// `null`/absent agent_type (the parent Claude Code session / orchestrator) also bypasses.
+const FULL_READ_ALLOWED_AGENTS = new Set([
+  'architect',
+  'release-manager',
+  'documenter',
+]);
+
+function shouldRedirectEventSchemasRead(toolInput, rawConfig, agentType) {
   // Honor opt-out: if config.event_schemas.full_load_disabled === false, skip.
   const disabled = !(rawConfig && rawConfig.event_schemas && rawConfig.event_schemas.full_load_disabled === false);
   if (!disabled) return null;
+
+  // Roles that need the full file pass through. Includes the orchestrator
+  // (no agent_type) so the user's main Claude Code session is not blocked.
+  if (!agentType || FULL_READ_ALLOWED_AGENTS.has(agentType)) return null;
 
   const fp = toolInput.file_path || toolInput.path || '';
   if (!fp) return null;
@@ -98,10 +112,11 @@ function shouldRedirectEventSchemasRead(toolInput, rawConfig) {
   if (!normalized.includes('agents/pm-reference/')) return null;
 
   return (
-    'Read of agents/pm-reference/event-schemas.md is disabled. ' +
+    'Read of agents/pm-reference/event-schemas.md is disabled for this agent role. ' +
     'Use the chunked-load MCP tool instead: mcp__orchestray__schema_get(event_type="<name>"). ' +
     'It returns the schema for the event you need without loading the full 200KB+ file. ' +
-    'To restore the legacy full-file Read, set event_schemas.full_load_disabled: false ' +
+    'Roles that bypass this redirect: architect, release-manager, documenter, and the orchestrator. ' +
+    'To restore the legacy full-file Read globally, set event_schemas.full_load_disabled: false ' +
     'in .orchestray/config.json.'
   );
 }
@@ -163,7 +178,9 @@ process.stdin.on('end', () => {
     }
 
     // Check event-schemas.md redirect BEFORE R14 dedup.
-    const redirectReason = shouldRedirectEventSchemasRead(toolInput, rawConfig);
+    // Pass through the calling agent_type so the orchestrator (no agent_type) and
+    // architect/release-manager/documenter roles bypass the redirect.
+    const redirectReason = shouldRedirectEventSchemasRead(toolInput, rawConfig, event.agent_type || null);
     if (redirectReason) {
       // Emit a distinct event so analytics can separate this from the
       // advisory PostToolUse path (emit-tier2-load.js source: 'hook').

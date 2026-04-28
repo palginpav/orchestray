@@ -6289,3 +6289,346 @@ Field notes:
 - `failures`: list of flag names that resolved to `false` (e.g. `["hook_dedup_clean", "transcript_token_path_resolves"]`).
 - Kill switch: `ORCHESTRAY_DISABLE_TOKENWRIGHT_SELF_PROBE=1` or `compression.self_probe_enabled: false`.
 - Detection from analytics: `/orchestray:analytics` reads `tokenwright_self_probe` with `result: fail` and surfaces a banner in the next session.
+
+---
+
+## v2.2.8 event additions
+
+### `verify_fix_coverage_report` event
+
+Emitted once per orchestration at close time by `bin/_lib/verify-fix-coverage.js` (called from `bin/post-orchestration-extract-on-stop.js`). Reports how many developer/refactorer agent tasks were paired with a `verify_fix_start` event.
+
+```json
+{
+  "type": "verify_fix_coverage_report",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "tasks_total": 5,
+  "tasks_with_verify_fix": 0,
+  "ratio": 0.0,
+  "alert": "zero_coverage",
+  "distinct_agents": ["developer"]
+}
+```
+
+Field notes:
+- `alert` ∈ `{ok, below_threshold, zero_coverage, n/a_single_task}`. Threshold default 0.5.
+- Kill switch: `verify_fix.coverage_report.enabled: false`.
+
+### `sentinel_probe_session` event
+
+Emitted once per session start by `bin/sentinel-probe.js` (registered as `SessionStart` hook). Runs 4 health checks (orchestray_dir, audit_dir_writable, hooks_json, config_json).
+
+```json
+{
+  "type": "sentinel_probe_session",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "results": [{"check_name": "orchestray_dir", "status": "pass", "detail": "..."}],
+  "overall_status": "pass",
+  "ts": "ISO 8601"
+}
+```
+
+Field notes:
+- `overall_status` ∈ `{pass, fail}`. On `fail`, a stderr banner is written.
+- Kill switch: `ORCHESTRAY_DISABLE_SENTINEL_PROBE=1` or `sentinel_probe.enabled: false`.
+
+### `block_z_sentinel_retripped` event
+
+Emitted by `bin/compose-block-a.js` when the Block-Z sentinel was recently auto-cleared on TTL but a fresh violation re-trips it within 60 seconds.
+
+```json
+{
+  "type": "block_z_sentinel_retripped",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "time_since_clear_ms": 1234,
+  "recovery_attempts": 1,
+  "observed_hash": "sha256...",
+  "pinned_hash": "sha256..."
+}
+```
+
+Field notes:
+- `recovery_attempts` increments per re-trip within a 1-hour window.
+- Kill switch: existing `caching.block_z.enabled: false`.
+
+### `block_z_drift_unresolved` event
+
+Emitted by `bin/compose-block-a.js` when zone1 hash drift produces ≥3 sentinel re-trips within 1 hour. Auto-clear is then disabled (operator must manually recover).
+
+```json
+{
+  "type": "block_z_drift_unresolved",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "recovery_attempts": 3,
+  "distinct_hashes_seen": ["...", "...", "..."],
+  "window_minutes": 60
+}
+```
+
+Field notes:
+- After this event fires, a permanent-style sentinel `.block-a-zone-caching-disabled-permanent` is written.
+
+### `context_pin_applied` event
+
+Emitted by `bin/compose-block-a.js` when `--context <file>` pins are present in `.orchestray/state/orchestration-pins.json` for the current orchestration.
+
+```json
+{
+  "type": "context_pin_applied",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "pinned_files": ["README.md", "src/foo.ts"],
+  "total_bytes": 5432,
+  "soft_cap_exceeded": false
+}
+```
+
+Field notes:
+- Soft cap: 8 KB total pin-budget. When exceeded, `soft_cap_exceeded: true` but the pins are NOT blocked.
+
+### `schema_redirect_emitted` event
+
+Emitted by `bin/context-shield.js` (PreToolUse:Read) when a Read of `agents/pm-reference/event-schemas.md` is denied with a redirect to `mcp__orchestray__schema_get`.
+
+```json
+{
+  "type": "schema_redirect_emitted",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "blocking_path": "/abs/path/event-schemas.md",
+  "suggested_tool": "mcp__orchestray__schema_get",
+  "suggested_slug": "agent_start"
+}
+```
+
+Field notes:
+- `suggested_slug`: best-guess from context, defaults to `agent_start` as a generic example.
+- Opt-out: `event_schemas.full_load_disabled: false`.
+
+### `schema_redirect_followed` event
+
+Emitted by `bin/emit-schema-redirect-followed.js` (PostToolUse:`mcp__orchestray__schema_get`) when an agent calls the chunked-MCP tool after receiving a redirect.
+
+```json
+{
+  "type": "schema_redirect_followed",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "agent_type": "developer",
+  "time_to_follow_ms": 1234,
+  "called_slug": "agent_start",
+  "suggested_slug": "agent_start",
+  "slug_match": true
+}
+```
+
+Field notes:
+- Pairs with `schema_redirect_emitted` via `.orchestray/state/schema-redirect-pending.jsonl`.
+
+### `housekeeper_pending_queued` event
+
+Emitted by `bin/spawn-housekeeper-on-trigger.js` (PostToolUse) when a KB write or schema edit triggers a queued housekeeper run.
+
+```json
+{
+  "type": "housekeeper_pending_queued",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "trigger_type": "kb_write",
+  "trigger_source": "facts/test.md",
+  "debounced": false
+}
+```
+
+Field notes:
+- `trigger_type` ∈ `{kb_write, schema_edit, phase_transition}`.
+- Debounce TTL: 60s per trigger_type.
+- Kill switch: `housekeeping.auto_delegate.enabled: false` or `ORCHESTRAY_DISABLE_AUTO_HOUSEKEEPER=1`.
+
+### `hook_double_fire_detected` event
+
+Emitted by `bin/_lib/double-fire-guard.js` when the same `dedup_key` is seen from a different caller path within the TTL window. Catches dual-install duplicate registrations.
+
+```json
+{
+  "type": "hook_double_fire_detected",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "guard_name": "compose-block-a",
+  "dedup_key": "...",
+  "delta_ms": 12,
+  "first_caller": "/abs/path/...",
+  "second_caller": "/abs/path/..."
+}
+```
+
+Field notes:
+- `guard_name` ∈ `{tokenwright, compose-block-a, inject-delegation-delta, emit-routing-outcome}`.
+- One emit per `(orchestration_id, guard_name, dedup_key)` tuple (Issue D fix).
+
+### `snapshot_captured` event
+
+Emitted by `bin/snapshot-pre-write.js` (PreToolUse:Write|Edit|MultiEdit) when a target file's pre-write contents are copied to `.orchestray/snapshots/<orch_id>/<spawn_id>/`.
+
+```json
+{
+  "type": "snapshot_captured",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "spawn_id": "...",
+  "agent_type": "developer",
+  "path": "/abs/file/path",
+  "bytes": 12345
+}
+```
+
+Field notes:
+- Disk cap: 50 MB per orchestration; oldest evicted on overflow.
+- Auto-GC: snapshot dir deleted at orchestration close.
+- Kill switch: `snapshots.enabled: false` or `ORCHESTRAY_DISABLE_SNAPSHOTS=1`.
+
+### `rollback_applied` event
+
+Emitted by the `/orchestray:rollback` skill when a snapshot is restored over a working file.
+
+```json
+{
+  "type": "rollback_applied",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "spawn_id": "...",
+  "agent_type": "developer",
+  "path": "/abs/file/path",
+  "source": "user_skill"
+}
+```
+
+### `loop_started` event
+
+Emitted by the `/orchestray:loop` skill when a tight-loop primitive is initialized.
+
+```json
+{
+  "type": "loop_started",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "loop_id": "...",
+  "agent_type": "developer",
+  "max_iterations": 10,
+  "completion_promise": "TASK_COMPLETE"
+}
+```
+
+### `loop_iteration` event
+
+Emitted by `bin/loop-continue.js` (SubagentStop) when a loop iteration completes without meeting the completion promise.
+
+```json
+{
+  "type": "loop_iteration",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "loop_id": "...",
+  "iter_count": 3,
+  "last_output_excerpt": "..."
+}
+```
+
+### `loop_completed` event
+
+Emitted by `bin/loop-continue.js` when a loop ends.
+
+```json
+{
+  "type": "loop_completed",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "loop_id": "...",
+  "iter_count": 5,
+  "completion_reason": "promise_met"
+}
+```
+
+Field notes:
+- `completion_reason` ∈ `{promise_met, max_iterations, cost_cap, user_cancel}`.
+
+### `spawn_requested` event
+
+Emitted by `mcp__orchestray__spawn_agent` when a worker requests a reactive spawn.
+
+```json
+{
+  "type": "spawn_requested",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "request_id": "uuid",
+  "requester_agent": "developer",
+  "requester_spawn_id": "...",
+  "requested_agent": "security-engineer",
+  "justification": "...",
+  "max_cost_usd": 0.50
+}
+```
+
+Field notes:
+- Per-orchestration quota: 5 (configurable via `reactive_spawn.per_orchestration_quota`).
+- Kill switch: `reactive_spawn.enabled: false` or `ORCHESTRAY_DISABLE_REACTIVE_SPAWN=1`.
+
+### `spawn_approved` event
+
+Emitted by `bin/process-spawn-requests.js` (PreToolUse:Agent) when an auto-approve threshold is met.
+
+```json
+{
+  "type": "spawn_approved",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "request_id": "...",
+  "decision_source": "auto",
+  "reason": "below_threshold"
+}
+```
+
+Field notes:
+- `decision_source` ∈ `{auto, user}`.
+- Auto-approve threshold default: 20% of remaining orchestration budget.
+
+### `spawn_denied` event
+
+Emitted by `bin/process-spawn-requests.js` when a spawn request fails the cost cap, quota, or max-depth check.
+
+```json
+{
+  "type": "spawn_denied",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "request_id": "...",
+  "decision_source": "auto",
+  "reason": "above_threshold"
+}
+```
+
+Field notes:
+- `reason` ∈ `{above_threshold, quota_exhausted, max_depth_exceeded, user_explicit}`.
+- Max-depth default: 2 (a reactive-spawned agent cannot itself reactive-spawn).

@@ -43,7 +43,14 @@ const SCHEMA_REL_PATH = path.join(
 // realistic serialized size is ~50 KB. We cap at 65 KB (still 3x smaller
 // than the 186 KB source and well under any I/O limit). The sidecar is
 // loaded JIT, never injected wholesale.
-const MAX_INDEX_BYTES = 65536; // 64 KB soft ceiling.
+// v2.2.8 bumped from 64 KB to 96 KB. The v2.2.8 release adds ~17 new event
+// types (Tokenwright Agent-Teams capture, Block-Z retrip telemetry, schema
+// redirect, housekeeper auto-delegation, generalized double-fire guard,
+// workspace snapshot, /orchestray:loop, reactive spawning) that push the
+// sidecar above the original 64 KB cap. The sidecar is loaded JIT by
+// `mcp__orchestray__schema_get`, never injected wholesale, so the modest
+// disk-side bump has no PM-context impact.
+const MAX_INDEX_BYTES = 98304; // 96 KB soft ceiling.
 
 // W7 fix-pass L-001 (security): pre-stat ceiling for the source markdown.
 // 25× the current 226 KB source — generous headroom for legitimate growth,

@@ -67,6 +67,7 @@ const costBudgetReserve = require('./tools/cost_budget_reserve');
 const metricsQuery = require('./tools/metrics_query');
 const curatorTombstone = require('./tools/curator_tombstone');
 const schemaGet = require('./tools/schema_get');
+const spawnAgent = require('./tools/spawn_agent');
 
 // Stage 2 resource handlers
 const patternResource = require('./resources/pattern_resource');
@@ -232,6 +233,10 @@ const TOOL_TABLE = Object.freeze({
   curator_tombstone: {
     definition: curatorTombstone.definition,
     handler: curatorTombstone.handle,
+  },
+  spawn_agent: {
+    definition: spawnAgent.definition,
+    handler: spawnAgent.handle,
   },
 });
 

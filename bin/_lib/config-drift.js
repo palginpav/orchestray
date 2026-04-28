@@ -174,6 +174,10 @@ const KNOWN_TOP_LEVEL_KEYS = Object.freeze([
   // Mirrors compressionSchema in schemas/config.schema.js.
   'compression',
 
+  // v2.2.8 Item 5 (L): reactive worker-initiated agent spawning.
+  // Mirrors reactiveSpawnSchema in schemas/config.schema.js.
+  'reactive_spawn',
+
   // Meta
   'config_drift_silence',
 ]);

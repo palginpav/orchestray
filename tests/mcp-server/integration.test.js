@@ -331,7 +331,7 @@ describe('A. protocol handshake', () => {
 
 describe('B. tools/list', () => {
 
-  test('default config returns all 17 tools',
+  test('default config returns all 18 tools',
     { timeout: TEST_TIMEOUT },
     async () => {
       await withServer(null, async (_tmp, client) => {
@@ -356,6 +356,7 @@ describe('B. tools/list', () => {
           'pattern_record_skip_reason',
           'routing_lookup',
           'schema_get',
+          'spawn_agent',
           'specialist_save',
         ]);
       });
@@ -371,7 +372,7 @@ describe('B. tools/list', () => {
           await initialize(client);
           const resp = await client.sendAndReceive({ method: 'tools/list', params: {} });
           const names = resp.result.tools.map((t) => t.name);
-          assert.equal(names.length, 16);
+          assert.equal(names.length, 17);
           assert.ok(!names.includes('pattern_find'),
             'pattern_find must be absent when disabled via shorthand');
           assert.ok(names.includes('pattern_record_skip_reason'),
@@ -396,7 +397,7 @@ describe('B. tools/list', () => {
           await initialize(client);
           const resp = await client.sendAndReceive({ method: 'tools/list', params: {} });
           const names = resp.result.tools.map((t) => t.name);
-          assert.equal(names.length, 16);
+          assert.equal(names.length, 17);
           assert.ok(!names.includes('kb_search'),
             'kb_search must be absent when disabled via nested form');
           assert.ok(names.includes('pattern_record_skip_reason'),
@@ -1199,7 +1200,7 @@ describe('N. tools/list with unknown config tool key', () => {
           const resp = await client.sendAndReceive({ method: 'tools/list', params: {} });
           assert.equal(resp.error, undefined, 'tools/list must not error');
           const names = resp.result.tools.map((t) => t.name).sort();
-          // Must be exactly the known 17 tools — unknown keys neither added nor removed.
+          // Must be exactly the known 18 tools — unknown keys neither added nor removed.
           assert.deepEqual(names, [
             'ask_user',
             'cost_budget_check',
@@ -1217,6 +1218,7 @@ describe('N. tools/list with unknown config tool key', () => {
             'pattern_record_skip_reason',
             'routing_lookup',
             'schema_get',
+            'spawn_agent',
             'specialist_save',
           ], 'unknown config keys must not contaminate tools/list');
           // Verify neither unknown key name leaked into the tool list.
@@ -1247,7 +1249,7 @@ describe('N. tools/list with unknown config tool key', () => {
           const resp = await client.sendAndReceive({ method: 'tools/list', params: {} });
           assert.equal(resp.error, undefined);
           const names = resp.result.tools.map((t) => t.name);
-          assert.equal(names.length, 16, 'only one known tool removed, unknown key ignored');
+          assert.equal(names.length, 17, 'only one known tool removed, unknown key ignored');
           assert.ok(!names.includes('pattern_find'), 'pattern_find must be absent (disabled)');
           assert.ok(!names.includes('some_unknown_key'), 'unknown key must not appear');
         }
