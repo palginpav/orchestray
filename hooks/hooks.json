@@ -60,6 +60,15 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/sentinel-probe.js",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -161,6 +170,26 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/inject-housekeeper-pending.js",
+            "timeout": 5
+          }
+        ],
+        "matcher": "Agent"
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/snapshot-pre-write.js",
+            "timeout": 10
+          }
+        ],
+        "matcher": "Write|Edit|MultiEdit"
       }
     ],
     "PostToolUse": [
@@ -217,6 +246,26 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/emit-schema-redirect-followed.js",
+            "timeout": 5
+          }
+        ],
+        "matcher": "mcp__orchestray__schema_get"
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/spawn-housekeeper-on-trigger.js",
+            "timeout": 5
+          }
+        ],
+        "matcher": "mcp__orchestray__kb_write|Edit|Write"
       }
     ],
     "UserPromptSubmit": [
@@ -428,6 +477,15 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/audit-housekeeper-action.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/loop-continue.js",
             "timeout": 5
           }
         ]
