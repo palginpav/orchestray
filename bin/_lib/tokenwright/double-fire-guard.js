@@ -34,7 +34,7 @@ const { requireGuard } = require('../double-fire-guard');
  * @returns {{ shouldFire: boolean, doubleFireEvent: object|null }}
  */
 function checkDoubleFire({ dedupToken, callerPath, stateDir, orchestrationId }) {
-  return requireGuard({
+  const result = requireGuard({
     guardName:       'tokenwright',
     dedupKey:        dedupToken,
     ttlMs:           60 * 1000, // preserve original 60s TTL
@@ -42,6 +42,15 @@ function checkDoubleFire({ dedupToken, callerPath, stateDir, orchestrationId }) 
     callerPath,
     orchestrationId,
   });
+  // Backward compat: rename `hook_double_fire_detected` (generalized) →
+  // `compression_double_fire_detected` (Tokenwright legacy) so v226 tests
+  // and analytics readers continue to match. Same payload structure;
+  // only the `type` and `event_type` strings differ.
+  if (result.doubleFireEvent) {
+    result.doubleFireEvent.type = 'compression_double_fire_detected';
+    result.doubleFireEvent.event_type = 'compression_double_fire_detected';
+  }
+  return result;
 }
 
 module.exports = { checkDoubleFire };
