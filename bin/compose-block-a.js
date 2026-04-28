@@ -242,6 +242,52 @@ function buildZone1(cwd) {
     }
   }
 
+  // v2.2.8 Item 8: --context pinned files. Prepend pinned-file content to
+  // Zone 1 with a [pinned: <path>] annotation. Pinned-file bytes are
+  // additive (not subtracted from any zone budget). Soft cap 8 KB total —
+  // exceeded → emit a warning event but never block.
+  try {
+    const pinsPath = path.join(cwd, '.orchestray', 'state', 'orchestration-pins.json');
+    if (fs.existsSync(pinsPath)) {
+      const pinsData = JSON.parse(fs.readFileSync(pinsPath, 'utf8'));
+      let activeOrchId = null;
+      try {
+        const orchFile = getCurrentOrchestrationFile(cwd);
+        const orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
+        if (orchData && orchData.orchestration_id) activeOrchId = orchData.orchestration_id;
+      } catch (_e) { /* keep null */ }
+      const orchPins = activeOrchId && pinsData && pinsData[activeOrchId];
+      if (orchPins && Array.isArray(orchPins.pinned_files) && orchPins.pinned_files.length > 0) {
+        const SOFT_CAP_BYTES = 8 * 1024;
+        let pinnedTotalBytes = 0;
+        const pinnedParts = [];
+        for (const pinPath of orchPins.pinned_files) {
+          try {
+            const absPin = path.isAbsolute(pinPath) ? pinPath : path.join(cwd, pinPath);
+            const pinText = fs.readFileSync(absPin, 'utf8');
+            pinnedTotalBytes += Buffer.byteLength(pinText, 'utf8');
+            pinnedParts.push('<!-- zone1:pinned:' + pinPath + ' -->\n[pinned: ' + pinPath + ']\n' + pinText);
+          } catch (_e) { /* skip missing pinned file */ }
+        }
+        if (pinnedParts.length > 0) {
+          parts.unshift(pinnedParts.join('\n\n'));
+          try {
+            writeEvent({
+              version:           1,
+              schema_version:    1,
+              type:              'context_pin_applied',
+              timestamp:         new Date().toISOString(),
+              orchestration_id:  activeOrchId,
+              pinned_files:      orchPins.pinned_files,
+              total_bytes:       pinnedTotalBytes,
+              soft_cap_exceeded: pinnedTotalBytes > SOFT_CAP_BYTES,
+            }, { cwd });
+          } catch (_e) { /* fail-open */ }
+        }
+      }
+    }
+  } catch (_e) { /* fail-open: pin file absent or malformed */ }
+
   // Schema shadow (R-SHDW content joins Zone 1 when present and non-stale)
   try {
     const { shadow, stale, disabled } = loadShadowWithCheck(cwd, {
@@ -560,6 +606,88 @@ function handle(event) {
       process.exit(0);
       return;
     }
+
+    // v2.2.8 Item 6: Block-Z sentinel re-trip detection. If the sentinel was
+    // recently auto-cleared (TTL expired) AND a violation landed within the
+    // last 60 seconds, this is a re-trip — the underlying drift didn't
+    // resolve. Emit `block_z_sentinel_retripped`. After 3 such re-trips
+    // within a 1-hour window, emit `block_z_drift_unresolved` and write a
+    // permanent sentinel that requires operator action to clear.
+    try {
+      const violationsPath = path.join(cwd, STATE_DIR, 'block-a-zone-violations.jsonl');
+      if (fs.existsSync(violationsPath)) {
+        const raw = fs.readFileSync(violationsPath, 'utf8');
+        const lines = raw.split('\n').filter(Boolean);
+        const tail = lines.slice(-3); // last few lines suffice
+        const nowMs = Date.now();
+        const RECENT_WINDOW_MS = 60 * 1000;
+        const recentViolations = [];
+        for (const line of tail) {
+          try {
+            const v = JSON.parse(line);
+            const tsMs = v.timestamp ? new Date(v.timestamp).getTime() : 0;
+            if (tsMs && (nowMs - tsMs) <= RECENT_WINDOW_MS) recentViolations.push(v);
+          } catch (_e) { /* skip malformed line */ }
+        }
+        if (recentViolations.length > 0) {
+          const last = recentViolations[recentViolations.length - 1];
+          // Track recovery counter
+          const recoveryPath = path.join(cwd, STATE_DIR, 'block-z-recovery.json');
+          let recovery = { count: 0, first_attempt_ts: nowMs, distinct_hashes: [] };
+          try {
+            if (fs.existsSync(recoveryPath)) {
+              recovery = JSON.parse(fs.readFileSync(recoveryPath, 'utf8'));
+              const HOUR_MS = 60 * 60 * 1000;
+              if ((nowMs - (recovery.first_attempt_ts || 0)) > HOUR_MS) {
+                recovery = { count: 0, first_attempt_ts: nowMs, distinct_hashes: [] };
+              }
+            }
+          } catch (_e) { /* keep defaults */ }
+          recovery.count = (recovery.count || 0) + 1;
+          if (last.actual_hash && !recovery.distinct_hashes.includes(last.actual_hash)) {
+            recovery.distinct_hashes.push(last.actual_hash);
+          }
+          try { fs.writeFileSync(recoveryPath, JSON.stringify(recovery), 'utf8'); } catch (_e) { /* fail-open */ }
+          // Emit block_z_sentinel_retripped
+          try {
+            writeEvent({
+              version:            1,
+              schema_version:     1,
+              type:               'block_z_sentinel_retripped',
+              timestamp:          new Date(nowMs).toISOString(),
+              time_since_clear_ms: nowMs - (last.timestamp ? new Date(last.timestamp).getTime() : nowMs),
+              recovery_attempts:  recovery.count,
+              observed_hash:      last.actual_hash || null,
+              pinned_hash:        last.expected_hash || null,
+            }, { cwd });
+          } catch (_e) { /* fail-open */ }
+          // At 3+ attempts in 1h, escalate to drift_unresolved
+          if (recovery.count >= 3) {
+            try {
+              writeEvent({
+                version:               1,
+                schema_version:        1,
+                type:                  'block_z_drift_unresolved',
+                timestamp:             new Date(nowMs).toISOString(),
+                recovery_attempts:     recovery.count,
+                distinct_hashes_seen:  recovery.distinct_hashes,
+                window_minutes:        60,
+              }, { cwd });
+            } catch (_e) { /* fail-open */ }
+            // Write permanent sentinel — operator must manually clear
+            try {
+              const permPath = path.join(cwd, STATE_DIR, '.block-a-zone-caching-disabled-permanent');
+              fs.writeFileSync(permPath, JSON.stringify({
+                quarantined: true,
+                reason:      'block_z_drift_unresolved',
+                attempts:    recovery.count,
+                first_seen:  new Date(recovery.first_attempt_ts).toISOString(),
+              }), 'utf8');
+            } catch (_e) { /* fail-open */ }
+          }
+        }
+      }
+    } catch (_e) { /* fail-open: never block compose-block-a on retrip telemetry */ }
 
     // P2.1 (v2.2.0): build Block-Z first. Env kill switch and config flag both
     // honoured. Fail-soft: an empty blockZ.text falls through to today's
