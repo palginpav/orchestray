@@ -145,7 +145,14 @@ describe('agents/pm.md Block A hash stability', () => {
     // v2.2.2 Bucket C hook-enforcement markers added to §9.7, §12.a, and
     // Delegation Delta Pre-Render heading (orch-1777291253) — prose retained
     // as the behavior contract; the hooks now do the runtime enforcement.
-    const PINNED_BLOCK_A_HASH = '7f43a0b52d169d1b';
+    // v2.2.7 W4 PM-prompt edits (orch-20260428T115457Z-w226-fix-all):
+    //   - delegation-delta markers directive: corrected comment, added mandatory
+    //     marker structure template so PM actually emits static/per-spawn markers
+    //   - MCP chunked-load directive: added IMPORTANT note to Tier-2 table row
+    //     directing PM (and downstream agents) to use mcp__orchestray__schema_get
+    //   - housekeeper delegation: Section 23f rewritten with explicit Agent() call
+    //     syntax, trigger conditions table, and routing.jsonl requirement
+    const PINNED_BLOCK_A_HASH = '7ebdac801de71799';
 
     assert.equal(
       actualHash,

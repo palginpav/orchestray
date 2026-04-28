@@ -26,6 +26,7 @@ function makeTmpDir(t) {
 
 // ---------------------------------------------------------------------------
 // Happy-path: transcript with two assistant usage entries summing to 1500
+// (uncached tokens only — legacy shape still works)
 // ---------------------------------------------------------------------------
 test('resolveActualTokens: returns tokens=1500 and source=transcript from fixture JSONL', (t) => {
   const tmpDir = makeTmpDir(t);
@@ -46,6 +47,67 @@ test('resolveActualTokens: returns tokens=1500 and source=transcript from fixtur
 
   assert.equal(result.source, 'transcript', 'source must be transcript');
   assert.equal(result.tokens, 1500, 'tokens must sum to 1500');
+});
+
+// ---------------------------------------------------------------------------
+// Regression: cache tokens must be included in the sum.
+//
+// This test would have caught the v2.2.6 bug where only `input_tokens` was
+// summed, ignoring `cache_creation_input_tokens` and `cache_read_input_tokens`.
+//
+// Real subagent transcripts (observed 2026-04-28) look like:
+//   Turn 1: input_tokens=2, cache_creation_input_tokens=22252, cache_read_input_tokens=0
+//   Turn 2: input_tokens=3, cache_creation_input_tokens=2515, cache_read_input_tokens=22252
+//
+// Old code returned 5 (sum of input_tokens only).
+// Correct code must return 49024 (2+22252+0 + 3+2515+22252).
+// The estimated side uses prompt_bytes/4 ≈ 22000+ tokens, so returning 5
+// caused ~96% estimation_error_pct.
+// ---------------------------------------------------------------------------
+test('resolveActualTokens: includes cache_creation and cache_read tokens (regression for 96% error bug)', (t) => {
+  const tmpDir = makeTmpDir(t);
+  const transcriptPath = path.join(tmpDir, 'subagent.jsonl');
+
+  // Mirrors real subagent transcript shape: mostly-cached prompt,
+  // tiny uncached slice, plus growing cache_read on later turns.
+  const entries = [
+    { role: 'user', content: 'task delegation prompt' },
+    {
+      role: 'assistant',
+      usage: {
+        input_tokens: 2,
+        cache_creation_input_tokens: 22252,
+        cache_read_input_tokens: 0,
+        output_tokens: 500,
+      },
+    },
+    {
+      role: 'assistant',
+      usage: {
+        input_tokens: 3,
+        cache_creation_input_tokens: 2515,
+        cache_read_input_tokens: 22252,
+        output_tokens: 300,
+      },
+    },
+  ];
+  fs.writeFileSync(transcriptPath, entries.map(e => JSON.stringify(e)).join('\n') + '\n', 'utf8');
+
+  const event = { agent_transcript_path: transcriptPath };
+  const result = resolveActualTokens(event, tmpDir);
+
+  assert.equal(result.source, 'transcript', 'source must be transcript');
+
+  // Expected: (2+22252+0) + (3+2515+22252) = 22254 + 24770 = 49024
+  const expected = (2 + 22252 + 0) + (3 + 2515 + 22252);
+  assert.equal(result.tokens, expected,
+    `tokens must include cache fields; expected ${expected}, got ${result.tokens}. ` +
+    'If this fails with a small number (~5) the cache-token fix is missing.');
+
+  // Confirm the old code would have returned a much smaller number (just input_tokens sum=5)
+  // so this test distinguishes correct from buggy behaviour.
+  assert.ok(result.tokens > 100,
+    'tokens must be >> input_tokens-only sum (~5); cache fields must contribute');
 });
 
 // ---------------------------------------------------------------------------

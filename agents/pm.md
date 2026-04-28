@@ -621,11 +621,22 @@ This file is the SINGLE SOURCE OF TRUTH for routing during the orchestration. Th
 
 ### Delegation Delta Pre-Render (R-DELEG-DELTA, v2.2.0)
 
-<!-- v2.2.2: this protocol is also enforced by bin/inject-delegation-delta.js (PreToolUse:Agent hook). The hook calls computeDelta and rewrites tool_input.prompt automatically on every Agent() spawn, so the PM does not need to run this step manually. Prose retained as the behavior contract and for the kill-switch reference. -->
+<!-- v2.2.2: bin/inject-delegation-delta.js (PreToolUse:Agent hook) calls computeDelta and rewrites tool_input.prompt automatically — BUT ONLY when the markers are present. The PM MUST still emit the markers (step below). Without markers, computeDelta returns type='full' reason='markers_missing' and every spawn skips the delta path entirely. -->
 
 **Why.** Per-spawn delegation prompts repeat ~70% identical bytes across spawns of the same `(orchestration_id, agent_type)` pair (handoff-contract reference, rubric format reminder, exploration-discipline boilerplate, model+effort routing template, pre-flight checklist). P3.2 replaces this resend with a hash-anchored delta after the first spawn, riding P2.1 Slot 4 for cache pinning.
 
-**Pre-render step.** AFTER your routing.jsonl write and BEFORE the `Agent()` call, wrap the static portion of the delegation prompt in `<!-- delta:static-begin -->` … `<!-- delta:static-end -->` and the per-spawn portion in `<!-- delta:per-spawn-begin -->` … `<!-- delta:per-spawn-end -->`. See `agents/pm-reference/delegation-templates.md` §13 for the full static-vs-per-spawn boundary table and worked example. Then call `bin/_lib/spawn-context-delta.js` `computeDelta(prompt, { orchestration_id, agent_type, postCompactResume })`.
+**Pre-render step (MANDATORY — markers required for hook to function).** AFTER your routing.jsonl write and BEFORE the `Agent()` call, compose the delegation prompt with the following structure:
+
+```
+<!-- delta:static-begin -->
+<cache-stable portion: Block-A prefix, repo map, project-intent block, structured-result schema, output-shape addendum, handoff contract reference, exploration-discipline boilerplate, model+effort routing template, pre-flight checklist>
+<!-- delta:static-end -->
+<!-- delta:per-spawn-begin -->
+<per-spawn portion: task description, files to touch, context from prior agent, acceptance rubric body, correction patterns, context_size_hint>
+<!-- delta:per-spawn-end -->
+```
+
+See `agents/pm-reference/delegation-templates.md` §13 for the full static-vs-per-spawn boundary table and worked example. The `<!-- delta:static-begin -->` marker MUST be the first line of the prompt; `<!-- delta:per-spawn-end -->` MUST be the last line. Without both pairs, `bin/_lib/spawn-context-delta.js` returns `type='full', reason='markers_missing'` and emits `delegation_delta_skip` instead of `delegation_delta_emit`.
 
 If the result is `type: 'full'`:
 - Pass the full assembled prompt to `Agent(prompt=…)`.
@@ -1750,15 +1761,34 @@ SubagentStop handoff (Section 17 dynamic-agent contract).
 ### 23f. Housekeeper invocation (narrow-scope background ops)
 
 For three specific op classes — PM-delegated KB-artifact write verification,
-schema-shadow regen, telemetry rollup recompute — emit a single-line marker
-in your turn:
+schema-shadow regen, telemetry rollup recompute — **spawn the housekeeper agent directly** using `Agent()`:
 
-> `[housekeeper: write <abs-path>]`     (KB-write verify)
-> `[housekeeper: regen-schema-shadow]`  (schema-shadow diff)
-> `[housekeeper: rollup-recompute]`     (rollup row-count refresh)
+```
+Agent(
+  subagent_type="orchestray-housekeeper",
+  model="haiku",
+  description="[housekeeper: write <abs-path>]",   # KB-write verify
+  prompt="Verify KB artifact write. Path: <abs-path>. ..."
+)
+```
 
-The marker triggers an `Agent(subagent_type="orchestray-housekeeper", ...)`
-spawn. Tool list is FROZEN at `[Read, Glob]` — drift detector hook
+Use the marker string that matches the op class as the `description` parameter:
+
+| Op class | `description` value |
+|---|---|
+| KB-write verify | `[housekeeper: write <abs-path>]` |
+| Schema-shadow diff | `[housekeeper: regen-schema-shadow]` |
+| Rollup row-count refresh | `[housekeeper: rollup-recompute]` |
+
+**Trigger conditions (delegate immediately after the triggering event):**
+
+1. **After a `mcp__orchestray__kb_write` call** that writes a KB artifact → spawn with `[housekeeper: write <abs-path>]` to verify the write completed and bytes match.
+2. **After editing any file under `bin/` or `agents/pm-reference/` that emits audit events** (i.e., the event-schemas.md source of truth may be stale) → spawn with `[housekeeper: regen-schema-shadow]` to compute the diff.
+3. **After an orchestration phase closes** (phase transitions from execute→verify or verify→close) → spawn with `[housekeeper: rollup-recompute]` to refresh per-orchestration row counts.
+
+Write a routing.jsonl entry for the housekeeper spawn before calling `Agent()` (same requirement as all other agent spawns). The `description` field is the routing match key — use the marker string verbatim.
+
+Tool list is FROZEN at `[Read, Glob]` — drift detector hook
 (`bin/audit-housekeeper-drift.js`) blocks the spawn if the agent file
 changed against the baseline. Kill switches: env
 `ORCHESTRAY_HOUSEKEEPER_DISABLED=1` OR config
@@ -1826,7 +1856,7 @@ Load these reference files conditionally based on the situation:
 | `enable_repo_map` is true AND repo map generation/staleness check is this turn | `agents/pm-reference/repo-map-protocol.md` |
 | `pattern_extraction_enabled` is true (orchestration complete AND `auto_learning.extract_on_complete.enabled === true`) | `agents/pm-reference/extraction-protocol.md` |
 | `context_compression_v218.archetype_cache.enabled` is not false AND `<orchestray-archetype-advisory>` fence present in context | `agents/pm-reference/archetype-cache-protocol.md` |
-| PM is about to emit an audit event whose payload shape is not in current context, OR a hook validation error references an unknown event type, OR PM is about to edit a file under hooks/ that emits events | DEFAULT: read the 1k-token fingerprint section of `agents/pm-reference/event-schemas.tier2-index.json`. ON-DEMAND: call `mcp__orchestray__schema_get(event_type=...)` for the 200–600 token chunk. **D-8: full-file Read of `agents/pm-reference/event-schemas.md` is DISABLED when `event_schemas.full_load_disabled: true` (the v2.2.0 default).** Kill switch: set `event_schemas.full_load_disabled: false` in `.orchestray/config.json` to restore legacy full-file Read. |
+| PM is about to emit an audit event whose payload shape is not in current context, OR a hook validation error references an unknown event type, OR PM is about to edit a file under hooks/ that emits events | DEFAULT: read the 1k-token fingerprint section of `agents/pm-reference/event-schemas.tier2-index.json`. ON-DEMAND: call `mcp__orchestray__schema_get(event_type=...)` for the 200–600 token chunk. **D-8: full-file Read of `agents/pm-reference/event-schemas.md` is DISABLED when `event_schemas.full_load_disabled: true` (the v2.2.0 default).** Kill switch: set `event_schemas.full_load_disabled: false` in `.orchestray/config.json` to restore legacy full-file Read. **IMPORTANT (v2.2.7): Do NOT attempt to Read `agents/pm-reference/event-schemas.md` directly — the path is blocked and will emit `event_schemas_full_load_blocked`. Always use `mcp__orchestray__schema_get(event_type="<type>")` for per-event schema lookups. Downstream agents (developer, reviewer, etc.) delegated tasks that touch hook files must be given this same directive in their delegation prompt.** |
 | PM is selecting an agent for delegation AND (a) the orchestration is a resume/redo/replay (evidenced by `.orchestray/state/orchestration.md` status field in {paused, redo_pending, replay_active}), OR (b) cost-budget-check hook has emitted a hard-block event in the current turn, OR (c) `enable_drift_sentinel` or `enable_consequence_forecast` flag is `true` in `.orchestray/config.json`, OR `ORCHESTRAY_TIER1_RARE_ALWAYS_LOAD=1` is set in session env | `agents/pm-reference/tier1-orchestration-rare.md` |
 | PM is selecting an agent whose type is NOT in {architect, developer, reviewer} AND the agent's delegation shape is not already in the current turn's context, OR `ORCHESTRAY_DELEGATION_TEMPLATES_MERGE=1` is set in session env | `agents/pm-reference/delegation-templates-detailed.md` |
 | Section 23 inline-vs-scout decision rule encounters a Class-B candidate AND `agents/pm-reference/haiku-routing.md` is not yet loaded this session | `agents/pm-reference/haiku-routing.md` |

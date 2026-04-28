@@ -716,6 +716,7 @@ function main() {
           ? 'housekeeper_forbidden_tool_blocked'
           : 'scout_forbidden_tool_blocked';
         emitAuditEvent(cwd, {
+          version: 1,
           timestamp: new Date().toISOString(),
           type: blockedEventType,
           hook: 'validate-task-completion',
@@ -739,6 +740,7 @@ function main() {
       const fc = (structuredResult && structuredResult.files_changed) || [];
       if (Array.isArray(fc) && fc.length > 0) {
         emitAuditEvent(cwd, {
+          version: 1,
           timestamp: new Date().toISOString(),
           type: 'scout_files_changed_blocked',
           hook: 'validate-task-completion',
