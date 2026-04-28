@@ -8,13 +8,18 @@ You type a prompt. Orchestray's PM agent scores its complexity. If it warrants o
 
 **Simple prompts** pass through to normal Claude Code behavior. **Complex prompts** get the full treatment.
 
-### What's new in v2.2.7
+### What's new in v2.2.8
 
-**v2.2.7 is a hotfix for v2.2.6.** If you upgraded to v2.2.6, please upgrade to v2.2.7 right away. The v2.2.6 installer had a bug that removed the Tokenwright hook entries from your `~/.claude/settings.json` instead of just deduplicating real duplicates, leaving Tokenwright with nowhere to fire on the next session. v2.2.7 reverts the auto-dedup pass; re-running the installer puts the entries back.
+**v2.2.8 wires what was promised, then adds one new reactive capability.** The housekeeper agent now fires automatically via PostToolUse hooks — no longer relying on prose instructions the PM ignored. Tokenwright's estimation error is corrected, its Agent Teams coverage gap is closed, and the dual-install double-fire guard now protects three more high-frequency hooks. Schema-get redirects now include a worked example agents can act on. All four telemetry surfaces that were dark after v2.2.6/v2.2.7 are now observable.
 
-**Everything else from v2.2.6 still ships in v2.2.7** — the four bug fixes (realized-savings event now fires every spawn via transcript-first token resolution, pending-journal cleanup actually removes entries, runtime double-fire guard, journal stays bounded) and the eight new audit events (skip, invariant violation, estimation drift, coverage rollup, double-fire detection, journal truncation, self-probe, realized-unknown).
+What changes in practice:
+- **Housekeeper fires automatically** after KB writes, schema edits, and phase transitions — you'll see `housekeeper_action` events in `/orchestray:analytics` for the first time.
+- **Tokenwright estimation is accurate** — `estimation_error_pct` is now ~0% on aligned comparisons; the 60,469% outliers from v2.2.7 are gone.
+- **Workers can request additional agents mid-task** via `mcp__orchestray__spawn_agent` — no PM round-trip required for sub-tasks discovered during execution.
+- **`/orchestray:loop` and `/orchestray:rollback`** ship as new slash commands for iterate-until and snapshot-restore workflows.
+- **17 new audit events** cover reactive spawning, loop iterations, snapshots, Block-Z retrips, schema redirects, and verify-fix coverage — all areas that were previously silent.
 
-What you do: re-run `npx orchestray --global` (or your usual upgrade flow), then restart Claude Code. The hooks are back where they should be.
+Default-on. No config required. Restart Claude Code after upgrading.
 
 ### Key features
 

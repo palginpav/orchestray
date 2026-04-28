@@ -3,6 +3,67 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.2.8] - 2026-04-28
+
+v2.2.8 is a hardening + capability bundle under the theme "wire what was promised, then add one new reactive primitive." The hardening half closes four telemetry surfaces that have been dark since v2.2.6: the housekeeper agent now fires automatically via PostToolUse hooks (not prose instructions), verify-fix loop coverage is observable end-to-end, three scout/housekeeper block events that existed only in tests now emit in production, and the dual-install double-fire guard extends to three more high-frequency hooks. On top of that foundation, one new capability ships: workers can now request additional agent spawns mid-task via a new MCP tool, without returning control to the PM. A `/orchestray:loop` primitive, `/orchestray:rollback` with workspace snapshots, a `--context` pin flag on `/orchestray:run`, and a Block-Z retrip telemetry signal round out the release. Default-on across the board. Restart Claude Code after upgrading.
+
+### Added
+
+- **Reactive worker-initiated agent spawning.** Any agent mid-task can now call `mcp__orchestray__spawn_agent` to request a helper agent (security-engineer, researcher, etc.) without returning control to the PM. Requests under 20% of the remaining cost budget auto-approve; larger requests surface to the user via `mcp__orchestray__ask_user`. A 2-level depth cap prevents chain reactions; a per-orchestration quota of 5 requests keeps costs bounded. Kill switch: `ORCHESTRAY_DISABLE_REACTIVE_SPAWN=1`.
+
+- **`/orchestray:loop` tight-loop primitive.** When a task needs "iterate until X" behavior — run, check, adjust, repeat — `/orchestray:loop` is cheaper than a full verify-fix orchestration. The status line shows `[loop N/max]` while a loop is active. Kill switch: `ORCHESTRAY_DISABLE_LOOP=1`.
+
+- **`/orchestray:rollback` with per-spawn workspace snapshots.** Before each write-capable spawn, Orchestray snapshots the workspace state (50 MB cap, auto-GC on orchestration close). `/orchestray:rollback` restores the snapshot for any spawn in the current orchestration. Kill switch: `ORCHESTRAY_DISABLE_SNAPSHOTS=1`.
+
+- **`--context <file>` flag on `/orchestray:run`.** Pin scaffolding files (design docs, issue context, migration guides) into the orchestration's delegation prompts without consuming the per-spawn repo-map budget. Named files are injected once into Block-A and held stable across all spawns.
+
+- **17 new audit event types.** v2.2.8 adds `housekeeper_action`, `verify_fix_coverage_report`, `scout_forbidden_tool_blocked`, `scout_files_changed_blocked`, `housekeeper_forbidden_tool_blocked`, `hook_double_fire_detected`, `block_z_sentinel_retripped`, `block_z_drift_unresolved`, `schema_redirect_emitted`, `schema_redirect_followed`, `spawn_requested`, `spawn_approved`, `spawn_denied`, `sentinel_probe_session`, `loop_iteration`, `loop_complete`, and `snapshot_taken`. Full field definitions in `agents/pm-reference/event-schemas.md`.
+
+- **Self-probe wired into SessionStart.** The Tokenwright self-probe now runs automatically on every session start (not just after install), emitting a `sentinel_probe_session` event. Catches latent hook-wiring breakage before it silently accumulates across sessions. Kill switch: `ORCHESTRAY_DISABLE_SENTINEL_PROBE=1`.
+
+### Fixed
+
+- **Housekeeper agent now fires automatically.** The housekeeper was instructed in prose to delegate after KB writes, schema edits, and phase transitions — and never did, producing zero `housekeeper_action` events in any session. v2.2.8 replaces those instructions with PostToolUse hooks that detect the trigger events and write a pending sentinel; a companion PreToolUse:Agent hook drains the queue before the next spawn. The pm.md prose block (38 lines) is trimmed to an 11-line stub pointing at the mechanical hook.
+
+- **Tokenwright realized-savings now captures Agent Teams completions.** The `SubagentStop` hook variant that fires for Agent Teams teammate completions was not feeding into the realized-savings calculation. v2.2.8 wires in the `TaskCompleted` hook handler so teammate spawns are covered alongside regular subagent spawns.
+
+- **Tokenwright estimation error corrected.** Before this release, `estimation_error_pct` was sometimes reported as high as 60,469% because the estimated side (bytes/4 of the outbound delegation prompt) and the actual side (all cache tokens across all turns) were measuring different things. v2.2.8 aligns both to the same single-turn scope — the error is now ~0% on aligned comparisons.
+
+- **Self-probe no longer reports a false negative on working local installs.** The probe's install-detection logic checked only the global plugin path, so installs that used the project-local path always reported `install_detected: false` even when fully functional. The check now mirrors the same project → user → plugin resolution order Claude Code uses.
+
+- **Cross-spawn double-fire suppression is now module-scoped.** The dedup cache was per-spawn (re-initialized on each hook invocation), so two rapid concurrent spawns could both pass the guard and double-fire. The cache is now module-scoped and persists across the process lifetime.
+
+- **Block-Z sentinel retrip is now observable.** When zone1 hash drift causes the Block-Z sentinel to auto-clear and immediately re-trip (the v2.2.6 loop scenario), v2.2.8 emits `block_z_sentinel_retripped` on each retrip and escalates to `block_z_drift_unresolved` with a permanent sentinel after 3 retrips within an hour. Previously there was no audit-log trace of the loop.
+
+- **Schema-get redirect now includes a worked example.** The PreToolUse hook that blocks direct reads of `event-schemas.md` was returning a prose "use the MCP tool instead" message with no call example. The hook now returns a deny with a prefilled `mcp__orchestray__schema_get(slug='...')` invocation and emits `schema_redirect_emitted` / `schema_redirect_followed` paired events so the redirect path is auditable. Orchestrator, architect, release-manager, and documenter agents bypass the redirect by allowlist.
+
+- **Double-fire guard extended to three more hooks.** `compose-block-a`, `inject-delegation-delta`, and `emit-routing-outcome` now all use the generalized guard from `bin/_lib/double-fire-guard.js`. Previously only Tokenwright was protected; a dual-install configuration could silently double `block_a_zone_composed`, `delegation_delta_emit`, and `routing_outcome` counts in analytics.
+
+- **Verify-fix coverage is now observable.** A new `verify_fix_coverage_report` event emits at orchestration close with `tasks_total`, `tasks_with_verify_fix`, `ratio`, and an `alert` field. This closes the dark surface where "no verify-fix ran" was indistinguishable from "verify-fix ran but emitted nothing." Alert fires only when `tasks_total >= 2` to skip single-task orchestrations.
+
+### Migration notes
+
+- Restart Claude Code after upgrading.
+- No config changes required for default-on behavior.
+- New env kill switches: `ORCHESTRAY_DISABLE_REACTIVE_SPAWN=1`, `ORCHESTRAY_DISABLE_LOOP=1`, `ORCHESTRAY_DISABLE_SNAPSHOTS=1`, `ORCHESTRAY_DISABLE_AUTO_HOUSEKEEPER=1`, `ORCHESTRAY_DISABLE_SENTINEL_PROBE=1`, `ORCHESTRAY_DISABLE_DOUBLE_FIRE_GUARD=1`, `ORCHESTRAY_DISABLE_BLOCK_Z=1`.
+- Three v2.2.6 b1-transcript-token-resolution tests are now `.skip()` — the v2.2.7 B1 strategy was superseded by v2.2.8 Issue B alignment; new behavior is covered by `tests/instrumentation/v228/b-estimation-alignment.test.js`.
+
+### Tests
+
+- 4754 pre-v2.2.8 tests + 87 new in `tests/instrumentation/v228/` − 3 superseded = **4841 tests passing**, 4 skipped (1 pre-existing + 3 superseded), 0 failures.
+
+### Under the hood
+
+- 7 new helper modules: `bin/_lib/verify-fix-coverage.js`, `bin/_lib/double-fire-guard.js`, `bin/_lib/block-z-recovery.js`, `bin/_lib/context-pin.js`, `bin/_lib/loop-state.js`, `bin/_lib/snapshot.js`, `bin/_lib/spawn-quota.js`.
+- 7 new bin/ scripts: `bin/spawn-housekeeper-on-trigger.js`, `bin/inject-housekeeper-pending.js`, `bin/snapshot-pre-write.js`, `bin/loop-continue.js`, `bin/process-spawn-requests.js`, `bin/emit-schema-redirect-followed.js`, `bin/mcp-server/tools/spawn_agent.js`.
+- 2 new skills: `/orchestray:loop` and `/orchestray:rollback`.
+- 17 new event-schema entries (event-schemas.md, shadow.json, tier2-index.json all regenerated).
+- 8 new hooks.json wire entries.
+- `bin/_lib/tier2-index.js` `MAX_INDEX_BYTES` bumped 64 KB → 96 KB to fit the 145-event sidecar.
+- Schema shadow regenerated to **145 event types** (was 128 in v2.2.6/v2.2.7).
+
+---
+
 ## [2.2.7] - 2026-04-28
 
 v2.2.7 is a hotfix for a regression introduced in v2.2.6. If you upgraded to v2.2.6, **please upgrade to v2.2.7 right away** — the v2.2.6 installer had a bug that removed the Tokenwright hook entries from your `~/.claude/settings.json` instead of just deduplicating real duplicates, leaving Tokenwright with nowhere to fire. v2.2.7 reverts the auto-dedup pass and re-installs the hooks correctly.
