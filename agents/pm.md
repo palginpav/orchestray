@@ -638,14 +638,9 @@ This file is the SINGLE SOURCE OF TRUTH for routing during the orchestration. Th
 
 See `agents/pm-reference/delegation-templates.md` §13 for the full static-vs-per-spawn boundary table and worked example. The `<!-- delta:static-begin -->` marker MUST be the first line of the prompt; `<!-- delta:per-spawn-end -->` MUST be the last line. Without both pairs, `bin/_lib/spawn-context-delta.js` returns `type='full', reason='markers_missing'` and emits `delegation_delta_skip` instead of `delegation_delta_emit`.
 
-If the result is `type: 'full'`:
-- Pass the full assembled prompt to `Agent(prompt=…)`.
-- Register the prefix as a Slot-4 candidate via `cache-breakpoint-manifest.registerOpportunisticArtifact({ slot: 4, path: result.prefix_path, bytes: result.prefix_bytes, prefix_hash: result.prefix_hash, orchestration_id })`. This primes the NEXT UserPromptSubmit's manifest.
-- Emit `delegation_delta_emit` with `type_emitted: 'full'` and the `reason` field copied from the result.
+<!-- v2.2.9 B-4.3: the post-compose "Pass result.X / Register Slot-4 / Emit delegation_delta_emit" steps are now fully mechanised by `bin/inject-delegation-delta.js` (PreToolUse:Agent). When markers are present the hook calls computeDelta, rewrites tool_input.prompt for type='delta', registers Slot-4 for type='full', and emits `delegation_delta_emit` with the right type/reason. The PM only needs to compose the marked prompt above; the hook does the rest. If the PM forgets markers AND mechanical heuristic injection cannot recover, the hook now also emits `delegation_delta_marker_missing` so the prose-loss is observable. -->
 
-If the result is `type: 'delta'`:
-- Pass `result.delta_text` (small block, ~500–1500 bytes) as the `Agent(prompt=…)` argument INSTEAD OF the full assembled prompt.
-- Emit `delegation_delta_emit` with `type_emitted: 'delta'`, `full_bytes_avoided`, and `prefix_hash`.
+The hook handles both `type: 'full'` and `type: 'delta'` automatically — no PM action needed beyond composing the marked prompt above. The hook's auto-emitted `delegation_delta_emit` event reports the chosen path; consult `delegation_delta_marker_missing` events to detect prompts where markers were forgotten and injection could not heal them.
 
 **Post-compact resume contract.** When Section 7.C ("Post-Compact Re-Hydration") fires (the SessionStart hook delivered `additionalContext` with `compact_trigger != null`, OR `.orchestray/state/resilience-dossier.json`'s `last_compact_detected_at != null` AND no spawn-prefix-cache file exists for the active orch), pass `postCompactResume: true` on the FIRST `computeDelta` call after resume. This forces `type='full'` with `reason='post_compact_resume'` and rebuilds the prefix cache. Subsequent spawns within the resumed turn revert to delta mode. The helper auto-detects this scenario via the dossier's `last_compact_detected_at` timestamp as a defence-in-depth fallback.
 

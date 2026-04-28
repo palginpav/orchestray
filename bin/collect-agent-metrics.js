@@ -12,6 +12,7 @@ const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { appendJsonlWithRotation } = require('./_lib/jsonl-rotate');
 const { normalizeEvent } = require('./read-event');
 const { resolveTeammateModel } = require('./_lib/team-config-resolve');
+const { requireGuard }   = require('./_lib/double-fire-guard');
 
 // ---------------------------------------------------------------------------
 // P1.1 M0.1 — Variant-C duplicate-emit dedupe (W1 design §1.1).
@@ -566,6 +567,60 @@ process.stdin.on('end', () => {
     // DEF-2: only attach the note when escalation was actually detected.
     if (modelResolutionNote) {
       auditEvent.model_resolution_note = modelResolutionNote;
+    }
+
+    // v2.2.9 B-4.1: double-fire guard for agent_stop. Catches dual-install
+    // duplicate registrations and the SubagentStop+TaskCompleted double-wire
+    // for the same agent stop (W3 G-8). The dedup token uniquely identifies
+    // a single stop event by (orchestration_id, agent_type, session_id,
+    // agent_id). When a second invocation hits the same token from a
+    // different caller_path within the TTL window, suppress all writes
+    // (audit row, Variant-C, metrics row) and emit
+    // `agent_stop_double_fire_suppressed` so dual-install drift is visible.
+    //
+    // Kill switch: ORCHESTRAY_AGENT_STOP_DOUBLE_FIRE_GUARD_DISABLED=1 bypasses
+    // (default-on). Also respects the global ORCHESTRAY_DISABLE_DOUBLE_FIRE_GUARD.
+    if (process.env.ORCHESTRAY_AGENT_STOP_DOUBLE_FIRE_GUARD_DISABLED !== '1' &&
+        orchestrationId !== 'unknown') {
+      try {
+        const stateDir = path.join(cwd, '.orchestray', 'state');
+        const sessionDiscriminator = auditEvent.session_id || auditEvent.agent_id || 'unknown';
+        const dedupKey = orchestrationId + ':' + (agentType || 'unknown') + ':' +
+                         sessionDiscriminator + ':agent_stop';
+        const guard = requireGuard({
+          guardName:       'collect-agent-metrics',
+          dedupKey,
+          ttlMs:           5 * 60 * 1000, // 5 min: covers SubagentStop + later TaskCompleted re-fire
+          stateDir,
+          callerPath:      __filename,
+          orchestrationId,
+        });
+        if (!guard.shouldFire) {
+          // Duplicate fire detected — emit suppressed event for observability,
+          // skip all write paths, and exit cleanly.
+          if (guard.doubleFireEvent) {
+            try {
+              writeEvent({
+                type:             'agent_stop_double_fire_suppressed',
+                version:          1,
+                schema_version:   1,
+                timestamp:        new Date().toISOString(),
+                orchestration_id: orchestrationId,
+                agent_type:       agentType || null,
+                dedup_token:      dedupKey,
+                delta_ms:         guard.doubleFireEvent.delta_ms,
+                first_caller:     guard.doubleFireEvent.first_caller,
+                second_caller:    guard.doubleFireEvent.second_caller,
+              }, { cwd });
+            } catch (_e) { /* fail-open */ }
+          }
+          process.stdout.write(JSON.stringify({ continue: true }));
+          process.exit(0);
+          return;
+        }
+      } catch (_guardErr) {
+        // Fail-open: guard error must never block agent stop.
+      }
     }
 
     // Variant C: auto-emit a routing_outcome supplement on SubagentStop / TaskCompleted.

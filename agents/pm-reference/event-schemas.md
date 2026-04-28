@@ -6632,3 +6632,66 @@ Emitted by `bin/process-spawn-requests.js` when a spawn request fails the cost c
 Field notes:
 - `reason` ∈ `{above_threshold, quota_exhausted, max_depth_exceeded, user_explicit}`.
 - Max-depth default: 2 (a reactive-spawned agent cannot itself reactive-spawn).
+
+### `agent_stop_double_fire_suppressed` event
+
+Emitted by `bin/collect-agent-metrics.js` (v2.2.9 B-4.1) when the double-fire guard catches a duplicate `agent_stop` invocation. Pairs with `hook_double_fire_detected` (the generic guard event) to give first-class visibility to the SubagentStop+TaskCompleted dual-wire and dual-install drift.
+
+```json
+{
+  "type": "agent_stop_double_fire_suppressed",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "agent_type": "developer",
+  "dedup_token": "<orch>:<agent_type>:<session_id|agent_id>:agent_stop",
+  "delta_ms": 12,
+  "first_caller": "/abs/path/...",
+  "second_caller": "/abs/path/..."
+}
+```
+
+Field notes:
+- Suppressed write paths: the `agent_stop` audit row, the Variant-C `routing_outcome` supplement, and the per-spawn `agent_metrics.jsonl` row are ALL skipped on the second fire.
+- Kill switch: `ORCHESTRAY_AGENT_STOP_DOUBLE_FIRE_GUARD_DISABLED=1` (default-on); also respects the global `ORCHESTRAY_DISABLE_DOUBLE_FIRE_GUARD=1`.
+- TTL: 5 minutes (covers the typical SubagentStop → TaskCompleted re-fire window).
+
+### `sentinel_probe_bypassed` event
+
+Emitted by `bin/sentinel-probe.js` (v2.2.9 B-4.2) when SessionStart bypasses the probe via the env-kill-switch or config-disabled path. Pairs with `sentinel_probe_session` (success path) so every SessionStart produces exactly one of the two events — the bypass case is no longer dark.
+
+```json
+{
+  "type": "sentinel_probe_bypassed",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "bypass_reason": "kill_switch"
+}
+```
+
+Field notes:
+- `bypass_reason` ∈ `{kill_switch, config_disabled, unknown}`.
+- `kill_switch` — `ORCHESTRAY_DISABLE_SENTINEL_PROBE=1` set in env.
+- `config_disabled` — `sentinel_probe.enabled: false` in `.orchestray/config.json`.
+- Pure observability: emitting this event does NOT change bypass behavior.
+
+### `delegation_delta_marker_missing` event
+
+Emitted by `bin/inject-delegation-delta.js` (v2.2.9 B-4.3) when an Agent tool call carries a non-empty prompt but the PM forgot to wrap it with delta markers AND mechanical injection failed. Distinguishes "PM should have emitted markers but didn't" from genuine `delegation_delta_skip` reasons (kill switch, no orchestration, empty prompt). Fires alongside `delegation_delta_skip(markers_missing)` so legacy consumers are unaffected.
+
+```json
+{
+  "type": "delegation_delta_marker_missing",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "spawn_target_agent": "developer",
+  "spawn_id": "..."
+}
+```
+
+Field notes:
+- Only fires when the Agent tool call is valid (non-empty prompt, recognised `subagent_type`) — pure prose-loss signal.
+- `spawn_id` is `null` when the PM did not include one in the spawn payload.
+- Kill switch: `ORCHESTRAY_DELEGATION_DELTA_MARKER_TRACK_DISABLED=1` (default-on).
+- Healthy ratio: `delegation_delta_marker_missing` ≪ `delegation_delta_emit` indicates the PM is wrapping prompts. A high ratio means F-PM-1 prose has rotted.

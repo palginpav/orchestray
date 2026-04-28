@@ -188,9 +188,38 @@ function runSessionChecks(projectRoot) {
 // Entrypoint
 // ---------------------------------------------------------------------------
 
+/**
+ * v2.2.9 B-4.2: emit `sentinel_probe_bypassed` when SessionStart bypasses
+ * the probe via the env-kill-switch or config-disabled path. Pairs with
+ * `sentinel_probe_session` (the success path) to form a logical XOR — every
+ * SessionStart now produces exactly one of the two. Pure observability,
+ * no behavior change. Fail-open on any error.
+ *
+ * @param {string} bypassReason - 'kill_switch' | 'config_disabled' | 'unknown'
+ * @param {string|null} projectRoot - resolved project root for cwd context
+ */
+function _emitSessionBypassed(bypassReason, projectRoot) {
+  try {
+    const opts = projectRoot ? { cwd: projectRoot } : undefined;
+    writeEvent({
+      type:           'sentinel_probe_bypassed',
+      version:        1,
+      schema_version: 1,
+      timestamp:      new Date().toISOString(),
+      bypass_reason:  bypassReason,
+    }, opts);
+  } catch (_e) { /* fail-open */ }
+}
+
 function main() {
   // Kill-switch: env var.
   if (process.env.ORCHESTRAY_DISABLE_SENTINEL_PROBE === '1') {
+    // v2.2.9 B-4.2: emit bypass observability before exiting.
+    const op = process.argv[2];
+    if (!op || op === '--session') {
+      const projectRoot = resolveSafeCwd(process.env.ORCHESTRAY_PROJECT_ROOT || null);
+      _emitSessionBypassed('kill_switch', projectRoot);
+    }
     process.stdout.write(JSON.stringify({ continue: true }) + '\n');
     process.exit(0);
   }
@@ -203,6 +232,8 @@ function main() {
 
     // Kill-switch: config gate.
     if (!_isSessionProbeEnabled(projectRoot)) {
+      // v2.2.9 B-4.2: emit bypass observability for the config-disabled path.
+      _emitSessionBypassed('config_disabled', projectRoot);
       process.stdout.write(JSON.stringify({ continue: true }) + '\n');
       process.exit(0);
     }
@@ -260,7 +291,7 @@ function main() {
 }
 
 // Export for tests.
-module.exports = { runSessionChecks, _isSessionProbeEnabled };
+module.exports = { runSessionChecks, _isSessionProbeEnabled, _emitSessionBypassed };
 
 if (require.main === module) {
   main();
