@@ -325,6 +325,131 @@ async function runMcpFanout(cwd, orchId, eventsPath) {
 }
 
 // ---------------------------------------------------------------------------
+// ROI emit (W2c, v2.2.12)
+// ---------------------------------------------------------------------------
+
+const ROI_DISABLED_ENV = 'ORCHESTRAY_ORCHESTRATION_ROI_AUTO_EMIT_DISABLED';
+const ROI_SCHEMA_VERSION = 1;
+
+/**
+ * Scan events.jsonl for the orchestration_start row matching orchId to
+ * extract started_at.  Returns ISO string or null.
+ *
+ * @param {string} eventsPath
+ * @param {string} orchId
+ * @returns {string|null}
+ */
+function findOrchStartedAt(eventsPath, orchId) {
+  let text;
+  try {
+    const stat = fs.statSync(eventsPath);
+    if (stat.size === 0) return null;
+    const CAP = 64 * 1024 * 1024;
+    if (stat.size > CAP) {
+      const fd = fs.openSync(eventsPath, 'r');
+      try {
+        const buf = Buffer.alloc(CAP);
+        fs.readSync(fd, buf, 0, CAP, stat.size - CAP);
+        text = buf.toString('utf8');
+      } finally {
+        fs.closeSync(fd);
+      }
+    } else {
+      text = fs.readFileSync(eventsPath, 'utf8');
+    }
+  } catch (_e) {
+    return null;
+  }
+  if (!text.includes('orchestration_start') || !text.includes(orchId)) return null;
+  for (const line of text.split('\n')) {
+    if (!line || !line.includes('orchestration_start') || !line.includes(orchId)) continue;
+    try {
+      const evt = JSON.parse(line);
+      if (
+        evt &&
+        (evt.type === 'orchestration_start' || evt.event_type === 'orchestration_start') &&
+        evt.orchestration_id === orchId
+      ) {
+        return evt.timestamp || evt.ts || null;
+      }
+    } catch (_e) { /* skip malformed */ }
+  }
+  return null;
+}
+
+/**
+ * Compute simple ROI signals from events.jsonl for orchId.
+ *
+ * @param {string} eventsPath
+ * @param {string} orchId
+ * @returns {{ total_events: number, mcp_tool_call_count: number, w_items_completed: number }}
+ */
+function computeOrchRoiSignals(eventsPath, orchId) {
+  let text;
+  try {
+    text = fs.readFileSync(eventsPath, 'utf8');
+  } catch (_e) {
+    return { total_events: 0, mcp_tool_call_count: 0, w_items_completed: 0 };
+  }
+  let total_events = 0;
+  let mcp_tool_call_count = 0;
+  let w_items_completed = 0;
+  for (const line of text.split('\n')) {
+    if (!line) continue;
+    try {
+      const evt = JSON.parse(line);
+      if (!evt || evt.orchestration_id !== orchId) continue;
+      total_events++;
+      const t = evt.type || evt.event_type || '';
+      if (t === 'mcp_tool_call') mcp_tool_call_count++;
+      if (t === 'task_completed') w_items_completed++;
+    } catch (_e) { /* skip malformed */ }
+  }
+  return { total_events, mcp_tool_call_count, w_items_completed };
+}
+
+/**
+ * Emit orchestration_roi for orchId.
+ * Fail-open — any error is logged and swallowed.
+ *
+ * Kill switch: ORCHESTRAY_ORCHESTRATION_ROI_AUTO_EMIT_DISABLED=1
+ *
+ * @param {string} cwd
+ * @param {string} orchId
+ * @param {string} eventsPath
+ */
+function emitOrchestrationRoi(cwd, orchId, eventsPath) {
+  if (process.env[ROI_DISABLED_ENV] === '1') return;
+  try {
+    const now = new Date().toISOString();
+    const startedAt = findOrchStartedAt(eventsPath, orchId);
+    const duration_seconds = startedAt
+      ? Math.round((Date.now() - new Date(startedAt).getTime()) / 1000)
+      : null;
+    const { total_events, mcp_tool_call_count, w_items_completed } =
+      computeOrchRoiSignals(eventsPath, orchId);
+
+    writeEvent({
+      schema_version:     ROI_SCHEMA_VERSION,
+      type:               'orchestration_roi',
+      orchestration_id:   orchId,
+      started_at:         startedAt || null,
+      ended_at:           now,
+      duration_seconds,
+      w_items_completed,
+      total_events,
+      mcp_tool_call_count,
+      total_cost_usd:     null, // not derivable from events alone; PM sets this
+    }, { cwd });
+  } catch (e) {
+    process.stderr.write(
+      '[audit-on-orch-complete] orchestration_roi emit error: ' +
+      (e && e.message ? e.message : String(e)) + '\n',
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Decision-recorder fanout (W3-2, v2.2.11)
 // ---------------------------------------------------------------------------
 
@@ -447,6 +572,13 @@ process.stdout.write(JSON.stringify({ continue: true }));
       runDecisionRecorders(cwd, orchId);
     } catch (e) {
       process.stderr.write('[audit-on-orch-complete] decision-recorders uncaught: ' + (e && e.message) + '\n');
+    }
+
+    // Emit orchestration_roi (W2c, v2.2.12).
+    try {
+      emitOrchestrationRoi(cwd, orchId, eventsPath);
+    } catch (e) {
+      process.stderr.write('[audit-on-orch-complete] orchestration-roi uncaught: ' + (e && e.message) + '\n');
     }
   } catch (e) {
     process.stderr.write('[audit-on-orch-complete] uncaught: ' + (e && e.message) + '\n');

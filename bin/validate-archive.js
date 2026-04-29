@@ -214,6 +214,21 @@ function main() {
         'Copy them from .orchestray/state/ to complete the archive. ' +
         'Kill switch: ORCHESTRAY_ARCHIVE_VALIDATION_DISABLED=1\n'
       );
+    } else {
+      // Success path: all required files present.
+      // Kill switch: ORCHESTRAY_ARCHIVE_VALIDATION_SUCCESS_EMIT_DISABLED=1
+      if (process.env.ORCHESTRAY_ARCHIVE_VALIDATION_SUCCESS_EMIT_DISABLED !== '1') {
+        try {
+          writeEvent({
+            version:          SCHEMA_VERSION,
+            schema_version:   SCHEMA_VERSION,
+            type:             'archive_must_copy_validation',
+            orchestration_id: orchId,
+            files_checked:    REQUIRED_FILES.length,
+            result:           'success',
+          }, { cwd });
+        } catch (_e) { /* fail-open */ }
+      }
     }
 
     process.stdout.write(JSON.stringify({ continue: true }));
