@@ -59,18 +59,19 @@ v2.2.9 completes the mechanisation push started in v2.2.8: every enforcement tha
 - No config changes required. All new behaviour is default-on.
 - New env kill switches: `ORCHESTRAY_AUDIT_AUTOFILL_DISABLED=1`, `ORCHESTRAY_ORCH_ARCHIVE_DISABLED=1`, `ORCHESTRAY_PROMISED_EVENT_TRACKER_DISABLED=1`, `ORCHESTRAY_HOUSEKEEPER_AUTO_SPAWN_DISABLED=1`, `ORCHESTRAY_STRICT_MODEL_REQUIRED=0` (disables model-required hard-block).
 - Per-role T15 hard-tier kill switches: `ORCHESTRAY_T15_<ROLE>_HARD_DISABLED=1` (e.g., `ORCHESTRAY_T15_DEVELOPER_HARD_DISABLED=1`).
-- Tests updated: 6 tests are intentional skips matching v2.2.9 scope-locked deferrals.
+- Tests updated: 6 pre-existing skips for unrelated W5/W10/W11 stubs predating v2.2.9 — none introduced or accepted in this release. Per the locked scope contract, v2.2.9 ships zero new defers.
+- Downstream consumers reading audit events should switch from filtering live `events.jsonl` to reading the per-orchestration archive at `.orchestray/history/<orch_id>/events.jsonl`.
 
 ### Tests
 
-5132 / 5138 passing, 0 failures, 6 intentional skips.
+5132 / 5138 passing, 0 failures, 6 pre-existing skips (unrelated to v2.2.9 scope).
 
 ### Under the hood
 
-- 12+ new helper modules in `bin/_lib/`: autofill extension to `audit-event-writer.js`, `pm-emit-state-watcher.js`, `housekeeper-queue.js`, `dual-install-parity.js`, and supporting helpers.
-- 10+ new `bin/` scripts: `bin/archive-orch-events.js`, `bin/audit-promised-events.js`, `bin/audit-housekeeper-orphan.js`, `bin/spawn-housekeeper-drainer.js`, `bin/release-manager/changelog-event-name-check.js`, and others.
-- 12 new hooks.json wire entries.
-- Schema shadow regenerated to **175 event types** (was 145 in v2.2.8). Shadow byte cap 8 KB → 12 KB.
+- New helper modules and per-role schema map under `bin/_lib/` (event-writer autofill extension, PM emit state-watcher, per-role handoff schema, per-role write allowlists).
+- New `bin/` scripts for the housekeeper queue trio (trigger, queue processor, prompt drainer), dossier-inject orphan auditor, schema-naming firewall, dual-install parity check, promised-event tracker, and the per-role / git / kb-index / cite-label gates.
+- 30 new event types added to the shadow registry; 21 referenced explicitly in this CHANGELOG.
+- Schema shadow regenerated to **175 event types** (was 145 in v2.2.8). Shadow byte cap raised 8 KB → 12 KB.
 
 ---
 

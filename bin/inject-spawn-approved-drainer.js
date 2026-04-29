@@ -90,11 +90,17 @@ function buildPromptBlock(pendingRows) {
     '**[ORCHESTRAY SPAWN DRAINER]** Pending approved housekeeper spawns — call Agent() for each before responding:',
   ];
   for (const row of pendingRows) {
-    const desc = (row.justification || 'housekeeper maintenance').slice(0, 80);
+    // v2.2.9 P1-S1: escape worker-supplied fields via JSON.stringify to prevent
+    // a forged second Agent() call via a quote/newline in `justification` or
+    // `request_id`. JSON.stringify yields a properly-quoted JS string literal,
+    // including the surrounding double-quotes, so we drop our own quotes.
+    const rawDesc = (row.justification || 'housekeeper maintenance').slice(0, 80);
+    const desc = JSON.stringify(rawDesc);
+    const reqId = JSON.stringify(String(row.request_id || '?'));
     lines.push(
       '- Agent(subagent_type: "' + HOUSEKEEPER_AGENT + '", model: "haiku",' +
-      ' description: "' + desc + '")'
-      + ' [request_id: ' + (row.request_id || '?') + ']'
+      ' description: ' + desc + ')'
+      + ' [request_id: ' + reqId + ']'
     );
   }
   const block = lines.join('\n');

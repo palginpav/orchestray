@@ -102,6 +102,12 @@ Set in `.orchestray/config.json` or as env vars. No session restart required.
 | Prompt compression (Tokenwright) | `compression.enabled: false` | `ORCHESTRAY_DISABLE_COMPRESSION=1` |
 | Reactive agent spawning | — | `ORCHESTRAY_DISABLE_REACTIVE_SPAWN=1` |
 | Housekeeper auto-spawn | — | `ORCHESTRAY_HOUSEKEEPER_AUTO_SPAWN_DISABLED=1` |
+| Spawn-approved drainer (housekeeper E2E) | — | `ORCHESTRAY_SPAWN_DRAINER_DISABLED=1` |
+| Per-role hard-tier handoff schema | — | `ORCHESTRAY_T15_<ROLE>_HARD_DISABLED=1` (per role: `DEVELOPER`, `RESEARCHER`, etc.) |
+| Per-role write-path gate | — | `ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1` |
+| Developer git-action gate | — | `ORCHESTRAY_GIT_GATE_DISABLED=1` |
+| Strict model-required on `Agent()` | — | `ORCHESTRAY_STRICT_MODEL_REQUIRED=0` (the only opt-out — default is hard-block) |
+| CHANGELOG↔shadow naming firewall | — | `ORCHESTRAY_CHANGELOG_FIREWALL_DISABLED=1` (non-release commits only — release commits cannot opt out) |
 | Loop primitive | — | `ORCHESTRAY_DISABLE_LOOP=1` |
 | Workspace snapshots | — | `ORCHESTRAY_DISABLE_SNAPSHOTS=1` |
 | Haiku scout (file ops) | `haiku_routing.enabled: false` | — |
@@ -123,6 +129,15 @@ Run `node bin/regen-schema-shadow.js` followed by `node -e "require('./bin/_lib/
 
 **Gate blocks first spawn after upgrade.**
 On the next user prompt, `bin/post-upgrade-sweep.js` repairs stale checkpoint rows automatically. If the gate still blocks, set `mcp_enforcement.global_kill_switch: true` (and a `kill_switch_reason`) in `.orchestray/config.json` to complete the in-flight orchestration, then clear both fields.
+
+**`t15_role_schema_violation` blocks reviewer / researcher / inventor / security-engineer / ux-critic / platform-oracle on first upgrade to v2.2.9.**
+Six previously warn-tier roles were promoted to hard-tier with no grace flag — every Structured Result missing the role-required fields now blocks the spawn. Update the agent's output to include the role contract from `bin/_lib/role-schemas.js`. For an emergency pin while you fix the upstream agent, set `ORCHESTRAY_T15_<ROLE>_HARD_DISABLED=1` (e.g. `ORCHESTRAY_T15_RESEARCHER_HARD_DISABLED=1`) — the role downgrades to warn-tier for that session only.
+
+**`agent_model_unspecified_blocked` on existing orchestrations.**
+v2.2.9 flipped the default for `ORCHESTRAY_STRICT_MODEL_REQUIRED` from "auto-resolve to sonnet" to "hard-block". Add explicit `model:` to every `Agent()` call (e.g. `Agent(subagent_type: "developer", model: "sonnet", …)`), or set `ORCHESTRAY_STRICT_MODEL_REQUIRED=0` for one release while you backfill. Per-agent `model:` frontmatter does not satisfy the gate — it must appear on the `Agent()` call itself.
+
+**`role_write_path_blocked` when reviewer/tester/documenter/release-manager writes a file.**
+Each write-capable specialist has a per-role allowlist defined in `bin/_lib/role-write-allowlists.js`. If you need a wider scope for a one-off task, set `ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1` in the spawning shell, or add the path to the allowlist (preferred — keeps the rest of the codebase protected).
 
 ## License
 
