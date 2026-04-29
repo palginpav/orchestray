@@ -145,6 +145,12 @@ Set in `.orchestray/config.json` or as env vars. No session restart required.
 | MCP handler-entry instrumentation (v2.2.11) | — | `ORCHESTRAY_MCP_ENTRY_INSTRUMENTATION_DISABLED=1` |
 | Loop-kind taxonomy disambiguation (v2.2.11) | — | `ORCHESTRAY_LOOP_KIND_DISAMBIGUATION_DISABLED=1` |
 | `*_failed` rename-cycle alias emit (v2.2.11) | — | `ORCHESTRAY_RENAME_CYCLE_ALIAS_DISABLED=1` |
+| `context_size_hint` stager hook (v2.2.12) | — | `ORCHESTRAY_CTX_HINT_STAGER_DISABLED=1` |
+| Contracts validation hard-fail (v2.2.12, reverts to warn) | — | `ORCHESTRAY_CONTRACTS_PARSE_GATE_DISABLED=1` |
+| `*_failed` deprecation stderr warn (v2.2.12) | — | `ORCHESTRAY_DEPRECATED_NAME_WARN_DISABLED=1` |
+| Archive validation success-path emit (v2.2.12) | — | `ORCHESTRAY_ARCHIVE_VALIDATION_SUCCESS_EMIT_DISABLED=1` |
+| Orchestration ROI auto-emit at close (v2.2.12) | — | `ORCHESTRAY_ORCHESTRATION_ROI_AUTO_EMIT_DISABLED=1` |
+| KB write auto-index update (v2.2.12) | — | `ORCHESTRAY_KB_INDEX_AUTO_DISABLED=1` |
 
 ## Requirements
 
@@ -172,7 +178,7 @@ v2.2.9 flipped the default for `ORCHESTRAY_STRICT_MODEL_REQUIRED` from "auto-res
 Each write-capable specialist has a per-role allowlist defined in `bin/_lib/role-write-allowlists.js`. If you need a wider scope for a one-off task, set `ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1` in the spawning shell, or add the path to the allowlist (preferred — keeps the rest of the codebase protected).
 
 **`contracts_parse_failed` fires on task YAML with a `## Contracts` section.**
-v2.2.11 adds soft-warn validation for the new `## Contracts` task-YAML schema. If the section is malformed (missing required fields, invalid YAML), `contracts_parse_failed` is emitted. The spawn is not blocked in v2.2.11 (full enforcement ships in v2.2.12). To silence warnings while you migrate, set `ORCHESTRAY_CONTRACTS_MISSING_WARN_DISABLED=1` or `ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED=1`.
+Since v2.2.12, Contracts validation is a hard-fail (exit 2). If a task YAML `## Contracts` section is malformed, the spawn is blocked and `contracts_parse_failed` is emitted. To revert to soft-warn, set `ORCHESTRAY_CONTRACTS_PARSE_GATE_DISABLED=1`. To disable the validator entirely, set `ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED=1` or `ORCHESTRAY_CONTRACTS_MISSING_WARN_DISABLED=1`.
 
 **`agent_mcp_grounding_missing` blocks pm/researcher/debugger/architect spawns.**
 v2.2.10 promotes the MCP grounding gate from warning to hard-block (exit 2) for these four roles. The server-side prefetch hook normally satisfies the gate automatically before each spawn. If the gate fires unexpectedly (e.g. in a custom spawn path that bypasses the prefetch hook), verify that `bin/prefetch-mcp-grounding.js` is registered as `PreToolUse:Agent` in your hooks configuration. Set `ORCHESTRAY_MCP_GROUNDING_GATE_DISABLED=1` as an emergency bypass.

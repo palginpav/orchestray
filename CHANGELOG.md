@@ -3,6 +3,48 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.2.12] - 2026-04-29
+
+v2.2.12 closes 3 production regressions from v2.2.11 that were silently suppressing events in busy projects, promotes Contracts validation from soft-warn to hard-fail, and adds 8 mechanised instrumentation items that make events fire without PM prose. Operators get more events in their audit logs, fewer false circuit-breaker trips, and automatic `context_size_hint` injection so Agent() spawns no longer require manual hinting. Shadow registry grows 205 → 213 event types.
+
+### Fixed — v2.2.11 regressions (Wave 0)
+
+- **KB-index validator was blocking every write.** The validator required an `id` field; live index entries use `slug`. Every KB write in v2.2.11 exited 2. Fixed: validator now accepts either field, with `path` as a final fallback. (W0)
+- **Schema-shadow circuit breaker produced hundreds of false miss-records per day.** `recordMiss` fired for declared types whose emitted payload had the wrong shape — not just for truly unknown types. Fixed: shape errors now emit a separate `schema_shape_violation` advisory (rate-limited once per process per type); `recordMiss` fires only for genuinely unknown types. (W1b)
+- **`context_size_hint` hard-block was unspawnable.** Every Agent() call was rejected because there was no way to inject `context_size_hint` via the Agent() tool API. Fixed: a new stager hook parses the hint from the prompt body automatically before the gate runs. (W1a)
+
+### Added — Instrumentation and enforcement (Waves 1–2)
+
+- **Automatic `context_size_hint` stager.** A new hook reads the hint embedded in the delegation prompt and stages it before the spawn-budget preflight gate. No manual hinting needed. Kill switch: `ORCHESTRAY_CTX_HINT_STAGER_DISABLED=1`. (W1a)
+- **`schema_shape_violation` advisory event.** Emitted (rate-limited, once per process per type) when a declared event's payload fails schema validation. Replaces false miss-records with an actionable advisory. (W1b)
+- **4 declared lifecycle event types.** `orchestration_start`, `orchestration_complete`, `orchestration_roi`, and `archive_must_copy_validation` are now declared in the shadow registry. Reconciled away `agent_spawn`, `task_started`, `task_completed` as redundant with existing canonical types. (W1c)
+- **Contracts validator hard-fails by default.** Promoted from soft-warn to exit-2 block. Malformed `## Contracts` sections in task YAML now block the spawn. Kill switches: `ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED=1` (skip entirely), `ORCHESTRAY_CONTRACTS_PARSE_GATE_DISABLED=1` (revert to warn-only). One-shot post-upgrade banner prints on first session start after upgrade, then silent. New event: `contracts_hardfail_banner_shown`. (W2a)
+- **`*_failed` deprecation surfacing.** DEPRECATED schema annotations and a once-per-process-per-type stderr warning now guide emitters from `*_failed` names toward the `*_attempt`+`*_result` rename-cycle pattern. Triple-write continues unaffected. Kill switch: `ORCHESTRAY_DEPRECATED_NAME_WARN_DISABLED=1`. (W2b)
+- **Success-path emit for archive validation; code emit site for orchestration ROI.** `archive_must_copy_validation` now emits on the success path (not only on failure). `orchestration_roi` now has a wired code emit site in the orchestration-close flow. Both default-on per Q4 Path A. Kill switches: `ORCHESTRAY_ARCHIVE_VALIDATION_SUCCESS_EMIT_DISABLED=1`, `ORCHESTRAY_ORCHESTRATION_ROI_AUTO_EMIT_DISABLED=1`. (W2c)
+- **KB writes auto-update `index.json`.** Writes to KB artifacts, facts, and decisions directories now automatically append an entry to `index.json`. Replaces the prose instruction that agents reliably skipped. New events: `kb_index_auto_updated`, `kb_index_auto_skipped`. Kill switch: `ORCHESTRAY_KB_INDEX_AUTO_DISABLED=1`. (W2d)
+- **Shadow registry grows 205 → 213** (+8 declared event types across W1c, W2a, W2d).
+
+### Migration notes
+
+- **Restart Claude Code after upgrading.** Hooks and agent definitions are cached at session start.
+- No config changes required. All new behaviour is default-on.
+- **`ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1` is now redundant.** The stager hook satisfies the gate automatically. Operators may remove it from `.claude/settings.json`. Setting it continues to work as a no-op safety valve.
+- **One-shot post-upgrade banner** about Contracts hard-fail prints once on first session start after upgrade. Subsequent sessions: silent.
+- **Contracts validation is now a hard-fail.** The v2.2.11 migration note said "full enforcement ships in v2.2.12" — that enforcement is here. Operators using `ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED=1` to suppress warnings in v2.2.11 retain that kill switch unchanged. To revert to soft-warn without disabling the validator entirely, use `ORCHESTRAY_CONTRACTS_PARSE_GATE_DISABLED=1`.
+- New env kill switches (set to `1` to disable): `ORCHESTRAY_CTX_HINT_STAGER_DISABLED`, `ORCHESTRAY_CONTRACTS_PARSE_GATE_DISABLED`, `ORCHESTRAY_DEPRECATED_NAME_WARN_DISABLED`, `ORCHESTRAY_ARCHIVE_VALIDATION_SUCCESS_EMIT_DISABLED`, `ORCHESTRAY_ORCHESTRATION_ROI_AUTO_EMIT_DISABLED`, `ORCHESTRAY_KB_INDEX_AUTO_DISABLED`.
+
+### Tests
+
+5509 tests / 5503 pass / 0 fail / 6 skip. Includes 8 new test files covering W0 through W2d (one per W-item).
+
+### Under the hood
+
+- New hook scripts: `bin/inject-context-size-hint.js` (W1a stager), `bin/boot-validate-config.js` banner logic (W2a).
+- Modified: `bin/_lib/audit-event-writer.js` (W1b recordMiss split + shape-violation advisory), `bin/_lib/kb-index-validator.js` (W0 id|slug|path fallback), `bin/redirect-kb-write.js` (W2d auto-index append), `bin/audit-on-orch-complete.js` (W2c ROI emit site), `bin/validate-archive.js` (W2c success-path emit), `bin/validate-task-contracts.js` (W2a hard-fail promotion), `agents/pm-reference/event-schemas.md` (W1c declares + W2a/W2d event types), `agents/pm-reference/event-schemas.shadow.json` (205→213), `agents/pm-reference/agent-common-protocol.md` (W2d prose instruction → mechanical pointer), `hooks/hooks.json` (W1a stager registration).
+- WIP commits: f7a4232 (W0), 31ab8c9 (W1a), f5e2b57 (W1b), cd9554d (W1c), c30982f (W2a), e9494c9 (W2b), ac7bad4 (W2c), c20f8ae (W2d), 3c2cf15 (hygiene).
+
+---
+
 ## [2.2.11] - 2026-04-29
 
 v2.2.11 closes 5 production regressions from v2.2.10, mechanises 12 prose-residual enforcement gaps, introduces the `## Contracts` task-YAML schema, redesigns 4 cargo-prone MCP tools with decision-recorders, removes the deprecated `ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY` kill switch, and grows the shadow registry from 183 to 205 event types. Event-type activation forecast: 47–50%. MCP-tool activation holds at 76%.
