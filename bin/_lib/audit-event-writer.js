@@ -63,6 +63,9 @@ let _schemaWarnedThisProcess  = false;
 // Shape violations are high-frequency (321/24h baseline); without this they flood events.jsonl.
 const _shapeViolationWarnedTypes = new Map(); // event_type -> true
 
+// W2b (v2.2.12): rate-limited deprecation warn for pre-rename event types.
+const _deprecatedNamesWarnedThisProcess = new Set();
+
 const SHADOW_REL_CONFIG = path.join('.orchestray', 'config.json');
 
 /**
@@ -887,6 +890,20 @@ function _emitRenameCycleAliases(originalEvent, cwd, eventsPath) {
  */
 function writeEventWithAliases(eventPayload, opts) {
   opts = opts || {};
+
+  // W2b (v2.2.12): deprecation warn for pre-rename event types (rate-limited 1/process/type).
+  const requestedType = eventPayload && (eventPayload.type || eventPayload.event_type);
+  if (requestedType && _RENAME_CYCLE_ALIAS_TABLE[requestedType] &&
+      process.env.ORCHESTRAY_DEPRECATED_NAME_WARN_DISABLED !== '1' &&
+      !_deprecatedNamesWarnedThisProcess.has(requestedType)) {
+    _deprecatedNamesWarnedThisProcess.add(requestedType);
+    const aliases = _RENAME_CYCLE_ALIAS_TABLE[requestedType];
+    process.stderr.write(
+      '[orchestray] event type "' + requestedType + '" is deprecated since v2.2.12' +
+      ' — emit "' + aliases.attempt + '" + "' + aliases.result + '" instead.\n'
+    );
+  }
+
   const result = writeEvent(eventPayload, opts);
 
   // Only emit aliases when the original event was written (not surrogated/dropped).
@@ -936,4 +953,10 @@ module.exports._testHooks = {
 
   /** Expose the map for test assertions. */
   get shapeViolationWarnedTypes() { return _shapeViolationWarnedTypes; },
+
+  /** W2b (v2.2.12): reset per-process deprecated-name warn set for test isolation. */
+  resetDeprecatedNamesWarned() { _deprecatedNamesWarnedThisProcess.clear(); },
+
+  /** W2b (v2.2.12): expose set for test assertions. */
+  get deprecatedNamesWarnedThisProcess() { return _deprecatedNamesWarnedThisProcess; },
 };
