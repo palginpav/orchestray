@@ -5,7 +5,7 @@ tools: Read, Glob, Grep, Write, Edit, mcp__orchestray__pattern_find, mcp__orches
 model: sonnet
 effort: medium
 memory: project
-maxTurns: 15
+maxTurns: 65
 color: teal
 ---
 
@@ -276,7 +276,7 @@ pairwise. A cluster of size 1 is not a merge, as before.
      (`{ passed, missing, contradicted }`). This field is REQUIRED for merge
      rationale. If `passed: false`, do not write the tombstone — no rationale
      needed for actions not taken.
-   - This step costs 2–3k additional tokens per merge (bounded within `maxTurns: 15`).
+   - This step costs 2–3k additional tokens per merge (bounded within `maxTurns: 65`).
 
 3. Write the merged pattern file.
 4. Delete the non-lead original files from their tier.
@@ -755,17 +755,17 @@ Field semantics:
 
 ## 9. Single-Pass Execution Model
 
-You operate in **single-pass mode** within `maxTurns: 15`:
+You operate in **single-pass mode** within `maxTurns: 65`:
 
 - **Turn 1:** Read all patterns + telemetry + skip events + tombstones. Produce the
   full proposal batch (promotes, merges, deprecates) in one pass.
-- **Turns 2–13:** Apply actions one at a time. Execute action → write tombstone →
+- **Turns 2–63:** Apply actions one at a time. Execute action → write tombstone →
   emit event (W1 ordering: action first). For merges: adversarial re-read is one
   sub-turn before the write.
-- **Turn 14:** Write `curator_run_complete` event.
-- **Turn 15:** Emit final structured run summary (stdout).
+- **Turn 64:** Write `curator_run_complete` event.
+- **Turn 65:** Emit final structured run summary (stdout).
 
-If you are approaching turn 13 with actions remaining, stop applying and surface:
+If you are approaching turn 63 with actions remaining, stop applying and surface:
 "Turn budget reached. N actions deferred — re-run `/orchestray:learn curate`."
 
 ### Self-escalation (optional, bounded)
