@@ -929,19 +929,16 @@ if (require.main === module) {
                     t => missingStrict.includes(t) && !missing.includes(t)
                   );
 
-                  // v2.2.10 M2 §22b hard-block promotion:
-                  // Default: hard-block (exit 2) when MCP pre-decomp checkpoints are missing
-                  // and routing.jsonl is absent (first-spawn / pre-decomposition window).
-                  // Escape hatches: ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY=1 or
-                  //                 ORCHESTRAY_MCP_PREFETCH_DISABLED=1 downgrade to warn.
+                  // v2.2.11: ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY kill switch removed.
+                  // Hard-block (exit 2) is the only path when MCP pre-decomp checkpoints
+                  // are missing and routing.jsonl is absent (first-spawn / pre-decomp window).
+                  // ORCHESTRAY_MCP_PREFETCH_DISABLED=1 still downgrades to advisory-only.
                   // Implicit warn-mode: when routing.jsonl already exists, the orchestration
                   // is underway — hard-blocking mid-flight spawns would be disruptive, so
-                  // we fall back to advisory-only regardless of env settings (preserves
-                  // backward compatibility with existing §22b behavior).
-                  const warnOnly = process.env.ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY === '1';
+                  // we fall back to advisory-only (preserves backward compatibility with §22b).
                   const prefetchDisabled = process.env.ORCHESTRAY_MCP_PREFETCH_DISABLED === '1';
                   const routingFileExists = fs.existsSync(routingFile);
-                  const useWarnMode = warnOnly || prefetchDisabled || routingFileExists;
+                  const useWarnMode = prefetchDisabled || routingFileExists;
 
                   const warnSentinel = path.join(cwd, '.orchestray', 'state', '.gate-22b-warned-' + orchId);
                   const alreadyWarned = fs.existsSync(warnSentinel);
@@ -972,8 +969,7 @@ if (require.main === module) {
                         "Missing tools: " + missing.join(', ') + ". " +
                         "Call mcp__orchestray__pattern_find, mcp__orchestray__kb_search, and " +
                         "mcp__orchestray__history_find_similar_tasks before spawning agents. " +
-                        "To override: set ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY=1 or " +
-                        "ORCHESTRAY_MCP_PREFETCH_DISABLED=1.\n"
+                        "To override: set ORCHESTRAY_MCP_PREFETCH_DISABLED=1.\n"
                       );
                     }
                     // Write sentinel so subsequent spawns in the same orch don't re-warn/re-block.

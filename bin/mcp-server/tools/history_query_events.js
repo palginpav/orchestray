@@ -13,6 +13,8 @@ const { queryEvents } = require('../lib/history_scan');
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
 const { toolSuccess, toolError } = require('../lib/tool-result');
 const { AGENT_ROLES } = require('../lib/constants');
+// NOTE: emitHandlerEntry intentionally omitted for history_query_events — instrumenting
+// this tool creates a feedback loop (the entry event becomes part of the events it reads).
 
 const EVENT_TYPES = [
   'agent_start',
@@ -76,6 +78,7 @@ const definition = deepFreeze({
 });
 
 async function handle(input, context) {
+  // No emitHandlerEntry: avoids feedback-loop pollution of the events corpus this tool reads.
   const validation = validateAgainstSchema(input || {}, INPUT_SCHEMA);
   if (!validation.ok) {
     return toolError('history_query_events: ' + validation.errors.join('; '));

@@ -55,6 +55,7 @@ const {
 // Atomic append primitive — ensures concurrent writers don't interleave lines
 // (F05: replaces the non-atomic fs.appendFileSync used previously).
 const { atomicAppendJsonl } = require('../../_lib/atomic-append');
+const { emitHandlerEntry } = require('../../_lib/mcp-handler-entry');
 
 // File that holds reservation records (append-only JSONL)
 const RESERVATIONS_FILE = '.orchestray/state/cost-reservations.jsonl';
@@ -189,6 +190,7 @@ function findReservationById(reservationsPath, reservationId) {
 // ---------------------------------------------------------------------------
 
 async function handle(input, context) {
+  emitHandlerEntry('cost_budget_reserve', context);
   const validation = validateAgainstSchema(input, INPUT_SCHEMA);
   if (!validation.ok) {
     return toolError('cost_budget_reserve: ' + validation.errors.join('; '));

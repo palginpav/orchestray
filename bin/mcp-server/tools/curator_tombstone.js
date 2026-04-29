@@ -48,6 +48,7 @@ const { loadCuratorConfig } = require('../../_lib/config-schema');
 
 // MCP server path helpers (project root resolution).
 const paths = require('../lib/paths');
+const { emitHandlerEntry } = require('../../_lib/mcp-handler-entry');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -486,6 +487,7 @@ const ACTION_HANDLERS = {
 // ---------------------------------------------------------------------------
 
 async function handle(input, context) {
+  emitHandlerEntry('curator_tombstone', context);
   // Schema validation (hand-rolled per project convention — no zod).
   const validation = validateAgainstSchema(input, INPUT_SCHEMA);
   if (!validation.ok) {

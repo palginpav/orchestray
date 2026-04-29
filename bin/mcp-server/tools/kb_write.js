@@ -23,6 +23,7 @@ const paths = require('../lib/paths');
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
 const { toolSuccess, toolError } = require('../lib/tool-result');
 const { checkLimit, recordSuccess } = require('../lib/tool-counts');
+const { emitHandlerEntry } = require('../../_lib/mcp-handler-entry');
 
 // ---------------------------------------------------------------------------
 // Lock primitive (extracted from atomic-append.js — no circular dependency)
@@ -119,6 +120,7 @@ const definition = deepFreeze({
 // ---------------------------------------------------------------------------
 
 async function handle(input, context) {
+  emitHandlerEntry('kb_write', context);
   const validation = validateAgainstSchema(input, INPUT_SCHEMA);
   if (!validation.ok) {
     return toolError('kb_write: ' + validation.errors.join('; '));

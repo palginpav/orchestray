@@ -23,6 +23,7 @@ const path = require('node:path');
 const paths = require('../lib/paths');
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
 const { toolSuccess, toolError } = require('../lib/tool-result');
+const { emitHandlerEntry } = require('../../_lib/mcp-handler-entry');
 
 // ---------------------------------------------------------------------------
 // Lock primitive (inlined from atomic-append.js — no circular dependency)
@@ -154,6 +155,7 @@ const definition = deepFreeze({
 // ---------------------------------------------------------------------------
 
 async function handle(input, context) {
+  emitHandlerEntry('specialist_save', context);
   // ------------------------------------------------------------------
   // 1. Validate inputs against schema.
   // ------------------------------------------------------------------

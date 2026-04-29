@@ -18,6 +18,7 @@ const path = require('node:path');
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
 const { loadCostBudgetCheckConfig, DEFAULT_EFFORT_MULTIPLIERS } = require('../../_lib/config-schema');
 const { resolveSafeCwd } = require('../../_lib/resolve-project-cwd');
+const { emitHandlerEntry } = require('../../_lib/mcp-handler-entry');
 const { toolSuccess, toolError } = require('../lib/tool-result');
 const { AGENT_ROLES } = require('../lib/constants');
 
@@ -318,6 +319,7 @@ async function readAccumulatedCost(orchId, projectRoot, dateFilter) {
 // ---------------------------------------------------------------------------
 
 async function handle(input, context) {
+  emitHandlerEntry('cost_budget_check', context);
   const validation = validateAgainstSchema(input, INPUT_SCHEMA);
   if (!validation.ok) {
     return toolError('cost_budget_check: ' + validation.errors.join('; '));

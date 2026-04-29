@@ -8008,3 +8008,109 @@ Field notes:
 - `missing_files`: array of filenames (not paths) that are absent from the archive directory.
 - `schema_version`: always `1` in this release.
 - Warn-only: does not block. Kill switch: `ORCHESTRAY_ARCHIVE_VALIDATION_DISABLED=1`.
+
+---
+
+## Section 33: v2.2.11 Wave-4 Rename-Cycle Shadow Aliases (W2-11)
+
+The following four event types are **transitional shadow aliases** declared as part of
+the `*_failed` → `*_attempt`/`*_result` rename cycle (B5 fix, v2.2.11). They are emitted
+alongside the original `*_failed` event by `bin/_lib/audit-event-writer.js` when the
+alias table fires. Retire in v2.2.13 per W4b §2.4 deprecation cycle.
+
+Kill switch: `ORCHESTRAY_RENAME_CYCLE_ALIAS_DISABLED=1` disables the alias emission for
+all four types.
+
+### `staging_write_attempt` event
+
+Shadow alias for the start of a staging-write operation. Paired with `staging_write_result`.
+Emitted alongside `staging_write_failed` during the rename-cycle transition.
+
+```json
+{
+  "type": "staging_write_attempt",
+  "version": 1,
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "original_event_type": "staging_write_failed",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `original_event_type`: the pre-rename event type this alias shadows.
+- `schema_version`: always 1 (v2.2.11 baseline).
+- Transitional: retire in v2.2.13.
+
+---
+
+### `staging_write_result` event
+
+Shadow alias for the outcome of a staging-write operation. Paired with `staging_write_attempt`.
+Emitted alongside `staging_write_failed` during the rename-cycle transition.
+
+```json
+{
+  "type": "staging_write_result",
+  "version": 1,
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "original_event_type": "staging_write_failed",
+  "outcome": "failed",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `original_event_type`: the pre-rename event type this alias shadows.
+- `outcome`: always `"failed"` in v2.2.11 (the alias fires only when the original `*_failed` event fires).
+- `schema_version`: always 1 (v2.2.11 baseline).
+- Transitional: retire in v2.2.13.
+
+---
+
+### `task_validation_attempt` event
+
+Shadow alias for the start of a task-validation operation. Paired with `task_validation_result`.
+Emitted alongside `task_validation_failed` during the rename-cycle transition.
+
+```json
+{
+  "type": "task_validation_attempt",
+  "version": 1,
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "original_event_type": "task_validation_failed",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `original_event_type`: the pre-rename event type this alias shadows.
+- `schema_version`: always 1 (v2.2.11 baseline).
+- Transitional: retire in v2.2.13.
+
+---
+
+### `task_validation_result` event
+
+Shadow alias for the outcome of a task-validation operation. Paired with `task_validation_attempt`.
+Emitted alongside `task_validation_failed` during the rename-cycle transition.
+
+```json
+{
+  "type": "task_validation_result",
+  "version": 1,
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "original_event_type": "task_validation_failed",
+  "outcome": "failed",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `original_event_type`: the pre-rename event type this alias shadows.
+- `outcome`: always `"failed"` in v2.2.11 (the alias fires only when the original `*_failed` event fires).
+- `schema_version`: always 1 (v2.2.11 baseline).
+- Transitional: retire in v2.2.13.

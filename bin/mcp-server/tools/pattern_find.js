@@ -31,6 +31,7 @@ const { parseFields, projectArray } = require('../lib/field-projection');
 const scorerVariants = require('../../_lib/scorer-variants');
 const { getEventWindow } = require('../../_lib/scorer-telemetry');
 const { maybeAnnounce: maybeAnnounceScorerVariants } = require('../announce-scorer-variants');
+const { emitHandlerEntry } = require('../../_lib/mcp-handler-entry');
 
 // Session flag to emit the FTS5 fallback warning at most once per process.
 let _fts5WarnedThisSession = false;
@@ -123,6 +124,7 @@ function _selectScorer(retrievalConfig) {
 // ---------------------------------------------------------------------------
 
 async function handle(input, context) {
+  emitHandlerEntry('pattern_find', context);
   const validation = validateAgainstSchema(input, INPUT_SCHEMA);
   if (!validation.ok) {
     return toolError('pattern_find: ' + validation.errors.join('; '));

@@ -23,6 +23,7 @@ const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
 const { toolSuccess, toolError } = require('../lib/tool-result');
 const { writeAuditEvent } = require('../lib/audit');
 const { logStderr } = require('../lib/rpc');
+const { emitHandlerEntry } = require('../../_lib/mcp-handler-entry');
 
 // The four-value reason enum per scope-proposal §W1 R5 risk.
 const SKIP_REASONS = ['all-irrelevant', 'all-low-confidence', 'all-stale', 'other'];
@@ -135,6 +136,7 @@ function _computeForgottenRate(orchId, context) {
 }
 
 async function handle(input, context) {
+  emitHandlerEntry('pattern_record_skip_reason', context);
   const validation = validateAgainstSchema(input, INPUT_SCHEMA);
   if (!validation.ok) {
     return toolError('pattern_record_skip_reason: ' + validation.errors.join('; '));

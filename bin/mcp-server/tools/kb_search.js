@@ -21,6 +21,7 @@ const { sanitizeExcerpt } = require('../lib/excerpt');
 const { getSharedKbDir } = require('../lib/paths');
 const { writeAuditEvent, readOrchestrationId } = require('../lib/audit');
 const { parseFields, projectArray } = require('../lib/field-projection');
+const { emitHandlerEntry } = require('../../_lib/mcp-handler-entry');
 
 const SECTIONS = ['artifacts', 'facts', 'decisions'];
 
@@ -50,6 +51,7 @@ const definition = deepFreeze({
 });
 
 async function handle(input, context) {
+  emitHandlerEntry('kb_search', context);
   const validation = validateAgainstSchema(input, INPUT_SCHEMA);
   if (!validation.ok) {
     return toolError('kb_search: ' + validation.errors.join('; '));

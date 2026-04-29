@@ -28,6 +28,7 @@ const path = require('node:path');
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
 const { toolSuccess, toolError } = require('../lib/tool-result');
 const { parseFields, projectArray } = require('../lib/field-projection');
+const { emitHandlerEntry } = require('../../_lib/mcp-handler-entry');
 
 // Maximum bytes to read from routing.jsonl to avoid blocking on huge files.
 const MAX_ROUTING_READ = 2 * 1024 * 1024; // 2 MB
@@ -323,6 +324,7 @@ function normalizeDecisionEntry(ev, merged) {
 // ---------------------------------------------------------------------------
 
 async function handle(input, context) {
+  emitHandlerEntry('routing_lookup', context);
   const validation = validateAgainstSchema(input, INPUT_SCHEMA);
   if (!validation.ok) {
     return toolError('routing_lookup: ' + validation.errors.join('; '));

@@ -32,6 +32,7 @@ const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
 const { toolSuccess, toolError }            = require('../lib/tool-result');
 const { logStderr }                         = require('../lib/rpc');
 const { writeAuditEvent, readOrchestrationId } = require('../lib/audit');
+const { emitHandlerEntry } = require('../../_lib/mcp-handler-entry');
 
 const { getChunk } = require('../../_lib/tier2-index');
 const { TIER2_INDEX_REL_PATH } = require('../../_lib/tier2-index');
@@ -64,6 +65,7 @@ const definition = deepFreeze({
 });
 
 async function handle(input, context) {
+  emitHandlerEntry('schema_get', context);
   const validation = validateAgainstSchema(input, INPUT_SCHEMA);
   if (!validation.ok) {
     return toolError('schema_get: ' + validation.errors.join('; '));

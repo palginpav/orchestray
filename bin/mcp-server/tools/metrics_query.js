@@ -19,6 +19,7 @@ const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
 const { toolSuccess, toolError } = require('../lib/tool-result');
 const { mean, p50, groupBy } = require('../../_lib/analytics');
 const { parseFields, projectArray } = require('../lib/field-projection');
+const { emitHandlerEntry } = require('../../_lib/mcp-handler-entry');
 
 // ---------------------------------------------------------------------------
 // Schema constants
@@ -288,6 +289,7 @@ function aggregate(rows, groupByField, metric) {
 // ---------------------------------------------------------------------------
 
 async function handle(input, context) {
+  emitHandlerEntry('metrics_query', context);
   // Validate input
   const validation = validateAgainstSchema(input || {}, INPUT_SCHEMA);
   if (!validation.ok) {

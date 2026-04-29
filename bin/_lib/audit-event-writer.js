@@ -810,9 +810,92 @@ function _schemaGetSelfCall(eventType, cwd, eventsPath) {
   } catch (_e) { /* fail-open */ }
 }
 
+// ---------------------------------------------------------------------------
+// W2-11: rename-cycle alias table (v2.2.11)
+// ---------------------------------------------------------------------------
+// When `staging_write_failed` or `task_validation_failed` is emitted, ALSO emit
+// paired `*_attempt` + `*_result` shadow aliases so downstream analytics can
+// start consuming the new names before the old ones are retired in v2.2.13.
+//
+// Kill switch: ORCHESTRAY_RENAME_CYCLE_ALIAS_DISABLED=1
+//
+// The alias table maps each pre-rename event type to its two shadow aliases.
+// `attempt` fires first (start-of-operation marker), `result` fires second
+// (outcome marker, always "failed" in this release since aliases only fire
+// when the *_failed event fires).
+const _RENAME_CYCLE_ALIAS_TABLE = {
+  staging_write_failed:    { attempt: 'staging_write_attempt',    result: 'staging_write_result' },
+  task_validation_failed:  { attempt: 'task_validation_attempt',  result: 'task_validation_result' },
+};
+
+/**
+ * Emit rename-cycle shadow aliases when a pre-rename event type fires.
+ *
+ * @param {object} originalEvent  - The already-written (filled) event payload.
+ * @param {string} cwd            - Project root.
+ * @param {string} eventsPath     - Path to events.jsonl.
+ */
+function _emitRenameCycleAliases(originalEvent, cwd, eventsPath) {
+  if (process.env.ORCHESTRAY_RENAME_CYCLE_ALIAS_DISABLED === '1') return;
+  const eventType = originalEvent && (originalEvent.type || originalEvent.event_type);
+  if (!eventType) return;
+  const aliases = _RENAME_CYCLE_ALIAS_TABLE[eventType];
+  if (!aliases) return;
+
+  const baseFields = {
+    version:          1,
+    orchestration_id: originalEvent.orchestration_id || null,
+    original_event_type: eventType,
+    schema_version:   1,
+  };
+
+  // Emit attempt alias first
+  try {
+    const attemptEvent = Object.assign({}, baseFields, {
+      type: aliases.attempt,
+    });
+    writeEvent(attemptEvent, { cwd, eventsPath });
+  } catch (_e) { /* fail-open — alias loss is acceptable */ }
+
+  // Emit result alias second
+  try {
+    const resultEvent = Object.assign({}, baseFields, {
+      type:    aliases.result,
+      outcome: 'failed',
+    });
+    writeEvent(resultEvent, { cwd, eventsPath });
+  } catch (_e) { /* fail-open — alias loss is acceptable */ }
+}
+
+/**
+ * Wrap writeEvent to also fire rename-cycle aliases for pre-rename event types.
+ * This is called instead of writeEvent directly at the happy-path exit point.
+ * Only runs when the original write succeeded (reason: 'ok' or 'unknown_type_emitted').
+ *
+ * @param {object} eventPayload - Raw (pre-autofill) event payload.
+ * @param {object} opts         - Same as writeEvent opts.
+ * @returns {object}            - Same return shape as writeEvent.
+ */
+function writeEventWithAliases(eventPayload, opts) {
+  opts = opts || {};
+  const result = writeEvent(eventPayload, opts);
+
+  // Only emit aliases when the original event was written (not surrogated/dropped).
+  if (result && (result.reason === 'ok' || result.reason === 'unknown_type_emitted' ||
+      result.reason === 'circuit_broken_bypass')) {
+    const cwd = resolveSafeCwd(opts.cwd);
+    const eventsPath = resolveEventsPath(cwd, opts.eventsPath);
+    // Pass the raw payload — _emitRenameCycleAliases reads .type from it.
+    _emitRenameCycleAliases(eventPayload, cwd, eventsPath);
+  }
+
+  return result;
+}
+
 module.exports = writeAuditEvent;
-module.exports.writeEvent       = writeEvent;
-module.exports.writeAuditEvent  = writeAuditEvent;
+module.exports.writeEvent            = writeEvent;
+module.exports.writeEventWithAliases = writeEventWithAliases;
+module.exports.writeAuditEvent       = writeAuditEvent;
 
 // ---------------------------------------------------------------------------
 // _testHooks — exported for B3 unit tests only (not production API)

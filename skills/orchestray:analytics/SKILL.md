@@ -287,6 +287,61 @@ The user wants to see aggregate performance analytics across orchestration histo
    | explicit subset | {b} |
    ```
 
+   **Rollup H — Event Activation Ratio firing trend (v2.2.10/v2.2.11):**
+
+   Read `.orchestray/audit/events.jsonl` (up to last 1000 events). Filter lines
+   where the event type field (`event` or `type`) equals `event_activation_ratio`.
+   For each valid row parse the JSON and extract: `timestamp`, `ratio`, `numerator`,
+   `denominator`, `dark_count`, `orchestration_id`. Skip malformed lines (unparseable
+   JSON, missing `ratio`, non-numeric `ratio`, or `ratio` outside 0–1 range) without
+   crashing — bad rows are silently omitted.
+
+   Sort valid rows by `timestamp` ascending. Compute:
+   - `rows_count` — count of valid rows.
+   - `avg_ratio` — mean of all `ratio` values.
+   - `last_row` — the most recent valid row (for "last orch" snapshot).
+   - `7d_rows` — rows whose `timestamp` is within the last 7 days; `avg_ratio_7d` is
+     their mean (or `n/a` if none).
+
+   **Display as two sub-tables:**
+
+   ```
+   ## Event Activation Ratio — Firing Trend (v2.2.10)
+
+   ### Per-Orchestration Trend
+   | Date       | Orch ID (prefix) | Ratio   | Fired | Declared | Dark |
+   |------------|------------------|---------|-------|----------|------|
+   | 2026-04-24 | orch-20260424... | 27.0%   | 16    | 60       | 44   |
+   | 2026-04-25 | orch-20260425... | 30.0%   | 18    | 60       | 42   |
+   ...  (all valid rows, newest last; show at most 30 rows)
+
+   ### Summary
+   | Metric                   | Value                               |
+   |--------------------------|-------------------------------------|
+   | Rows (all time)          | {rows_count}                        |
+   | All-time avg ratio       | {avg_ratio*100:.1f}% ({rows_count} orches) |
+   | 7-day avg ratio          | {avg_ratio_7d*100:.1f}% ({7d_count} orches) |
+   | Last orch ratio          | {last_row.ratio*100:.1f}% ({last_row.numerator}/{last_row.denominator}) |
+   | Last orch dark types     | {last_row.dark_count}               |
+   ```
+
+   **Edge cases:**
+   - `rows_count === 0` (no valid `event_activation_ratio` rows): replace both
+     sub-tables with:
+     ```
+     ## Event Activation Ratio — Firing Trend (v2.2.10)
+     No event_activation_ratio data yet. Accrues after first orchestration completes
+     with v2.2.10+ installed (kill switch: ORCHESTRAY_ACTIVATION_RATIO_EMIT_DISABLED).
+     ```
+   - `rows_count === 1`: show the single-row trend table and skip the 7-day avg line
+     (label it `n/a — only 1 data point`).
+   - Date column: format as `YYYY-MM-DD` from `timestamp` field (ISO-8601). If
+     `timestamp` is absent or unparseable, show `unknown`.
+   - Orch ID prefix: first 20 characters of `orchestration_id`, followed by `...`.
+     If `orchestration_id` is absent, show `—`.
+   - Table capped at 30 rows. If more rows exist, append below the table:
+     `({rows_count - 30} earlier rows omitted)`.
+
 9. **Cache Performance, Cost Delta, Active Experiments**: After displaying the main analytics and before Health Signals, show the cache/cost/experiment sections. See the **Cache Performance**, **Cost Delta**, and **Active Experiments** sections below for display logic.
 
 10. **Pattern Effectiveness Dashboard**: After displaying the main analytics, show pattern learning metrics.

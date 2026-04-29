@@ -9,7 +9,7 @@
  * Coverage:
  *   1. Missing checkpoints (no WARN_ONLY, no PREFETCH_DISABLED) → exit 2, stderr names missing tools, warn event emitted.
  *   2. All 3 checkpoints present → exit 0, no mcp_checkpoint_missing event.
- *   3. ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY=1 + missing checkpoints → exit 0, warn event emitted.
+ *   3. ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY=1 + missing checkpoints → exit 2 (kill switch removed in v2.2.11; env var ignored).
  *   4. ORCHESTRAY_MCP_PREFETCH_DISABLED=1 + missing checkpoints → exit 0, warn event emitted.
  */
 
@@ -105,8 +105,7 @@ function buildPayload(root) {
 function runGate(root, envOverrides) {
   const env = Object.assign({}, process.env, {
     ORCHESTRAY_PROJECT_ROOT: root,
-    // Clear escape hatches unless overridden.
-    ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY: '',
+    // Clear remaining escape hatch unless overridden.
     ORCHESTRAY_MCP_PREFETCH_DISABLED: '',
   }, envOverrides || {});
 
@@ -189,9 +188,10 @@ describe('v2210 M2 — §22b hard-block', () => {
     assert.equal(missing.length, 0, 'should not emit mcp_checkpoint_missing when tools present');
   });
 
-  test('T3: ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY=1 + missing checkpoints → exit 0, warn event emitted', () => {
+  test('T3: ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY=1 + missing checkpoints → exit 2 (kill switch removed v2.2.11)', () => {
+    // v2.2.11: ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY is no longer honoured.
+    // Setting it must NOT downgrade to advisory — hard-block (exit 2) is the only path.
     const root = makeRoot();
-    // Same setup as T1: file exists, one row present, but required tools absent.
     const ledger = path.join(root, '.orchestray', 'state', 'mcp-checkpoint.jsonl');
     fs.writeFileSync(
       ledger,
@@ -207,14 +207,23 @@ describe('v2210 M2 — §22b hard-block', () => {
       'utf8'
     );
 
-    const { status } = runGate(root, { ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY: '1' });
+    const { status, stderr } = runGate(root, { ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY: '1' });
 
-    assert.equal(status, 0, 'should exit 0 in warn-only mode even with missing checkpoints');
+    assert.equal(status, 2, 'should exit 2 even when ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY=1 (kill switch removed)');
+
+    // stderr must still name the missing tools
+    const missingTools = ['pattern_find', 'kb_search', 'history_find_similar_tasks'];
+    for (const tool of missingTools) {
+      assert.ok(
+        stderr.includes(tool),
+        `stderr should mention missing tool "${tool}"; got: ${stderr}`
+      );
+    }
 
     const events = readEvents(root);
     const missing = events.filter(e => e.type === 'mcp_checkpoint_missing');
-    assert.ok(missing.length >= 1, 'should still emit mcp_checkpoint_missing event in warn-only mode');
-    assert.equal(missing[0].warn_mode, true, 'warn_mode should be true');
+    assert.ok(missing.length >= 1, 'should emit mcp_checkpoint_missing event');
+    assert.equal(missing[0].warn_mode, false, 'warn_mode should be false (kill switch no longer activates warn mode)');
   });
 
   test('T4: ORCHESTRAY_MCP_PREFETCH_DISABLED=1 + missing checkpoints → exit 0, warn event emitted', () => {

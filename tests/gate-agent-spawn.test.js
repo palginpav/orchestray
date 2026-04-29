@@ -1615,14 +1615,13 @@ describe('v2023-W3: §22b warn-mode — once-per-orchestration advisory', () => 
     assert.match(second.stderr, /v2\.0\.23/, '22b-T3: second orch must emit its own advisory');
   });
 
-  test('22b-T5: dual-gate path — §22b warns on first spawn, §22c hard-blocks on second spawn', () => {
-    // F-TEST-1: Exercises the operator-confusion scenario flagged by W3/W4.
+  test('22b-T5: §22b hard-blocks first spawn when checkpoints missing; §22c hard-blocks post-routing spawn', () => {
+    // v2.2.11: ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY removed — §22b always hard-blocks.
     // Setup: pattern_record_application: 'hook-strict' (matches DEFAULT_MCP_ENFORCEMENT).
     // First spawn: routing.jsonl absent → §22c first-spawn carve-out skips §22c.
-    //              §22b fires (kb_search missing) → emits info notice + exits 0.
-    // Second spawn: routing.jsonl now present → §22c activates.
+    //              §22b fires (kb_search missing) → exit 2 (hard-block, no warn-only escape).
+    // Second spawn (after satisfying §22b): routing.jsonl now present → §22c activates.
     //               pattern_record_application not called → §22c exits 2.
-    //               §22b warning NOT re-emitted (sentinel holds).
     //               mcp_checkpoint_missing event emitted EXACTLY ONCE for the orch.
 
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-22b-t5-'));
@@ -1666,22 +1665,17 @@ describe('v2023-W3: §22b warn-mode — once-per-orchestration advisory', () => 
     // No routing.jsonl yet → first spawn window (§22c carve-out applies)
 
     // ── First spawn ──────────────────────────────────────────────────────────
-    // v2.2.10 M2: hard-block is the default when routing.jsonl absent. To exercise
-    // the dual-gate path (§22b warn → §22c hard-block), use ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY=1
-    // on the first spawn so §22b stays advisory. Obsoleted: prior test relied on warn-only default.
+    // v2.2.11: ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY removed — §22b always hard-blocks.
+    // kb_search checkpoint is missing → §22b must exit 2.
     const first = run({
       tool_name: 'Agent',
       cwd: dir,
       tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Decompose task' },
-    }, { env: { ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY: '1' } });
+    });
 
-    assert.equal(first.status, 0, '22b-T5: first spawn must be allowed (§22b is warn-only via env)');
-    assert.match(first.stderr, /info:/,
-      '22b-T5: first spawn must emit §22b info notice');
-    assert.match(first.stderr, /v2\.0\.23/,
-      '22b-T5: first spawn notice must reference v2.0.23');
-    assert.match(first.stderr, /will not repeat/,
-      '22b-T5: first spawn notice must include one-shot cadence signal');
+    assert.equal(first.status, 2, '22b-T5: first spawn must be hard-blocked by §22b (exit 2) — warn-only kill switch removed');
+    assert.match(first.stderr, /BLOCKED|kb_search|missing/,
+      '22b-T5: §22b block message must appear in stderr naming missing tools');
 
     // Verify mcp_checkpoint_missing event was emitted once
     const eventsPath = path.join(dir, '.orchestray', 'audit', 'events.jsonl');
@@ -1693,12 +1687,44 @@ describe('v2023-W3: §22b warn-mode — once-per-orchestration advisory', () => 
     );
     assert.equal(missingEventsAfterFirst.length, 1,
       '22b-T5: mcp_checkpoint_missing event must be emitted exactly once after first spawn');
+    assert.equal(missingEventsAfterFirst[0].warn_mode, false,
+      '22b-T5: warn_mode must be false (hard-block path)');
+
+    // Satisfy §22b: write the missing kb_search checkpoint, then write routing.jsonl.
+    // This simulates PM fixing up and proceeding to decomposition → §22c activates on next spawn.
+    fs.appendFileSync(
+      path.join(stateDir, 'mcp-checkpoint.jsonl'),
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        orchestration_id: orchId,
+        tool: 'kb_search',
+        outcome: 'answered',
+        phase: 'pre-decomposition',
+        result_count: 1,
+        fields_used: true,
+      }) + '\n',
+      'utf8'
+    );
+    // Also write history_find_similar_tasks so all 3 pre-decomp tools are satisfied.
+    fs.appendFileSync(
+      path.join(stateDir, 'mcp-checkpoint.jsonl'),
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        orchestration_id: orchId,
+        tool: 'history_find_similar_tasks',
+        outcome: 'answered',
+        phase: 'pre-decomposition',
+        result_count: 1,
+        fields_used: true,
+      }) + '\n',
+      'utf8'
+    );
 
     // Simulate PM decomposing: write routing.jsonl → §22c activates on next spawn
     writeRoutingFile22b(dir, orchId);
 
     // ── Second spawn ─────────────────────────────────────────────────────────
-    // pattern_record_application NOT called → §22c must hard-block
+    // §22b is satisfied now; pattern_record_application NOT called → §22c must hard-block
     const second = run({
       tool_name: 'Agent',
       cwd: dir,
@@ -1708,24 +1734,6 @@ describe('v2023-W3: §22b warn-mode — once-per-orchestration advisory', () => 
     assert.equal(second.status, 2, '22b-T5: second spawn must be blocked by §22c (exit 2)');
     assert.match(second.stderr, /§22c|hook-strict|pattern_record_application/,
       '22b-T5: §22c block message must appear in stderr');
-    assert.ok(
-      !second.stderr.includes('will not repeat'),
-      '22b-T5: §22b info notice must NOT be re-emitted on second spawn (sentinel holds)'
-    );
-    assert.ok(
-      !second.stderr.includes('[orchestray v2.0.23] info:'),
-      '22b-T5: §22b info prefix must NOT appear on second spawn'
-    );
-
-    // mcp_checkpoint_missing event count must still be exactly 1 (not incremented on second spawn)
-    const eventsAfterSecond = fs.existsSync(eventsPath)
-      ? fs.readFileSync(eventsPath, 'utf8').split('\n').filter(l => l.trim()).map(l => JSON.parse(l))
-      : [];
-    const missingEventsAfterSecond = eventsAfterSecond.filter(
-      e => e.type === 'mcp_checkpoint_missing' && e.orchestration_id === orchId && e.warn_mode === true
-    );
-    assert.equal(missingEventsAfterSecond.length, 1,
-      '22b-T5: mcp_checkpoint_missing event (warn_mode:true) must not be re-emitted on second spawn');
   });
 
   test('22b-T4: spawn is allowed even when gate fires (no exit 2 in warn-mode)', () => {

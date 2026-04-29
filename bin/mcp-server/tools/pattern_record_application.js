@@ -15,6 +15,7 @@ const frontmatter = require('../lib/frontmatter');
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
 const { toolSuccess, toolError } = require('../lib/tool-result');
 const { checkLimit, recordSuccess } = require('../lib/tool-counts');
+const { emitHandlerEntry } = require('../../_lib/mcp-handler-entry');
 
 const OUTCOMES = ['applied', 'applied-success', 'applied-failure'];
 
@@ -42,6 +43,7 @@ const definition = deepFreeze({
 });
 
 async function handle(input, context) {
+  emitHandlerEntry('pattern_record_application', context);
   const validation = validateAgainstSchema(input, INPUT_SCHEMA);
   if (!validation.ok) {
     return toolError('pattern_record_application: ' + validation.errors.join('; '));

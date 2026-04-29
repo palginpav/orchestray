@@ -35,6 +35,7 @@ const { AGENT_ROLES } = require('../lib/constants');
 
 // Reuse writeEvent from the canonical audit-event gateway.
 const { writeEvent } = require('../../_lib/audit-event-writer');
+const { emitHandlerEntry } = require('../../_lib/mcp-handler-entry');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -257,6 +258,7 @@ function appendSpawnRequest(projectRoot, request) {
 // ---------------------------------------------------------------------------
 
 async function handle(input, context) {
+  emitHandlerEntry('spawn_agent', context);
   // --- Kill switches ---
   if (process.env.ORCHESTRAY_DISABLE_REACTIVE_SPAWN === '1') {
     return toolSuccess({

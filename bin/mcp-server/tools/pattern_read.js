@@ -28,6 +28,7 @@ const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
 const { toolSuccess, toolError }            = require('../lib/tool-result');
 const { logStderr }                         = require('../lib/rpc');
 const { writeAuditEvent, readOrchestrationId } = require('../lib/audit');
+const { emitHandlerEntry } = require('../../_lib/mcp-handler-entry');
 
 const INPUT_SCHEMA = {
   type: 'object',
@@ -47,6 +48,7 @@ const definition = deepFreeze({
 });
 
 async function handle(input, context) {
+  emitHandlerEntry('pattern_read', context);
   const validation = validateAgainstSchema(input, INPUT_SCHEMA);
   if (!validation.ok) {
     return toolError('pattern_read: ' + validation.errors.join('; '));

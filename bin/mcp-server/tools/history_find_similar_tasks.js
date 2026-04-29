@@ -18,6 +18,7 @@ const { assertSafeSegment } = paths;
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
 const { toolSuccess, toolError } = require('../lib/tool-result');
 const { logStderr } = require('../lib/rpc');
+const { emitHandlerEntry } = require('../../_lib/mcp-handler-entry');
 
 const INPUT_SCHEMA = {
   type: 'object',
@@ -39,6 +40,7 @@ const definition = deepFreeze({
 });
 
 async function handle(input, context) {
+  emitHandlerEntry('history_find_similar_tasks', context);
   const validation = validateAgainstSchema(input, INPUT_SCHEMA);
   if (!validation.ok) {
     return toolError('history_find_similar_tasks: ' + validation.errors.join('; '));

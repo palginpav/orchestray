@@ -319,11 +319,20 @@ function run(payload, cwd) {
   const iterCost      = estimateIterCost(payload);
   const newCostSoFar  = costSoFar + iterCost;
 
+  // W2-12: resolve loop_kind for taxonomy disambiguation.
+  // loop-continue.js drives the /orchestray:loop (orch) primitive by default.
+  // State may carry loop_kind: "verify_fix" for future verify-fix loop callers.
+  // Kill switch: ORCHESTRAY_LOOP_KIND_DISAMBIGUATION_DISABLED=1 omits the field.
+  const loopKindDisabled = process.env.ORCHESTRAY_LOOP_KIND_DISAMBIGUATION_DISABLED === '1';
+  const loopKind = loopKindDisabled
+    ? undefined
+    : (state.loop_kind === 'verify_fix' ? 'verify_fix' : 'orch');
+
   // 1. Completion promise met?
   if (outputContainsPromise(agentOutput, completionPromise)) {
     clearLoopState(cwd);
     clearRespawnSentinel(cwd);
-    emitEvent({
+    const _ev1 = {
       type:             'loop_completed',
       version:          1,
       schema_version:   1,
@@ -333,7 +342,9 @@ function run(payload, cwd) {
       cost_so_far_usd:  newCostSoFar,
       agent:            state.agent || 'developer',
       max_iterations:   maxIterations,
-    }, cwd);
+    };
+    if (loopKind !== undefined) _ev1.loop_kind = loopKind;
+    emitEvent(_ev1, cwd);
     respond({ continue: true });
     return;
   }
@@ -342,7 +353,7 @@ function run(payload, cwd) {
   if (iterCount + 1 >= maxIterations) {
     clearLoopState(cwd);
     clearRespawnSentinel(cwd);
-    emitEvent({
+    const _ev2 = {
       type:             'loop_completed',
       version:          1,
       schema_version:   1,
@@ -352,7 +363,9 @@ function run(payload, cwd) {
       cost_so_far_usd:  newCostSoFar,
       agent:            state.agent || 'developer',
       max_iterations:   maxIterations,
-    }, cwd);
+    };
+    if (loopKind !== undefined) _ev2.loop_kind = loopKind;
+    emitEvent(_ev2, cwd);
     respond({ continue: true });
     return;
   }
@@ -361,7 +374,7 @@ function run(payload, cwd) {
   if (newCostSoFar >= costCapUsd) {
     clearLoopState(cwd);
     clearRespawnSentinel(cwd);
-    emitEvent({
+    const _ev3 = {
       type:             'loop_completed',
       version:          1,
       schema_version:   1,
@@ -371,7 +384,9 @@ function run(payload, cwd) {
       cost_so_far_usd:  newCostSoFar,
       agent:            state.agent || 'developer',
       max_iterations:   maxIterations,
-    }, cwd);
+    };
+    if (loopKind !== undefined) _ev3.loop_kind = loopKind;
+    emitEvent(_ev3, cwd);
     respond({ continue: true });
     return;
   }

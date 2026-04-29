@@ -27,6 +27,7 @@ const frontmatter = require('../lib/frontmatter');
 const { validateAgainstSchema, deepFreeze } = require('../lib/schemas');
 const { toolSuccess, toolError } = require('../lib/tool-result');
 const { writeAuditEvent } = require('../lib/audit');
+const { emitHandlerEntry } = require('../../_lib/mcp-handler-entry');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -150,6 +151,7 @@ function resolvePatternFile(patternName, projectRoot) {
 // ---------------------------------------------------------------------------
 
 async function handle(input, context) {
+  emitHandlerEntry('pattern_deprecate', context);
   const validation = validateAgainstSchema(input, INPUT_SCHEMA);
   if (!validation.ok) {
     return toolError('pattern_deprecate: ' + validation.errors.join('; '));
