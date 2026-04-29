@@ -84,7 +84,11 @@ function runHookSync(cwd, toolInput, envOverrides) {
     cwd,
     tool_input: toolInput,
   };
-  const env = Object.assign({}, process.env, { ORCHESTRAY_DEBUG: '' }, envOverrides || {});
+  // v2.2.12: clear inherited kill-switch env state so tests are deterministic.
+  const baseEnv = Object.assign({}, process.env);
+  delete baseEnv.ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED;
+  delete baseEnv.ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED;
+  const env = Object.assign({}, baseEnv, { ORCHESTRAY_DEBUG: '' }, envOverrides || {});
   const r = cp.spawnSync(NODE, [HOOK_PATH], {
     input: JSON.stringify(payload),
     env,

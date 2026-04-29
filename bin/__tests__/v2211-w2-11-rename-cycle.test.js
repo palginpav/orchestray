@@ -174,7 +174,7 @@ describe('v2211 W2-11 — rename-cycle shadow aliases', () => {
       assert.ok(shadow[t] && typeof shadow[t].v === 'number', `${t} must have version field`);
     }
 
-    assert.equal(shadow._meta.event_count, 205, 'shadow event_count must be 205');
+    assert.ok(shadow._meta.event_count >= 205, `shadow event_count must be >=205 (v2.2.11 baseline; v2.2.12+ adds more); got ${shadow._meta.event_count}`);
   });
 
   test('Test 5: alias events carry correct original_event_type field', () => {

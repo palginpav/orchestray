@@ -136,20 +136,27 @@ describe('audit-event-writer (R-SHDW-EMIT gateway)', () => {
       assert.equal(result.event_type, 'tier2_load');
       assert.ok(Array.isArray(result.errors) && result.errors.length > 0, 'errors should be non-empty');
 
+      // v2.2.12 W1b: the surrogate path now ALSO emits a rate-limited
+      // `schema_shape_violation` advisory (1 per process per type). For first
+      // emit of a given type, we expect 2 lines: the surrogate + the advisory.
       const lines = readEventsJsonl(tmpDir);
-      assert.equal(lines.length, 1, 'exactly one line should be present (the surrogate)');
-      assert.equal(lines[0].type, 'schema_shadow_validation_block', 'line is the surrogate event');
-      assert.equal(lines[0].blocked_event_type, 'tier2_load');
-      assert.ok(Array.isArray(lines[0].errors) && lines[0].errors.length > 0);
+      assert.equal(lines.length, 2, 'exactly two lines: surrogate + schema_shape_violation advisory');
+      const surrogate = lines.find((e) => e.type === 'schema_shadow_validation_block');
+      const advisory = lines.find((e) => e.type === 'schema_shape_violation');
+      assert.ok(surrogate, 'surrogate event present');
+      assert.equal(surrogate.blocked_event_type, 'tier2_load');
+      assert.ok(Array.isArray(surrogate.errors) && surrogate.errors.length > 0);
+      assert.ok(advisory, 'schema_shape_violation advisory present');
+      assert.equal(advisory.event_type, 'tier2_load');
       // Confirm the original tier2_load was NOT written
       const tier2Lines = lines.filter((e) => e.type === 'tier2_load');
       assert.equal(tier2Lines.length, 0, 'no original tier2_load line written');
 
-      // recordMiss should have logged an entry
+      // v2.2.12 W1b: recordMiss MUST NOT fire for shape-violations.
       const missesPath = path.join(tmpDir, '.orchestray', 'state', 'schema-shadow-misses.jsonl');
-      assert.ok(fs.existsSync(missesPath), 'misses log exists');
-      const missLines = fs.readFileSync(missesPath, 'utf8').split('\n').filter(Boolean);
-      assert.equal(missLines.length, 1, 'exactly one miss entry');
+      const missesExist = fs.existsSync(missesPath);
+      const missLines = missesExist ? fs.readFileSync(missesPath, 'utf8').split('\n').filter(Boolean) : [];
+      assert.equal(missLines.length, 0, 'shape-violation no longer increments misses log (W1b)');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
