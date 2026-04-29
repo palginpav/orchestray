@@ -451,6 +451,11 @@ function writeTombstone(runId, tombstone, options) {
       // Ensure these are always set from our computed values, not caller overrides.
       orch_id:    runId,
       action_id:  actionId,
+      // v2.1.6 reconciler gate (curator-reconcile.js §F-03/F-10/W2-04): tombstones
+      // without schema_version >= 2 are flagged as "pre-v2.1.6" and never auto-repaired
+      // / auto-deleted. Stamping it here closes the gap that left every clean
+      // promote/unshare flagged after the writer never set the field.
+      schema_version: 2,
     }
   );
 

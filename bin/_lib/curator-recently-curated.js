@@ -297,6 +297,22 @@ function applyStampsForRun(runId, options) {
   const projectRoot = (options && options.projectRoot) || process.cwd();
   const patternsDir = path.join(projectRoot, '.orchestray', 'patterns');
 
+  // Resolve a slug to its on-disk file. Pattern files are named
+  // `{category}-{slug}.md` in the current corpus convention; older patterns
+  // were named bare `{slug}.md`. Prefer an exact match first, then scan for
+  // any `*-{slug}.md` suffix. Returns the direct slug-only path on miss so
+  // the downstream ENOENT message stays predictable.
+  function resolvePatternPath(slug) {
+    const direct = path.join(patternsDir, slug + '.md');
+    if (fs.existsSync(direct)) return direct;
+    try {
+      const suffix = '-' + slug + '.md';
+      const match = fs.readdirSync(patternsDir).find(f => f.endsWith(suffix));
+      if (match) return path.join(patternsDir, match);
+    } catch (_) {}
+    return direct;
+  }
+
   let rows;
   try {
     const result = listTombstones({ only_run_id: runId, projectRoot, include_archive: false });
@@ -336,7 +352,17 @@ function applyStampsForRun(runId, options) {
       continue;
     }
 
-    const absPath = path.join(patternsDir, slug + '.md');
+    // Prefer the tombstone's recorded path (always present in v2.1.0+ writes
+    // and authoritative for the actual filename, which carries a category prefix).
+    // Honour absolute paths verbatim; resolve project-relative paths against
+    // projectRoot. Fall back to the slug-suffix resolver if no path was recorded.
+    const inputPath = t.inputs && t.inputs[0] && t.inputs[0].path;
+    let absPath;
+    if (inputPath) {
+      absPath = path.isAbsolute(inputPath) ? inputPath : path.join(projectRoot, inputPath);
+    } else {
+      absPath = resolvePatternPath(slug);
+    }
 
     // Compute body hash for this pattern file (H6).
     let bodyHash = '';
@@ -387,7 +413,7 @@ function applyStampsForRun(runId, options) {
       continue;
     }
 
-    const absPath = path.join(patternsDir, slug + '.md');
+    const absPath = resolvePatternPath(slug);
 
     let bodyHash = '';
     if (computeBodyHash) {

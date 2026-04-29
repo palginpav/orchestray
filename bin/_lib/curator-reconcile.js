@@ -53,6 +53,7 @@
  */
 
 const fs   = require('node:fs');
+const os   = require('node:os');
 const path = require('node:path');
 
 const {
@@ -185,6 +186,71 @@ function _isDeprecated(content) {
 }
 
 // ---------------------------------------------------------------------------
+// Path resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Expand a leading ~/ in a path string to the user's home directory.
+ *
+ * @param {string} p
+ * @returns {string}
+ */
+function _expandHome(p) {
+  if (typeof p !== 'string') return p;
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
+/**
+ * Resolve the shared-tier file path that this tombstone refers to.
+ *
+ * Pattern files in the shared tier are named `{category}-{slug}.md`
+ * (e.g., `anti-pattern-doesnotthrow-only-masks-behavior.md`), not bare
+ * `{slug}.md`. The tombstone's `output.path` carries the authoritative
+ * destination (with ~/ expansion); the slug-only path is only correct for
+ * legacy patterns whose filename happens to equal the slug.
+ *
+ * Resolution order:
+ *   1. `output.path` if present and not the unshare sentinel "deleted"
+ *      and clearly a shared-tier path (not the local-pattern path).
+ *   2. Direct sharedDir/{slug}.md if it exists on disk.
+ *   3. sharedDir scan for any `*-{slug}.md` (handles category prefixes).
+ *   4. sharedDir/{slug}.md as a final fallback so downstream ENOENT
+ *      messages stay predictable.
+ *
+ * @param {object}       tombstone
+ * @param {string|null}  sharedDir
+ * @returns {string|null}
+ */
+function _resolveSharedPath(tombstone, sharedDir) {
+  const slug = tombstone.inputs && tombstone.inputs[0] && tombstone.inputs[0].slug;
+  const outputPath = tombstone.output && tombstone.output.path;
+
+  // Trust output.path for promote (it records the actual write destination).
+  // Skip "deleted" (unshare sentinel) and any path that looks like the local
+  // patterns dir rather than the shared tier.
+  if (
+    outputPath &&
+    outputPath !== 'deleted' &&
+    outputPath.indexOf('/.orchestray/patterns/') === -1
+  ) {
+    return _expandHome(outputPath);
+  }
+
+  if (!sharedDir || !slug) return sharedDir ? path.join(sharedDir, (slug || '') + '.md') : null;
+
+  const direct = path.join(sharedDir, slug + '.md');
+  try {
+    if (fs.existsSync(direct)) return direct;
+    const suffix = '-' + slug + '.md';
+    const match = fs.readdirSync(sharedDir).find(f => f.endsWith(suffix));
+    if (match) return path.join(sharedDir, match);
+  } catch (_) {}
+  return direct;
+}
+
+// ---------------------------------------------------------------------------
 // Per-action verifier
 // ---------------------------------------------------------------------------
 
@@ -225,7 +291,7 @@ function _verifyOne(tombstone, opts) {
       return { status: 'flagged', detail: 'tombstone missing slug in inputs[0]', tombstone };
     }
 
-    const destPath = path.join(sharedDir, slug + '.md');
+    const destPath = _resolveSharedPath(tombstone, sharedDir);
     const existing = _readFileSafe(destPath);
 
     if (existing !== null) {
@@ -296,7 +362,7 @@ function _verifyOne(tombstone, opts) {
       };
     }
 
-    const destPath = path.join(sharedDir, slug + '.md');
+    const destPath = _resolveSharedPath(tombstone, sharedDir);
     if (!fs.existsSync(destPath)) {
       return { status: 'ok', detail: 'shared-tier file already absent', tombstone };
     }

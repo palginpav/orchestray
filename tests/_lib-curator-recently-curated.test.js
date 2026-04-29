@@ -561,6 +561,65 @@ describe('applyStampsForRun', () => {
     cleanupDir(dir);
   });
 
+  test('regression: category-prefixed filename ({category}-{slug}.md) is found via inputs[0].path', () => {
+    // Reproduces the v2.2.10 bug: the resolver built `{slug}.md` and missed
+    // every file named `{category}-{slug}.md`. Stamps failed ENOENT for all
+    // promotes. Fix: prefer inputs[0].path; fall back to a slug-suffix scan.
+    const dir   = makeTmpDir();
+    const opts  = { projectRoot: dir };
+    const runId = startRun(opts);
+
+    const pDir  = path.join(dir, '.orchestray', 'patterns');
+    fs.mkdirSync(pDir, { recursive: true });
+
+    // File on disk has category prefix; tombstone slug does not.
+    const slug         = 'doesnotthrow-only-masks-behavior';
+    const filename     = 'anti-pattern-' + slug + '.md';
+    const fp           = path.join(pDir, filename);
+    const projectRelFp = path.join('.orchestray', 'patterns', filename);
+    const content      = `---\nname: ${slug}\ncategory: anti-pattern\nconfidence: 0.7\n---\n\nBody.\n`;
+    fs.writeFileSync(fp, content, 'utf8');
+
+    const actionId = writeTombstone(runId, {
+      action:  'promote',
+      inputs:  [{ slug, path: projectRelFp, content_sha256: 'abc', content_snapshot: content }],
+      output:  { path: '~/.orchestray/shared/patterns/' + filename, action_summary: 'promoted' },
+    }, opts);
+
+    const summary = applyStampsForRun(runId, opts);
+    assert.deepStrictEqual(summary.failed, [], 'no ENOENT failures expected');
+    assert.ok(summary.stamped.includes(actionId), 'category-prefixed file must be stamped');
+    assert.ok(readStamp(fp) !== null, 'stamp must land on the actual file');
+
+    cleanupDir(dir);
+  });
+
+  test('regression: evaluated-slugs pass resolves category-prefixed filenames', () => {
+    // Evaluated-pass receives only slug strings (no path), so the bare
+    // `{slug}.md` lookup formerly missed every category-prefixed file. The
+    // resolvePatternPath fallback scans for `*-{slug}.md`.
+    const dir   = makeTmpDir();
+    const opts  = { projectRoot: dir, evaluatedSlugs: ['eval-only-pattern'] };
+    const runId = startRun(opts);
+
+    const pDir = path.join(dir, '.orchestray', 'patterns');
+    fs.mkdirSync(pDir, { recursive: true });
+    const fp = path.join(pDir, 'specialization-eval-only-pattern.md');
+    fs.writeFileSync(
+      fp,
+      '---\nname: eval-only-pattern\ncategory: specialization\nconfidence: 0.6\n---\n\nBody.\n',
+      'utf8'
+    );
+
+    const summary = applyStampsForRun(runId, opts);
+    assert.deepStrictEqual(summary.failed, []);
+    assert.ok(summary.stamped.includes('evaluated:eval-only-pattern'));
+    const stamp = readStamp(fp);
+    assert.ok(stamp !== null && stamp.action === 'evaluated');
+
+    cleanupDir(dir);
+  });
+
   test('round-trip: applyStampsForRun → readStamp has correct action_id', () => {
     const dir  = makeTmpDir();
     const opts = { projectRoot: dir };
