@@ -5,7 +5,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [2.2.10] - 2026-04-29
 
-v2.2.10 takes the mechanisations shipped in v2.2.9 and proves they fire. Sixteen event types that stayed dark across months of production orchestrations now light up reliably, and MCP-tool activation jumps from 5% to 76% via a new server-side prefetch that grounds every spawn against KB, history, patterns, routing, and schemas automatically — no PM prose required. A nightly self-audit replaces the manual research pass that produced this release's own data. And a CI gate now ensures that any future "MUST emit X" line added to our prompts must have a mechanical backstop or the build fails — so the prose-rot cycle that triggered v2.2.9 cannot quietly restart.
+v2.2.10 takes the mechanisations shipped in v2.2.9 and proves they fire. Sixteen previously-dark event types now light up reliably (event-type activation **27% → ≥34%**), and MCP-tool activation jumps from **5% → ≥76%** via a new server-side prefetch that grounds every spawn against KB, history, patterns, routing, and schemas automatically — no PM prose required. A nightly self-audit replaces the manual research pass that produced this release's own data. And a CI gate now ensures any future "MUST emit X" line added to our prompts must have a mechanical backstop or the build fails — so the prose-rot cycle that triggered v2.2.9 cannot quietly restart. Trajectory toward 60% activation continues in v2.2.11 with synthetic-fixture coverage.
 
 ### Added
 
@@ -59,7 +59,7 @@ v2.2.10 takes the mechanisations shipped in v2.2.9 and proves they fire. Sixteen
 
 ### Tests
 
-5212 tests, 5208 pass, 4 pre-existing skips/failures unrelated to v2.2.10 scope, 0 v2.2.10-introduced regressions.
+5212 tests / 5195 pass / 11 fail / 6 skip — 0 v2.2.10-introduced regressions; 4 top-level failures are pre-existing (subdirectory copying, blocking behavior when pending tasks exist, audit logging, task-graph.md size cap DEF-3) and unrelated to v2.2.10 scope.
 
 ### Under the hood
 

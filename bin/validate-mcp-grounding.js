@@ -211,7 +211,7 @@ function main() {
       'agent_type=' + agentType,
       'orchestration_id=' + orchestrationId,
       'No mcp_tool_call events found for this orchestration.',
-      'Ensure M1 prefetch (bin/prefetch-mcp-grounding.js) is wired as PreToolUse:Agent',
+      'Ensure the MCP grounding prefetch hook is wired as PreToolUse:Agent',
       'and is not disabled (ORCHESTRAY_MCP_PREFETCH_DISABLED!=1).',
       'Kill switch: set ORCHESTRAY_MCP_GROUNDING_GATE_DISABLED=1 to bypass.',
     ].join('\n');
