@@ -785,7 +785,7 @@ if (require.main === module) {
     // Route to the appropriate handler based on hook event type.
     // SESSION_SOURCE env var allows test simulation of SessionStart(source=compact|resume).
     const hookEvent = event.hook_event_name || event.hookEventName || '';
-    const sessionSource = event.session_source || process.env.SESSION_SOURCE || '';
+    const sessionSource = event.source || process.env.SESSION_SOURCE || '';
     const isSessionStart = hookEvent === 'SessionStart' ||
       (sessionSource === 'compact' || sessionSource === 'resume');
 

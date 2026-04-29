@@ -48,6 +48,7 @@ const {
   recordMiss,
   computeSourceHash,
 }                                      = require('./load-schema-shadow');
+const { peekOrchestrationId }          = require('./peek-orchestration-id');
 
 // ---------------------------------------------------------------------------
 // Internal state
@@ -573,6 +574,20 @@ function writeEvent(eventPayload, opts) {
   try {
     atomicAppendJsonl(eventsPath, filledPayload);
     emitAutofillTelemetry(validation.event_type, autofilledFields, cwd, eventsPath);
+    // B3 (v2.2.11): wire min-denominator guard — track every event so the
+    // denominator is real before the threshold-exceeded alarm can fire.
+    // peekOrchestrationId returns null when no orchestration is active;
+    // _trackAutofillThreshold uses null as a stable key prefix, which is fine.
+    try {
+      const orchId = peekOrchestrationId(cwd);
+      _trackAutofillThreshold(
+        validation.event_type,
+        autofilledFields.length > 0,
+        orchId,
+        cwd,
+        eventsPath
+      );
+    } catch (_e) { /* fail-open — observability must never block the write */ }
     return {
       written:    true,
       reason:     'ok',
