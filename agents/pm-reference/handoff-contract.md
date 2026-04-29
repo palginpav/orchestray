@@ -236,7 +236,39 @@ parsers, scorers, or human reviewers.
 - **Wrapping the JSON in extra prose inside the fence.** The fence body must
   parse as a single JSON object, nothing else.
 
-## 9. MCP projection conventions (R-PFX, v2.1.14; R-CAT-DEFAULT, v2.1.16)
+## 9. Task-YAML `contracts:` block (v2.2.11, W3-1)
+
+The `contracts:` key in `.orchestray/state/tasks/*.yaml` declares file ownership
+and pre/postconditions for a task. Validated by `bin/validate-task-contracts.js`
+on PreToolUse:Agent (pre) and PostToolUse:Agent (post). Soft-warn in v2.2.11;
+hard-fail in v2.2.13.
+
+```yaml
+contracts:
+  schema_version: "1"          # Required when `contracts:` is present
+  inputs:                       # Optional — informative only
+    - path/to/input-file.md
+  outputs:                      # Required — auto-promoted to file_exists postconditions
+    - path/to/output-file.md
+  preconditions:                # Optional — checked before agent spawn
+    - { type: file_exists,    target: path/to/dep.yaml }
+    - { type: file_contains,  target: path/to/doc.md, pattern: "^## Section" }
+  postconditions:               # Optional — checked after agent completion
+    - { type: file_size_min_bytes, target: path/to/output.md, min_bytes: 1000 }
+  file_ownership:               # Required when `contracts:` is present
+    write_allowed:              # Globs; writes MUST be subset of this list
+      - bin/my-feature.js
+    write_forbidden:            # Optional belt-and-suspenders deny list
+      - bin/**/*.secret.js
+    read_allowed: "*"           # Default; tighten to glob list when sensitive
+```
+
+**Required fields** (when `contracts:` present): `schema_version`, `outputs`, `file_ownership`.
+
+**Kill switch**: `ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED=1` suppresses all validation.
+Missing block emits `contract_check_skipped` (disable via `ORCHESTRAY_CONTRACTS_MISSING_WARN_DISABLED=1`).
+
+## 10. MCP projection conventions (R-PFX, v2.1.14; R-CAT-DEFAULT, v2.1.16)
 
 All agents that call `pattern_find` or `kb_search` MUST minimize response size by
 default. v2.1.16 layers two defaults: **catalog mode** is the new top-level default
@@ -303,9 +335,9 @@ pattern-accuracy review tasks — all other reviewer calls use the default proje
 Agents may always pass `fields: null` or omit the argument to get the full legacy
 response. There is no config gate. Rollback is reverting the 5 agent prompt edits.
 
-## 10. Artifact body cap & detail pointer
+## 11. Artifact body cap & detail pointer
 
-### 10.1 Target body cap
+### 11.1 Target body cap
 
 The section of a Structured Result that the next-hop agent reads inline (the
 "readable body" — `summary` + `assumptions` + `issues`) MUST NOT exceed **2,000
@@ -317,7 +349,7 @@ this threshold, the agent MUST:
 1. Keep the inline Structured Result within the 2,000-token body cap.
 2. Write the full content to a separate file and cite it via `detail_artifact`.
 
-### 10.2 The `detail_artifact` pointer
+### 11.2 The `detail_artifact` pointer
 
 `detail_artifact` is an optional top-level string field in the Structured Result
 JSON. It names a relative path (from the project root) to a file containing
@@ -340,7 +372,7 @@ Rules:
   by default; fetch `detail_artifact` via `Read` only when accuracy demands the
   full content (e.g., the reviewer is re-auditing the artifact).
 
-### 10.3 Downstream-agent reading rule
+### 11.3 Downstream-agent reading rule
 
 Downstream agents (PM routing, reviewer, next developer) MUST follow this
 precedence:
@@ -351,7 +383,7 @@ precedence:
    the spec"). Do NOT fetch it for routing decisions or cost projections.
 3. If `detail_artifact` is absent, treat the Structured Result body as complete.
 
-### 10.4 Dual-threshold validator (T15 R-HCAP)
+### 11.4 Dual-threshold validator (T15 R-HCAP)
 
 The T15 hook (`bin/validate-task-completion.js`) measures the byte size of any
 artifact path fields found in the Structured Result (e.g., `design_artifact`,
@@ -365,7 +397,7 @@ thresholds using a 4-bytes-per-token heuristic:
 | > 5,000 | yes | Emit `handoff_body_warn` (threshold: `"warn"`); exit 0 |
 | > 5,000 | no | Emit `handoff_body_warn` (threshold: `"block_would_have_fired"`) in v2.1.14; emit `handoff_body_block` + exit 2 when `hard_block: true` |
 
-### 10.5 Kill switch
+### 11.5 Kill switch
 
 Set `handoff_body_cap.enabled: false` in `.orchestray/config.json` to disable
 all body-size checks (reverts to pre-v2.1.14 behavior):
@@ -378,9 +410,9 @@ all body-size checks (reverts to pre-v2.1.14 behavior):
 }
 ```
 
-Default: `enabled: true`. See §10.6 for the full config schema.
+Default: `enabled: true`. See §11.6 for the full config schema.
 
-### 10.6 Config schema (`handoff_body_cap`)
+### 11.6 Config schema (`handoff_body_cap`)
 
 ```json
 {
@@ -403,7 +435,7 @@ Default: `enabled: true`. See §10.6 for the full config schema.
   `threshold_breached: "block_would_have_fired"` (soft-warn-only, telemetry
   trail only). When `true`: exit 2 blocks completion.
 
-### 10.7 Reviewer and architect guidance
+### 11.7 Reviewer and architect guidance
 
 Reviewer and architect artifacts routinely reach 23–43 KB (5,800–10,750 tokens).
 Structure large artifacts as:
@@ -415,7 +447,7 @@ Structure large artifacts as:
 Do NOT embed raw tool output, full diffs, or verbose reasoning directly in the
 Structured Result body. These belong in `detail_artifact`.
 
-## 11. Change log
+## 12. Change log
 
 - v1 — v2.1.9 initial schema (2026-04-20)
 - v2 — v2.1.14 R-PFX: added §9 MCP projection conventions (2026-04-24)
@@ -424,3 +456,5 @@ Structured Result body. These belong in `detail_artifact`.
   mode is now the top-level default for `pattern_find`/`kb_search`; `fields`
   projection becomes the legacy fallback shape; reviewer carve-out documented in
   both axes (2026-04-25)
+- v5 — v2.2.11 W3-1: added §9 task-YAML `contracts:` block syntax reference;
+  renumbered old §9 → §10, §10 → §11 (2026-04-29)

@@ -58,6 +58,7 @@ const { resolveSafeCwd }              = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES }             = require('./_lib/constants');
 const { writeEvent }                  = require('./_lib/audit-event-writer');
+const { computeDecisions }            = require('./_lib/decision-recorder-helpers');
 
 const REPO_ROOT  = path.resolve(__dirname, '..');
 const STATE_FILE = path.join('.orchestray', 'state', 'orch-complete-trigger.json');
@@ -324,6 +325,50 @@ async function runMcpFanout(cwd, orchId, eventsPath) {
 }
 
 // ---------------------------------------------------------------------------
+// Decision-recorder fanout (W3-2, v2.2.11)
+// ---------------------------------------------------------------------------
+
+/**
+ * Emit 4 `*_decision_recorded` events — one per cargo-prone tool — describing
+ * whether each tool was invoked / considered_skipped / not_applicable in this
+ * orchestration.
+ *
+ * Design: W4b §1.2–§1.3 (v2211-W4b-semantic-redesign.md).
+ *
+ * Fires AFTER the existing 6-audit + 3-MCP-fanout block.  No new hook entry;
+ * no action-verb tool is invoked; archive is read-only.
+ *
+ * Fail-open: any error in computeDecisions or writeEvent is logged to stderr;
+ * the fanout continues with remaining tools.
+ */
+function runDecisionRecorders(cwd, orchId) {
+  let decisions;
+  try {
+    decisions = computeDecisions(cwd, orchId);
+  } catch (e) {
+    process.stderr.write(
+      '[audit-on-orch-complete] decision-recorders computeDecisions error: ' +
+      (e && e.message ? e.message : String(e)) + '\n',
+    );
+    return;
+  }
+
+  for (const payload of decisions) {
+    if (payload === null) continue; // kill switch active for this tool
+    try {
+      writeEvent(payload, { cwd });
+    } catch (e) {
+      process.stderr.write(
+        '[audit-on-orch-complete] decision-recorder emit error (' +
+        (payload && payload.type) + '): ' +
+        (e && e.message ? e.message : String(e)) + '\n',
+      );
+      // continue with remaining tools
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -395,6 +440,13 @@ process.stdout.write(JSON.stringify({ continue: true }));
       emitActivationRatio({ cwd, orchId });
     } catch (e) {
       process.stderr.write('[audit-on-orch-complete] activation-ratio uncaught: ' + (e && e.message) + '\n');
+    }
+
+    // Emit 4 decision-recorder events (W3-2, v2.2.11).
+    try {
+      runDecisionRecorders(cwd, orchId);
+    } catch (e) {
+      process.stderr.write('[audit-on-orch-complete] decision-recorders uncaught: ' + (e && e.message) + '\n');
     }
   } catch (e) {
     process.stderr.write('[audit-on-orch-complete] uncaught: ' + (e && e.message) + '\n');

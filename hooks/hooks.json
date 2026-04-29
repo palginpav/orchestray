@@ -158,6 +158,11 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/inject-tokenwright.js",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-task-contracts.js",
+            "timeout": 5
           }
         ]
       },
@@ -393,6 +398,16 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-commit-handoff.js",
             "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-task-contracts.js",
+            "timeout": 5
           }
         ]
       }
