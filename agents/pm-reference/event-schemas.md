@@ -7925,3 +7925,86 @@ Field notes:
 - `replan_budget`: the configured budget (default 3).
 - `schema_version`: always `1` in this release.
 
+
+---
+
+### `reviewer_git_diff_section_missing` event
+
+Emitted by `bin/validate-reviewer-git-diff.js` (PreToolUse:Agent, W2-1) when a
+reviewer spawn prompt does not include a `## Git Diff` section. Per
+`delegation-templates.md:113`, reviewer prompts must include this section for
+token-efficient context handoff; without it, reviewers must fetch the diff
+themselves, wasting context budget.
+
+```json
+{
+  "event": "reviewer_git_diff_section_missing",
+  "version": 1,
+  "schema_version": 1,
+  "spawn_id": "subagent-abc123",
+  "timestamp": "2026-01-01T00:00:00.000Z"
+}
+```
+
+Field notes:
+- `spawn_id`: agent_id or task_id from the spawn payload; null if unavailable.
+- `schema_version`: always `1` in this release.
+- Warn-only: does not block the spawn. Kill switch: `ORCHESTRAY_REVIEWER_GIT_DIFF_CHECK_DISABLED=1`.
+
+---
+
+### `kb_slug_validation_failed` event
+
+Emitted by `bin/validate-kb-slug.js` (PreToolUse:Write, W2-2) when a Write
+targeting `.orchestray/kb/{facts,decisions,artifacts}/` uses a filename (slug)
+that fails the allowed-character check `/^[a-zA-Z0-9_-]+$/`. This prevents
+path-traversal attacks via `..` or special characters in KB slugs, as identified
+in `agent-common-protocol.md:22`.
+
+```json
+{
+  "event": "kb_slug_validation_failed",
+  "version": 1,
+  "schema_version": 1,
+  "slug": "../escape",
+  "path": ".orchestray/kb/artifacts/../escape.md",
+  "reason": "slug contains disallowed characters (only [a-zA-Z0-9_-] permitted)",
+  "timestamp": "2026-01-01T00:00:00.000Z"
+}
+```
+
+Field notes:
+- `slug`: the extracted filename without `.md` extension.
+- `path`: the original Write target path.
+- `reason`: human-readable description of the validation failure.
+- `schema_version`: always `1` in this release.
+- Hard-block (exit 2): blocks the Write. Kill switch: `ORCHESTRAY_KB_SLUG_VALIDATION_DISABLED=1`.
+
+---
+
+### `archive_must_copy_missing` event
+
+Emitted by `bin/validate-archive.js` (PostToolUse:Bash, W2-3) when an
+`orchestration_complete` event is detected but one or more of the 3 required
+archive files are absent from `.orchestray/history/<orch_id>/`. Per
+`phase-close.md:127`, the archive checklist mandates these files be copied at
+orchestration close.
+
+Required files: `events.jsonl`, `orchestration.md`, `task-graph.md`.
+
+```json
+{
+  "event": "archive_must_copy_missing",
+  "version": 1,
+  "schema_version": 1,
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "missing_files": ["task-graph.md"],
+  "timestamp": "2026-01-01T00:00:00.000Z"
+}
+```
+
+Field notes:
+- `orchestration_id`: the ID of the just-completed orchestration.
+- `missing_files`: array of filenames (not paths) that are absent from the archive directory.
+- `schema_version`: always `1` in this release.
+- Warn-only: does not block. Kill switch: `ORCHESTRAY_ARCHIVE_VALIDATION_DISABLED=1`.
