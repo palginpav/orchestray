@@ -30,10 +30,10 @@ const { resolveSafeCwd }        = require('./_lib/resolve-project-cwd');
 const { writeEvent }            = require('./_lib/audit-event-writer');
 
 // ---------------------------------------------------------------------------
-// Path matcher — only intercept facts/ and decisions/ under .orchestray/kb/
+// Path matcher — intercept facts/, decisions/, and artifacts/ under .orchestray/kb/
 // ---------------------------------------------------------------------------
 
-const KB_INTERCEPT_RE = /[/\\]\.orchestray[/\\]kb[/\\](facts|decisions)[/\\][^/\\]+\.md$/;
+const KB_INTERCEPT_RE = /[/\\]\.orchestray[/\\]kb[/\\](facts|decisions|artifacts)[/\\][^/\\]+\.md$/;
 
 function isKbPath(filePath) {
   if (typeof filePath !== 'string') return false;
@@ -127,7 +127,7 @@ async function runTelemetry(cwd, filePath, toolInput, hookEvent) {
   let outcome = 'error';
 
   // Derive bucket from path
-  const bucketMatch = filePath.match(/[/\\]\.orchestray[/\\]kb[/\\](facts|decisions)[/\\]/);
+  const bucketMatch = filePath.match(/[/\\]\.orchestray[/\\]kb[/\\](facts|decisions|artifacts)[/\\]/);
   const bucket = bucketMatch ? bucketMatch[1] : 'facts';
 
   // Build a minimal kb_write input from the Write payload for telemetry.

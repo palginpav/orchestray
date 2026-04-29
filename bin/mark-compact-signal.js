@@ -32,6 +32,7 @@ const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { writeEvent } = require('./_lib/audit-event-writer');
 const { recordDegradation } = require('./_lib/degraded-journal');
 const { loadResilienceConfig } = require('./_lib/config-schema');
+const { peekOrchestrationId } = require('./_lib/peek-orchestration-id');
 
 const LOCK_BASENAME = 'compact-signal.lock';
 
@@ -111,15 +112,8 @@ function handleSessionStart(event) {
   }
 }
 
-function _peekOrchestrationId(cwd) {
-  try {
-    const markerPath = path.join(cwd, '.orchestray', 'audit', 'current-orchestration.json');
-    const raw = fs.readFileSync(markerPath, 'utf8');
-    const m = JSON.parse(raw);
-    if (m && typeof m.orchestration_id === 'string') return m.orchestration_id;
-  } catch (_e) { /* swallow */ }
-  return null;
-}
+// Delegate to shared helper (extracted to bin/_lib/peek-orchestration-id.js in W0d).
+const _peekOrchestrationId = peekOrchestrationId;
 
 function _dirExists(p) {
   try { return fs.statSync(p).isDirectory(); } catch (_e) { return false; }

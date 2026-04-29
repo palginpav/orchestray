@@ -48,6 +48,7 @@ const { writeEvent } = require('./_lib/audit-event-writer');
 const { recordDegradation } = require('./_lib/degraded-journal');
 const { loadResilienceConfig } = require('./_lib/config-schema');
 const { parseDossier, _fenceCollisionScan } = require('./_lib/resilience-dossier-schema');
+const { peekOrchestrationId } = require('./_lib/peek-orchestration-id');
 
 const FENCE_OPEN = '<orchestray-resilience-dossier>';
 const FENCE_CLOSE = '</orchestray-resilience-dossier>';
@@ -678,11 +679,19 @@ function handleSessionStart(event) {
       return { output: nop, action: 'shadow_dry_run', orchestration_id: dossier.orchestration_id || null };
     }
 
+    // Attribution fix (W0d): when the dossier's own orchestration_id is null
+    // (common for completed orchs whose dossier was written after orch close),
+    // fall back to the active orchestration marker on disk so the orphan
+    // detector can correlate dossier_written / dossier_injected pairs.
+    // Fallback only fires on strict null/undefined — empty string is NOT null.
+    const dossierOrchId = (dossier.orchestration_id != null)
+      ? dossier.orchestration_id
+      : peekOrchestrationId(cwd);
     _audit(cwd, {
       type: 'dossier_injected',
       version: 1,
       trigger: 'SessionStart',
-      orchestration_id: dossier.orchestration_id || null,
+      orchestration_id: dossierOrchId,
       written_at: dossier.written_at || null,
       bytes_injected: bytesInjected,
       truncated,

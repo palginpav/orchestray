@@ -734,7 +734,15 @@ function processEdit(event, opts) {
  * audit-on-orch-complete.js fan-out). NOT triggered by a file-write watch
  * target — this is an orch-slice completeness check.
  *
- * Kill switch: ORCHESTRAY_ROI_WATCHED_DISABLED=1
+ * Kill switches:
+ *   ORCHESTRAY_ROI_WATCHED_DISABLED=1        — disables the entire rule (pre-existing).
+ *   ORCHESTRAY_ROI_WATCHED_DEDUP_DISABLED=1  — disables per-orch dedup (legacy: emit
+ *                                              on every PM Stop invocation).
+ *
+ * Per-orch dedup: a lock file `.orchestray/state/roi-missing-dedup-<orchId>.lock`
+ * prevents re-emitting `orchestration_roi_missing` for the same orchestration_id
+ * across multiple PM Stop invocations in the same session. Lock survives intentionally
+ * (no cleanup) — orch ids are unique so stale locks are inert.
  *
  * @param {string}   cwd       - Project root.
  * @param {string}   orchId    - Active orchestration_id.
@@ -771,6 +779,23 @@ function checkOrchRoiPresence(cwd, orchId, readLines) {
   });
 
   if (!hasRoi) {
+    // Per-orch dedup: emit at most once per orchestration_id per session.
+    // Kill switch: ORCHESTRAY_ROI_WATCHED_DEDUP_DISABLED=1 → legacy behaviour (emit every call).
+    if (process.env.ORCHESTRAY_ROI_WATCHED_DEDUP_DISABLED !== '1') {
+      try {
+        const stateDir  = path.join(cwd, '.orchestray', 'state');
+        fs.mkdirSync(stateDir, { recursive: true });
+        const lockFile = path.join(stateDir, 'roi-missing-dedup-' + orchId + '.lock');
+        if (fs.existsSync(lockFile)) return; // already emitted for this orch
+        try {
+          fs.writeFileSync(lockFile, orchId, { flag: 'wx' }); // exclusive create — race-safe
+        } catch (e) {
+          if (e && e.code === 'EEXIST') return; // lost race — other call already emitted
+          throw e;
+        }
+      } catch (_e) { /* fail-open: if lock logic errors, allow emit */ }
+    }
+
     try {
       writeEvent({
         version:          1,
