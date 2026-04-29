@@ -16,20 +16,26 @@
  *   - Emits `contract_check` event (existing schema) or `contract_check_skipped`
  *     (when no contracts block is present) or `contracts_parse_failed`
  *     (when the block is malformed).
- *   - Exit 0 always in v2.2.11 (soft-block-warn per W4b §2.4; hard-fail pending in a future release).
+ *   - Exit 2 (hard-fail) when contracts_parse_failed (v2.2.12 default).
+ *     Set ORCHESTRAY_CONTRACTS_PARSE_GATE_DISABLED=1 to revert to exit 0.
  *
  * PostToolUse:Agent (phase: "post"):
  *   - Validates postconditions.
  *   - Checks file ownership by reading `files_changed` from the agent's
  *     structured result and comparing to `contracts.file_ownership.write_allowed`.
  *   - Emits `file_ownership_violation` for each disallowed write.
- *   - Exit 0 always in v2.2.11 (soft-block-warn; hard-fail pending in a future release).
+ *   - Exit 0 (warn-only; file_ownership hard-fail pending in a future release).
  *
- * Kill switch: ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED=1 suppresses all emits
- * and exits 0 on every path.
+ * Kill switches:
+ *   ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED=1  — suppresses all emits and exits 0.
+ *   ORCHESTRAY_CONTRACTS_PARSE_GATE_DISABLED=1 — reverts contracts_parse_failed to
+ *     soft-warn (exit 0) instead of the default hard-fail (exit 2). The event still
+ *     emits in both modes.
+ *
+ * v2.2.12: parse-fail default promoted to exit 2 (hard-fail).
  *
  * Missing contracts block: emits `contract_check_skipped` once per task
- * (telemetry only in v2.2.11; becomes hard-fail in v2.2.13).
+ * (telemetry only; becomes hard-fail in v2.2.13).
  */
 
 const fs   = require('fs');
@@ -41,6 +47,12 @@ const { MAX_INPUT_BYTES }     = require('./_lib/constants');
 const { recordDegradation }   = require('./_lib/degraded-journal');
 const { peekOrchestrationId } = require('./_lib/peek-orchestration-id');
 const { loadTaskYaml, matchGlob } = require('./_lib/load-task-yaml');
+
+// ---------------------------------------------------------------------------
+// Exit-code signal: functions set this to 2 when a hard-fail condition is met.
+// main() reads it after runPre/runPost completes.
+// ---------------------------------------------------------------------------
+let _exitCode = 0;
 
 // ---------------------------------------------------------------------------
 // Noise allow-list: paths excluded from ownership checks to prevent
@@ -166,7 +178,7 @@ function main() {
     }
 
     process.stdout.write(JSON.stringify({ continue: true }) + '\n');
-    process.exit(0);
+    process.exit(_exitCode);
   });
 }
 
@@ -477,6 +489,19 @@ function emitParseFailed(cwd, taskId, orchId, filePath, parseError) {
   } catch (err) {
     _degradationFallback(cwd, 'emit contracts_parse_failed', err);
   }
+
+  // v2.2.12: hard-fail by default. Event always emits; exit code controlled by kill switch.
+  if (process.env.ORCHESTRAY_CONTRACTS_PARSE_GATE_DISABLED !== '1') {
+    _exitCode = 2;
+    process.stderr.write(
+      '[orchestray] validate-task-contracts: contracts_parse_failed — hard-fail (exit 2).' +
+      ' Set ORCHESTRAY_CONTRACTS_PARSE_GATE_DISABLED=1 to revert to warn-only.\n'
+    );
+  } else {
+    process.stderr.write(
+      '[orchestray] validate-task-contracts: contracts_parse_failed (soft-warn; ORCHESTRAY_CONTRACTS_PARSE_GATE_DISABLED=1)\n'
+    );
+  }
 }
 
 function emitContractCheck(cwd, taskId, orchId, phase, checks) {
@@ -497,13 +522,13 @@ function emitContractCheck(cwd, taskId, orchId, phase, checks) {
     _degradationFallback(cwd, 'emit contract_check', err);
   }
 
-  // v2.2.11 soft-block-warn: log to stderr but do not exit 2
+  // condition check failures remain warn-only; hard-fail for these pending in a future release.
   if (overall !== 'pass') {
     const failedChecks = checks.filter(c => c.result === 'fail');
     process.stderr.write(
       '[orchestray] validate-task-contracts: ' + phase + '-phase check WARN' +
       ' for task ' + taskId + ' — ' + failedChecks.length + ' check(s) failed. ' +
-      '(warn-only; hard-fail pending — set ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED=1 to suppress)\n'
+      '(warn-only; set ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED=1 to suppress)\n'
     );
   }
 }
@@ -525,11 +550,11 @@ function emitOwnershipViolation(cwd, taskId, orchId, filePath, assignedFiles, ag
     _degradationFallback(cwd, 'emit file_ownership_violation', err);
   }
 
-  // v2.2.11 soft-block-warn
+  // file_ownership violations remain warn-only; hard-fail pending in a future release.
   process.stderr.write(
     '[orchestray] validate-task-contracts: file_ownership_violation — task ' +
     taskId + ' wrote ' + filePath +
-    ' (' + violationKind + '). (warn-only; hard-fail pending — set ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED=1 to suppress)\n'
+    ' (' + violationKind + '). (warn-only; set ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED=1 to suppress)\n'
   );
 }
 

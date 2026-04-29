@@ -34,6 +34,74 @@ const path = require('path');
 // script.
 const WARNED_KEYS = new Set();
 
+// ---------------------------------------------------------------------------
+// Contracts hard-fail banner (v2.2.12)
+//
+// Fires once per install: when the installed version is >= 2.2.12 and the
+// sentinel .orchestray/state/.contracts-hardfail-banner-shown does not exist.
+// After printing, writes the sentinel with an ISO timestamp so subsequent
+// sessions are silent. Fail-open: sentinel write failure is non-fatal.
+// ---------------------------------------------------------------------------
+
+/**
+ * Compare semver strings. Returns true if `a` >= `b` (major.minor.patch only).
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean}
+ */
+function semverGte(a, b) {
+  const parse = (s) => String(s || '0').split('.').map(n => parseInt(n, 10) || 0);
+  const [aMaj, aMin, aPatch] = parse(a);
+  const [bMaj, bMin, bPatch] = parse(b);
+  if (aMaj !== bMaj) return aMaj > bMaj;
+  if (aMin !== bMin) return aMin > bMin;
+  return aPatch >= bPatch;
+}
+
+/**
+ * Emit the contracts hard-fail upgrade banner once per install.
+ * @param {string} cwd  — project root (CLAUDE_PROJECT_DIR or process.cwd())
+ */
+function maybeEmitContractsHardfailBanner(cwd) {
+  try {
+    // Read installed version from package.json
+    const pkgPath = path.join(__dirname, '..', 'package.json');
+    let version = '0.0.0';
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      version = pkg.version || '0.0.0';
+    } catch (_) { /* version stays 0.0.0 — banner won't fire */ }
+
+    if (!semverGte(version, '2.2.12')) return;
+
+    const sentinelPath = path.join(cwd, '.orchestray', 'state', '.contracts-hardfail-banner-shown');
+    if (fs.existsSync(sentinelPath)) return;
+
+    // Print banner to stderr
+    process.stderr.write(
+      '[orchestray v' + version + '] Contracts validation is now hard-fail by default.' +
+      ' Set ORCHESTRAY_CONTRACTS_PARSE_GATE_DISABLED=1 to revert to warn-only.\n'
+    );
+
+    // Emit telemetry event (best-effort)
+    try {
+      const { writeEvent } = require('./_lib/audit-event-writer');
+      writeEvent({
+        type:    'contracts_hardfail_banner_shown',
+        version: 1,
+        installed_version: version,
+        schema_version: 1,
+      }, { cwd });
+    } catch (_) { /* fail-open */ }
+
+    // Write sentinel (best-effort; failure still counts as "banner shown once")
+    try {
+      fs.mkdirSync(path.dirname(sentinelPath), { recursive: true });
+      fs.writeFileSync(sentinelPath, new Date().toISOString() + '\n', { flag: 'wx' });
+    } catch (_) { /* sentinel write failed — acceptable */ }
+  } catch (_) { /* entire banner path must never crash boot */ }
+}
+
 /**
  * Emit one drift warning to stderr, deduped by key.
  * @param {string} dedupKey  — stable identity of the warning (e.g. "unknown:foo")
@@ -127,6 +195,9 @@ function runCli() {
       );
     }
 
+    // Contracts hard-fail upgrade banner (v2.2.12 — once per install).
+    maybeEmitContractsHardfailBanner(cwd);
+
     process.exit(code);
   } catch (err) {
     // Most likely cause: internal validator missing or broken.
@@ -140,7 +211,7 @@ function runCli() {
   }
 }
 
-module.exports = { runDriftDetection, warnOnce, WARNED_KEYS };
+module.exports = { runDriftDetection, warnOnce, WARNED_KEYS, maybeEmitContractsHardfailBanner, semverGte };
 
 if (require.main === module) {
   runCli();
