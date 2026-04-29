@@ -209,9 +209,9 @@ function main() {
       } catch (_e) { /* fail-open */ }
 
       process.stderr.write(
-        '[orchestray] validate-archive: WARN — orchestration ' + orchId + ' archive is missing ' +
-        missing.length + ' required file(s): ' + missing.join(', ') + '. ' +
-        'See phase-close.md:127 for archive checklist. ' +
+        '[orchestray] validate-archive: WARN — orchestration ' + orchId + ' archive is incomplete. ' +
+        'Missing in .orchestray/history/' + orchId + '/: ' + missing.join(', ') + '. ' +
+        'Copy them from .orchestray/state/ to complete the archive. ' +
         'Kill switch: ORCHESTRAY_ARCHIVE_VALIDATION_DISABLED=1\n'
       );
     }

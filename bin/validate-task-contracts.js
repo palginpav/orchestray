@@ -16,14 +16,14 @@
  *   - Emits `contract_check` event (existing schema) or `contract_check_skipped`
  *     (when no contracts block is present) or `contracts_parse_failed`
  *     (when the block is malformed).
- *   - Exit 0 always in v2.2.11 (soft-block-warn per W4b §2.4; v2.2.13 hard-fail).
+ *   - Exit 0 always in v2.2.11 (soft-block-warn per W4b §2.4; hard-fail pending in a future release).
  *
  * PostToolUse:Agent (phase: "post"):
  *   - Validates postconditions.
  *   - Checks file ownership by reading `files_changed` from the agent's
  *     structured result and comparing to `contracts.file_ownership.write_allowed`.
  *   - Emits `file_ownership_violation` for each disallowed write.
- *   - Exit 0 always in v2.2.11 (soft-block-warn; v2.2.13 hard-fail).
+ *   - Exit 0 always in v2.2.11 (soft-block-warn; hard-fail pending in a future release).
  *
  * Kill switch: ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED=1 suppresses all emits
  * and exits 0 on every path.
@@ -474,7 +474,7 @@ function emitContractCheck(cwd, taskId, orchId, phase, checks) {
     process.stderr.write(
       '[orchestray] validate-task-contracts: ' + phase + '-phase check WARN' +
       ' for task ' + taskId + ' — ' + failedChecks.length + ' check(s) failed. ' +
-      '(soft-warn in v2.2.11; will hard-fail in v2.2.13)\n'
+      '(warn-only; hard-fail pending — set ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED=1 to suppress)\n'
     );
   }
 }
@@ -500,7 +500,7 @@ function emitOwnershipViolation(cwd, taskId, orchId, filePath, assignedFiles, ag
   process.stderr.write(
     '[orchestray] validate-task-contracts: file_ownership_violation — task ' +
     taskId + ' wrote ' + filePath +
-    ' (' + violationKind + '). (soft-warn in v2.2.11; will hard-fail in v2.2.13)\n'
+    ' (' + violationKind + '). (warn-only; hard-fail pending — set ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED=1 to suppress)\n'
   );
 }
 

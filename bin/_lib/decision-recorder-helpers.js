@@ -353,10 +353,10 @@ function decideCuratorTombstone(rows, orchId) {
  * an array of 4 payload objects (one per tool).
  *
  * Kill switches (§1.4, per feedback_default_on_shipping.md):
- *   ORCHESTRAY_DECISION_RECORDER_PATTERN_DEPRECATE_DISABLED=1
- *   ORCHESTRAY_DECISION_RECORDER_ASK_USER_DISABLED=1
- *   ORCHESTRAY_DECISION_RECORDER_AGENT_SPAWN_DISABLED=1
- *   ORCHESTRAY_DECISION_RECORDER_CURATOR_TOMBSTONE_DISABLED=1
+ *   ORCHESTRAY_DR_PATTERN_DEPRECATE_DISABLED=1
+ *   ORCHESTRAY_DR_ASK_USER_DISABLED=1
+ *   ORCHESTRAY_DR_AGENT_SPAWN_DISABLED=1
+ *   ORCHESTRAY_DR_CURATOR_TOMBSTONE_DISABLED=1
  *
  * A disabled tool yields null in the output array; the caller skips emit for
  * that slot. This preserves the "exactly 4 fired unless explicitly killed"
@@ -372,19 +372,19 @@ function computeDecisions(cwd, orchId) {
 
   const env = process.env;
 
-  const patternDeprecate = env.ORCHESTRAY_DECISION_RECORDER_PATTERN_DEPRECATE_DISABLED === '1'
+  const patternDeprecate = env.ORCHESTRAY_DR_PATTERN_DEPRECATE_DISABLED === '1'
     ? null
     : decidePatternDeprecation(rows, orchId);
 
-  const askUser = env.ORCHESTRAY_DECISION_RECORDER_ASK_USER_DISABLED === '1'
+  const askUser = env.ORCHESTRAY_DR_ASK_USER_DISABLED === '1'
     ? null
     : decideAskUser(rows, orchId);
 
-  const agentSpawn = env.ORCHESTRAY_DECISION_RECORDER_AGENT_SPAWN_DISABLED === '1'
+  const agentSpawn = env.ORCHESTRAY_DR_AGENT_SPAWN_DISABLED === '1'
     ? null
     : decideAgentSpawn(rows, orchId);
 
-  const curatorTombstone = env.ORCHESTRAY_DECISION_RECORDER_CURATOR_TOMBSTONE_DISABLED === '1'
+  const curatorTombstone = env.ORCHESTRAY_DR_CURATOR_TOMBSTONE_DISABLED === '1'
     ? null
     : decideCuratorTombstone(rows, orchId);
 

@@ -3,6 +3,68 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.2.11] - 2026-04-29
+
+v2.2.11 closes 5 production regressions from v2.2.10, mechanises 12 prose-residual enforcement gaps, introduces the `## Contracts` task-YAML schema, redesigns 4 cargo-prone MCP tools with decision-recorders, removes the deprecated `ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY` kill switch, and grows the shadow registry from 183 to 205 event types. Event-type activation forecast: 47–50%. MCP-tool activation holds at 76%.
+
+> **Activation denominator note:** the scope-lock projection used denominator 197 (pre-Wave-2-4 baseline). Waves 2–4 added 8 more event types, shifting the actual post-ship denominator to 205 and reducing the activation floor by ~1–2 percentage points. The 47–50% forecast above is computed against the actual 205-type denominator.
+
+### Fixed — v2.2.10 regressions (Wave 0)
+
+- **`orchestration_roi_missing` dedup guard.** The watcher was emitting one row per state-file write, producing up to 256 rows per orchestration. Now emits at most one per orchestration ID. Kill switch: `ORCHESTRAY_ROI_WATCHED_DEDUP_DISABLED=1`. (W0a)
+- **KB write redirect now covers `.orchestray/kb/artifacts/*.md`.** The `KB_INTERCEPT_RE` regex was missing the `artifacts/` path; writes to that directory were bypassing the redirect and going unrecorded. (W0b)
+- **Autofill-threshold false-alarm at low sample counts.** The min-denominator guard (total_count < 20 → no emit) was declared in the plan but never wired into the production code path. Fixed; the guard now correctly suppresses noisy single-event samples. (W0c)
+- **Dossier injection was stamping `orchestration_id: null`.** The `inject-resilience-dossier.js` handler read `orchestration_id` from a private helper that was not exported. A new shared helper (`bin/_lib/peek-orchestration-id.js`) is extracted and used by both the inject path and `mark-compact-signal.js`. The orphan detector now sees a match instead of a null. (W0d)
+- **`session_source` field typo at `inject-resilience-dossier.js:779`.** The handler was reading `event.session_source` (undefined); the documented field is `event.source`. Fixed; the `resume` and `compact` source values now route correctly without falling back to the default path. (W0e)
+
+### Added — New mechanical enforcement (Waves 2 & 3)
+
+- **Reviewer must include a `## Git Diff` section.** Reviewer spawns that skip the git diff block are now rejected by a `PreToolUse:Agent` hook before the spawn completes. Kill switch: `ORCHESTRAY_REVIEWER_GIT_DIFF_CHECK_DISABLED=1`. (W2-1)
+- **KB slug path-traversal hard-block.** Writes to `.orchestray/kb/` with a slug containing `..`, absolute paths, or disallowed characters are rejected at the Write hook layer before the file lands. Kill switch: `ORCHESTRAY_KB_SLUG_VALIDATION_DISABLED=1`. (W2-2)
+- **Archive must-copy checklist validator.** At orchestration close, a `PostToolUse[orchestration_complete]` hook verifies that the required per-orch archive files were copied. Missing entries emit `archive_copy_missing` and block close. Kill switch: `ORCHESTRAY_ARCHIVE_VALIDATION_DISABLED=1`. (W2-3)
+- **T15 cross-field validation.** Per-role Structured Result schema enforcement now checks cross-field constraints (e.g. `status=blocked` requires `blocker` present) in addition to per-field type checks. (W2-4)
+- **Replan budget guard.** If the PM emits a replan event without a corresponding budget check row, a warning fires at PM Stop. Kill switch: `ORCHESTRAY_REPLAN_BUDGET_GUARD_DISABLED=1`. (W2-5)
+- **Architect pattern-ack check.** Architect spawns are validated for a pattern acknowledgement block; missing acks emit `architect_pattern_ack_missing`. Kill switch: `ORCHESTRAY_PATTERN_ACK_CHECK_DISABLED=1`. (W2-6)
+- **`context_size_hint` missing is now a hard fail.** Promoted from warn-event to exit-2 block. Spawns without a context size hint are rejected. Kill switch: `ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED=1` (downgrades back to warn). (W2-8)
+- **Reviewer dimensions block missing is now a hard fail.** Promoted from warn-event to exit-2 block. Kill switch: `ORCHESTRAY_REVIEWER_DIMENSIONS_WARN_DISABLED=1`. (W2-9)
+- **Commit handoff validator.** Release-manager spawns are validated for required handoff fields; missing fields emit `commit_handoff_validation_failed` and block the spawn. Kill switch: `ORCHESTRAY_COMMIT_HANDOFF_CHECK_DISABLED=1`. (W2-10)
+- **`## Contracts` task-YAML schema.** Task YAML files may now include a `## Contracts` section declaring pre/post conditions and interface guarantees. `bin/validate-task-contracts.js` parses and soft-warns on malformed contracts; parse failures emit `contracts_parse_failed`. Kill switch: `ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED=1` (validator), `ORCHESTRAY_CONTRACTS_MISSING_WARN_DISABLED=1` (missing-contracts warn). (W3-1)
+- **Decision-recorders for 4 cargo-prone MCP tools.** `pattern_deprecate`, `ask_user`, `spawn_agent`, and `curator_tombstone` calls are now fanned out from `bin/audit-on-orch-complete.js` and recorded as typed decision events (`pattern_deprecation_decision_recorded`, `user_question_decision_recorded`, `agent_spawn_decision_recorded`, `curator_tombstone_decision_recorded`). Decisions are queryable via `/orchestray:analytics`. (W3-2)
+
+### Added — Deferral clearance (Wave 4)
+
+- **Block-Z, scout, and housekeeper synthetic test fixtures.** Six previously-dark enforcement paths now have synthetic fixtures that exercise them deterministically. (W4-1)
+- **Analytics firing-trend dashboard.** `/orchestray:analytics --firing-audit` now renders a rolling trend chart (Rollup H) showing per-event-type activation change over the last N orchestrations. (W4-3)
+- **MCP handler entry instrumentation.** 17 MCP tool handlers now emit an entry-time event on invocation, making MCP call sequences fully observable in the audit log. (W4-4)
+- **`*_failed` rename-cycle init.** `staging_write_failed` and `task_validation_failed` gain shadow aliases (`*_attempt` + `*_result`) as the first stage of the rename-cycle migration. Both names are accepted; the old names remain valid through v2.2.12. (W2-11)
+- **`loop_completed` taxonomy disambiguation.** Emitters that previously wrote a generic `loop_completed` event now emit either `loop_completed{loop_kind:"orch"}` or `loop_completed{loop_kind:"verify_fix"}`, enabling per-loop-kind analytics. (W2-12)
+- **22 new event types.** Shadow registry grows from 183 to 205. New types: `pattern_deprecation_decision_recorded`, `user_question_decision_recorded`, `agent_spawn_decision_recorded`, `curator_tombstone_decision_recorded`, `file_ownership_violation`, `contracts_parse_failed`, `contracts_merge_base_unresolved`, `contract_check_skipped`, `context_size_hint_required_failed`, `reviewer_dimensions_block_missing`, `commit_handoff_validation_failed`, `event_type_attempt`, `event_type_result`, `loop_completed` (extended), plus 8 additional governance types from Waves 2–4.
+
+### Removed
+
+- **`ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY` kill switch.** Deprecated in v2.2.10 (where it was noted as "removed in v2.2.11"). The pre-decomp checkpoint gate is now unconditionally hard-fail (exit 2). The warn-only branch in `bin/gate-agent-spawn.js` is deleted. (W4-2)
+
+### Migration notes
+
+- **Restart Claude Code after upgrading.** Hook registrations and agent definitions are cached at session start.
+- No config changes required. All new behaviour is default-on.
+- **`ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY=1` is ignored.** Remove it from any scripts or config files that set it; the gate is now unconditionally hard. If the gate fires unexpectedly after upgrade, the M1 prefetch hook (`bin/prefetch-mcp-grounding.js`) normally satisfies the checkpoint rows automatically — verify it is registered as `PreToolUse:Agent`.
+- **`## Contracts` validation is soft-warn by default.** `contracts_parse_failed` is a warn event, not an exit-2 block, in v2.2.11. Full enforcement ships in v2.2.12.
+- New env kill switches (set to `1` to disable): `ORCHESTRAY_ROI_WATCHED_DEDUP_DISABLED`, `ORCHESTRAY_REVIEWER_GIT_DIFF_CHECK_DISABLED`, `ORCHESTRAY_KB_SLUG_VALIDATION_DISABLED`, `ORCHESTRAY_ARCHIVE_VALIDATION_DISABLED`, `ORCHESTRAY_REPLAN_BUDGET_GUARD_DISABLED`, `ORCHESTRAY_PATTERN_ACK_CHECK_DISABLED`, `ORCHESTRAY_COMMIT_HANDOFF_CHECK_DISABLED`, `ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED`, `ORCHESTRAY_CONTRACTS_MISSING_WARN_DISABLED`, `ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED` (hard-block; distinct from `ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED` which disables the warn event only), `ORCHESTRAY_DR_PATTERN_DEPRECATE_DISABLED`, `ORCHESTRAY_DR_ASK_USER_DISABLED`, `ORCHESTRAY_DR_AGENT_SPAWN_DISABLED`, `ORCHESTRAY_DR_CURATOR_TOMBSTONE_DISABLED`, `ORCHESTRAY_MCP_ENTRY_INSTRUMENTATION_DISABLED`.
+
+### Tests
+
+5449 tests / 5449 pass / 2 fail / 6 skip — 0 v2.2.11-introduced regressions; 2 failures are pre-existing and unrelated to v2.2.11 scope.
+
+### Under the hood
+
+- New hook scripts: `bin/validate-reviewer-git-diff.js` (W2-1), `bin/validate-kb-slug.js` (W2-2), `bin/validate-archive.js` (W2-3), `bin/validate-task-contracts.js` + `bin/_lib/load-task-yaml.js` (W3-1), `bin/_lib/decision-recorder-helpers.js` (W3-2), `bin/validate-commit-handoff.js` (W2-10), `bin/validate-pattern-ack.js` (W2-6).
+- New helper: `bin/_lib/peek-orchestration-id.js` (W0d — shared orch-id reader replacing private copy in `mark-compact-signal.js`).
+- New test files: `v2211-w0a` through `v2211-w4-*` — synthetic fixtures for all 24 W-items.
+- Modified: `bin/_lib/pm-emit-state-watcher.js` (W0a dedup + W2-5 replan guard + W2-12 loop_kind), `bin/redirect-kb-write.js` (W0b regex), `bin/_lib/audit-event-writer.js` (W0c min-denom), `bin/inject-resilience-dossier.js` (W0d + W0e), `bin/gate-agent-spawn.js` (W4-2 warn-only branch removed), `bin/audit-on-orch-complete.js` (W3-2 decision fanout), `agents/pm-reference/event-schemas.md` (14 canonical declares + W2-11/W2-12), `agents/pm-reference/event-schemas.shadow.json` (183→205), `agents/pm-reference/handoff-contract.md` (W3-1 Contracts section), `skills/orchestray:analytics/SKILL.md` (W4-3 firing-trend), `hooks/hooks.json` (new PostToolUse + PreToolUse entries; hook ordering: `audit-on-orch-complete.js` → `validate-archive.js` → `emit-event-activation-ratio.js`).
+
+---
+
 ## [2.2.10] - 2026-04-29
 
 v2.2.10 takes the mechanisations shipped in v2.2.9 and proves they fire. Sixteen previously-dark event types now light up reliably (event-type activation **27% → ≥34%**), and MCP-tool activation jumps from **5% → ≥76%** via a new server-side prefetch that grounds every spawn against KB, history, patterns, routing, and schemas automatically — no PM prose required. A nightly self-audit replaces the manual research pass that produced this release's own data. And a CI gate now ensures any future "MUST emit X" line added to our prompts must have a mechanical backstop or the build fails — so the prose-rot cycle that triggered v2.2.9 cannot quietly restart. Trajectory toward 60% activation continues in v2.2.11 with synthetic-fixture coverage.

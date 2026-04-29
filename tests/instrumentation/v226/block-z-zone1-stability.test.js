@@ -25,7 +25,7 @@
  *       zone1_hash is null → validate-cache-invariant skips the check.
  *   T4. After compose-block-a re-pins (stores hash WITH shadow), validate-cache-invariant
  *       passes with no violation.
- *   T5. The pinned hash bc9929c77331 (3-file, no shadow, \n\n join) is the
+ *   T5. The pinned hash b6fdb3baeba9 (3-file, no shadow, \n\n join) is the
  *       expected value when shadow is stale/disabled — regression guard.
  */
 
@@ -231,18 +231,18 @@ describe('T4: validator passes after compose-block-a re-pins with shadow', () =>
 });
 
 // ---------------------------------------------------------------------------
-// T5: the pinned expected hash bc9929c77331 matches 3-file no-shadow computation
+// T5: the pinned expected hash b6fdb3baeba9 matches 3-file no-shadow computation
 // (regression guard — if zone1 sources change, this test fails and reminds
 // the developer to re-pin the expected hash in block-a-zones.json)
 // ---------------------------------------------------------------------------
-describe('T5: pinned hash bc9929c77331 regression guard', () => {
-  test('current zone1 sources (3 files, no shadow, \\n\\n join) hash to bc9929c77331', () => {
+describe('T5: pinned hash b6fdb3baeba9 regression guard', () => {
+  test('current zone1 sources (3 files, no shadow, \\n\\n join) hash to b6fdb3baeba9', () => {
     // This tests the PRODUCTION repo files. If CLAUDE.md, handoff-contract.md,
     // or phase-contract.md change, this test will fail, which is intentional:
     // the developer must run invalidate-block-a-zone1.js to clear the pin and let
     // compose-block-a.js re-pin on the next session.
     //
-    // NOTE: the hash bc9929c77331 is only valid when the schema-shadow sentinel
+    // NOTE: the hash b6fdb3baeba9 is only valid when the schema-shadow sentinel
     // (.orchestray/state/.schema-shadow-disabled) is active (shadow disabled).
     // When shadow is enabled, the hash will be different and this test should be
     // updated or replaced with a test that computes and pins the new hash.
@@ -264,8 +264,8 @@ describe('T5: pinned hash bc9929c77331 regression guard', () => {
       }
       const hash = crypto.createHash('sha256').update(parts.join('\n\n'), 'utf8').digest('hex');
       assert.equal(
-        hash.substring(0, 12), 'bc9929c77331',
-        'Zone1 3-file hash must match pinned value bc9929c77331. ' +
+        hash.substring(0, 12), 'b6fdb3baeba9',
+        'Zone1 3-file hash must match pinned value b6fdb3baeba9. ' +
         'If this fails, CLAUDE.md or a zone1 source file was edited. ' +
         'Run: node bin/invalidate-block-a-zone1.js to re-pin.'
       );

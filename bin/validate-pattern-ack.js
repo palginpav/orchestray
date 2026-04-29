@@ -312,6 +312,12 @@ function run(event, cwd) {
     pattern_slugs_offered: offered,
     schema_version:        SCHEMA_VERSION,
   }, { cwd });
+
+  process.stderr.write(
+    '[orchestray] validate-pattern-ack: WARN — architect spawn ' + (spawnId || '(unknown)') +
+    ' did not acknowledge ' + offered.length + ' offered pattern(s): ' + offered.join(', ') + '. ' +
+    'Kill switch: ORCHESTRAY_PATTERN_ACK_CHECK_DISABLED=1\n'
+  );
 }
 
 main();

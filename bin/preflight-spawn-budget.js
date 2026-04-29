@@ -274,7 +274,8 @@ process.stdin.on('end', () => {
           type: 'block',
           message: `[orchestray] Spawn blocked: the "${role}" agent was spawned without a context_size_hint. ` +
                    `All Agent spawns must include context_size_hint with non-zero system/tier2/handoff values. ` +
-                   `To bypass enforcement, set ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1.`,
+                   `To suppress: ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1 (disables hard-block) or ` +
+                   `ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED=1 (disables the warn event only; block still fires).`,
         }) + '\n');
         process.exit(2);
       }

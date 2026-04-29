@@ -51,10 +51,10 @@ beforeEach(() => {
 afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
   // Restore any env-var mutations set per test.
-  delete process.env.ORCHESTRAY_DECISION_RECORDER_PATTERN_DEPRECATE_DISABLED;
-  delete process.env.ORCHESTRAY_DECISION_RECORDER_ASK_USER_DISABLED;
-  delete process.env.ORCHESTRAY_DECISION_RECORDER_AGENT_SPAWN_DISABLED;
-  delete process.env.ORCHESTRAY_DECISION_RECORDER_CURATOR_TOMBSTONE_DISABLED;
+  delete process.env.ORCHESTRAY_DR_PATTERN_DEPRECATE_DISABLED;
+  delete process.env.ORCHESTRAY_DR_ASK_USER_DISABLED;
+  delete process.env.ORCHESTRAY_DR_AGENT_SPAWN_DISABLED;
+  delete process.env.ORCHESTRAY_DR_CURATOR_TOMBSTONE_DISABLED;
 });
 
 const ORCH_ID = 'orch-test-20260429T000000Z';
@@ -257,7 +257,7 @@ describe('curator_tombstone', () => {
 // ---------------------------------------------------------------------------
 
 test('T10: kill switch — PATTERN_DEPRECATE disabled; other 3 still return payloads', () => {
-  process.env.ORCHESTRAY_DECISION_RECORDER_PATTERN_DEPRECATE_DISABLED = '1';
+  process.env.ORCHESTRAY_DR_PATTERN_DEPRECATE_DISABLED = '1';
   seedArchive(ORCH_ID, []);
 
   const results = computeDecisions(tmpDir, ORCH_ID);

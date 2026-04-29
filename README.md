@@ -119,16 +119,30 @@ Set in `.orchestray/config.json` or as env vars. No session restart required.
 | Verify-fix watcher auto-emit | — | `ORCHESTRAY_VERIFY_FIX_WATCHER_DISABLED=1` |
 | Tier2 protocol watcher auto-emit | — | `ORCHESTRAY_TIER2_WATCHER_DISABLED=1` |
 | Autofill-threshold fail-loud | — | `ORCHESTRAY_AUTOFILL_THRESHOLD_DISABLED=1` |
-| Context size hint missing warn | — | `ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED=1` |
+| Context size hint missing warn (warn event only) | — | `ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED=1` |
+| Context size hint hard-block bypass | — | `ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1` |
 | Reviewer dimensions missing warn | — | `ORCHESTRAY_REVIEWER_DIMENSIONS_WARN_DISABLED=1` |
 | Orchestration ROI missing warn | — | `ORCHESTRAY_ROI_WATCHED_DISABLED=1` |
 | Per-orch activation ratio KPI emit | — | `ORCHESTRAY_ACTIVATION_RATIO_EMIT_DISABLED=1` |
 | Sentinel probe per-session dedup | — | `ORCHESTRAY_SENTINEL_DEDUP_DISABLED=1` |
 | Server-side MCP grounding prefetch | — | `ORCHESTRAY_MCP_PREFETCH_DISABLED=1` |
-| Pre-decomp checkpoint gate (warn-only mode; removed v2.2.11) | — | `ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY=1` |
 | Orch-complete MCP fanout (metrics/routing/pattern) | — | `ORCHESTRAY_ORCH_COMPLETE_MCP_FANOUT_DISABLED=1` |
 | Schema-get self-call on shadow cache miss | — | `ORCHESTRAY_SCHEMA_GET_SELF_CALL_DISABLED=1` |
 | KB write redirect to MCP (Phase 1 transparent-pass) | — | `ORCHESTRAY_KB_WRITE_REDIRECT_DISABLED=1` |
+| Orchestration ROI missing dedup guard | — | `ORCHESTRAY_ROI_WATCHED_DEDUP_DISABLED=1` |
+| Reviewer git-diff section check | — | `ORCHESTRAY_REVIEWER_GIT_DIFF_CHECK_DISABLED=1` |
+| KB slug path-traversal hard-block | — | `ORCHESTRAY_KB_SLUG_VALIDATION_DISABLED=1` |
+| Archive must-copy checklist validator | — | `ORCHESTRAY_ARCHIVE_VALIDATION_DISABLED=1` |
+| Replan budget guard | — | `ORCHESTRAY_REPLAN_BUDGET_GUARD_DISABLED=1` |
+| Architect pattern-ack check | — | `ORCHESTRAY_PATTERN_ACK_CHECK_DISABLED=1` |
+| Commit handoff validator | — | `ORCHESTRAY_COMMIT_HANDOFF_CHECK_DISABLED=1` |
+| Contracts task-YAML validator | — | `ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED=1` |
+| Contracts missing-contracts warn | — | `ORCHESTRAY_CONTRACTS_MISSING_WARN_DISABLED=1` |
+| Decision-recorder: pattern deprecation (v2.2.11) | — | `ORCHESTRAY_DR_PATTERN_DEPRECATE_DISABLED=1` |
+| Decision-recorder: ask_user calls (v2.2.11) | — | `ORCHESTRAY_DR_ASK_USER_DISABLED=1` |
+| Decision-recorder: agent spawn (v2.2.11) | — | `ORCHESTRAY_DR_AGENT_SPAWN_DISABLED=1` |
+| Decision-recorder: curator tombstone (v2.2.11) | — | `ORCHESTRAY_DR_CURATOR_TOMBSTONE_DISABLED=1` |
+| MCP handler-entry instrumentation (v2.2.11) | — | `ORCHESTRAY_MCP_ENTRY_INSTRUMENTATION_DISABLED=1` |
 
 ## Requirements
 
@@ -154,6 +168,9 @@ v2.2.9 flipped the default for `ORCHESTRAY_STRICT_MODEL_REQUIRED` from "auto-res
 
 **`role_write_path_blocked` when reviewer/tester/documenter/release-manager writes a file.**
 Each write-capable specialist has a per-role allowlist defined in `bin/_lib/role-write-allowlists.js`. If you need a wider scope for a one-off task, set `ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1` in the spawning shell, or add the path to the allowlist (preferred — keeps the rest of the codebase protected).
+
+**`contracts_parse_failed` fires on task YAML with a `## Contracts` section.**
+v2.2.11 adds soft-warn validation for the new `## Contracts` task-YAML schema. If the section is malformed (missing required fields, invalid YAML), `contracts_parse_failed` is emitted. The spawn is not blocked in v2.2.11 (full enforcement ships in v2.2.12). To silence warnings while you migrate, set `ORCHESTRAY_CONTRACTS_MISSING_WARN_DISABLED=1` or `ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED=1`.
 
 **`agent_mcp_grounding_missing` blocks pm/researcher/debugger/architect spawns.**
 v2.2.10 promotes the MCP grounding gate from warning to hard-block (exit 2) for these four roles. The server-side prefetch hook normally satisfies the gate automatically before each spawn. If the gate fires unexpectedly (e.g. in a custom spawn path that bypasses the prefetch hook), verify that `bin/prefetch-mcp-grounding.js` is registered as `PreToolUse:Agent` in your hooks configuration. Set `ORCHESTRAY_MCP_GROUNDING_GATE_DISABLED=1` as an emergency bypass.

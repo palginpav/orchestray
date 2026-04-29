@@ -125,9 +125,9 @@ function main() {
       } catch (_e) { /* fail-open */ }
 
       process.stderr.write(
-        '[orchestray] validate-reviewer-git-diff: WARN — reviewer spawn lacks ## Git Diff section. ' +
-        'Include a `## Git Diff` section in the delegation prompt for token-efficient context handoff. ' +
-        'Kill switch: ORCHESTRAY_REVIEWER_GIT_DIFF_CHECK_DISABLED=1\n'
+        '[orchestray] validate-reviewer-git-diff: WARN — add `## Git Diff` to the reviewer ' +
+        'delegation prompt (delegation-templates.md:113). Missing section causes the reviewer ' +
+        'to re-fetch diff, wasting context. Kill switch: ORCHESTRAY_REVIEWER_GIT_DIFF_CHECK_DISABLED=1\n'
       );
     }
 

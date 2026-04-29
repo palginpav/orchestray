@@ -8,7 +8,7 @@
  * was invoked (not just when it completed) so timing, ordering, and drop-rate
  * analysis is possible even if the handler never finishes.
  *
- * Kill switch: `ORCHESTRAY_MCP_HANDLER_ENTRY_INSTRUMENTATION_DISABLED=1`
+ * Kill switch: `ORCHESTRAY_MCP_ENTRY_INSTRUMENTATION_DISABLED=1`
  * disables ALL handler-entry emits without touching the exit-time emit that
  * server.js already fires for every non-ask_user tool.
  *
@@ -43,7 +43,7 @@ const { resolveSafeCwd }         = require('./resolve-project-cwd');
 // ---------------------------------------------------------------------------
 
 function _isDisabled() {
-  return process.env.ORCHESTRAY_MCP_HANDLER_ENTRY_INSTRUMENTATION_DISABLED === '1';
+  return process.env.ORCHESTRAY_MCP_ENTRY_INSTRUMENTATION_DISABLED === '1';
 }
 
 // ---------------------------------------------------------------------------

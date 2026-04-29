@@ -13,7 +13,7 @@
  *      event emitted with `phase: "entry"`.
  *  T2. Double-fire guard: calling emitHandlerEntry twice with the same context
  *      reference → still only 1 event.
- *  T3. Kill switch SET (ORCHESTRAY_MCP_HANDLER_ENTRY_INSTRUMENTATION_DISABLED=1)
+ *  T3. Kill switch SET (ORCHESTRAY_MCP_ENTRY_INSTRUMENTATION_DISABLED=1)
  *      → 0 events emitted.
  *  T4. Missing orchestration_id (no current-orchestration.json) → helper
  *      handles gracefully; event still written with orchestration_id null or "unknown".
@@ -92,12 +92,12 @@ function loadHelper() {
 beforeEach(() => {
   tmpDir = makeTmpDir();
   // Ensure kill switch is off before each test.
-  delete process.env.ORCHESTRAY_MCP_HANDLER_ENTRY_INSTRUMENTATION_DISABLED;
+  delete process.env.ORCHESTRAY_MCP_ENTRY_INSTRUMENTATION_DISABLED;
 });
 
 afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
-  delete process.env.ORCHESTRAY_MCP_HANDLER_ENTRY_INSTRUMENTATION_DISABLED;
+  delete process.env.ORCHESTRAY_MCP_ENTRY_INSTRUMENTATION_DISABLED;
 });
 
 // ---------------------------------------------------------------------------
@@ -141,9 +141,9 @@ describe('W4-4 MCP handler-entry instrumentation', () => {
   // T3 — Kill switch disables all entry emits
   // -------------------------------------------------------------------------
 
-  test('T3: ORCHESTRAY_MCP_HANDLER_ENTRY_INSTRUMENTATION_DISABLED=1 → 0 events', () => {
+  test('T3: ORCHESTRAY_MCP_ENTRY_INSTRUMENTATION_DISABLED=1 → 0 events', () => {
     writeCurrentOrchFile(tmpDir, 'orch-test-w44-03');
-    process.env.ORCHESTRAY_MCP_HANDLER_ENTRY_INSTRUMENTATION_DISABLED = '1';
+    process.env.ORCHESTRAY_MCP_ENTRY_INSTRUMENTATION_DISABLED = '1';
 
     const { emitHandlerEntry } = loadHelper();
     const context = makeContext(tmpDir);

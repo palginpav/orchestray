@@ -306,7 +306,7 @@ The user wants to see aggregate performance analytics across orchestration histo
    **Display as two sub-tables:**
 
    ```
-   ## Event Activation Ratio — Firing Trend (v2.2.10)
+   ## Event Activation Ratio — Firing Trend
 
    ### Per-Orchestration Trend
    | Date       | Orch ID (prefix) | Ratio   | Fired | Declared | Dark |
@@ -329,7 +329,7 @@ The user wants to see aggregate performance analytics across orchestration histo
    - `rows_count === 0` (no valid `event_activation_ratio` rows): replace both
      sub-tables with:
      ```
-     ## Event Activation Ratio — Firing Trend (v2.2.10)
+     ## Event Activation Ratio — Firing Trend
      No event_activation_ratio data yet. Accrues after first orchestration completes
      with v2.2.10+ installed (kill switch: ORCHESTRAY_ACTIVATION_RATIO_EMIT_DISABLED).
      ```

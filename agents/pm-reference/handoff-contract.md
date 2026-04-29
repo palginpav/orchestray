@@ -260,7 +260,7 @@ contracts:
       - bin/my-feature.js
     write_forbidden:            # Optional belt-and-suspenders deny list
       - bin/**/*.secret.js
-    read_allowed: "*"           # Default; tighten to glob list when sensitive
+    read_allowed: "*"           # Informative only in v2.2.11 (read enforcement deferred to a future release)
 ```
 
 **Required fields** (when `contracts:` present): `schema_version`, `outputs`, `file_ownership`.
