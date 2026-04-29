@@ -7350,3 +7350,197 @@ Field notes:
 - `drained_at`: ISO8601 timestamp when the drainer marked the row as processed.
 - `drainer_orphan_age_seconds`: seconds elapsed since `drained_at`.
 - `feature_optional`: false.
+
+---
+
+### `event_activation_ratio` event
+
+Emitted at orchestration complete and from F3 nightly cron (`bin/audit-firing-nightly.js`).
+Reports the ratio of event types that fired at least once in the window vs. total declared
+event types, surfacing dark (never-fired) event coverage gaps.
+
+```json
+{
+  "event": "event_activation_ratio",
+  "version": 1,
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "numerator": 120,
+  "denominator": 183,
+  "ratio": 0.656,
+  "dark_count": 63,
+  "window_label": "per-orch"
+}
+```
+
+Field notes:
+- `numerator`: count of distinct event types that fired at least once in the window.
+- `denominator`: total declared event types (from shadow `event_count`).
+- `ratio`: `numerator / denominator`, float 0..1.
+- `dark_count`: `denominator - numerator` (event types that did not fire).
+- `window_label`: `"per-orch"` for orchestration-scope emit; `"daily"` for nightly cron.
+
+---
+
+### `agent_mcp_grounding_missing` event
+
+Emitted by `bin/validate-mcp-grounding.js` (SubagentStop, F2) when a subagent completes
+without having made any MCP tool calls, indicating it may have reasoned from stale
+in-context knowledge rather than grounded retrieval.
+
+```json
+{
+  "event": "agent_mcp_grounding_missing",
+  "version": 1,
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "agent_id": "subagent-abc123",
+  "subagent_type": "developer",
+  "mcp_calls_seen": 0
+}
+```
+
+Field notes:
+- `agent_id`: the subagent identifier from the SubagentStop event envelope.
+- `subagent_type`: agent role (e.g. `developer`, `reviewer`).
+- `mcp_calls_seen`: count of MCP tool calls observed during the subagent run (0 when this event fires).
+
+---
+
+### `context_size_hint_missing` event
+
+Emitted by B4 validation when a spawned subagent's delegation block lacks a
+`context_size_hint` field, indicating the PM did not size-annotate the delegation.
+
+```json
+{
+  "event": "context_size_hint_missing",
+  "version": 1,
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "subagent_type": "developer",
+  "task_id": "task-001"
+}
+```
+
+Field notes:
+- `subagent_type`: the role that was spawned without the hint.
+- `task_id`: identifier from the delegation block, if present.
+
+---
+
+### `reviewer_dimensions_missing` event
+
+Emitted by B5 validation when a reviewer subagent is spawned without the required
+`## Review Dimensions` block in its delegation, preventing scoped review execution.
+
+```json
+{
+  "event": "reviewer_dimensions_missing",
+  "version": 1,
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "agent_id": "subagent-def456",
+  "task_id": "task-002"
+}
+```
+
+Field notes:
+- `agent_id`: the reviewer subagent identifier.
+- `task_id`: delegation task identifier.
+
+---
+
+### `orchestration_roi_missing` event
+
+Emitted by B6 validation at orchestration close when no `orchestration_roi` event
+was recorded for the completed orchestration, indicating the ROI aggregator did not run.
+
+```json
+{
+  "event": "orchestration_roi_missing",
+  "version": 1,
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "timestamp": "2026-01-01T00:00:00.000Z"
+}
+```
+
+Field notes:
+- Emitted once per orchestration close where the ROI row is absent.
+
+---
+
+### `audit_event_autofill_threshold_exceeded` event
+
+Emitted by B3 when the autofill ratio of a specific event type exceeds the configured
+threshold, indicating the backstop mechanism is doing more work than the PM prose emit.
+
+```json
+{
+  "event": "audit_event_autofill_threshold_exceeded",
+  "version": 1,
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "event_type": "tier2_invoked",
+  "autofilled_count": 8,
+  "total_count": 10,
+  "ratio": 0.8,
+  "threshold": 0.5
+}
+```
+
+Field notes:
+- `event_type`: the event type for which autofill exceeded the threshold.
+- `autofilled_count`: rows where `source === "state_watcher_backstop"`.
+- `total_count`: total rows of this event type in the orchestration.
+- `ratio`: `autofilled_count / total_count`, float.
+- `threshold`: the configured threshold (default 0.5).
+
+---
+
+### `mcp_grounding_prefetched` event
+
+Emitted by `bin/prefetch-mcp-grounding.js` (PreToolUse:Agent, M1) when grounding
+context is pre-fetched before a subagent spawn and injected into Block A.
+
+```json
+{
+  "event": "mcp_grounding_prefetched",
+  "version": 1,
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "agent_id": "subagent-ghi789",
+  "subagent_type": "developer",
+  "tool_name": "mcp__orchestray__kb_search",
+  "result_byte_count": 2048,
+  "injected_into_block_a": true
+}
+```
+
+Field notes:
+- `tool_name`: the MCP tool used for pre-fetch (e.g. `mcp__orchestray__kb_search`).
+- `result_byte_count`: byte size of the pre-fetched result injected into context.
+- `injected_into_block_a`: whether the result was injected into Block A context.
+
+---
+
+### `kb_write_redirected` event
+
+Emitted by `bin/redirect-kb-write.js` (PreToolUse:Write, M5) when a Write targeting
+the KB is transparently redirected through the v2.2.10 pass-through layer.
+
+```json
+{
+  "event": "kb_write_redirected",
+  "version": 1,
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "agent_id": "subagent-jkl012",
+  "target_path": ".orchestray/kb/artifacts/example.md",
+  "phase": "transparent-pass-v2210"
+}
+```
+
+Field notes:
+- `target_path`: the original Write destination path.
+- `phase`: always `"transparent-pass-v2210"` in this release.

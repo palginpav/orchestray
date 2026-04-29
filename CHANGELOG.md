@@ -3,6 +3,75 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.2.10] - 2026-04-29
+
+v2.2.10 takes the mechanisations shipped in v2.2.9 and proves they fire. Sixteen event types that stayed dark across months of production orchestrations now light up reliably, and MCP-tool activation jumps from 5% to 76% via a new server-side prefetch that grounds every spawn against KB, history, patterns, routing, and schemas automatically — no PM prose required. A nightly self-audit replaces the manual research pass that produced this release's own data. And a CI gate now ensures that any future "MUST emit X" line added to our prompts must have a mechanical backstop or the build fails — so the prose-rot cycle that triggered v2.2.9 cannot quietly restart.
+
+### Added
+
+- **Server-side MCP grounding prefetch for every spawn.** Before any agent spawn, a new hook automatically calls KB search, pattern finder, history similarity, routing lookup, cost budget check, budget reserve, schema get, and pattern read on behalf of the spawning agent. The fetched data is injected into the delegation prompt inside a `<mcp-grounding>` fence. PM, researcher, debugger, and architect spawns each get a role-tailored subset. Zero PM prose required; the grounding happens at the hook layer. Emits `mcp_grounding_prefetched` per spawn. Kill switch: `ORCHESTRAY_MCP_PREFETCH_DISABLED=1`.
+
+- **Hard-reject gate for spawns that finish without MCP grounding.** Any spawn in the pm, researcher, debugger, or architect roles that completes without a single recorded MCP tool call now hard-fails (exit code 2) rather than emitting a warning. The prefetch above normally satisfies this gate automatically. Emits `agent_mcp_grounding_missing` before rejecting. Kill switch: `ORCHESTRAY_MCP_GROUNDING_GATE_DISABLED=1`.
+
+- **Per-orchestration boundary trigger for six governance audits.** Six audits that previously ran only when you closed Claude Code now fire the moment each orchestration finishes, regardless of session lifetime. "Did the PM forget a promised event? Did a citation skip its label? Was the housekeeper triggered?" — these checks now produce per-orchestration results, written to the per-orch archive alongside all other events. The six Stop-hook entries for these audits are retired; the new PostToolUse trigger on orchestration close is the sole path. Kill switch: `ORCHESTRAY_ORCH_BOUNDARY_TRIGGER_DISABLED=1` (re-enables Stop fallback in-place if the new trigger misfires).
+
+- **Nightly self-firing audit.** Once per calendar day (guarded by a per-day sentinel), Orchestray scans the last 24 hours of events, computes an activation ratio for every declared event type, and emits `event_activation_ratio` plus one `event_promised_but_dark` row per event type that never fired. `/orchestray:analytics --firing-audit` surfaces the trend. The previous release required a manual researcher pass to produce this data; this release writes the report itself. Kill switch: `ORCHESTRAY_FIRING_AUDIT_DISABLED=1`.
+
+- **Per-orchestration activation ratio KPI.** At orchestration close, a new `event_activation_ratio` event records how many of the declared event types actually fired during that run (numerator, denominator, ratio, dark count). Visible in `/orchestray:analytics`. Kill switch: `ORCHESTRAY_ACTIVATION_RATIO_EMIT_DISABLED=1`.
+
+- **Watcher-of-the-watcher CI gate.** A new CI-gated test scans every agent prompt for "MUST emit `<event>`" and "emit `<event>`" patterns and asserts that each captured event name has a corresponding matcher row in the mechanical backstop infrastructure. If a future release adds a new prose emit instruction without wiring the watcher, the build fails. No kill switch — this is a CI gate, not a runtime hook.
+
+- **Auto-fire MCP lookups at orchestration close.** On every orchestration close, metrics query, routing lookup, and (when an archetype was applied) pattern record application are called server-side automatically. Three more previously-dark MCP tools light up at each close. Kill switch: `ORCHESTRAY_ORCH_COMPLETE_MCP_FANOUT_DISABLED=1`.
+
+- **KB write redirect (Phase 1).** Writes to `.orchestray/kb/facts/` and `.orchestray/kb/decisions/` now transparently pass through the KB write MCP tool, recording the write as a `kb_write_redirected` event in the audit log. The original write still proceeds (Phase 1 transparent-pass). Phase 2 full enforcement ships in v2.2.11. Kill switch: `ORCHESTRAY_KB_WRITE_REDIRECT_DISABLED=1`.
+
+- **8 new event types.** `event_activation_ratio`, `agent_mcp_grounding_missing`, `context_size_hint_missing`, `reviewer_dimensions_missing`, `orchestration_roi_missing`, `audit_event_autofill_threshold_exceeded`, `mcp_grounding_prefetched`, `kb_write_redirected`. Shadow registry grows from 175 to 183 event types.
+
+### Fixed
+
+- **Four "tier2_invoked" protocols now auto-emit.** The cognitive-backpressure, auto-documenter, disagreement, and replay-analysis protocols each had a prose instruction telling the PM to run a manual command to emit `tier2_invoked`. The PM reliably skipped it; zero emissions landed. The watcher now detects when the relevant state file is written and emits the event automatically. The four prose instructions are deleted. Kill switch: `ORCHESTRAY_TIER2_WATCHER_DISABLED=1`.
+
+- **Verify-fix loop pass and fail events now auto-emit.** When a task's verify-fix status transitions to `resolved`, a `verify_fix_pass` event is now emitted automatically by the watcher. Transitions to `escalated` emit `verify_fix_fail`. Both were prose-only "manual emit REQUIRED" before this release; neither fired reliably. Kill switch: `ORCHESTRAY_VERIFY_FIX_WATCHER_DISABLED=1`.
+
+- **Autofill threshold now fires loud.** When more than 20% of events for a given event type required autofill (a sign the emit site is structurally broken), the system previously logged silently. Now it emits `audit_event_autofill_threshold_exceeded` and writes a quarantine banner file so the degradation is impossible to miss in analytics. Kill switch: `ORCHESTRAY_AUTOFILL_THRESHOLD_DISABLED=1`.
+
+- **Missing context size hint is now observable.** When an agent spawn carries no context size hint (or an all-zero hint), a `context_size_hint_missing` warn-event is emitted. Previously this was a TODO comment with no observable consequence. Kill switch: `ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED=1`.
+
+- **Reviewer spawns without a Dimensions block are now observable.** Reviewer spawns that lack a `## Dimensions to Apply` section in their prompt now emit `reviewer_dimensions_missing`. Kill switch: `ORCHESTRAY_REVIEWER_DIMENSIONS_WARN_DISABLED=1`.
+
+- **Missing orchestration ROI event at close is now observable.** If an orchestration closes without an `orchestration_roi` event, `orchestration_roi_missing` is emitted. Kill switch: `ORCHESTRAY_ROI_WATCHED_DISABLED=1`.
+
+- **Schema self-call on shadow cache miss.** When the audit event writer encounters an event type not in the shadow cache, it now calls the schema get tool directly, caches the result for the session, and records an `mcp_tool_call:schema_get` row. Previously the miss was silent and the validation was skipped. Kill switch: `ORCHESTRAY_SCHEMA_GET_SELF_CALL_DISABLED=1`.
+
+- **Sentinel probe per-session dedup.** The sentinel probe was firing on every `SessionStart` in a session, which could produce hundreds of rows per session in long-running orchestrations. It now fires once per session ID. Kill switch: `ORCHESTRAY_SENTINEL_DEDUP_DISABLED=1`.
+
+- **Idle-teammate notification silenced when Agent Teams is disabled.** The idle teammate reassignment handler now exits silently when `agent_teams.enabled` is false in config. Previously it would attempt to process idle events even when the feature was off.
+
+- **Pre-decomp MCP checkpoint gate promoted from warn to exit 2.** Spawning an agent without the required pre-decomp checkpoint rows (pattern find, KB search, history find similar tasks) for the orchestration now hard-blocks the spawn rather than logging a warning. M1 prefetch normally writes these rows automatically. Kill switch: `ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY=1` (reverts to warn; removed in v2.2.11).
+
+### Migration notes
+
+- **Restart Claude Code after upgrading.** Agent definitions and hook registrations are cached at session start; a restart is required for v2.2.10 hooks to take effect.
+- No config changes required. All new behaviour is default-on.
+- **F1 boundary trigger retires 6 Stop-hook entries.** Operators with custom hooks or scripts asserting Stop-hook firing of the migrated audits must switch to reading the per-orchestration archive at `.orchestray/history/<orch_id>/events.jsonl`. Use `ORCHESTRAY_ORCH_BOUNDARY_TRIGGER_DISABLED=1` to re-enable the Stop fallback in-place while migrating.
+- **F2 hard-block affects pm, researcher, debugger, and architect roles.** Spawns in these roles that complete with zero MCP tool calls will exit 2. M1 prefetch automatically satisfies this gate for normal spawns. If F2 misfires (e.g., in a custom spawn path that bypasses the prefetch), set `ORCHESTRAY_MCP_GROUNDING_GATE_DISABLED=1`.
+- New env kill switches (set to `1` to disable; default unset = feature enabled): `ORCHESTRAY_ORCH_BOUNDARY_TRIGGER_DISABLED`, `ORCHESTRAY_MCP_GROUNDING_GATE_DISABLED`, `ORCHESTRAY_FIRING_AUDIT_DISABLED`, `ORCHESTRAY_VERIFY_FIX_WATCHER_DISABLED`, `ORCHESTRAY_TIER2_WATCHER_DISABLED`, `ORCHESTRAY_AUTOFILL_THRESHOLD_DISABLED`, `ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED`, `ORCHESTRAY_REVIEWER_DIMENSIONS_WARN_DISABLED`, `ORCHESTRAY_ROI_WATCHED_DISABLED`, `ORCHESTRAY_ACTIVATION_RATIO_EMIT_DISABLED`, `ORCHESTRAY_SENTINEL_DEDUP_DISABLED`, `ORCHESTRAY_MCP_PREFETCH_DISABLED`, `ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY` (warn-only, not disabled; removed v2.2.11), `ORCHESTRAY_ORCH_COMPLETE_MCP_FANOUT_DISABLED`, `ORCHESTRAY_SCHEMA_GET_SELF_CALL_DISABLED`, `ORCHESTRAY_KB_WRITE_REDIRECT_DISABLED`.
+
+### Tests
+
+5212 tests, 5208 pass, 4 pre-existing skips/failures unrelated to v2.2.10 scope, 0 v2.2.10-introduced regressions.
+
+### Under the hood
+
+- New hook scripts: `bin/prefetch-mcp-grounding.js` (M1 server-side prefetch), `bin/validate-mcp-grounding.js` (F2 agent_stop gate), `bin/audit-on-orch-complete.js` (F1 boundary trigger + M3 fanout), `bin/audit-firing-nightly.js` + `bin/_lib/firing-audit-roll.js` (F3 nightly cron), `bin/emit-event-activation-ratio.js` (N1), `bin/redirect-kb-write.js` (M5).
+- New helper: `bin/_lib/watcher-coverage-scan.js` (N2 CI gate + F3 corpus scan).
+- Modified: `bin/_lib/pm-emit-state-watcher.js` (B1 verify-fix + B2 tier2 + B6 ROI rules), `bin/_lib/audit-event-writer.js` (B3 autofill threshold + M4 schema_get self-call), `bin/preflight-spawn-budget.js` (B4 context_size_hint), `bin/validate-reviewer-scope.js` (B5 dimensions check), `bin/gate-agent-spawn.js` (M2 exit-2 lift), `bin/sentinel-probe.js` (N3 session dedup), `bin/reassign-idle-teammate.js` (N3 config-gate).
+- 6 Stop-hook entries retired from `hooks/hooks.json`; replaced by PostToolUse[orchestration_complete] and SessionStart entries.
+- New event types in shadow registry: `event_activation_ratio`, `agent_mcp_grounding_missing`, `context_size_hint_missing`, `reviewer_dimensions_missing`, `orchestration_roi_missing`, `audit_event_autofill_threshold_exceeded`, `mcp_grounding_prefetched`, `kb_write_redirected`. Shadow grows 175 → 183 event types; no cap bump required (12 KB cap has headroom).
+- 37 new tests added; 6 existing v2.2.9 tests updated to assert against per-orch archive instead of live tail and to confirm 6 Stop-hook entries absent.
+
+---
+
 ## [2.2.9] - 2026-04-29
 
 v2.2.9 completes the mechanisation push started in v2.2.8: every enforcement that previously lived only in a prose instruction now has a hook, a schema gate, or a hard-reject validator backing it up. Thirty-plus mechanical changes ship across schema validation, agent telemetry, dual-install consistency, and numeric threshold enforcement — all default-on, all with kill switches. The result: fewer silent failures, fewer "it was supposed to fire but didn't" gaps, and an audit log you can actually trust.

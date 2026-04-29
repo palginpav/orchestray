@@ -38,7 +38,17 @@ function run(stdinData) {
 }
 
 function makeTmpDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'orch-r-at-flag-'));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-r-at-flag-'));
+  // N3 fix: write config.json with agent_teams.enabled=true so the N3 gate allows
+  // the hook to proceed (gate exits 0 silently when agent_teams.enabled !== true).
+  const orchDir = path.join(tmpDir, '.orchestray');
+  fs.mkdirSync(orchDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(orchDir, 'config.json'),
+    JSON.stringify({ agent_teams: { enabled: true } }),
+    'utf8'
+  );
+  return tmpDir;
 }
 
 function seedTaskGraph(tmpDir, content) {

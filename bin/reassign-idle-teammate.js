@@ -27,6 +27,26 @@ const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 
+/**
+ * Read agent_teams.enabled from .orchestray/config.json.
+ * Returns false when:
+ *   - the config file is absent,
+ *   - the field is absent,
+ *   - or the field is explicitly false.
+ * Returns true only when agent_teams.enabled === true.
+ * Never throws.
+ */
+function _isAgentTeamsEnabled(cwd) {
+  try {
+    const cfgPath = path.join(cwd, '.orchestray', 'config.json');
+    if (!fs.existsSync(cfgPath)) return false;
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    return !!(cfg && cfg.agent_teams && cfg.agent_teams.enabled === true);
+  } catch (_e) {
+    return false; // unreadable or corrupt config → treat as disabled
+  }
+}
+
 // 1 MB cap: corrupted or runaway task-graph.md files could be arbitrarily
 // large, and reading them fully would OOM the hook process (Node default
 // heap is ~1.5 GB, but hook timeout is 5 s). On overflow we skip the
@@ -48,6 +68,14 @@ process.stdin.on('end', () => {
   try {
     const event = JSON.parse(input);
     const cwd = resolveSafeCwd(event.cwd);
+
+    // N3.b config gate: if agent_teams.enabled is false (or absent), exit 0
+    // silently without emitting any teammate_idle event.
+    if (!_isAgentTeamsEnabled(cwd)) {
+      process.stdout.write(JSON.stringify({ continue: true }) + '\n');
+      process.exit(0);
+    }
+
     const auditDir = path.join(cwd, '.orchestray', 'audit');
 
     // Read orchestration_id from current-orchestration.json if available
@@ -124,3 +152,6 @@ process.stdin.on('end', () => {
     process.exit(0);
   }
 });
+
+// Export for tests.
+module.exports = { _isAgentTeamsEnabled };

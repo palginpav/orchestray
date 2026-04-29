@@ -2,7 +2,7 @@
 name: analytics
 description: Show aggregate performance analytics across all orchestrations
 disable-model-invocation: true
-argument-hint: "[last N]"
+argument-hint: "[last N] [--firing-audit]"
 ---
 
 # Orchestration Analytics
@@ -442,6 +442,40 @@ Claude Code session (agent definitions are cached at session start).
 ```
 
 Schema loader: `loadV2017ExperimentsConfig(cwd)` in `bin/_lib/config-schema.js`.
+
+---
+
+## Event Activation Ratio (v2.2.10 N1)
+
+Measures what fraction of declared (non-optional) event types actually fired
+in a given orchestration. Surfaces coverage gaps — dark event types are
+potential dead code or untested paths.
+
+**Emitted by:** `bin/emit-event-activation-ratio.js`, invoked at end of
+`bin/audit-on-orch-complete.js` once per orchestration boundary.
+
+**Event type:** `event_activation_ratio` (fields: `numerator`, `denominator`,
+`ratio`, `dark_count`, `window_label`, `orchestration_id`).
+
+**Surface in analytics:**
+
+```
+## Event Activation Ratio (per-orch)
+| Metric | Value |
+|--------|-------|
+| Last orch ratio | {ratio*100:.1f}% ({numerator}/{denominator}) |
+| Dark types      | {dark_count} |
+```
+
+To compute 7-day rolling: query `event_activation_ratio` events from
+`.orchestray/audit/events.jsonl` over the past 7 days, average the `ratio`
+field, and show the result alongside the most recent per-orch reading.
+
+```
+| 7-day rolling avg | {avg_ratio*100:.1f}% ({N} orches) |
+```
+
+Kill switch: `ORCHESTRAY_ACTIVATION_RATIO_EMIT_DISABLED=1`.
 
 ---
 

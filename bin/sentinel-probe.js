@@ -123,6 +123,47 @@ function _checkConfigJson(projectRoot) {
 }
 
 /**
+ * Compute a per-session lock ID from env vars.
+ * Uses CLAUDE_SESSION_ID when available; falls back to UTC date + PID so that
+ * distinct real sessions still get distinct IDs even when CLAUDE_SESSION_ID is absent.
+ */
+function _sessionLockId() {
+  if (process.env.CLAUDE_SESSION_ID) return process.env.CLAUDE_SESSION_ID;
+  // Fallback: date portion of ISO timestamp + PID gives a stable-per-session key
+  // as long as multiple SessionStart fires happen within the same second/PID.
+  const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  return 'pid-' + process.pid + '-' + date;
+}
+
+/**
+ * Check whether this session has already fired sentinel_probe_session.
+ * Returns true if the lock file already exists (dedup should skip).
+ * Creates the lock file on first call so subsequent calls return true.
+ * No-ops (returns false) when ORCHESTRAY_SENTINEL_DEDUP_DISABLED=1.
+ */
+function _checkAndSetSessionLock(projectRoot) {
+  if (process.env.ORCHESTRAY_SENTINEL_DEDUP_DISABLED === '1') return false;
+  try {
+    const lockId = _sessionLockId();
+    const stateDir = path.join(projectRoot, '.orchestray', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const lockFile = path.join(stateDir, 'sentinel-probe-session-' + lockId + '.lock');
+    if (fs.existsSync(lockFile)) return true; // already ran this session
+    // Write lock — use writeFileSync with 'wx' flag (exclusive create) to be
+    // race-safe. On race, the second writer gets EEXIST and also returns true.
+    try {
+      fs.writeFileSync(lockFile, lockId, { flag: 'wx' });
+    } catch (e) {
+      if (e && e.code === 'EEXIST') return true;
+      throw e;
+    }
+    return false;
+  } catch (_e) {
+    return false; // fail-open: if lock logic errors, let the probe run
+  }
+}
+
+/**
  * Read sentinel_probe kill-switch from config.
  * Returns true if the probe should run.
  */
@@ -238,6 +279,13 @@ function main() {
       process.exit(0);
     }
 
+    // N3.a per-session dedup: if this session has already fired
+    // sentinel_probe_session, exit 0 silently (no double-emit).
+    if (_checkAndSetSessionLock(projectRoot)) {
+      process.stdout.write(JSON.stringify({ continue: true }) + '\n');
+      process.exit(0);
+    }
+
     let sessionResult;
     try {
       sessionResult = runSessionChecks(projectRoot);
@@ -291,7 +339,7 @@ function main() {
 }
 
 // Export for tests.
-module.exports = { runSessionChecks, _isSessionProbeEnabled, _emitSessionBypassed };
+module.exports = { runSessionChecks, _isSessionProbeEnabled, _emitSessionBypassed, _checkAndSetSessionLock, _sessionLockId };
 
 if (require.main === module) {
   main();

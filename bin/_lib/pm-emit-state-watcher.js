@@ -1,8 +1,8 @@
 'use strict';
 
 /**
- * pm-emit-state-watcher.js — backstop emitter for 4 prose-only PM events
- * (v2.2.9 B-8).
+ * pm-emit-state-watcher.js — backstop emitter for prose-only PM events
+ * (v2.2.9 B-8; extended v2.2.10 B1; extended v2.2.10 B2; extended v2.2.10 B6).
  *
  * Why this exists
  * ---------------
@@ -14,6 +14,20 @@
  *   F-PM-9  → `pattern_roi_snapshot` when roi-snapshot.json updates
  *   F-PM-12 → `verify_fix_start` synthesised from task YAML round_history
  *   F-PM-21 → `consequence_forecast` when consequences.md is written
+ *
+ * v2.2.10 B1 adds two more:
+ *   B1-pass → `verify_fix_pass` when task YAML verify_fix.status → resolved
+ *   B1-fail → `verify_fix_fail` when task YAML verify_fix.status → escalated
+ *
+ * v2.2.10 B2 replaces 4 R-TGATE-PM Bash-emit prose blocks with mechanical rules:
+ *   B2-cb   → `tier2_invoked` protocol=cognitive_backpressure on state/confidence/task-*.json write
+ *   B2-ad   → `tier2_invoked` protocol=auto_documenter on routing.jsonl write with documenter entry
+ *   B2-dp   → `tier2_invoked` protocol=disagreement_protocol on state/disagree-*.json write
+ *   B2-ra   → `tier2_invoked` protocol=replay_analysis on state/replay-*.json write
+ *
+ * v2.2.10 B6: `checkOrchRoiPresence` — orch-complete-time check.
+ *   Reads the orch slice; emits `orchestration_roi_missing` if no
+ *   `orchestration_roi` row found. Called by audit-pm-emit-coverage.js.
  *
  * What this helper does
  * ---------------------
@@ -40,6 +54,8 @@
  * Kill switches
  * -------------
  *   - process.env.ORCHESTRAY_PM_EMIT_WATCHER_DISABLED === '1'
+ *   - process.env.ORCHESTRAY_VERIFY_FIX_WATCHER_DISABLED === '1'  (B1 rules only)
+ *   - process.env.ORCHESTRAY_TIER2_WATCHER_DISABLED === '1'        (B2 rules only)
  *   - config.pm_emit_watcher.enabled === false
  *
  * Default-on per `feedback_default_on_shipping.md`.
@@ -83,6 +99,8 @@ const EVENTS_TAIL_BYTES = 1 * 1024 * 1024; // 1 MB
  *   id:                 unique slug (used in last-seen + observability)
  *   match(filePath):    boolean — does this path trigger the watcher?
  *   eventType:          the event the PM was supposed to emit
+ *   resolveEventType?:  optional fn(ctx) → string|null — dynamic event type
+ *                       (overrides eventType for idempotency + pmAlreadyEmitted)
  *   buildPayload(ctx):  returns the canonical event payload (less the
  *                       backstop-marker fields, which are added by the caller)
  *   findingRef:         W1 finding slug for traceability
@@ -214,11 +232,203 @@ const WATCH_TARGETS = [
       };
     },
   },
+
+  // B1: state/tasks/<task>.md|yaml write with verify_fix.status transition.
+  //   status: resolved   → verify_fix_pass
+  //   status: escalated  → verify_fix_fail
+  //   anything else      → no-op (payload_null)
+  //
+  // Uses `resolveEventType` to pick the event dynamically. `processEdit` reads
+  // this method when present and uses it in place of the static `eventType`
+  // field for the `pmAlreadyEmitted` check, the last-seen status key, and the
+  // backstop emit. Idempotency: last-seen records `last_event_type` so a
+  // repeated write with the same status is suppressed even outside the
+  // 30-second PM-emit window.
+  {
+    id:        'task_verify_fix_outcome',
+    findingRef: 'B1',
+    eventType: 'verify_fix_pass', // static default; overridden by resolveEventType
+    match(rel) {
+      return /^\.orchestray\/state\/tasks\/[^/]+\.(md|yaml)$/.test(rel);
+    },
+    /**
+     * Returns the event type for this file write, or null if not applicable.
+     * Called by `processEdit` BEFORE the `pmAlreadyEmitted` check so we use
+     * the correct event slug for de-dup.
+     */
+    resolveEventType(ctx) {
+      if (process.env.ORCHESTRAY_VERIFY_FIX_WATCHER_DISABLED === '1') return null;
+      const taskFile = path.join(ctx.cwd, ctx.relPath);
+      let raw;
+      try { raw = fs.readFileSync(taskFile, 'utf8'); }
+      catch (_e) { return null; }
+      if (parseVerifyFixStatus(raw, 'resolved'))  return 'verify_fix_pass';
+      if (parseVerifyFixStatus(raw, 'escalated')) return 'verify_fix_fail';
+      return null; // status is open/in_progress/design_rejected/etc → no-op
+    },
+    buildPayload(ctx) {
+      if (process.env.ORCHESTRAY_VERIFY_FIX_WATCHER_DISABLED === '1') return null;
+      const taskFile = path.join(ctx.cwd, ctx.relPath);
+      let raw;
+      try { raw = fs.readFileSync(taskFile, 'utf8'); }
+      catch (_e) { return null; }
+      const task_id     = path.basename(ctx.relPath).replace(/\.(md|yaml)$/, '');
+      const round       = parseLatestRound(raw);
+      const error_count = parseLatestErrorCount(raw);
+
+      if (parseVerifyFixStatus(raw, 'resolved')) {
+        return {
+          version:      1,
+          type:         'verify_fix_pass',
+          task_id,
+          round:        round == null ? 1 : round,
+          rounds_total: round == null ? 1 : round,
+        };
+      }
+      if (parseVerifyFixStatus(raw, 'escalated')) {
+        return {
+          version:          1,
+          type:             'verify_fix_fail',
+          task_id,
+          round:            round == null ? 1 : round,
+          remaining_errors: error_count == null ? 0 : error_count,
+        };
+      }
+      return null; // status does not warrant an emit
+    },
+  },
+
+  // B2-cb: state/confidence/task-*.json write → tier2_invoked (cognitive_backpressure)
+  {
+    id:        'cognitive_backpressure_write',
+    findingRef: 'B2',
+    eventType: 'tier2_invoked',
+    match(rel) {
+      return /^\.orchestray\/state\/confidence\/task-[^/]+\.json$/.test(rel);
+    },
+    buildPayload(ctx) {
+      if (process.env.ORCHESTRAY_TIER2_WATCHER_DISABLED === '1') return null;
+      const task_id = path.basename(ctx.relPath, '.json');
+      return {
+        version:        1,
+        type:           'tier2_invoked',
+        protocol:       'cognitive_backpressure',
+        trigger_signal: 'state_watcher_backstop: ' + ctx.relPath,
+        task_id,
+      };
+    },
+  },
+
+  // B2-ad: state/routing.jsonl write with documenter delegation entry
+  //        → tier2_invoked (auto_documenter)
+  {
+    id:        'auto_documenter_routing',
+    findingRef: 'B2',
+    eventType: 'tier2_invoked',
+    match(rel) {
+      return rel === '.orchestray/state/routing.jsonl' ||
+             rel === '.orchestray/audit/routing.jsonl';
+    },
+    buildPayload(ctx) {
+      if (process.env.ORCHESTRAY_TIER2_WATCHER_DISABLED === '1') return null;
+      const file = path.join(ctx.cwd, ctx.relPath);
+      let raw;
+      try { raw = fs.readFileSync(file, 'utf8'); }
+      catch (_e) { return null; }
+      // Only fire when a documenter delegation appears anywhere in the file.
+      const hasDocumenter = raw.split('\n').some(line => {
+        if (!line.trim()) return false;
+        try {
+          const entry = JSON.parse(line);
+          return (
+            entry &&
+            (entry.agent_type === 'documenter' || entry.agent_role === 'documenter')
+          );
+        } catch (_e) { return false; }
+      });
+      if (!hasDocumenter) return null;
+      return {
+        version:        1,
+        type:           'tier2_invoked',
+        protocol:       'auto_documenter',
+        trigger_signal: 'state_watcher_backstop: ' + ctx.relPath,
+      };
+    },
+  },
+
+  // B2-dp: state/disagree-*.json write → tier2_invoked (disagreement_protocol)
+  {
+    id:        'disagreement_protocol_write',
+    findingRef: 'B2',
+    eventType: 'tier2_invoked',
+    match(rel) {
+      return /^\.orchestray\/state\/disagree-[^/]+\.json$/.test(rel);
+    },
+    buildPayload(ctx) {
+      if (process.env.ORCHESTRAY_TIER2_WATCHER_DISABLED === '1') return null;
+      return {
+        version:        1,
+        type:           'tier2_invoked',
+        protocol:       'disagreement_protocol',
+        trigger_signal: 'state_watcher_backstop: ' + ctx.relPath,
+      };
+    },
+  },
+
+  // B2-ra: state/replay-*.json write → tier2_invoked (replay_analysis)
+  {
+    id:        'replay_analysis_write',
+    findingRef: 'B2',
+    eventType: 'tier2_invoked',
+    match(rel) {
+      return /^\.orchestray\/state\/replay-[^/]+\.json$/.test(rel);
+    },
+    buildPayload(ctx) {
+      if (process.env.ORCHESTRAY_TIER2_WATCHER_DISABLED === '1') return null;
+      return {
+        version:        1,
+        type:           'tier2_invoked',
+        protocol:       'replay_analysis',
+        trigger_signal: 'state_watcher_backstop: ' + ctx.relPath,
+      };
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
 // Mini-parsers (best-effort, fail-open)
 // ---------------------------------------------------------------------------
+
+/**
+ * Check if the verify_fix block in YAML raw text has `status: <expected>`.
+ * Returns true only when `verify_fix:` block is present AND the indented
+ * `status:` key inside it has the expected value.
+ * Best-effort — fails open (returns false) on error.
+ */
+function parseVerifyFixStatus(raw, expected) {
+  if (!raw || !/verify_fix:/m.test(raw)) return false;
+  const lines = raw.split('\n');
+  let vfIndent = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const vfMatch = /^(\s*)verify_fix:\s*$/.exec(line);
+    if (vfMatch) {
+      vfIndent = vfMatch[1].length;
+      for (let j = i + 1; j < lines.length; j++) {
+        const sub = lines[j];
+        if (!sub.trim()) continue;
+        const subIndent = sub.length - sub.trimStart().length;
+        if (subIndent <= vfIndent) break;
+        const stMatch = /^\s+status:\s*(\w+)\s*$/.exec(sub);
+        if (stMatch) {
+          return stMatch[1] === expected;
+        }
+      }
+      return false;
+    }
+  }
+  return false;
+}
 
 /**
  * Find the highest-numbered `- round: <N>` in YAML round_history. Returns
@@ -438,17 +648,42 @@ function processEdit(event, opts) {
     return { processed: true, target_id: target.id, backstop_emitted: false, reason: 'no_orchestration' };
   }
 
-  // Update last-seen (best-effort).
+  // For targets with `resolveEventType`, derive the effective event type now
+  // (before last-seen update) so idempotency and pmAlreadyEmitted use the
+  // correct slug. Also enables early-exit when the resolved type is null
+  // (e.g., verify_fix.status is still open).
+  let effectiveEventType = target.eventType;
+  if (typeof target.resolveEventType === 'function') {
+    effectiveEventType = target.resolveEventType({ cwd, relPath, orchId, nowMs });
+    if (!effectiveEventType) {
+      // Status is not a terminal value we care about — no-op.
+      return { processed: true, target_id: target.id, backstop_emitted: false, reason: 'payload_null' };
+    }
+  }
+
+  // Idempotency for status-keyed targets (B1): suppress re-emit when the same
+  // status was already backstopped for this file in this orchestration.
   const lastSeen = loadLastSeen(cwd);
+  const lastEntry = lastSeen[relPath];
+  if (
+    lastEntry &&
+    lastEntry.orchestration_id === orchId &&
+    lastEntry.last_event_type  === effectiveEventType
+  ) {
+    return { processed: true, target_id: target.id, backstop_emitted: false, reason: 'status_unchanged' };
+  }
+
+  // Update last-seen (best-effort).
   lastSeen[relPath] = {
     mutated_at:       new Date(nowMs).toISOString(),
     orchestration_id: orchId,
     target_id:        target.id,
+    last_event_type:  effectiveEventType,
   };
   saveLastSeen(cwd, lastSeen);
 
   // Did PM emit this event itself in the recent window?
-  if (pmAlreadyEmitted(cwd, target.eventType, orchId, nowMs)) {
+  if (pmAlreadyEmitted(cwd, effectiveEventType, orchId, nowMs)) {
     return { processed: true, target_id: target.id, backstop_emitted: false, reason: 'pm_emit_paired' };
   }
 
@@ -478,7 +713,7 @@ function processEdit(event, opts) {
     writeEvent({
       version:             1,
       type:                'pm_emit_backstop_engaged',
-      original_event_type: target.eventType,
+      original_event_type: effectiveEventType,
       source_state_file:   relPath,
       finding_ref:         target.findingRef,
     }, { cwd });
@@ -488,17 +723,79 @@ function processEdit(event, opts) {
 }
 
 // ---------------------------------------------------------------------------
+// B6: orchestration_roi presence check
+// ---------------------------------------------------------------------------
+
+/**
+ * Watcher rule: orch_complete without prior orchestration_roi → emit
+ * orchestration_roi_missing.
+ *
+ * Called from audit-pm-emit-coverage.js at orch_complete time (via the
+ * audit-on-orch-complete.js fan-out). NOT triggered by a file-write watch
+ * target — this is an orch-slice completeness check.
+ *
+ * Kill switch: ORCHESTRAY_ROI_WATCHED_DISABLED=1
+ *
+ * @param {string}   cwd       - Project root.
+ * @param {string}   orchId    - Active orchestration_id.
+ * @param {Function} readLines - fn(filePath) → string[] — injected for tests.
+ */
+function checkOrchRoiPresence(cwd, orchId, readLines) {
+  if (process.env.ORCHESTRAY_ROI_WATCHED_DISABLED === '1') return;
+  if (!orchId) return;
+
+  const archivePath = path.join(cwd, '.orchestray', 'history', orchId, 'events.jsonl');
+  const livePath    = path.join(cwd, EVENTS_REL);
+
+  let lines;
+  try {
+    if (fs.existsSync(archivePath)) {
+      lines = typeof readLines === 'function' ? readLines(archivePath) : fs.readFileSync(archivePath, 'utf8').split('\n');
+    } else {
+      lines = typeof readLines === 'function' ? readLines(livePath) : fs.readFileSync(livePath, 'utf8').split('\n');
+    }
+  } catch (_e) {
+    lines = [];
+  }
+
+  const hasRoi = lines.some(l => {
+    const trimmed = typeof l === 'string' ? l.trim() : '';
+    if (!trimmed) return false;
+    let evt;
+    try { evt = JSON.parse(trimmed); }
+    catch (_e) { return false; }
+    if (!evt || typeof evt !== 'object') return false;
+    if (evt.type !== 'orchestration_roi') return false;
+    if (orchId && evt.orchestration_id && evt.orchestration_id !== orchId) return false;
+    return true;
+  });
+
+  if (!hasRoi) {
+    try {
+      writeEvent({
+        version:          1,
+        type:             'orchestration_roi_missing',
+        orchestration_id: orchId,
+        reason:           'no orchestration_roi event in orch slice at orch_complete',
+      }, { cwd });
+    } catch (_e) { /* fail-open */ }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
 module.exports = {
   processEdit,
+  checkOrchRoiPresence,
   WATCH_TARGETS,
   // Visible for tests:
   _internals: {
     parseLatestRound,
     parseLatestErrorCount,
     parseConsequencePredictions,
+    parseVerifyFixStatus,
     pmAlreadyEmitted,
     isDisabled,
   },

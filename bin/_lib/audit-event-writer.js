@@ -464,6 +464,12 @@ function writeEvent(eventPayload, opts) {
     if (isUnknownType && !_inGuardEmit) {
       _inGuardEmit = true;
       try {
+        // M4 (v2.2.10): self-call schema_get for the unknown type and emit
+        // mcp_tool_call observability row (cached — at most once per type per process).
+        try {
+          _schemaGetSelfCall(validation.event_type || 'unknown', cwd, eventsPath);
+        } catch (_e) { /* fail-open */ }
+
         // Increment the 3-strike miss counter for unknown-type emissions —
         // matches the strict drop+surrogate path. Preserves the v2.1.14
         // auto-disable invariant: 3 misses in 24h still trip the circuit.
@@ -651,6 +657,167 @@ function writeAuditEvent({ type, mode, extraFieldsPicker, additionalEventsPicker
   });
 }
 
+// ---------------------------------------------------------------------------
+// B3: autofill-threshold tracking (v2.2.10)
+// ---------------------------------------------------------------------------
+// Per-event-type counters: { eventType -> { total, autofilled } }
+const _autofillCounters = new Map();
+// Guard set: orch+eventType pairs that have already fired the threshold event.
+const _autofillThresholdFired = new Set();
+
+const AUTOFILL_THRESHOLD_DEFAULT = 0.20;
+const AUTOFILL_MIN_OBSERVATIONS  = 20;  // must have at least this many before threshold fires
+
+/**
+ * Track one observation toward the autofill-threshold counter.
+ * Called from emitAutofillTelemetry (production path) and _testHooks (tests).
+ *
+ * @param {string} eventType   - The event type being tracked
+ * @param {boolean} wasAutofilled - Whether this observation was autofilled
+ * @param {string} orchId      - Active orchestration ID
+ * @param {string} cwd         - Project root (for writing events + banner)
+ * @param {string} eventsPath  - Path to events.jsonl
+ */
+function _trackAutofillThreshold(eventType, wasAutofilled, orchId, cwd, eventsPath) {
+  // Kill switch
+  if (process.env.ORCHESTRAY_AUTOFILL_THRESHOLD_DISABLED === '1') return;
+
+  const key = orchId + '::' + eventType;
+  if (!_autofillCounters.has(key)) {
+    _autofillCounters.set(key, { total: 0, autofilled: 0 });
+  }
+  const counter = _autofillCounters.get(key);
+  counter.total++;
+  if (wasAutofilled) counter.autofilled++;
+
+  // Check threshold only if we haven't already fired for this key
+  if (_autofillThresholdFired.has(key)) return;
+
+  const threshold = parseFloat(process.env.ORCHESTRAY_AUTOFILL_THRESHOLD || String(AUTOFILL_THRESHOLD_DEFAULT));
+  if (counter.total < AUTOFILL_MIN_OBSERVATIONS) return;
+
+  const ratio = counter.autofilled / counter.total;
+  if (ratio <= threshold) return;
+
+  // Threshold exceeded — fire once
+  _autofillThresholdFired.add(key);
+
+  // Emit threshold event
+  try {
+    const thresholdEvent = {
+      version:         1,
+      type:            'audit_event_autofill_threshold_exceeded',
+      event_type:      eventType,
+      autofilled_count: counter.autofilled,
+      total_count:     counter.total,
+      ratio:           ratio,
+      threshold:       threshold,
+      orchestration_id: orchId,
+    };
+    const raw = JSON.stringify(thresholdEvent);
+    const line = raw + '\n';
+    try {
+      fs.appendFileSync(eventsPath, line, 'utf8');
+    } catch (_e) { /* fail-open */ }
+  } catch (_e) { /* fail-open */ }
+
+  // Write banner file
+  try {
+    const stateDir = path.join(cwd, '.orchestray', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const bannerPath = path.join(stateDir, 'quarantine-banner-autofill-' + orchId + '.txt');
+    const content =
+      '[orchestray] autofill-threshold exceeded for event_type=' + eventType +
+      ' in orchestration=' + orchId + '\n' +
+      'ratio=' + ratio.toFixed(4) + ' threshold=' + threshold + '\n' +
+      'autofilled=' + counter.autofilled + ' total=' + counter.total + '\n';
+    fs.writeFileSync(bannerPath, content, 'utf8');
+  } catch (_e) { /* fail-open */ }
+}
+
+// ---------------------------------------------------------------------------
+// M4: schema_get self-call cache (v2.2.10)
+// ---------------------------------------------------------------------------
+// Set of event types we've already attempted a schema_get self-call for.
+const _schemaGetCalledTypes = new Set();
+
+/**
+ * When writeEvent encounters an unknown event type, self-call getChunk()
+ * (which is the schema_get implementation) and emit a mcp_tool_call event.
+ * Subsequent calls for the same type are suppressed (cache).
+ *
+ * @param {string} eventType   - The unknown event type
+ * @param {string} cwd         - Project root
+ * @param {string} eventsPath  - Path to events.jsonl
+ */
+function _schemaGetSelfCall(eventType, cwd, eventsPath) {
+  if (process.env.ORCHESTRAY_SCHEMA_GET_SELF_CALL_DISABLED === '1') return;
+  if (_schemaGetCalledTypes.has(eventType)) return;
+  _schemaGetCalledTypes.add(eventType);
+
+  // Invoke getChunk from tier2-index.js (same as schema_get MCP tool).
+  // Only emit the mcp_tool_call observability row when the tier2 index is
+  // accessible (i.e. buildIndex() was called for this cwd). If the index is
+  // absent (e.g. unit test fixtures that don't build the index), silently
+  // skip the emit so existing "exactly N lines" dedup tests are not broken.
+  let indexFound = false;
+  try {
+    const tier2Index = require('./tier2-index');
+    if (typeof tier2Index.getChunk === 'function') {
+      const result = tier2Index.getChunk(eventType, { cwd });
+      // result.found is false when index missing/stale — treat as cache miss
+      // but only emit the mcp_tool_call row when the lookup actually ran.
+      // Emit the mcp_tool_call row only when the index was reachable (even if the
+      // event type wasn't in it — that IS the cache-miss signal). When the index
+      // file is missing entirely (upgrade window / test fixture without buildIndex),
+      // getChunk returns error:'index_missing' — skip the emit so "exactly N lines"
+      // dedup tests are not broken by a spurious row.
+      if (result && typeof result === 'object' && result.error !== 'index_missing') {
+        indexFound = true; // index accessible — getChunk probe ran
+      }
+    }
+  } catch (_e) { /* fail-open */ }
+
+  if (!indexFound) return;
+
+  // Emit mcp_tool_call observability event directly (bypassing writeEvent recursion)
+  try {
+    const mcpEvent = {
+      version:          1,
+      type:             'mcp_tool_call',
+      tool:             'schema_get',
+      source:           'audit-writer-cache-miss',
+      event_type_query: eventType,
+      timestamp:        new Date().toISOString(),
+    };
+    const line = JSON.stringify(mcpEvent) + '\n';
+    fs.appendFileSync(eventsPath, line, 'utf8');
+  } catch (_e) { /* fail-open */ }
+}
+
 module.exports = writeAuditEvent;
 module.exports.writeEvent       = writeEvent;
 module.exports.writeAuditEvent  = writeAuditEvent;
+
+// ---------------------------------------------------------------------------
+// _testHooks — exported for B3 unit tests only (not production API)
+// ---------------------------------------------------------------------------
+module.exports._testHooks = {
+  /**
+   * Reset per-orch counters and fired-set entries for a given orchId.
+   * Allows unit tests to run in isolation despite module caching.
+   */
+  resetForOrch(orchId) {
+    for (const key of _autofillCounters.keys()) {
+      if (key.startsWith(orchId + '::')) _autofillCounters.delete(key);
+    }
+    for (const key of _autofillThresholdFired.keys()) {
+      if (key.startsWith(orchId + '::')) _autofillThresholdFired.delete(key);
+    }
+  },
+
+  /**
+   * Expose _trackAutofillThreshold for direct test driving.
+   */
+  trackThreshold: _trackAutofillThreshold,
+};

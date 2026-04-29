@@ -69,6 +69,15 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/audit-firing-nightly.js",
+            "timeout": 15
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -225,6 +234,26 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/prefetch-mcp-grounding.js",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/redirect-kb-write.js",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -311,6 +340,16 @@
           }
         ],
         "matcher": "Edit|Write|MultiEdit"
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/audit-on-orch-complete.js",
+            "timeout": 30
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -485,33 +524,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/archive-orch-events.js",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/audit-housekeeper-orphan.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/audit-promised-events.js",
-            "timeout": 8
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/post-orchestration-extract-on-stop.js",
             "timeout": 60
           }
@@ -525,27 +537,19 @@
             "timeout": 10
           }
         ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/scan-cite-labels.js",
-            "timeout": 3
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/audit-pm-emit-coverage.js",
-            "timeout": 8
-          }
-        ]
       }
     ],
     "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-mcp-grounding.js",
+            "timeout": 5
+          }
+        ]
+      },
       {
         "hooks": [
           {
@@ -577,15 +581,6 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/capture-tokenwright-realized.js",
             "timeout": 5
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/audit-round-archive-hook.js",
-            "timeout": 8
           }
         ]
       },

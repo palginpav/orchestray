@@ -146,6 +146,25 @@ function main() {
       : '';
     const evaluation = evaluateScope(promptBody);
 
+    // B5 (v2.2.10): warn when reviewer prompt lacks ## Dimensions to Apply header.
+    // Warn-only — never blocks the spawn. Kill switch: ORCHESTRAY_REVIEWER_DIMENSIONS_WARN_DISABLED=1
+    if (evaluation.scoped && process.env.ORCHESTRAY_REVIEWER_DIMENSIONS_WARN_DISABLED !== '1') {
+      const hasDimensions = /^## Dimensions to Apply/m.test(promptBody);
+      if (!hasDimensions) {
+        try {
+          const auditDir = path.join(cwd, '.orchestray', 'audit');
+          fs.mkdirSync(auditDir, { recursive: true });
+          try { fs.chmodSync(auditDir, 0o700); } catch (_e) { /* best-effort */ }
+          writeEvent({
+            version:    1,
+            type:       'reviewer_dimensions_missing',
+            agent_id:   (event.tool_input && event.tool_input.agent_id) || null,
+            task_id:    (event.tool_input && event.tool_input.task_id)  || null,
+          }, { cwd });
+        } catch (_e) { /* fail-open */ }
+      }
+    }
+
     if (!evaluation.scoped) {
       // v2.2.9 B-2.3: hard-reject unless kill switch is active.
       const hardDisabled = process.env.ORCHESTRAY_REVIEWER_SCOPE_HARD_DISABLED === '1';

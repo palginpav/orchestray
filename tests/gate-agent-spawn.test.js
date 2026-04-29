@@ -1303,10 +1303,11 @@ describe('2013-W3: mcp_checkpoint_missing event emission', () => {
       tool_input: { model: 'sonnet' },
     });
 
-    // v2.0.23 §22b warn-mode: gate emits advisory but ALLOWS spawn (no exit 2).
-    assert.equal(status, 0, 'W3-T1: warn-mode — gate must exit 0 on genuine absence');
+    // v2.2.10 M2: hard-block is now the default when routing.jsonl is absent.
+    // Obsoleted: prior test expected exit 0 (warn-only default from v2.0.23).
+    assert.equal(status, 2, 'W3-T1: hard-block — gate must exit 2 on genuine absence (M2 v2.2.10)');
 
-    // Event must be written (for observability; warn_mode: true)
+    // Event must be written (for observability; warn_mode: false in hard-block mode)
     const events = readEvents(dir);
     const missing_ev = events.find(e => e.type === 'mcp_checkpoint_missing');
     assert.ok(missing_ev, 'W3-T1: mcp_checkpoint_missing event must be emitted to events.jsonl');
@@ -1324,8 +1325,8 @@ describe('2013-W3: mcp_checkpoint_missing event emission', () => {
       'W3-T1: source must be "hook"');
     assert.ok(typeof missing_ev.timestamp === 'string' && missing_ev.timestamp.length > 0,
       'W3-T1: timestamp must be a non-empty string');
-    assert.equal(missing_ev.warn_mode, true,
-      'W3-T1: warn_mode must be true (v2.0.23 advisory-only enforcement)');
+    assert.equal(missing_ev.warn_mode, false,
+      'W3-T1: warn_mode must be false (v2.2.10 M2 hard-block default)');
   });
 
   test('W3-T2: phase-mismatch block (BUG-D path) emits mcp_checkpoint_missing with phase_mismatch=true', () => {
@@ -1369,8 +1370,8 @@ describe('2013-W3: mcp_checkpoint_missing event emission', () => {
       tool_input: { model: 'sonnet' },
     });
 
-    // v2.0.23 §22b warn-mode: gate emits info notice but ALLOWS spawn (no exit 2).
-    assert.equal(status, 0, 'W3-T2: warn-mode — gate must exit 0 on phase-mismatch + genuine absence');
+    // Phase-mismatch path always allows spawn (no hard-block on phase-mismatch, even in M2).
+    assert.equal(status, 0, 'W3-T2: gate must exit 0 on phase-mismatch + genuine absence');
     // BUG-D phase-mismatch info notice must fire
     assert.match(stderr, /inconsistent/i,
       'W3-T2: BUG-D phase-mismatch info notice must appear in stderr');
@@ -1390,8 +1391,10 @@ describe('2013-W3: mcp_checkpoint_missing event emission', () => {
       'W3-T2: missing_tools must include pattern_find (the genuinely absent tool)');
     assert.equal(missing_ev.source, 'hook',
       'W3-T2: source must be "hook"');
-    assert.equal(missing_ev.warn_mode, true,
-      'W3-T2: warn_mode must be true (v2.0.23 advisory-only enforcement)');
+    // v2.2.10 M2: warn_mode is false on phase-mismatch path (no routing.jsonl, no env escape hatch).
+    // Obsoleted: prior test expected warn_mode:true (warn-only default from v2.0.23).
+    assert.equal(missing_ev.warn_mode, false,
+      'W3-T2: warn_mode must be false (M2 v2.2.10 hard-block default, phase-mismatch still allows)');
   });
 
 });
@@ -1663,13 +1666,16 @@ describe('v2023-W3: §22b warn-mode — once-per-orchestration advisory', () => 
     // No routing.jsonl yet → first spawn window (§22c carve-out applies)
 
     // ── First spawn ──────────────────────────────────────────────────────────
+    // v2.2.10 M2: hard-block is the default when routing.jsonl absent. To exercise
+    // the dual-gate path (§22b warn → §22c hard-block), use ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY=1
+    // on the first spawn so §22b stays advisory. Obsoleted: prior test relied on warn-only default.
     const first = run({
       tool_name: 'Agent',
       cwd: dir,
       tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Decompose task' },
-    });
+    }, { env: { ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY: '1' } });
 
-    assert.equal(first.status, 0, '22b-T5: first spawn must be allowed (§22b is warn-only)');
+    assert.equal(first.status, 0, '22b-T5: first spawn must be allowed (§22b is warn-only via env)');
     assert.match(first.stderr, /info:/,
       '22b-T5: first spawn must emit §22b info notice');
     assert.match(first.stderr, /v2\.0\.23/,

@@ -48,11 +48,22 @@ const { writeEvent }                  = require('./_lib/audit-event-writer');
 const { resolveSafeCwd }              = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 
+// B6: ROI presence check — logic lives in pm-emit-state-watcher for
+// co-location with the other watcher rules. We import and call it here
+// so audit-pm-emit-coverage participates in the orch-close fan-out.
+const { checkOrchRoiPresence } = require('./_lib/pm-emit-state-watcher');
+
 const WATCHED_EVENT_TYPES = [
   'tier2_invoked',
   'pattern_roi_snapshot',
   'verify_fix_start',
   'consequence_forecast',
+  'orchestration_roi',
+  // N2-fix: developer agent emits this when delta-handoff fallback triggers
+  // (delegation-templates.md §Fallback). No clean state-file trigger exists
+  // for the watcher (it fires on developer-side logic, not PM state writes),
+  // so coverage-script rot-detection is the mechanical backstop.
+  'delta_handoff_fallback',
 ];
 
 const FLOOR_TOTAL_EVENTS = 2;     // require at least 2 emits before alarming
@@ -172,6 +183,10 @@ function main() {
       }, { cwd });
     } catch (_e) { /* fail-open */ }
   }
+
+  // B6: emit orchestration_roi_missing when orchestration_roi absent in orch slice.
+  try { checkOrchRoiPresence(cwd, orchId, readJsonlLines); }
+  catch (_e) { /* fail-open */ }
 }
 
 // Always emit the continue envelope so the Stop hook chain is well-formed.

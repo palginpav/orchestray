@@ -224,21 +224,37 @@ process.stdin.on('end', () => {
     // this check is wired into the delegation path. Fall back to 0 (no-op) when
     // not provided — this is the v2.1.15 conservative approach until the PM
     // delegation templates are updated to pass explicit size fields.
-    // TODO(v2.1.17): add a PreToolUse:Agent validator that emits
-    // `context_size_hint_missing` audit events when the hint is absent or zero
-    // (warn-only, never block). Today the PM populates this hint via prompt
-    // instruction in agents/pm.md §"PM responsibility — populate context_size_hint";
-    // there is no machine-checked enforcement, so the v2.1.16 R-BUDGET-WIRE
-    // success metric ("≥95% of agent_start events show populated
-    // context_size_hint within 7 days") is observable post-release but cannot
-    // be enforced pre-ship. See
-    // .orchestray/kb/artifacts/v2116-w12-release-review.md F-008.
+    // B4 (v2.2.10): emit context_size_hint_missing warn-event when the hint is
+    // absent or all values are zero. Never blocks the spawn (warn-only).
+    // Kill switch: ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED=1
     const systemSize   = (toolInput.context_size_hint && toolInput.context_size_hint.system)   || 0;
     const tier2Size    = (toolInput.context_size_hint && toolInput.context_size_hint.tier2)    || 0;
     const handoffSize  = (toolInput.context_size_hint && toolInput.context_size_hint.handoff)  || 0;
     const computedSize = systemSize + tier2Size + handoffSize;
 
-    // When no context hint is provided, skip the check (fail-open).
+    // Emit warn event when hint is missing or all-zero and role is known.
+    if (computedSize === 0 && role && process.env.ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED !== '1') {
+      try {
+        const orchFile = path.join(cwd, '.orchestray', 'audit', 'current-orchestration.json');
+        let orchId = 'unknown';
+        try {
+          const orchRaw = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
+          orchId = orchRaw.orchestration_id || 'unknown';
+        } catch (_e) { /* fail-open */ }
+
+        writeEvent({
+          event_type:     'context_size_hint_missing',
+          version:        1,
+          orchestration_id: orchId,
+          subagent_type:  role,
+          task_id:        toolInput.task_id || null,
+        }, { cwd });
+      } catch (_e) {
+        // Audit emit failure never blocks the spawn
+      }
+    }
+
+    // When no context hint is provided, skip the budget check (fail-open).
     if (computedSize === 0 || !role) {
       process.exit(0);
     }
