@@ -1,6 +1,6 @@
 {
   "name": "orchestray",
-  "version": "2.2.9",
+  "version": "2.2.10",
   "description": "Multi-agent orchestration plugin for Claude Code",
   "bin": {
     "orchestray": "bin/install.js"

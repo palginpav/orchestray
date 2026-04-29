@@ -113,6 +113,22 @@ Set in `.orchestray/config.json` or as env vars. No session restart required.
 | Haiku scout (file ops) | `haiku_routing.enabled: false` | — |
 | Compaction resilience | `resilience.enabled: false` | `ORCHESTRAY_RESILIENCE_DISABLED=1` |
 | MCP enforcement gate | `mcp_enforcement.global_kill_switch: true` | — |
+| Per-orch boundary trigger for governance audits | — | `ORCHESTRAY_ORCH_BOUNDARY_TRIGGER_DISABLED=1` (re-enables Stop fallback) |
+| MCP grounding hard-reject gate | — | `ORCHESTRAY_MCP_GROUNDING_GATE_DISABLED=1` |
+| Nightly self-firing activation audit | — | `ORCHESTRAY_FIRING_AUDIT_DISABLED=1` |
+| Verify-fix watcher auto-emit | — | `ORCHESTRAY_VERIFY_FIX_WATCHER_DISABLED=1` |
+| Tier2 protocol watcher auto-emit | — | `ORCHESTRAY_TIER2_WATCHER_DISABLED=1` |
+| Autofill-threshold fail-loud | — | `ORCHESTRAY_AUTOFILL_THRESHOLD_DISABLED=1` |
+| Context size hint missing warn | — | `ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED=1` |
+| Reviewer dimensions missing warn | — | `ORCHESTRAY_REVIEWER_DIMENSIONS_WARN_DISABLED=1` |
+| Orchestration ROI missing warn | — | `ORCHESTRAY_ROI_WATCHED_DISABLED=1` |
+| Per-orch activation ratio KPI emit | — | `ORCHESTRAY_ACTIVATION_RATIO_EMIT_DISABLED=1` |
+| Sentinel probe per-session dedup | — | `ORCHESTRAY_SENTINEL_DEDUP_DISABLED=1` |
+| Server-side MCP grounding prefetch | — | `ORCHESTRAY_MCP_PREFETCH_DISABLED=1` |
+| Pre-decomp checkpoint gate (warn-only mode; removed v2.2.11) | — | `ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY=1` |
+| Orch-complete MCP fanout (metrics/routing/pattern) | — | `ORCHESTRAY_ORCH_COMPLETE_MCP_FANOUT_DISABLED=1` |
+| Schema-get self-call on shadow cache miss | — | `ORCHESTRAY_SCHEMA_GET_SELF_CALL_DISABLED=1` |
+| KB write redirect to MCP (Phase 1 transparent-pass) | — | `ORCHESTRAY_KB_WRITE_REDIRECT_DISABLED=1` |
 
 ## Requirements
 
@@ -138,6 +154,9 @@ v2.2.9 flipped the default for `ORCHESTRAY_STRICT_MODEL_REQUIRED` from "auto-res
 
 **`role_write_path_blocked` when reviewer/tester/documenter/release-manager writes a file.**
 Each write-capable specialist has a per-role allowlist defined in `bin/_lib/role-write-allowlists.js`. If you need a wider scope for a one-off task, set `ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1` in the spawning shell, or add the path to the allowlist (preferred — keeps the rest of the codebase protected).
+
+**`agent_mcp_grounding_missing` blocks pm/researcher/debugger/architect spawns.**
+v2.2.10 promotes the MCP grounding gate from warning to hard-block (exit 2) for these four roles. The server-side prefetch hook normally satisfies the gate automatically before each spawn. If the gate fires unexpectedly (e.g. in a custom spawn path that bypasses the prefetch hook), verify that `bin/prefetch-mcp-grounding.js` is registered as `PreToolUse:Agent` in your hooks configuration. Set `ORCHESTRAY_MCP_GROUNDING_GATE_DISABLED=1` as an emergency bypass.
 
 ## License
 
