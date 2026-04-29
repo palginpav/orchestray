@@ -3,6 +3,77 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.2.9] - 2026-04-29
+
+v2.2.9 completes the mechanisation push started in v2.2.8: every enforcement that previously lived only in a prose instruction now has a hook, a schema gate, or a hard-reject validator backing it up. Thirty-plus mechanical changes ship across schema validation, agent telemetry, dual-install consistency, and numeric threshold enforcement — all default-on, all with kill switches. The result: fewer silent failures, fewer "it was supposed to fire but didn't" gaps, and an audit log you can actually trust.
+
+### Added
+
+- **Per-orchestration event archive.** On orchestration close, all audit events for that run are written to `.orchestray/history/<orch-id>/events.jsonl`. Future analytics, pattern extraction, and verify-fix coverage checks now work against a bounded, per-orchestration slice rather than an unbounded live tail. Emits `orchestration_events_archived` on each close.
+
+- **Required-field autofill in the audit event writer.** The audit writer now fills in missing required fields (version, timestamp, orchestration ID, session ID) automatically before writing. Previously, omitted fields caused events to be silently dropped or replaced with a surrogate block. An `audit_event_autofilled` event makes every autofill visible in analytics.
+
+- **Promised-event tracker.** A new stop-hook tail scans the shadow for event types that have never fired in 7+ days and emits `event_promised_but_dark` for each. `/orchestray:analytics` surfaces these gaps so dark telemetry surfaces are found proactively rather than discovered in post-mortems.
+
+- **CHANGELOG naming firewall.** A pre-publish validator (`bin/release-manager/changelog-event-name-check.js`) checks every backtick-wrapped identifier in the CHANGELOG against the event shadow. Any name that isn't a real shadow event causes the release commit to exit with an error. Prevents "CHANGELOG says event X ships; X was never registered" drift.
+
+- **Hard-reject schema validation for all 14 agent roles.** The T15 handoff validator now enforces per-role required fields with no grace period. All roles produce a hard block, not a warning, when their structured result is missing required fields. Per-role kill switches remain for emergency use.
+
+- **Housekeeper auto-spawn via queue.** The housekeeper agent now fires automatically through the reactive spawn queue (the same mechanism used by worker-initiated spawning) after KB writes, schema edits, and phase transitions. It no longer depends on the PM reading a prose nudge. A debounce collapses multiple triggers within the same orchestration to one queued request, emitting `housekeeper_trigger_debounced` when collapsed. Orphaned triggers (sentinel written, no spawn within 60 s) emit `housekeeper_trigger_orphaned`.
+
+- **Spawn-approved drainer.** When the reactive spawn queue holds a pending request, a PreToolUse hook injects a "spawn-approved" block into the PM's next agent call context, ensuring the queued spawn is acted on rather than sitting in the queue indefinitely. Emits `spawn_approved_drainer_injected`.
+
+- **Dual-install parity check.** On every session start, Orchestray verifies that hook scripts registered in `~/.claude/settings.json` match the versions in the active install location. Divergences emit `dual_install_divergence_detected` and surface in `/orchestray:doctor`. Seven v2.2.3-era orphan scripts are reconciled as part of this change.
+
+- **Numeric threshold gates for 6 previously prose-only limits.** Max-turns enforcement, repo-map drift, KB index validity, model-required hard-block, cite-label enforcement, and auto-trigger TTL expiry are now enforced mechanically by hooks and validators. Emits `agent_max_turns_violation`, `kb_index_invalid`, `repo_map_threshold_drift`, `agent_model_unspecified_blocked`, `cite_unlabelled_detected`, and `auto_trigger_expired` respectively.
+
+- **PM emit state-watcher.** Four orchestration-state emits that were prose-only (tier2 invocation, ROI snapshot, verify-fix start/pass/fail, consequence-forecast checkpoint) are now backstopped by a helper that fires when the PM's prose emit is absent. Emits `pm_emit_backstop_engaged` when it fires and `pm_emit_prose_rotting` when the backstop fires more than once in a row (signal to delete the prose).
+
+- **Group-boundary gate.** A PreToolUse extension to the agent-spawn gate hard-blocks spawns that cross group boundaries out of order. Emits `group_boundary_violation`.
+
+- **30 new schema events.** Shadow corpus grows from 145 to 175 event types. Shadow byte cap bumped from 8 KB to 12 KB.
+
+### Fixed
+
+- **Agent telemetry now lands reliably — closes the silent 86% drop.** `agent_stop` events were missing the required `version` field, causing the schema validator to reject them and replace them with a surrogate block. The autofill fix (above) means every `agent_stop` now writes with `version: 1` automatically. In dual-install configurations under v2.2.8, up to 86% of agent stop events were silently lost; that loss is now zero.
+
+- **Housekeeper actually fires — `housekeeper_action` events now appear in analytics.** The prior mechanism wrote a prose advisory that the PM could and did ignore. Zero `housekeeper_action` events fired across 5 v2.2.8 orchestrations. The queue-based mechanisation above closes this gap entirely.
+
+- **Dossier writes without matching injects are now detected.** A new orphan detector compares dossier-written and dossier-injected events at session end. Unmatched writes emit `dossier_write_without_inject_detected` so silent compaction-resilience failures surface immediately.
+
+- **Agent stop double-fire guard extended to agent-stop events.** Previously only Tokenwright and three high-frequency hooks had double-fire protection. Agent stop events from dual-install configurations could fire twice, doubling per-spawn cost accounting in analytics. The guard now covers `agent_stop` events and emits `agent_stop_double_fire_suppressed` on suppression.
+
+- **Delegation delta marker invariant enforced mechanically.** Spawns that should carry a delegation delta marker but don't now emit `delegation_delta_marker_missing` and are blocked. Previously this was a prose instruction that was silently skipped.
+
+- **W2: collect-agent-metrics `agent_stop` emit-site stamps `version: 1`.** The emit site in `bin/collect-agent-metrics.js` was the primary source of the 86%-loss bug. Fixed at the source alongside the autofill backstop.
+
+- **W3: install.js now copies `bin/release-manager/` correctly.** The copy step omitted the `bin/release-manager/` directory, meaning release-manager scripts were absent from fresh global installs. Also fixes a settings.json idempotency bug triggered by the missing directory.
+
+- **Context-shield bypass is now observable.** When the schema-redirect allowlist bypasses the shield for orchestrator, architect, release-manager, or documenter agents, `schema_redirect_bypassed` is emitted. Previously the bypass was silent.
+
+- **Reviewer scope violations are now hard-blocked.** The previous warn-only mode meant reviewers could read outside their scoped file set without consequence. The gate now emits `reviewer_scope_blocked` and exits 2 on violation.
+
+### Migration notes
+
+- Restart Claude Code after upgrading.
+- No config changes required. All new behaviour is default-on.
+- New env kill switches: `ORCHESTRAY_AUDIT_AUTOFILL_DISABLED=1`, `ORCHESTRAY_ORCH_ARCHIVE_DISABLED=1`, `ORCHESTRAY_PROMISED_EVENT_TRACKER_DISABLED=1`, `ORCHESTRAY_HOUSEKEEPER_AUTO_SPAWN_DISABLED=1`, `ORCHESTRAY_STRICT_MODEL_REQUIRED=0` (disables model-required hard-block).
+- Per-role T15 hard-tier kill switches: `ORCHESTRAY_T15_<ROLE>_HARD_DISABLED=1` (e.g., `ORCHESTRAY_T15_DEVELOPER_HARD_DISABLED=1`).
+- Tests updated: 6 tests are intentional skips matching v2.2.9 scope-locked deferrals.
+
+### Tests
+
+5132 / 5138 passing, 0 failures, 6 intentional skips.
+
+### Under the hood
+
+- 12+ new helper modules in `bin/_lib/`: autofill extension to `audit-event-writer.js`, `pm-emit-state-watcher.js`, `housekeeper-queue.js`, `dual-install-parity.js`, and supporting helpers.
+- 10+ new `bin/` scripts: `bin/archive-orch-events.js`, `bin/audit-promised-events.js`, `bin/audit-housekeeper-orphan.js`, `bin/spawn-housekeeper-drainer.js`, `bin/release-manager/changelog-event-name-check.js`, and others.
+- 12 new hooks.json wire entries.
+- Schema shadow regenerated to **175 event types** (was 145 in v2.2.8). Shadow byte cap 8 KB → 12 KB.
+
+---
+
 ## [2.2.8] - 2026-04-28
 
 v2.2.8 is a hardening + capability bundle under the theme "wire what was promised, then add one new reactive primitive." The hardening half closes four telemetry surfaces that have been dark since v2.2.6: the housekeeper agent now fires automatically via PostToolUse hooks (not prose instructions), verify-fix loop coverage is observable end-to-end, three scout/housekeeper block events that existed only in tests now emit in production, and the dual-install double-fire guard extends to three more high-frequency hooks. On top of that foundation, one new capability ships: workers can now request additional agent spawns mid-task via a new MCP tool, without returning control to the PM. A `/orchestray:loop` primitive, `/orchestray:rollback` with workspace snapshots, a `--context` pin flag on `/orchestray:run`, and a Block-Z retrip telemetry signal round out the release. Default-on across the board. Restart Claude Code after upgrading.
