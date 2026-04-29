@@ -4602,6 +4602,38 @@ Field notes:
 
 ---
 
+### `schema_shape_violation` event
+
+Emitted by `bin/_lib/audit-event-writer.js` when a declared event type fails
+shape validation (missing required fields or wrong field types). Distinct from
+`schema_shadow_validation_block` (which marks the original event as blocked) —
+this event provides the violation details for observability.
+
+Rate-limited: fires at most once per declared event type per process. Subsequent
+shape failures of the same type within the same process are silently dropped.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "schema_shape_violation",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "event_type": "<the declared event type that failed shape validation>",
+  "validation_errors": ["<validation error message 1>", "..."],
+  "rate_limited": false
+}
+```
+
+Field notes:
+- `event_type`: The `type` field of the event that failed shape validation.
+  Unlike `schema_shadow_validation_block`, this is always a DECLARED type.
+- `validation_errors`: Array of human-readable validation error messages.
+- `rate_limited`: Always `false` on the first (and only) emit per type per process.
+
+---
+
 ### `schema_shadow_stale` event
 
 Emitted by `bin/inject-schema-shadow.js` when the shadow's `_meta.source_hash`
@@ -8114,3 +8146,140 @@ Field notes:
 - `outcome`: always `"failed"` in v2.2.11 (the alias fires only when the original `*_failed` event fires).
 - `schema_version`: always 1 (v2.2.11 baseline).
 - Transitional: retire in v2.2.13.
+
+---
+
+### `orchestration_start` event
+
+Appended at orchestration init by `bin/ox.js` when the PM runs `ox state start`.
+Records that an Orchestray orchestration has begun; triggers the audit-event
+pipeline to begin associating events with this orchestration_id.
+Captured-at version: v2.2.12.
+
+```json
+{
+  "type": "orchestration_start",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx",
+  "task": "Brief task description passed to ox state start",
+  "started_at": "ISO 8601",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `orchestration_id`: Unique ID for this orchestration run. Format: `orch-<timestamp>-<slug>`.
+- `task`: The task description passed to `ox state start` by the PM.
+- `started_at`: Same value as `timestamp` at emit time; preserved separately for downstream consumers that compute duration without relying on field position.
+- `schema_version`: Always `1` (v2.2.12 baseline).
+
+Emitted from: `bin/ox.js:283` via `writeEvent`.
+
+Kill switch: none (declarative event; no gate).
+
+---
+
+### `orchestration_complete` event
+
+Appended at orchestration close by `bin/ox.js` when the PM runs `ox state complete`.
+Signals to `bin/audit-on-orch-complete.js` (PostToolUse watcher) that it should
+fire the 6 end-of-orch audits. This is the canonical trigger event for the
+orch-boundary fanout (v2.2.10 F1).
+Captured-at version: v2.2.12.
+
+```json
+{
+  "type": "orchestration_complete",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx",
+  "status": "success",
+  "completed_at": "ISO 8601",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `status`: One of `"success"`, `"partial"`, `"failure"`. Passed via `--status` flag to `ox state complete`; defaults to `"success"` when flag is absent.
+- `completed_at`: Same value as `timestamp` at emit time.
+- Consumers: `bin/audit-on-orch-complete.js` polls `events.jsonl` on every PostToolUse:Bash and acts when it finds an unprocessed row of this type. `bin/validate-archive.js` uses the same trigger.
+- `schema_version`: Always `1` (v2.2.12 baseline).
+
+Emitted from: `bin/ox.js:329` via `writeEvent`.
+
+Kill switch: none (declarative event; structural close signal — suppressing it would break the 6-audit fanout).
+
+---
+
+### `orchestration_roi` event
+
+Appended by the PM at orchestration close per `agents/pm-reference/phase-close.md:250`.
+Records cost and output metrics for the completed orchestration. The companion
+watcher at `bin/_lib/pm-emit-state-watcher.js:816` (B6 rule) emits
+`orchestration_roi_missing` when this event is absent at orch close — closing
+the v2.2.11 paradox where the guard fired but the positive event had no declare.
+W-ROI-EMIT (v2.2.12) adds a code emitter at `bin/audit-on-orch-complete.js`.
+Captured-at version: v2.2.12.
+
+```json
+{
+  "type": "orchestration_roi",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx",
+  "total_cost_usd": 0.0,
+  "agent_count": 0,
+  "files_changed_count": 0,
+  "efficiency_ratio": 0.0,
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `total_cost_usd`: Summed cost of all agent spawns in this orchestration. Sourced from the token-cost rollup pass in `audit-on-orch-complete.js`. Report `0` if cost data is unavailable.
+- `agent_count`: Number of distinct subagent spawns (not counting re-tries) in this orchestration.
+- `files_changed_count`: Files changed across all agent spawns. Sourced from the git diff at orch close. Report `0` if git data is unavailable.
+- `efficiency_ratio`: `files_changed_count / max(total_cost_usd, 0.01)` — files changed per USD spent. A normalised throughput indicator.
+- `schema_version`: Always `1` (v2.2.12 baseline).
+- Pre-v2.2.12 misses observed: 78 `orchestration_roi_missing` events in the pre-release window; each represents an orch close where this event was absent.
+
+Emitted from: `agents/pm-reference/phase-close.md:250` (PM agent direct-append instruction); `bin/audit-on-orch-complete.js` (W-ROI-EMIT, v2.2.12 adds code emitter).
+
+Kill switch: `ORCHESTRAY_ORCH_LIFECYCLE_EMIT_DISABLED=1` (gates the W-ROI-EMIT code emitter; PM agent instruction remains active regardless).
+
+---
+
+### `archive_must_copy_validation` event
+
+Emitted by `bin/validate-archive.js` at orchestration close to record the outcome
+of the archive-completeness check (v2.2.11 W2-3). Declared dark in v2.2.12 pending
+the success-path emit being wired; the failure path emits `archive_must_copy_missing`
+instead. When the success path is wired, this event will fire once per orch close
+when all required archive files are present.
+
+Paired with `archive_must_copy_missing` (emitted on failure).
+Captured-at version: v2.2.12.
+
+```json
+{
+  "type": "archive_must_copy_validation",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx",
+  "missing_files": [],
+  "present_files": ["events.jsonl", "orchestration.md", "task-graph.md"],
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `missing_files`: Array of filenames absent from `.orchestray/history/<orch_id>/`. Empty array when all required files are present (success case).
+- `present_files`: Array of filenames confirmed present in the archive directory.
+- Required archive files (v2.2.11): `events.jsonl`, `orchestration.md`, `task-graph.md`.
+- `schema_version`: Always `1` (v2.2.12 baseline).
+- Declared dark in v2.2.12: no success-path emit site wired yet. Failure path covered by `archive_must_copy_missing`. Emit site wiring is a v2.2.13 candidate.
+
+Emitted from: `bin/validate-archive.js` (success-path emit; v2.2.13 candidate — declared dark in v2.2.12).
+
+Kill switch: `ORCHESTRAY_ARCHIVE_VALIDATION_DISABLED=1`.

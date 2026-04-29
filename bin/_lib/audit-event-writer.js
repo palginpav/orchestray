@@ -59,6 +59,10 @@ let _inAutofillEmit    = false;  // recursion guard for audit_event_autofilled e
 let _circuitWarnedThisProcess = false;
 let _schemaWarnedThisProcess  = false;
 
+// Rate-limit schema_shape_violation: emit at most once per event_type per process.
+// Shape violations are high-frequency (321/24h baseline); without this they flood events.jsonl.
+const _shapeViolationWarnedTypes = new Map(); // event_type -> true
+
 const SHADOW_REL_CONFIG = path.join('.orchestray', 'config.json');
 
 /**
@@ -535,23 +539,28 @@ function writeEvent(eventPayload, opts) {
 
     _inGuardEmit = true;
     try {
-      // Increment the 3-strike miss counter (matches v2.1.14 semantics).
-      try {
-        const cfg = loadShadowConfig(cwd);
-        const sourceHash = computeSourceHash(cwd);
-        recordMiss(
-          cwd,
-          validation.event_type || 'unknown',
-          sourceHash,
-          cfg && cfg.miss_threshold_24h ? cfg.miss_threshold_24h : 3
-        );
-      } catch (_e) { /* fail-open */ }
+      // W-MISS-SPLIT (v2.2.12): recordMiss NOT called here — a declared type
+      // with bad shape is a shape violation, not a shadow miss. recordMiss stays
+      // ONLY in the unknown_type_emitted path above.
 
-      // Emit the surrogate with skipValidation:true to break recursion.
+      // Emit schema_shape_violation once per event_type per process (rate-limited
+      // to avoid flooding events.jsonl; was 321 false miss-writes/24h before fix).
+      const violatedType = validation.event_type || 'unknown';
+      if (!_shapeViolationWarnedTypes.has(violatedType)) {
+        _shapeViolationWarnedTypes.set(violatedType, true);
+        try {
+          writeEvent({
+            version: 1, type: 'schema_shape_violation',
+            event_type: violatedType, validation_errors: validation.errors, rate_limited: false,
+          }, { cwd, eventsPath, skipValidation: true });
+        } catch (_e) { /* fail-open */ }
+      }
+
+      // Emit legacy surrogate (backward-compat — other consumers may read this).
       const surrogate = {
         version:            1,
         type:               'schema_shadow_validation_block',
-        blocked_event_type: validation.event_type || 'unknown',
+        blocked_event_type: violatedType,
         errors:             validation.errors,
         schema_ref:         'agents/pm-reference/event-schemas.md',
       };
@@ -918,4 +927,13 @@ module.exports._testHooks = {
    * Expose _trackAutofillThreshold for direct test driving.
    */
   trackThreshold: _trackAutofillThreshold,
+
+  /**
+   * Reset the per-process shape-violation rate-limit map (W-MISS-SPLIT v2.2.12).
+   * Required so tests can run in isolation against the module cache.
+   */
+  resetShapeViolationWarnedTypes() { _shapeViolationWarnedTypes.clear(); },
+
+  /** Expose the map for test assertions. */
+  get shapeViolationWarnedTypes() { return _shapeViolationWarnedTypes; },
 };

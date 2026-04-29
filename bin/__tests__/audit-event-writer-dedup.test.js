@@ -128,15 +128,23 @@ describe('audit-event-writer dedup (v2.2.2 B2)', () => {
     }
   });
 
-  test('4. Validation failure (missing required) — only the surrogate (1 line, NOT 2)', () => {
+  test('4. Validation failure (missing required) — surrogate + shape-violation advisory (2 lines); original NOT written', () => {
     const tmpDir = makeTmpRepo();
     try {
       // tier2_load is in the schema but requires fields. Empty payload triggers
       // the strict drop+surrogate path.
+      // W-MISS-SPLIT (v2.2.12 W1b): shape-violation path now emits TWO events:
+      //   - schema_shape_violation (new, rate-limited advisory)
+      //   - schema_shadow_validation_block (legacy surrogate, preserved for compat)
+      // The original tier2_load MUST NOT be written.
       const lines = callWriteEventN(tmpDir, { type: 'tier2_load' }, 1);
-      assert.equal(lines.length, 1, 'exactly one line (the surrogate); got: ' + lines.length);
-      assert.equal(lines[0].type, 'schema_shadow_validation_block');
-      assert.equal(lines[0].blocked_event_type, 'tier2_load');
+      assert.equal(lines.length, 2, 'two lines (surrogate + shape-violation advisory); got: ' + lines.length);
+      const surrogate      = lines.find((e) => e.type === 'schema_shadow_validation_block');
+      const shapeViolation = lines.find((e) => e.type === 'schema_shape_violation');
+      assert.ok(surrogate,      'schema_shadow_validation_block must be present');
+      assert.ok(shapeViolation, 'schema_shape_violation must be present');
+      assert.equal(surrogate.blocked_event_type, 'tier2_load');
+      assert.equal(shapeViolation.event_type,    'tier2_load');
       // The original tier2_load MUST NOT be written.
       const originals = lines.filter((e) => e.type === 'tier2_load');
       assert.equal(originals.length, 0, 'original NOT written');
