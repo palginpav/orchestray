@@ -516,8 +516,14 @@ describe('subdirectory copying', () => {
       // assert the referenced module resolves against the installed layout.
       // Full `require()` execution is avoided because these scripts start a
       // stdin listener on load and would hang the child process.
+      //
+      // Skip files inside `_lib/` itself: from there, sibling modules are
+      // required as `./X`, never `./_lib/X`. A literal `./_lib/X` in such a
+      // file is therefore a docstring/usage-example, not a real require, and
+      // the path would resolve to a phantom `_lib/_lib/X.js`.
       const libRequireRe = /require\(\s*['"](\.\/_lib\/[^'"]+)['"]\s*\)/g;
       for (const jsFile of installedJs) {
+        if (jsFile.includes(path.sep + '_lib' + path.sep)) continue;
         const src = fs.readFileSync(jsFile, 'utf8');
         let m;
         while ((m = libRequireRe.exec(src)) !== null) {

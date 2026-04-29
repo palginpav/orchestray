@@ -35,7 +35,18 @@ function parseOutput(stdout) {
 }
 
 function makeTmpDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'orchestray-idle-test-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestray-idle-test-'));
+  // The hook short-circuits with exit 0 when agent_teams.enabled is false
+  // (the N3.b config gate). The blocking-behavior, audit, and size-cap tests
+  // need teams enabled to exercise the script's real logic. Tests covering
+  // the gate itself can override by writing config without the field.
+  const orchDir = path.join(dir, '.orchestray');
+  fs.mkdirSync(orchDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(orchDir, 'config.json'),
+    JSON.stringify({ agent_teams: { enabled: true } }) + '\n'
+  );
+  return dir;
 }
 
 function writeTaskGraph(tmpDir, content) {
@@ -337,6 +348,46 @@ describe('stdin parsing safety', () => {
     const { stdout, status } = run(JSON.stringify({}));
     assert.equal(status, 0);
     assert.equal(parseOutput(stdout).continue, true);
+  });
+
+});
+
+describe('agent_teams gate (N3.b)', () => {
+
+  test('exits 0 silently when agent_teams.enabled is absent (default off)', () => {
+    // makeTmpDir writes agent_teams.enabled: true by default; here we
+    // override with an empty config to verify the gate short-circuits
+    // without scanning task-graph.md.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestray-idle-gate-'));
+    fs.mkdirSync(path.join(tmpDir, '.orchestray'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.orchestray', 'config.json'), '{}\n');
+    // Even with an unchecked task pending, the gate must short-circuit.
+    fs.mkdirSync(path.join(tmpDir, '.orchestray', 'state'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.orchestray', 'state', 'task-graph.md'),
+      '## Tasks\n- [ ] Pending task\n'
+    );
+    try {
+      const { status } = run(JSON.stringify({ cwd: tmpDir }));
+      assert.equal(status, 0, 'gate must short-circuit before scanning task-graph.md');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('exits 0 when config.json is absent entirely', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestray-idle-noconfig-'));
+    fs.mkdirSync(path.join(tmpDir, '.orchestray', 'state'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.orchestray', 'state', 'task-graph.md'),
+      '## Tasks\n- [ ] Pending task\n'
+    );
+    try {
+      const { status } = run(JSON.stringify({ cwd: tmpDir }));
+      assert.equal(status, 0, 'no config.json is treated as gate disabled');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
   });
 
 });
