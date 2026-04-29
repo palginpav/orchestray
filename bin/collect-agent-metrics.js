@@ -547,6 +547,7 @@ process.stdin.on('end', () => {
       auditEvent = {
         timestamp: new Date().toISOString(),
         type: 'agent_stop',
+        version: 1,
         orchestration_id: orchestrationId,
         agent_id: event.agent_id || null,
         agent_type: agentType,
