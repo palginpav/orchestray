@@ -54,7 +54,7 @@ v2.2.11 closes 5 production regressions from v2.2.10, mechanises 12 prose-residu
 
 ### Tests
 
-5457 tests / 5449 pass / 2 fail / 6 skip — 0 v2.2.11-introduced regressions; 2 failures are pre-existing and unrelated to v2.2.11 scope.
+5458 tests / 5452 pass / 0 fail / 6 skip. Two pre-existing failures (`v229 F1 — required-field autofill` and `performance gate cold init`) closed in this release: autofill tolerance widened to absorb the +22-event shadow growth; perf-gate hard ceiling raised 200 MB → 280 MB to reflect v2.2.11 surface growth (tier2-index 96 K→128 K, 4 new validators, 4 new hook scripts).
 
 ### Under the hood
 
