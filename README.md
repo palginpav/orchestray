@@ -143,6 +143,8 @@ Set in `.orchestray/config.json` or as env vars. No session restart required.
 | Decision-recorder: agent spawn (v2.2.11) | — | `ORCHESTRAY_DR_AGENT_SPAWN_DISABLED=1` |
 | Decision-recorder: curator tombstone (v2.2.11) | — | `ORCHESTRAY_DR_CURATOR_TOMBSTONE_DISABLED=1` |
 | MCP handler-entry instrumentation (v2.2.11) | — | `ORCHESTRAY_MCP_ENTRY_INSTRUMENTATION_DISABLED=1` |
+| Loop-kind taxonomy disambiguation (v2.2.11) | — | `ORCHESTRAY_LOOP_KIND_DISAMBIGUATION_DISABLED=1` |
+| `*_failed` rename-cycle alias emit (v2.2.11) | — | `ORCHESTRAY_RENAME_CYCLE_ALIAS_DISABLED=1` |
 
 ## Requirements
 

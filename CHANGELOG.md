@@ -38,7 +38,7 @@ v2.2.11 closes 5 production regressions from v2.2.10, mechanises 12 prose-residu
 - **MCP handler entry instrumentation.** 17 MCP tool handlers now emit an entry-time event on invocation, making MCP call sequences fully observable in the audit log. (W4-4)
 - **`*_failed` rename-cycle init.** `staging_write_failed` and `task_validation_failed` gain shadow aliases (`*_attempt` + `*_result`) as the first stage of the rename-cycle migration. Both names are accepted; the old names remain valid through v2.2.12. (W2-11)
 - **`loop_completed` taxonomy disambiguation.** Emitters that previously wrote a generic `loop_completed` event now emit either `loop_completed{loop_kind:"orch"}` or `loop_completed{loop_kind:"verify_fix"}`, enabling per-loop-kind analytics. (W2-12)
-- **22 new event types.** Shadow registry grows from 183 to 205. New types: `pattern_deprecation_decision_recorded`, `user_question_decision_recorded`, `agent_spawn_decision_recorded`, `curator_tombstone_decision_recorded`, `file_ownership_violation`, `contracts_parse_failed`, `contracts_merge_base_unresolved`, `contract_check_skipped`, `context_size_hint_required_failed`, `reviewer_dimensions_block_missing`, `commit_handoff_validation_failed`, `event_type_attempt`, `event_type_result`, `loop_completed` (extended), plus 8 additional governance types from Waves 2–4.
+- **22 new event types.** Shadow registry grows from 183 to 205. New types: `pattern_deprecation_decision_recorded`, `user_question_decision_recorded`, `agent_spawn_decision_recorded`, `curator_tombstone_decision_recorded`, `file_ownership_violation`, `contracts_parse_failed`, `contracts_merge_base_unresolved`, `contract_check_skipped`, `context_size_hint_required_failed`, `reviewer_dimensions_block_missing`, `commit_handoff_validation_failed`, `event_type_attempt`, `event_type_result`, `loop_completed` (extended), `replan_budget_exceeded`, `architect_pattern_ack_missing`, `reviewer_git_diff_section_missing`, `kb_slug_validation_failed`, `archive_must_copy_missing`, `staging_write_attempt`, `staging_write_result`, `task_validation_attempt`, `task_validation_result`.
 
 ### Removed
 
@@ -54,7 +54,7 @@ v2.2.11 closes 5 production regressions from v2.2.10, mechanises 12 prose-residu
 
 ### Tests
 
-5449 tests / 5449 pass / 2 fail / 6 skip — 0 v2.2.11-introduced regressions; 2 failures are pre-existing and unrelated to v2.2.11 scope.
+5457 tests / 5449 pass / 2 fail / 6 skip — 0 v2.2.11-introduced regressions; 2 failures are pre-existing and unrelated to v2.2.11 scope.
 
 ### Under the hood
 
