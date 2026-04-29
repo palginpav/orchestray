@@ -6632,3 +6632,47 @@ Emitted by `bin/process-spawn-requests.js` when a spawn request fails the cost c
 Field notes:
 - `reason` ∈ `{above_threshold, quota_exhausted, max_depth_exceeded, user_explicit}`.
 - Max-depth default: 2 (a reactive-spawned agent cannot itself reactive-spawn).
+
+### `spawn_approved_drainer_injected` event
+
+Emitted by `bin/inject-spawn-approved-drainer.js` (UserPromptSubmit hook) when an approved housekeeper spawn row is found in `spawn-approved.jsonl` and a hard-block prompt injection is prepended to the PM turn.
+
+```json
+{
+  "type": "spawn_approved_drainer_injected",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "request_id": "...",
+  "requested_agent": "orchestray-housekeeper",
+  "age_seconds": 12
+}
+```
+
+Field notes:
+- `request_id`: matches the `request_id` from the originating `spawn_requested` row.
+- `requested_agent`: always `"orchestray-housekeeper"` in v2.2.9 (only auto-approve case).
+- `age_seconds`: seconds elapsed since `requested_at` on the approved row.
+- `feature_optional`: false.
+
+### `spawn_drainer_orphaned` event
+
+Emitted by `bin/audit-housekeeper-orphan.js` when the drainer injected the prompt-block (`drained_at` set) but the PM still did not call `Agent(subagent_type: "orchestray-housekeeper")` within the 60-second grace window. Distinct from `spawn_orphaned` (approval never drained).
+
+```json
+{
+  "type": "spawn_drainer_orphaned",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "request_id": "...",
+  "requested_agent": "orchestray-housekeeper",
+  "drained_at": "ISO 8601",
+  "drainer_orphan_age_seconds": 75
+}
+```
+
+Field notes:
+- `drained_at`: ISO8601 timestamp when the drainer marked the row as processed.
+- `drainer_orphan_age_seconds`: seconds elapsed since `drained_at`.
+- `feature_optional`: false.
