@@ -3907,6 +3907,8 @@ Field notes:
 
 ### `task_validation_failed`
 
+**DEPRECATED in v2.2.12** — emit `task_validation_attempt` + `task_validation_result` instead.
+
 Emitted by `bin/validate-task-completion.js` when a `TaskCompleted` event (Agent Teams)
 is missing `task_id` or `task_subject`. The task is blocked (exit 2).
 
@@ -5356,6 +5358,8 @@ Schema stability: additive-only.
 ---
 
 ### `staging_write_failed` event (v2.1.17 W11-fix F-W11-07 R-RV-DIMS-CAPTURE)
+
+**DEPRECATED in v2.2.12** — emit `staging_write_attempt` + `staging_write_result` instead.
 
 Emitted by `bin/_lib/context-telemetry-cache.js` (and its callers in
 `bin/collect-context-telemetry.js`) when an I/O operation against the
@@ -7586,6 +7590,60 @@ Field notes:
 
 ---
 
+### `kb_index_auto_updated` event
+
+Emitted by `bin/redirect-kb-write.js` (PreToolUse:Write, W2d) when a new KB entry
+slug is successfully auto-appended to `.orchestray/kb/index.json`.
+
+```json
+{
+  "type": "kb_index_auto_updated",
+  "version": 1,
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "slug": "my-finding",
+  "bucket": "artifacts",
+  "path": ".orchestray/kb/artifacts/my-finding.md",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `slug`: the filename stem of the written KB file.
+- `bucket` ∈ `{"facts", "decisions", "artifacts"}`.
+- `path`: relative path written into `entries[]`.
+- `schema_version`: always `1` (v2.2.12 baseline).
+
+Kill switch: `ORCHESTRAY_KB_INDEX_AUTO_DISABLED=1` suppresses this event.
+
+---
+
+### `kb_index_auto_skipped` event
+
+Emitted by `bin/redirect-kb-write.js` (PreToolUse:Write, W2d) when the auto-append
+to `index.json` is skipped due to lock contention, I/O error, or kill switch.
+
+```json
+{
+  "type": "kb_index_auto_skipped",
+  "version": 1,
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "slug": "my-finding",
+  "bucket": "artifacts",
+  "reason": "index_write_error",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `slug`: the filename stem of the written KB file.
+- `bucket` ∈ `{"facts", "decisions", "artifacts"}`.
+- `reason` ∈ `{"index_read_error", "index_write_error"}`.
+- `schema_version`: always `1` (v2.2.12 baseline).
+
+---
+
 ### `agent_spawn_decision_recorded` event
 
 Emitted by `bin/audit-on-orch-complete.js` (W3-2) at orchestration close to record
@@ -7709,6 +7767,30 @@ Field notes:
 - `schema_version`: always 1 (v2.2.11 baseline).
 
 ---
+
+---
+
+### `contracts_hardfail_banner_shown` event
+
+Emitted by `bin/boot-validate-config.js` (v2.2.12 W2a) once per install when the
+installed Orchestray version is >= 2.2.12 and the session sentinel
+`.orchestray/state/.contracts-hardfail-banner-shown` does not yet exist. Signals
+that the operator has been notified that contracts validation is now hard-fail by
+default.
+
+```json
+{
+  "type": "contracts_hardfail_banner_shown",
+  "version": 1,
+  "installed_version": "2.2.12",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `installed_version`: the Orchestray version that triggered the banner.
+- `schema_version`: always 1.
 
 ### `context_size_hint_required_failed` event
 

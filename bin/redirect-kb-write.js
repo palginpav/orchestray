@@ -23,11 +23,83 @@
  * Output: exit 0 always; `{"continue": true}` on stdout
  */
 
+const fs   = require('fs');
 const path = require('path');
 
 const { MAX_INPUT_BYTES }       = require('./_lib/constants');
 const { resolveSafeCwd }        = require('./_lib/resolve-project-cwd');
 const { writeEvent }            = require('./_lib/audit-event-writer');
+
+// ---------------------------------------------------------------------------
+// KB index auto-append (W2d)
+// ---------------------------------------------------------------------------
+
+/** Derive title from H1 in file, or humanise slug. */
+function deriveTitle(filePath, slug, bucket) {
+  try {
+    const buf = Buffer.allocUnsafe(500);
+    const fd = fs.openSync(filePath, 'r');
+    const n = fs.readSync(fd, buf, 0, 500, 0);
+    fs.closeSync(fd);
+    const first = buf.slice(0, n).toString('utf8').split('\n').find((l) => l.trim());
+    if (first && first.startsWith('# ')) return first.slice(2).trim();
+  } catch (_e) { /* fall through */ }
+  return (bucket + '/' + slug).replace(/[-_]/g, ' ');
+}
+
+/** Auto-append entry to index.json if slug absent. Fail-open. */
+function autoAppendKbIndex(cwd, filePath, slug, bucket) {
+  if (process.env.ORCHESTRAY_KB_INDEX_AUTO_DISABLED === '1') return;
+
+  const indexPath = path.join(cwd, '.orchestray', 'kb', 'index.json');
+  const SCHEMA_VERSION = 1;
+
+  let parsed;
+  try {
+    const raw = fs.readFileSync(indexPath, 'utf8');
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    if (!err || err.code !== 'ENOENT') {
+      writeEvent({ type: 'kb_index_auto_skipped', slug, bucket, reason: 'index_read_error', schema_version: SCHEMA_VERSION }, { cwd });
+      return;
+    }
+    // index.json doesn't exist yet — start fresh
+    parsed = { version: '1.0', created_at: new Date().toISOString(), entries: [] };
+  }
+
+  if (!Array.isArray(parsed.entries)) parsed.entries = [];
+
+  // Idempotency check — slug already present
+  const alreadyPresent = parsed.entries.some(
+    (e) => (typeof e.slug === 'string' && e.slug === slug) || (typeof e.id === 'string' && e.id === slug)
+  );
+  if (alreadyPresent) return;
+
+  const relPath = '.orchestray/kb/' + bucket + '/' + slug + '.md';
+  const title = deriveTitle(filePath, slug, bucket);
+  const typeMap = { facts: 'fact', decisions: 'decision', artifacts: 'artifact' };
+
+  parsed.entries.push({
+    slug,
+    title,
+    type: typeMap[bucket] || bucket,
+    path: relPath,
+    created_at: new Date().toISOString(),
+  });
+
+  // Atomic write via tmp file + rename
+  const tmpPath = indexPath + '.tmp.' + process.pid;
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(parsed, null, 2) + '\n', 'utf8');
+    fs.renameSync(tmpPath, indexPath);
+  } catch (writeErr) {
+    try { fs.unlinkSync(tmpPath); } catch (_e) { /* ignore */ }
+    writeEvent({ type: 'kb_index_auto_skipped', slug, bucket, reason: 'index_write_error', schema_version: SCHEMA_VERSION }, { cwd });
+    return;
+  }
+
+  writeEvent({ type: 'kb_index_auto_updated', slug, bucket, path: relPath, schema_version: SCHEMA_VERSION }, { cwd });
+}
 
 // ---------------------------------------------------------------------------
 // Path matcher — intercept facts/, decisions/, and artifacts/ under .orchestray/kb/
@@ -172,4 +244,10 @@ async function runTelemetry(cwd, filePath, toolInput, hookEvent) {
     phase: 'transparent-pass-v2210',
     bucket,
   }, { cwd });
+
+  // Auto-append to index.json for .md KB writes (W2d)
+  if (KB_INTERCEPT_RE.test(filePath)) {
+    const slug = path.basename(filePath, '.md');
+    autoAppendKbIndex(cwd, filePath, slug, bucket);
+  }
 }

@@ -13,9 +13,7 @@ After completing your task, write significant, reusable findings to the knowledg
 for context sharing with subsequent agents:
 
 - Write to `.orchestray/kb/facts/{slug}.md` (or `security-{slug}.md` for security findings)
-- Update `.orchestray/kb/index.json`, adding your entry to the `entries` array
-- Check the index first for existing entries on the same topic — update instead of
-  duplicating
+- `index.json` is updated automatically by `bin/redirect-kb-write.js` — do NOT update it manually. Set `ORCHESTRAY_KB_INDEX_AUTO_DISABLED=1` to opt out (e.g. for tests).
 - Keep detail files under 500 tokens
 - Include: what you found, why it matters, and what the next agent should know
 
