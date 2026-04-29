@@ -704,6 +704,24 @@ function install(targetDir) {
       track(path.join('orchestray', 'bin', '_lib', rel));
     }
   }
+  // Copy any named subdirectories that contain hook scripts (e.g. release-manager/).
+  // These are NOT covered by the top-level binFiles loop above (which only reads
+  // immediate .js files) and NOT covered by _lib/ (which is a shared library dir).
+  // Without this, hooks.json entries that reference bin/release-manager/*.js are
+  // installed as hook registrations but the scripts themselves are never copied —
+  // causing the pruning pass on the next install to remove those entries (because
+  // the scripts don't exist), then re-add them merged into the wrong entry.
+  const BIN_SUBDIRS = ['release-manager'];
+  for (const subName of BIN_SUBDIRS) {
+    const subSrc = path.join(binDir, subName);
+    if (fs.existsSync(subSrc) && fs.statSync(subSrc).isDirectory()) {
+      const subDst = path.join(targetDir, 'orchestray', 'bin', subName);
+      const subFiles = copyJsTree(subSrc, subDst);
+      for (const rel of subFiles) {
+        track(path.join('orchestray', 'bin', subName, rel));
+      }
+    }
+  }
   console.log(`  \x1b[32m✓\x1b[0m Installed ${binFiles.length} hook scripts`);
 
   // 3a. F-04 closure: install `ox` as a bare command so agents can invoke
