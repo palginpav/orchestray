@@ -50,12 +50,12 @@ const _parser = require('./_lib/event-schemas-parser');
 // on the next UserPromptSubmit, avoiding a spurious violation → sentinel trip.
 const { invalidateZone1Hash } = require('./_lib/invalidate-block-a-zone1');
 
-const MAX_SHADOW_BYTES = 12288; // 12 KB hard ceiling — raised from 8192 in v2.2.9
-                                // to absorb the 23 new event types added by the
-                                // mechanisation release (housekeeper auto-spawn,
-                                // dossier inject telemetry, double-fire guard,
-                                // numeric-threshold gates, dual-install parity,
-                                // PM emit state-watcher). Still under PIPE_BUF.
+const MAX_SHADOW_BYTES = 16384; // 16 KB hard ceiling — raised from 12288 (12 KB) in v2.2.11
+                                // because v2.2.12 is expected to add ≥4 new event types
+                                // (pushing shadow past the former 12 KB limit before the
+                                // release shipped). Previous raise was 8192→12288 in v2.2.9
+                                // to absorb the 23 new event types added by the mechanisation
+                                // release. Value stays well under Linux PIPE_BUF (65536).
 
 // ---------------------------------------------------------------------------
 // Argument parsing

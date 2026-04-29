@@ -180,6 +180,29 @@ describe('v2211-w0b-kb-write-artifacts', () => {
       `Expected 0 kb_write_redirected for state path, got ${redirected.length}`);
   });
 
+  test('6. Write to .orchestray/kb/index.json → 1 mcp_tool_call:kb_write + 1 kb_write_redirected; bucket=index', () => {
+    const tmpDir = makeTmpDir();
+    const filePath = path.join(tmpDir, '.orchestray', 'kb', 'index.json');
+    const { stdout, events } = runHook(tmpDir, filePath, {}, '{}');
+
+    assert.strictEqual(stdout.continue, true, 'continue must be true');
+
+    const toolCalls = events.filter((e) => e.type === 'mcp_tool_call' && e.tool === 'kb_write');
+    assert.strictEqual(toolCalls.length, 1,
+      `Expected 1 mcp_tool_call:kb_write for index.json, got ${toolCalls.length}`);
+
+    const redirected = events.filter((e) => e.type === 'kb_write_redirected');
+    assert.strictEqual(redirected.length, 1,
+      `Expected 1 kb_write_redirected for index.json, got ${redirected.length}`);
+
+    assert.strictEqual(redirected[0].bucket, 'index',
+      `Expected bucket='index', got '${redirected[0].bucket}'`);
+    assert.ok(
+      typeof redirected[0].target_path === 'string' && redirected[0].target_path.endsWith('index.json'),
+      'target_path must reference index.json'
+    );
+  });
+
   test('5. Write to artifacts/foo.md with ORCHESTRAY_KB_WRITE_REDIRECT_DISABLED=1 → 0 emits', () => {
     const tmpDir = makeTmpDir();
     const filePath = path.join(tmpDir, '.orchestray', 'kb', 'artifacts', 'foo.md');

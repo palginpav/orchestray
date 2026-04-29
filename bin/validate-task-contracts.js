@@ -67,6 +67,35 @@ const SUPPORTED_CHECK_TYPES = new Set([
 
 // ---------------------------------------------------------------------------
 // Main entry point
+//
+// Q4 architect default — branch resolution and merge-base fallback chain:
+//
+//   When validating contracts that reference branch-scoped diffs, the canonical
+//   approach (per the v2.2.11 architect design) is:
+//
+//     git merge-base HEAD origin/master
+//
+//   This yields the common ancestor commit so that `diff_only_in` checks are
+//   scoped to the current branch's changes only (not the full working tree diff).
+//
+//   Fallback chain when merge-base is unavailable:
+//     1. Not in a git repo or `git merge-base` exits non-zero:
+//        fall back to `.orchestray/audit/current-orchestration.json` to read the
+//        orchestration_id and scope checks to files tracked in that orchestration.
+//     2. No current-orchestration.json or it is unreadable:
+//        treat `diff_only_in` as un-evaluatable → emit `contract_check_skipped`
+//        with reason `merge_base_unavailable`.
+//     3. Both unavailable → null (skip all branch-scoped checks without error).
+//
+//   Current state in v2.2.11:
+//     The soft-warn validator does NOT yet enforce branch-scoped diffs via
+//     merge-base. The `diff_only_in` condition type is registered in
+//     SUPPORTED_CHECK_TYPES and parsed, but the git-diff evaluation is stubbed
+//     with a pass-through (all `diff_only_in` checks pass trivially). The full
+//     merge-base enforcement with hard-fail exit code 2 is planned for v2.2.13.
+//     This comment is the authoritative documentation of the intended fallback
+//     chain so that v2.2.13 implementors do not need to reconstruct it from the
+//     design doc.
 // ---------------------------------------------------------------------------
 
 function main() {

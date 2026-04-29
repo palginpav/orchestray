@@ -31,13 +31,16 @@ const { writeEvent }            = require('./_lib/audit-event-writer');
 
 // ---------------------------------------------------------------------------
 // Path matcher — intercept facts/, decisions/, and artifacts/ under .orchestray/kb/
+// Also intercepts the top-level .orchestray/kb/index.json index file, which
+// bypassed the original regex (that only matched subfolder .md writes).
 // ---------------------------------------------------------------------------
 
 const KB_INTERCEPT_RE = /[/\\]\.orchestray[/\\]kb[/\\](facts|decisions|artifacts)[/\\][^/\\]+\.md$/;
+const KB_INDEX_RE     = /[/\\]\.orchestray[/\\]kb[/\\]index\.json$/;
 
 function isKbPath(filePath) {
   if (typeof filePath !== 'string') return false;
-  return KB_INTERCEPT_RE.test(filePath);
+  return KB_INTERCEPT_RE.test(filePath) || KB_INDEX_RE.test(filePath);
 }
 
 // ---------------------------------------------------------------------------
@@ -126,9 +129,10 @@ async function runTelemetry(cwd, filePath, toolInput, hookEvent) {
   const t0 = Date.now();
   let outcome = 'error';
 
-  // Derive bucket from path
+  // Derive bucket from path.
+  // index.json lives at the kb root (no subfolder), so it gets its own label.
   const bucketMatch = filePath.match(/[/\\]\.orchestray[/\\]kb[/\\](facts|decisions|artifacts)[/\\]/);
-  const bucket = bucketMatch ? bucketMatch[1] : 'facts';
+  const bucket = bucketMatch ? bucketMatch[1] : (KB_INDEX_RE.test(filePath) ? 'index' : 'facts');
 
   // Build a minimal kb_write input from the Write payload for telemetry.
   // We do NOT actually call kb_write.handle() here because that would perform
