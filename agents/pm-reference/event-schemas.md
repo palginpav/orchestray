@@ -7875,3 +7875,53 @@ Field notes:
 - `reason`: human-readable rationale for the decision classification.
 - `evidence_ref`: pointer to the supporting event line in the per-orch events.jsonl archive.
 - `schema_version`: always 1 (v2.2.11 baseline).
+
+---
+
+### `architect_pattern_ack_missing` event
+
+Emitted by `bin/validate-pattern-ack.js` (PostToolUse:Agent, v2.2.11 W2-6) when an
+architect subagent completes without referencing any of the high-confidence patterns
+(confidence >= 0.7) that were offered in the `<mcp-grounding>` block injected by
+`bin/prefetch-mcp-grounding.js`. Warn-only (exit 0); never blocks a spawn.
+Kill switch: `ORCHESTRAY_PATTERN_ACK_CHECK_DISABLED=1`.
+
+```json
+{
+  "version": 1,
+  "type": "architect_pattern_ack_missing",
+  "spawn_id": "subagent-abc123",
+  "pattern_slugs_offered": ["slug-a", "slug-b"],
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `spawn_id`: the architect subagent spawn identifier (`tool_input.agent_id` or `spawn_id`); `null` when absent from payload.
+- `pattern_slugs_offered`: slugs of high-confidence patterns present in the grounding block that were not referenced in the architect's structured result summary or files_changed descriptions.
+- `schema_version`: always 1 (v2.2.11 baseline).
+
+### `replan_budget_exceeded` event
+
+Emitted by W2-5 replan budget guard in `bin/_lib/pm-emit-state-watcher.js` (called
+from `audit-pm-emit-coverage.js` at PM Stop) when the count of `w_item_redo_requested`
+events for the active orchestration exceeds `replan_budget` from `.orchestray/config.json`
+(default 3). Fires at most once per orchestration (lock file dedup).
+
+```json
+{
+  "event": "replan_budget_exceeded",
+  "version": 1,
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "replan_count": 4,
+  "replan_budget": 3,
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `replan_count`: number of `w_item_redo_requested` events observed for this orchestration.
+- `replan_budget`: the configured budget (default 3).
+- `schema_version`: always `1` in this release.
+

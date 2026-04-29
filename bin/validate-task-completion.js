@@ -43,6 +43,8 @@ const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { recordDegradation } = require('./_lib/degraded-journal');
 const { loadHandoffBodyCapConfig } = require('./_lib/config-schema');
+// v2.2.11 W2-4: cross-field invariant checker (R1/R2/R3 per handoff-contract.md §2).
+const { validateCrossField } = require('./_lib/t15-cross-field');
 // v2.2.2 Fix #7: REQUIRED_SECTIONS shares its source with the C2 hook's
 // HANDOFF_CONTRACT_SUFFIX so the agent-side prompt and the hook-side
 // enforcement can never drift apart.
@@ -963,6 +965,39 @@ function main() {
         }
       }
 
+      // v2.2.11 W2-4: cross-field invariant checks (R1/R2/R3).
+      // Runs after per-role schema check so field-level failures take precedence.
+      // Non-blocking observability: emits t15_role_schema_violation with
+      // violation_kind:"cross_field" but does NOT exit 2 (fail-open per contract).
+      if (structuredResult) {
+        try {
+          const cfResult = validateCrossField(structuredResult);
+          if (!cfResult.valid && cfResult.violations.length > 0) {
+            emitAuditEvent(cwd, {
+              timestamp: new Date().toISOString(),
+              type: 't15_role_schema_violation',
+              violation_kind: 'cross_field',
+              hook: 'validate-task-completion',
+              orchestration_id: resolveOrchestrationId(cwd),
+              agent_role: agentRole,
+              violations: cfResult.violations.map(v => ({
+                field: v.field,
+                rule: v.rule,
+                expected: v.expected,
+                actual: v.actual,
+              })),
+              session_id: event.session_id || null,
+            });
+            process.stderr.write(
+              '[orchestray] validate-task-completion: CROSS-FIELD violation for ' +
+              (agentRole || 'unknown') + ':\n' +
+              cfResult.violations.map(v => '  - ' + v.rule + ' (' + v.field + '): ' + v.actual).join('\n') + '\n' +
+              'See agents/pm-reference/handoff-contract.md §2 for cross-field rules.\n'
+            );
+          }
+        } catch (_cfErr) { /* fail-open — cross-field check must never block */ }
+      }
+
       // R-DX2 (v2.1.11): Validate artifact-path fields to catch placeholder values.
       // This check runs after the structured-result section check so missing-section
       // rejections take precedence. Only validates when structured result is present.
@@ -1107,6 +1142,8 @@ module.exports = {
   // v2.2.9 B-5.1: escalation-hint detector
   detectEscalationHint,
   ESCALATION_AGENT_ROLES,
+  // v2.2.11 W2-4: cross-field invariant checker
+  validateCrossField,
 };
 
 if (require.main === module) {

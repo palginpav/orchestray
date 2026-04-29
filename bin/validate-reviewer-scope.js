@@ -165,6 +165,27 @@ function main() {
       }
     }
 
+    // W2-9 (v2.2.11): warn-event when reviewer prompt lacks ## Dimensions to Apply block.
+    // Warn-only for v2.2.11 (hard-block deferred to v2.2.12).
+    // Kill switch: ORCHESTRAY_REVIEWER_DIMENSIONS_CHECK_DISABLED=1
+    if (process.env.ORCHESTRAY_REVIEWER_DIMENSIONS_CHECK_DISABLED !== '1') {
+      const hasDimensionsBlock = /##\s+Dimensions\s+to\s+Apply/i.test(promptBody);
+      if (!hasDimensionsBlock) {
+        const spawnId = (event.tool_input && (event.tool_input.agent_id || event.tool_input.task_id)) || null;
+        try {
+          const auditDir = path.join(cwd, '.orchestray', 'audit');
+          fs.mkdirSync(auditDir, { recursive: true });
+          try { fs.chmodSync(auditDir, 0o700); } catch (_e) { /* best-effort */ }
+          writeEvent({
+            version:        1,
+            schema_version: 1,
+            type:           'reviewer_dimensions_block_missing',
+            spawn_id:       spawnId,
+          }, { cwd });
+        } catch (_e) { /* fail-open */ }
+      }
+    }
+
     if (!evaluation.scoped) {
       // v2.2.9 B-2.3: hard-reject unless kill switch is active.
       const hardDisabled = process.env.ORCHESTRAY_REVIEWER_SCOPE_HARD_DISABLED === '1';

@@ -233,15 +233,19 @@ process.stdin.on('end', () => {
     const computedSize = systemSize + tier2Size + handoffSize;
 
     // Emit warn event when hint is missing or all-zero and role is known.
+    // B4 (v2.2.11): after the warn emit, hard-block the spawn via
+    // context_size_hint_required_failed + exit 2 (fail-closed).
+    // Kill switch: ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1 reverts to legacy warn-only.
     if (computedSize === 0 && role && process.env.ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED !== '1') {
+      let orchId = 'unknown';
       try {
         const orchFile = path.join(cwd, '.orchestray', 'audit', 'current-orchestration.json');
-        let orchId = 'unknown';
         try {
           const orchRaw = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
           orchId = orchRaw.orchestration_id || 'unknown';
         } catch (_e) { /* fail-open */ }
 
+        // Warn event always fires (telemetry trail).
         writeEvent({
           event_type:     'context_size_hint_missing',
           version:        1,
@@ -251,6 +255,28 @@ process.stdin.on('end', () => {
         }, { cwd });
       } catch (_e) {
         // Audit emit failure never blocks the spawn
+      }
+
+      // Hard-block: emit required_failed and exit 2, unless kill switch is set.
+      if (process.env.ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED !== '1') {
+        try {
+          writeEvent({
+            event_type:    'context_size_hint_required_failed',
+            version:       1,
+            spawn_id:      toolInput.task_id || orchId,
+            subagent_type: role,
+            schema_version: 1,
+          }, { cwd });
+        } catch (_e) {
+          // Audit emit failure does not prevent the block
+        }
+        process.stdout.write(JSON.stringify({
+          type: 'block',
+          message: `[orchestray] Spawn blocked: the "${role}" agent was spawned without a context_size_hint. ` +
+                   `All Agent spawns must include context_size_hint with non-zero system/tier2/handoff values. ` +
+                   `To bypass enforcement, set ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1.`,
+        }) + '\n');
+        process.exit(2);
       }
     }
 

@@ -51,7 +51,7 @@ const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 // B6: ROI presence check — logic lives in pm-emit-state-watcher for
 // co-location with the other watcher rules. We import and call it here
 // so audit-pm-emit-coverage participates in the orch-close fan-out.
-const { checkOrchRoiPresence } = require('./_lib/pm-emit-state-watcher');
+const { checkOrchRoiPresence, checkReplanBudget } = require('./_lib/pm-emit-state-watcher');
 
 const WATCHED_EVENT_TYPES = [
   'tier2_invoked',
@@ -186,6 +186,10 @@ function main() {
 
   // B6: emit orchestration_roi_missing when orchestration_roi absent in orch slice.
   try { checkOrchRoiPresence(cwd, orchId, readJsonlLines); }
+  catch (_e) { /* fail-open */ }
+
+  // W2-5: emit replan_budget_exceeded when w_item_redo_requested count exceeds budget.
+  try { checkReplanBudget(cwd, orchId, readJsonlLines); }
   catch (_e) { /* fail-open */ }
 }
 

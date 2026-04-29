@@ -112,14 +112,15 @@ describe('v2.2.10 B4 — context_size_hint_missing warn-event', () => {
     assert.equal(missing.length, 0, 'no context_size_hint_missing events should be emitted');
   });
 
-  // ── Test 2: missing context_size_hint → 1 emit with subagent_type ──────
-  test('spawn input without context_size_hint → 1 context_size_hint_missing event, exit 0', () => {
+  // ── Test 2: missing context_size_hint → warn + required_failed, exit 2 ─
+  // Updated v2.2.11 (W2-8): fail-closed promotion — exit is now 2 (block).
+  test('spawn input without context_size_hint → context_size_hint_missing + context_size_hint_required_failed, exit 2', () => {
     const r = runHookSync(tmpRoot, {
       subagent_type: 'developer',
       task_id: 'W2',
       // no context_size_hint field at all
     });
-    assert.equal(r.status, 0, 'hook exits 0 (never blocks); stderr=' + r.stderr);
+    assert.equal(r.status, 2, 'hook exits 2 (hard-block); stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
     const missing = events.filter(e => e.event_type === 'context_size_hint_missing');
@@ -129,14 +130,15 @@ describe('v2.2.10 B4 — context_size_hint_missing warn-event', () => {
     assert.equal(missing[0].version, 1, 'version must be 1');
   });
 
-  // ── Test 3: all-zero context_size_hint → 1 emit ─────────────────────
-  test('all-zero context_size_hint → 1 context_size_hint_missing event, exit 0', () => {
+  // ── Test 3: all-zero context_size_hint → warn + required_failed, exit 2 ─
+  // Updated v2.2.11 (W2-8): fail-closed promotion — exit is now 2 (block).
+  test('all-zero context_size_hint → context_size_hint_missing + context_size_hint_required_failed, exit 2', () => {
     const r = runHookSync(tmpRoot, {
       subagent_type: 'reviewer',
       task_id: 'W3',
       context_size_hint: { system: 0, tier2: 0, handoff: 0 },
     });
-    assert.equal(r.status, 0, 'hook exits 0; stderr=' + r.stderr);
+    assert.equal(r.status, 2, 'hook exits 2 (hard-block); stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
     const missing = events.filter(e => e.event_type === 'context_size_hint_missing');

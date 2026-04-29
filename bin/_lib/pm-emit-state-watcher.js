@@ -723,6 +723,92 @@ function processEdit(event, opts) {
 }
 
 // ---------------------------------------------------------------------------
+// W2-5: replan budget guard — PM Stop check
+// ---------------------------------------------------------------------------
+
+/**
+ * Counts `w_item_redo_requested` events for `orchId` in the provided lines,
+ * compares to `replan_budget` from config (default 3), and emits
+ * `replan_budget_exceeded` if the count exceeds the budget. Fires at most
+ * once per orchestration via a lock file.
+ *
+ * Kill switch: ORCHESTRAY_REPLAN_BUDGET_GUARD_DISABLED=1
+ *
+ * @param {string}   cwd       - Project root.
+ * @param {string}   orchId    - Active orchestration_id.
+ * @param {Function} readLines - fn(filePath) → string[] — injected for tests.
+ */
+function checkReplanBudget(cwd, orchId, readLines) {
+  if (process.env.ORCHESTRAY_REPLAN_BUDGET_GUARD_DISABLED === '1') return;
+  if (!orchId) return;
+
+  // Per-orch dedup via lock file — only fire once per orchestration_id.
+  const lockPath = path.join(
+    cwd, '.orchestray', 'state',
+    'replan-budget-exceeded-' + orchId + '.lock',
+  );
+  if (fs.existsSync(lockPath)) return;
+
+  // Read replan_budget from config (default 3).
+  let replan_budget = 3;
+  try {
+    const cfgPath = path.join(cwd, '.orchestray', 'config.json');
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    if (cfg && typeof cfg.replan_budget === 'number' && Number.isFinite(cfg.replan_budget)) {
+      replan_budget = cfg.replan_budget;
+    }
+  } catch (_e) { /* config absent → default 3 */ }
+
+  // Read the orch event slice (archive preferred; live log as fallback).
+  const archivePath = path.join(cwd, '.orchestray', 'history', orchId, 'events.jsonl');
+  const livePath    = path.join(cwd, EVENTS_REL);
+
+  let lines;
+  try {
+    if (fs.existsSync(archivePath)) {
+      lines = typeof readLines === 'function' ? readLines(archivePath) : fs.readFileSync(archivePath, 'utf8').split('\n');
+    } else {
+      lines = typeof readLines === 'function' ? readLines(livePath) : fs.readFileSync(livePath, 'utf8').split('\n');
+    }
+  } catch (_e) {
+    lines = [];
+  }
+
+  // Count w_item_redo_requested events for this orchestration.
+  let replan_count = 0;
+  for (const l of lines) {
+    const trimmed = typeof l === 'string' ? l.trim() : '';
+    if (!trimmed) continue;
+    let evt;
+    try { evt = JSON.parse(trimmed); }
+    catch (_e) { continue; }
+    if (!evt || typeof evt !== 'object') continue;
+    if (evt.type !== 'w_item_redo_requested') continue;
+    if (orchId && evt.orchestration_id && evt.orchestration_id !== orchId) continue;
+    replan_count++;
+  }
+
+  if (replan_count <= replan_budget) return; // at threshold is allowed; exceed = over
+
+  // Write lock file before emitting so a second Stop fire is deduped.
+  try {
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, orchId, { flag: 'wx' });
+  } catch (_e) { /* flag: wx fails if already exists — that's the dedup */ }
+
+  try {
+    writeEvent({
+      version:          1,
+      type:             'replan_budget_exceeded',
+      orchestration_id: orchId,
+      replan_count,
+      replan_budget,
+      schema_version:   1,
+    }, { cwd });
+  } catch (_e) { /* fail-open */ }
+}
+
+// ---------------------------------------------------------------------------
 // B6: orchestration_roi presence check
 // ---------------------------------------------------------------------------
 
@@ -814,6 +900,7 @@ function checkOrchRoiPresence(cwd, orchId, readLines) {
 module.exports = {
   processEdit,
   checkOrchRoiPresence,
+  checkReplanBudget,
   WATCH_TARGETS,
   // Visible for tests:
   _internals: {
