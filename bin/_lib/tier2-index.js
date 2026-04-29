@@ -50,7 +50,11 @@ const SCHEMA_REL_PATH = path.join(
 // sidecar above the original 64 KB cap. The sidecar is loaded JIT by
 // `mcp__orchestray__schema_get`, never injected wholesale, so the modest
 // disk-side bump has no PM-context impact.
-const MAX_INDEX_BYTES = 98304; // 96 KB soft ceiling.
+// v2.2.11 bumped from 96 KB to 128 KB. F1-A-2211 declares 13 new event types
+// (14 including the updated loop_completed), pushing the sidecar from 95 KB to
+// ~101 KB. The 128 KB ceiling gives headroom for the remaining v2.2.11 waves
+// (W2-W4 add further event types). The sidecar is JIT-loaded, not PM-injected.
+const MAX_INDEX_BYTES = 131072; // 128 KB soft ceiling.
 
 // W7 fix-pass L-001 (security): pre-stat ceiling for the source markdown.
 // 25× the current 226 KB source — generous headroom for legitimate growth,

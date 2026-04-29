@@ -6565,7 +6565,10 @@ Field notes:
 
 ### `loop_completed` event
 
-Emitted by `bin/loop-continue.js` when a loop ends.
+Emitted by `bin/loop-continue.js` when a loop ends. The `loop_kind` field
+disambiguates orchestration-level loop closure (`"orch"`) from verify-fix loop
+closure (`"verify_fix"`), resolving the v2.2.11 B5 taxonomy fix. Declared with
+`schema_version` for forward-compat (v2.2.11 F1-A-2211).
 
 ```json
 {
@@ -6575,12 +6578,16 @@ Emitted by `bin/loop-continue.js` when a loop ends.
   "orchestration_id": "...",
   "loop_id": "...",
   "iter_count": 5,
-  "completion_reason": "promise_met"
+  "completion_reason": "promise_met",
+  "loop_kind": "orch",
+  "schema_version": 1
 }
 ```
 
 Field notes:
 - `completion_reason` ∈ `{promise_met, max_iterations, cost_cap, user_cancel}`.
+- `loop_kind` ∈ `{"orch", "verify_fix"}` — taxonomy disambiguation (B5 fix, v2.2.11).
+- `schema_version`: always 1 (v2.2.11 baseline).
 - feature_optional: true (opt-in `/orchestray:loop` slash command; legitimately dark per W4 RCA-8 when the user does not invoke the loop. Excluded from the F3 promised-event tracker so it does not alarm.)
 
 ### `spawn_requested` event
@@ -7544,3 +7551,327 @@ the KB is transparently redirected through the v2.2.10 pass-through layer.
 Field notes:
 - `target_path`: the original Write destination path.
 - `phase`: always `"transparent-pass-v2210"` in this release.
+
+---
+
+### `agent_spawn_decision_recorded` event
+
+Emitted by `bin/audit-on-orch-complete.js` (W3-2) at orchestration close to record
+whether `spawn_agent` was invoked, considered-and-skipped, or not applicable in the
+orchestration. One of four honest decision-recorder events (v2.2.11 F1-A-2211).
+
+```json
+{
+  "type": "agent_spawn_decision_recorded",
+  "version": 1,
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "decision": "invoked",
+  "reason": "reactive spawn requested by developer subagent",
+  "evidence_ref": "events.jsonl:line:42",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `decision` ∈ `{"invoked", "considered_skipped", "not_applicable"}`.
+- `reason`: human-readable rationale for the decision classification.
+- `evidence_ref`: pointer to the supporting event line in the per-orch events.jsonl archive.
+- `schema_version`: always 1 (v2.2.11 baseline).
+
+---
+
+### `commit_handoff_validation_failed` event
+
+Emitted by `bin/validate-commit-handoff.js` (W2-10) when a developer agent's commit
+body is missing a required `## Handoff` subsection field, enforcing the W-item
+commit-body discipline from `agents/pm-reference/agent-common-protocol.md`.
+
+```json
+{
+  "type": "commit_handoff_validation_failed",
+  "version": 1,
+  "release_id": "orch-20260101T000000Z-example",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "missing_field": "invariants_established",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `release_id`: the orchestration or release context in which the commit was made.
+- `missing_field`: the specific `## Handoff` subsection key that was absent.
+- `schema_version`: always 1 (v2.2.11 baseline).
+
+---
+
+### `contract_check_skipped` event
+
+Emitted by `bin/validate-task-contracts.js` (W3-1) when contracts validation is
+bypassed for a task, for example when the task YAML lacks a `contracts:` block.
+Transitional event — retires in v2.2.13 once all task definitions include contracts.
+
+```json
+{
+  "type": "contract_check_skipped",
+  "version": 1,
+  "task_id": "task-001",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "skip_reason": "no_contracts_block",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `task_id`: the task for which contracts validation was skipped.
+- `skip_reason`: reason for the skip (e.g. `"no_contracts_block"`, `"schema_disabled"`).
+- `schema_version`: always 1 (v2.2.11 baseline).
+- Transitional: this event retires in v2.2.13 when contracts become mandatory.
+
+---
+
+### `contracts_merge_base_unresolved` event
+
+Emitted by `bin/validate-task-contracts.js` (W3-1) when the contracts validator
+cannot resolve a merge base branch reference in a task's contract definition.
+
+```json
+{
+  "type": "contracts_merge_base_unresolved",
+  "version": 1,
+  "task_id": "task-001",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "branch": "feature/my-branch",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `task_id`: the task whose contract referenced an unresolvable branch.
+- `branch`: the branch name that could not be resolved as a merge base.
+- `schema_version`: always 1 (v2.2.11 baseline).
+
+---
+
+### `contracts_parse_failed` event
+
+Emitted by `bin/validate-task-contracts.js` (W3-1) when the contracts block in a
+task YAML cannot be parsed, preventing contract validation from proceeding.
+
+```json
+{
+  "type": "contracts_parse_failed",
+  "version": 1,
+  "task_id": "task-001",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "parse_error": "unexpected token at line 4",
+  "file_path": ".orchestray/tasks/task-001.yml",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `task_id`: the task whose contracts block failed to parse.
+- `parse_error`: the parse error message.
+- `file_path`: path to the task YAML file that contained the malformed contracts block.
+- `schema_version`: always 1 (v2.2.11 baseline).
+
+---
+
+### `context_size_hint_required_failed` event
+
+Emitted by `bin/preflight-spawn-budget.js` (W2-8) when a subagent spawn is blocked
+because a `context_size_hint` field is required but absent from the delegation block.
+Fail-closed enforcement upgrade from the advisory-only mode in v2.2.10.
+
+```json
+{
+  "type": "context_size_hint_required_failed",
+  "version": 1,
+  "spawn_id": "subagent-abc123",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "subagent_type": "developer",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `spawn_id`: the identifier of the blocked subagent spawn attempt.
+- `subagent_type`: the agent role that was attempting to spawn without the hint.
+- `schema_version`: always 1 (v2.2.11 baseline).
+
+---
+
+### `curator_tombstone_decision_recorded` event
+
+Emitted by `bin/audit-on-orch-complete.js` (W3-2) at orchestration close to record
+whether `curator_tombstone` was invoked, considered-and-skipped, or not applicable.
+One of four honest decision-recorder events (v2.2.11 F1-A-2211).
+
+```json
+{
+  "type": "curator_tombstone_decision_recorded",
+  "version": 1,
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "decision": "considered_skipped",
+  "reason": "dry_run — curator ran but no tombstone action was taken",
+  "evidence_ref": "events.jsonl:line:87",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `decision` ∈ `{"invoked", "considered_skipped", "not_applicable"}`.
+- `reason`: human-readable rationale for the decision classification.
+- `evidence_ref`: pointer to the supporting event line in the per-orch events.jsonl archive.
+- `schema_version`: always 1 (v2.2.11 baseline).
+
+---
+
+### `event_type_attempt` event
+
+Emitted during the rename-cycle Wave-2 stage when an event is attempted under its
+pre-rename name, recording the original event type before the alias resolution step.
+Part of the `*_failed` → `*_attempt`/`*_result` rename-cycle infrastructure (B5 fix).
+
+```json
+{
+  "type": "event_type_attempt",
+  "version": 1,
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "original_event_type": "staging_write_failed",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `original_event_type`: the pre-rename event type name being attempted.
+- `schema_version`: always 1 (v2.2.11 baseline).
+
+---
+
+### `event_type_result` event
+
+Emitted during the rename-cycle Wave-2 stage after an event has been resolved through
+the alias table, recording the outcome of the rename-cycle resolution step. Pairs with
+`event_type_attempt` (B5 fix).
+
+```json
+{
+  "type": "event_type_result",
+  "version": 1,
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "original_event_type": "staging_write_failed",
+  "outcome": "resolved_via_alias",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `original_event_type`: the pre-rename event type name that was resolved.
+- `outcome`: result of the rename-cycle step (e.g. `"resolved_via_alias"`, `"no_alias_found"`).
+- `schema_version`: always 1 (v2.2.11 baseline).
+
+---
+
+### `file_ownership_violation` event
+
+Emitted by `bin/validate-task-contracts.js` (W3-1) when a file write violates the
+declared ownership contract for a task — either writing outside allowed paths or
+matching a forbidden-path pattern (v2.2.11 F1-A-2211).
+
+```json
+{
+  "type": "file_ownership_violation",
+  "version": 1,
+  "task_id": "task-001",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "file_path": "agents/pm.md",
+  "violation_kind": "outside_allowed",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `task_id`: the task whose ownership contract was violated.
+- `file_path`: the path that was written or attempted.
+- `violation_kind` ∈ `{"outside_allowed", "matches_forbidden"}` — whether the file was outside the allowed set or matched a forbidden pattern.
+- `schema_version`: always 1 (v2.2.11 baseline).
+
+---
+
+### `pattern_deprecation_decision_recorded` event
+
+Emitted by `bin/audit-on-orch-complete.js` (W3-2) at orchestration close to record
+whether `pattern_deprecate` was invoked, considered-and-skipped, or not applicable.
+One of four honest decision-recorder events (v2.2.11 F1-A-2211).
+
+```json
+{
+  "type": "pattern_deprecation_decision_recorded",
+  "version": 1,
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "decision": "not_applicable",
+  "reason": "no pattern deprecation signals in this orchestration",
+  "evidence_ref": "events.jsonl:line:0",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `decision` ∈ `{"invoked", "considered_skipped", "not_applicable"}`.
+- `reason`: human-readable rationale for the decision classification.
+- `evidence_ref`: pointer to the supporting event line in the per-orch events.jsonl archive.
+- `schema_version`: always 1 (v2.2.11 baseline).
+
+---
+
+### `reviewer_dimensions_block_missing` event
+
+Emitted by `bin/validate-reviewer-scope.js` (W2-9) when a reviewer subagent is
+spawned without the required `## Review Dimensions` block in its delegation prompt,
+preventing scoped review execution. Distinct from `reviewer_dimensions_missing` which
+detects absence at spawn-check time.
+
+```json
+{
+  "type": "reviewer_dimensions_block_missing",
+  "version": 1,
+  "spawn_id": "subagent-def456",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `spawn_id`: the reviewer subagent spawn identifier.
+- `schema_version`: always 1 (v2.2.11 baseline).
+
+---
+
+### `user_question_decision_recorded` event
+
+Emitted by `bin/audit-on-orch-complete.js` (W3-2) at orchestration close to record
+whether `ask_user` was invoked, considered-and-skipped, or not applicable. One of
+four honest decision-recorder events (v2.2.11 F1-A-2211).
+
+```json
+{
+  "type": "user_question_decision_recorded",
+  "version": 1,
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "decision": "not_applicable",
+  "reason": "no ambiguity signal detected in this orchestration",
+  "evidence_ref": "events.jsonl:line:0",
+  "schema_version": 1
+}
+```
+
+Field notes:
+- `decision` ∈ `{"invoked", "considered_skipped", "not_applicable"}`.
+- `reason`: human-readable rationale for the decision classification.
+- `evidence_ref`: pointer to the supporting event line in the per-orch events.jsonl archive.
+- `schema_version`: always 1 (v2.2.11 baseline).
