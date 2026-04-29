@@ -40,11 +40,13 @@ function _validateEntries(entries, ids) {
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i];
     if (!_isPlainObject(e)) return `entry_${i}_not_object`;
-    if (typeof e.id !== 'string' || !ID_RE.test(e.id)) return `entry_${i}_bad_id`;
+    const entryId = (typeof e.id === 'string' && e.id) || (typeof e.slug === 'string' && e.slug) || null; // v2.2.12: accept both for compat
+    if (entryId && !ID_RE.test(entryId)) return `entry_${i}_bad_id`;
     if (typeof e.path !== 'string' || e.path.length === 0) return `entry_${i}_bad_path`;
     if (path.isAbsolute(e.path) || e.path.includes('..')) return `entry_${i}_path_unsafe`;
-    if (ids.has(e.id)) return `entry_${i}_duplicate_id_${e.id}`;
-    ids.add(e.id);
+    const dedupeKey = entryId || e.path;
+    if (ids.has(dedupeKey)) return `entry_${i}_duplicate_id_${dedupeKey}`;
+    ids.add(dedupeKey);
   }
   return null;
 }
