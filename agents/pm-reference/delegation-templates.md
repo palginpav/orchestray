@@ -57,6 +57,51 @@ the role-specific fields. See `agents/pm.md` § "Pre-Spawn Budget Check
 
 ---
 
+## Mandatory `model:` field (G-14, v2.2.14)
+
+Every `Agent()` invocation MUST include `model:` set to one of `"haiku"`, `"sonnet"`, or `"opus"`. The `bin/gate-agent-spawn.js` PreToolUse hook hard-blocks any spawn without it. Kill switch: `ORCHESTRAY_STRICT_MODEL_REQUIRED=0` (not recommended in production — disables routing telemetry and lets misrouted spawns through).
+
+### Canonical spawn-shape examples
+
+```js
+// Sonnet — default for developer / refactorer / reviewer / tester / debugger / documenter
+Agent({
+  subagent_type: "developer",
+  model: "sonnet",  // MANDATORY — gate-agent-spawn.js blocks otherwise
+  description: "Implement endpoint X",
+  prompt: "context_size_hint: system=8000 tier2=4000 handoff=12000\n\n…task…"
+})
+
+// Opus — for architect / inventor / cross-cutting reviewer
+Agent({
+  subagent_type: "architect",
+  model: "opus",  // MANDATORY — gate-agent-spawn.js blocks otherwise
+  description: "Design system X",
+  prompt: "context_size_hint: system=10000 tier2=6000 handoff=18000\n\n…task…"
+})
+
+// Haiku — for read-only scouts (Explore-style reconnaissance)
+Agent({
+  subagent_type: "haiku-scout",
+  model: "haiku",  // MANDATORY — gate-agent-spawn.js blocks otherwise
+  description: "Locate files matching pattern Y",
+  prompt: "context_size_hint: system=4000 tier2=2000 handoff=6000\n\n…task…"
+})
+```
+
+The `model:` field is checked BEFORE any other spawn-time gate. Missing it produces:
+
+```
+[orchestray] Agent() call missing required 'model' parameter.
+Per Section 19 and v2.2.9 B-7.4 (default hard-block), every spawn must
+route to haiku/sonnet/opus explicitly. Set ORCHESTRAY_STRICT_MODEL_REQUIRED=0
+to restore the legacy auto-resolve cascade.
+```
+
+The PM's routing protocol (`agents/pm.md` §3) computes the right model per task before the spawn — `model:` is the parameter name to plug in the routed value.
+
+---
+
 ## Section 3: Delegation Prompt Format
 
 When delegating to a subagent, provide a **clear, self-contained task description**.
