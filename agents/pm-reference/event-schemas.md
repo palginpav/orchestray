@@ -8578,8 +8578,8 @@ Layout B (peers contiguous before), and Layout C (peers contiguous after). Layou
   "matcher": "Agent|Explore|Task",
   "before_hash": "a1b2c3d4e5f6",
   "after_hash": "f6e5d4c3b2a1",
-  "before_basenames": ["gate-cost-budget.js", "check-pause-sentinel.js"],
-  "after_basenames": ["check-pause-sentinel.js", "gate-cost-budget.js"],
+  "before_basenames": [],
+  "after_basenames": [],
   "divergence_at_index": 0,
   "peer_layout": "none",
   "schema_version": 1
@@ -8614,9 +8614,9 @@ by an operator. A single-line stderr warning is also written. Fires even when
   "timestamp": "ISO 8601",
   "event": "PreToolUse",
   "matcher": "Agent|Explore|Task",
-  "peer_basenames": ["third-party-gate.js"],
-  "orchestray_basenames": ["gate-cost-budget.js", "check-pause-sentinel.js"],
-  "live_basenames": ["gate-cost-budget.js", "third-party-gate.js", "check-pause-sentinel.js"],
+  "peer_basenames": [],
+  "orchestray_basenames": [],
+  "live_basenames": [],
   "schema_version": 1
 }
 ```
