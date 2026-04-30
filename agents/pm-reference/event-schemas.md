@@ -6904,6 +6904,29 @@ Field notes:
 - Optional fields: `skip_count` (count of paired `dossier_injection_skipped` rows), `kill_switch_skip_count`, `archive_source` (`per_orch_archive | live_events_filter`).
 - **`feature_optional: false`** — required for the v2.2.9 anti-regression invariant.
 
+### `dossier_orphan_threshold_exceeded`
+
+Emitted by `bin/audit-dossier-orphan.js` (Stop-hook tail) when the per-orchestration orphan counter reaches the configured threshold. Fires ONCE per orchestration — only on the crossing event (count === threshold), not on every subsequent orphan. Designed to surface recurring dossier-injection failures that individual `dossier_write_without_inject_detected` events may not escalate on their own.
+
+```json
+{
+  "type": "dossier_orphan_threshold_exceeded",
+  "schema_version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "<id>",
+  "count": 5,
+  "threshold": 5
+}
+```
+
+Field notes:
+- `count`: current value of the per-orchestration orphan counter at the moment of crossing.
+- `threshold`: the configured threshold value (default 5; overridable via `.orchestray/config.json` → `dossier_orphan_threshold`).
+- Counter persisted at `.orchestray/state/dossier-orphan-counter.<orchestration_id>`.
+- Kill switch: `ORCHESTRAY_DOSSIER_ORPHAN_THRESHOLD_DISABLED=1` (default off — threshold fires by default).
+- Counter is keyed on `orchestration_id` (NOT `session_id`). Each orchestration has an independent counter and fires its own threshold event independently.
+- **`feature_optional: false`** — required for the v2.2.13 G-08 escalator invariant.
+
 ### `agent_stop_double_fire_suppressed` event
 
 Emitted by `bin/collect-agent-metrics.js` (v2.2.9 B-4.1) when the double-fire guard catches a duplicate `agent_stop` invocation. Pairs with `hook_double_fire_detected` (the generic guard event) to give first-class visibility to the SubagentStop+TaskCompleted dual-wire and dual-install drift.

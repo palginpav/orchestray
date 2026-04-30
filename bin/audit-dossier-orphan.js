@@ -33,10 +33,20 @@
  *     post-orchestration-extract-on-stop.js so any per-orch archive that
  *     lands first is consumed.
  *
+ * Threshold escalator (v2.2.13 W6, G-08):
+ *   When orphan detections for a given orchestration_id accumulate beyond a
+ *   configurable threshold (default 5), `dossier_orphan_threshold_exceeded` is
+ *   emitted ONCE — on the crossing event (count == threshold), not on every
+ *   subsequent orphan. Counter persisted in:
+ *     `.orchestray/state/dossier-orphan-counter.<orchestration_id>`
+ *   Config override: `.orchestray/config.json` → `dossier_orphan_threshold`
+ *   Kill switch: ORCHESTRAY_DOSSIER_ORPHAN_THRESHOLD_DISABLED=1 (default off).
+ *
  * Kill switch: ORCHESTRAY_DOSSIER_ORPHAN_AUDIT_DISABLED=1 disables the
  * detector. Default-on.
  *
  * Design: v2.2.9 mechanisation plan §B-3.3, §E.5; W4 RCA-5.
+ *         v2.2.13 mechanisation plan §5 W6 (P1-1 re-keyed on orchestration_id).
  */
 
 const fs   = require('fs');
@@ -182,6 +192,74 @@ function _existsFile(p) {
 }
 
 /**
+ * Read the threshold from `.orchestray/config.json` → `dossier_orphan_threshold`.
+ * Returns the default (5) on any read/parse failure.
+ *
+ * @param {string} cwd
+ * @returns {number}
+ */
+function _readThreshold(cwd) {
+  const DEFAULT = 5;
+  try {
+    const configPath = path.join(cwd, '.orchestray', 'config.json');
+    const raw = fs.readFileSync(configPath, 'utf8');
+    const cfg = JSON.parse(raw);
+    if (cfg && typeof cfg.dossier_orphan_threshold === 'number' && cfg.dossier_orphan_threshold > 0) {
+      return cfg.dossier_orphan_threshold;
+    }
+  } catch (_e) { /* fall through to default */ }
+  return DEFAULT;
+}
+
+/**
+ * Increment the per-orchestration orphan counter and emit
+ * `dossier_orphan_threshold_exceeded` ONCE when the counter first crosses the
+ * threshold (count === threshold). Subsequent orphans for the same
+ * orchestration_id do NOT re-emit.
+ *
+ * No-op when:
+ *   - orchId is falsy / empty
+ *   - ORCHESTRAY_DOSSIER_ORPHAN_THRESHOLD_DISABLED=1 is set
+ *
+ * @param {string} cwd
+ * @param {string} orchId
+ */
+function maybeEmitThreshold(cwd, orchId) {
+  if (!orchId) return;
+  if (process.env.ORCHESTRAY_DOSSIER_ORPHAN_THRESHOLD_DISABLED === '1') return;
+
+  const threshold = _readThreshold(cwd);
+  const counterPath = path.join(cwd, '.orchestray', 'state', `dossier-orphan-counter.${orchId}`);
+
+  let count = 0;
+  try {
+    const raw = fs.readFileSync(counterPath, 'utf8').trim();
+    const parsed = parseInt(raw, 10);
+    if (!isNaN(parsed)) count = parsed;
+  } catch (_e) { /* file absent — count starts at 0 */ }
+
+  count += 1;
+
+  try {
+    fs.mkdirSync(path.dirname(counterPath), { recursive: true });
+    fs.writeFileSync(counterPath, String(count), 'utf8');
+  } catch (_e) { /* fail-open */ }
+
+  if (count === threshold) {
+    const payload = {
+      type: 'dossier_orphan_threshold_exceeded',
+      schema_version: 1,
+      orchestration_id: orchId,
+      count,
+      threshold,
+    };
+    try {
+      writeEvent(payload, { cwd });
+    } catch (_e) { /* fail-open */ }
+  }
+}
+
+/**
  * Run the orphan audit. Returns { orphans: [...], scanned: N, source_breakdown: {...} }.
  * Emits one `dossier_write_without_inject_detected` per orphan.
  *
@@ -222,6 +300,9 @@ function runAudit(opts) {
       writeEvent(payload, { cwd });
     } catch (_e) { /* fail-open */ }
     orphans.push(payload);
+
+    // Threshold escalator: increment per-orch counter; emit once on crossing.
+    maybeEmitThreshold(cwd, orchId);
   }
 
   return { orphans, scanned, source_breakdown: sourceBreakdown };
@@ -269,6 +350,8 @@ module.exports = {
   runAudit,
   tallyDossierEvents,
   isOrphan,
+  maybeEmitThreshold,
   _readOrchestrationEvents,
+  _readThreshold,
   _parseJsonl,
 };
