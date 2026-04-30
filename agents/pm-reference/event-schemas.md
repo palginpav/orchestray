@@ -7792,6 +7792,42 @@ Field notes:
 - `installed_version`: the Orchestray version that triggered the banner.
 - `schema_version`: always 1.
 
+### `contracts_runpost_silent_skip` event
+
+Emitted by `bin/validate-task-contracts.js` (v2.2.13 W5, G-06 reframed per W3-review
+P0-1) when the post-phase (`runPost`) fast-paths out without running `runChecks`.
+This event exists to help operators distinguish "post-phase ran a real check" from
+"post-phase short-circuited silently." Audit-only; no behavioural change.
+
+The PostToolUse:Agent registration is **intentionally preserved** — the pre/post split
+is load-bearing (preconditions before spawn, postconditions after). This event is the
+observability complement to that preserved gate.
+
+Kill switch: `ORCHESTRAY_CONTRACTS_RUNPOST_AUDIT_DISABLED=1` suppresses the emit.
+
+```json
+{
+  "event_type": "contracts_runpost_silent_skip",
+  "version": 1,
+  "orchestration_id": "orch-example",
+  "task_id": "W-example",
+  "reason": "no_contracts_block",
+  "schema_version": 1,
+  "timestamp": "2026-01-01T00:00:00.000Z"
+}
+```
+
+Field notes:
+- `orchestration_id`: the active orchestration ID (or `"unknown"` if unavailable).
+- `task_id`: the task for which the post-phase was skipped (or `"unknown"` if unresolvable).
+- `reason`: which fast-path was taken. One of:
+  - `no_task_yaml` — no task YAML file found for the task_id.
+  - `task_yaml_read_error` — task YAML file exists but could not be read/parsed.
+  - `no_contracts_block` — task YAML loaded successfully but has no `contracts:` block.
+- `schema_version`: always 1.
+
+Emitted from: `bin/validate-task-contracts.js` PostToolUse:Agent path (v2.2.13 W5).
+
 ### `context_size_hint_required_failed` event
 
 Emitted by `bin/preflight-spawn-budget.js` (W2-8) when a subagent spawn is blocked

@@ -195,7 +195,7 @@ function runPre(event, cwd) {
 
   if (!taskFilePath) {
     // No task YAML found — emit skip
-    emitSkipped(cwd, taskId, orchId, 'no_task_yaml');
+    emitSkipped(cwd, taskId, orchId, 'no_task_yaml', 'pre');
     return;
   }
 
@@ -204,7 +204,7 @@ function runPre(event, cwd) {
     parsed = loadTaskYaml(taskFilePath);
   } catch (err) {
     // File read error
-    emitSkipped(cwd, taskId, orchId, 'task_yaml_read_error');
+    emitSkipped(cwd, taskId, orchId, 'task_yaml_read_error', 'pre');
     return;
   }
 
@@ -214,7 +214,7 @@ function runPre(event, cwd) {
       emitParseFailed(cwd, taskId, orchId, taskFilePath, parsed.error);
     } else {
       // No contracts block
-      emitSkipped(cwd, taskId, orchId, 'no_contracts_block');
+      emitSkipped(cwd, taskId, orchId, 'no_contracts_block', 'pre');
     }
     return;
   }
@@ -243,7 +243,7 @@ function runPost(event, cwd) {
   const taskFilePath = resolveTaskFilePath(cwd, taskId);
 
   if (!taskFilePath) {
-    emitSkipped(cwd, taskId, orchId, 'no_task_yaml');
+    emitSkipped(cwd, taskId, orchId, 'no_task_yaml', 'post');
     return;
   }
 
@@ -251,7 +251,7 @@ function runPost(event, cwd) {
   try {
     parsed = loadTaskYaml(taskFilePath);
   } catch (err) {
-    emitSkipped(cwd, taskId, orchId, 'task_yaml_read_error');
+    emitSkipped(cwd, taskId, orchId, 'task_yaml_read_error', 'post');
     return;
   }
 
@@ -259,7 +259,7 @@ function runPost(event, cwd) {
     if (parsed.error) {
       emitParseFailed(cwd, taskId, orchId, taskFilePath, parsed.error);
     } else {
-      emitSkipped(cwd, taskId, orchId, 'no_contracts_block');
+      emitSkipped(cwd, taskId, orchId, 'no_contracts_block', 'post');
     }
     return;
   }
@@ -459,7 +459,11 @@ function validateFileOwnership(cwd, taskId, orchId, fileOwnership, filesChanged,
 // Event emitters
 // ---------------------------------------------------------------------------
 
-function emitSkipped(cwd, taskId, orchId, skipReason) {
+// v2.2.13 W5 (G-06, reframed per W3-review P0-1): when phase='post', also emit
+// contracts_runpost_silent_skip so operators can distinguish "post-phase ran a real
+// check" from "post-phase fast-pathed out." Audit-only; no behaviour change.
+// Kill switch: ORCHESTRAY_CONTRACTS_RUNPOST_AUDIT_DISABLED=1.
+function emitSkipped(cwd, taskId, orchId, skipReason, phase) {
   if (process.env.ORCHESTRAY_CONTRACTS_MISSING_WARN_DISABLED === '1') return;
   try {
     writeEvent({
@@ -472,6 +476,20 @@ function emitSkipped(cwd, taskId, orchId, skipReason) {
     }, { cwd });
   } catch (err) {
     _degradationFallback(cwd, 'emit contract_check_skipped', err);
+  }
+
+  if (phase === 'post' &&
+      process.env.ORCHESTRAY_CONTRACTS_RUNPOST_AUDIT_DISABLED !== '1') {
+    try {
+      writeEvent({
+        event_type:       'contracts_runpost_silent_skip',
+        version:          1,
+        orchestration_id: orchId || 'unknown',
+        task_id:          taskId || 'unknown',
+        reason:           skipReason,
+        schema_version:   1,
+      }, { cwd });
+    } catch (_e) { /* fail-open — audit emit must not break postcondition gate */ }
   }
 }
 
