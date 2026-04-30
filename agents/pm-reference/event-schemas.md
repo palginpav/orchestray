@@ -10212,10 +10212,11 @@ did not run in a given session.
 {
   "type": "dossier_compensation_skipped",
   "version": 1,
+  "schema_version": 1,
   "timestamp": "2026-04-30T00:00:00.000Z",
   "reason": "all_archives_stale",
-  "dossier_path": ".orchestray/state/resilience-dossier.json",
-  "archive_age_seconds": 2700000
+  "dossier_path": null,
+  "archive_age_seconds": null
 }
 ```
 

@@ -329,7 +329,7 @@ function tryHealGlobalFile({ cwd, relPath, localInstallPath, globalInstallPath }
       writeEvent({
         type: 'dual_install_autoheal_skipped',
         version: 1,
-        timestamp: ts,
+        ts: ts,
         path: relPath,
         reason: 'local_missing',
       }, { cwd });
@@ -344,7 +344,7 @@ function tryHealGlobalFile({ cwd, relPath, localInstallPath, globalInstallPath }
       writeEvent({
         type: 'dual_install_autoheal_skipped',
         version: 1,
-        timestamp: ts,
+        ts: ts,
         path: relPath,
         reason: 'global_missing',
       }, { cwd });
@@ -369,7 +369,7 @@ function tryHealGlobalFile({ cwd, relPath, localInstallPath, globalInstallPath }
       writeEvent({
         type: 'dual_install_autoheal_skipped',
         version: 1,
-        timestamp: ts,
+        ts: ts,
         path: relPath,
         reason: 'reverse_direction_global_newer',
       }, { cwd });
@@ -395,7 +395,7 @@ function tryHealGlobalFile({ cwd, relPath, localInstallPath, globalInstallPath }
       writeEvent({
         type: 'dual_install_autoheal_skipped',
         version: 1,
-        timestamp: ts,
+        ts: ts,
         path: relPath,
         reason: 'race_resolved',
       }, { cwd });
@@ -412,7 +412,7 @@ function tryHealGlobalFile({ cwd, relPath, localInstallPath, globalInstallPath }
       writeEvent({
         type: 'dual_install_autoheal_skipped',
         version: 1,
-        timestamp: ts,
+        ts: ts,
         path: relPath,
         reason,
       }, { cwd });
@@ -434,7 +434,7 @@ function tryHealGlobalFile({ cwd, relPath, localInstallPath, globalInstallPath }
       writeEvent({
         type: 'dual_install_autoheal_skipped',
         version: 1,
-        timestamp: ts,
+        ts: ts,
         path: relPath,
         reason: 'sha_mismatch_post_write',
         expected_sha: localSha,
@@ -449,7 +449,7 @@ function tryHealGlobalFile({ cwd, relPath, localInstallPath, globalInstallPath }
     writeEvent({
       type: 'dual_install_autoheal',
       version: 1,
-      timestamp: ts,
+      ts: ts,
       path: relPath,
       from_install: 'local',
       to_install: 'global',
@@ -458,6 +458,9 @@ function tryHealGlobalFile({ cwd, relPath, localInstallPath, globalInstallPath }
       prior_global_sha: globalShaBefore,
     }, { cwd });
   } catch (_e) { /* fail-open */ }
+
+  // S-4: log heal success to stderr (mirrors the divergence-detected stderr advisory).
+  process.stderr.write('[orchestray] dual_install: healed ' + relPath + ' (local→global)\n');
 }
 
 /**

@@ -221,9 +221,12 @@ process.stdin.on('end', () => {
     logStderr('git commit failed (exit ' + commitResult.status + '): ' + stderrExcerpt);
 
     try {
+      const ts = new Date().toISOString();
       writeEvent(
         {
           type:             'worktree_auto_commit_failed',
+          schema_version:   1,
+          ts,
           orchestration_id: orchestrationId,
           error_code:       commitResult.status,
           stderr_excerpt:   stderrExcerpt,
@@ -243,9 +246,12 @@ process.stdin.on('end', () => {
 
   // 9. Emit success event.
   try {
+    const ts = new Date().toISOString();
     writeEvent(
       {
         type:                'worktree_auto_commit_emitted',
+        schema_version:      1,
+        ts,
         orchestration_id:    orchestrationId,
         session_id:          sessionId,
         subagent_type:       subagentType,

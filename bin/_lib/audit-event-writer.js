@@ -153,6 +153,9 @@ const AUTOFILL_ALLOWLIST = {
   timestamp: function () {
     return new Date().toISOString();
   },
+  ts: function () {
+    return new Date().toISOString();
+  },
   orchestration_id: function (_payload, cwd) {
     return resolveOrchestrationId(cwd);
   },

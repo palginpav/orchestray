@@ -63,6 +63,9 @@ const FENCE_CLOSE = '</orchestray-resilience-dossier>';
  */
 const COMPENSATION_STALE_MS = 30 * 24 * 60 * 60 * 1000;
 
+/** Maximum tail lines to scan from events.jsonl (memory guard, mirrors W8 pattern). */
+const COMPENSATION_TAIL_LINE_LIMIT = 2000;
+
 /**
  * Size cap for compensation: dossiers larger than this (bytes) are skipped
  * to avoid exceeding the additionalContext budget.
@@ -576,7 +579,12 @@ function _makeEnvelopeOutput(hookEventName, additionalContext) {
 function _parseJsonlLines(content) {
   const out = [];
   if (!content) return out;
-  for (const line of content.split('\n')) {
+  // S-5: cap at last COMPENSATION_TAIL_LINE_LIMIT lines (memory guard for large audit logs).
+  let lines = content.split('\n');
+  if (lines.length > COMPENSATION_TAIL_LINE_LIMIT) {
+    lines = lines.slice(lines.length - COMPENSATION_TAIL_LINE_LIMIT);
+  }
+  for (const line of lines) {
     if (!line.trim()) continue;
     try {
       const obj = JSON.parse(line);
@@ -1044,4 +1052,5 @@ module.exports = {
   _tryDossierCompensation,
   COMPENSATION_STALE_MS,
   COMPENSATION_SIZE_CAP_BYTES,
+  COMPENSATION_TAIL_LINE_LIMIT,
 };

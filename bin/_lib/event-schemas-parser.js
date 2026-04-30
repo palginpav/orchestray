@@ -51,17 +51,25 @@ const SCHEMA_PATH = path.resolve(__dirname, '..', '..', 'agents', 'pm-reference'
 
 let _fileCachedSchemas  = null;  // Array<EventSchema> | null
 let _fileCachedMtimeMs  = 0;     // mtimeMs of the file at last parse
+let _lastStatHitMs      = 0;     // Date.now() when last stat confirmed cache hit (S-3 rate-limit)
+
+/**
+ * Minimum interval between stat calls in milliseconds when the prior stat
+ * confirmed the cache is still fresh (S-3 defense-in-depth for slow disks).
+ * Only applies after a confirmed cache-hit; a cache miss always re-stats immediately.
+ */
+const STAT_TTL_MS = 100;
 
 /**
  * Emit a schema_cache_invalidated event to the audit log.
  * Must never throw under any error condition.
  *
- * @param {{ prior_mtime: number, new_mtime: number|null, cause: string, error_code?: string }} payload
+ * @param {{ prior_mtime: number, new_mtime: number|null, cause: string, error_code?: string, schema_event_count?: number }} payload
  */
 function _emitCacheInvalidation(payload) {
   try {
     const evt = Object.assign(
-      { event_type: 'schema_cache_invalidated', ts: new Date().toISOString(), version: '2.2.18' },
+      { type: 'schema_cache_invalidated', ts: new Date().toISOString(), version: 1 },
       payload
     );
     // Route through the canonical audit writer when available.
@@ -108,6 +116,14 @@ function parseEventSchemasFromFile() {
     return _fileCachedSchemas;
   }
 
+  // S-3: rate-limit stat calls — only skip stat when the prior stat confirmed
+  // a cache hit (mtime unchanged) within the last STAT_TTL_MS (100 ms).
+  // A cache miss always forces an immediate stat on the next call.
+  const now = Date.now();
+  if (_fileCachedSchemas !== null && _lastStatHitMs > 0 && now - _lastStatHitMs < STAT_TTL_MS) {
+    return _fileCachedSchemas;
+  }
+
   // Stat the file to get current mtime (≤5ms budget per spec).
   let currentMtimeMs;
   try {
@@ -116,10 +132,11 @@ function parseEventSchemasFromFile() {
     if (_fileCachedSchemas !== null) {
       // Degraded: file deleted or unreadable mid-session — keep last-known cache.
       _emitCacheInvalidation({
-        prior_mtime: _fileCachedMtimeMs,
-        new_mtime:   null,
-        cause:       'stat_failed',
-        error_code:  statErr.code || 'UNKNOWN',
+        prior_mtime:        _fileCachedMtimeMs,
+        new_mtime:          null,
+        cause:              'stat_failed',
+        error_code:         statErr.code || 'UNKNOWN',
+        schema_event_count: _fileCachedSchemas.length,
       });
       return _fileCachedSchemas;
     }
@@ -129,6 +146,7 @@ function parseEventSchemasFromFile() {
 
   // Cache hit: mtime unchanged.
   if (_fileCachedSchemas !== null && currentMtimeMs === _fileCachedMtimeMs) {
+    _lastStatHitMs = now; // S-3: record hit time to gate next stat
     return _fileCachedSchemas;
   }
 
@@ -142,9 +160,10 @@ function parseEventSchemasFromFile() {
   // the very first parse where priorMtime is 0).
   if (priorMtime > 0) {
     _emitCacheInvalidation({
-      prior_mtime: priorMtime,
-      new_mtime:   currentMtimeMs,
-      cause:       'mtime_changed',
+      prior_mtime:        priorMtime,
+      new_mtime:          currentMtimeMs,
+      cause:              'mtime_changed',
+      schema_event_count: _fileCachedSchemas.length,
     });
   }
 
@@ -157,6 +176,7 @@ function parseEventSchemasFromFile() {
 function clearFileCache() {
   _fileCachedSchemas = null;
   _fileCachedMtimeMs = 0;
+  _lastStatHitMs     = 0;
 }
 
 // ---------------------------------------------------------------------------

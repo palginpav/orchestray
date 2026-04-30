@@ -202,6 +202,14 @@ describe('v2218 W1 — worktree auto-commit on SubagentStop', () => {
         'body must include Generated-By trailer; got: ' + log.body);
       assert.ok(log.body.includes('Agent: developer'), 'body must include Agent: developer');
 
+      // S-1: verify worktree_auto_commit_emitted lands in events.jsonl with no
+      // schema_shadow_validation_block for that event type.
+      const events = readEvents(worktreeDir);
+      const emitEvents = events.filter(e => e && e.type === 'worktree_auto_commit_emitted');
+      assert.ok(emitEvents.length >= 1, 'events.jsonl must contain worktree_auto_commit_emitted; got: ' + JSON.stringify(events.map(e => e && e.type)));
+      const blockEvents = events.filter(e => e && e.type === 'schema_shadow_validation_block' && e.blocked_event_type === 'worktree_auto_commit_emitted');
+      assert.equal(blockEvents.length, 0, 'no schema_shadow_validation_block for worktree_auto_commit_emitted; got: ' + JSON.stringify(blockEvents));
+
     } finally {
       cleanup();
     }
