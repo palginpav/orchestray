@@ -1922,7 +1922,7 @@ function runW9PatternDecaySeed(cwd, stateDir, sentinelPath) {
  * Run the W12 anti_pattern_gate seed.
  *
  * If the `anti_pattern_gate` top-level block is absent, adds it with canonical
- * defaults (enabled: true, min_decayed_confidence: 0.65, max_advisories_per_spawn: 1).
+ * defaults (enabled: true, min_decayed_confidence: 0.55, max_advisories_per_spawn: 1).
  * If the block is present, preserves it entirely (operator intent).
  *
  * Idempotent sentinel: .orchestray/state/.anti-pattern-gate-seeded-2018

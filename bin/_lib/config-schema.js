@@ -1284,7 +1284,7 @@ function validatePatternDecayConfig(obj) {
 //   Kill flag: set to false to disable the entire anti-pattern advisory gate
 //   without touching other gate logic in gate-agent-spawn.js.
 //
-// anti_pattern_gate.min_decayed_confidence — number 0.0..1.0, default 0.65.
+// anti_pattern_gate.min_decayed_confidence — number 0.0..1.0, default 0.55.
 //   Only anti-patterns with decayed_confidence >= this threshold emit advisories.
 //   Lowering to 0 means all matching anti-patterns advise (not recommended);
 //   raising to 1 effectively disables the gate.
@@ -1307,10 +1307,10 @@ const DEFAULT_ANTI_PATTERN_GATE = Object.freeze({
   enabled: true,
   /**
    * Minimum decayed_confidence for an anti-pattern match to emit an advisory.
-   * Range 0.0..1.0. Default 0.65 per DESIGN §Risks.
+   * Range 0.0..1.0. Default 0.55 per DESIGN §Risks (lowered from 0.65 in v2.2.17).
    * @type {number}
    */
-  min_decayed_confidence: 0.65,
+  min_decayed_confidence: 0.55,
   /**
    * Maximum advisories injected per single Agent() spawn. MUST remain 1.
    * Future-proofing key: do not raise without a rethink of the injection path.

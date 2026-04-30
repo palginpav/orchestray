@@ -1535,7 +1535,7 @@ function runAntiPatternAdvisoryGate(cwd, toolInput, orchFile) {
   const decayConfig = loadPatternDecayConfig(cwd);
   const threshold = typeof gateConfig.min_decayed_confidence === 'number'
     ? gateConfig.min_decayed_confidence
-    : 0.65;
+    : 0.55;
 
   // Score all matching anti-patterns.
   const candidates = [];

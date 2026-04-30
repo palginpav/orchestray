@@ -84,10 +84,10 @@ const FRESH_INSTALL_PATTERN_DECAY = {
 
 // Default anti_pattern_gate block for fresh installs.
 // Uses canonical defaults from DEFAULT_ANTI_PATTERN_GATE in config-schema.js.
-// Per v2018 W12: enabled by default, threshold 0.65, max 1 advisory per spawn.
+// Per v2018 W12: enabled by default, threshold 0.55 (lowered from 0.65 in v2.2.17), max 1 advisory per spawn.
 const FRESH_INSTALL_ANTI_PATTERN_GATE = {
   enabled: true,
-  min_decayed_confidence: 0.65,
+  min_decayed_confidence: 0.55,
   max_advisories_per_spawn: 1,
 };
 
