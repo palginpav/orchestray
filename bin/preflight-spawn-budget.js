@@ -232,7 +232,26 @@ process.stdin.on('end', () => {
     //
     // Kill switch: ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED=1 skips
     // step 2 (falls back to legacy "must come from tool_input" behaviour).
-    const HINT_RE = /^\s*`?context_size_hint:\s*system=(\d+)\s+tier2=(\d+)\s+handoff=(\d+)/m;
+    //
+    // G-11 (v2.2.14): Two inline forms are accepted (both case-insensitive to
+    // whitespace variants):
+    //
+    //   Flat form (canonical):
+    //     context_size_hint: system=8000 tier2=4000 handoff=12000
+    //
+    //   Object form (also accepted — PMs that copy from delegation-templates.md
+    //   JSON examples would naturally write this):
+    //     context_size_hint: { system: 8000, tier2: 4000, handoff: 12000 }
+    //
+    // Both parse to the same internal { systemSize, tier2Size, handoffSize }.
+    // Mixed forms (e.g. "system: 8000 tier2=4000") do NOT match either regex and
+    // fall through to the absent path, which emits a clear spawn-block message.
+    //
+    // Flat form regex: key=value triples, space-separated.
+    const HINT_RE_FLAT = /^\s*`?context_size_hint:\s*system=(\d+)\s+tier2=(\d+)\s+handoff=(\d+)/m;
+    // Object form regex: JSON-like { system: N, tier2: N, handoff: N } with
+    // flexible whitespace around punctuation (handles copy-paste from docs).
+    const HINT_RE_OBJ  = /^\s*`?context_size_hint:\s*\{\s*system\s*:\s*(\d+)\s*,\s*tier2\s*:\s*(\d+)\s*,\s*handoff\s*:\s*(\d+)\s*\}/m;
 
     let systemSize  = (toolInput.context_size_hint && toolInput.context_size_hint.system)  || 0;
     let tier2Size   = (toolInput.context_size_hint && toolInput.context_size_hint.tier2)   || 0;
@@ -242,7 +261,9 @@ process.stdin.on('end', () => {
     if (parseSource === 'absent' &&
         process.env.ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED !== '1') {
       const prompt = typeof toolInput.prompt === 'string' ? toolInput.prompt : '';
-      const m = HINT_RE.exec(prompt);
+      const mFlat = HINT_RE_FLAT.exec(prompt);
+      const mObj  = !mFlat && HINT_RE_OBJ.exec(prompt);
+      const m = mFlat || mObj;
       if (m) {
         systemSize  = parseInt(m[1], 10);
         tier2Size   = parseInt(m[2], 10);
