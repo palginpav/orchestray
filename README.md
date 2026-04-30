@@ -161,6 +161,15 @@ Set in `.orchestray/config.json` or as env vars. No session restart required.
 | Dossier-orphan threshold escalator (v2.2.13) | — | `ORCHESTRAY_DOSSIER_ORPHAN_THRESHOLD_DISABLED=1` |
 | Mandatory `model:` field on `Agent()` calls | — | `ORCHESTRAY_STRICT_MODEL_REQUIRED=0` (the only opt-out — default is hard-block) |
 | Schema-shadow safety net (event-type validation) | — | `ORCHESTRAY_DISABLE_SCHEMA_SHADOW=1` |
+| Reviewer hard-block on missing `## Git Diff` (v2.2.15) | — | `ORCHESTRAY_REVIEWER_GIT_DIFF_GATE_DISABLED=1` (downgrades to warn-only; legacy `_CHECK_DISABLED` still bypasses entirely) |
+| Reviewer hard-block on missing `## Dimensions to Apply` (v2.2.15) | — | `ORCHESTRAY_REVIEWER_DIMENSIONS_GATE_DISABLED=1` |
+| Context-size-hint warn-then-block ramp (v2.2.15) | — | `ORCHESTRAY_CONTEXT_SIZE_HINT_GATE_DISABLED=1` (full bypass); `ORCHESTRAY_CONTEXT_SIZE_HINT_RAMP_THRESHOLD=N` (default 3 spawns/orch before exit 2) |
+| Commit-body `## Handoff` warn-then-block ramp (v2.2.15) | — | `ORCHESTRAY_COMMIT_HANDOFF_GATE_DISABLED=1` (downgrades to warn); `ORCHESTRAY_COMMIT_HANDOFF_RAMP_THRESHOLD=N` (default 3) |
+| Hook double-fire skip + SessionStart dual-install version-mismatch surfacing (v2.2.15) | — | `ORCHESTRAY_DOUBLE_FIRE_SKIP_GATE_DISABLED=1` |
+| Multiple `## Structured Result` warn event (v2.2.15) | — | `ORCHESTRAY_MULTI_STRUCTURED_RESULT_GATE_DISABLED=1` |
+| `assert.doesNotThrow` orphan-test lint (v2.2.15, telemetry-first warn) | — | `ORCHESTRAY_LINT_DOESNOTTHROW_ORPHAN_DISABLED=1` |
+| MCP server↔pm.md tool-allowlist parity (v2.2.15) | — | `ORCHESTRAY_LINT_MCP_ALLOWLIST_PARITY_DISABLED=1` |
+| `EVENT_TYPES`↔schema-declares enum parity (v2.2.15) | — | `ORCHESTRAY_LINT_EVENT_TYPES_ENUM_PARITY_DISABLED=1` |
 
 ## Requirements
 

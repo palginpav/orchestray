@@ -3,6 +3,150 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.2.15] - 2026-04-30
+
+v2.2.15 finishes the wide-mechanisation push that v2.2.14 started: every prose-only enforcement rule that audit could find a place for in code became a hook or a test. The headline fix is a v2.2.14 carry-over — the **MCP audit log misroute** that some operators saw when their MCP server cwd lacked an ancestor `.orchestray/` directory is finally fixed (audit events now route correctly, and `mcp_audit_routing_failed` advisory fires loud when they cannot). v2.2.15 also closes a **silent v2.2.14 regression**: a duplicate copy of the schema parser inside the emit-validator was re-disabling the schema-shadow safety net the moment its own copy of the parsing rules drifted; both validators now share one canonical parser. Six new mechanical gates ship default-on with kill switches, `zod` 4.4.1 is now the validation baseline (with a packaging fix so the MCP server actually finds it after install), and the install integrity sweep now warns if your global and project-local Orchestray installs disagree on version.
+
+### Fixed — Headline
+
+- **MCP audit log misroute fixed (v2.2.14 G-17 carry-over).** When the MCP server process started in a cwd that had no `.orchestray/` ancestor (e.g., session bootstrap from `$HOME`), tool-call exit-phase events silently misrouted to a sibling project's `events.jsonl` or to nowhere at all. v2.2.15 walks cwd upward to find the project root, accepts an explicit `ORCHESTRAY_PROJECT_ROOT` env override, and emits a new `mcp_audit_routing_failed` advisory when neither path resolves — operators see the failure instead of silently losing telemetry. (FN-39)
+- **Schema-shadow safety net was being silently re-disabled by a sibling parser.** v2.2.14's G-08 lifted `miss_threshold_24h` from 3 to 10 to keep the schema-shadow circuit armed under normal MCP traffic. But `bin/_lib/schema-emit-validator.js` carried its own private `parseSchemas()` function whose subtly different rules dropped declares the canonical parser found, causing the validator to record misses for events that ARE declared and disable the circuit. v2.2.15 removes the duplicate parser; both code paths now route through `bin/_lib/event-schemas-parser.js#parseEventSchemas`. (FN-28)
+- **Hook double-fire spam suppressed.** The double-fire guard was firing on legitimate retry sequences (343 hits in some `events.jsonl` audits), drowning out real alerts. v2.2.15 tightens the rapid-fire counter to fire its sentinel only on count ≥5 with delta_ms <100, and stages the result for the next release-manager spawn instead of emitting on every fire. Kill switch: `ORCHESTRAY_DOUBLE_FIRE_SKIP_GATE_DISABLED=1`. (FN-47)
+
+### Added — Mechanical-enforcement gates (six new gates)
+
+Every gate ships default-on per `feedback_default_on_shipping.md`. Each has a dedicated `*_GATE_DISABLED` kill switch.
+
+- **Reviewer spawns hard-block on missing `## Git Diff` section.** Was warn-only; promoted to exit 2. The legacy `ORCHESTRAY_REVIEWER_GIT_DIFF_CHECK_DISABLED` short-circuit is preserved for full bypass; new `ORCHESTRAY_REVIEWER_GIT_DIFF_GATE_DISABLED=1` downgrades to warn-only. (FN-42)
+- **Reviewer spawns hard-block on missing `## Dimensions to Apply` block.** New `bin/validate-reviewer-dimensions.js` asserts both the heading AND ≥1 bullet under it; emits `reviewer_dimensions_gate_blocked` (block) or `reviewer_dimensions_gate_warn` (kill-switch downgrade). Kill switch: `ORCHESTRAY_REVIEWER_DIMENSIONS_GATE_DISABLED=1`. (FN-43)
+- **All Agent() spawns warn-then-block on missing `context_size_hint`.** New `bin/validate-context-size-hint.js` parses inline `context_size_hint:` in BOTH flat (`system=N tier2=N handoff=N`) and object (`{ system: N, tier2: N, handoff: N }`) forms — closes a v2.2.14 G-11 form-parity gap. **3-spawn soft-warn ramp** per orchestration; the 4th spawn missing a hint exits 2. Tunable via `ORCHESTRAY_CONTEXT_SIZE_HINT_RAMP_THRESHOLD`. Kill switch: `ORCHESTRAY_CONTEXT_SIZE_HINT_GATE_DISABLED=1`. (FN-44)
+- **Developer / release-manager success spawns require `## Handoff` body in HEAD commit.** New gate emits `commit_handoff_body_missing` and exits 2 when a `status:success` developer or release-manager spawn closes without a `## Handoff` section in `git log -1 --format=%B`. 3-spawn soft-warn ramp; tunable via `ORCHESTRAY_COMMIT_HANDOFF_RAMP_THRESHOLD`. Kill switch: `ORCHESTRAY_COMMIT_HANDOFF_GATE_DISABLED=1`. (FN-45)
+- **Developer commits forbidden from carrying Co-Authored-By or "Generated with Claude" trailers.** Per `feedback_commit_style.md`. The git-action gate now scans `-m` and `-F` commit messages for those trailers (case-insensitive, hyphen-tolerant) and blocks them. Subsumed under existing `ORCHESTRAY_GIT_GATE_DISABLED=1`. (FN-46)
+- **Release-manager spawns can no longer push or tag.** The git-action gate now also blocks `git push` and `git tag -a/-s/--annotate/--sign` for the `release-manager` role — staging a commit is the agent's job; pushing and tagging require explicit per-version operator authorization (`feedback_release_actions_explicit_permission.md`). Subsumed under `ORCHESTRAY_GIT_GATE_DISABLED=1`. (FN-48)
+
+### Added — Output-quality validators
+
+- **Multiple `## Structured Result` blocks now emit a warning event.** The parser silently picked the last block when an agent emitted more than one; v2.2.15 detects ≥2 occurrences and emits `multiple_structured_result_blocks{block_count: N}` so operators see the duplication. Warn-only this release; promotes to exit 2 in v2.2.16 if rate >0. Kill switch: `ORCHESTRAY_MULTI_STRUCTURED_RESULT_GATE_DISABLED=1`. (P1-05)
+- **Tester spawns must have actually run a test runner.** New `bin/validate-tester-runs-tests.js` (SubagentStop) scans the spawn audit window for a Bash event matching a known test-runner invocation; missing → exit 2. Telemetry-first ramp. (P1-06)
+- **Pattern-application acknowledgement gate.** New `bin/validate-pattern-application.js` requires roles that called `pattern_find` to also call `pattern_record_application` or `pattern_record_skip_reason`; warn-only in v2.2.15, hard-block in v2.2.16. (P1-07)
+- **Reviewers always get the full pattern body, never a `[CACHED]` abbreviation.** `bin/_lib/pattern-citation-render.js` now skips the cache shortcut when `subagent_type=reviewer`. (P1-08)
+- **Researcher spawns must cite ≥3 sources unless `verdict=no_clear_fit`.** New `bin/validate-researcher-citations.js` (SubagentStop). (P1-09)
+- **Platform-oracle claims must carry `stability_tier ∈ {stable, experimental, community}` and a non-empty `source_url`.** New `bin/validate-platform-oracle-grounding.js` (SubagentStop). (P1-10)
+
+### Added — `zod` 4.4.1 as the validation baseline
+
+- **`zod` 4.4.1 adopted for config-shape validation.** `validateMcpEnforcement()` migrated from hand-rolled checks to a zod schema; the long-standing `TODO(backlog): switch validateMcpEnforcement() to zod` is closed. `zod` is in `dependencies` (not devDependencies) so the MCP server can `require('zod')` at module load. (P1-11)
+- **Packaging fix: install.js now copies `node_modules/zod/` correctly.** The earlier `copyJsTree` helper only copied `*.js` files; zod's CommonJS entry point `index.cjs` plus its `locales/` directory were dropped, causing the MCP server to crash with `MODULE_NOT_FOUND` on first boot. v2.2.15 uses `fs.cpSync` for the zod tree so all required files survive into `<targetDir>/orchestray/node_modules/zod/`. SessionStart prints `Installed node_modules/zod (<file_count> files)` on success. (P1-11 packaging fix)
+
+### Added — Half-shipped-enum lint mechanised (caught one inline)
+
+The `half-shipped-enum` anti-pattern (event declared in schema but never emitted, OR emitted but never declared) was sitting at conf:0.7 / applied:0 — exactly the prose-only-rule shape that `feedback_mechanical_over_prose.md` flags as ship-as-dead-code. v2.2.15 mechanises three sister patterns:
+
+- **C-01 doesnotthrow-orphan lint.** `bin/_lib/lint-doesnotthrow-orphan.js` flags `assert.doesNotThrow(...)` calls in test files that have no paired strong assertion. Telemetry-first ramp (warn-only this release; promote to exit-2 in v2.2.16). Surfaced 2 real orphan tests for v2.2.16 cleanup. Kill switch: `ORCHESTRAY_LINT_DOESNOTTHROW_ORPHAN_DISABLED=1`. New event: `lint_doesnotthrow_orphan_warn`.
+- **C-02 MCP tool ↔ pm.md allowlist parity.** `bin/_lib/mcp-tool-allowlist-derive.js` parses the server's `TOOL_TABLE` and pm.md's `tools:` frontmatter, then diffs them. Missing entries hard-block; stale entries (in pm.md but absent from server) emit `mcp_allowlist_stale_entry_warn`. A documented `NOT_FOR_PM` exclusion list captures 6 tools intentionally curator-owned (`curator_tombstone`, `schema_get`, `spawn_agent`, `metrics_query`, `pattern_read`, `cost_budget_check`). Kill switch: `ORCHESTRAY_LINT_MCP_ALLOWLIST_PARITY_DISABLED=1`.
+- **C-03 EVENT_TYPES enum ↔ schema-declares parity.** Test asserts every entry in `bin/mcp-server/tools/history_query_events.js#EVENT_TYPES` is declared in `event-schemas.md`. Caught a real instance inline: `mcp_resource_read` was emitted at every MCP `resources/read` since v2.0.21 but never declared. Fixed inline (declare added, schema-shadow regenerated). Four legacy phantom enums (`elicitation_requested`, `elicitation_answered`, `orchestration_end`, `verify_fix_attempt`) moved to a documented `ENUM_PHANTOM_EXCLUSIONS` so historical filter vocabulary stays stable. Kill switch: `ORCHESTRAY_LINT_EVENT_TYPES_ENUM_PARITY_DISABLED=1`.
+
+### Added — Federation provenance helpers
+
+- **`backfillPromoteLog` and `appendFederationTombstone`** in `bin/_lib/shared-promote.js`. 14 of 16 shared patterns lacked promote-log entries; the backfill helper reconstructs provenance via filesystem mtime + git log for orphaned shared entries. The tombstone helper records retirements when shared patterns are pulled. (P1-12)
+
+### Added — Dual-install version-mismatch detection
+
+- **SessionStart now compares `~/.claude/orchestray/package.json#version` vs `<cwd>/.claude/orchestray/package.json#version`** and emits `dual_install_version_mismatch` if they disagree, persisting `.orchestray/state/dual-install-version-mismatch.json` so the next release-manager spawn surfaces the gap. Per `feedback_update_both_installs.md`. Subsumed under `ORCHESTRAY_DOUBLE_FIRE_SKIP_GATE_DISABLED=1`. (FN-47b)
+
+### Added — Telemetry coverage
+
+- **Autofill telemetry now fires on the schema-unreadable branch** with `schema_state:'unreadable'`, so F1-style threshold monitoring works even when the parser cannot read the schema. (P1-13)
+- **`tier2-index.js` MAX_INDEX_BYTES ceiling raised** from 128 KB → 144 KB to accommodate 3 new event declares; documented in-source. The 128 KB ceiling was a soft limit with no consumers depending on the exact value. (C-03 packaging follow-up)
+
+### Changed — Documentation hygiene (carries from v2.2.14 close-out)
+
+- **CHANGELOG v2.2.13 opener rewritten in plain language.** Per `feedback_changelog_user_readable.md` — leads with the operator-visible impact ("Agent() spawns no longer hard-block…") instead of internal IDs. Earlier entry remained reviewer-grade. (P1-14)
+- **README troubleshooting section uses symptom-first format.** Each entry now opens with the visible symptom in bold + the event id in backticks, then the cause. (P1-15)
+- **`/orchestray:status` SKILL no longer carries a stale `argument-hint:` field.** The command takes no arguments. (P1-16)
+- **`tier2-index.js` shape doc-comment** clarifies the on-disk schema for the sidecar so future consumers don't reinvent the format. (P1-17)
+
+### Deprecated — 8 anti-pattern / decomposition pattern files
+
+Per the v2.2.15 P1-01 + P1-03 triage. Each pattern file now carries `deprecated: true`, `status: deprecated`, `deprecated_in_version: 2.2.15`, and a `deprecation_rationale` field. Matching `roi-snapshot.json` entries flagged `deprecated: true`.
+
+| pattern | rationale |
+|---|---|
+| `decomposition-file-ownership-map-hard-sequencing` | Superseded by `parallel-file-exclusive-plugin-update` + PM Section 17 dispatch |
+| `decomposition-audit-fix-verify-triad-disjoint-scopes` | Lesson baked into PM Section 8 verify-fix loops |
+| `decomposition-concern-partitioned-parallel-reaudit` | Decomposition lesson now structural in PM |
+| `decomposition-kill-switch-plan-handoff-gate` | Absorbed into v2.2.13/14/15 wide-mechanisation discipline |
+| `anti-pattern-doc-number-claims-drift-within-release` | Absorbed into release-manager invariants |
+| `anti-pattern-doc-tightening-over-correction` | Absorbed into mechanical-over-prose discipline |
+| `anti-pattern-untracked-files-persist-across-sessions` | Absorbed into install.js prune logic |
+| `decomposition-multi-pass-review` | Absorbed into v2.2.x cascade-audit reviewer-multi-round protocol |
+
+### Schema delta — 224 → 259 (+35)
+
+| Wave | New declares |
+|------|--------------|
+| W8c FN-33 cluster | 17 declares (install_hook_args_updated, mcp_audit_routing_failed, reviewer_dimensions_gate_blocked, reviewer_dimensions_gate_warn, context_size_hint_gate_warn, context_size_hint_gate_blocked, commit_handoff_body_missing, dual_install_version_mismatch, multiple_structured_result_blocks, plus 8 sibling parser-recovered declares) |
+| W9 final-review F-1 cluster | 6 declares (W8d emit-coverage backfill) |
+| WC-2 (C-01/C-02/C-03) | 3 declares (`lint_doesnotthrow_orphan_warn`, `mcp_allowlist_stale_entry_warn`, `mcp_resource_read` retrofit) |
+| Other (Phase 4 close-out + B-3) | 9 declares |
+
+`event-schemas.shadow.json` regen is content-stable across consecutive runs (12630 bytes, source_hash `ccedcda30ecf...`).
+
+### Hook chain delta — +5 entries
+
+| Change | Hook | Hook point |
+|--------|------|-----------|
+| ADDED | `bin/validate-reviewer-dimensions.js` | `PreToolUse:Agent` (subagent_type=reviewer) |
+| ADDED | `bin/validate-context-size-hint.js` | `PreToolUse:Agent` (all subagents) |
+| ADDED | `bin/validate-tester-runs-tests.js` | `SubagentStop` |
+| ADDED | `bin/validate-pattern-application.js` | `SubagentStop` |
+| ADDED | `bin/validate-researcher-citations.js` | `SubagentStop` |
+| ADDED | `bin/validate-platform-oracle-grounding.js` | `SubagentStop` |
+| MODIFIED | `bin/release-manager/dual-install-parity-check.js` | `SessionStart` (version-mismatch detection added) |
+
+### Kill switches added
+
+| Env var | What it disables |
+|---------|-----------------|
+| `ORCHESTRAY_REVIEWER_GIT_DIFF_GATE_DISABLED=1` | Hard-block on missing `## Git Diff` (downgrades to warn) |
+| `ORCHESTRAY_REVIEWER_DIMENSIONS_GATE_DISABLED=1` | Hard-block on missing `## Dimensions to Apply` (downgrades to warn) |
+| `ORCHESTRAY_CONTEXT_SIZE_HINT_GATE_DISABLED=1` | Bypasses the `context_size_hint` gate entirely |
+| `ORCHESTRAY_CONTEXT_SIZE_HINT_RAMP_THRESHOLD=N` | Override the per-orch ramp count (default 3) before exit 2 |
+| `ORCHESTRAY_COMMIT_HANDOFF_GATE_DISABLED=1` | Disables the `## Handoff`-body exit-2 branch (event still fires) |
+| `ORCHESTRAY_COMMIT_HANDOFF_RAMP_THRESHOLD=N` | Override the per-orch handoff-body ramp count |
+| `ORCHESTRAY_DOUBLE_FIRE_SKIP_GATE_DISABLED=1` | Disables FN-47 fast-fire skip + SessionStart version-mismatch surfacing |
+| `ORCHESTRAY_MULTI_STRUCTURED_RESULT_GATE_DISABLED=1` | Suppresses the multiple-`## Structured Result` warn event |
+| `ORCHESTRAY_LINT_DOESNOTTHROW_ORPHAN_DISABLED=1` | Disables the C-01 orphan-doesNotThrow lint emit |
+| `ORCHESTRAY_LINT_MCP_ALLOWLIST_PARITY_DISABLED=1` | Disables the C-02 server↔pm.md tool-allowlist parity gate |
+| `ORCHESTRAY_LINT_EVENT_TYPES_ENUM_PARITY_DISABLED=1` | Disables the C-03 EVENT_TYPES↔schema-declares parity test |
+
+### Not in this release (deferred to v2.2.16 with explicit triggers)
+
+- **Lower the pattern-confidence gate from 0.65 → 0.55.** Default-flip-without-telemetry rule applies — the v2.2.15 audit ramp telemetry is needed to size the false-positive risk before the threshold drops. Trigger: 1 release of telemetry data on the 0.65 gate. (P1-03 LOWER-THRESHOLD)
+- **EVIDENCE-BOOST for 6 decayed-confidence patterns.** Bundled with the LOWER-THRESHOLD measurement so the boost can be evidenced against the same telemetry window. (P1-03 EVIDENCE-BOOST 6)
+- **Promote C-01 doesnotthrow-orphan lint from warn to exit-2.** Telemetry-first ramp; v2.2.15 emits findings without failing the suite. (C-01 ramp)
+- **2 real `assert.doesNotThrow` orphan tests caught by C-01** — `bin/__tests__/emit-compression-telemetry-r1.test.js:229` and `bin/__tests__/v222-hooks-config-bucket-c.test.js:32`. Both test "hooks.json is valid JSON" without checking the parsed shape. v2.2.16 cleanup target.
+- **Release-manager `≥10-file diff shape` test.** This project's release commits are 2-file version bumps; the rule needs to scope to `git diff origin/master...HEAD` (release-branch diverge point), not `HEAD~1`. Architect re-scope required before the test ships. (C-05)
+
+### Migration notes
+
+- **Restart Claude Code after upgrading.** Hook definitions are cached at session start.
+- **No config changes required** — every new gate ships default-on with a kill switch for emergency bypass.
+- **`zod` is now a runtime dependency.** `npx orchestray --global` runs `npm install` first (which downloads zod), then `bin/install.js` copies `node_modules/zod/` into the install target. If you symlink the install instead of running install.js, ensure `zod` is resolvable from the symlinked tree.
+
+### Tests
+
+5778 tests / 5773 pass / 0 fail / 5 skip (vs v2.2.14 baseline 5632 / 5627 / 0 / 5 — net +146 cases). New regression suites land for FN-39 (MCP audit routing), FN-43/44/45/46/47/48 (W8d gate cluster), P1-05 through P1-11 (output-quality + zod), and C-01/C-02/C-03 (lint mechanisations). 5 skipped tests are unchanged legitimate-superseded markers.
+
+### Under the hood
+
+- 51 FIX-NOW corrections (Phase 3 W8a/b/c/d), 8 close-out corrections (Phase 4), 14 PLAN-V2215 items (Wave B-1 / B-2 / B-3 / B-4), 11 Wave-C items (deprecate + mechanise + sharpen + evidence-boost). Total scope across the orchestration: 84 implementation actions.
+- `MAX_INDEX_BYTES` in `bin/_lib/tier2-index.js` raised 131072 → 147456 (128 KB → 144 KB) to fit the schema delta.
+- `event-schemas-parser.js#SECTION_RE` extended with a sibling `SECTION_RE_PREFIXED` two-pass match that recovers `### Variant D — \`<slug>\`` style sections (FN-32). 16 declares hidden behind that prefix style are now visible to the schema parser.
+- WIP commits in this release: `a1c10dc` (recovery — 82-file restore from worktree-agent after destructive resets clobbered Phase 3+4+Wave-B work), `20e5c4c` (test triage — 37 fail → 0 fail), `8feb4a6` (Wave C-2 mechanisations), `3b1a93c` (final close-out — P1-05 wiring verify + Wave-C SHARPEN/EVIDENCE-BOOST).
+
+---
+
 ## [2.2.14] - 2026-04-30
 
 v2.2.14 is a reliability sweep that fixes three issues every user hits on every session start, plus 16 smaller improvements. The headline fix: **global-install users no longer see a `node:fs:1012` error on every Claude Code session open** (the error was harmless but alarming — a missing directory in the install copy pass). v2.2.14 also stops a **startup log dump that silently consumed context budget each session**, and **re-enables an event-validation guard that had been silently off for most users** since the install accumulated a few unknown-event misses. Orchestration first-spawn friction is also reduced — the requirements the PM gate enforces are now written directly into the delegation templates it copies from, so fewer spawns fail and retry.
