@@ -48,6 +48,14 @@ function makeDir({ orchestrationId = 'orch-int-test-001' } = {}) {
     path.join(auditDir, 'current-orchestration.json'),
     JSON.stringify({ orchestration_id: orchestrationId })
   );
+  // v2.2.13 W4: symlink schemas so writeEvent's validation succeeds silently.
+  const schemaDir = path.join(__dirname, '..', '..', 'agents', 'pm-reference');
+  const sandboxSchemaDir = path.join(dir, 'agents', 'pm-reference');
+  fs.mkdirSync(sandboxSchemaDir, { recursive: true });
+  for (const f of ['event-schemas.md', 'event-schemas.shadow.json']) {
+    try { fs.symlinkSync(path.join(schemaDir, f), path.join(sandboxSchemaDir, f)); }
+    catch (_e) { try { fs.copyFileSync(path.join(schemaDir, f), path.join(sandboxSchemaDir, f)); } catch (_e2) {} }
+  }
   return { dir, auditDir, stateDir };
 }
 

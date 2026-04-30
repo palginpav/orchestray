@@ -36,6 +36,22 @@ afterEach(() => {
  * Create a fresh isolated tmpdir.
  * Optionally write a current-orchestration.json inside it.
  */
+// v2.2.13 W4: gate-agent-spawn now emits orchestration_start via writeEvent,
+// which loads schemas from agents/pm-reference/event-schemas.md. Symlink both
+// the .md (validator source) and shadow.json (writer-side cache) into the
+// sandbox so validation succeeds cleanly (no stderr warnings).
+function linkSchemas(dir) {
+  const schemaDir = path.join(__dirname, '..', 'agents', 'pm-reference');
+  const sandboxSchemaDir = path.join(dir, 'agents', 'pm-reference');
+  fs.mkdirSync(sandboxSchemaDir, { recursive: true });
+  for (const f of ['event-schemas.md', 'event-schemas.shadow.json']) {
+    const src = path.join(schemaDir, f);
+    const dst = path.join(sandboxSchemaDir, f);
+    try { fs.symlinkSync(src, dst); }
+    catch (_e) { try { fs.copyFileSync(src, dst); } catch (_e2) {} }
+  }
+}
+
 function makeDir({ withOrch = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-gate-test-'));
   cleanup.push(dir);
@@ -47,6 +63,7 @@ function makeDir({ withOrch = false } = {}) {
       JSON.stringify({ orchestration_id: 'orch-test-001' })
     );
   }
+  linkSchemas(dir);
   return dir;
 }
 
@@ -735,6 +752,7 @@ describe('G8 — BUG-B+C regression: repeated-orchestration gate pass-through', 
     // Post-fix: phase is 'pre-decomposition' (correct) → gate passes.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-gate-g8-'));
     cleanup.push(dir);
+    linkSchemas(dir);
 
     const auditDir = path.join(dir, '.orchestray', 'audit');
     const stateDir = path.join(dir, '.orchestray', 'state');
