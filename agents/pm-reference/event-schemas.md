@@ -9700,3 +9700,107 @@ Field notes:
 Emitted from: `bin/validate-platform-oracle-grounding.js`.
 
 Kill switch: `ORCHESTRAY_PLATFORM_ORACLE_GROUNDING_GATE_DISABLED=1`.
+
+---
+
+### `lint_doesnotthrow_orphan_warn` event
+
+Emitted by `bin/_lib/lint-doesnotthrow-orphan.js` (C-01, v2.2.15 P1-02) when
+a `.test.js` file under `bin/__tests__/` contains a `test(...)` block whose
+only assertion family is `assert.doesNotThrow` / `assert.doesNotThrowAsync`
+without a paired value-equality, regex-match, throws-pair, or non-trivial
+`assert.ok`. Telemetry-first: warn-only in v2.2.15; promote to exit-2 in
+v2.2.16 if the false-positive ratio in the v2.2.15 telemetry window stays
+low.
+
+```json
+{
+  "type": "lint_doesnotthrow_orphan_warn",
+  "version": 1,
+  "schema_version": 1,
+  "file": "/abs/path/to/bin/__tests__/example.test.js",
+  "line": 42,
+  "test_name": "only doesNotThrow",
+  "orchestration_id": "orch-20260101T000000Z-example"
+}
+```
+
+Field notes:
+- `file`: absolute path to the `.test.js` file containing the orphan.
+- `line`: 1-based line number of the offending `assert.doesNotThrow(...)`.
+- `test_name`: the string literal passed as the first argument to `test(...)` /
+  `it(...)` / `t.test(...)`.
+- `orchestration_id`: optional; omitted when the lint runs outside of an
+  active orchestration (e.g. in a developer-run `npm test`).
+
+Emitted from: `bin/_lib/lint-doesnotthrow-orphan.js` (lib) /
+`bin/__tests__/anti-pattern-doesnotthrow-orphan-lint.test.js` (test runner).
+
+Kill switch: `ORCHESTRAY_LINT_DOESNOTTHROW_ORPHAN_DISABLED=1`.
+
+---
+
+### `mcp_allowlist_stale_entry_warn` event
+
+Emitted by `bin/_lib/mcp-tool-allowlist-derive.js` (C-02, v2.2.15 P1-02) when
+`agents/pm.md` frontmatter `tools:` lists an `mcp__orchestray__<slug>` token
+whose slug no longer appears in `bin/mcp-server/server.js` TOOL_TABLE — i.e.
+PM still references a retired tool. Warn-only; exit 0. The reverse direction
+(missing entries) is hard-block per the C-02 mechanisation.
+
+```json
+{
+  "type": "mcp_allowlist_stale_entry_warn",
+  "version": 1,
+  "schema_version": 1,
+  "stale_slugs": ["retired_tool"],
+  "orchestration_id": "orch-20260101T000000Z-example"
+}
+```
+
+Field notes:
+- `stale_slugs`: the list of pm.md `mcp__orchestray__*` slugs absent from
+  TOOL_TABLE. Always at least one entry; the event is suppressed when empty.
+
+Emitted from: `bin/_lib/mcp-tool-allowlist-derive.js` (consumed via
+`bin/__tests__/anti-pattern-mcp-allowlist-parity.test.js` and any post-upgrade
+sweep step that wires it).
+
+Kill switch: `ORCHESTRAY_LINT_MCP_ALLOWLIST_PARITY_DISABLED=1`.
+
+---
+
+### `mcp_resource_read` event
+
+Emitted by `bin/mcp-server/lib/audit.js#buildResourceAuditEvent` for every
+MCP `resources/read` call. Surfaces in the audit ledger so retro-orchestration
+analyses can correlate resource access with task outcomes. Declared here as
+part of v2.2.15 C-03 (event-types enum parity) — previously emitted but
+undeclared, which left the half-shipped-enum anti-pattern silently active.
+
+```json
+{
+  "type": "mcp_resource_read",
+  "version": 1,
+  "schema_version": 1,
+  "timestamp": "2026-04-30T00:00:00.000Z",
+  "uri": "kb://facts/some-fact",
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "duration_ms": 12,
+  "outcome": "ok"
+}
+```
+
+Field notes:
+- `uri`: MCP resource URI, e.g. `kb://...`, `pattern://...`,
+  `history://...`, `orchestration://...`. Defaults to `"unknown"` when the
+  caller did not supply one.
+- `orchestration_id`: defaults to `"unknown"` when no current orchestration
+  file exists at call time.
+- `duration_ms`: server-side handler duration, integer milliseconds.
+- `outcome`: one of `ok`, `error`, `not_found` (handler emits `safeOutcome`).
+
+Emitted from: `bin/mcp-server/lib/audit.js`, called by `bin/mcp-server/server.js`
+on every `resources/read` dispatch.
+
+Kill switch: none — emission is intrinsic to the resources/read handler.
