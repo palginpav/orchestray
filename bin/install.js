@@ -792,6 +792,39 @@ function install(targetDir) {
     console.log(`  \x1b[32m✓\x1b[0m Installed MCP server (${mcpFileCount} files)`);
   }
 
+  // 3d. Copy schemas/ directory to orchestray/schemas/ (sibling of bin/).
+  // validate-config.js does require('../schemas') — it must live at the
+  // orchestray root level, NOT under bin/. Without this, every global-install
+  // SessionStart hook throws node:fs:1012 (ENOENT) because validate-config.js
+  // cannot find the module. Latent since v2.2.9 B-7 introduced schemas/.
+  const schemasSrc = path.join(pkgRoot, 'schemas');
+  let schemasFileCount = 0;
+  if (fs.existsSync(schemasSrc) && fs.statSync(schemasSrc).isDirectory()) {
+    const schemasDst = path.join(targetDir, 'orchestray', 'schemas');
+    const schemasFiles = copyJsTree(schemasSrc, schemasDst);
+    for (const rel of schemasFiles) {
+      track(path.join('orchestray', 'schemas', rel));
+    }
+    schemasFileCount = schemasFiles.length;
+    console.log(`  \x1b[32m✓\x1b[0m Installed schemas/ (${schemasFileCount} files)`);
+  } else {
+    console.log('  \x1b[33m⚠\x1b[0m schemas/ not found in source; skipping');
+  }
+
+  // 3d post-install verification: ensure validate-config.js can resolve schemas.
+  // If this throws, the SessionStart hook would fail with node:fs:1012 for every
+  // user — surface a clear error here instead.
+  try {
+    require.resolve('../schemas', { paths: [path.join(targetDir, 'orchestray', 'bin')] });
+  } catch (resolveErr) {
+    console.error(
+      `  \x1b[31m✗\x1b[0m Post-install verification failed: validate-config.js cannot` +
+      ` resolve '../schemas' from <install>/orchestray/bin/. ` +
+      `SessionStart hook will throw node:fs:1012 for all users. ` +
+      `Error: ${resolveErr.message}`
+    );
+  }
+
   // 4. Merge hooks into existing hooks.json (don't overwrite user's hooks)
   mergeHooks(targetDir);
   console.log(`  \x1b[32m✓\x1b[0m Configured hooks`);
