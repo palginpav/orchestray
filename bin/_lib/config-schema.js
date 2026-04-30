@@ -3935,6 +3935,92 @@ function validateFeatureDemandGateConfig(obj) {
   return errors.length === 0 ? { valid: true } : { valid: false, errors };
 }
 
+// ---------------------------------------------------------------------------
+// worktree_auto_commit section defaults and loader (W1 v2.2.18)
+//
+// worktree_auto_commit.enabled — boolean, default true.
+//   When true, the SubagentStop hook auto-commits dirty linked worktrees so
+//   agent edits are never silently lost.
+//   Kill switch: set to false here, or set env ORCHESTRAY_WORKTREE_AUTO_COMMIT_DISABLED=1.
+//   Per feedback_default_on_shipping.md: default is ON; kill switch is the override.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_WORKTREE_AUTO_COMMIT = Object.freeze({
+  enabled: true,
+});
+
+/**
+ * Load and merge the worktree_auto_commit config section from
+ * <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing/malformed returns DEFAULT_WORKTREE_AUTO_COMMIT
+ * so the hook still runs at a safe default.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ enabled: boolean }}
+ */
+function loadWorktreeAutoCommitConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_WORKTREE_AUTO_COMMIT);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_WORKTREE_AUTO_COMMIT);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_WORKTREE_AUTO_COMMIT);
+  }
+
+  const fromFile = parsed.worktree_auto_commit;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_WORKTREE_AUTO_COMMIT);
+  }
+
+  const merged = Object.assign({}, DEFAULT_WORKTREE_AUTO_COMMIT, sanitizeConfig(fromFile));
+
+  // Validate and warn — always return merged (fail-open).
+  try {
+    const result = validateWorktreeAutoCommitConfig(merged);
+    if (!result.valid) {
+      logStderr('worktree_auto_commit config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) {
+    // Validation must never throw
+  }
+
+  return merged;
+}
+
+/**
+ * Validate a worktree_auto_commit config object.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateWorktreeAutoCommitConfig(obj) {
+  const errors = [];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['worktree_auto_commit must be an object'] };
+  }
+
+  if ('enabled' in obj && typeof obj.enabled !== 'boolean') {
+    errors.push(
+      'worktree_auto_commit.enabled must be a boolean — got ' + JSON.stringify(obj.enabled)
+    );
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
 module.exports = {
   DEFAULT_MCP_ENFORCEMENT,
   loadMcpEnforcement,
@@ -4038,4 +4124,8 @@ module.exports = {
   DEFAULT_DOSSIER_ORPHAN_THRESHOLD,
   loadDossierOrphanConfig,
   validateDossierOrphanThreshold,
+  // W1 (v2.2.18): worktree_auto_commit config block
+  DEFAULT_WORKTREE_AUTO_COMMIT,
+  loadWorktreeAutoCommitConfig,
+  validateWorktreeAutoCommitConfig,
 };
