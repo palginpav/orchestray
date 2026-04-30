@@ -279,6 +279,7 @@ process.stdin.on('end', () => {
       writeEvent(
         {
           type:             'master_auto_commit_failed',
+          ts:               new Date().toISOString(),
           orchestration_id: orchestrationId,
           error_code:       commitResult.status,
           stderr_excerpt:   stderrExcerpt,
@@ -304,6 +305,7 @@ process.stdin.on('end', () => {
     writeEvent(
       {
         type:                'master_auto_commit_emitted',
+        ts:                  new Date().toISOString(),
         orchestration_id:    orchestrationId,
         current_phase:       currentPhase,
         files_changed_count: filesChangedCount,

@@ -59,6 +59,7 @@ const ORPHAN_AGE_THRESHOLD_MS = 60 * 1000;
 const REQUESTER_SYSTEM        = 'system:housekeeper-trigger';
 const HOUSEKEEPER_AGENT       = 'orchestray-housekeeper';
 const MAX_LIVE_BYTES          = 64 * 1024 * 1024; // 64 MB defensive cap
+const TOMBSTONE_TTL_DAYS      = 7; // moved up from L153 (NEW-INFO-2; v2.2.18)
 
 // ---------------------------------------------------------------------------
 // Self-check probe — exercises the W7b TTL formula in-memory without writing
@@ -150,7 +151,6 @@ function runSelfCheck() {
 // being re-emitted on every Stop fire. Each tombstone expires after 7 days.
 // ---------------------------------------------------------------------------
 
-const TOMBSTONE_TTL_DAYS = 7;
 
 function _tombstonePath(cwd) {
   return path.join(cwd, '.orchestray', 'state', 'drainer-tombstones.jsonl');
