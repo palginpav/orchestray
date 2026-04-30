@@ -255,6 +255,25 @@ function resolveOrchestrationId(cwd) {
   } catch (_e) { return null; }
 }
 
+/**
+ * Build a divergence_pair_signature for a file divergence. Combines the
+ * filename and both hashes so downstream consumers can dedupe events that
+ * originate from two hook fires (e.g., dual-install double-fire) for the
+ * same underlying file pair.
+ *
+ * Format: `<basename>:<source_hash_short>:<target_hash_short>`
+ * where hash_short is the first 8 chars of the SHA-256 hex digest, or '0' if null.
+ *
+ * @param {object} d - Divergence entry from checkParity().
+ * @returns {string}
+ */
+function _divergencePairSignature(d) {
+  const base = path.basename(d.file_path || '');
+  const src  = d.source_hash ? d.source_hash.slice(0, 8) : '0';
+  const tgt  = d.target_hash ? d.target_hash.slice(0, 8) : '0';
+  return `${base}:${src}:${tgt}`;
+}
+
 function emitDivergenceEvents(cwd, divergences) {
   const orchId = resolveOrchestrationId(cwd);
   for (const d of divergences) {
@@ -268,6 +287,7 @@ function emitDivergenceEvents(cwd, divergences) {
         divergence_type: d.divergence_type,
         source_hash: d.source_hash,
         target_hash: d.target_hash,
+        divergence_pair_signature: _divergencePairSignature(d),
       }, { cwd });
     } catch (_e) { /* fail-open on emit */ }
   }
@@ -521,6 +541,7 @@ module.exports = {
   checkVersionParity,
   consumePendingDoubleFireWarn,
   isSessionStart,
+  _divergencePairSignature,
 };
 
 if (require.main === module) {

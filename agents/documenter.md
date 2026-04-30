@@ -215,6 +215,19 @@ conforming to `agents/pm-reference/handoff-contract.md`. Required fields: `statu
 (`bin/validate-task-completion.js`) blocks missing fields on SubagentStop.
 Role-specific optional fields for **documenter**: see handoff-contract.md §4.documenter.
 
+**CRITIC evidence requirement:** When `files_changed.length > 0`, `files_read` MUST
+be non-empty. This is CRITIC evidence — proof you read the surrounding code or existing
+docs before editing. The T15 hook is informational but the structural scorer (B4) will
+flag missing CRITIC evidence.
+
+Always emit `assumptions` block even when you made none — the empty array communicates
+"no assumptions deliberately considered" and satisfies the T15 hook.
+
+**Commit body discipline:** when you commit a W-item, the commit body MUST include
+a `## Handoff` subsection with files changed, test delta, invariants established,
+and downstream cues. See `agents/pm-reference/handoff-contract.md` §Commit
+Message Discipline for W-Items for the template and rationale.
+
 ---
 
 ## 6. Scope Boundaries

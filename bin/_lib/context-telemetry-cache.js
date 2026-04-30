@@ -106,7 +106,15 @@ function readCache(projectDir) {
   const cachePath = _cachePath(projectDir);
   try {
     const raw = fs.readFileSync(cachePath, 'utf8');
-    const parsed = JSON.parse(raw);
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (_syntaxErr) {
+      // Corrupt cache file — start fresh and delete to avoid re-tripping on
+      // every subsequent read (50 SyntaxError events per session observed).
+      try { fs.unlinkSync(cachePath); } catch (_e) {} // best-effort delete
+      return _skeleton(null);
+    }
     if (!parsed || typeof parsed !== 'object' || parsed.schema_version !== SCHEMA_VERSION) {
       // Unknown schema version — return skeleton.
       return _skeleton(null);
@@ -161,9 +169,21 @@ function updateCache(projectDir, updaterFn) {
       let current;
       try {
         const raw = fs.readFileSync(cachePath, 'utf8');
-        current = JSON.parse(raw);
-        if (!current || typeof current !== 'object' || current.schema_version !== SCHEMA_VERSION) {
+        let parsed;
+        try {
+          parsed = JSON.parse(raw);
+        } catch (_syntaxErr) {
+          // Corrupt file — discard and start fresh; delete to prevent re-trip.
+          try { fs.unlinkSync(cachePath); } catch (_e) {} // best-effort
           current = _skeleton(null);
+          parsed = null;
+        }
+        if (parsed !== null) {
+          if (!parsed || typeof parsed !== 'object' || parsed.schema_version !== SCHEMA_VERSION) {
+            current = _skeleton(null);
+          } else {
+            current = parsed;
+          }
         }
       } catch (readErr) {
         if (readErr && readErr.code !== 'ENOENT') {
