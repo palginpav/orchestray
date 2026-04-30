@@ -120,7 +120,7 @@ Set in `.orchestray/config.json` or as env vars. No session restart required.
 | Tier2 protocol watcher auto-emit | — | `ORCHESTRAY_TIER2_WATCHER_DISABLED=1` |
 | Autofill-threshold fail-loud | — | `ORCHESTRAY_AUTOFILL_THRESHOLD_DISABLED=1` |
 | Context size hint missing warn (warn event only) | — | `ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED=1` |
-| Context size hint hard-block bypass | — | `ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1` |
+| Context size hint hard-block bypass (**DEPRECATED v2.2.13 — now a no-op; remove from settings.json**) | — | `ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1` |
 | Reviewer dimensions missing warn | — | `ORCHESTRAY_REVIEWER_DIMENSIONS_WARN_DISABLED=1` |
 | Orchestration ROI missing warn | — | `ORCHESTRAY_ROI_WATCHED_DISABLED=1` |
 | Per-orch activation ratio KPI emit | — | `ORCHESTRAY_ACTIVATION_RATIO_EMIT_DISABLED=1` |
@@ -145,12 +145,19 @@ Set in `.orchestray/config.json` or as env vars. No session restart required.
 | MCP handler-entry instrumentation (v2.2.11) | — | `ORCHESTRAY_MCP_ENTRY_INSTRUMENTATION_DISABLED=1` |
 | Loop-kind taxonomy disambiguation (v2.2.11) | — | `ORCHESTRAY_LOOP_KIND_DISAMBIGUATION_DISABLED=1` |
 | `*_failed` rename-cycle alias emit (v2.2.11) | — | `ORCHESTRAY_RENAME_CYCLE_ALIAS_DISABLED=1` |
-| `context_size_hint` stager hook (v2.2.12) | — | `ORCHESTRAY_CTX_HINT_STAGER_DISABLED=1` |
+| `context_size_hint` stager hook (**DELETED v2.2.13** — replaced by inline parser in preflight; kill switch is a no-op) | — | `ORCHESTRAY_CTX_HINT_STAGER_DISABLED=1` |
 | Contracts validation hard-fail (v2.2.12, reverts to warn) | — | `ORCHESTRAY_CONTRACTS_PARSE_GATE_DISABLED=1` |
 | `*_failed` deprecation stderr warn (v2.2.12) | — | `ORCHESTRAY_DEPRECATED_NAME_WARN_DISABLED=1` |
 | Archive validation success-path emit (v2.2.12) | — | `ORCHESTRAY_ARCHIVE_VALIDATION_SUCCESS_EMIT_DISABLED=1` |
 | Orchestration ROI auto-emit at close (v2.2.12) | — | `ORCHESTRAY_ORCHESTRATION_ROI_AUTO_EMIT_DISABLED=1` |
 | KB write auto-index update (v2.2.12) | — | `ORCHESTRAY_KB_INDEX_AUTO_DISABLED=1` |
+| Context size hint inline prompt-body parser (v2.2.13) | — | `ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED=1` |
+| SessionStart hook-chain drift validator (v2.2.13) | — | `ORCHESTRAY_HOOK_ORDER_VALIDATION_DISABLED=1` |
+| Install-time hook reorder auto-fix (v2.2.13) | — | `ORCHESTRAY_INSTALL_HOOK_REORDER_DISABLED=1` |
+| `orchestration_start` + `orchestration_complete` lifecycle emits (v2.2.13) | — | `ORCHESTRAY_ORCH_LIFECYCLE_EMIT_DISABLED=1` |
+| Contracts postcondition silent-skip audit emit (v2.2.13) | — | `ORCHESTRAY_CONTRACTS_RUNPOST_AUDIT_DISABLED=1` |
+| Dossier-orphan threshold escalator (v2.2.13) | — | `ORCHESTRAY_DOSSIER_ORPHAN_THRESHOLD_DISABLED=1` |
+| Hook-chain integration test in CI (v2.2.13) | — | `ORCHESTRAY_HOOKCHAIN_INTEGRATION_TEST_DISABLED=1` |
 
 ## Requirements
 

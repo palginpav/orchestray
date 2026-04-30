@@ -3,6 +3,90 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.2.13] - 2026-04-30
+
+v2.2.13 closes the structural break introduced by v2.2.12 W1a: the `inject-context-size-hint.js` stager hook was functionally inert because Claude Code does not propagate `updatedInput` between sibling `PreToolUse:Agent` hooks, so every Agent() spawn hard-blocked until operators set a manual kill switch. The fix folds the prompt-body parser directly into the spawn-budget preflight script and deletes the stager. A new hook-chain integration test prevents the same class of bug from reaching production again. Install now auto-repairs drifted hook ordering on upgrade, and SessionStart validates live ordering on every session start. Two previously declared-dark lifecycle events (`orchestration_start` and `orchestration_complete`) now fire in production. Shadow registry grows 213 → 221.
+
+### Fixed — v2.2.12 W1a regression (Wave 1)
+
+- **Agent() spawns no longer hard-block on missing `context_size_hint`.** The v2.2.12 stager hook (`inject-context-size-hint.js`) was structurally broken: Claude Code does not carry `updatedInput` from one `PreToolUse:Agent` hook to the next sibling hook. The stager injected the hint into its own output but `preflight-spawn-budget.js` never saw it, causing every orchestration to fail at the gate until operators set `ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1`. Fixed: the prompt-body regex parser is now inlined directly into `preflight-spawn-budget.js`. When `tool_input.context_size_hint` is absent, the preflight parses the hint from the prompt body in a single pass. The stager script and its hook entry are fully deleted. New event: `context_size_hint_parsed_inline{source: 'prompt_body'|'tool_input_native'|'absent'}` fires on every spawn. Kill switch: `ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED=1`. (W1, G-01)
+- **`ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED` env var fully retired.** The gated code path no longer exists, making the var a no-op. If it is still present in `settings.json`, SessionStart and the preflight gate both emit `deprecated_kill_switch_detected` once per session and write a stderr warning. Remove it from `~/.claude/settings.json` and any project `.claude/settings.json` env blocks. The var retires completely in v2.2.14. (W1, W3-review P1-7)
+
+### Added — Mechanisms (Waves 2–6)
+
+- **Hook-chain integration test** prevents the v2.2.12 W1a class of bug from reaching production. A new integration test runs hook scripts end-to-end via `child_process` (not mocked stdin) against two two-hop scenarios: S1 confirms the inline-parse path works on the post-W1 chain; S2 regression-guards the platform constraint that `updatedInput` does NOT propagate between sibling `PreToolUse:Agent` hooks — the test fails loud the moment a future design re-introduces this dependency. Kill switch: `ORCHESTRAY_HOOKCHAIN_INTEGRATION_TEST_DISABLED=1`. (W2, G-02)
+- **Deterministic install hook reorder.** `bin/install.js` now detects and auto-fixes drifted hook ordering on upgrade for layouts A (no peer hooks), B (peer hooks before Orchestray), and C (peer hooks after Orchestray). Layout D (peer hooks interleaved with Orchestray hooks) cannot be auto-resolved safely and emits `install_hook_order_skipped_interleaved` as a warn-only advisory. New events: `install_hook_order_corrected`, `install_hook_order_skipped_interleaved`. Kill switch: `ORCHESTRAY_INSTALL_HOOK_REORDER_DISABLED=1`. (W3, G-03)
+- **SessionStart drift validator.** On every session start, a new hook (`bin/validate-hook-order.js`) compares the live `settings.json` hook chain against the canonical `hooks/hooks.json` definition and emits `hook_chain_drift_detected` if they diverge — even between upgrades. Operators see the drift before it silently blocks spawns. Kill switch: `ORCHESTRAY_HOOK_ORDER_VALIDATION_DISABLED=1`. (W3, G-04)
+- **`orchestration_start` and `orchestration_complete` now fire in production.** Both events were declared in v2.2.12's schema but had zero emit sites (`o:0`). `orchestration_start` is now emitted at the first Agent() spawn of each orchestration (atomic write-exclusive sentinel closes the TOCTOU race). `orchestration_complete` is emitted by a new `bin/emit-orchestration-complete.js` SubagentStop hook. Both lift from declared-dark to `o:>=1`. Kill switch: `ORCHESTRAY_ORCH_LIFECYCLE_EMIT_DISABLED=1`. (W4, G-05)
+- **Postcondition-skip observability for the Contracts gate.** The four silent-skip branches in `bin/validate-task-contracts.js` now emit `contracts_runpost_silent_skip` so operators can distinguish "post-phase ran and passed" from "post-phase fast-pathed without checking". The PostToolUse:Agent registration is preserved — the working postcondition gate was incorrectly slated for removal in the prior plan (W3-review P0-1 reframe). Kill switch: `ORCHESTRAY_CONTRACTS_RUNPOST_AUDIT_DISABLED=1`. (W5, G-06)
+- **Dossier-orphan threshold escalator.** When `dossier_write_without_inject_detected` events accumulate past a per-orchestration threshold (default 5), `dossier_orphan_threshold_exceeded` is emitted once to surface the anomaly before it silently dominates audit logs. Threshold is configurable via `.orchestray/config.json` → `dossier_orphan_threshold`. Kill switch: `ORCHESTRAY_DOSSIER_ORPHAN_THRESHOLD_DISABLED=1`. (W6, G-08)
+
+### Schema delta — 213 → 221 (+8)
+
+**6 new event types:**
+
+| Event | Wave | Notes |
+|-------|------|-------|
+| `context_size_hint_parsed_inline` | W1 | Fires on every Agent() spawn; `source` field indicates parse path |
+| `hook_chain_drift_detected` | W3 | SessionStart emit when live settings.json diverges from canonical hooks.json |
+| `install_hook_order_corrected` | W3 | Install-time auto-fix; includes `divergence_at_index` + `peer_layout` |
+| `install_hook_order_skipped_interleaved` | W3 | Warn-only; install cannot safely auto-fix interleaved peer hooks |
+| `contracts_runpost_silent_skip` | W5 | Emitted on the 4 silent-skip branches in the postcondition gate |
+| `dossier_orphan_threshold_exceeded` | W6 | Per-orchestration escalator; keyed on `orchestration_id` |
+
+**2 backfill declares (existing emitters, never declared):**
+
+| Event | Status | Notes |
+|-------|--------|-------|
+| `context_size_hint_staged` | **DEPRECATED on declare** | Script deleted in W1; declare preserves audit-replay validity for v2.2.12 events. Retires v2.2.14. |
+| `deprecated_kill_switch_detected` | Active | Emitted when a retired env var is still set in settings.json |
+
+### Hook chain delta
+
+| Change | Hook | Hook point |
+|--------|------|-----------|
+| DELETED | `bin/inject-context-size-hint.js` | `PreToolUse:Agent\|Explore\|Task` |
+| PRESERVED (was incorrectly slated for removal) | `bin/validate-task-contracts.js` | `PostToolUse:Agent` |
+| ADDED | `bin/validate-hook-order.js` | `SessionStart` |
+| ADDED | `bin/emit-orchestration-complete.js` | `SubagentStop` |
+
+Net: -1 hook entry, +2 hook entries.
+
+### Kill switches
+
+New env vars (set to `1` to disable):
+
+| Env var | What it disables |
+|---------|-----------------|
+| `ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED=1` | Inline prompt-body hint parser in preflight (falls back to native `tool_input` only) |
+| `ORCHESTRAY_HOOK_ORDER_VALIDATION_DISABLED=1` | SessionStart drift validator |
+| `ORCHESTRAY_INSTALL_HOOK_REORDER_DISABLED=1` | Install-time auto-fix for layouts A/B/C (layout D warn-only regardless) |
+| `ORCHESTRAY_ORCH_LIFECYCLE_EMIT_DISABLED=1` | `orchestration_start` and `orchestration_complete` lifecycle emits |
+| `ORCHESTRAY_CONTRACTS_RUNPOST_AUDIT_DISABLED=1` | `contracts_runpost_silent_skip` emit on postcondition silent-skip branches |
+| `ORCHESTRAY_DOSSIER_ORPHAN_THRESHOLD_DISABLED=1` | Dossier-orphan threshold escalator |
+| `ORCHESTRAY_HOOKCHAIN_INTEGRATION_TEST_DISABLED=1` | Hook-chain integration test in CI |
+
+**DEPRECATED (retires v2.2.14):** `ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED` — now a no-op; the gated code path was deleted in W1. If still present in `settings.json`, SessionStart emits `deprecated_kill_switch_detected` and prints a stderr warning. Remove it.
+
+### Migration notes
+
+- **Remove `ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED` from `settings.json`.** The kill switch is a no-op in v2.2.13. SessionStart warns once per session until it is removed.
+- No other config changes required. All new behaviour is default-on.
+- Restart Claude Code after upgrading (hook definitions are cached at session start).
+
+### Tests
+
+5540 tests / 5540 pass / 0 fail / 6 skip. +6 new test files / ~30 new cases covering W1 through W6. Previous stager test (`v2212-w1a-stager.test.js`) deleted (script removed); 4 cases migrated into `v2213-W1-merge-stager.test.js`.
+
+### Under the hood
+
+- New hook scripts: `bin/validate-hook-order.js` (W3 SessionStart drift validator), `bin/emit-orchestration-complete.js` (W4 SubagentStop lifecycle emit).
+- Deleted hook script: `bin/inject-context-size-hint.js` (W1; replaced by inline parser in `bin/preflight-spawn-budget.js`).
+- Modified: `bin/preflight-spawn-budget.js` (W1 inline parser + `context_size_hint_parsed_inline` emit), `bin/boot-validate-config.js` (W1 deprecated-env warn), `bin/install.js` (W3 `mergeHooks` drift-detect-and-reorder), `bin/gate-agent-spawn.js` (W4 first-spawn `orchestration_start` emit with `wx` sentinel), `bin/validate-task-contracts.js` (W5 `contracts_runpost_silent_skip` emit on silent-skip branches), `bin/audit-dossier-orphan.js` (W6 per-orchestration threshold escalator), `hooks/hooks.json` (W1 stager removal, W3 SessionStart entry, W4 SubagentStop entry), `agents/pm-reference/event-schemas.shadow.json` (213→221), `agents/pm-reference/event-schemas.md` (+6 new + 2 backfill declares).
+- WIP commits: 3b0fd0e (W5), ab186ff (W6), 423a227 (W1), 572ef98 (W2), 2bbbfa8 (W3), ed3e746 (W4), ec16cf8 (W4 follow-up symlinks).
+
+---
+
 ## [2.2.12] - 2026-04-29
 
 v2.2.12 closes 3 production regressions from v2.2.11 that were silently suppressing events in busy projects, promotes Contracts validation from soft-warn to hard-fail, and adds 8 mechanised instrumentation items that make events fire without PM prose. Operators get more events in their audit logs, fewer false circuit-breaker trips, and automatic `context_size_hint` injection so Agent() spawns no longer require manual hinting. Shadow registry grows 205 → 213 event types.
