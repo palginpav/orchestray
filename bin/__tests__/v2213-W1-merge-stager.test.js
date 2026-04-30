@@ -7,8 +7,8 @@
  *   1. tool_input.context_size_hint (native, non-zero) → source='tool_input_native'
  *   2. prompt body regex match (tool_input.context_size_hint absent) → source='prompt_body'
  *   3. neither source → source='absent'; exits 2 (hard-block)
- *   4. ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1 still bypasses hard-block
- *      (deprecated alias backward compat during v2.2.13 deprecation window)
+ *   4. ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1 is now a NO-OP (v2.2.14 G-04
+ *      retired the var); spawn still blocks (exits 2)
  *   5. ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED=1 skips prompt-body
  *      parse; falls through to absent path and hard-blocks
  *
@@ -161,8 +161,8 @@ describe('v2.2.13 W1 — inline context_size_hint parser in preflight-spawn-budg
     assert.equal(required.length, 1, 'exactly 1 context_size_hint_required_failed event');
   });
 
-  // ── Case 4: deprecated env var still bypasses hard-block (backward compat)
-  test('ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1 → exits 0 (deprecated alias backward compat)', () => {
+  // ── Case 4: retired env var is no-op — spawn still hard-blocks (v2.2.14 G-04)
+  test('ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1 → exits 2 (var is retired no-op)', () => {
     const r = runHook(
       tmpRoot,
       {
@@ -173,7 +173,7 @@ describe('v2.2.13 W1 — inline context_size_hint parser in preflight-spawn-budg
       },
       { ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED: '1' },
     );
-    assert.equal(r.status, 0, 'deprecated alias still bypasses hard-block; stderr=' + r.stderr);
+    assert.equal(r.status, 2, 'retired var must not bypass hard-block; stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
     // inline parse event still fires (source=absent because no hint in prompt)
@@ -181,16 +181,13 @@ describe('v2.2.13 W1 — inline context_size_hint parser in preflight-spawn-budg
     assert.equal(inline.length, 1, 'context_size_hint_parsed_inline still emits');
     assert.equal(inline[0].source, 'absent', 'source=absent (no hint anywhere)');
 
-    // required_failed must NOT emit when deprecated kill switch is set
+    // required_failed MUST emit — var is no longer read
     const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
-    assert.equal(required.length, 0, 'context_size_hint_required_failed must not emit with deprecated kill switch');
+    assert.equal(required.length, 1, 'context_size_hint_required_failed must emit (var is no-op)');
 
-    // deprecated_kill_switch_detected must emit
+    // deprecated_kill_switch_detected must NOT emit — detection code removed
     const deprecated = events.filter(e => e.event_type === 'deprecated_kill_switch_detected');
-    assert.equal(deprecated.length, 1, 'deprecated_kill_switch_detected must emit');
-    assert.equal(deprecated[0].name, 'ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED');
-    assert.equal(deprecated[0].retires_in, 'v2.2.14');
-    assert.equal(deprecated[0].schema_version, 1);
+    assert.equal(deprecated.length, 0, 'deprecated_kill_switch_detected must not emit (function removed in G-04)');
   });
 
   // ── Case 5: INLINE_PARSE_DISABLED skips prompt-body parse → absent/block ─

@@ -251,45 +251,6 @@ process.stdin.on('end', () => {
       }
     }
 
-    // Deprecated env-var detection: ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED
-    // is now a NO-OP (the gated code path no longer exists). Emit a one-time-per-
-    // session deprecation event and warn, gated by a sentinel file.
-    if (process.env.ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED === '1') {
-      const orchStateDir = require('path').join(cwd, '.orchestray', 'state');
-      // Shared sentinel (no pid component) so boot + preflight dedupe per session.
-      const sentinelPath = require('path').join(orchStateDir, 'deprecated-env-warned-context-hint');
-      try {
-        if (!require('fs').existsSync(sentinelPath)) {
-          try {
-            require('fs').mkdirSync(orchStateDir, { recursive: true });
-            require('fs').writeFileSync(sentinelPath, new Date().toISOString() + '\n', { flag: 'wx' });
-          } catch (_) { /* fail-open — sentinel write failure is non-fatal */ }
-          process.stderr.write(
-            '[orchestray] DEPRECATED: ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED is a no-op as of ' +
-            'v2.2.13 and will be removed in v2.2.14. Remove it from .claude/settings.json — the inline ' +
-            'prompt-body parser (v2.2.13) now satisfies the context_size_hint gate automatically. ' +
-            '(If you need to disable inline parsing, use ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED=1.)\n'
-          );
-          try {
-            let orchId = 'unknown';
-            try {
-              const orchFile = require('path').join(cwd, '.orchestray', 'audit', 'current-orchestration.json');
-              const orchRaw = JSON.parse(require('fs').readFileSync(orchFile, 'utf8'));
-              orchId = orchRaw.orchestration_id || 'unknown';
-            } catch (_) { /* fail-open */ }
-            writeEvent({
-              event_type:    'deprecated_kill_switch_detected',
-              version:       1,
-              name:          'ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED',
-              replacement:   'ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED',
-              retires_in:    'v2.2.14',
-              schema_version: 1,
-            }, { cwd });
-          } catch (_) { /* fail-open */ }
-        }
-      } catch (_) { /* fail-open — entire deprecation path must never crash the hook */ }
-    }
-
     // Emit inline-parse result event (once per spawn, always).
     try {
       let orchId = 'unknown';
@@ -316,8 +277,6 @@ process.stdin.on('end', () => {
     // Kill switch: ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED=1
     // B4 (v2.2.11): after the warn emit, hard-block the spawn via
     // context_size_hint_required_failed + exit 2 (fail-closed).
-    // v2.2.13 W1: ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED is now a NO-OP
-    // (the env var is deprecated; the inline parser replaces its function).
     if (computedSize === 0 && role && process.env.ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED !== '1') {
       let orchId = 'unknown';
       try {
@@ -340,35 +299,29 @@ process.stdin.on('end', () => {
       }
 
       // Hard-block: emit required_failed and exit 2.
-      // v2.2.13 W1: ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED is deprecated
-      // (NO-OP in v2.2.13; retires v2.2.14). The inline prompt-body parser
-      // (parseSource='prompt_body') is now the primary mechanism — if the hint
-      // was in the prompt it would have been resolved above. Reaching here means
-      // neither tool_input nor prompt had the hint.
-      // During the deprecation window, the env var still bypasses the hard-block
-      // for backward compat (operators who set it won't get blocked spawns).
-      if (process.env.ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED !== '1') {
-        try {
-          writeEvent({
-            event_type:    'context_size_hint_required_failed',
-            version:       1,
-            spawn_id:      toolInput.task_id || orchId,
-            subagent_type: role,
-            schema_version: 1,
-          }, { cwd });
-        } catch (_e) {
-          // Audit emit failure does not prevent the block
-        }
-        process.stdout.write(JSON.stringify({
-          type: 'block',
-          message: `[orchestray] Spawn blocked: the "${role}" agent was spawned without a context_size_hint. ` +
-                   `To fix: include "context_size_hint: system=N tier2=N handoff=N" as a line in the delegation ` +
-                   `prompt (or pass tool_input.context_size_hint with non-zero system/tier2/handoff values). ` +
-                   `To disable this gate entirely (not recommended in production): ` +
-                   `ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED=1.`,
-        }) + '\n');
-        process.exit(2);
+      // The inline prompt-body parser (parseSource='prompt_body') is the primary
+      // mechanism — if the hint was in the prompt it would have been resolved above.
+      // Reaching here means neither tool_input nor prompt had the hint.
+      try {
+        writeEvent({
+          event_type:    'context_size_hint_required_failed',
+          version:       1,
+          spawn_id:      toolInput.task_id || orchId,
+          subagent_type: role,
+          schema_version: 1,
+        }, { cwd });
+      } catch (_e) {
+        // Audit emit failure does not prevent the block
       }
+      process.stdout.write(JSON.stringify({
+        type: 'block',
+        message: `[orchestray] Spawn blocked: the "${role}" agent was spawned without a context_size_hint. ` +
+                 `To fix: include "context_size_hint: system=N tier2=N handoff=N" as a line in the delegation ` +
+                 `prompt (or pass tool_input.context_size_hint with non-zero system/tier2/handoff values). ` +
+                 `To disable this gate entirely (not recommended in production): ` +
+                 `ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED=1.`,
+      }) + '\n');
+      process.exit(2);
     }
 
     // When no context hint is provided, skip the budget check (fail-open).

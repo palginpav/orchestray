@@ -9,16 +9,13 @@
  * or has all-zero values. Both the warn event AND the required_failed event
  * must fire before the block.
  *
- * Kill switch: ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1 reverts to
- * legacy warn-only behaviour (only context_size_hint_missing fires, exit 0).
- *
  * Tests:
  *   1. Valid hint (system:5000) → 0 fails, both events absent, exit 0.
  *   2. All-zero hint → both context_size_hint_missing AND
  *      context_size_hint_required_failed emit, exit 2.
  *   3. Missing context_size_hint field → both events emit, exit 2.
- *   4. Kill switch ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1 →
- *      only context_size_hint_missing emits, exit 0.
+ *   4. ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1 is retired (v2.2.14 G-04) —
+ *      spawn hard-blocks (exit 2) regardless; var is a no-op.
  *   5. context_size_hint_required_failed carries subagent_type from spawn payload.
  */
 
@@ -156,20 +153,20 @@ describe('v2.2.11 W2-8 — context_size_hint fail-closed (warn → exit-2)', () 
     assert.equal(required.length, 1, 'exactly 1 context_size_hint_required_failed event');
   });
 
-  // ── Test 4: kill switch → only warn emits, exit 0 ──────────────────────
-  test('ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1 → only warn emits, exit 0', () => {
+  // ── Test 4: retired env var is no-op — hard-block still fires (v2.2.14 G-04)
+  test('ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1 → exits 2 (var is retired, no-op)', () => {
     const r = runHookSync(
       tmpRoot,
       { subagent_type: 'developer', task_id: 'T4' },
       { ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED: '1' },
     );
-    assert.equal(r.status, 0, 'kill switch reverts to legacy warn-only; stderr=' + r.stderr);
+    assert.equal(r.status, 2, 'retired var must not bypass hard-block; stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
     const missing  = events.filter(e => e.event_type === 'context_size_hint_missing');
     const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
     assert.equal(missing.length,  1, 'context_size_hint_missing still emits (telemetry trail)');
-    assert.equal(required.length, 0, 'context_size_hint_required_failed must NOT emit when kill switch is set');
+    assert.equal(required.length, 1, 'context_size_hint_required_failed must emit (var is retired no-op)');
   });
 
   // ── Test 5: required_failed event carries subagent_type ────────────────

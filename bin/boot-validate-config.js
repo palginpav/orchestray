@@ -103,50 +103,6 @@ function maybeEmitContractsHardfailBanner(cwd) {
 }
 
 /**
- * v2.2.13 W1: Detect and warn about the deprecated
- * ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED env var. The gated code path
- * no longer exists (the inline prompt-body parser in preflight-spawn-budget.js
- * replaces it). Fires once per session via a per-pid sentinel file. Fail-open.
- *
- * @param {string} cwd  — project root
- */
-function maybeWarnDeprecatedContextHintEnvVar(cwd) {
-  if (process.env.ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED !== '1') return;
-  try {
-    const stateDir = path.join(cwd, '.orchestray', 'state');
-    // Shared sentinel (no pid component) so boot + preflight dedupe per session.
-    const sentinelPath = path.join(stateDir, 'deprecated-env-warned-context-hint');
-    if (fs.existsSync(sentinelPath)) return;
-
-    // Write sentinel first (fail-open if it fails — we still warn).
-    try {
-      fs.mkdirSync(stateDir, { recursive: true });
-      fs.writeFileSync(sentinelPath, new Date().toISOString() + '\n', { flag: 'wx' });
-    } catch (_) { /* sentinel write failure is non-fatal */ }
-
-    process.stderr.write(
-      '[orchestray] DEPRECATED: ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED is a no-op as of ' +
-      'v2.2.13 and will be removed in v2.2.14. Remove it from .claude/settings.json — the inline ' +
-      'prompt-body parser (v2.2.13) now satisfies the context_size_hint gate automatically. ' +
-      '(If you need to disable inline parsing, use ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED=1.)\n'
-    );
-
-    // Emit telemetry event (best-effort).
-    try {
-      const { writeEvent } = require('./_lib/audit-event-writer');
-      writeEvent({
-        event_type:    'deprecated_kill_switch_detected',
-        version:       1,
-        name:          'ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED',
-        replacement:   'ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED',
-        retires_in:    'v2.2.14',
-        schema_version: 1,
-      }, { cwd });
-    } catch (_) { /* fail-open */ }
-  } catch (_) { /* entire deprecation path must never crash boot */ }
-}
-
-/**
  * Emit one drift warning to stderr, deduped by key.
  * @param {string} dedupKey  — stable identity of the warning (e.g. "unknown:foo")
  * @param {string} message   — full stderr line (without trailing newline)
@@ -242,9 +198,6 @@ function runCli() {
     // Contracts hard-fail upgrade banner (v2.2.12 — once per install).
     maybeEmitContractsHardfailBanner(cwd);
 
-    // v2.2.13 W1: deprecated env-var detection (once per session).
-    maybeWarnDeprecatedContextHintEnvVar(cwd);
-
     process.exit(code);
   } catch (err) {
     // Most likely cause: internal validator missing or broken.
@@ -258,7 +211,7 @@ function runCli() {
   }
 }
 
-module.exports = { runDriftDetection, warnOnce, WARNED_KEYS, maybeEmitContractsHardfailBanner, maybeWarnDeprecatedContextHintEnvVar, semverGte };
+module.exports = { runDriftDetection, warnOnce, WARNED_KEYS, maybeEmitContractsHardfailBanner, semverGte };
 
 if (require.main === module) {
   runCli();

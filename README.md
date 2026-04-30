@@ -120,7 +120,6 @@ Set in `.orchestray/config.json` or as env vars. No session restart required.
 | Tier2 protocol watcher auto-emit | — | `ORCHESTRAY_TIER2_WATCHER_DISABLED=1` |
 | Autofill-threshold fail-loud | — | `ORCHESTRAY_AUTOFILL_THRESHOLD_DISABLED=1` |
 | Context size hint missing warn (warn event only) | — | `ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED=1` |
-| Context size hint hard-block bypass (**DEPRECATED v2.2.13 — now a no-op; remove from settings.json**) | — | `ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1` |
 | Reviewer dimensions missing warn | — | `ORCHESTRAY_REVIEWER_DIMENSIONS_WARN_DISABLED=1` |
 | Orchestration ROI missing warn | — | `ORCHESTRAY_ROI_WATCHED_DISABLED=1` |
 | Per-orch activation ratio KPI emit | — | `ORCHESTRAY_ACTIVATION_RATIO_EMIT_DISABLED=1` |

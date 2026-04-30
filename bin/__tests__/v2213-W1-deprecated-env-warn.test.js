@@ -3,14 +3,14 @@
 /**
  * v2213-W1-deprecated-env-warn.test.js — deprecated env-var detection (v2.2.13 W1).
  *
- * Verifies that boot-validate-config.js emits `deprecated_kill_switch_detected`
- * exactly once per session when ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1
- * is set, and that the sentinel mechanism prevents re-emit.
+ * As of v2.2.14 G-04, ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED is fully
+ * retired. The maybeWarnDeprecatedContextHintEnvVar function has been deleted from
+ * boot-validate-config.js. These tests verify that retirement is complete.
  *
  * Tests:
- *   1. Env var set → deprecated_kill_switch_detected emits, stderr warns.
- *   2. Env var NOT set → no deprecated_kill_switch_detected event.
- *   3. Sentinel file present → event does NOT re-emit (dedup works).
+ *   1. maybeWarnDeprecatedContextHintEnvVar is no longer exported from boot-validate-config.
+ *   2. boot-validate-config runs without error when env var is set (var is no-op).
+ *   3. boot-validate-config does NOT emit deprecated_kill_switch_detected (function removed).
  *
  * Runner: node --test bin/__tests__/v2213-W1-deprecated-env-warn.test.js
  */
@@ -82,95 +82,42 @@ function runBoot(cwd, envOverrides) {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('v2.2.13 W1 — deprecated env-var detection in boot-validate-config', () => {
+describe('v2.2.14 G-04 — deprecated env-var fully retired in boot-validate-config', () => {
 
   let tmpRoot;
   beforeEach(() => { tmpRoot = makeTmpRoot(); });
   afterEach(() => { fs.rmSync(tmpRoot, { recursive: true, force: true }); });
 
-  // ── Test 1: env var set → event emits, stderr warns ────────────────────
-  test('ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1 → deprecated_kill_switch_detected emits once', () => {
-    const r = runBoot(tmpRoot, { ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED: '1' });
-
-    // Boot may fail (exit non-zero) due to config validation, but the
-    // deprecation warn should still fire before exit — fail-open principle.
-    assert.ok(
-      r.stderr.includes('DEPRECATED: ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED'),
-      'stderr must contain the DEPRECATED warning; got: ' + r.stderr,
+  // ── Test 1: maybeWarnDeprecatedContextHintEnvVar no longer exported ─────
+  test('maybeWarnDeprecatedContextHintEnvVar is NOT exported from boot-validate-config', () => {
+    // Bypass module cache so we get a fresh load
+    const modPath = require.resolve(BOOT_PATH);
+    delete require.cache[modPath];
+    const mod = require(BOOT_PATH);
+    assert.equal(
+      typeof mod.maybeWarnDeprecatedContextHintEnvVar,
+      'undefined',
+      'maybeWarnDeprecatedContextHintEnvVar must be removed from exports (G-04)',
     );
-    assert.ok(
-      r.stderr.includes('ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED'),
-      'stderr must include replacement env var name (UX critique F-04); got: ' + r.stderr,
-    );
-
-    const events = readEvents(tmpRoot);
-    const deprecated = events.filter(e => e.event_type === 'deprecated_kill_switch_detected');
-    assert.equal(deprecated.length, 1, 'exactly 1 deprecated_kill_switch_detected event');
-    assert.equal(deprecated[0].name, 'ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED');
-    assert.equal(deprecated[0].replacement, 'ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED');
-    assert.equal(deprecated[0].retires_in, 'v2.2.14');
-    assert.equal(deprecated[0].schema_version, 1);
   });
 
-  // ── Test 2: env var NOT set → no event ─────────────────────────────────
-  test('ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED not set → no deprecated_kill_switch_detected', () => {
-    const r = runBoot(tmpRoot, {});
+  // ── Test 2: env var set → no DEPRECATED warn in stderr ─────────────────
+  test('ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1 → no DEPRECATED warning emitted', () => {
+    const r = runBoot(tmpRoot, { ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED: '1' });
 
     assert.ok(
       !r.stderr.includes('DEPRECATED: ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED'),
-      'stderr must NOT contain the DEPRECATED warning when env var is unset; got: ' + r.stderr,
+      'stderr must NOT contain DEPRECATED warning — function was removed; got: ' + r.stderr,
     );
-
-    const events = readEvents(tmpRoot);
-    const deprecated = events.filter(e => e.event_type === 'deprecated_kill_switch_detected');
-    assert.equal(deprecated.length, 0, 'no deprecated_kill_switch_detected event when env var is unset');
   });
 
-  // ── Test 3: sentinel present → re-emit suppressed ──────────────────────
-  test('sentinel file present → event does NOT re-emit (per-session dedup)', () => {
-    // v2.2.13 UX critique F-01: shared sentinel (no pid component) so boot
-    // and preflight dedupe across the whole session.
-    const stateDir = path.join(tmpRoot, '.orchestray', 'state');
-    const sentinelPath = path.join(stateDir, 'deprecated-env-warned-context-hint');
-    fs.writeFileSync(sentinelPath, new Date().toISOString() + '\n', 'utf8');
+  // ── Test 3: env var set → no deprecated_kill_switch_detected event ──────
+  test('ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1 → no deprecated_kill_switch_detected event', () => {
+    runBoot(tmpRoot, { ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED: '1' });
 
-    // Run boot in the SAME process pid so the sentinel matches.
-    // We need to invoke via --eval to control the pid used.
-    // Instead, test the exported function directly.
-    const { maybeWarnDeprecatedContextHintEnvVar } = require(BOOT_PATH);
-
-    // Save original env
-    const origVal = process.env.ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED;
-    process.env.ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED = '1';
-
-    // Patch stderr to capture output
-    const stderrLines = [];
-    const origWrite = process.stderr.write.bind(process.stderr);
-    process.stderr.write = (msg) => { stderrLines.push(msg); return true; };
-
-    try {
-      maybeWarnDeprecatedContextHintEnvVar(tmpRoot);
-    } finally {
-      process.stderr.write = origWrite;
-      if (origVal === undefined) {
-        delete process.env.ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED;
-      } else {
-        process.env.ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED = origVal;
-      }
-    }
-
-    // Sentinel was already present → no warn should have been written.
-    // v2.2.13 final-review F-03: substring updated to match the post-ux-critic
-    // message (was 'DEPRECATED env var ...'; now 'DEPRECATED: ...').
-    const deprecatedWarnings = stderrLines.filter(l =>
-      l.includes('DEPRECATED: ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED'),
-    );
-    assert.equal(deprecatedWarnings.length, 0, 'sentinel must suppress re-emit');
-
-    // No new event should have been written
     const events = readEvents(tmpRoot);
     const deprecated = events.filter(e => e.event_type === 'deprecated_kill_switch_detected');
-    assert.equal(deprecated.length, 0, 'sentinel prevents event re-emit');
+    assert.equal(deprecated.length, 0, 'no deprecated_kill_switch_detected event — function removed in G-04');
   });
 
 });
