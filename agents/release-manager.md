@@ -64,6 +64,25 @@ branch since the last tag.
   the `package.json` `files` field (no leaked test fixtures, no missing essentials).
 - Resolve any verification failure before proceeding.
 
+### Step 3b: Run Release-Shape Gate (≥10-file diff)
+
+Before staging the version-bump commit, run:
+
+```
+Bash("npm run test:release-shape")
+```
+
+This verifies that the cumulative diff from the **previous release tag**
+(NOT `HEAD~1`, NOT `origin/master`) to HEAD touches ≥10 files. The test
+self-skips if no previous release tag exists; otherwise it asserts the
+release range carries operator-visible content beyond the version bump.
+
+If the test fails, the commit content is too thin for a numbered release.
+Either gather more pending work and re-run, or coordinate with the user to
+tag a hotfix-style variant (e.g., `2.2.16.1`) instead of bumping the patch
+number. Do not bypass the gate by setting `ORCHESTRAY_RELEASE_SHAPE_TEST_ENABLED=0`
+without explicit user authorisation.
+
 ### Step 4: Verify Audit Loop Status
 
 If the project has the iterative-audit convention (`feedback_preship_audit_loop`),
