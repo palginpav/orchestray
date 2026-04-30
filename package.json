@@ -23,7 +23,8 @@
     "better-sqlite3": "^11",
     "graphology": "0.26.0",
     "graphology-metrics": "^2.4.0",
-    "web-tree-sitter": "0.26.8"
+    "web-tree-sitter": "0.26.8",
+    "zod": "^4.4.1"
   },
   "scripts": {
     "test": "ORCHESTRAY_PARALLEL_TESTS=1 node --require ./tests/helpers/setup.js --test tests/*.test.js tests/helpers/*.test.js tests/hooks/*.test.js tests/install/*.test.js tests/kb-refs-sweep/*.test.js tests/mcp-server/*.test.js tests/mcp-server/lib/*.test.js tests/mcp-server/tools/*.test.js tests/mcp-server/resources/*.test.js tests/mcp-server/elicit/*.test.js tests/post-orchestration-extract/*.test.js tests/tokenwright/*.test.js tests/regression/*.test.js tests/resilience/*.test.js tests/schemas/*.test.js tests/telemetry/*.test.js tests/unit/*.test.js tests/instrumentation/**/*.test.js bin/_lib/__tests__/*.test.js bin/__tests__/*.test.js bin/mcp-server/tools/__tests__/*.test.js",

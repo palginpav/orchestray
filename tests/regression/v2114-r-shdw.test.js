@@ -122,12 +122,13 @@ describe('R-SHDW: generator', () => {
     assert.ok(eventTypes.length >= 5, 'shadow must have >= 5 event types, got ' + eventTypes.length);
   });
 
-  test('2. generator output is ≤ 12288 bytes', () => {
+  test('2. generator output is ≤ 16384 bytes', () => {
     // v2.1.16 W12-fix F-005: cap raised from 4096 → 8192.
     // v2.2.9 MAX_SHADOW_BYTES bump: 8192 → 12288 to accommodate B-2.1 per-role
     // schema entries and additional event types added in this release.
+    // v2.2.15 Wave B-1: 12288 → 16384 to accommodate 8 new P1-05..P1-10 event types.
     const stat = fs.statSync(SHADOW_PATH);
-    assert.ok(stat.size <= 12288, 'shadow file size ' + stat.size + ' exceeds 12288 bytes');
+    assert.ok(stat.size <= 16384, 'shadow file size ' + stat.size + ' exceeds 16384 bytes');
   });
 
   test('3. shadow includes the 4 new R-SHDW event types', () => {

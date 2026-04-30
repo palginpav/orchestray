@@ -18,10 +18,10 @@
  *   recordSuccess(params, projectRoot, config)
  *     Called AFTER a successful handler outcome. Appends the count row.
  *
- *   bumpAndCheck(params, projectRoot, config)  [DEPRECATED]
- *     Calls checkLimit + recordSuccess together (single-call path).
- *     Kept for simple handlers that don't need the split. New callers
- *     should use checkLimit / recordSuccess explicitly.
+ *   FN-58 (v2.2.15) — `bumpAndCheck` was retired. Zero non-test callers
+ *   remained after `grep -rn bumpAndCheck bin/ --include='*.js' | grep -v __tests__`
+ *   (only the function declaration and its module-export in this file).
+ *   Use `checkLimit` + `recordSuccess` explicitly.
  *
  * Fail-open / fail-closed contract (F02 fix):
  *   - When maxAllowed is null (informational query), ledger oversize -> fail-open
@@ -334,48 +334,15 @@ function recordSuccess(params, projectRoot, config) {
 }
 
 // ---------------------------------------------------------------------------
-// Deprecated: bumpAndCheck (single-call path for simple handlers)
+// FN-58 (v2.2.15) — `bumpAndCheck` removed. Single-call convenience API
+// retired after audit confirmed zero non-test callers; remaining callers use
+// `checkLimit` + `recordSuccess` explicitly to keep the bookkeeping atomic
+// only on successful outcomes.
 // ---------------------------------------------------------------------------
-
-/**
- * @deprecated Use checkLimit() + recordSuccess() instead.
- *
- * Combines checkLimit and recordSuccess in one call: checks the limit first,
- * and if not exceeded, appends the count record.
- *
- * Kept as a convenience for simple handlers that don't need the split API.
- * New callers should use checkLimit/recordSuccess directly so the counter
- * only increments on successful outcomes.
- *
- * @param {object} params
- *   @param {string} params.orchestration_id
- *   @param {string} params.task_id
- *   @param {string} params.tool_name
- * @param {string}      projectRoot  - Absolute path to project root
- * @param {object|null} config       - The loaded server config (or null)
- * @returns {{ exceeded: boolean, count?: number|string, max?: number, reason?: string }}
- */
-function bumpAndCheck(params, projectRoot, config) {
-  const limitResult = checkLimit(params, projectRoot, config);
-  if (limitResult.exceeded) {
-    return {
-      exceeded: true,
-      count: limitResult.count,
-      max: limitResult.maxAllowed,
-      reason: limitResult.reason,
-    };
-  }
-
-  // Not exceeded: record the call.
-  recordSuccess(params, projectRoot, config);
-
-  return { exceeded: false };
-}
 
 module.exports = {
   checkLimit,
   recordSuccess,
-  bumpAndCheck,
   // Exported for testing
   readMaxPerTask,
   readLedger,

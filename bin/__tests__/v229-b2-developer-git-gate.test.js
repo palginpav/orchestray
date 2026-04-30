@@ -235,16 +235,89 @@ describe('v229-b2.5 — integration: safe git commands pass', () => {
   });
 });
 
-describe('v229-b2.5 — integration: non-developer roles not gated', () => {
-  test('release-manager git push --force → exit 0 (not gated by this hook)', () => {
-    const r = runHook(bashPayload('git push --force', 'release-manager'));
-    assert.equal(r.status, 0, 'release-manager is not gated by developer-git hook');
-    cleanup(r.tmp);
-  });
+describe('v229-b2.5 — integration: non-developer/release-manager roles not gated', () => {
+  // FN-48 (v2.2.15): release-manager IS now gated; see dedicated suite below.
 
   test('reviewer calling git → exit 0', () => {
     const r = runHook(bashPayload('git push -f', 'reviewer'));
     assert.equal(r.status, 0);
+    cleanup(r.tmp);
+  });
+
+  test('architect calling git push → exit 0', () => {
+    const r = runHook(bashPayload('git push origin main', 'architect'));
+    assert.equal(r.status, 0);
+    cleanup(r.tmp);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FN-48 (v2.2.15): release-manager push/tag block.
+// ---------------------------------------------------------------------------
+
+describe('v2.2.15 FN-48 — release-manager push/tag block', () => {
+  test('release-manager `git push origin main` → exit 2 (any push form blocked)', () => {
+    const r = runHook(bashPayload('git push origin main', 'release-manager'));
+    assert.equal(r.status, 2, 'release-manager push must block. stderr=' + r.stderr.slice(0, 200));
+    const events = readAuditEvents(r.tmp);
+    const ev = events.find(e => e.type === 'developer_git_violation');
+    assert.ok(ev, 'developer_git_violation event must be emitted');
+    assert.equal(ev.violation_type, 'release_manager_push');
+    assert.equal(ev.agent_role, 'release-manager');
+    cleanup(r.tmp);
+  });
+
+  test('release-manager `git tag -a v2.2.15` → exit 2', () => {
+    const r = runHook(bashPayload('git tag -a v2.2.15 -m "release"', 'release-manager'));
+    assert.equal(r.status, 2);
+    const events = readAuditEvents(r.tmp);
+    const ev = events.find(e => e.type === 'developer_git_violation');
+    assert.ok(ev);
+    assert.equal(ev.violation_type, 'release_manager_tag_write');
+    cleanup(r.tmp);
+  });
+
+  test('developer `git push origin main` (non-force) → exit 0 (not blocked for developer)', () => {
+    const r = runHook(bashPayload('git push origin main', 'developer'));
+    assert.equal(r.status, 0, 'developer non-force push remains allowed');
+    cleanup(r.tmp);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FN-46 (v2.2.15): commit-trailer regex (Co-Authored-By, Generated with Claude).
+// ---------------------------------------------------------------------------
+
+describe('v2.2.15 FN-46 — commit trailer regex', () => {
+  test('developer commit with Co-Authored-By: → exit 2', () => {
+    const r = runHook(bashPayload(
+      'git commit -m "wip: foo\n\nCo-Authored-By: Claude <noreply@anthropic.com>"',
+      'developer'
+    ));
+    assert.equal(r.status, 2, 'Co-Authored-By trailer must block. stderr=' + r.stderr.slice(0, 200));
+    const events = readAuditEvents(r.tmp);
+    const ev = events.find(e => e.type === 'developer_git_violation');
+    assert.ok(ev);
+    assert.equal(ev.violation_type, 'co_authored_by_trailer');
+    cleanup(r.tmp);
+  });
+
+  test('developer commit with "Generated with Claude" → exit 2', () => {
+    const r = runHook(bashPayload(
+      'git commit -m "wip: foo\n\nGenerated with [Claude Code]"',
+      'developer'
+    ));
+    assert.equal(r.status, 2, 'Generated with Claude trailer must block. stderr=' + r.stderr.slice(0, 200));
+    const events = readAuditEvents(r.tmp);
+    const ev = events.find(e => e.type === 'developer_git_violation');
+    assert.ok(ev);
+    assert.equal(ev.violation_type, 'generated_with_claude_trailer');
+    cleanup(r.tmp);
+  });
+
+  test('developer normal commit (no trailer) → exit 0', () => {
+    const r = runHook(bashPayload('git commit -m "wip: normal commit, no trailers"', 'developer'));
+    assert.equal(r.status, 0, 'normal commit must pass. stderr=' + r.stderr.slice(0, 200));
     cleanup(r.tmp);
   });
 });

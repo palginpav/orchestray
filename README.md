@@ -49,6 +49,10 @@ That's it. Orchestray scores complexity, decomposes the task, routes agents, run
 | `/orchestray:update` | Update Orchestray to the latest version |
 | `/orchestray:report` | Full audit report with cost breakdown |
 | `/orchestray:issue [#/url]` | Orchestrate from a GitHub issue |
+| `/orchestray:redo <W-id>` | Re-run a planning item; `--cascade` to update dependents |
+| `/orchestray:watch` | Live-tail a running orchestration |
+| `/orchestray:state peek` | Inspect raw Orchestray runtime state |
+| `/orchestray:feature` | Inspect or wake quarantined feature gates |
 | `/orchestray:doctor` | Health probes; `--deep` for install-integrity check |
 
 ## Agent roles
@@ -144,8 +148,6 @@ Set in `.orchestray/config.json` or as env vars. No session restart required.
 | MCP handler-entry instrumentation (v2.2.11) | — | `ORCHESTRAY_MCP_ENTRY_INSTRUMENTATION_DISABLED=1` |
 | Loop-kind taxonomy disambiguation (v2.2.11) | — | `ORCHESTRAY_LOOP_KIND_DISAMBIGUATION_DISABLED=1` |
 | `*_failed` rename-cycle alias emit (v2.2.11) | — | `ORCHESTRAY_RENAME_CYCLE_ALIAS_DISABLED=1` |
-| `context_size_hint` stager hook (**DELETED v2.2.13** — replaced by inline parser in preflight; kill switch is a no-op) | — | `ORCHESTRAY_CTX_HINT_STAGER_DISABLED=1` |
-| `ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED` (**RETIRED v2.2.14** — env var was a no-op since v2.2.13; all read sites deleted; remove from `~/.claude/settings.json`) | — | _retired; no longer read_ |
 | Contracts validation hard-fail (v2.2.12, reverts to warn) | — | `ORCHESTRAY_CONTRACTS_PARSE_GATE_DISABLED=1` |
 | `*_failed` deprecation stderr warn (v2.2.12) | — | `ORCHESTRAY_DEPRECATED_NAME_WARN_DISABLED=1` |
 | Archive validation success-path emit (v2.2.12) | — | `ORCHESTRAY_ARCHIVE_VALIDATION_SUCCESS_EMIT_DISABLED=1` |
@@ -157,12 +159,8 @@ Set in `.orchestray/config.json` or as env vars. No session restart required.
 | `orchestration_start` + `orchestration_complete` lifecycle emits (v2.2.13) | — | `ORCHESTRAY_ORCH_LIFECYCLE_EMIT_DISABLED=1` |
 | Contracts postcondition silent-skip audit emit (v2.2.13) | — | `ORCHESTRAY_CONTRACTS_RUNPOST_AUDIT_DISABLED=1` |
 | Dossier-orphan threshold escalator (v2.2.13) | — | `ORCHESTRAY_DOSSIER_ORPHAN_THRESHOLD_DISABLED=1` |
-| `schemas/` directory copy in install.js (fixes node:fs:1012 SessionStart error) (v2.2.14) | — | — |
-| `calibrate-role-budgets --if-stale` cache-mtime gate (v2.2.14) | — | — |
-| `calibrate-role-budgets --quiet` stdout suppression (v2.2.14) | — | — |
-| `pattern_read` + `scout_decision` schema declares + sentinel auto-rearm (v2.2.14) | — | — |
-| `context_size_hint` HINT_RE accepts both flat and object forms (v2.2.14) | — | — |
-| Mandatory `model:` field doc-block in delegation-templates.md (v2.2.14) | — | `ORCHESTRAY_STRICT_MODEL_REQUIRED=0` |
+| Mandatory `model:` field on `Agent()` calls | — | `ORCHESTRAY_STRICT_MODEL_REQUIRED=0` (the only opt-out — default is hard-block) |
+| Schema-shadow safety net (event-type validation) | — | `ORCHESTRAY_DISABLE_SCHEMA_SHADOW=1` |
 
 ## Requirements
 
@@ -180,19 +178,19 @@ Run `node bin/regen-schema-shadow.js` followed by `node -e "require('./bin/_lib/
 **Gate blocks first spawn after upgrade.**
 On the next user prompt, `bin/post-upgrade-sweep.js` repairs stale checkpoint rows automatically. If the gate still blocks, set `mcp_enforcement.global_kill_switch: true` (and a `kill_switch_reason`) in `.orchestray/config.json` to complete the in-flight orchestration, then clear both fields.
 
-**`t15_role_schema_violation` blocks reviewer / researcher / inventor / security-engineer / ux-critic / platform-oracle on first upgrade to v2.2.9.**
+**Role agent blocked on first upgrade to v2.2.9** (`t15_role_schema_violation` — reviewer / researcher / inventor / security-engineer / ux-critic / platform-oracle)
 Six previously warn-tier roles were promoted to hard-tier with no grace flag — every Structured Result missing the role-required fields now blocks the spawn. Update the agent's output to include the role contract from `bin/_lib/role-schemas.js`. For an emergency pin while you fix the upstream agent, set `ORCHESTRAY_T15_<ROLE>_HARD_DISABLED=1` (e.g. `ORCHESTRAY_T15_RESEARCHER_HARD_DISABLED=1`) — the role downgrades to warn-tier for that session only.
 
-**`agent_model_unspecified_blocked` on existing orchestrations.**
+**Model not specified on Agent() call blocks spawn** (`agent_model_unspecified_blocked`)
 v2.2.9 flipped the default for `ORCHESTRAY_STRICT_MODEL_REQUIRED` from "auto-resolve to sonnet" to "hard-block". Add explicit `model:` to every `Agent()` call (e.g. `Agent(subagent_type: "developer", model: "sonnet", …)`), or set `ORCHESTRAY_STRICT_MODEL_REQUIRED=0` for one release while you backfill. Per-agent `model:` frontmatter does not satisfy the gate — it must appear on the `Agent()` call itself.
 
-**`role_write_path_blocked` when reviewer/tester/documenter/release-manager writes a file.**
+**Write-path blocked for reviewer / tester / documenter / release-manager** (`role_write_path_blocked`)
 Each write-capable specialist has a per-role allowlist defined in `bin/_lib/role-write-allowlists.js`. If you need a wider scope for a one-off task, set `ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1` in the spawning shell, or add the path to the allowlist (preferred — keeps the rest of the codebase protected).
 
-**`contracts_parse_failed` fires on task YAML with a `## Contracts` section.**
+**Task YAML Contracts section blocked at spawn** (`contracts_parse_failed`)
 Since v2.2.12, Contracts validation is a hard-fail (exit 2). If a task YAML `## Contracts` section is malformed, the spawn is blocked and `contracts_parse_failed` is emitted. To revert to soft-warn, set `ORCHESTRAY_CONTRACTS_PARSE_GATE_DISABLED=1`. To disable the validator entirely, set `ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED=1` or `ORCHESTRAY_CONTRACTS_MISSING_WARN_DISABLED=1`.
 
-**`agent_mcp_grounding_missing` blocks pm/researcher/debugger/architect spawns.**
+**MCP grounding missing blocks pm / researcher / debugger / architect spawns** (`agent_mcp_grounding_missing`)
 v2.2.10 promotes the MCP grounding gate from warning to hard-block (exit 2) for these four roles. The server-side prefetch hook normally satisfies the gate automatically before each spawn. If the gate fires unexpectedly (e.g. in a custom spawn path that bypasses the prefetch hook), verify that `bin/prefetch-mcp-grounding.js` is registered as `PreToolUse:Agent` in your hooks configuration. Set `ORCHESTRAY_MCP_GROUNDING_GATE_DISABLED=1` as an emergency bypass.
 
 ## License

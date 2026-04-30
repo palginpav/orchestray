@@ -16,7 +16,12 @@
 
 const fs     = require('fs');
 const path   = require('path');
-const crypto = require('crypto');
+
+// FN-28 (v2.2.15) — DELETED inline parseSchemas; route through the canonical
+// shared parser so the validator and regen-schema-shadow.js / tier2-index can
+// never disagree about which slugs the source declares. The dual-parser drift
+// was the root cause of the v2.2.14 G-08 schema-shadow auto-disable (W2-01 P0).
+const { parseEventSchemas } = require('./event-schemas-parser');
 
 const SCHEMA_REL_PATH = path.join('agents', 'pm-reference', 'event-schemas.md');
 
@@ -28,73 +33,25 @@ let _cachedSchemas = null; // Map<string, { required: string[], version: number 
 let _cacheSourcePath = null;
 
 /**
- * Extract event schemas from the event-schemas.md content.
- * Returns a Map of event_type → { required: string[], version: number }.
+ * Build the validator's `Map<slug, { required, version }>` from the canonical
+ * parser's array output. The canonical parser also returns `optional` and
+ * `enum_dialect_hash`, which the validator does not need; we discard them so
+ * downstream consumers see exactly the same shape as before FN-28.
  *
- * Uses the same heuristic parser as regen-schema-shadow.js.
+ * Exposed (and exported) so tests can drive the validator's lookup table from
+ * the same content as `parseEventSchemas` and assert the slug sets match.
  */
 function parseSchemas(content) {
   const schemas = new Map();
-  const SECTION_RE = /^### [`]?([a-z][a-z0-9_.-]*)(?:[`]| event| Event)/mg;
-  const KEY_VALUE_RE = /^\s+"([^"]+)"\s*:\s*(.+?)(?:,\s*)?$/;
-
-  const sectionStarts = [];
-  let m;
-  while ((m = SECTION_RE.exec(content)) !== null) {
-    sectionStarts.push({ index: m.index, slug: m[1] });
+  const events  = parseEventSchemas(content);
+  for (const ev of events) {
+    if (!ev || typeof ev.slug !== 'string') continue;
+    if (schemas.has(ev.slug)) continue;
+    schemas.set(ev.slug, {
+      required: Array.isArray(ev.required) ? ev.required.slice() : [],
+      version:  typeof ev.version === 'number' ? ev.version : 1,
+    });
   }
-
-  for (let i = 0; i < sectionStarts.length; i++) {
-    const sectionEnd = (i + 1 < sectionStarts.length)
-      ? sectionStarts[i + 1].index
-      : content.length;
-    const sectionContent = content.slice(sectionStarts[i].index, sectionEnd);
-
-    const fenceStart = sectionContent.indexOf('```json');
-    if (fenceStart === -1) continue;
-    const fenceContentStart = fenceStart + '```json'.length;
-    const fenceEnd = sectionContent.indexOf('```', fenceContentStart);
-    if (fenceEnd === -1) continue;
-
-    const jsonBlock = sectionContent.slice(fenceContentStart, fenceEnd);
-
-    const typeMatch = jsonBlock.match(/"type"\s*:\s*"([^"]+)"/);
-    if (!typeMatch) continue;
-    const eventType = typeMatch[1];
-
-    if (!/^[a-z][a-z0-9_.-]*$/.test(eventType)) continue;
-    if (schemas.has(eventType)) continue;
-
-    const required = [];
-    let version = 1;
-    const lines = jsonBlock.split('\n').filter(l => !l.match(/^```/));
-
-    for (const line of lines) {
-      const km = line.match(KEY_VALUE_RE);
-      if (!km) continue;
-      const key = km[1];
-      const valText = km[2].trim();
-
-      if (key === 'type') continue;
-      if (key === 'version') {
-        const v = parseInt(valText, 10);
-        if (!isNaN(v)) version = v;
-        required.push(key);
-        continue;
-      }
-
-      const isOptional = /optional|null|undefined|\?/.test(valText) ||
-        valText === 'null' ||
-        (valText.startsWith('"') && valText.includes('optional'));
-
-      if (!isOptional) {
-        required.push(key);
-      }
-    }
-
-    schemas.set(eventType, { required, version });
-  }
-
   return schemas;
 }
 

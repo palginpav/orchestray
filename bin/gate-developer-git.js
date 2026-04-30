@@ -9,7 +9,24 @@
  *   - git reset --hard origin/<branch>
  *   - git commit -m "release:..." (release commits are release-manager's job)
  *
- * Kill switch: ORCHESTRAY_GIT_GATE_DISABLED=1 — disables all checks.
+ * v2.2.15 FN-46: also blocks any developer `git commit -m` whose inline
+ * message contains `Co[-\s]?Authored[-\s]?By:` (canonical OR no-hyphen
+ * variants) or "Generated with Claude" / "Generated with [Claude" trailers
+ * (per `feedback_commit_style.md` user memory — concise commits, no
+ * co-authoring trailers).
+ *
+ * v2.2.15 W9 F-3: the `-F <file>` branch is hint-only — the regex cannot
+ * read file contents to enforce the trailer rules, so a stderr advisory is
+ * emitted recommending `-m` instead. The previous `-F`-globbing branch
+ * over-blocked any commit-from-file and was removed.
+ *
+ * v2.2.15 FN-48: when the resolved role is "release-manager", additionally
+ * block ANY `git push` form (not just --force) and any `git tag -a`/`-s` write.
+ * Per the release-manager invariant: never push, never tag (the operator
+ * authorises those steps explicitly per `feedback_release_actions_explicit_permission.md`).
+ *
+ * Kill switch: ORCHESTRAY_GIT_GATE_DISABLED=1 — disables all checks (subsumes
+ * FN-46 and FN-48).
  *
  * Contract:
  *   - exit 2 + emit developer_git_violation when a forbidden pattern is matched
@@ -33,30 +50,75 @@ const FORBIDDEN_PATTERNS = [
     // git push --force or git push -f (with any remote/branch args)
     regex: /\bgit\s+push\b[^|;&\n]*?(?:--force|-f)\b/,
     description: 'force push is forbidden for developer agents — use regular push',
+    roles: ['developer', 'release-manager'],
   },
   {
     id: 'hard_reset_origin',
     // git reset --hard origin/<anything>
     regex: /\bgit\s+reset\s+--hard\s+origin\//,
     description: 'git reset --hard origin/<branch> is forbidden for developer agents',
+    roles: ['developer', 'release-manager'],
   },
   {
     id: 'release_commit',
     // git commit -m "release: ..." or git commit -m 'release: ...'
     regex: /\bgit\s+commit\b[^|;&\n]*?-m\s+['"]release:/,
     description: 'release: commits are owned by release-manager, not developer',
+    roles: ['developer'],
+  },
+  // FN-46 (v2.2.15) + F-3 (v2.2.15 W9 follow-up): Co-Authored-By trailer in
+  // commit message body. The regex tolerates the canonical hyphenated form
+  // AND the no-hyphen / spaced variants (`Co Authored By`, `Co-Authored By`,
+  // `Co Authored-By`) that bare-text rendering of trailers can produce.
+  // The -F branch was previously globbed into this rule and over-blocked
+  // ANY `git commit -F file` regardless of message content (regex cannot
+  // read file contents). The -F branch is now handled separately as a
+  // hint-only WARN below; the structural -F overblock is gone.
+  {
+    id: 'co_authored_by_trailer',
+    // -m only — message text is inline and content-checkable.
+    regex: /\bgit\s+commit\b[^|;&\n]*?-m\s+['"][\s\S]*?Co[-\s]?Authored[-\s]?By\s*:/i,
+    description: 'commit messages must not include Co-Authored-By trailers (feedback_commit_style.md)',
+    roles: ['developer', 'release-manager'],
+  },
+  // FN-46: "Generated with Claude" / "Generated with [Claude" trailer.
+  {
+    id: 'generated_with_claude_trailer',
+    // Match BOTH bracketed and bare forms in inline -m messages.
+    regex: /\bgit\s+commit\b[^|;&\n]*?-m\s+['"][\s\S]*?Generated\s+with\s+\[?Claude/i,
+    description: 'commit messages must not include "Generated with Claude" trailers (feedback_commit_style.md)',
+    roles: ['developer', 'release-manager'],
+  },
+  // FN-48: release-manager must not push at all (any form).
+  {
+    id: 'release_manager_push',
+    regex: /\bgit\s+push\b/,
+    description: 'release-manager must never `git push` — operator authorises pushes explicitly (feedback_release_actions_explicit_permission.md)',
+    roles: ['release-manager'],
+  },
+  // FN-48: release-manager must not write annotated/signed tags.
+  {
+    id: 'release_manager_tag_write',
+    // git tag -a <name> ... | git tag -s <name> ... | git tag --sign ... | git tag --annotate ...
+    regex: /\bgit\s+tag\b[^|;&\n]*?(?:-a\b|-s\b|--annotate\b|--sign\b)/,
+    description: 'release-manager must never write annotated/signed tags — operator authorises tags explicitly',
+    roles: ['release-manager'],
   },
 ];
 
 /**
- * Find any forbidden pattern in a bash command string.
+ * Find any forbidden pattern in a bash command string for the given role.
  *
  * @param {string} command
+ * @param {string} role - resolved agent role (lower-case)
  * @returns {{id: string, description: string}|null}
  */
-function findForbiddenPattern(command) {
+function findForbiddenPattern(command, role) {
   if (typeof command !== 'string') return null;
+  const targetRole = (typeof role === 'string' ? role.toLowerCase() : '') || 'developer';
   for (const pattern of FORBIDDEN_PATTERNS) {
+    const allowedRoles = Array.isArray(pattern.roles) ? pattern.roles : ['developer'];
+    if (!allowedRoles.includes(targetRole)) continue;
     if (pattern.regex.test(command)) {
       return { id: pattern.id, description: pattern.description };
     }
@@ -139,9 +201,9 @@ function main() {
       process.exit(0);
     }
 
-    // Only gate the developer role.
+    // FN-48 (v2.2.15): also gate the release-manager role.
     const role = resolveRole(event);
-    if (role !== 'developer') {
+    if (role !== 'developer' && role !== 'release-manager') {
       process.stdout.write(JSON.stringify({ continue: true }));
       process.exit(0);
     }
@@ -154,8 +216,22 @@ function main() {
       process.exit(0);
     }
 
-    const violation = findForbiddenPattern(command);
+    const violation = findForbiddenPattern(command, role);
     if (!violation) {
+      // FN-46 follow-up (W9 F-3): emit a hint-only WARN when a developer/
+      // release-manager pipes a commit message from a file (`git commit -F
+      // <path>`). The regex cannot inspect file contents, so we cannot block
+      // on the same trailer rules; the advisory reminds the agent that
+      // inline `-m` is preferred per feedback_commit_style.md, but the spawn
+      // is allowed to proceed.
+      if (/\bgit\s+commit\b[^|;&\n]*?-F\b/.test(command)) {
+        process.stderr.write(
+          '[orchestray] gate-developer-git: HINT — `git commit -F <file>` cannot be ' +
+          'content-checked for Co-Authored-By / "Generated with Claude" trailers. ' +
+          'Prefer inline `git commit -m "<msg>"` so the trailer gate can verify ' +
+          'commit-style discipline (feedback_commit_style.md).\n'
+        );
+      }
       process.stdout.write(JSON.stringify({ continue: true }));
       process.exit(0);
     }
@@ -167,7 +243,7 @@ function main() {
       timestamp: new Date().toISOString(),
       type: 'developer_git_violation',
       hook: 'gate-developer-git',
-      agent_role: 'developer',
+      agent_role: role,
       command: command.slice(0, 200),
       violation_type: violation.id,
       description: violation.description,
@@ -175,7 +251,7 @@ function main() {
     });
 
     process.stderr.write(
-      '[orchestray] gate-developer-git: BLOCKED — developer attempted forbidden git command: ' +
+      '[orchestray] gate-developer-git: BLOCKED — ' + role + ' attempted forbidden git command: ' +
       violation.id + ': ' + violation.description + '.\n' +
       'Command: ' + command.slice(0, 120) + '\n' +
       'Kill switch: ORCHESTRAY_GIT_GATE_DISABLED=1\n'

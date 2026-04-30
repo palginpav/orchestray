@@ -1,4 +1,5 @@
 'use strict';
+// NOT_A_HOOK (v2.2.15 FN-59): CLI-only utility, not wired as a hook handler.
 
 /**
  * Back-compat read helper for `.orchestray/audit/events.jsonl` (R-EVENT-NAMING,

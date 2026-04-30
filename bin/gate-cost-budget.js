@@ -252,9 +252,9 @@ process.stdin.on('end', async () => {
       // F14: emit structured hookSpecificOutput JSON on stdout before exit so
       // Claude Code can surface a machine-readable denial reason (mirrors context-shield.js).
       const blockMsg =
-        '[orchestray] gate-cost-budget: spawn BLOCKED (hard_block=true). ' +
-        'Set cost_budget_enforcement.hard_block=false or raise the cap to allow. ' +
-        'Emergency: set cost_budget_enforcement.enabled=false.\n';
+        '[orchestray] cost budget exceeded — spawn blocked. ' +
+        'To allow: raise the cap or set cost_budget_enforcement.hard_block=false. ' +
+        'Emergency bypass: set cost_budget_enforcement.enabled=false.\n';
       process.stderr.write(breachMsg + blockMsg);
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {

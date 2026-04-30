@@ -915,7 +915,213 @@ function _projectHash(projectRoot) {
   return h.toString(16).padStart(8, '0');
 }
 
-module.exports = { promotePattern, _projectHash, _localCollisionCheck, _bodyHash };
+// ---------------------------------------------------------------------------
+// P1-12 (v2.2.15): Federation tombstone + provenance backfill
+//
+// backfillPromoteLog — one-shot helper to stamp provenance records for every
+//   pattern in ~/.orchestray/shared/patterns/ that is NOT yet present in
+//   ~/.orchestray/shared/meta/promote-log.jsonl.
+//
+//   Calling convention: backfillPromoteLog({ sharedRoot, dryRun })
+//     - sharedRoot: path to the shared root directory (default: ~/.orchestray/shared)
+//     - dryRun: if true, log what would be written but do not modify the file.
+//   Returns { added: number, skipped: number, warn: string|null }
+//
+// appendFederationTombstone — called when a shared pattern is REVOKED (via
+//   /orchestray:learn unshare) to record a tombstone entry in promote-log.jsonl.
+//   This provides a durable audit trail of retractions alongside promotions.
+//
+//   Calling convention: appendFederationTombstone({ slug, sharedRoot, reason })
+//     - slug: the revoked pattern slug.
+//     - sharedRoot: path to the shared root (default: ~/.orchestray/shared).
+//     - reason: optional human note (defaults to 'unshared').
+//   Returns { ok: boolean, warn?: string }
+// ---------------------------------------------------------------------------
+
+/**
+ * Backfill provenance records for shared patterns that have no promote-log entry.
+ *
+ * Reads the list of *.md files in <sharedRoot>/patterns/, cross-references
+ * against existing entries in <sharedRoot>/meta/promote-log.jsonl, and
+ * appends a backfill entry for each unrecorded slug.
+ *
+ * Safe contract:
+ *   - APPEND-only. Never truncates or rewrites the log.
+ *   - Atomic append (best-effort via appendFileSync; JSONL is append-safe).
+ *   - Missing or unreadable sharedRoot → returns warn, does NOT throw.
+ *
+ * @param {object} [opts]
+ * @param {string}  [opts.sharedRoot] - Path to shared root. Default: ~/.orchestray/shared.
+ * @param {boolean} [opts.dryRun=false] - When true, log only (no file writes).
+ * @returns {{ added: number, skipped: number, warn: string|null }}
+ */
+function backfillPromoteLog(opts) {
+  const sharedRoot = (opts && opts.sharedRoot) ||
+    path.join(os.homedir(), '.orchestray', 'shared');
+  const dryRun = Boolean(opts && opts.dryRun);
+
+  const patternsDir = path.join(sharedRoot, 'patterns');
+  const logPath     = path.join(sharedRoot, 'meta', 'promote-log.jsonl');
+
+  // Guard: shared directory must exist and be readable.
+  let patternFiles;
+  try {
+    patternFiles = fs.readdirSync(patternsDir).filter(f => f.endsWith('.md'));
+  } catch (err) {
+    return {
+      added:   0,
+      skipped: 0,
+      warn:    `[shared-promote] backfillPromoteLog: cannot read ${patternsDir}: ${err.message}. Backfill skipped.`,
+    };
+  }
+
+  // Load existing log slugs so we don't duplicate entries.
+  const loggedSlugs = new Set();
+  try {
+    const raw = fs.readFileSync(logPath, 'utf8');
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const entry = JSON.parse(trimmed);
+        if (entry.slug) loggedSlugs.add(entry.slug);
+      } catch (_e) { /* skip malformed line */ }
+    }
+  } catch (_e) {
+    // Log file doesn't exist yet — that's fine; all patterns need backfill.
+  }
+
+  const now = new Date().toISOString();
+  let added   = 0;
+  let skipped = 0;
+
+  for (const filename of patternFiles) {
+    const slug = filename.replace(/\.md$/, '');
+
+    if (loggedSlugs.has(slug)) {
+      skipped++;
+      continue;
+    }
+
+    // Best-effort: read the file's mtime for the timestamp.
+    let timestamp = now;
+    let createdDate = null;
+    try {
+      const stat = fs.statSync(path.join(patternsDir, filename));
+      timestamp = stat.mtime.toISOString();
+    } catch (_e) { /* use now */ }
+
+    // Best-effort: read frontmatter for a `created` field.
+    try {
+      const rawContent = fs.readFileSync(path.join(patternsDir, filename), 'utf8');
+      const { parse: parseFm } = _getFrontmatter();
+      const parsed = parseFm(rawContent);
+      if (parsed.hasFrontmatter && parsed.frontmatter && parsed.frontmatter.created) {
+        createdDate = String(parsed.frontmatter.created);
+      }
+    } catch (_e) { /* skip */ }
+
+    const entry = {
+      slug,
+      promoted_at:  timestamp,
+      promoted_from: 'unknown',
+      provenance:   'backfilled-v2.2.15',
+      ...(createdDate ? { created: createdDate } : {}),
+    };
+
+    if (!dryRun) {
+      _appendPromoteLog(logPath, entry);
+    }
+    added++;
+  }
+
+  // Emit audit event (best-effort, non-fatal).
+  if (!dryRun && added > 0) {
+    try {
+      // Use process.cwd() as the project root for the audit event — backfill
+      // is invoked from install.js which runs in the project root.
+      const { writeEvent } = require('./audit-event-writer');
+      writeEvent({
+        type:            'federation_promote_log_backfilled',
+        version:         1,
+        schema_version:  1,
+        timestamp:       now,
+        patterns_added:  added,
+        patterns_skipped: skipped,
+      }, { cwd: process.cwd() });
+    } catch (_e) { /* observability must not break the backfill */ }
+  }
+
+  return { added, skipped, warn: null };
+}
+
+/**
+ * Append a tombstone entry to the federation promote-log when a shared pattern
+ * is revoked (unshared). This provides a durable audit trail alongside the
+ * curator tombstone system.
+ *
+ * Safe contract:
+ *   - APPEND-only. Never truncates or rewrites the log.
+ *   - Returns { ok: true } on success, { ok: false, warn } on non-fatal failure.
+ *
+ * @param {object} opts
+ * @param {string}  opts.slug       - Slug of the revoked pattern.
+ * @param {string}  [opts.sharedRoot] - Path to shared root. Default: ~/.orchestray/shared.
+ * @param {string}  [opts.reason='unshared'] - Reason for revocation.
+ * @returns {{ ok: boolean, warn?: string }}
+ */
+function appendFederationTombstone(opts) {
+  const slug       = opts && opts.slug;
+  const sharedRoot = (opts && opts.sharedRoot) ||
+    path.join(os.homedir(), '.orchestray', 'shared');
+  const reason     = (opts && opts.reason) || 'unshared';
+
+  if (!slug) {
+    return { ok: false, warn: '[shared-promote] appendFederationTombstone: slug is required.' };
+  }
+
+  const logPath = path.join(sharedRoot, 'meta', 'promote-log.jsonl');
+
+  const entry = {
+    slug,
+    tombstone:   true,
+    tombstone_at: new Date().toISOString(),
+    reason,
+  };
+
+  try {
+    _appendPromoteLog(logPath, entry);
+  } catch (err) {
+    return {
+      ok:   false,
+      warn: `[shared-promote] appendFederationTombstone: failed to write tombstone for '${slug}': ${err.message}`,
+    };
+  }
+
+  // Emit audit event (best-effort, non-fatal).
+  try {
+    const { writeEvent } = require('./audit-event-writer');
+    writeEvent({
+      type:           'federation_pattern_tombstoned',
+      version:        1,
+      schema_version: 1,
+      timestamp:      entry.tombstone_at,
+      slug,
+      reason,
+    }, { cwd: process.cwd() });
+  } catch (_e) { /* observability must not break the revoke pipeline */ }
+
+  return { ok: true };
+}
+
+module.exports = {
+  promotePattern,
+  backfillPromoteLog,
+  appendFederationTombstone,
+  _projectHash,
+  _localCollisionCheck,
+  _bodyHash,
+};
 
 // ---------------------------------------------------------------------------
 // Smoke test (run directly: node bin/_lib/shared-promote.js)

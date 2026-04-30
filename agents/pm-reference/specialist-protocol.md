@@ -157,8 +157,9 @@ if the specialist has already reached the threshold:
 The PM discovers specialist templates from TWO tiers, in this order:
 
 1. **Shipped tier** — read-only plugin-shipped templates at `<plugin-root>/specialists/`.
-   These ship with every Orchestray install. Examples at time of v2.1.8: `translator`,
-   `ui-ux-designer`. Users cannot edit these in-place (edits would be overwritten on
+   These ship with every Orchestray install. Current shipped specialists: `translator`,
+   `ui-ux-designer`, `database-migration`, `api-contract-designer`, `error-message-writer`.
+   Users cannot edit these in-place (edits would be overwritten on
    `/orchestray:update`). To customize, write a project-local override (tier 2 below).
 
 2. **Project tier** — user-authored per-project specialists at `.orchestray/specialists/`

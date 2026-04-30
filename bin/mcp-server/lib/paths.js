@@ -15,6 +15,11 @@ const path = require('node:path');
 
 const WALK_CAP = 20;
 
+// W9 F-8 (v2.2.15): one-shot warn flag for an invalid ORCHESTRAY_PROJECT_ROOT
+// env var. Module-scope so each process emits at most one warn line, even if
+// `getProjectRoot()` is called many times.
+let _warnedProjectRootEnvInvalid = false;
+
 /**
  * Walk upward from `start` looking for a directory that contains `marker`.
  * Returns the first directory that has it, or null if the walk cap is hit.
@@ -70,21 +75,88 @@ function getPluginRoot() {
 /**
  * Resolve the project root — the directory containing `.orchestray/`.
  *
- * Walks up from `process.cwd()` (not __dirname) so callers that chdir into a
- * sandbox/fixture get the expected result. Throws on miss.
+ * Resolution chain (FN-39, v2.2.15 — fixes the v2.2.14 G-17 misroute):
+ *   1. `CLAUDE_PROJECT_DIR` env var — set by Claude Code on hook invocations.
+ *      First-class hint that the caller is rooted in a known project; trust it.
+ *   2. `ORCHESTRAY_PROJECT_ROOT` env var — explicit operator override (the
+ *      v2.2.14 G-17 carry-over). Validated to contain `.orchestray/`.
+ *   3. Walk up from `process.cwd()` until `.orchestray/` is found.
+ *   4. Plugin-manifest fallback — look for `.claude-plugin/plugin.json` and
+ *      honor a `project_root` field if present (rare; used by alternate
+ *      installs where cwd cannot be set on launch).
  *
- * v2.2.14 G-17 follow-up: honor `ORCHESTRAY_PROJECT_ROOT` env var first so
- * MCP server processes launched with cwd=<install dir> can still route audit
- * events to the right project (the cwd-walk would otherwise miss).
+ * Throws when every step misses. The MCP audit writer wraps this in a
+ * fail-open advisory: it emits a single `mcp_audit_routing_failed` event and a
+ * one-shot stderr warning so subsequent failures stay terse.
  */
 function getProjectRoot() {
+  // Step 1: CLAUDE_PROJECT_DIR (Claude Code-set, hook-invocation hint).
+  const fromClaude = process.env.CLAUDE_PROJECT_DIR;
+  if (fromClaude && fromClaude.length > 0) {
+    const resolved = path.resolve(fromClaude);
+    // Belt-and-braces: only honor when the dir actually contains .orchestray
+    // so a stale env var does not silently misroute audit writes.
+    try {
+      if (fs.existsSync(path.join(resolved, '.orchestray'))) {
+        return resolved;
+      }
+    } catch (_e) {
+      // Fall through.
+    }
+  }
+
+  // Step 2: ORCHESTRAY_PROJECT_ROOT (explicit operator override).
   const fromEnv = process.env.ORCHESTRAY_PROJECT_ROOT;
   if (fromEnv && fromEnv.length > 0) {
-    return path.resolve(fromEnv);
+    const resolved = path.resolve(fromEnv);
+    try {
+      if (fs.existsSync(path.join(resolved, '.orchestray'))) {
+        return resolved;
+      }
+    } catch (_e) {
+      // Fall through to the warn-and-continue branch below.
+    }
+    // W9 F-8 (v2.2.15): the env var is set but the path lacks `.orchestray/`.
+    // Previous v2.2.14 behaviour silent-trusted the bare path for backward
+    // compat — a footgun for stale operator overrides. Now we emit a one-shot
+    // stderr warn and fall through to the cwd walk-up (step 3), which is
+    // safer for the common misconfigured-env-var case.
+    if (!_warnedProjectRootEnvInvalid) {
+      _warnedProjectRootEnvInvalid = true;
+      try {
+        process.stderr.write(
+          '[orchestray] paths.js: WARN — ORCHESTRAY_PROJECT_ROOT=' + resolved +
+          ' does not contain a `.orchestray/` directory; ignoring and falling ' +
+          'through to cwd walk-up.\n'
+        );
+      } catch (_e) { /* best-effort */ }
+    }
+    // Fall through to Step 3 instead of silent-trust.
   }
+
+  // Step 3: cwd walk-up.
   const found = walkUpFor(process.cwd(), '.orchestray');
   if (found) return found;
-  throw new Error('project root not found (no .orchestray/ in cwd ancestors)');
+
+  // Step 4: plugin-manifest hint. Final fallback before throw.
+  try {
+    const pluginRoot = getPluginRoot();
+    const manifestPath = path.join(pluginRoot, '.claude-plugin', 'plugin.json');
+    if (fs.existsSync(manifestPath)) {
+      const raw = fs.readFileSync(manifestPath, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.project_root === 'string' && parsed.project_root.length > 0) {
+        const resolved = path.resolve(parsed.project_root);
+        if (fs.existsSync(path.join(resolved, '.orchestray'))) {
+          return resolved;
+        }
+      }
+    }
+  } catch (_e) {
+    // Fall through to throw — manifest is best-effort.
+  }
+
+  throw new Error('project root not found (no .orchestray/ in cwd ancestors; CLAUDE_PROJECT_DIR / ORCHESTRAY_PROJECT_ROOT / plugin manifest also missed)');
 }
 
 /** Absolute path to `<project>/.orchestray/audit/events.jsonl`. */

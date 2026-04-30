@@ -113,24 +113,25 @@ function readOrchestrationId() {
  * error), log to stderr and return. Audit failures must never block the
  * tool response.
  *
- * v2.2.14 G-17 follow-up: when project-root resolution fails (typically
- * because the MCP server process was launched with cwd=~/.claude/orchestray/
- * which has no .orchestray/ ancestor), every writeAuditEvent silently routes
- * to stderr and the row never lands in events.jsonl. To make this visible
- * the helper emits the diagnosis on the FIRST failure of the session with a
- * concrete recovery hint, then keeps subsequent failures terse so logs do
- * not flood. Set ORCHESTRAY_PROJECT_ROOT=<absolute path to project root> in
- * the MCP server's launch env to bypass cwd-walk resolution.
+ * v2.2.14 G-17 follow-up + FN-39 (v2.2.15): when project-root resolution
+ * fails (typically because the MCP server process was launched with
+ * cwd=~/.claude/orchestray/ which has no .orchestray/ ancestor), every
+ * writeAuditEvent silently routes to stderr and the row never lands in
+ * events.jsonl. The fix lands in `paths.getProjectRoot()` (4-step
+ * resolution chain — CLAUDE_PROJECT_DIR → ORCHESTRAY_PROJECT_ROOT → cwd
+ * walk → plugin manifest); when every step still misses, this writer
+ * emits a single `mcp_audit_routing_failed` audit event so the failure is
+ * structurally observable downstream. The first failure of the session
+ * also writes a one-shot stderr advisory; subsequent failures stay terse.
  */
-let _firstFailWarned = false;
+let _firstFailWarned   = false;
+let _routingFailEmitted = false;
 function writeAuditEvent(event) {
+  let projectRoot;
+  let target;
   try {
-    const target = paths.getAuditEventsPath();
-    // The MCP server resolves project root and events.jsonl through `paths`,
-    // which may differ from process.cwd(). Pass both so writeEvent uses the
-    // server-resolved target while still anchoring orchestration_id lookups
-    // to the same project root.
-    writeEvent(event, { cwd: paths.getProjectRoot(), eventsPath: target });
+    target      = paths.getAuditEventsPath();
+    projectRoot = paths.getProjectRoot();
   } catch (err) {
     const msg = err && err.message ? err.message : String(err);
     if (!_firstFailWarned) {
@@ -138,8 +139,52 @@ function writeAuditEvent(event) {
       logStderr(
         'audit write failed: ' + msg + '\n' +
         '  ↳ MCP audit events will not land in events.jsonl this session.\n' +
-        '  ↳ Set ORCHESTRAY_PROJECT_ROOT=<abs path to project root> in the MCP\n' +
-        '    server launch env to fix cwd-walk resolution.'
+        '  ↳ Set CLAUDE_PROJECT_DIR or ORCHESTRAY_PROJECT_ROOT to the project\n' +
+        '    root (the directory containing `.orchestray/`) to fix routing.'
+      );
+    } else {
+      logStderr('audit write failed: ' + msg);
+    }
+    // FN-39: emit one mcp_audit_routing_failed observability row per process so
+    // the failure is structurally visible (CLAUDE_PROJECT_DIR / ORCHESTRAY_PROJECT_ROOT
+    // missing or stale, etc.). Best-effort: drop silently if even the surrogate
+    // emit cannot land (no project root to write to means writeEvent itself
+    // would just throw again — the warning above is the only signal).
+    if (!_routingFailEmitted) {
+      _routingFailEmitted = true;
+      try {
+        const fallbackEvent = {
+          version:        1,
+          type:           'mcp_audit_routing_failed',
+          timestamp:      new Date().toISOString(),
+          tried:          ['CLAUDE_PROJECT_DIR', 'ORCHESTRAY_PROJECT_ROOT', 'cwd_walk', 'plugin_manifest'],
+          reason:         msg,
+          original_type:  (event && typeof event.type === 'string') ? event.type : 'unknown',
+        };
+        // We have no project root; try writeEvent with cwd=process.cwd() so it
+        // can attempt a best-effort fallback (and fail-open on its own path).
+        writeEvent(fallbackEvent, { cwd: process.cwd(), skipValidation: false });
+      } catch (_e) {
+        // Surrogate emit failed too — already logged the stderr advisory above.
+      }
+    }
+    return;
+  }
+  try {
+    // The MCP server resolves project root and events.jsonl through `paths`,
+    // which may differ from process.cwd(). Pass both so writeEvent uses the
+    // server-resolved target while still anchoring orchestration_id lookups
+    // to the same project root.
+    writeEvent(event, { cwd: projectRoot, eventsPath: target });
+  } catch (err) {
+    const msg = err && err.message ? err.message : String(err);
+    if (!_firstFailWarned) {
+      _firstFailWarned = true;
+      logStderr(
+        'audit write failed: ' + msg + '\n' +
+        '  ↳ MCP audit events will not land in events.jsonl this session.\n' +
+        '  ↳ Set CLAUDE_PROJECT_DIR or ORCHESTRAY_PROJECT_ROOT to the project\n' +
+        '    root (the directory containing `.orchestray/`) to fix routing.'
       );
     } else {
       logStderr('audit write failed: ' + msg);

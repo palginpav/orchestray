@@ -32,14 +32,26 @@ const crypto = require('crypto');
 // Heading patterns
 // ---------------------------------------------------------------------------
 //
-// We recognize three header shapes:
-//   ### `<slug>` ...      — backtick-wrapped slug (most common)
-//   ### <slug> event ...  — bare slug followed by "event" or "Event"
-//   ### archetype_cache_* — no backticks, underscore slugs
+// We recognize four header shapes:
+//   ### `<slug>` ...               — backtick-wrapped slug (most common)
+//   ### <slug> event ...           — bare slug followed by "event" or "Event"
+//   ### archetype_cache_* ...      — no backticks, underscore slugs
+//   ### <prefix prose> — `<slug>`  — prefix prose then backtick slug
+//                                    (e.g. `### Variant D — \`routing_decision\``)
 //
 // Slugs are restricted to `^[a-z][a-z0-9_.-]*$`.
+//
+// FN-32 (v2.2.15) — The strict `SECTION_RE` only catches the first three
+// shapes. Sections written as `### Variant <X> — \`slug\`` were silently
+// skipped, leaving the slug undeclared and the shadow short by ~30 events.
+// `SECTION_RE_PREFIXED` recovers them as a backstop pass: any heading that
+// contains a backtick-wrapped slug regardless of leading prose. Slug-shape
+// validation in the parse loop and the requirement that the section contain
+// a `\`\`\`json` fence with a matching `"type":` value still apply, so this
+// looser pattern cannot pollute the slug set.
 
-const SECTION_RE = /^### [`]?([a-z][a-z0-9_.-]*)(?:[`]| event| Event)/mg;
+const SECTION_RE          = /^### [`]?([a-z][a-z0-9_.-]*)(?:[`]| event| Event)/mg;
+const SECTION_RE_PREFIXED = /^### [^`\n]*[`]([a-z][a-z0-9_.-]*)[`]/mg;
 
 /**
  * Extract fields from a JSON sample block.
@@ -128,15 +140,43 @@ function computeEnumDialectHash(jsonBlock) {
  * Walk the markdown content and return the section anchors. Each entry is
  *   { index, slug }
  * where `index` is the byte offset of the heading line.
+ *
+ * Two-pass walk (FN-32, v2.2.15):
+ *   1. Strict `SECTION_RE` catches the canonical heading shapes.
+ *   2. Fallback `SECTION_RE_PREFIXED` recovers headings whose slug appears
+ *      after prefix prose (e.g. `### Variant D — \`routing_decision\``).
+ *
+ * Each `index` is unique per heading line — duplicates from pass 2 are dropped
+ * when pass 1 already anchored the same line. The downstream slug-shape filter
+ * and `\`\`\`json` fence requirement guarantee that loose pass-2 matches whose
+ * sections do not declare a `"type":` are silently skipped (no slug pollution).
  */
 function _enumerateSections(content) {
   const anchors = [];
-  let m;
+  const seenIndexes = new Set();
+
+  // Pass 1: strict canonical shape (existing behaviour).
   // Re-create the regex per call so concurrent callers do not race on lastIndex.
-  const re = new RegExp(SECTION_RE.source, SECTION_RE.flags);
-  while ((m = re.exec(content)) !== null) {
-    anchors.push({ index: m.index, slug: m[1] });
+  let m;
+  const re1 = new RegExp(SECTION_RE.source, SECTION_RE.flags);
+  while ((m = re1.exec(content)) !== null) {
+    if (!seenIndexes.has(m.index)) {
+      anchors.push({ index: m.index, slug: m[1] });
+      seenIndexes.add(m.index);
+    }
   }
+
+  // Pass 2: fallback for prefix-prose headings (e.g. Variant D).
+  const re2 = new RegExp(SECTION_RE_PREFIXED.source, SECTION_RE_PREFIXED.flags);
+  while ((m = re2.exec(content)) !== null) {
+    if (!seenIndexes.has(m.index)) {
+      anchors.push({ index: m.index, slug: m[1] });
+      seenIndexes.add(m.index);
+    }
+  }
+
+  // Sort by file offset so section-end calculations remain monotonic.
+  anchors.sort(function (a, b) { return a.index - b.index; });
   return anchors;
 }
 
@@ -284,6 +324,7 @@ function parseEventSchemasWithRanges(content) {
 
 module.exports = {
   SECTION_RE,
+  SECTION_RE_PREFIXED,
   extractFields,
   computeEnumDialectHash,
   parseFeatureOptional,

@@ -837,9 +837,9 @@ a. **task_subject requirement** — every `Agent()` spawn that passes a `subagen
 b. **Reviewer file-list requirement** — every reviewer delegation MUST include an
    explicit file list. Use a `files:` header with a bulleted list of repo-relative
    paths, a `scope:` section, or a bulleted list of at least three paths. The
-   `bin/validate-reviewer-scope.js` PreToolUse hook emits a `reviewer_scope_warn`
-   audit event when this is absent (warn-only in v2.1.9; hard-block candidate in
-   v2.2). Broad-scope reviewer spawns caused turn-cap exhaustion in ~40% of v2.1.8
+   `bin/validate-reviewer-scope.js` PreToolUse hook **hard-blocks** (exit 2) on
+   violation since v2.2.9; kill switch `ORCHESTRAY_REVIEWER_SCOPE_HARD_DISABLED=1`.
+   Broad-scope reviewer spawns caused turn-cap exhaustion in ~40% of v2.1.8
    review cycles — bound the scope up front.
 
 c. **Release-phase no-deferral** — when spawning `release-manager` OR when the

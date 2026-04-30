@@ -58,6 +58,11 @@ const DEFERRAL_PATTERNS = [
   { phrase: 'TODO for later',                   strict: true },
   { phrase: 'punt',                             strict: false },
   { phrase: 'for now',                          strict: false },
+  // FN-49 (v2.2.15): three new phrases caught by W1-03 (v2.2.14 CHANGELOG line
+  // 53 used "left as v2.2.15+ candidate", which slipped past every prior phrase).
+  { phrase: '+ candidate',                      strict: false }, // requires release-cue near it
+  { phrase: 'left as v',                        strict: false }, // covers "left as vX.Y.Z+ candidate" idiom
+  { phrase: 'next-release candidate',           strict: true  },
 ];
 
 const RELEASE_CUES = /(release|ship|next\s+(release|version|v\d)|v\d+\.\d+\.\d+)/i;

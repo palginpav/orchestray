@@ -68,12 +68,17 @@ const _deprecatedNamesWarnedThisProcess = new Set();
 
 const SHADOW_REL_CONFIG = path.join('.orchestray', 'config.json');
 
+// FN-37 (v2.2.15) — single-source-of-truth for the 24h miss threshold so
+// `loadShadowConfig` defaults and the recordMiss fallback at the unknown-type
+// emit branch can never drift. Mirrors the `loadShadowConfig` defaults block.
+const DEFAULT_MISS_THRESHOLD_24H = 10;
+
 /**
  * Load event_schema_shadow config block (mirrors inject-schema-shadow.js
  * loadShadowConfig — copied locally to avoid circular dependency).
  */
 function loadShadowConfig(cwd) {
-  const defaults = { enabled: true, miss_threshold_24h: 10 };
+  const defaults = { enabled: true, miss_threshold_24h: DEFAULT_MISS_THRESHOLD_24H };
   try {
     const raw    = fs.readFileSync(path.join(cwd, SHADOW_REL_CONFIG), 'utf8');
     const parsed = JSON.parse(raw);
@@ -282,8 +287,13 @@ function withAutofillObject(event, cwd) {
  * pass schema validation, but we skip the validator to avoid lock-step
  * recursion across the schema-unreadable path. Failures are swallowed —
  * observability must never break the underlying write.
+ *
+ * @param {string|null} schemaState - Optional. When set, included as `schema_state`
+ *   in the telemetry row. Callers on the schema-unreadable branch pass
+ *   `'unreadable'` (P1-13, v2.2.15 W2-07) so analytics can distinguish
+ *   schema-readable vs schema-unreadable autofills without dropping the signal.
  */
-function emitAutofillTelemetry(eventType, fields, cwd, eventsPath) {
+function emitAutofillTelemetry(eventType, fields, cwd, eventsPath, schemaState) {
   if (!fields || fields.length === 0) return;
   if (_inAutofillEmit) return;
   if (_inGuardEmit) return; // surrogate path — never emit telemetry from there
@@ -295,6 +305,10 @@ function emitAutofillTelemetry(eventType, fields, cwd, eventsPath) {
       event_type:        eventType || 'unknown',
       fields_autofilled: fields.slice(),
     };
+    // P1-13: include schema_state tag when provided (schema-unreadable branch).
+    if (schemaState !== undefined && schemaState !== null) {
+      telemetry.schema_state = schemaState;
+    }
     try {
       writeEvent(telemetry, { cwd, eventsPath, skipValidation: true });
     } catch (_e) { /* fail-open */ }
@@ -432,12 +446,19 @@ function writeEvent(eventPayload, opts) {
     }
     try {
       atomicAppendJsonl(eventsPath, filledPayload);
-      // Schema-unreadable path: F1 deliberately suppresses the autofill
-      // telemetry here. Without the schema we cannot know which fields the
-      // event-type actually requires, so the autofill list is dominated by
-      // the legacy timestamp + orchestration_id pre-fills (which were
-      // silent in v2.2.8). Emitting telemetry on this branch produces
-      // spurious signal in CI environments that stub the schema.
+      // P1-13 (v2.2.15 W2-07): emit autofill telemetry on schema-unreadable branch
+      // with schema_state:'unreadable' tag. Previously suppressed (F1 rationale was
+      // "spurious CI signal"), but this silences F1 threshold-monitoring on the
+      // exact path that needs diagnosing. The schema_state field lets analytics
+      // pipelines filter these out of production noise while still surfacing
+      // them in diagnostic queries.
+      emitAutofillTelemetry(
+        validation.event_type,
+        autofilledFields,
+        cwd,
+        eventsPath,
+        /* schema_state */ 'unreadable'
+      );
       return {
         written:    true,
         reason:     'ok',
@@ -488,7 +509,7 @@ function writeEvent(eventPayload, opts) {
             cwd,
             validation.event_type || 'unknown',
             sourceHash,
-            cfg && cfg.miss_threshold_24h ? cfg.miss_threshold_24h : 10
+            cfg && cfg.miss_threshold_24h ? cfg.miss_threshold_24h : DEFAULT_MISS_THRESHOLD_24H
           );
         } catch (_e) { /* fail-open */ }
         try { atomicAppendJsonl(eventsPath, filledPayload); } catch (_e) { /* fail-open */ }
@@ -959,4 +980,14 @@ module.exports._testHooks = {
 
   /** W2b (v2.2.12): expose set for test assertions. */
   get deprecatedNamesWarnedThisProcess() { return _deprecatedNamesWarnedThisProcess; },
+
+  /**
+   * P1-13 (v2.2.15): expose emitAutofillTelemetry for direct test driving.
+   * Allows tests to verify the schema_state field is propagated correctly
+   * without going through the full writeEvent pipeline.
+   */
+  emitAutofillTelemetry,
+
+  /** P1-13: reset the schema-warned-this-process flag between tests. */
+  resetSchemaWarned() { _schemaWarnedThisProcess = false; },
 };

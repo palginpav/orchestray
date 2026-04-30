@@ -5094,7 +5094,7 @@ Kill switch: `config.delta_handoff.force_full: true` forces `fetched: true` with
 
 ```json
 {
-  "event_type": "delta_handoff_fallback",
+  "type": "delta_handoff_fallback",
   "version": 1,
   "timestamp": "<ISO 8601>",
   "orchestration_id": "<current orch id, or 'unknown'>",
@@ -5143,7 +5143,7 @@ generate recommended `1.2× p95` updates (v2.1.16 actor; does not auto-run).
 
 ```json
 {
-  "event_type": "budget_warn",
+  "type": "budget_warn",
   "version": 1,
   "timestamp": "<ISO 8601>",
   "orchestration_id": "<current orch id, or 'unknown'>",
@@ -6908,7 +6908,7 @@ Field notes:
 - `not_session_start` covers UPS turns where no `compact-signal.lock` is present (i.e. the turn isn't a post-compact recovery turn).
 - `dossier_file_corrupt` covers lock-parse failure, dossier-read failure, dossier-parse failure, and fence-collision detection.
 - `dossier_stale` covers `dossier.status === 'completed'` (the orchestration already finished).
-- `unknown_skip` is a fallback for un-categorised exceptions — treat as TODO; v2.2.10 should categorise.
+- `unknown_skip` is the stable fallback for un-categorised exceptions. Stays in the enum permanently — it absorbs the long tail of one-off failure modes that do not warrant a dedicated `skip_reason`.
 - Optional fields: `trigger` (`UserPromptSubmit | SessionStart`), `sub_reason` (free-text refinement), and per-branch detail fields (`err_code`, `parse_reason`, `bytes_would_inject`, `lock_source`, `counter`, `max`, `offending_field`).
 - **`feature_optional: false`** — required for fail-closed observability. The orphan auditor (`bin/audit-dossier-orphan.js`) consumes this stream to decide whether a `dossier_written` row had a paired outcome; if both `dossier_injected` AND `dossier_injection_skipped` are absent for the same orchestration, `dossier_write_without_inject_detected` fires.
 - Kill switch: `ORCHESTRAY_DOSSIER_INJECT_TELEMETRY_DISABLED=1` suppresses this telemetry only; the inject mechanism itself stays working.
@@ -7459,7 +7459,7 @@ event types, surfacing dark (never-fired) event coverage gaps.
 
 ```json
 {
-  "event": "event_activation_ratio",
+  "type": "event_activation_ratio",
   "version": 1,
   "orchestration_id": "orch-20260101T000000Z-example",
   "timestamp": "2026-01-01T00:00:00.000Z",
@@ -7488,7 +7488,7 @@ in-context knowledge rather than grounded retrieval.
 
 ```json
 {
-  "event": "agent_mcp_grounding_missing",
+  "type": "agent_mcp_grounding_missing",
   "version": 1,
   "orchestration_id": "orch-20260101T000000Z-example",
   "timestamp": "2026-01-01T00:00:00.000Z",
@@ -7512,7 +7512,7 @@ Emitted by B4 validation when a spawned subagent's delegation block lacks a
 
 ```json
 {
-  "event": "context_size_hint_missing",
+  "type": "context_size_hint_missing",
   "version": 1,
   "orchestration_id": "orch-20260101T000000Z-example",
   "timestamp": "2026-01-01T00:00:00.000Z",
@@ -7529,12 +7529,22 @@ Field notes:
 
 ### `reviewer_dimensions_missing` event
 
+> **deprecated: true** — **status: deprecated** (FN-41, v2.2.15)
+>
+> The B5 emit site at `bin/validate-reviewer-scope.js:149-166` was deleted in
+> v2.2.15 FN-41; the canonical replacement is `reviewer_dimensions_block_missing`
+> (W2-9 path) and the W8d gate `reviewer_dimensions_gate_blocked` /
+> `reviewer_dimensions_gate_warn`. The declare is retained for audit-replay
+> validity of pre-FN-41 events.jsonl rows. Per `anti-pattern-half-shipped-enum.md`
+> deprecated declares MUST carry an explicit `deprecated:` marker so future
+> readers know retention is intentional and not stale.
+
 Emitted by B5 validation when a reviewer subagent is spawned without the required
 `## Review Dimensions` block in its delegation, preventing scoped review execution.
 
 ```json
 {
-  "event": "reviewer_dimensions_missing",
+  "type": "reviewer_dimensions_missing",
   "version": 1,
   "orchestration_id": "orch-20260101T000000Z-example",
   "timestamp": "2026-01-01T00:00:00.000Z",
@@ -7556,7 +7566,7 @@ was recorded for the completed orchestration, indicating the ROI aggregator did 
 
 ```json
 {
-  "event": "orchestration_roi_missing",
+  "type": "orchestration_roi_missing",
   "version": 1,
   "orchestration_id": "orch-20260101T000000Z-example",
   "timestamp": "2026-01-01T00:00:00.000Z"
@@ -7575,7 +7585,7 @@ threshold, indicating the backstop mechanism is doing more work than the PM pros
 
 ```json
 {
-  "event": "audit_event_autofill_threshold_exceeded",
+  "type": "audit_event_autofill_threshold_exceeded",
   "version": 1,
   "orchestration_id": "orch-20260101T000000Z-example",
   "timestamp": "2026-01-01T00:00:00.000Z",
@@ -7603,7 +7613,7 @@ context is pre-fetched before a subagent spawn and injected into Block A.
 
 ```json
 {
-  "event": "mcp_grounding_prefetched",
+  "type": "mcp_grounding_prefetched",
   "version": 1,
   "orchestration_id": "orch-20260101T000000Z-example",
   "timestamp": "2026-01-01T00:00:00.000Z",
@@ -7629,7 +7639,7 @@ the KB is transparently redirected through the v2.2.10 pass-through layer.
 
 ```json
 {
-  "event": "kb_write_redirected",
+  "type": "kb_write_redirected",
   "version": 1,
   "orchestration_id": "orch-20260101T000000Z-example",
   "timestamp": "2026-01-01T00:00:00.000Z",
@@ -7862,7 +7872,7 @@ Kill switch: `ORCHESTRAY_CONTRACTS_RUNPOST_AUDIT_DISABLED=1` suppresses the emit
 
 ```json
 {
-  "event_type": "contracts_runpost_silent_skip",
+  "type": "contracts_runpost_silent_skip",
   "version": 1,
   "orchestration_id": "orch-example",
   "task_id": "W-example",
@@ -8115,7 +8125,7 @@ events for the active orchestration exceeds `replan_budget` from `.orchestray/co
 
 ```json
 {
-  "event": "replan_budget_exceeded",
+  "type": "replan_budget_exceeded",
   "version": 1,
   "orchestration_id": "orch-20260101T000000Z-example",
   "timestamp": "2026-01-01T00:00:00.000Z",
@@ -8143,7 +8153,7 @@ themselves, wasting context budget.
 
 ```json
 {
-  "event": "reviewer_git_diff_section_missing",
+  "type": "reviewer_git_diff_section_missing",
   "version": 1,
   "schema_version": 1,
   "spawn_id": "subagent-abc123",
@@ -8168,7 +8178,7 @@ in `agent-common-protocol.md:22`.
 
 ```json
 {
-  "event": "kb_slug_validation_failed",
+  "type": "kb_slug_validation_failed",
   "version": 1,
   "schema_version": 1,
   "slug": "../escape",
@@ -8199,7 +8209,7 @@ Required files: `events.jsonl`, `orchestration.md`, `task-graph.md`.
 
 ```json
 {
-  "event": "archive_must_copy_missing",
+  "type": "archive_must_copy_missing",
   "version": 1,
   "schema_version": 1,
   "orchestration_id": "orch-20260101T000000Z-example",
@@ -8477,7 +8487,7 @@ Resolution order and source values:
 
 ```json
 {
-  "event_type": "context_size_hint_parsed_inline",
+  "type": "context_size_hint_parsed_inline",
   "version": 1,
   "timestamp": "ISO 8601",
   "orchestration_id": "orch-xxx",
@@ -8509,7 +8519,7 @@ by this missing declare (root cause of G-09).
 
 ```json
 {
-  "event_type": "context_size_hint_staged",
+  "type": "context_size_hint_staged",
   "version": 1,
   "timestamp": "ISO 8601",
   "orchestration_id": "orch-xxx",
@@ -8547,7 +8557,7 @@ write failure.
 
 ```json
 {
-  "event_type": "deprecated_kill_switch_detected",
+  "type": "deprecated_kill_switch_detected",
   "version": 1,
   "timestamp": "ISO 8601",
   "name": "ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED",
@@ -8574,7 +8584,7 @@ install time (`bin/install.js` G-04 reorder step).
 
 ```json
 {
-  "event_type": "hook_chain_drift_detected",
+  "type": "hook_chain_drift_detected",
   "version": 1,
   "timestamp": "ISO 8601",
   "event": "PreToolUse",
@@ -8594,75 +8604,83 @@ Kill switch: `ORCHESTRAY_HOOK_ORDER_VALIDATION_DISABLED=1` exits the validator i
 
 ---
 
-### `install_hook_order_corrected` event
+### Degraded-journal kind — install_hook_order_corrected (FN-35, v2.2.15)
 
-Emitted by `bin/install.js` (`mergeHooks` reorder step, v2.2.13 W3 G-04) once per
+> **Re-classified v2.2.15 (FN-35).** Recorded as a `degraded.jsonl` kind, not an
+> `events.jsonl` event-type. Activation-ratio rollups that scan `events.jsonl` will
+> not see these rows. Schema-shadow validators must NOT count this slug toward
+> declared-but-unobserved telemetry. The previous `### \`install_hook_order_corrected\` event`
+> heading is retired so the canonical parser stops anchoring it as an event slug.
+> Path A retire: doc-only; install.js journal selection is unchanged
+> (still writes via `recordDegradation` to `.orchestray/state/degraded.jsonl`).
+
+Recorded by `bin/install.js` (`mergeHooks` reorder step, v2.2.13 W3 G-04) once per
 corrected `(event, matcher)` group when the orchestray hook order in `settings.json`
 differed from canonical and was auto-fixed. Only fires for Layout A (no peers),
 Layout B (peers contiguous before), and Layout C (peers contiguous after). Layout D
 (interleaved) is logged separately via `install_hook_order_skipped_interleaved`.
 
-> **Note:** Recorded in `.orchestray/state/degraded.jsonl` (not `events.jsonl`) via
-> `recordDegradation` per W3-Q5 architect settle; declared here for cross-reference.
-> Activation-ratio rollups that scan `events.jsonl` will not see these rows.
+Sample record (degraded.jsonl):
 
-```json
-{
-  "event_type": "install_hook_order_corrected",
-  "version": 1,
-  "timestamp": "ISO 8601",
-  "event": "PreToolUse",
-  "matcher": "Agent|Explore|Task",
-  "before_hash": "a1b2c3d4e5f6",
-  "after_hash": "f6e5d4c3b2a1",
-  "before_basenames": [],
-  "after_basenames": [],
-  "divergence_at_index": 0,
-  "peer_layout": "none",
-  "schema_version": 1
-}
-```
+    {
+      "kind": "install_hook_order_corrected",
+      "version": 1,
+      "timestamp": "ISO 8601",
+      "event": "PreToolUse",
+      "matcher": "Agent|Explore|Task",
+      "before_hash": "a1b2c3d4e5f6",
+      "after_hash": "f6e5d4c3b2a1",
+      "before_basenames": [],
+      "after_basenames": [],
+      "divergence_at_index": 0,
+      "peer_layout": "none",
+      "schema_version": 1
+    }
 
 Required fields: `event` (string), `matcher` (string|null), `before_hash` (string), `after_hash` (string), `before_basenames` (string[]), `after_basenames` (string[]), `divergence_at_index` (number|null), `peer_layout` (`'none'|'before'|'after'`), `schema_version` (1).
 
-Emitted from: `bin/install.js` (mergeHooks reorder step, install-time).
+Recorded from: `bin/install.js` (mergeHooks reorder step, install-time) via `recordDegradation`.
 
-Kill switch: `ORCHESTRAY_INSTALL_HOOK_REORDER_DISABLED=1` skips auto-reorder for Layouts A/B/C; event not emitted. Layout D warn (`install_hook_order_skipped_interleaved`) fires regardless.
+Kill switch: `ORCHESTRAY_INSTALL_HOOK_REORDER_DISABLED=1` skips auto-reorder for Layouts A/B/C; record not written. Layout D record (`install_hook_order_skipped_interleaved`) is written regardless.
 
 ---
 
-### `install_hook_order_skipped_interleaved` event
+### Degraded-journal kind — install_hook_order_skipped_interleaved (FN-35, v2.2.15)
 
-Emitted by `bin/install.js` (`mergeHooks` reorder step, v2.2.13 W3 G-04) when
+> **Re-classified v2.2.15 (FN-35).** Recorded as a `degraded.jsonl` kind, not an
+> `events.jsonl` event-type. Activation-ratio rollups that scan `events.jsonl` will
+> not see these rows. Schema-shadow validators must NOT count this slug toward
+> declared-but-unobserved telemetry. The previous `### \`install_hook_order_skipped_interleaved\` event`
+> heading is retired so the canonical parser stops anchoring it as an event slug.
+> Path A retire: doc-only; install.js journal selection is unchanged
+> (still writes via `recordDegradation` to `.orchestray/state/degraded.jsonl`).
+
+Recorded by `bin/install.js` (`mergeHooks` reorder step, v2.2.13 W3 G-04) when
 peer (non-orchestray) hooks are interleaved with orchestray hooks in a live
 `(event, matcher)` group and the orchestray order has drifted from canonical.
 Orchestray does NOT auto-reorder in this case — the chain may have been hand-tuned
 by an operator. A single-line stderr warning is also written. Fires even when
 `ORCHESTRAY_INSTALL_HOOK_REORDER_DISABLED=1`.
 
-> **Note:** Recorded in `.orchestray/state/degraded.jsonl` (not `events.jsonl`) via
-> `recordDegradation` per W3-Q5 architect settle; declared here for cross-reference.
-> Activation-ratio rollups that scan `events.jsonl` will not see these rows.
+Sample record (degraded.jsonl):
 
-```json
-{
-  "event_type": "install_hook_order_skipped_interleaved",
-  "version": 1,
-  "timestamp": "ISO 8601",
-  "event": "PreToolUse",
-  "matcher": "Agent|Explore|Task",
-  "peer_basenames": [],
-  "orchestray_basenames": [],
-  "live_basenames": [],
-  "schema_version": 1
-}
-```
+    {
+      "kind": "install_hook_order_skipped_interleaved",
+      "version": 1,
+      "timestamp": "ISO 8601",
+      "event": "PreToolUse",
+      "matcher": "Agent|Explore|Task",
+      "peer_basenames": [],
+      "orchestray_basenames": [],
+      "live_basenames": [],
+      "schema_version": 1
+    }
 
 Required fields: `event` (string), `matcher` (string|null), `peer_basenames` (string[]), `orchestray_basenames` (string[]), `live_basenames` (string[]), `schema_version` (1).
 
-Emitted from: `bin/install.js` (mergeHooks reorder step, install-time).
+Recorded from: `bin/install.js` (mergeHooks reorder step, install-time) via `recordDegradation`.
 
-Kill switch: none — the warn fires regardless of `ORCHESTRAY_INSTALL_HOOK_REORDER_DISABLED` (informational; decoupled from the auto-fix flag).
+Kill switch: none — the warn record is written regardless of `ORCHESTRAY_INSTALL_HOOK_REORDER_DISABLED` (informational; decoupled from the auto-fix flag).
 
 ---
 
@@ -8742,3 +8760,943 @@ Emitted from: PM agent prose (Section 23 haiku-routing decision rule) via `write
 
 Kill switch: `haiku_routing.enabled: false` in `.orchestray/config.json` disables the
 haiku-routing feature; `scout_decision` rows are not emitted when routing is disabled.
+
+---
+
+## v2.2.15 additions (FN-33, FN-40)
+
+The block below adds canonical declares for events that were emitted in earlier
+releases without a corresponding schema section, plus three brand-new event-types
+introduced by v2.2.15 W8b/W8c sweeps. All declares use the canonical `"type":`
+field (verified by FN-31 lint test). The schema-shadow regen rebuilds the sidecar
+indexes after this block lands.
+
+### `task_completed_metrics` event
+
+Emitted by `bin/collect-agent-metrics.js` (TaskCompleted hook, Agent Teams mode)
+when a teammate task finishes. Mirrors `agent_stop` shape but for the Teams
+execution mode (`mode: "teams"`).
+
+```json
+{
+  "type": "task_completed_metrics",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "mode": "teams",
+  "orchestration_id": "orch-xxx",
+  "agent_id": "task-xxx | null",
+  "agent_type": "developer",
+  "session_id": "sess-xxx | null",
+  "task_subject": "string | null",
+  "team_name": "string | null",
+  "usage": {},
+  "usage_source": "string",
+  "cost_confidence": "string",
+  "estimated_cost_usd": 0.0,
+  "estimated_cost_opus_baseline_usd": 0.0,
+  "model_used": "string",
+  "turns_used": 0
+}
+```
+
+Field notes:
+- `mode`: Always `"teams"` for this event-type. Subagent runs emit `agent_stop` instead.
+- `usage`: Token-usage dict with `input_tokens`, `output_tokens`, etc.
+- `cost_confidence`: One of `high | medium | low` per the cost-estimator's heuristic.
+
+Emitted from: `bin/collect-agent-metrics.js`.
+
+Kill switch: subsumed under `enable_agent_teams` config flag.
+
+---
+
+### `prefix_drift` event
+
+Emitted by `bin/cache-prefix-lock.js` (UserPromptSubmit hook) when the Block A
+prefix hash drifts from the previously-stored hash. Diagnostic only; never emits
+`additionalContext` (R3 — design constraint).
+
+```json
+{
+  "type": "prefix_drift",
+  "schema_version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx",
+  "old_hash": "string",
+  "new_hash": "string"
+}
+```
+
+Field notes:
+- `schema_version`: Always `1`. Note: this declare uses `schema_version` rather
+  than `version` because the original emitter has shipped that field name since
+  v2.1.x; canonical-rename is a future migration.
+- `old_hash` / `new_hash`: SHA-256 prefix hashes (truncated).
+
+Emitted from: `bin/cache-prefix-lock.js`.
+
+Kill switch: hook-level — disabling the UserPromptSubmit handler suppresses emission.
+
+---
+
+### `mcp_data_quality` event
+
+Emitted by `bin/mcp-server/lib/audit.js` `buildDataQualityEvent()` when MCP
+resource discovery (e.g. `pattern_resource.list`) skips a malformed file. One
+row per skipped file per discovery sweep.
+
+```json
+{
+  "type": "mcp_data_quality",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "source": "string",
+  "file": "string",
+  "reason": "string",
+  "orchestration_id": "orch-xxx | unknown",
+  "duration_ms": 0,
+  "outcome": "data_quality_skip"
+}
+```
+
+Field notes:
+- `source`: The discovery surface (e.g. `pattern_resource.list`).
+- `file`: Repo-relative path of the offending file.
+- `reason`: Human-readable cause (parse error, missing field, etc.).
+- `outcome`: Always `"data_quality_skip"`.
+
+Emitted from: `bin/mcp-server/lib/audit.js`.
+
+Kill switch: subsumed under MCP-server-level disable (`mcp_server.enabled: false`).
+
+---
+
+### `pre_compact_archive` event
+
+Emitted by `bin/pre-compact-archive.js` (PreCompact hook) when an
+auto/manual/unknown compact triggers a snapshot. One row per compaction.
+
+```json
+{
+  "type": "pre_compact_archive",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx | none",
+  "trigger": "manual | auto | unknown",
+  "snapshot_dir": "string",
+  "archived_count": 0
+}
+```
+
+Field notes:
+- `trigger`: How the compact was initiated. `unknown` covers payloads that did
+  not carry the trigger field (older Claude Code versions).
+- `snapshot_dir`: Repo-relative path under `.orchestray/history/`.
+
+Emitted from: `bin/pre-compact-archive.js`.
+
+Kill switch: none — diagnostic; archives even when audit dir is missing (no-emit then).
+
+---
+
+### `teammate_idle` event
+
+Emitted by `bin/reassign-idle-teammate.js` (TeammateIdle hook, Agent Teams mode)
+when a teammate falls idle. The hook may then redirect the teammate to remaining
+work; the event is the structured signal for analytics.
+
+```json
+{
+  "type": "teammate_idle",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "mode": "teams",
+  "orchestration_id": "orch-xxx",
+  "session_id": "sess-xxx | null"
+}
+```
+
+Field notes:
+- `mode`: Always `"teams"`. Hook only fires under Agent Teams.
+
+Emitted from: `bin/reassign-idle-teammate.js`.
+
+Kill switch: subsumed under `enable_agent_teams` config flag.
+
+---
+
+### `dynamic_agent_spawn` event
+
+Auto-emitted by `bin/audit-event.js` (via the `additionalEventsPicker` extension
+in `bin/_lib/audit-event-writer.js`) whenever a non-canonical `agent_type` is
+detected during `SubagentStart`. Fires alongside `agent_start` with the same
+timestamp; consumers can join on `(agent_id, timestamp)`. This declare canonicalises
+the Section "Dynamic Agent Spawn Event" prose under an H3 the parser anchors.
+
+```json
+{
+  "type": "dynamic_agent_spawn",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx",
+  "agent_id": "string",
+  "agent_type": "string",
+  "session_id": "string",
+  "paired_with": "agent_start"
+}
+```
+
+Field notes:
+- `agent_type`: Non-canonical agent name (e.g. `researcher`, project-defined specialist).
+- `paired_with`: Always `"agent_start"`.
+
+Emitted from: `bin/audit-event.js` via additionalEventsPicker.
+
+Kill switch: none — auto-emitted.
+
+---
+
+### `replan` event
+
+Emitted by the PM (Section "Replan Event") whenever the PM rebuilds the task
+graph mid-orchestration. Canonicalises the H2 "Section 42: Replan Event" so the
+parser anchors a slug.
+
+```json
+{
+  "type": "replan",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx",
+  "reason": "approach_invalidation | scope_expansion | dependency_discovery | completed_work_invalidation | design_rejection",
+  "old_task_count": 0,
+  "new_task_count": 0,
+  "tasks_invalidated": []
+}
+```
+
+Field notes:
+- `reason`: Enum of replan triggers; see Section 42 prose for definitions.
+- `tasks_invalidated`: Array of task IDs whose output is no longer valid.
+
+Emitted from: PM agent (Section 42 protocol) via `writeAuditEvent`.
+
+Kill switch: none — observability event.
+
+---
+
+### `fields_projected` event
+
+Emitted by `bin/record-mcp-checkpoint.js` (PostToolUse hook) when an MCP
+tool_input carries a `fields:` projection list. One row per projected call.
+
+```json
+{
+  "type": "fields_projected",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx | unknown",
+  "tool_name": "string",
+  "field_count": 0,
+  "source": "hook"
+}
+```
+
+Field notes:
+- `tool_name`: The MCP tool the projection was applied to.
+- `field_count`: Length of the `fields[]` projection list.
+- `source`: Always `"hook"`.
+
+Emitted from: `bin/record-mcp-checkpoint.js`.
+
+Kill switch: none — observability event.
+
+---
+
+### `output_shape_observed` event
+
+Emitted alongside `output_shape_applied` to record that an MCP tool's response
+shape was observed (logged at runtime for shape-pair drift detection).
+
+```json
+{
+  "type": "output_shape_observed",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx | unknown",
+  "tool_name": "string",
+  "shape_hash": "string",
+  "source": "hook"
+}
+```
+
+Field notes:
+- `shape_hash`: Short hash of the observed response shape.
+- Pairs with `output_shape_observed_pair_missing` (below) when the matching
+  `output_shape_applied` row is absent.
+
+Emitted from: MCP tool wrapper layer.
+
+Kill switch: subsumed under MCP-level audit.
+
+---
+
+### `output_shape_observed_pair_missing` event
+
+Emitted when an `output_shape_observed` row is recorded but its sibling
+`output_shape_applied` row never lands within the orchestration window —
+indicating a shape-application gap for downstream analytics.
+
+```json
+{
+  "type": "output_shape_observed_pair_missing",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx | unknown",
+  "tool_name": "string",
+  "observed_shape_hash": "string"
+}
+```
+
+Field notes:
+- `observed_shape_hash`: The hash from the orphan `output_shape_observed` row.
+
+Emitted from: shape-pair scanner at orchestration close.
+
+Kill switch: subsumed under MCP-level audit.
+
+---
+
+### `mcp_checkpoint_missing` event
+
+Emitted by `bin/gate-agent-spawn.js` immediately before `exit(2)` whenever the
+MCP pre-decomposition checkpoint gate blocks a spawn. Canonicalises the H2
+"MCP Checkpoint Missing Event" so the parser anchors a slug.
+
+```json
+{
+  "type": "mcp_checkpoint_missing",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx",
+  "missing_tools": [],
+  "phase_mismatch": false,
+  "source": "hook",
+  "warn_mode": false
+}
+```
+
+Field notes:
+- `missing_tools`: Tool-names absent from the checkpoint ledger (null-filter result).
+- `phase_mismatch`: `true` when strict-phase check would have shown different gaps.
+- `warn_mode`: `true` when the gate is in warn-only mode (no exit-2).
+
+Emitted from: `bin/gate-agent-spawn.js`.
+
+Kill switch: `ORCHESTRAY_MCP_CHECKPOINT_GATE_DISABLED=1` (existing).
+
+---
+
+### `calibrate_skipped_fresh_cache` event
+
+> Coordinated declare with W8b FN-27. The emitter lives in
+> `bin/calibrate-role-budgets.js` at the `--if-stale` cache-hit branch; W8b
+> wires the emit. This declare lands here so the schema is in place at the
+> time emission begins.
+
+Emitted by `bin/calibrate-role-budgets.js` when invoked with `--if-stale` and
+the existing `role-budgets.json` cache is younger than the staleness window.
+Provides observability that the periodic recalibration short-circuited (vs
+silently being absent).
+
+```json
+{
+  "type": "calibrate_skipped_fresh_cache",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx | unknown",
+  "cache_age_days": 0,
+  "window_days": 14,
+  "source": "calibrate"
+}
+```
+
+Field notes:
+- `cache_age_days`: Floor-div age of the cache file in days.
+- `window_days`: The configured staleness window passed via `--window-days`.
+
+Emitted from: `bin/calibrate-role-budgets.js` (W8b FN-27 emit site).
+
+Kill switch: none — observability.
+
+---
+
+### `install_stale_hook_pruned` event
+
+> Coordinated declare with W8b FN-16. The emitter lives in `bin/install.js`
+> at the stale-hook prune branch; W8b wires the emit. This declare lands here
+> so the schema is in place at the time emission begins.
+
+Emitted by `bin/install.js` when a stale hook script (no longer in canonical
+`hooks/hooks.json`) is pruned from the global install dir or removed from
+`~/.claude/settings.json`. One row per pruned script.
+
+```json
+{
+  "type": "install_stale_hook_pruned",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "script_basename": "string",
+  "settings_path": "string",
+  "removed_from_settings": false,
+  "removed_from_install_dir": false
+}
+```
+
+Field notes:
+- `script_basename`: The hook script name that was pruned.
+- `settings_path`: Repo-relative or absolute path of the settings.json edited.
+- `removed_from_settings` / `removed_from_install_dir`: Per-target booleans.
+
+Emitted from: `bin/install.js` (W8b FN-16 emit site).
+
+Kill switch: `ORCHESTRAY_INSTALL_PRUNE_GATE_DISABLED=1`.
+
+---
+
+### `mcp_audit_routing_failed` event
+
+Emitted by `bin/mcp-server/lib/audit.js` `writeAuditEvent` (FN-39, v2.2.15)
+when the 4-step project-root resolution chain misses every step
+(`CLAUDE_PROJECT_DIR` → `ORCHESTRAY_PROJECT_ROOT` → cwd walk → plugin manifest).
+One row per process to surface the v2.2.14 G-17 misroute class to operators
+without flooding logs.
+
+```json
+{
+  "type": "mcp_audit_routing_failed",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "tried": ["CLAUDE_PROJECT_DIR", "ORCHESTRAY_PROJECT_ROOT", "cwd_walk", "plugin_manifest"],
+  "reason": "string",
+  "original_type": "string"
+}
+```
+
+Field notes:
+- `tried`: The resolution steps attempted. Always `["CLAUDE_PROJECT_DIR", "ORCHESTRAY_PROJECT_ROOT", "cwd_walk", "plugin_manifest"]` in v2.2.15.
+- `reason`: The error message from the final resolution attempt.
+- `original_type`: The `type` field of the event whose write triggered the routing failure (so operators know which audit row is at-risk).
+
+Emitted from: `bin/mcp-server/lib/audit.js`.
+
+Kill switch: `ORCHESTRAY_MCP_AUDIT_CWD_RESOLUTION_FALLBACK_DISABLED=1` (per consolidated-findings §9 risk register).
+
+---
+
+### `install_hook_args_updated` event
+
+> Coordinated declare with W8b FN-14. The emitter lives in `bin/install.js`
+> at the args-update branch (line ~1494); W8b wires the emit. This declare
+> closes the W8b ANO-3 follow-up (the prior W8c FN-33 declare batch did not
+> include this slug; finisher picked it up in-scope per
+> `feedback_no_close_out_deferral.md`).
+
+Emitted by `bin/install.js` when an in-place upgrade detects a same-script
+hook entry whose args-tail differs from canonical. The hook's path prefix is
+preserved (the user's `node <homedir>/.../script.js` is sacrosanct), but the
+args tail is rewritten to match canonical. Hooks marked
+`command_managed: true` opt out of the rewrite. One row per updated hook.
+
+```json
+{
+  "type": "install_hook_args_updated",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "event": "string",
+  "matcher": "string|null",
+  "basename": "string",
+  "old_command": "string (truncated to 240 chars)",
+  "new_command": "string (truncated to 240 chars)",
+  "dedup_key": "install_hook_args_updated|<event>|<matcher>|<basename>"
+}
+```
+
+Field notes:
+- `event`: The hook event block (e.g., `Stop`, `SubagentStop`, `PreToolUse`).
+- `matcher`: Hook matcher value or `null` for blocks without a matcher.
+- `basename`: The hook script's basename (e.g., `calibrate-role-budgets.js`).
+- `old_command` / `new_command`: Full command strings, truncated to 240 chars
+  for log-line discipline. Useful for operator audit of the args-drift fix.
+- `dedup_key`: Per-(event,matcher,basename) uniqueness key — collapses
+  duplicate emits across re-installs of the same drift case.
+
+Emitted from: `bin/install.js` `mergeHooks` arg-update pass (W8b FN-14).
+
+Kill switch: `ORCHESTRAY_INSTALL_ARGS_UPDATE_DISABLED=1` skips the args-update
+pass; existing hooks with drifted args remain unmodified until the next
+intentional install.
+
+---
+
+## Mechanical-enforcement gates (v2.2.15)
+
+The W8d wave wired four PreToolUse:Agent / SubagentStop / SessionStart hooks
+that block (or warn-then-block) on shape problems the PM otherwise had to
+catch by prose. Six event slugs land here so the v2.2.14 G-08 schema-shadow
+auto-disable trip class never re-engages once these fire in production.
+
+Each declare follows the canonical `### \`<slug>\` event` shape used by
+sibling FN-33 declares and `mcp_audit_routing_failed`. Payload fields are
+extracted from the emitter source.
+
+### `reviewer_dimensions_gate_blocked` event
+
+Emitted by `bin/validate-reviewer-dimensions.js` (FN-43, v2.2.15) when a
+reviewer subagent is spawned without a `## Dimensions to Apply` block AND the
+gate is active (no kill switch). The hook exits 2 and the spawn is denied.
+
+```json
+{
+  "type": "reviewer_dimensions_gate_blocked",
+  "version": 1,
+  "schema_version": 1,
+  "spawn_id": "subagent-def456",
+  "reason": "missing_heading",
+  "gate_disabled": false
+}
+```
+
+Field notes:
+- `spawn_id`: pulled from `event.agent_id`, `event.task_id`, or the
+  corresponding `tool_input.*` keys; null if none present.
+- `reason`: one of `missing_heading`, `missing_bullets`, or other classifier
+  values from `evaluateDimensions()`.
+- `gate_disabled`: always `false` for the blocked variant.
+
+Emitted from: `bin/validate-reviewer-dimensions.js`.
+
+Kill switch: `ORCHESTRAY_REVIEWER_DIMENSIONS_GATE_DISABLED=1` flips to
+warn-mode (emits `reviewer_dimensions_gate_warn` instead).
+
+---
+
+### `reviewer_dimensions_gate_warn` event
+
+Warn-mode counterpart of `reviewer_dimensions_gate_blocked`. Emitted by
+`bin/validate-reviewer-dimensions.js` when the kill switch
+`ORCHESTRAY_REVIEWER_DIMENSIONS_GATE_DISABLED=1` is set: the spawn is allowed
+but the violation is recorded for telemetry.
+
+```json
+{
+  "type": "reviewer_dimensions_gate_warn",
+  "version": 1,
+  "schema_version": 1,
+  "spawn_id": "subagent-def456",
+  "reason": "missing_heading",
+  "gate_disabled": true
+}
+```
+
+Field notes: same as `reviewer_dimensions_gate_blocked`, except
+`gate_disabled` is always `true`.
+
+Emitted from: `bin/validate-reviewer-dimensions.js`.
+
+Kill switch: not applicable (this event IS the kill-switch-active telemetry).
+
+---
+
+### `context_size_hint_gate_warn` event
+
+Emitted by `bin/validate-context-size-hint.js` (FN-44, v2.2.15) for the first
+N spawns of an orchestration that are missing a `context_size_hint` line
+(default ramp threshold = 3; tunable via
+`ORCHESTRAY_CONTEXT_SIZE_HINT_RAMP_THRESHOLD`). Within the ramp window the
+hook exits 0 and the spawn proceeds; the event marks the warn for
+observability.
+
+Also emitted with `ramp_state: "no_orchestration"` when the spawn lands before
+an orchestration id is resolvable (cannot ramp without an orch id).
+
+```json
+{
+  "type": "context_size_hint_gate_warn",
+  "version": 1,
+  "schema_version": 1,
+  "subagent_type": "developer",
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "ramp_count": 1,
+  "ramp_threshold": 3,
+  "ramp_state": "warn"
+}
+```
+
+Field notes:
+- `subagent_type`: role pulled from `tool_input.subagent_type` /
+  `tool_input.agent_type`; null if neither set.
+- `orchestration_id`: omitted (set to `null` by the no-orch branch) when
+  `ramp_state === "no_orchestration"`.
+- `ramp_count`: the warn-bump count for the orchestration (1-indexed).
+- `ramp_threshold`: the configured ramp threshold; null when ramping is not
+  yet possible.
+- `ramp_state`: `"warn"` (within ramp window) or `"no_orchestration"`
+  (pre-orch warning).
+
+Emitted from: `bin/validate-context-size-hint.js` (lines 232 + 254).
+
+Kill switch: `ORCHESTRAY_CONTEXT_SIZE_HINT_GATE_DISABLED=1` bypasses the
+entire validator (no event, no block). Tunable:
+`ORCHESTRAY_CONTEXT_SIZE_HINT_RAMP_THRESHOLD`.
+
+---
+
+### `context_size_hint_gate_blocked` event
+
+Emitted by `bin/validate-context-size-hint.js` once the per-orchestration
+ramp window is exhausted (default: ≥4th missing-hint spawn). The hook exits 2
+and the spawn is denied.
+
+```json
+{
+  "type": "context_size_hint_gate_blocked",
+  "version": 1,
+  "schema_version": 1,
+  "subagent_type": "developer",
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "ramp_count": 4,
+  "ramp_threshold": 3,
+  "ramp_state": "blocked"
+}
+```
+
+Field notes:
+- `subagent_type`: role from `tool_input` (see warn variant).
+- `ramp_count`: the warn-bump count that exceeded the threshold.
+- `ramp_state`: always `"blocked"`.
+
+Emitted from: `bin/validate-context-size-hint.js` (line 276).
+
+Kill switch: `ORCHESTRAY_CONTEXT_SIZE_HINT_GATE_DISABLED=1`.
+
+---
+
+### `commit_handoff_body_missing` event
+
+Emitted by `bin/validate-commit-handoff.js` (FN-45, v2.2.15) on SubagentStop
+for the `developer` and `release-manager` roles when the head-of-branch
+commit body lacks a `## Handoff` subsection (per
+`agents/pm-reference/agent-common-protocol.md` §Commit Message Discipline).
+A ramp threshold (default 3) gates warn vs. block; this event is emitted
+unconditionally on any miss.
+
+```json
+{
+  "type": "commit_handoff_body_missing",
+  "version": 1,
+  "schema_version": 1,
+  "release_id": "orch-20260101T000000Z-example",
+  "agent_role": "developer",
+  "ramp_count": 1,
+  "ramp_threshold": 3,
+  "gate_disabled": false
+}
+```
+
+Field notes:
+- `release_id`: the orchestration identifier (named `release_id` for
+  consistency with the release-manager-side telemetry).
+- `agent_role`: one of `developer`, `release-manager`.
+- `ramp_count`: per-orchestration miss count (1-indexed).
+- `ramp_threshold`: configured threshold; defaults to 3.
+- `gate_disabled`: `true` when `ORCHESTRAY_COMMIT_HANDOFF_GATE_DISABLED=1` is
+  set (telemetry only; never blocks).
+
+Emitted from: `bin/validate-commit-handoff.js` (line 351).
+
+Kill switch: `ORCHESTRAY_COMMIT_HANDOFF_GATE_DISABLED=1`. Tunable:
+`ORCHESTRAY_COMMIT_HANDOFF_RAMP_THRESHOLD`.
+
+---
+
+### `dual_install_version_mismatch` event
+
+Emitted by `bin/release-manager/dual-install-parity-check.js` (FN-47,
+v2.2.15) on SessionStart when the global install at `~/.claude/orchestray/`
+and the local install at `<project>/.claude/orchestray/` report different
+versions. SessionStart cannot block the session; the event surfaces via
+stderr advisory + a sentinel file (`.orchestray/state/dual-install-version-mismatch.json`)
+that downstream release-manager spawns read.
+
+```json
+{
+  "type": "dual_install_version_mismatch",
+  "version": 1,
+  "schema_version": 1,
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "global_version": "2.2.14",
+  "local_version": "2.2.15"
+}
+```
+
+Field notes:
+- `global_version`: version reported by `~/.claude/orchestray/package.json`.
+- `local_version`: version reported by `<project>/.claude/orchestray/package.json`.
+- `timestamp`: ISO 8601 capture moment.
+
+Emitted from: `bin/release-manager/dual-install-parity-check.js` (line 379).
+
+Kill switch: `ORCHESTRAY_DOUBLE_FIRE_SKIP_GATE_DISABLED=1` suppresses the
+emit (and the stderr advisory + sentinel write).
+
+---
+
+### `federation_promote_log_backfilled` event
+
+Emitted by `bin/_lib/shared-promote.js` `backfillPromoteLog()` (P1-12,
+v2.2.15) when the one-shot backfill helper runs and adds provenance records
+for shared patterns that were promoted before the promote-log was introduced.
+Emitted once per `backfillPromoteLog()` call (not once per pattern).
+
+```json
+{
+  "type": "federation_promote_log_backfilled",
+  "version": 1,
+  "schema_version": 1,
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "patterns_added": 14,
+  "patterns_skipped": 2
+}
+```
+
+Field notes:
+- `patterns_added`: number of new backfill entries appended to promote-log.jsonl.
+- `patterns_skipped`: number of shared patterns already present in the log.
+
+Emitted from: `bin/_lib/shared-promote.js` (`backfillPromoteLog`).
+
+---
+
+### `federation_pattern_tombstoned` event
+
+Emitted by `bin/_lib/shared-promote.js` `appendFederationTombstone()` (P1-12,
+v2.2.15) when a shared pattern is revoked (unshared). Provides a durable
+audit trail of retractions in promote-log.jsonl alongside normal promotions.
+
+```json
+{
+  "type": "federation_pattern_tombstoned",
+  "version": 1,
+  "schema_version": 1,
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "slug": "my-pattern",
+  "reason": "unshared"
+}
+```
+
+Field notes:
+- `slug`: the revoked pattern slug.
+- `reason`: revocation reason; defaults to `"unshared"`.
+
+Emitted from: `bin/_lib/shared-promote.js` (`appendFederationTombstone`).
+
+---
+
+### `multiple_structured_result_blocks` event
+
+Emitted by `bin/validate-task-completion.js` (P1-05, v2.2.15) on SubagentStop
+when the agent output contains more than one `## Structured Result` heading.
+Warn-only in v2.2.15; hard exit 2 planned for v2.2.16 if rate > 0. Only the
+last block is parsed by the T15 gate.
+
+```json
+{
+  "type": "multiple_structured_result_blocks",
+  "version": 1,
+  "schema_version": 1,
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "hook": "validate-task-completion",
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "agent_role": "developer",
+  "block_count": 2,
+  "gate_disabled": false,
+  "session_id": null
+}
+```
+
+Field notes:
+- `block_count`: number of `## Structured Result` headings found (always ≥2 when emitted).
+- `gate_disabled`: `true` when `ORCHESTRAY_MULTI_STRUCTURED_RESULT_GATE_DISABLED=1`.
+
+Emitted from: `bin/validate-task-completion.js` (P1-05).
+
+Kill switch: `ORCHESTRAY_MULTI_STRUCTURED_RESULT_GATE_DISABLED=1`.
+
+---
+
+### `tester_runs_tests_gate_warn` event
+
+Emitted by `bin/validate-tester-runs-tests.js` (P1-06, v2.2.15) during the
+ramp window when a tester claims `tests_passing: true` but no test-runner
+Bash evidence is found in the audit window. Warn-only; exit 0.
+
+```json
+{
+  "type": "tester_runs_tests_gate_warn",
+  "version": 1,
+  "schema_version": 1,
+  "agent_role": "tester",
+  "ramp_count": 1,
+  "ramp_threshold": 3,
+  "ramp_state": "warn",
+  "orchestration_id": "orch-20260101T000000Z-example"
+}
+```
+
+Field notes:
+- `ramp_state`: one of `warn`, `no_orchestration`.
+- `ramp_count`: current per-orchestration miss count (null when no orchestration).
+
+Emitted from: `bin/validate-tester-runs-tests.js`.
+
+Kill switch: `ORCHESTRAY_TESTER_RUNS_TESTS_GATE_DISABLED=1`.
+
+---
+
+### `tester_runs_tests_gate_blocked` event
+
+Emitted by `bin/validate-tester-runs-tests.js` (P1-06, v2.2.15) when the
+ramp window is exhausted and a tester claims `tests_passing: true` without
+test-runner Bash evidence. Exits 2.
+
+```json
+{
+  "type": "tester_runs_tests_gate_blocked",
+  "version": 1,
+  "schema_version": 1,
+  "agent_role": "tester",
+  "ramp_count": 4,
+  "ramp_threshold": 3,
+  "ramp_state": "blocked",
+  "orchestration_id": "orch-20260101T000000Z-example"
+}
+```
+
+Field notes:
+- `ramp_state`: always `"blocked"`.
+- `ramp_count`: miss count that exceeded the threshold.
+
+Emitted from: `bin/validate-tester-runs-tests.js`.
+
+Kill switch: `ORCHESTRAY_TESTER_RUNS_TESTS_GATE_DISABLED=1`.
+
+---
+
+### `pattern_application_gate_warn` event
+
+Emitted by `bin/validate-pattern-application.js` (P1-07, v2.2.15) during the
+ramp window when `pattern_find` was called but no `pattern_record_application`
+or `pattern_record_skip_reason` follows in the audit window. Warn-only; exit 0.
+
+```json
+{
+  "type": "pattern_application_gate_warn",
+  "version": 1,
+  "schema_version": 1,
+  "agent_role": "developer",
+  "ramp_count": 1,
+  "ramp_threshold": 3,
+  "ramp_state": "warn",
+  "orchestration_id": "orch-20260101T000000Z-example"
+}
+```
+
+Field notes:
+- `ramp_state`: one of `warn`, `no_orchestration`.
+- `ramp_count`: current per-orchestration miss count (null when no orchestration).
+
+Emitted from: `bin/validate-pattern-application.js`.
+
+Kill switch: `ORCHESTRAY_PATTERN_APPLICATION_GATE_DISABLED=1`.
+
+---
+
+### `pattern_application_gate_blocked` event
+
+Emitted by `bin/validate-pattern-application.js` (P1-07, v2.2.15) when the
+ramp window is exhausted and `pattern_find` was called without an ack. Exits 2.
+
+```json
+{
+  "type": "pattern_application_gate_blocked",
+  "version": 1,
+  "schema_version": 1,
+  "agent_role": "developer",
+  "ramp_count": 4,
+  "ramp_threshold": 3,
+  "ramp_state": "blocked",
+  "orchestration_id": "orch-20260101T000000Z-example"
+}
+```
+
+Field notes:
+- `ramp_state`: always `"blocked"`.
+
+Emitted from: `bin/validate-pattern-application.js`.
+
+Kill switch: `ORCHESTRAY_PATTERN_APPLICATION_GATE_DISABLED=1`.
+
+---
+
+### `researcher_citations_gate_blocked` event
+
+Emitted by `bin/validate-researcher-citations.js` (P1-09, v2.2.15) when a
+researcher returns a non-`no_clear_fit` verdict but cites fewer than 3 sources.
+Exits 2.
+
+```json
+{
+  "type": "researcher_citations_gate_blocked",
+  "version": 1,
+  "schema_version": 1,
+  "agent_role": "researcher",
+  "source_count": 1,
+  "min_sources": 3,
+  "orchestration_id": "orch-20260101T000000Z-example"
+}
+```
+
+Field notes:
+- `source_count`: number of sources found in the Structured Result.
+- `min_sources`: always 3.
+
+Emitted from: `bin/validate-researcher-citations.js`.
+
+Kill switch: `ORCHESTRAY_RESEARCHER_CITATIONS_GATE_DISABLED=1`.
+
+---
+
+### `platform_oracle_grounding_gate_blocked` event
+
+Emitted by `bin/validate-platform-oracle-grounding.js` (P1-10, v2.2.15) when
+a platform-oracle result is missing `stability_tier` ∈ {stable, experimental,
+community} or a non-empty `source_url` on any claim. Exits 2.
+
+```json
+{
+  "type": "platform_oracle_grounding_gate_blocked",
+  "version": 1,
+  "schema_version": 1,
+  "agent_role": "platform-oracle",
+  "violations": ["stability_tier missing or invalid (got: null)"],
+  "orchestration_id": "orch-20260101T000000Z-example"
+}
+```
+
+Field notes:
+- `violations`: array of human-readable violation descriptions.
+
+Emitted from: `bin/validate-platform-oracle-grounding.js`.
+
+Kill switch: `ORCHESTRAY_PLATFORM_ORACLE_GROUNDING_GATE_DISABLED=1`.

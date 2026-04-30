@@ -16,7 +16,20 @@
  * did not survive process restarts and did not cover rapid same-process
  * double-fires without journal round-trips.
  *
- * Kill switch: ORCHESTRAY_DISABLE_DOUBLE_FIRE_GUARD=1 bypasses guard entirely.
+ * v2.2.15 FN-47: when the same dedup_key has fired >FN47_FIRE_THRESHOLD times
+ * within a tight delta_ms window in the same session, the guard now ALSO
+ * skips the second-caller path entirely (returning shouldFire=false) and
+ * stages a one-shot SessionStart warning sentinel
+ * `.orchestray/state/double-fire-warn-pending.json` that bin/release-manager/
+ * dual-install-parity-check.js (and any other SessionStart consumer) can
+ * surface to the operator. Per `feedback_update_both_installs.md` the user
+ * must ALWAYS see this when both installs are racing — silent dedup is the
+ * v2.2.6 footgun this finding closes.
+ *
+ * Kill switches:
+ *   - ORCHESTRAY_DISABLE_DOUBLE_FIRE_GUARD=1 — full bypass (legacy).
+ *   - ORCHESTRAY_DOUBLE_FIRE_SKIP_GATE_DISABLED=1 — disables the FN-47 skip
+ *     branch (counter still ticks; SessionStart warn still stages; no skip).
  *
  * Fail-safe: any I/O error → shouldFire = true (fail-open) so the hook is not
  * silently killed by a probe failure.
@@ -31,6 +44,37 @@ const path = require('path');
 // Value: true (detected, suppressed)
 // ---------------------------------------------------------------------------
 const _suppressionCache = new Map();
+
+// ---------------------------------------------------------------------------
+// FN-47 — fast-fire skip threshold.
+// When the SAME dedup_key has been observed >FN47_FIRE_THRESHOLD times within
+// a delta_ms < FN47_DELTA_MS_MAX window (per orchestration), we stop
+// pretending one fire is correct: skip the second-caller path entirely AND
+// stage a one-shot SessionStart warning sentinel.
+// ---------------------------------------------------------------------------
+const FN47_FIRE_THRESHOLD = 5;
+const FN47_DELTA_MS_MAX   = 100;
+
+/**
+ * Stage a one-shot SessionStart warning by writing the sentinel file
+ * `.orchestray/state/double-fire-warn-pending.json`. Idempotent — overwrites
+ * with the latest payload. Failures are silent (fail-open).
+ *
+ * @param {string} stateDir
+ * @param {object} payload
+ */
+function stageSessionStartWarn(stateDir, payload) {
+  try {
+    const path = require('path');
+    const fs   = require('fs');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'double-fire-warn-pending.json'),
+      JSON.stringify(payload, null, 2),
+      'utf8'
+    );
+  } catch (_e) { /* fail-open */ }
+}
 
 /**
  * Build the module-scope suppression cache key.
@@ -171,7 +215,42 @@ function requireGuard({ guardName, dedupKey, ttlMs, stateDir, callerPath, orches
     );
 
     if (existing) {
-      // Check module-scope suppression cache first (Issue D: cross-spawn persistence).
+      const deltaMs = nowMs - existing.ts_ms;
+
+      // FN-47 (v2.2.15): count how many times this dedup_key has fired in
+      // this orchestration with delta_ms<FN47_DELTA_MS_MAX. If we exceed the
+      // threshold the install pair is racing for real — skip the second-caller
+      // path and stage a SessionStart warning.
+      const fastFireCount = activeEntries.filter(
+        e => e.dedup_key === dedupKey &&
+             e.orchestration_id === orchId &&
+             typeof e.ts_ms === 'number' &&
+             nowMs - e.ts_ms <= FN47_DELTA_MS_MAX * FN47_FIRE_THRESHOLD * 4
+      ).length;
+
+      const skipDisabled = process.env.ORCHESTRAY_DOUBLE_FIRE_SKIP_GATE_DISABLED === '1';
+
+      // FN-47 spec wording: ">5 dedup_key repeats AND delta_ms<100" — strict
+      // greater-than threshold (was `>=` in the initial impl; W9 F-6 corrects).
+      if (fastFireCount > FN47_FIRE_THRESHOLD && deltaMs < FN47_DELTA_MS_MAX && !skipDisabled) {
+        // Stage a one-shot SessionStart warning regardless of suppression cache state.
+        stageSessionStartWarn(stateDir, {
+          version:           1,
+          ts_ms:             nowMs,
+          guard_name:        guardName,
+          dedup_key:         dedupKey,
+          orchestration_id:  orchId,
+          fast_fire_count:   fastFireCount,
+          delta_ms:          deltaMs,
+          first_caller:      existing.caller_path,
+          second_caller:     callerPath,
+          message:           'Double-fire racing detected: install pair is firing the same hook ' +
+                             'rapidly. See feedback_update_both_installs.md — ensure /orchestray:update ' +
+                             'updated BOTH the global (~/.claude/) and local (.claude/) installs.',
+        });
+      }
+
+      // Check module-scope suppression cache (Issue D: cross-spawn persistence).
       const sk = suppressionKey(orchId, guardName, dedupKey);
       if (_suppressionCache.has(sk)) {
         // Already detected and reported for this orchestration — suppress silently.
@@ -200,9 +279,10 @@ function requireGuard({ guardName, dedupKey, ttlMs, stateDir, callerPath, orches
         orchestration_id: orchId,
         guard_name:       guardName,
         dedup_key:        dedupKey,
-        delta_ms:         nowMs - existing.ts_ms,
+        delta_ms:         deltaMs,
         first_caller:     existing.caller_path,
         second_caller:    callerPath,
+        fast_fire_count:  fastFireCount,
       };
 
       return { shouldFire: false, doubleFireEvent };
@@ -238,4 +318,10 @@ function requireGuard({ guardName, dedupKey, ttlMs, stateDir, callerPath, orches
   }
 }
 
-module.exports = { requireGuard };
+module.exports = {
+  requireGuard,
+  // FN-47 exports for testability.
+  stageSessionStartWarn,
+  FN47_FIRE_THRESHOLD,
+  FN47_DELTA_MS_MAX,
+};

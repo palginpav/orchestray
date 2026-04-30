@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// NOT_A_HOOK
+// FN-59 (v2.2.15): CLI-only tool. install.js is the npm install entry point —
+// invoked by `npx orchestray --global|--local`, never by Claude Code as a hook.
 'use strict';
 
 const fs = require('fs');
@@ -10,6 +13,15 @@ const { computeManifest }  = require('./_lib/install-manifest');
 
 const VERSION = require('../package.json').version;
 const REPO = 'https://github.com/palginpav/orchestray';
+
+// FN-23 (v2.2.15): tiny stderr-writer for advisory output. Per G-02 sibling
+// discipline, all install advisories ("✓ Installed N agents", "✓ Configured
+// hooks", etc.) write to stderr — leaving stdout reserved for the final
+// "Done!" ceremony and the help/usage text. This prevents install.js stdout
+// from polluting any pipe consumer that expects machine-readable output.
+function say(msg) {
+  process.stderr.write(String(msg) + '\n');
+}
 
 // Default MCP tool enable map for fresh installs.
 // When new MCP tools are added, append their key here with `true` so they are
@@ -133,6 +145,7 @@ const flags = {
 };
 
 if (flags.help) {
+  // Help text on stdout (user-facing primary output of --help).
   console.log(`
   Orchestray v${VERSION}
   Multi-agent orchestration plugin for Claude Code
@@ -170,6 +183,7 @@ const configDir = flags.local
   : path.join(homeDir || '', '.claude');
 
 if (!flags.global && !flags.local) {
+  // Interactive disambiguation prompt on stdout (no-args invocation).
   console.log(`
   Orchestray v${VERSION}
   Multi-agent orchestration for Claude Code
@@ -205,12 +219,12 @@ if (flags.preCommitGuard) {
   process.exit(0);
 }
 
-console.log('');
-console.log('  Orchestray v' + VERSION);
-console.log('  Multi-agent orchestration for Claude Code');
-console.log('');
-console.log(`  Installing ${flags.local ? 'locally' : 'globally'} to ${configDir}`);
-console.log('');
+say('');
+say('  Orchestray v' + VERSION);
+say('  Multi-agent orchestration for Claude Code');
+say('');
+say(`  Installing ${flags.local ? 'locally' : 'globally'} to ${configDir}`);
+say('');
 
 install(configDir);
 
@@ -318,9 +332,15 @@ function _maybeCreateSharedFederationDirs(projectRoot) {
       ? fed.shared_dir_path.trim()
       : '~/.orchestray/shared';
 
-    // Tilde expansion.
+    // Tilde + $HOME expansion (FN-22 v2.2.15: accept $HOME alongside ~/).
+    // FN-21: collapsed dead `slice(...?2:2)` ternary to `slice(2)` — both
+    // branches yielded the same offset for `~/` and `~\` prefixes.
     if (sharedDirPath === '~' || sharedDirPath.startsWith('~/') || sharedDirPath.startsWith('~\\')) {
-      sharedDirPath = path.join(os.homedir(), sharedDirPath.slice(sharedDirPath.startsWith('~\\') ? 2 : 2));
+      sharedDirPath = path.join(os.homedir(), sharedDirPath.slice(2));
+    } else if (sharedDirPath === '$HOME' || sharedDirPath.startsWith('$HOME/') || sharedDirPath.startsWith('$HOME\\')) {
+      sharedDirPath = path.join(os.homedir(), sharedDirPath.slice('$HOME'.length).replace(/^[\/\\]/, ''));
+    } else if (sharedDirPath.startsWith('${HOME}/') || sharedDirPath.startsWith('${HOME}\\') || sharedDirPath === '${HOME}') {
+      sharedDirPath = path.join(os.homedir(), sharedDirPath.slice('${HOME}'.length).replace(/^[\/\\]/, ''));
     }
     const sharedRoot = path.resolve(sharedDirPath);
 
@@ -339,11 +359,11 @@ function _maybeCreateSharedFederationDirs(projectRoot) {
     }
 
     if (anyCreated) {
-      console.log(`  \x1b[32m✓\x1b[0m Created shared federation directories at ${sharedRoot}`);
+      say(`  \x1b[32m✓\x1b[0m Created shared federation directories at ${sharedRoot}`);
     }
   } catch (err) {
     // Non-fatal — federation dirs can be created on first promote if install fails here.
-    console.log(`  \x1b[33m⚠\x1b[0m Could not create shared federation directories: ${err.message}`);
+    say(`  \x1b[33m⚠\x1b[0m Could not create shared federation directories: ${err.message}`);
     recordDegradation({
       kind: 'shared_dir_create_failed',
       severity: 'warn',
@@ -400,7 +420,10 @@ function _mergeCompactInstructionsIntoCLAUDEmd(pkgClaudeMdPath, projectRoot) {
     if (!exists) {
       // Case (a): create a minimal CLAUDE.md with just this section.
       fs.writeFileSync(userClaudeMdPath, sectionText + '\n', { encoding: 'utf8' });
-      console.log('  \x1b[32m✓\x1b[0m Created CLAUDE.md with ## Compact Instructions section');
+      // FN-23: this function is eval-extracted by tests/install/claude-md-merge
+      // and runs in a Function-eval scope without `say` in scope. Use raw
+      // process.stderr.write here instead of the say() helper.
+      process.stderr.write('  \x1b[32m✓\x1b[0m Created CLAUDE.md with ## Compact Instructions section\n');
       return;
     }
 
@@ -417,18 +440,18 @@ function _mergeCompactInstructionsIntoCLAUDEmd(pkgClaudeMdPath, projectRoot) {
       // The duplicate header is harmless; it will be deduplicated by readers.
       const appended = existing.trimEnd() + '\n\n' + sectionText + '\n';
       fs.writeFileSync(userClaudeMdPath, appended, { encoding: 'utf8' });
-      console.log('  \x1b[32m✓\x1b[0m Updated CLAUDE.md ## Compact Instructions with resilience paragraph');
+      process.stderr.write('  \x1b[32m✓\x1b[0m Updated CLAUDE.md ## Compact Instructions with resilience paragraph\n');
     } else {
       // Case (b): section entirely absent — append.
       const appended = existing.trimEnd() + '\n\n' + sectionText + '\n';
       fs.writeFileSync(userClaudeMdPath, appended, { encoding: 'utf8' });
-      console.log('  \x1b[32m✓\x1b[0m Appended ## Compact Instructions to CLAUDE.md');
+      process.stderr.write('  \x1b[32m✓\x1b[0m Appended ## Compact Instructions to CLAUDE.md\n');
     }
   } catch (err) {
     // Non-fatal: log a warning but do not abort the install.
-    console.log(
+    process.stderr.write(
       '  \x1b[33m⚠\x1b[0m Could not merge ## Compact Instructions into CLAUDE.md: ' +
-      String(err && err.message || err).slice(0, 200)
+      String(err && err.message || err).slice(0, 200) + '\n'
     );
   }
 }
@@ -514,7 +537,7 @@ function install(targetDir) {
     }
   }
   const refCount = agentSubdirs.reduce((n, dir) => n + fs.readdirSync(path.join(agentsDir, dir)).length, 0);
-  console.log(`  \x1b[32m✓\x1b[0m Installed ${agentFiles.length} agents + ${refCount} reference files`);
+  say(`  \x1b[32m✓\x1b[0m Installed ${agentFiles.length} agents + ${refCount} reference files`);
 
   // 1b. v2.1.9 I-13: install specialists and symlink into agents/ so
   // Claude Code's Agent() tool can resolve `subagent_type: <name>` for
@@ -552,7 +575,7 @@ function install(targetDir) {
         fs.copyFileSync(srcPath, installedPath);
         track(path.join('orchestray', 'specialists', specFile));
       } catch (err) {
-        console.log(
+        say(
           '  \x1b[33m⚠\x1b[0m Could not copy specialist ' + specFile + ': ' + err.message
         );
         continue;
@@ -591,7 +614,7 @@ function install(targetDir) {
       }
 
       if (existingConflict) {
-        console.log(
+        say(
           '  \x1b[33m⚠\x1b[0m Skipping specialist symlink ' + path.join('agents', specFile) +
           ' (existing file not managed by this installer)'
         );
@@ -618,7 +641,7 @@ function install(targetDir) {
             track(path.join('agents', specFile));
             specialistCopiedCount++;
             if (!windowsFallbackWarned) {
-              console.log(
+              say(
                 '  \x1b[33m⚠\x1b[0m Symlink permission denied; copied specialists into agents/. ' +
                 'Edits to copied files will not survive /orchestray:update. ' +
                 'Enable Developer Mode or run as admin for durable symlinks.'
@@ -626,12 +649,12 @@ function install(targetDir) {
               windowsFallbackWarned = true;
             }
           } catch (copyErr) {
-            console.log(
+            say(
               '  \x1b[33m⚠\x1b[0m Could not install specialist ' + specFile + ' (' + copyErr.message + ')'
             );
           }
         } else {
-          console.log(
+          say(
             '  \x1b[33m⚠\x1b[0m Could not symlink specialist ' + specFile + ' (' + err.message + ')'
           );
         }
@@ -643,10 +666,10 @@ function install(targetDir) {
       const how = specialistCopiedCount > 0
         ? 'symlinked ' + specialistSymlinkedCount + ', copied ' + specialistCopiedCount
         : 'symlinked into agents/';
-      console.log('  \x1b[32m✓\x1b[0m Installed ' + totalInstalled + ' specialists (' + how + ')');
+      say('  \x1b[32m✓\x1b[0m Installed ' + totalInstalled + ' specialists (' + how + ')');
     }
     if (specialistSkippedCount > 0) {
-      console.log(
+      say(
         '  \x1b[33m⚠\x1b[0m Skipped ' + specialistSkippedCount +
         ' specialist(s) due to user-managed files in agents/'
       );
@@ -680,7 +703,7 @@ function install(targetDir) {
       }
     }
   }
-  console.log(`  \x1b[32m✓\x1b[0m Installed ${skillDirs.length} skills`);
+  say(`  \x1b[32m✓\x1b[0m Installed ${skillDirs.length} skills`);
 
   // 3. Copy bin scripts to orchestray/bin/
   const binDir = path.join(pkgRoot, 'bin');
@@ -722,7 +745,7 @@ function install(targetDir) {
       }
     }
   }
-  console.log(`  \x1b[32m✓\x1b[0m Installed ${binFiles.length} hook scripts`);
+  say(`  \x1b[32m✓\x1b[0m Installed ${binFiles.length} hook scripts`);
 
   // 3a. F-04 closure: install `ox` as a bare command so agents can invoke
   // `ox <verb>` without specifying the full path.
@@ -740,7 +763,7 @@ function install(targetDir) {
     const shimPath  = path.join(oxBinDir, isWindows ? 'ox.cmd' : 'ox');
 
     if (!fs.existsSync(oxSrcPath)) {
-      console.log('  \x1b[33m⚠\x1b[0m ox.js not found in bin/; skipping ox shim install');
+      say('  \x1b[33m⚠\x1b[0m ox.js not found in bin/; skipping ox shim install');
     } else {
       if (isWindows) {
         const cmdContent = `@echo off\nnode "%~dp0ox.js" %*\n`;
@@ -753,10 +776,10 @@ function install(targetDir) {
         track(path.join('orchestray', 'bin', 'ox'));
       }
       _prependOxBinToPath(targetDir, oxBinDir);
-      console.log('  \x1b[32m✓\x1b[0m Installed `ox` shim; bare `ox help` is now available');
+      say('  \x1b[32m✓\x1b[0m Installed `ox` shim; bare `ox help` is now available');
     }
   } catch (oxErr) {
-    console.log(
+    say(
       '  \x1b[33m⚠\x1b[0m ox shim install failed (' + oxErr.message + '). ' +
       'Use `node <install-dir>/orchestray/bin/ox.js` as fallback.'
     );
@@ -789,7 +812,7 @@ function install(targetDir) {
     } catch (_e) { /* ignore — MCP registration will be skipped */ }
   }
   if (mcpFileCount > 0) {
-    console.log(`  \x1b[32m✓\x1b[0m Installed MCP server (${mcpFileCount} files)`);
+    say(`  \x1b[32m✓\x1b[0m Installed MCP server (${mcpFileCount} files)`);
   }
 
   // 3d. Copy schemas/ directory to orchestray/schemas/ (sibling of bin/).
@@ -806,28 +829,72 @@ function install(targetDir) {
       track(path.join('orchestray', 'schemas', rel));
     }
     schemasFileCount = schemasFiles.length;
-    console.log(`  \x1b[32m✓\x1b[0m Installed schemas/ (${schemasFileCount} files)`);
+    say(`  \x1b[32m✓\x1b[0m Installed schemas/ (${schemasFileCount} files)`);
   } else {
-    console.log('  \x1b[33m⚠\x1b[0m schemas/ not found in source; skipping');
+    say('  \x1b[33m⚠\x1b[0m schemas/ not found in source; skipping');
   }
 
-  // 3d post-install verification: ensure validate-config.js can resolve schemas.
-  // If this throws, the SessionStart hook would fail with node:fs:1012 for every
-  // user — surface a clear error here instead.
+  // 3d post-install verification (FN-20 v2.2.15): fork validate-config.js
+  // against a tmp fixture. The prior bare `require.resolve('../schemas')`
+  // confirmed the path resolved but never exercised require()'d submodules
+  // (config-schema.js etc.); a missing transitive require would still throw
+  // node:fs:1012 on first SessionStart fire. The dry-run probe loads the full
+  // module graph in a child process and reports a clear error if anything is
+  // missing. Best-effort: warn-only — never abort the install.
   try {
-    require.resolve('../schemas', { paths: [path.join(targetDir, 'orchestray', 'bin')] });
+    const installedValidator = path.join(targetDir, 'orchestray', 'bin', 'validate-config.js');
+    if (fs.existsSync(installedValidator)) {
+      const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-validate-probe-'));
+      try {
+        fs.mkdirSync(path.join(probeDir, '.orchestray'), { recursive: true });
+        fs.writeFileSync(
+          path.join(probeDir, '.orchestray', 'config.json'),
+          JSON.stringify({ mcp_server: { tools: { pattern_find: true } } }, null, 2),
+          'utf8'
+        );
+        const { spawnSync } = require('node:child_process');
+        const probe = spawnSync(
+          process.execPath,
+          [installedValidator, '--json', '--cwd', probeDir],
+          { encoding: 'utf8', timeout: 10_000 }
+        );
+        if (probe.status !== 0) {
+          console.error(
+            `  \x1b[31m✗\x1b[0m Post-install verification failed: validate-config.js exited ` +
+            `${probe.status} when probed against a tmp fixture. ` +
+            `SessionStart hook will likely throw node:fs:1012 or similar for all users.\n` +
+            `    stdout: ${(probe.stdout || '').slice(0, 200)}\n` +
+            `    stderr: ${(probe.stderr || '').slice(0, 200)}`
+          );
+        }
+      } finally {
+        try { fs.rmSync(probeDir, { recursive: true, force: true }); } catch (_e) {}
+      }
+    } else {
+      // FN-20: fall back to bare resolve check when the validator isn't
+      // installed (test fixtures, partial copies). Parity with prior check.
+      require.resolve('../schemas', { paths: [path.join(targetDir, 'orchestray', 'bin')] });
+    }
   } catch (resolveErr) {
     console.error(
-      `  \x1b[31m✗\x1b[0m Post-install verification failed: validate-config.js cannot` +
-      ` resolve '../schemas' from <install>/orchestray/bin/. ` +
-      `SessionStart hook will throw node:fs:1012 for all users. ` +
-      `Error: ${resolveErr.message}`
+      `  \x1b[31m✗\x1b[0m Post-install verification failed: ${resolveErr.message}`
     );
   }
 
   // 4. Merge hooks into existing hooks.json (don't overwrite user's hooks)
   mergeHooks(targetDir);
-  console.log(`  \x1b[32m✓\x1b[0m Configured hooks`);
+  say(`  \x1b[32m✓\x1b[0m Configured hooks`);
+
+  // 4.1 FN-17 (v2.2.15): additively merge top-level non-hook keys from repo
+  // settings.json into the user's active settings.json. Without this step,
+  // repo-root settings.json keys like `agent: "pm"` and `subagentStatusLine`
+  // never reach the user's active config — they only sit in
+  // <install>/orchestray/settings.json which Claude Code does not read.
+  // NEVER overwrites user values; only adds keys that are absent.
+  // Kill switch (default OFF — gate is ON): ORCHESTRAY_INSTALL_TOPLEVEL_MERGE_GATE_DISABLED=1.
+  if (process.env.ORCHESTRAY_INSTALL_TOPLEVEL_MERGE_GATE_DISABLED !== '1') {
+    mergeTopLevelSettings(targetDir);
+  }
 
   // 4a. (v2.2.7) The v2.2.6 auto-dedup pass was REMOVED here. Orchestray
   // does NOT copy `hooks/hooks.json` to the install location, so the user's
@@ -844,8 +911,8 @@ function install(targetDir) {
   // local: ./.mcp.json). Tracks names in manifest for clean uninstall.
   const mcpServerNames = mergeMcpServers(pluginJson, targetDir, flags.local);
   if (mcpServerNames.length > 0) {
-    console.log(`  \x1b[32m✓\x1b[0m Registered MCP server${mcpServerNames.length > 1 ? 's' : ''}: ${mcpServerNames.join(', ')}`);
-    console.log(`    \x1b[33mNote:\x1b[0m restart Claude Code for the MCP server to load.`);
+    say(`  \x1b[32m✓\x1b[0m Registered MCP server${mcpServerNames.length > 1 ? 's' : ''}: ${mcpServerNames.join(', ')}`);
+    say(`    \x1b[33mNote:\x1b[0m restart Claude Code for the MCP server to load.`);
   }
 
   // 5. Copy settings.json for default agent config
@@ -941,10 +1008,10 @@ function install(targetDir) {
     try {
       fs.mkdirSync(orchStateDir, { recursive: true });
       fs.writeFileSync(freshConfigPath, JSON.stringify(freshConfig, null, 2) + '\n');
-      console.log(`  \x1b[32m✓\x1b[0m Seeded .orchestray/config.json with default MCP tool map and pricing table`);
+      say(`  \x1b[32m✓\x1b[0m Seeded .orchestray/config.json with default MCP tool map and pricing table`);
     } catch (_e) {
       // Non-fatal: the config defaults via fail-open loaders if the write fails.
-      console.log(`  \x1b[33m⚠\x1b[0m Could not seed .orchestray/config.json (will use built-in defaults)`);
+      say(`  \x1b[33m⚠\x1b[0m Could not seed .orchestray/config.json (will use built-in defaults)`);
     }
   }
 
@@ -960,7 +1027,7 @@ function install(targetDir) {
       if (r.cache_sentinel_cleared)         cleared.push('cache-disable sentinel');
       if (r.housekeeper_quarantine_cleared) cleared.push('housekeeper quarantine');
       if (cleared.length > 0) {
-        console.log(`  \x1b[32m✓\x1b[0m v2.2.1 self-heal: cleared ${cleared.join(', ')}`);
+        say(`  \x1b[32m✓\x1b[0m v2.2.1 self-heal: cleared ${cleared.join(', ')}`);
       }
     }
   } catch (_e) {
@@ -1007,7 +1074,7 @@ function install(targetDir) {
     JSON.stringify(manifest, null, 2) + '\n'
   );
 
-  console.log(`  \x1b[32m✓\x1b[0m Wrote VERSION (${VERSION})`);
+  say(`  \x1b[32m✓\x1b[0m Wrote VERSION (${VERSION})`);
 
   // v2.0.22: drop an upgrade-pending sentinel (schema v2) so the next
   // UserPromptSubmit in any still-open Claude Code session can warn the user
@@ -1069,6 +1136,8 @@ function install(targetDir) {
   }
 
   // U-2 fix: RESTART reminder appears BEFORE "Done!" so it is not missed.
+  // FN-23: final-ceremony block stays on stdout — this is the user-visible
+  // success summary, not advisory chatter.
   console.log('');
   console.log('  \x1b[33m!\x1b[0m  RESTART required — Claude Code caches agent definitions at session');
   console.log('     start. Close and reopen any open session to pick up new agents.');
@@ -1113,11 +1182,12 @@ function _prependOxBinToPath(targetDir, oxBinDir) {
     const parts = current.split(separator);
     if (parts.includes(oxBinDir)) return;  // Already present — idempotent no-op.
     settings.env.PATH = [oxBinDir, current].join(separator);
-    const tmp = settingsFile + '.tmp.' + process.pid;
-    fs.writeFileSync(tmp, JSON.stringify(settings, null, 2) + '\n', 'utf8');
-    fs.renameSync(tmp, settingsFile);
+    // FN-18 (v2.2.15): use the writeJsonAtomic helper for parity with every
+    // other settings.json write site. Helper writes via openSync+fsyncSync+
+    // rename and is the canonical durability path.
+    writeJsonAtomic(settingsFile, settings);
   } catch (err) {
-    console.log('  \x1b[33m⚠\x1b[0m Could not update settings.json PATH for ox: ' + err.message);
+    say('  \x1b[33m⚠\x1b[0m Could not update settings.json PATH for ox: ' + err.message);
   }
 }
 
@@ -1148,6 +1218,56 @@ function mergeHooks(targetDir) {
   }
   if (!settings.hooks) settings.hooks = {};
 
+  // FN-19 (v2.2.15): canonical-source parse hoisted ABOVE the prune sweep so
+  // FN-16's stale-hook prune can consult the canonical-basename allowlist when
+  // deciding whether to drop a hook entry from settings.json. Prior order parsed
+  // canonical AFTER prune, which prevented "drop entries no longer in canonical"
+  // from ever knowing the canonical set.
+  let srcData = {};
+  if (fs.existsSync(srcHooksFile)) {
+    // Fail-fast on malformed canonical hooks.json. Silent catch{} previously
+    // left srcData={} which produced an install with zero canonical hook
+    // entries — symptom looks like "install succeeded" but no Orchestray hook
+    // ever fires. Better to surface the malformed file.
+    try {
+      srcData = JSON.parse(fs.readFileSync(srcHooksFile, 'utf8'));
+    } catch (e) {
+      console.error('orchestray: canonical hooks/hooks.json is malformed: ' + (e && e.message ? e.message : e));
+      process.exit(1);
+    }
+  }
+  // Source format: { hooks: { Event: [{hooks:[...]}] } }
+  const orchestrayHooks = srcData.hooks || srcData;
+
+  // Build a flat allowlist of every basename declared anywhere in canonical
+  // hooks.json. Used by FN-14 (arg-update) and FN-16 (prune).
+  const canonicalBasenames = new Set();
+  // canonicalCommandByBasename: basename → canonical full command template
+  // (with ${CLAUDE_PLUGIN_ROOT}/bin/ unexpanded — we expand per-install below).
+  const canonicalCommandByBasename = new Map();
+  for (const entries of Object.values(orchestrayHooks)) {
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      for (const h of (entry.hooks || [])) {
+        const cmd = h.command || '';
+        const m = cmd.match(/^\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/(\S+)(.*)$/);
+        if (!m) continue;
+        const scriptName = m[1];
+        const base = path.basename(scriptName);
+        canonicalBasenames.add(base);
+        if (!canonicalCommandByBasename.has(base)) {
+          canonicalCommandByBasename.set(base, { scriptName, rest: m[2] });
+        }
+      }
+    }
+  }
+
+  // FN-16 prune kill switch (v2.2.15): default ON; opt-out for users who hand-
+  // edited their settings.json with extra Orchestray-namespaced hooks they do
+  // NOT want auto-removed. Per W6 collision-avoidance: `_GATE_DISABLED` suffix.
+  const installPruneDisabled =
+    process.env.ORCHESTRAY_INSTALL_PRUNE_GATE_DISABLED === '1';
+
   // Forward-compat: prune hooks pointing at scripts THIS install would have
   // produced but does not ship now. Catches rollback / upgrade-removal: a
   // prior install registered hooks for scripts that the current install
@@ -1155,9 +1275,24 @@ function mergeHooks(targetDir) {
   // MODULE_NOT_FOUND. Scoped to OUR install's target bin/ — hooks under
   // any other path (other plugins, other orchestray installs on the same
   // machine, fictitious test paths) are left untouched.
-  {
+  //
+  // FN-16 (v2.2.15): also prune entries whose basename is not in the
+  // canonical-allowlist, AND delete the stale script file from the install dir.
+  // This catches the W2-08 case where 3 deleted hook scripts (`observe-output-shape`,
+  // `track-scout-decision`, `inject-context-size-hint`) were emitting 176
+  // undeclared rows on the active machine because the script files persisted
+  // across upgrades and settings.json never had its entries removed.
+  if (!installPruneDisabled) {
     const ourBinPrefix = path.join(targetDir, 'orchestray', 'bin') + path.sep;
     let pruned = 0;
+    let prunedFiles = 0;
+    const prunedDetails = [];
+    // Only enable the "no longer canonical" prune when the canonical-set is
+    // non-empty. Empty canonical = test fixture or partial install; falling
+    // back to the v2.2.14 "missing-file only" behaviour avoids pruning live
+    // hooks the test harness intentionally registered against an empty
+    // canonical set.
+    const canonicalKnown = canonicalBasenames.size > 0;
     for (const [event, entries] of Object.entries(settings.hooks)) {
       if (!Array.isArray(entries)) continue;
       for (let i = entries.length - 1; i >= 0; i--) {
@@ -1169,9 +1304,30 @@ function mergeHooks(targetDir) {
           if (!m) continue;
           const scriptPath = m[1];
           if (!scriptPath.startsWith(ourBinPrefix)) continue;
-          if (!fs.existsSync(scriptPath)) {
+          const base = path.basename(scriptPath);
+          // Skip user-managed entries (FN-14 advisory: command_managed:true).
+          if (entry.hooks[j].command_managed === true) continue;
+          // Reason 1: file gone from disk.
+          const fileMissing = !fs.existsSync(scriptPath);
+          // Reason 2: file present but no longer in canonical hooks.json.
+          // This catches scripts that were deleted from the package source but
+          // whose copies persisted in the install dir across upgrades. Gated on
+          // canonicalKnown so test fixtures with empty canonical hooks.json
+          // can still drive missing-file-only assertions.
+          const noLongerCanonical = canonicalKnown && !fileMissing && !canonicalBasenames.has(base);
+          if (fileMissing || noLongerCanonical) {
             entry.hooks.splice(j, 1);
             pruned++;
+            prunedDetails.push({ event, matcher: entry.matcher || null, basename: base, reason: fileMissing ? 'file_missing' : 'no_longer_canonical' });
+            // Reason 2 only: also remove the stale script file from the install
+            // dir so future SessionStart fires don't trip schema-shadow miss
+            // counters via undeclared writeEvent calls.
+            if (noLongerCanonical) {
+              try {
+                fs.unlinkSync(scriptPath);
+                prunedFiles++;
+              } catch (_e) { /* best effort */ }
+            }
           }
         }
         if (entry.hooks.length === 0) entries.splice(i, 1);
@@ -1179,19 +1335,34 @@ function mergeHooks(targetDir) {
       if (entries.length === 0) delete settings.hooks[event];
     }
     if (pruned > 0) {
-      console.log(
-        '  \x1b[32m✓\x1b[0m Pruned ' + pruned + ' stale hook' +
-        (pruned === 1 ? '' : 's') + ' pointing to deleted scripts.'
+      process.stderr.write(
+        '  [orchestray] Pruned ' + pruned + ' stale hook' +
+        (pruned === 1 ? '' : 's') + ' pointing to deleted/no-longer-canonical scripts.\n'
       );
+      // Emit one degraded-journal event per pruned hook for telemetry.
+      // FN-16 declared event-type: install_stale_hook_pruned (W8c FN-33).
+      // Schema: {type, ts, schema_version:1, event, matcher|null, basename, reason, scope}.
+      for (const d of prunedDetails) {
+        try {
+          recordDegradation({
+            kind: 'install_stale_hook_pruned',
+            severity: 'info',
+            projectRoot: process.cwd(),
+            detail: Object.assign({}, d, {
+              schema_version: 1,
+              dedup_key: 'install_stale_hook_pruned|' + d.event + '|' + (d.matcher || '') + '|' + d.basename,
+            }),
+          });
+        } catch (_e) { /* fail-open */ }
+      }
+      if (prunedFiles > 0) {
+        process.stderr.write(
+          '  [orchestray] Removed ' + prunedFiles + ' stale script file' +
+          (prunedFiles === 1 ? '' : 's') + ' from install dir.\n'
+        );
+      }
     }
   }
-
-  let srcData = {};
-  if (fs.existsSync(srcHooksFile)) {
-    try { srcData = JSON.parse(fs.readFileSync(srcHooksFile, 'utf8')); } catch {}
-  }
-  // Source format: { hooks: { Event: [{hooks:[...]}] } }
-  const orchestrayHooks = srcData.hooks || srcData;
 
   const binPrefix = path.join(targetDir, 'orchestray', 'bin');
 
@@ -1253,6 +1424,88 @@ function mergeHooks(targetDir) {
         const m = (h.command || '').match(/\/bin\/([^\s"']+)/);
         return m ? path.basename(m[1]) : null;
       };
+
+      // FN-14 (v2.2.15): arg-update pass. Walk every existing Orchestray hook
+      // in settings.hooks[event]; for any whose basename matches a new entry's
+      // canonical hook AND whose command differs (different args, different
+      // timeout), REPLACE the command field with the canonical shape. This
+      // closes the W3-2 / W3-3 hole where v2.2.14 G-03 added `--quiet` to
+      // calibrate-role-budgets in canonical hooks.json but in-place upgrades
+      // never propagated the new arg, so existing users still saw the stdout
+      // dump every SessionStart.
+      //
+      // Skipped when entry has `command_managed:true` (user-edited hook).
+      // Emits one stderr advisory line per actual update.
+      for (const entry of (settings.hooks[event] || [])) {
+        if (entry.matcher !== entry.matcher) continue; // (kept for static analysis; never trips)
+        for (const existing of (entry.hooks || [])) {
+          if (existing.command_managed === true) continue;
+          const cmd = existing.command || '';
+          if (!cmd.includes('orchestray')) continue;
+          const base = hookBasename(existing);
+          if (!base) continue;
+          // Find the canonical command for this basename in any newEntries.
+          let canonicalNewHook = null;
+          for (const ne of newEntries) {
+            if (ne.matcher !== entry.matcher) continue;
+            for (const h of (ne.hooks || [])) {
+              if (hookBasename(h) === base) { canonicalNewHook = h; break; }
+            }
+            if (canonicalNewHook) break;
+          }
+          if (!canonicalNewHook) continue;
+          // Compare the args/timeout. The path component is install-specific
+          // (different homedirs); the args are what we care about.
+          const existingArgs = (cmd.match(/\.js"?(\s+.*)?$/) || [, ''])[1] || '';
+          const canonicalArgs = ((canonicalNewHook.command || '').match(/\.js"?(\s+.*)?$/) || [, ''])[1] || '';
+          const existingTimeout = existing.timeout;
+          const canonicalTimeout = canonicalNewHook.timeout;
+          if (existingArgs.trim() === canonicalArgs.trim() && existingTimeout === canonicalTimeout) continue;
+          // Update — but preserve the user's existing PATH portion and only
+          // swap the args tail. Replacing the full command would also rewrite
+          // the install dir, which v2.0.20 regression tests assume is
+          // user-managed (not installer-managed) when the prior install used a
+          // different homedir. We swap `<path>.js<old args>` →
+          // `<path>.js<canonical args>` only.
+          const oldCmd = cmd;
+          const argsTailRe = /(\.js"?)(\s+.*)?$/;
+          if (!argsTailRe.test(cmd)) {
+            // Cmd shape we cannot safely splice (no `.js` boundary). Refuse to
+            // overwrite the full command — that would clobber the user's
+            // `node <path>` prefix and break in-place upgrades that point at a
+            // different homedir. Skip the update; emit a one-line advisory so
+            // the user knows the args drift was detected but not auto-fixed.
+            process.stderr.write(
+              '  [orchestray] Skipped ' + base + ' arg-update (unrecognised command shape; ' +
+              'add `command_managed:true` to silence this advisory).\n'
+            );
+            continue;
+          }
+          const newArgsTail = canonicalArgs ? ' ' + canonicalArgs : '';
+          existing.command = cmd.replace(argsTailRe, '$1' + newArgsTail);
+          if (canonicalTimeout !== undefined) existing.timeout = canonicalTimeout;
+          process.stderr.write(
+            '  [orchestray] Updated ' + base + ': ' +
+            (existingArgs.trim() || '(no args)') + ' → ' + (canonicalArgs.trim() || '(no args)') +
+            (existingTimeout !== canonicalTimeout ? ' (timeout ' + existingTimeout + ' → ' + canonicalTimeout + ')' : '') +
+            '\n'
+          );
+          recordDegradation({
+            kind: 'install_hook_args_updated',
+            severity: 'info',
+            projectRoot: process.cwd(),
+            detail: {
+              event,
+              matcher: entry.matcher || null,
+              basename: base,
+              old_command: oldCmd.slice(0, 240),
+              new_command: existing.command.slice(0, 240),
+              schema_version: 1,
+              dedup_key: 'install_hook_args_updated|' + event + '|' + (entry.matcher || '') + '|' + base,
+            },
+          });
+        }
+      }
 
       for (const entry of newEntries) {
         const entryMatcher = entry.matcher; // may be undefined
@@ -1449,7 +1702,104 @@ function mergeHooks(targetDir) {
     }
   }
 
-  fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n');
+  // FN-18 (v2.2.15): atomic write — Ctrl-C mid-write previously corrupted
+  // settings.json. tmp+fsync+rename on the same FS. Inlined (rather than
+  // calling the writeJsonAtomic helper below) so test harnesses that
+  // eval-extract only the mergeHooks function body still work.
+  {
+    const tmp = settingsFile + '.orchestray.tmp';
+    const fd  = fs.openSync(tmp, 'w');
+    try {
+      fs.writeSync(fd, JSON.stringify(settings, null, 2) + '\n');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, settingsFile);
+  }
+}
+
+/**
+ * FN-17 (v2.2.15): additively merge top-level non-hook keys from repo
+ * `settings.json` into the user's active `<targetDir>/settings.json`.
+ *
+ * Keys merged: `agent`, `subagentStatusLine`, `statusLine`, plus any env keys
+ * whose name starts with `ORCHESTRAY_` or `CLAUDE_CODE_EXPERIMENTAL_` —
+ * orchestray-namespaced env vars only. ALL other top-level keys are left
+ * alone, and existing user values are NEVER overwritten.
+ *
+ * Behaviour:
+ *   - Repo settings.json absent → no-op.
+ *   - Active settings.json absent → write a new one with just our merged keys.
+ *   - Active settings.json malformed → fail-fast (parity with mergeHooks above).
+ *
+ * Idempotent and append-only: re-running install on an already-merged file
+ * produces no diff.
+ */
+function mergeTopLevelSettings(targetDir) {
+  const repoSettingsFile   = path.join(pkgRoot, 'settings.json');
+  const activeSettingsFile = path.join(targetDir, 'settings.json');
+
+  if (!fs.existsSync(repoSettingsFile)) return;
+  let repo;
+  try {
+    repo = JSON.parse(fs.readFileSync(repoSettingsFile, 'utf8'));
+  } catch (e) {
+    process.stderr.write(
+      '  [orchestray] mergeTopLevelSettings: skipping — repo settings.json malformed: ' +
+      (e && e.message ? e.message : e) + '\n'
+    );
+    return;
+  }
+  if (!repo || typeof repo !== 'object') return;
+
+  let active = {};
+  if (fs.existsSync(activeSettingsFile)) {
+    try {
+      active = JSON.parse(fs.readFileSync(activeSettingsFile, 'utf8'));
+    } catch (e) {
+      // Parity with mergeHooks: refuse to overwrite a malformed file.
+      console.error(
+        '\n  \x1b[31m✗\x1b[0m mergeTopLevelSettings: ' + activeSettingsFile +
+        ' is not valid JSON. Parser said: ' + (e && e.message ? e.message : e) + '\n'
+      );
+      return;
+    }
+  }
+  if (!active || typeof active !== 'object') active = {};
+
+  const ORCH_ALLOWLIST = new Set(['agent', 'subagentStatusLine', 'statusLine']);
+  let changed = false;
+  const added = [];
+
+  for (const key of ORCH_ALLOWLIST) {
+    if (Object.prototype.hasOwnProperty.call(repo, key) &&
+        !Object.prototype.hasOwnProperty.call(active, key)) {
+      active[key] = repo[key];
+      added.push(key);
+      changed = true;
+    }
+  }
+
+  // Env namespace: merge orchestray-prefixed env keys additively.
+  if (repo.env && typeof repo.env === 'object' && !Array.isArray(repo.env)) {
+    if (!active.env || typeof active.env !== 'object') active.env = {};
+    for (const k of Object.keys(repo.env)) {
+      if (!/^(ORCHESTRAY_|CLAUDE_CODE_EXPERIMENTAL_)/.test(k)) continue;
+      if (Object.prototype.hasOwnProperty.call(active.env, k)) continue;
+      active.env[k] = repo.env[k];
+      added.push('env.' + k);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    writeJsonAtomic(activeSettingsFile, active);
+    process.stderr.write(
+      '  [orchestray] mergeTopLevelSettings added ' + added.length + ' key' +
+      (added.length === 1 ? '' : 's') + ': ' + added.join(', ') + '\n'
+    );
+  }
 }
 
 // Recursively copy every .js file under `src` into `dst`, preserving the
@@ -1620,7 +1970,7 @@ function writeJsonAtomic(file, data) {
 function uninstall(targetDir) {
   const manifestFile = path.join(targetDir, 'orchestray', 'manifest.json');
   if (!fs.existsSync(manifestFile)) {
-    console.log('  Orchestray not found at ' + targetDir);
+    say('  Orchestray not found at ' + targetDir);
     process.exit(1);
   }
 
@@ -1688,7 +2038,7 @@ function uninstall(targetDir) {
         // non-empty or already gone; skip
       }
     }
-    console.log(`  \x1b[32m✓\x1b[0m Removed installed files (${manifest.files.length})`);
+    say(`  \x1b[32m✓\x1b[0m Removed installed files (${manifest.files.length})`);
   } else {
     // Legacy fallback for manifests written by older versions.
     for (const file of manifest.agents || []) {
@@ -1699,14 +2049,14 @@ function uninstall(targetDir) {
       const p = path.join(targetDir, 'agents', dir);
       if (fs.existsSync(p)) fs.rmSync(p, { recursive: true });
     }
-    console.log(`  \x1b[32m✓\x1b[0m Removed agents`);
+    say(`  \x1b[32m✓\x1b[0m Removed agents`);
 
     // Remove skill directories
     for (const dir of manifest.skills || []) {
       const p = path.join(targetDir, 'skills', dir);
       if (fs.existsSync(p)) fs.rmSync(p, { recursive: true });
     }
-    console.log(`  \x1b[32m✓\x1b[0m Removed skills`);
+    say(`  \x1b[32m✓\x1b[0m Removed skills`);
   }
 
   // Try to rmdir orchestray/ only if it is now empty. Unconditional rmSync
@@ -1720,7 +2070,7 @@ function uninstall(targetDir) {
       orchDirRemoved = true;
     }
   } catch (_e) { /* non-empty or already gone; skip */ }
-  console.log(orchDirRemoved
+  say(orchDirRemoved
     ? `  \x1b[32m✓\x1b[0m Removed orchestray/`
     : `  \x1b[33m⚠\x1b[0m Kept orchestray/ (contains user files)`);
 
@@ -1738,12 +2088,14 @@ function uninstall(targetDir) {
           if (settings.hooks[event].length === 0) delete settings.hooks[event];
         }
         if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
-        fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n');
+        // FN-18 (v2.2.15): atomic write via the writeJsonAtomic helper.
+        writeJsonAtomic(settingsFile, settings);
       }
     } catch {}
   }
-  console.log(`  \x1b[32m✓\x1b[0m Cleaned hooks`);
+  say(`  \x1b[32m✓\x1b[0m Cleaned hooks`);
 
+  // FN-23: final uninstall ceremony stays on stdout (user-visible summary).
   console.log('');
   console.log('  \x1b[32mOrchestray uninstalled.\x1b[0m');
   console.log('');

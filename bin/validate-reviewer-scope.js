@@ -146,32 +146,27 @@ function main() {
       : '';
     const evaluation = evaluateScope(promptBody);
 
-    // B5 (v2.2.10): warn when reviewer prompt lacks ## Dimensions to Apply header.
-    // Warn-only — never blocks the spawn. Kill switch: ORCHESTRAY_REVIEWER_DIMENSIONS_WARN_DISABLED=1
-    if (evaluation.scoped && process.env.ORCHESTRAY_REVIEWER_DIMENSIONS_WARN_DISABLED !== '1') {
-      const hasDimensions = /^## Dimensions to Apply/m.test(promptBody);
-      if (!hasDimensions) {
-        try {
-          const auditDir = path.join(cwd, '.orchestray', 'audit');
-          fs.mkdirSync(auditDir, { recursive: true });
-          try { fs.chmodSync(auditDir, 0o700); } catch (_e) { /* best-effort */ }
-          writeEvent({
-            version:    1,
-            type:       'reviewer_dimensions_missing',
-            agent_id:   (event.tool_input && event.tool_input.agent_id) || null,
-            task_id:    (event.tool_input && event.tool_input.task_id)  || null,
-          }, { cwd });
-        } catch (_e) { /* fail-open */ }
-      }
-    }
+    // FN-41 (v2.2.15): the v2.2.10 B5 block (legacy `reviewer_dimensions_missing`
+    // emit) was a duplicate of the W2-9 block below with a stricter regex that
+    // missed legitimate prompts. Retired in favour of the W2-9 path which emits
+    // `reviewer_dimensions_block_missing` (the canonical schema declared in
+    // event-schemas.md). The hard gate is FN-43 (validate-reviewer-dimensions.js).
 
-    // W2-9 (v2.2.11): warn-event when reviewer prompt lacks ## Dimensions to Apply block.
-    // Warn-only for v2.2.11 (hard-block deferred to v2.2.12).
+    // W2-9 (v2.2.11) + FN-36 (v2.2.15): warn-event when reviewer prompt lacks
+    // ## Dimensions to Apply block. Warn-only here; FN-43 owns the hard block.
     // Kill switch: ORCHESTRAY_REVIEWER_DIMENSIONS_CHECK_DISABLED=1
+    //
+    // FN-36: spawn_id resolves from event TOP-LEVEL fields (Claude Code never
+    // places agent_id / task_id in tool_input). Falls back to tool_input only
+    // for backward compatibility with synthetic test payloads.
     if (process.env.ORCHESTRAY_REVIEWER_DIMENSIONS_CHECK_DISABLED !== '1') {
       const hasDimensionsBlock = /##\s+Dimensions\s+to\s+Apply/i.test(promptBody);
       if (!hasDimensionsBlock) {
-        const spawnId = (event.tool_input && (event.tool_input.agent_id || event.tool_input.task_id)) || null;
+        const spawnId =
+          event.agent_id ||
+          event.task_id ||
+          (event.tool_input && (event.tool_input.agent_id || event.tool_input.task_id)) ||
+          null;
         try {
           const auditDir = path.join(cwd, '.orchestray', 'audit');
           fs.mkdirSync(auditDir, { recursive: true });

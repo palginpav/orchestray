@@ -108,26 +108,34 @@ describe('v2.2.14 G-09 — install_hook_order_corrected + skipped_interleaved: n
     }
   });
 
-  // ── Case 1: Shadow declares must not have h field ────────────────────────
-  test('shadow: install_hook_order_corrected must not have h key', () => {
+  // ── Case 1: Shadow MUST NOT declare these slugs (FN-35 reclassification) ─
+  //
+  // v2.2.15 W8c FN-35 reclassifies install_hook_order_corrected and
+  // install_hook_order_skipped_interleaved from event-types (slugs in the
+  // shadow) to degraded-journal kinds (rows in degraded.jsonl only). Path A
+  // contract: doc-only — install.js journal selection is unchanged; the
+  // events still fire to degraded.jsonl, just with the correct architectural
+  // classification. The original G-09 v2.2.14 invariant ("shadow entry has
+  // no h key") becomes the strictly-stronger "not in shadow at all" — both
+  // signals carry the same intent (these are not events.jsonl events) and
+  // the new contract is a strict subset of the old one.
+  test('shadow: install_hook_order_corrected must NOT be declared (FN-35: degraded-journal kind)', () => {
     const shadow = JSON.parse(fs.readFileSync(SHADOW_JSON, 'utf8'));
-    const entry = shadow['install_hook_order_corrected'];
-    assert.ok(entry, 'install_hook_order_corrected must be declared in shadow');
     assert.strictEqual(
-      Object.prototype.hasOwnProperty.call(entry, 'h'),
+      Object.prototype.hasOwnProperty.call(shadow, 'install_hook_order_corrected'),
       false,
-      'install_hook_order_corrected shadow entry must NOT have h (degraded-only event; h is events.jsonl correlator)'
+      'install_hook_order_corrected must NOT appear in event-schemas.shadow.json — ' +
+      'it is a degraded-journal kind per W8c FN-35 (Path A reclassification), not an events.jsonl event'
     );
   });
 
-  test('shadow: install_hook_order_skipped_interleaved must not have h key', () => {
+  test('shadow: install_hook_order_skipped_interleaved must NOT be declared (FN-35: degraded-journal kind)', () => {
     const shadow = JSON.parse(fs.readFileSync(SHADOW_JSON, 'utf8'));
-    const entry = shadow['install_hook_order_skipped_interleaved'];
-    assert.ok(entry, 'install_hook_order_skipped_interleaved must be declared in shadow');
     assert.strictEqual(
-      Object.prototype.hasOwnProperty.call(entry, 'h'),
+      Object.prototype.hasOwnProperty.call(shadow, 'install_hook_order_skipped_interleaved'),
       false,
-      'install_hook_order_skipped_interleaved shadow entry must NOT have h (degraded-only event; h is events.jsonl correlator)'
+      'install_hook_order_skipped_interleaved must NOT appear in event-schemas.shadow.json — ' +
+      'it is a degraded-journal kind per W8c FN-35 (Path A reclassification), not an events.jsonl event'
     );
   });
 

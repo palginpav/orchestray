@@ -10,11 +10,12 @@
  * so that changes take effect without a session restart (DESIGN §D6 rule 6:
  * "No session reload required").
  *
- * TODO(backlog): switch validateMcpEnforcement() to zod once zod is added to package.json
+ * validateMcpEnforcement() migrated to zod in v2.2.15 (P1-11).
  */
 
 const fs = require('fs');
 const path = require('path');
+const { z } = require('zod');
 
 const { recordDegradation } = require('./degraded-journal');
 
@@ -111,6 +112,57 @@ const DEFAULT_MCP_ENFORCEMENT = Object.freeze({
 const VALID_PER_TOOL_VALUES = ['hook', 'hook-warn', 'hook-strict', 'prompt', 'allow'];
 const VALID_UNKNOWN_TOOL_POLICY = ['block', 'warn', 'allow'];
 
+// ---------------------------------------------------------------------------
+// zod schema for mcp_enforcement (migrated from hand-rolled validator in v2.2.15 P1-11).
+// All keys are optional — the validator accepts partial objects (merged from defaults).
+// Error messages intentionally mirror the hand-rolled style for backward compat.
+// ---------------------------------------------------------------------------
+const _perToolEnum = z.enum(/** @type {[string,...string[]]} */ (VALID_PER_TOOL_VALUES));
+const _unknownToolPolicyEnum = z.enum(/** @type {[string,...string[]]} */ (VALID_UNKNOWN_TOOL_POLICY));
+
+const _McpEnforcementShape = {
+  pattern_find:                  _perToolEnum.optional(),
+  kb_search:                     _perToolEnum.optional(),
+  history_find_similar_tasks:    _perToolEnum.optional(),
+  pattern_record_application:    _perToolEnum.optional(),
+  pattern_record_skip_reason:    _perToolEnum.optional(),
+  cost_budget_check:             _perToolEnum.optional(),
+  kb_write:                      _perToolEnum.optional(),
+  routing_lookup:                _perToolEnum.optional(),
+  cost_budget_reserve:           _perToolEnum.optional(),
+  pattern_deprecate:             _perToolEnum.optional(),
+  metrics_query:                 _perToolEnum.optional(),
+  unknown_tool_policy:           _unknownToolPolicyEnum.optional(),
+  global_kill_switch:            z.boolean().optional(),
+  kill_switch_reason:            z.string().optional(),
+};
+
+/**
+ * Convert a ZodError issue list to the legacy { valid, errors } shape.
+ * Formats messages to match the hand-rolled style operators depend on.
+ * @param {import('zod').ZodIssue[]} issues
+ * @param {unknown} obj - Original object (for kill-switch contextual check).
+ * @returns {string[]}
+ */
+function _zodIssuesToMcpErrors(issues, obj) {
+  return issues.map((issue) => {
+    const key = issue.path.join('.');
+    // zod 4 uses 'invalid_value' for enum mismatches; zod 3 used 'invalid_enum_value'.
+    if (issue.code === 'invalid_value' || issue.code === 'invalid_enum_value') {
+      const field = `mcp_enforcement.${key}`;
+      const received = JSON.stringify(obj && typeof obj === 'object' ? obj[issue.path[0]] : undefined);
+      if (issue.path[0] === 'unknown_tool_policy') {
+        return `${field} must be one of: ${VALID_UNKNOWN_TOOL_POLICY.join(', ')} — got ${received}`;
+      }
+      return `${field} must be one of: ${VALID_PER_TOOL_VALUES.join(', ')} — got ${received}`;
+    }
+    if (issue.code === 'invalid_type' && issue.path[0] === 'global_kill_switch') {
+      return `mcp_enforcement.global_kill_switch must be a boolean — got ${JSON.stringify(obj && obj[issue.path[0]])}`;
+    }
+    return `mcp_enforcement.${key}: ${issue.message}`;
+  });
+}
+
 /**
  * Load and merge mcp_enforcement from <cwd>/.orchestray/config.json with defaults.
  *
@@ -169,67 +221,31 @@ function loadMcpEnforcement(cwd) {
 /**
  * Validate an mcp_enforcement object (as returned by loadMcpEnforcement or user input).
  *
+ * Implemented with zod (v2.2.15 P1-11 migration). Preserves the existing
+ * { valid, errors } contract so all callers are unaffected.
+ *
+ * Extra cross-field rule (T1 H5): kill_switch_reason is required (non-empty string)
+ * when global_kill_switch is true. zod handles structural shape; this rule is
+ * applied as a post-parse check because it is conditional on a sibling field.
+ *
  * @param {unknown} obj - Value to validate.
  * @returns {{ valid: true } | { valid: false, errors: string[] }}
  */
 function validateMcpEnforcement(obj) {
-  const errors = [];
-
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
     return { valid: false, errors: ['mcp_enforcement must be an object'] };
   }
 
-  // T3 A1: perToolKeys must stay in sync with DEFAULT_MCP_ENFORCEMENT. Add
-  // pattern_record_skip_reason and cost_budget_check so operator configs that
-  // include these keys are validated rather than silently accepted.
-  // W6: add kb_write (2.0.15 addition).
-  const perToolKeys = [
-    'pattern_find',
-    'kb_search',
-    'history_find_similar_tasks',
-    'pattern_record_application',
-    'pattern_record_skip_reason',
-    'cost_budget_check',
-    'kb_write',
-    // v2.0.16 additions (W3/W4)
-    'routing_lookup',
-    'cost_budget_reserve',
-    // v2.0.16 D1
-    'pattern_deprecate',
-    // v2.0.17 T5
-    'metrics_query',
-  ];
-  for (const key of perToolKeys) {
-    if (key in obj) {
-      const v = obj[key];
-      if (!VALID_PER_TOOL_VALUES.includes(v)) {
-        errors.push(
-          `mcp_enforcement.${key} must be one of: ${VALID_PER_TOOL_VALUES.join(', ')} — got ${JSON.stringify(v)}`
-        );
-      }
-    }
-  }
+  const schema = z.object(_McpEnforcementShape).passthrough();
+  const result = schema.safeParse(obj);
+  const errors = result.success ? [] : _zodIssuesToMcpErrors(result.error.issues, obj);
 
-  if ('unknown_tool_policy' in obj) {
-    const v = obj.unknown_tool_policy;
-    if (!VALID_UNKNOWN_TOOL_POLICY.includes(v)) {
-      errors.push(
-        `mcp_enforcement.unknown_tool_policy must be one of: ${VALID_UNKNOWN_TOOL_POLICY.join(', ')} — got ${JSON.stringify(v)}`
-      );
-    }
-  }
-
-  if ('global_kill_switch' in obj) {
-    const v = obj.global_kill_switch;
-    if (typeof v !== 'boolean') {
-      errors.push(
-        `mcp_enforcement.global_kill_switch must be a boolean — got ${JSON.stringify(v)}`
-      );
-    }
-    // T1 H5 (v2.0.15): `kill_switch_reason` is required when the kill switch is
-    // active — makes blast-radius auditable in events.jsonl.
-    if (v === true) {
-      const reason = obj.kill_switch_reason;
+  // T1 H5 (v2.0.15): kill_switch_reason required when global_kill_switch is true.
+  // Cross-field rule — applied after structural parse to get clean error isolation.
+  if (result.success || !result.error.issues.some((i) => i.path[0] === 'global_kill_switch')) {
+    const typed = /** @type {any} */ (obj);
+    if (typed.global_kill_switch === true) {
+      const reason = typed.kill_switch_reason;
       if (typeof reason !== 'string' || reason.trim().length === 0) {
         errors.push(
           'mcp_enforcement.kill_switch_reason is required (non-empty string) when global_kill_switch is true'

@@ -5,6 +5,8 @@
  * validate-commit-handoff.js — PostToolUse:Agent hook.
  *
  * v2.2.11 W2-10 / B4 fix (commit_handoff_validation_failed).
+ * v2.2.15 FN-45: added exit-2 branch + 3-spawn soft-warn ramp when developer or
+ * release-manager reports `status:success` AND head commit lacks `## Handoff`.
  *
  * Fires after a developer or release-manager agent stops. Parses the
  * structured-result from the agent's response and checks for required
@@ -13,22 +15,40 @@
  *   release-manager: commit_hash, branch, files_changed[].path
  *   developer:       files_changed[].path  (for every entry in the array)
  *
- * Only activates when `files_changed.length > 0`. Emits one
- * `commit_handoff_validation_failed` event per missing field.
+ * v2.2.15 FN-45 also enforces the `## Handoff` body subsection mandated by
+ * agents/pm-reference/agent-common-protocol.md §Commit Message Discipline.
+ * The check runs `git log -1 --format=%B HEAD` in the project cwd and looks
+ * for a `## Handoff` heading. Soft-warn ramps for the first 3 missing-handoff
+ * spawns per orchestration; the 4th hard-blocks at exit 2.
  *
- * Kill switch: ORCHESTRAY_COMMIT_HANDOFF_CHECK_DISABLED=1
+ * Only activates when `files_changed.length > 0`. Emits one
+ * `commit_handoff_validation_failed` event per missing structured-result field
+ * AND a `commit_handoff_body_missing` event when the `## Handoff` block is
+ * absent.
+ *
+ * Kill switches:
+ *   - ORCHESTRAY_COMMIT_HANDOFF_CHECK_DISABLED=1 — full bypass (legacy).
+ *   - ORCHESTRAY_COMMIT_HANDOFF_GATE_DISABLED=1  — disables the FN-45 exit-2
+ *     branch (event still fires for telemetry; falls back to warn-only).
  *
  * Contract:
- *   - Always exit 0 (warn-only, never blocks). Observation only.
+ *   - Exit 0 when fields and `## Handoff` block are present, OR within ramp window.
+ *   - Exit 2 once ramp window is exhausted and `## Handoff` is still missing.
  *   - Fail-open on any internal error.
  */
 
 const fs   = require('fs');
 const path = require('path');
+const cp   = require('child_process');
 const { resolveSafeCwd }            = require('./_lib/resolve-project-cwd');
 const { writeEvent }                = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES }           = require('./_lib/constants');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
+
+// ---------------------------------------------------------------------------
+// FN-45 — handoff-body soft-warn ramp threshold (per orch).
+// ---------------------------------------------------------------------------
+const HANDOFF_RAMP_DEFAULT = 3;
 
 // Roles this validator watches.
 const WATCHED_ROLES = new Set(['release-manager', 'developer']);
@@ -211,6 +231,8 @@ module.exports = {
   validateReleaseManager,
   WATCHED_ROLES,
   COMMIT_HASH_RE,
+  // FN-45 exports for unit tests
+  // (defined below main(); referenced via module.exports re-bind in main scope)
 };
 
 // ---------------------------------------------------------------------------
@@ -303,10 +325,129 @@ function main() {
       );
     }
 
+    // -----------------------------------------------------------------------
+    // FN-45 (v2.2.15) — head-commit `## Handoff` body check.
+    //   Activates when role ∈ {developer, release-manager} AND status:success.
+    //   Soft-warn ramp for first HANDOFF_RAMP_DEFAULT missing spawns per orch;
+    //   exit 2 thereafter. Kill switch: ORCHESTRAY_COMMIT_HANDOFF_GATE_DISABLED=1.
+    // -----------------------------------------------------------------------
+    const status = (typeof sr.status === 'string') ? sr.status.toLowerCase() : '';
+    if (status === 'success' && WATCHED_ROLES.has(role)) {
+      const headBody = readHeadCommitBody(cwd);
+      if (headBody !== null && !/^##\s+Handoff\b/m.test(headBody)) {
+        const gateDisabled = process.env.ORCHESTRAY_COMMIT_HANDOFF_GATE_DISABLED === '1';
+        const threshold = (() => {
+          const env = process.env.ORCHESTRAY_COMMIT_HANDOFF_RAMP_THRESHOLD;
+          const n = parseInt(env, 10);
+          return Number.isFinite(n) && n >= 0 ? n : HANDOFF_RAMP_DEFAULT;
+        })();
+        const { count } = bumpHandoffWarnCount(cwd, orchestrationId, threshold);
+
+        // Always emit the body-missing telemetry.
+        try {
+          writeEvent({
+            version:        1,
+            schema_version: 1,
+            type:           'commit_handoff_body_missing',
+            release_id:     orchestrationId,
+            agent_role:     role,
+            ramp_count:     count,
+            ramp_threshold: threshold,
+            gate_disabled:  gateDisabled,
+          }, { cwd });
+        } catch (_e) { /* fail-open */ }
+
+        if (!gateDisabled && count > threshold) {
+          process.stderr.write(
+            '[orchestray] validate-commit-handoff: BLOCKED — head commit body lacks `## Handoff` ' +
+            'subsection (' + count + ' missing-handoff commits this orchestration; threshold=' + threshold + '). ' +
+            'Add a `## Handoff` block per agents/pm-reference/agent-common-protocol.md §Commit Message ' +
+            'Discipline (files changed, test delta, invariants, downstream cues). ' +
+            'Kill switch: ORCHESTRAY_COMMIT_HANDOFF_GATE_DISABLED=1\n'
+          );
+          process.stdout.write(JSON.stringify({
+            continue: false,
+            reason: 'commit_handoff_body_missing_after_ramp',
+          }) + '\n');
+          process.exit(2);
+        }
+
+        process.stderr.write(
+          '[orchestray] validate-commit-handoff: WARN (' + count + '/' + threshold + ') — head ' +
+          'commit body lacks `## Handoff` subsection. ' +
+          (gateDisabled
+            ? '(kill switch active; not blocking) '
+            : 'After ' + threshold + ' such commits this orchestration will hard-block. ') +
+          'See agents/pm-reference/agent-common-protocol.md §Commit Message Discipline.\n'
+        );
+      }
+    }
+
     process.stdout.write(JSON.stringify({ continue: true }) + '\n');
     process.exit(0);
   });
 }
+
+// ---------------------------------------------------------------------------
+// FN-45 helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the body (subject + body) of HEAD commit. Returns null when the cwd
+ * is not a git repo or the read fails for any reason (fail-open).
+ *
+ * @param {string} cwd
+ * @returns {string|null}
+ */
+function readHeadCommitBody(cwd) {
+  try {
+    const out = cp.execFileSync('git', ['log', '-1', '--format=%B', 'HEAD'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5000,
+    });
+    return typeof out === 'string' ? out : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
+ * Per-orchestration counter file path.
+ */
+function handoffCounterPath(cwd, orchestrationId) {
+  return path.join(cwd, '.orchestray', 'state', `commit-handoff-warn-count-${orchestrationId}.txt`);
+}
+
+/**
+ * Read+increment+persist the missing-handoff counter for this orchestration.
+ *
+ * @returns {{ count: number, threshold: number }}
+ */
+function bumpHandoffWarnCount(cwd, orchestrationId, threshold) {
+  const filePath = handoffCounterPath(cwd, orchestrationId || 'unknown');
+  let count = 0;
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const n = parseInt(raw.trim(), 10);
+    if (Number.isFinite(n) && n >= 0) count = n;
+  } catch (_e) { /* fresh */ }
+  count += 1;
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, String(count) + '\n', 'utf8');
+  } catch (_e) { /* fail-open */ }
+  return { count, threshold };
+}
+
+// Re-bind module.exports so FN-45 helpers are testable.
+Object.assign(module.exports, {
+  readHeadCommitBody,
+  handoffCounterPath,
+  bumpHandoffWarnCount,
+  HANDOFF_RAMP_DEFAULT,
+});
 
 if (require.main === module) {
   main();

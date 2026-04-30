@@ -170,6 +170,31 @@ function main() {
     try {
       const stat = fs.statSync(cachePath);
       if (Date.now() - stat.mtimeMs < windowMs) {
+        // FN-27 (v2.2.15): emit one `calibrate_skipped_fresh_cache` row per
+        // skipped run so SessionStart hook timing is traceable. The prior
+        // silent exit-0 made the cache-fresh branch invisible to telemetry —
+        // operators couldn't distinguish "cache hit" from "hook didn't run".
+        // Schema declared by W8c FN-33: {type, ts, schema_version:1,
+        // cache_age_ms, window_ms, mode}.
+        //
+        // Use skipValidation:true so the v2.2.14 G-02 invariant ("--if-stale
+        // cache-fresh must produce no stderr") survives — the schema-shadow
+        // validator may emit a warn line in test fixtures; the calibrate
+        // event is structurally simple enough that we don't need full
+        // validation, and a silent fail is preferable to a noisy SessionStart.
+        try {
+          const writeAuditEvent = require('./_lib/audit-event-writer');
+          const writeEvent      = writeAuditEvent.writeEvent;
+          if (typeof writeEvent === 'function') {
+            writeEvent({
+              type:           'calibrate_skipped_fresh_cache',
+              schema_version: 1,
+              cache_age_ms:   Math.max(0, Date.now() - stat.mtimeMs),
+              window_ms:      windowMs,
+              mode:           'if_stale',
+            }, { cwd, skipValidation: true });
+          }
+        } catch (_e) { /* fail-open — never block session start on telemetry */ }
         // Cache is fresh — skip recompute entirely. No stdout, no stderr.
         process.exit(0);
       }

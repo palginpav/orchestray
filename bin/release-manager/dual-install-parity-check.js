@@ -9,6 +9,22 @@
  * previous prose-only "release-manager must verify dual-install parity"
  * convention with a hook-blocking gate.
  *
+ * v2.2.15 FN-47 extension — SessionStart promotion:
+ *   When invoked at SessionStart with `event.hook_event_name === 'SessionStart'`,
+ *   compares `package.json#version` between the global install
+ *   (`~/.claude/orchestray/`) and the local install (`.claude/orchestray/` of
+ *   cwd). On version mismatch the script emits `dual_install_version_mismatch`
+ *   and writes a friendly stderr advisory to surface to the operator (per
+ *   `feedback_update_both_installs.md`: when both installs exist, /orchestray:update
+ *   must update BOTH). It also surfaces any pending double-fire warning sentinel
+ *   staged by bin/_lib/double-fire-guard.js so the user always sees the
+ *   "your installs are racing" advisory exactly once.
+ *
+ *   Hard-block contract: SessionStart cannot interrupt a session, but the
+ *   advisory is loud (stderr + structured stdout); we ALSO write the warning
+ *   to `.orchestray/state/dual-install-version-mismatch.json` so subsequent
+ *   release-manager spawns see it through the existing parity-check gate.
+ *
  * Behavior:
  *   1. If `.claude/orchestray/bin/` does NOT exist in cwd: exit 0 with
  *      `skipped_no_install_tree` reason. Single-install repos (most CI
@@ -292,6 +308,54 @@ function isReleaseContext(event) {
   return false;
 }
 
+/**
+ * FN-47 (v2.2.15) — SessionStart version-disagreement check.
+ *
+ * Reads `~/.claude/orchestray/package.json#version` and `<cwd>/.claude/orchestray/package.json#version`.
+ * Returns:
+ *   - { ok: true, mismatch: false }                    — versions match or only one install present.
+ *   - { ok: true, mismatch: true, global, local }      — both installs present and disagree.
+ *   - { ok: false }                                    — error reading; fail-open.
+ */
+function checkVersionParity(cwd) {
+  function readVer(pkgPath) {
+    try {
+      const raw = fs.readFileSync(pkgPath, 'utf8');
+      const j = JSON.parse(raw);
+      return typeof j.version === 'string' ? j.version : null;
+    } catch (_e) { return null; }
+  }
+  const home = process.env.HOME || process.env.USERPROFILE;
+  if (!home) return { ok: false };
+  const globalVer = readVer(path.join(home, '.claude', 'orchestray', 'package.json'));
+  const localVer  = readVer(path.join(cwd, '.claude', 'orchestray', 'package.json'));
+  if (!globalVer || !localVer) {
+    // Single-install configuration; nothing to compare.
+    return { ok: true, mismatch: false, global: globalVer, local: localVer };
+  }
+  return { ok: true, mismatch: globalVer !== localVer, global: globalVer, local: localVer };
+}
+
+/**
+ * FN-47: surface and clear the pending double-fire warning sentinel staged by
+ * bin/_lib/double-fire-guard.js. Returns the parsed sentinel or null.
+ */
+function consumePendingDoubleFireWarn(cwd) {
+  const sentinelPath = path.join(cwd, '.orchestray', 'state', 'double-fire-warn-pending.json');
+  try {
+    const raw = fs.readFileSync(sentinelPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    try { fs.unlinkSync(sentinelPath); } catch (_e) { /* idempotent */ }
+    return parsed;
+  } catch (_e) { return null; }
+}
+
+function isSessionStart(event) {
+  if (!event || typeof event !== 'object') return false;
+  const name = event.hook_event_name || event.hook_event || event.event_name || '';
+  return typeof name === 'string' && name.toLowerCase() === 'sessionstart';
+}
+
 function main() {
   readStdin((raw) => {
     let event = {};
@@ -301,6 +365,62 @@ function main() {
     let cwd;
     try { cwd = resolveSafeCwd(event.cwd); }
     catch (_e) { cwd = process.cwd(); }
+
+    // FN-47 (v2.2.15): SessionStart variant — compare install versions and
+    // surface any pending double-fire warning. Always exit 0 (advisory only;
+    // SessionStart cannot interrupt a session).
+    if (isSessionStart(event)) {
+      const skipDisabled = process.env.ORCHESTRAY_DOUBLE_FIRE_SKIP_GATE_DISABLED === '1';
+
+      const verResult = checkVersionParity(cwd);
+      if (verResult.ok && verResult.mismatch && !skipDisabled) {
+        try {
+          writeEvent({
+            type:             'dual_install_version_mismatch',
+            version:          1,
+            schema_version:   1,
+            timestamp:        new Date().toISOString(),
+            global_version:   verResult.global,
+            local_version:    verResult.local,
+          }, { cwd });
+        } catch (_e) { /* fail-open */ }
+
+        try {
+          fs.mkdirSync(path.join(cwd, '.orchestray', 'state'), { recursive: true });
+          fs.writeFileSync(
+            path.join(cwd, '.orchestray', 'state', 'dual-install-version-mismatch.json'),
+            JSON.stringify({
+              detected_at:    new Date().toISOString(),
+              global_version: verResult.global,
+              local_version:  verResult.local,
+            }, null, 2),
+            'utf8'
+          );
+        } catch (_e) { /* fail-open */ }
+
+        process.stderr.write(
+          `[orchestray] dual-install-parity-check: VERSION MISMATCH — ` +
+          `global ~/.claude/orchestray@${verResult.global} differs from ` +
+          `local .claude/orchestray@${verResult.local}. Both installs must agree; ` +
+          `run /orchestray:update to bring BOTH installs current ` +
+          `(see feedback_update_both_installs.md). ` +
+          `Kill switch: ORCHESTRAY_DOUBLE_FIRE_SKIP_GATE_DISABLED=1.\n`
+        );
+      }
+
+      const dfWarn = consumePendingDoubleFireWarn(cwd);
+      if (dfWarn) {
+        process.stderr.write(
+          `[orchestray] dual-install-parity-check: double-fire racing detected — ` +
+          `guard=${dfWarn.guard_name} dedup_key=${dfWarn.dedup_key} ` +
+          `count=${dfWarn.fast_fire_count} delta_ms=${dfWarn.delta_ms}. ` +
+          `${dfWarn.message || ''}\n`
+        );
+      }
+
+      process.stdout.write(JSON.stringify({ continue: true }));
+      process.exit(0);
+    }
 
     const releaseCtx = isReleaseContext(event);
     const manualInvocation = !raw;
@@ -397,6 +517,10 @@ module.exports = {
   SOURCE_ONLY_ALLOWLIST,
   SOURCE_ONLY_DIR_PREFIXES,
   RELEASE_MANAGER_ROLE,
+  // FN-47 exports for testability.
+  checkVersionParity,
+  consumePendingDoubleFireWarn,
+  isSessionStart,
 };
 
 if (require.main === module) {

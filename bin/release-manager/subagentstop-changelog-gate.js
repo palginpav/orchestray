@@ -60,7 +60,14 @@ function main() {
     return 0; // gate does not apply
   }
 
-  const script = path.join(cwd, 'bin', 'release-manager', 'changelog-event-name-check.js');
+  // FN-24 (v2.2.15): resolve the companion script via __dirname (sibling of
+  // this hook in the install dir) rather than via the user-project cwd. The
+  // prior path.join(cwd, 'bin', 'release-manager', ...) only worked when the
+  // user's cwd happened to be the orchestray repo itself; in any other repo
+  // the file did not exist and the gate fail-opened on every release-manager
+  // SubagentStop. The user cwd is still passed downstream via --cwd so the
+  // companion script reads/writes the right project's CHANGELOG.
+  const script = path.join(__dirname, 'changelog-event-name-check.js');
   if (!fs.existsSync(script)) {
     process.stderr.write(`subagentstop-changelog-gate: missing ${script}\n`);
     return 0; // fail-open

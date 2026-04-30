@@ -64,11 +64,10 @@ function renderCitation(match, agentType, orchId, citeCache, projectRoot) {
   const label = _label(match);
   const suffix = _suffix(match);
 
-  // Reviewer always gets full body regardless of cache state.
-  const isReviewer = agentType === 'reviewer';
-
-  // If CiteCache is disabled or agent is reviewer, always emit full body.
-  if (!citeCache || isReviewer) {
+  // P1-08 (v2.2.15): Reviewer ALWAYS gets full body — [CACHED] is a bug for reviewers.
+  // Explicit early return before any cache look-up so the cached branch is
+  // unreachable for reviewer agents regardless of citeCache state.
+  if (agentType === 'reviewer') {
     const body = match.body || match.description || '(no body available)';
     if (orchId && citeCache) {
       // Still record so subsequent non-reviewer agents get cached cite.
@@ -77,11 +76,17 @@ function renderCitation(match, agentType, orchId, citeCache, projectRoot) {
     return `- @orchestray:pattern://${match.slug}     ${label}     ${suffix}\n\n${body}`;
   }
 
+  // If CiteCache is disabled, always emit full body for all other agents.
+  if (!citeCache) {
+    const body = match.body || match.description || '(no body available)';
+    return `- @orchestray:pattern://${match.slug}     ${label}     ${suffix}\n\n${body}`;
+  }
+
   // Check if already seen in this orchestration.
   const { seen, firstAgent, hashShort } = isSeenInOrch(orchId, match.slug, projectRoot);
 
   if (seen && firstAgent) {
-    // Cached cite — emit one-line reference only.
+    // Cached cite — emit one-line reference only. Never reached for reviewer agents.
     return (
       `- @orchestray:pattern://${match.slug}     ${label}     ${suffix}\n` +
       `  [CACHED — loaded by ${firstAgent}, hash ${hashShort}]`

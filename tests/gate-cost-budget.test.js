@@ -204,8 +204,8 @@ describe('C: enabled + hard_block=true + breach → exit 2', () => {
     assert.ok(stderr.includes('[orchestray] gate-cost-budget:'),
       'stderr must contain gate-cost-budget prefix; got: ' + stderr);
     assert.ok(
-      stderr.includes('hard_block=true') || stderr.includes('BLOCKED'),
-      'stderr must confirm spawn is BLOCKED; got: ' + stderr
+      stderr.includes('spawn blocked') || stderr.includes('BLOCKED'),
+      'stderr must confirm spawn is blocked; got: ' + stderr
     );
   });
 

@@ -10,6 +10,13 @@
  * as a post-write integrity probe; on detected corruption it emits
  * `kb_index_invalid` and (in PreToolUse mode) exits 2.
  *
+ * v2.2.15 FN-53: extended to enforce **bucket↔path-prefix consistency**. An
+ * entry under `facts:` MUST have a path beginning with `facts/` or
+ * `.orchestray/kb/facts/`; an entry under `artifacts:` MUST have a path
+ * beginning with `artifacts/` or `.orchestray/kb/artifacts/`; same for
+ * `decisions/`. W5-F2 found 7 artifacts mis-bucketed under `facts:`; this
+ * mechanical check makes that drift impossible to ship.
+ *
  * Public API:
  *   validate(cwd) -> { valid: boolean, reason: string|null, file_path }
  *
@@ -20,6 +27,7 @@
  *   3. every entry is an object with at least { id, path } string fields
  *   4. every `path` string is relative (no leading "/", no ".." traversal)
  *   5. ids inside any single bucket are unique
+ *   6. (FN-53) bucket name aligns with path prefix
  *
  * Fail-open contract: returns `{ valid: true }` if the file does not exist
  * (pre-write state is legitimately empty). Only structural corruption fails.
@@ -30,6 +38,24 @@ const path = require('path');
 
 const ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
 const KNOWN_BUCKETS = ['artifacts', 'facts', 'decisions'];
+
+/**
+ * FN-53 — return true if `entryPath` is consistent with `bucketName`.
+ *
+ * Accepts both legacy short-form paths (`artifacts/foo.md`) and full-form
+ * paths (`.orchestray/kb/artifacts/foo.md`). The canonical short suffix
+ * directly under the bucket name is what we check.
+ *
+ * @param {string} entryPath
+ * @param {string} bucketName
+ * @returns {boolean}
+ */
+function pathMatchesBucket(entryPath, bucketName) {
+  if (typeof entryPath !== 'string' || typeof bucketName !== 'string') return false;
+  const shortPrefix = bucketName + '/';
+  const longPrefix  = '.orchestray/kb/' + bucketName + '/';
+  return entryPath.startsWith(shortPrefix) || entryPath.startsWith(longPrefix);
+}
 
 function _isPlainObject(v) {
   return v && typeof v === 'object' && !Array.isArray(v);
@@ -97,6 +123,19 @@ function validate(cwd) {
     const bucketIds = new Set();
     const r = _validateEntries(parsed[bucket], bucketIds);
     if (r) return { valid: false, reason: r, file_path: filePath };
+
+    // FN-53: bucket name must align with path prefix for every entry.
+    for (let i = 0; i < parsed[bucket].length; i++) {
+      const e = parsed[bucket][i];
+      if (!_isPlainObject(e) || typeof e.path !== 'string') continue;
+      if (!pathMatchesBucket(e.path, bucket)) {
+        return {
+          valid: false,
+          reason: `bucket_${bucket}_path_mismatch_at_${i}_${e.path.slice(0, 80)}`,
+          file_path: filePath,
+        };
+      }
+    }
   }
 
   return { valid: true, reason: null, file_path: filePath };
@@ -104,6 +143,7 @@ function validate(cwd) {
 
 module.exports = {
   validate,
+  pathMatchesBucket,
   ID_RE,
   KNOWN_BUCKETS,
 };

@@ -86,6 +86,44 @@ function _sourceHash(cwd) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// P1-17 (v2.2.15 W2-09): Sidecar shape clarification
+//
+// The `events` field in the sidecar JSON is a MAP-LIKE OBJECT (slug → metadata),
+// NOT an array. Validators and consumers must use Object.keys(events) /
+// Object.entries(events) — iterating it as an array will silently yield nothing.
+//
+// Sidecar shape (TypeScript-style):
+//
+//   interface EventMetadata {
+//     schema:           { version: number; required: string[]; optional: string[] };
+//     enum_dialect_hash: string | null;
+//     line_range:       [number, number];
+//     short_doc:        string;
+//     citation_anchor:  string;
+//   }
+//
+//   /** @typedef {Object<string, EventMetadata>} EventsBySlugMap */
+//
+//   interface Tier2Sidecar {
+//     _meta: {
+//       version:                    number;   // always 1
+//       source_path:                string;
+//       source_hash:                string;   // SHA-256 of event-schemas.md
+//       source_bytes:               number;
+//       generated_at:               string;   // ISO 8601
+//       index_size_bytes:           number;
+//       event_count:                number;   // Object.keys(events).length
+//       fingerprint_token_estimate: number;
+//     };
+//     fingerprint: string;   // newline-separated slug | doc | L<line> rows
+//     events:      EventsBySlugMap;  // NOT an array — slug → metadata dict
+//   }
+//
+// Ad-hoc validators that assert Array.isArray(sidecar.events) will fail.
+// Use: typeof sidecar.events === 'object' && !Array.isArray(sidecar.events).
+// ---------------------------------------------------------------------------
+
 /**
  * Build the fingerprint string. One line per event_type in the form
  *   "<event_type> | <short_doc or ''> | L<startLine>"

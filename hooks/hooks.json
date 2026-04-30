@@ -181,6 +181,16 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-task-contracts.js",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-reviewer-dimensions.js",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-context-size-hint.js",
+            "timeout": 5
           }
         ]
       },
@@ -563,7 +573,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/audit-event.js start",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/audit-event.js",
             "timeout": 5
           },
           {
@@ -703,6 +713,42 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/release-manager/dual-install-parity-check.js",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-tester-runs-tests.js",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-pattern-application.js",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-researcher-citations.js",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-platform-oracle-grounding.js",
             "timeout": 10
           }
         ]

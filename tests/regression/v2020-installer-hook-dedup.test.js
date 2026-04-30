@@ -25,15 +25,35 @@
  * exists). Non-Orchestray hooks (no "orchestray" in the command) never block
  * an Orchestray install.
  *
+ * v2.2.15 contract evolution (FN-14):
+ *   The original v2.0.20 contract required pre-existing Orchestray hooks be
+ *   preserved VERBATIM — including any args drift between the user's installed
+ *   command and the canonical hooks/hooks.json. That left the v2.2.14 G-03
+ *   regression unfixable: `--quiet` was added to calibrate-role-budgets in
+ *   canonical hooks.json but never reached existing user installs because
+ *   the dedup pass skipped on basename match alone.
+ *
+ *   FN-14 changes the contract: pre-existing hook PATHS are preserved
+ *   (the user's `node <homedir>/.../script.js` prefix is sacrosanct), but
+ *   ARGS are updated to match canonical. Users who hand-edit a hook can opt
+ *   out by setting `command_managed:true` on the hook entry — the installer
+ *   skips arg-update for those entries.
+ *
+ *   Scenario 2 below is updated to assert the new contract: path preserved,
+ *   args updated, and `command_managed:true` opt-out respected.
+ *
  * Scenarios covered here:
  *   1. Silent-drop repro — post-fix, the second hook is preserved.
- *   2. Partial dedup — `audit-event.js` preserved verbatim (no duplicate),
- *      `collect-context-telemetry.js` appended alongside it.
+ *   2. Partial dedup — `audit-event.js` PATH preserved (FN-14: args updated to
+ *      canonical, `start` arg dropped), `collect-context-telemetry.js`
+ *      appended alongside it.
  *   3. Full idempotency — installer run twice yields identical settings.json.
  *   4. Different matcher is a distinct entry — same script basename under
  *      two matchers co-exists.
  *   5. Non-Orchestray existing hook doesn't block — another plugin's hook
  *      in the same (event, matcher) slot is treated as a peer, not a dupe.
+ *   6. (FN-14) command_managed:true skips arg-update — user-edited hook is
+ *      preserved verbatim including its non-canonical args.
  */
 
 const { test, describe } = require('node:test');
@@ -193,11 +213,21 @@ describe('v2.0.20 — partial dedup (existing hook kept verbatim, new hook appen
         `audit-event.js must appear exactly once, got ${auditCommands.length}: ${JSON.stringify(auditCommands)}`
       );
 
-      // The pre-existing command must be preserved VERBATIM (not rewritten to
-      // the Orchestray bin path).
+      // FN-14 (v2.2.15) contract: the pre-existing PATH is preserved (user's
+      // homedir, node prefix, .js boundary intact); the ARGS are updated to
+      // match canonical. Canonical audit-event.js has no args, so the leading
+      // `start` arg in the prior command must be dropped while the path stays.
+      const priorPathPrefix = 'node "/home/u/.claude/orchestray/bin/audit-event.js"';
       assert.ok(
-        auditCommands[0] === priorCommand,
-        `pre-existing hook command must be untouched, got: ${auditCommands[0]}`
+        auditCommands[0].startsWith(priorPathPrefix),
+        `pre-existing PATH must be preserved (got "${auditCommands[0]}", expected to start with "${priorPathPrefix}")`
+      );
+      // After args-update, no `start` arg should remain (canonical has none).
+      const priorArgsTail = auditCommands[0].slice(priorPathPrefix.length).trim();
+      assert.equal(
+        priorArgsTail,
+        '',
+        `FN-14 should drop non-canonical args; got args tail: "${priorArgsTail}"`
       );
 
       // collect-context-telemetry.js must be present exactly once.
@@ -374,6 +404,61 @@ describe('v2.0.20 — non-Orchestray existing hook does not block install', () =
           `expected Orchestray hook ${name} to land under SubagentStart alongside a foreign hook — got: ${[...installedOrchestrayNames].join(', ')}`
         );
       }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+});
+
+describe('v2.2.15 FN-14 — command_managed:true skips arg-update', () => {
+  test('a pre-existing hook flagged command_managed:true is preserved verbatim across re-install', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      // Pre-seed an Orchestray-style audit-event.js entry with a non-canonical
+      // arg AND command_managed:true. After install, both the path AND the
+      // non-canonical args must remain — FN-14's arg-update pass MUST skip
+      // any entry carrying command_managed:true.
+      const customCommand =
+        'node "/custom/path/orchestray/bin/audit-event.js" --user-flag';
+      writePreexistingSettings(tmpDir, {
+        hooks: {
+          SubagentStart: [
+            {
+              hooks: [
+                {
+                  type: 'command',
+                  command: customCommand,
+                  timeout: 5,
+                  command_managed: true,
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+      const result = runInstall(tmpDir);
+      assert.equal(result.status, 0, `install failed: ${result.stderr}`);
+
+      const settings = readSettings(tmpDir);
+      const entries  = settings.hooks.SubagentStart;
+      // Find the audit-event.js entry; it must still carry the original
+      // command verbatim and the command_managed:true flag.
+      let found = null;
+      for (const entry of entries) {
+        for (const h of entry.hooks || []) {
+          if ((h.command || '').includes('audit-event.js') &&
+              (h.command || '').includes('--user-flag')) {
+            found = h; break;
+          }
+        }
+        if (found) break;
+      }
+      assert.ok(found, 'audit-event.js with command_managed:true should survive install');
+      assert.equal(found.command, customCommand,
+        `command_managed:true entry must NOT have args updated, got: ${found.command}`);
+      assert.equal(found.command_managed, true,
+        'command_managed:true flag must be preserved');
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
     }

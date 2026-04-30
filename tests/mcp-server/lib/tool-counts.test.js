@@ -13,7 +13,7 @@
  *   T4 — oversize ledger FAILS OPEN when maxAllowed is null (informational mode)
  *   T5 — counter only increments on recordSuccess, NOT on checkLimit
  *   T6 — rotation on oversize append: archived file created, fresh file used
- *   T7 — bumpAndCheck deprecated alias: check + record combined in one call
+ *   T7 — RETIRED in v2.2.15 W8c FN-58 (bumpAndCheck deprecated alias deleted)
  *   T8 — bad params fail-open (missing orchestration_id)
  */
 
@@ -26,7 +26,7 @@ const os = require('node:os');
 const {
   checkLimit,
   recordSuccess,
-  bumpAndCheck,
+  // bumpAndCheck DELETED in v2.2.15 W8c FN-58 (deprecated alias retired)
   readLedger,
   countCalls,
   readMaxPerTask,
@@ -344,51 +344,14 @@ describe('T6 — ledger rotation on oversize append', () => {
 });
 
 // ---------------------------------------------------------------------------
-// T7 — bumpAndCheck deprecated alias
+// T7 — RETIRED in v2.2.15 W8c FN-58
 // ---------------------------------------------------------------------------
-
-describe('T7 — bumpAndCheck deprecated alias', () => {
-
-  test('bumpAndCheck checks and records in one call, returns exceeded:false when under limit', () => {
-    const tmp = makeTmpProject();
-    try {
-      const params = makeParams({ tool_name: 'ask_user' });
-      const config = makeConfig({ ask_user: 5 });
-
-      const result = bumpAndCheck(params, tmp, config);
-      assert.equal(result.exceeded, false);
-
-      // The call should have been recorded.
-      const count = checkLimit(params, tmp, config).count;
-      assert.equal(count, 1, 'bumpAndCheck should record the call');
-    } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
-    }
-  });
-
-  test('bumpAndCheck returns exceeded:true when at limit, does NOT record the excess call', () => {
-    const tmp = makeTmpProject();
-    try {
-      const params = makeParams({ tool_name: 'ask_user' });
-      const config = makeConfig({ ask_user: 2 });
-
-      // Fill up the limit.
-      recordSuccess(params, tmp, config);
-      recordSuccess(params, tmp, config);
-
-      const result = bumpAndCheck(params, tmp, config);
-      assert.equal(result.exceeded, true);
-      assert.ok(result.max === 2 || result.maxAllowed === 2 || result.count === 'unknown' || result.count >= 2);
-
-      // Count should still be 2, not 3 (excess call was blocked, not recorded).
-      const count = checkLimit(params, tmp, config).count;
-      assert.equal(count, 2, 'bumpAndCheck must not record when already exceeded');
-    } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
-    }
-  });
-
-});
+//
+// `bumpAndCheck` was a deprecated alias that combined checkLimit + recordSuccess
+// into a single call. v2.2.15 W8c FN-58 confirmed zero non-test callers of the
+// `@deprecated` export and removed it from `bin/mcp-server/lib/tool-counts.js`.
+// This test block is intentionally empty — kept as a tombstone so the section
+// numbering remains stable for documentation/CHANGELOG references.
 
 // ---------------------------------------------------------------------------
 // T8 — bad params fail-open

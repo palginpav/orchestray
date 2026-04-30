@@ -12,9 +12,11 @@
  * Runs on SubagentStart only. SubagentStop is intentionally handled by a
  * different hook script (bin/collect-agent-metrics.js) because that script
  * needs to compute cost/token metrics that aren't available at start time.
- * The positional 'start' arg in hooks.json is decorative — this script
- * always emits type: 'agent_start' regardless of argv. Per T13 audit I10
- * and T15 audit.
+ *
+ * Always emits `type: 'agent_start'`; argv is ignored. Earlier versions of
+ * hooks.json passed a decorative `start` positional arg that was never
+ * parsed; v2.2.15 FN-25 removed it from the canonical entry. Per T13 audit
+ * I10 and T15 audit.
  */
 
 const writeAuditEvent = require('./_lib/audit-event-writer');

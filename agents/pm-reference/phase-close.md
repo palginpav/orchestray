@@ -282,7 +282,7 @@ at `.orchestray/history/<orch-id>/events.jsonl`.
 Run AFTER orchestration completes but BEFORE extracting new patterns (22a above). Update
 confidence scores for applied patterns: +0.1 on success, -0.2 on failure.
 
-#### §22c Stage A — Post-Decomposition Warn Mode (v2.0.15, ships unconditionally)
+#### §22c Stage A — Post-Decomposition Warn Mode
 
 **What it means.** During the post-decomposition window (after the first `Agent()` spawn
 of an orchestration), the PM is expected to have called either
@@ -297,14 +297,14 @@ signal for observability and analytics. The PM should treat a `pattern_record_sk
 event as a cue to complete the §22b protocol on the next orchestration, not as a gate
 failure.
 
-#### §22c Stage C — Second-Spawn Gate (v2.0.16, shipped)
+#### §22c Stage C — Second-Spawn Gate
 
-**What shipped in 2.0.16.** The `bin/gate-agent-spawn.js` PreToolUse:Agent hook now
+**What this does.** The `bin/gate-agent-spawn.js` PreToolUse:Agent hook now
 enforces a post-decomposition check on second-and-subsequent `Agent()` spawns within an
 orchestration. Enforcement mode is controlled by
 `mcp_enforcement.pattern_record_application` in `.orchestray/config.json`:
 
-- **`hook-strict`** (default in 2.0.16): on a second spawn with no post-decomposition
+- **`hook-strict`** (default mode): on a second spawn with no post-decomposition
   record, emit a `mcp_checkpoint_missing` event to `events.jsonl` with
   `phase: 'post-decomposition'` and exit 2 (deny spawn). Re-run §22b (in phase-decomp.md)
   to unblock — call the missing tool, then retry.
@@ -326,9 +326,9 @@ the record — either path satisfies the requirement. Emergency override: set
 `mcp_enforcement.global_kill_switch=true` or set `pattern_record_application` to `allow`.
 
 **Escalation ladder:**
-- Stage A (v2.0.15): warn, allow — advisory event in `events.jsonl`
-- Stage B (v2.0.16): `hook-warn` default (warn+allow on second spawn); `hook-strict` opt-in (block)
-- Stage C (v2.0.16, shipped): `hook-strict` is now the default — OQ1 field-data gate cleared
+- Stage A: warn, allow — advisory event in `events.jsonl`
+- Stage B: `hook-warn` default (warn+allow on second spawn); `hook-strict` opt-in (block)
+- Stage C (current): `hook-strict` is now the default — OQ1 field-data gate cleared
 
 ### 22d. Pruning
 

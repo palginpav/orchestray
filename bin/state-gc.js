@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// NOT_A_HOOK (v2.2.15 FN-59): CLI-only utility, not wired as a hook handler.
 'use strict';
 
 // 2018-W5-UX4b

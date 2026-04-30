@@ -118,7 +118,12 @@ function resolveRole(event) {
   ];
   for (const c of candidates) {
     if (typeof c === 'string' && c.trim()) {
-      return c.trim().toLowerCase().replace(/[\s\x00-\x1F]+/g, '');
+      // FN-26 (v2.2.15): strip control characters only. Whitespace was being
+      // stripped previously (`[\s\x00-\x1F]+` removed both internal whitespace
+      // AND control bytes), but Claude Code never sends roles with whitespace —
+      // the prior over-aggressive normalisation could only mask upstream
+      // schema bugs. Trimming + control-char removal is the right discipline.
+      return c.trim().toLowerCase().replace(/[\x00-\x1F]+/g, '');
     }
   }
   return null;

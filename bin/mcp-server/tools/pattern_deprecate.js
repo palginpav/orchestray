@@ -197,8 +197,16 @@ async function handle(input, context) {
   const nowIso = new Date().toISOString();
 
   // Merge deprecation fields into frontmatter (idempotent — overwrites if already deprecated)
+  //
+  // FN-56 (v2.2.15) — write `status: "deprecated"` alongside the legacy
+  // `deprecated: true` boolean. The boolean stays the de-facto runtime signal
+  // (`pattern_find` filters on it) but `status` is the forward-compatible
+  // enum: future states (e.g. `archived`, `superseded`) get a single shared
+  // field instead of N booleans. Existing consumers that read `deprecated`
+  // are untouched; new consumers should prefer `status`.
   const nextFm = Object.assign({}, parsed.frontmatter, {
     deprecated: true,
+    status: 'deprecated',
     deprecated_at: nowIso,
     deprecated_reason: input.reason,
   });

@@ -2,24 +2,31 @@
 'use strict';
 
 /**
- * validate-reviewer-git-diff.js — PreToolUse:Agent hook (v2.2.11 W2-1).
+ * validate-reviewer-git-diff.js — PreToolUse:Agent hook.
+ *
+ * v2.2.11 W2-1: introduced as warn-only.
+ * v2.2.15 FN-42: flipped to exit 2 (hard-block) on missing `## Git Diff` section.
  *
  * Activates only when `tool_input.subagent_type === "reviewer"`. Checks the
  * spawn prompt for a `## Git Diff` section (case-sensitive match). If absent,
- * emits a `reviewer_git_diff_section_missing` audit event.
+ * emits a `reviewer_git_diff_section_missing` audit event and blocks the spawn.
  *
  * Rationale: delegation-templates.md:113 specifies that reviewer prompts must
  * include a `## Git Diff` section for token-efficient context handoff. Without
- * it, reviewers must fetch the diff themselves, wasting context budget.
+ * it, reviewers must fetch the diff themselves, wasting context budget. The
+ * v2.2.11 warn-only ramp telemetry confirmed steady fire rate; per
+ * `feedback_mechanical_over_prose.md` we promote to exit 2.
  *
  * Behaviour:
- *   - Warn-only (exit 0). Never blocks a reviewer spawn.
- *   - Emits `reviewer_git_diff_section_missing` when the section is absent.
+ *   - Exit 2 (block) when `## Git Diff` section is absent.
+ *   - Exit 0 when section is present or kill switch is active.
  *   - Fail-open on any internal error.
- *   - Kill switch: ORCHESTRAY_REVIEWER_GIT_DIFF_CHECK_DISABLED=1
+ *   - Kill switch: ORCHESTRAY_REVIEWER_GIT_DIFF_GATE_DISABLED=1 → reverts to warn-only.
+ *   - Legacy kill switch ORCHESTRAY_REVIEWER_GIT_DIFF_CHECK_DISABLED=1 still
+ *     short-circuits the check entirely (skipped, no emit, no block).
  *
  * Input:  Claude Code PreToolUse:Agent JSON payload on stdin
- * Output: { continue: true } on stdout always; exit 0 always
+ * Output: { continue: true|false, ... } on stdout; exit 0 or 2.
  */
 
 const fs   = require('fs');
@@ -70,6 +77,7 @@ function shouldValidate(event) {
 // ---------------------------------------------------------------------------
 
 function main() {
+  // Legacy short-circuit: skip the check entirely (no emit, no block).
   if (process.env.ORCHESTRAY_REVIEWER_GIT_DIFF_CHECK_DISABLED === '1') {
     process.stdout.write(JSON.stringify({ continue: true }));
     process.exit(0);
@@ -114,7 +122,12 @@ function main() {
       : '';
 
     if (!hasGitDiffSection(promptBody)) {
-      const spawnId = (event.tool_input && (event.tool_input.agent_id || event.tool_input.task_id)) || null;
+      // FN-36 (v2.2.15): spawn_id resolves from event TOP-LEVEL fields first.
+      const spawnId =
+        event.agent_id ||
+        event.task_id ||
+        (event.tool_input && (event.tool_input.agent_id || event.tool_input.task_id)) ||
+        null;
       try {
         writeEvent({
           version:        SCHEMA_VERSION,
@@ -124,11 +137,31 @@ function main() {
         }, { cwd });
       } catch (_e) { /* fail-open */ }
 
+      // FN-42 (v2.2.15): hard-block unless GATE kill switch active.
+      const gateDisabled = process.env.ORCHESTRAY_REVIEWER_GIT_DIFF_GATE_DISABLED === '1';
+
+      if (gateDisabled) {
+        process.stderr.write(
+          '[orchestray] validate-reviewer-git-diff: WARN (kill switch active) — reviewer prompt ' +
+          'lacks `## Git Diff` (delegation-templates.md:113). Not blocking ' +
+          '(ORCHESTRAY_REVIEWER_GIT_DIFF_GATE_DISABLED=1).\n'
+        );
+        process.stdout.write(JSON.stringify({ continue: true }));
+        process.exit(0);
+      }
+
       process.stderr.write(
-        '[orchestray] validate-reviewer-git-diff: WARN — add `## Git Diff` to the reviewer ' +
-        'delegation prompt (delegation-templates.md:113). Missing section causes the reviewer ' +
-        'to re-fetch diff, wasting context. Kill switch: ORCHESTRAY_REVIEWER_GIT_DIFF_CHECK_DISABLED=1\n'
+        '[orchestray] validate-reviewer-git-diff: BLOCKED — reviewer delegation prompt is missing ' +
+        '`## Git Diff` section (delegation-templates.md:113). Without it the reviewer must re-fetch ' +
+        'the diff, wasting context. Add a `## Git Diff` section with the output of ' +
+        '`git diff <base>..HEAD` (or equivalent) to the delegation prompt. ' +
+        'Kill switch: ORCHESTRAY_REVIEWER_GIT_DIFF_GATE_DISABLED=1\n'
       );
+      process.stdout.write(JSON.stringify({
+        continue: false,
+        reason: 'reviewer_git_diff_section_missing',
+      }));
+      process.exit(2);
     }
 
     process.stdout.write(JSON.stringify({ continue: true }));

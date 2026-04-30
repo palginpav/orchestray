@@ -167,6 +167,27 @@ function validateArtifactPaths(structuredResult, projectRoot) {
 // R1 AC-05 (v2.1.11): Audit event schema validation
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// P1-05 (v2.2.15): Multiple Structured Result block detector
+// ---------------------------------------------------------------------------
+
+/**
+ * Scan raw agent output for more than one `## Structured Result` heading.
+ * Warn-only in v2.2.15; hard-block planned for v2.2.16 if rate > 0.
+ *
+ * Kill switch: ORCHESTRAY_MULTI_STRUCTURED_RESULT_GATE_DISABLED=1
+ *
+ * @param {string} rawText - Raw agent output text.
+ * @returns {{ multipleBlocks: boolean, count: number }}
+ */
+function detectMultipleStructuredResultBlocks(rawText) {
+  if (typeof rawText !== 'string' || !rawText) return { multipleBlocks: false, count: 0 };
+  const re = /^##\s+Structured\s+Result\b/gim;
+  const matches = rawText.match(re);
+  const count = matches ? matches.length : 0;
+  return { multipleBlocks: count > 1, count };
+}
+
 // Known event types extracted from agents/pm-reference/event-schemas.md §Summary Index.
 // This list is the allowlist — unknown event types are rejected (exit 2).
 // Honor ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD=1 kill switch (skip validation if set).
@@ -256,6 +277,18 @@ const KNOWN_EVENT_TYPES = new Set([
   'verify_fix_pass',
   'verify_fix_fail',
   'verify_fix_oscillation',
+  // P1-05 (v2.2.15): multiple Structured Result block detector
+  'multiple_structured_result_blocks',
+  // P1-06 (v2.2.15): tester runs-tests gate
+  'tester_runs_tests_gate_warn',
+  'tester_runs_tests_gate_blocked',
+  // P1-07 (v2.2.15): pattern application ack gate
+  'pattern_application_gate_warn',
+  'pattern_application_gate_blocked',
+  // P1-09 (v2.2.15): researcher citations gate
+  'researcher_citations_gate_blocked',
+  // P1-10 (v2.2.15): platform-oracle grounding gate
+  'platform_oracle_grounding_gate_blocked',
 ]);
 
 /**
@@ -795,6 +828,37 @@ function main() {
     const agentRole = identifyAgentRole(event);
     const structuredResult = extractStructuredResult(event);
 
+    // ── P1-05 (v2.2.15): Multiple Structured Result block detector.
+    // Warn-only in v2.2.15. Hard exit 2 in v2.2.16 if rate > 0.
+    try {
+      const rawAgentTextForP105 = [event.result, event.output, event.agent_output]
+        .find(v => typeof v === 'string' && v.length > 0) || '';
+      if (rawAgentTextForP105) {
+        const { multipleBlocks, count: srCount } = detectMultipleStructuredResultBlocks(rawAgentTextForP105);
+        if (multipleBlocks) {
+          const gateDisabled = process.env.ORCHESTRAY_MULTI_STRUCTURED_RESULT_GATE_DISABLED === '1';
+          emitAuditEvent(cwd, {
+            version:          1,
+            timestamp:        new Date().toISOString(),
+            type:             'multiple_structured_result_blocks',
+            hook:             'validate-task-completion',
+            orchestration_id: resolveOrchestrationId(cwd),
+            agent_role:       agentRole,
+            block_count:      srCount,
+            gate_disabled:    gateDisabled,
+            session_id:       event.session_id || null,
+          });
+          process.stderr.write(
+            '[orchestray] validate-task-completion: WARN — ' + (agentRole || 'unknown') +
+            ' output contains ' + srCount + ' `## Structured Result` blocks (expected 1). ' +
+            'Only the last block is parsed. Will exit 2 in v2.2.16. ' +
+            'Kill switch: ORCHESTRAY_MULTI_STRUCTURED_RESULT_GATE_DISABLED=1\n'
+          );
+          // Warn-only in v2.2.15 — no exit 2 here yet.
+        }
+      }
+    } catch (_p105err) { /* fail-open — multi-block check never blocks */ }
+
     // ── v2.2.9 B-5.1 — escalation-hint backstop.
     // Scan transcript for "TODO escalate to <role>" / "needs <role> review"
     // patterns when the agent is a write-capable specialist (developer,
@@ -1144,6 +1208,8 @@ module.exports = {
   ESCALATION_AGENT_ROLES,
   // v2.2.11 W2-4: cross-field invariant checker
   validateCrossField,
+  // P1-05 (v2.2.15): multiple Structured Result block detector
+  detectMultipleStructuredResultBlocks,
 };
 
 if (require.main === module) {

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// NOT_A_HOOK (v2.2.15 FN-59): not a stdin-reading hook handler. See script header docstring.
 'use strict';
 
 /**

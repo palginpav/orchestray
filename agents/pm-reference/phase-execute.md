@@ -100,7 +100,7 @@ For each task in a parallel group:
    - If `branch` starts with `worktree-agent-` or `orchestray/`: isolation succeeded; proceed
      with the merge protocol.
 
-**Known worktree failure modes (field-confirmed, v2.0.18):**
+**Known worktree failure modes (field-confirmed):**
 
 - **Stale base ref:** The harness creates worktrees from a cached ref (likely session-start
   HEAD), not live local HEAD. If several W-items have landed on master since the session

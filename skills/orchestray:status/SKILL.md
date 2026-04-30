@@ -2,7 +2,6 @@
 name: status
 description: Show current orchestration status
 disable-model-invocation: true
-argument-hint: 
 ---
 
 # Orchestration Status
