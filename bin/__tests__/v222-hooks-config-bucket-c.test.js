@@ -28,8 +28,20 @@ function findAgentMatcherChain(hooks) {
 }
 
 describe('C3 hook chain registration', () => {
-  test('hooks.json is valid JSON', () => {
-    assert.doesNotThrow(() => loadHooks(), 'hooks.json must be valid JSON');
+  test('loadHooks() returns object with .hooks.PreToolUse array', () => {
+    // v2.2.17 W4 (C-01 ramp): replaced doesNotThrow-only assertion with
+    // explicit shape checks. The original test caught a JSON.parse throw
+    // but verified nothing about the parsed shape — a hooks.json edited
+    // to have valid JSON but wrong top-level structure would silently
+    // pass while breaking every PreToolUse consumer.
+    const parsed = loadHooks();
+    assert.ok(parsed && typeof parsed === 'object', 'loadHooks() must return object');
+    assert.ok(parsed.hooks && typeof parsed.hooks === 'object',
+      'parsed object must have .hooks property');
+    assert.ok(Array.isArray(parsed.hooks.PreToolUse),
+      'hooks.PreToolUse must be array');
+    assert.ok(parsed.hooks.PreToolUse.length >= 1,
+      'hooks.PreToolUse must have ≥1 entry');
   });
 
   test('PreToolUse Agent matcher chain exists with the expected validators', () => {

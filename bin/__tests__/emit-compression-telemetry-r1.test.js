@@ -224,11 +224,21 @@ describe('R1 AC-01 — script exists and is always exit-0', () => {
 
 describe('R1 AC-02 — hooks.json registration', () => {
 
-  test('hooks.json is valid JSON', () => {
+  test('hooks.json parses to object with .hooks.SubagentStart array', () => {
+    // v2.2.17 W4 (C-01 ramp): replaced doesNotThrow-only assertion (which
+    // catches the throw but verifies nothing about the parsed shape) with
+    // explicit shape checks, so this test fails loudly if hooks.json
+    // becomes malformed in a way that JSON.parse silently allows but
+    // downstream consumers reject (e.g., wrong top-level shape).
     const hooksPath = path.resolve(__dirname, '..', '..', 'hooks', 'hooks.json');
-    assert.doesNotThrow(() => {
-      JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
-    }, 'hooks.json must be valid JSON');
+    const parsed = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+    assert.ok(parsed && typeof parsed === 'object', 'hooks.json must parse to object');
+    assert.ok(parsed.hooks && typeof parsed.hooks === 'object',
+      'hooks.json must have .hooks object');
+    assert.ok(Array.isArray(parsed.hooks.SubagentStart),
+      'hooks.SubagentStart must be array');
+    assert.ok(parsed.hooks.SubagentStart.length >= 1,
+      'hooks.SubagentStart must have ≥1 entry');
   });
 
   test('SubagentStart block contains emit-compression-telemetry.js', () => {
