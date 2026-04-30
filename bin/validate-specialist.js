@@ -32,6 +32,8 @@
 const fs = require('fs');
 const path = require('path');
 
+const { parseFrontmatter } = require('./_lib/frontmatter-parse');
+
 const VALID_MODELS = new Set(['haiku', 'sonnet', 'opus', 'inherit']);
 // Accept common model-id prefixes too so future model slugs don't break
 // the validator (e.g. 'claude-opus-4-7', 'claude-sonnet-4-6').
@@ -44,71 +46,6 @@ const VALID_EFFORT = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 // directly for trigger-phrase matching. A 500-char ceiling accommodates the
 // existing corpus without watering down the v2.2+ zod-schema work.
 const MAX_DESCRIPTION_LENGTH = 500;
-
-/**
- * Parse YAML-style frontmatter at the top of a file. Returns null if no
- * frontmatter found. This is a minimal YAML parser tuned for Orchestray
- * agent files — it accepts `key: value`, `key: "quoted value"`, and
- * `key: [a, b, c]`. Nested structures are NOT supported.
- *
- * @param {string} content
- * @returns {{ frontmatter: object, body: string }|null}
- */
-function parseFrontmatter(content) {
-  if (typeof content !== 'string') return null;
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
-  if (!match) return null;
-  const raw = match[1];
-  const body = match[2] || '';
-  const frontmatter = {};
-  const lines = raw.split(/\r?\n/);
-  let currentKey = null;
-  let currentMultilineValue = null;
-  for (const line of lines) {
-    if (line.trim().length === 0) continue;
-    // Key: value pattern at column 0.
-    const m = line.match(/^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/);
-    if (m) {
-      // If we had an accumulating multiline value, commit it.
-      if (currentKey !== null && currentMultilineValue !== null) {
-        frontmatter[currentKey] = currentMultilineValue.trim();
-        currentMultilineValue = null;
-      }
-      const key = m[1];
-      let value = m[2];
-      if (value === '' || value === undefined) {
-        // value might be on following line(s) — start accumulating.
-        currentKey = key;
-        currentMultilineValue = '';
-        continue;
-      }
-      // Strip enclosing quotes.
-      value = value.replace(/^["'](.*)["']\s*$/, '$1');
-      // Array: [a, b, c]
-      if (value.startsWith('[') && value.endsWith(']')) {
-        const inner = value.slice(1, -1);
-        frontmatter[key] = inner
-          .split(',')
-          .map(s => s.trim().replace(/^["']|["']$/g, ''))
-          .filter(s => s.length > 0);
-      } else {
-        frontmatter[key] = value;
-      }
-      currentKey = key;
-    } else if (currentKey !== null) {
-      // Continuation line.
-      if (currentMultilineValue !== null) {
-        currentMultilineValue += ' ' + line.trim();
-      } else {
-        frontmatter[currentKey] = (frontmatter[currentKey] || '') + ' ' + line.trim();
-      }
-    }
-  }
-  if (currentKey !== null && currentMultilineValue !== null) {
-    frontmatter[currentKey] = currentMultilineValue.trim();
-  }
-  return { frontmatter, body };
-}
 
 /**
  * Validate a single specialist file's frontmatter. Returns array of finding
