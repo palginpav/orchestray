@@ -1572,13 +1572,65 @@ function mergeHooks(targetDir) {
         // Orchestray hooks (no "orchestray" in the command) never block an
         // Orchestray install — another plugin's hook in the same matcher is
         // a peer, not a duplicate.
+        //
+        // v2.2.17 W7c (cross-install dedup): when a dual-install operator
+        // upgrades both global and project-local installs, each install's
+        // mergeHooks adds entries with its OWN absolute path, but the older
+        // install's entries (with a DIFFERENT absolute path) remain in
+        // settings.json. Both fire, producing the v2.2.15 FN-47 hook_double_fire_detected
+        // signal (32 events seen on this dev box at v2.2.16). Fix: REPLACE
+        // existing orchestray-shaped hooks whose path differs from THIS
+        // install's binPrefix — collapses both registrations into one.
         const installedBasenames = new Set();
+        const ourBinPrefixCheck = path.join(targetDir, 'orchestray', 'bin') + path.sep;
         for (const existing of settings.hooks[event]) {
           if (existing.matcher !== entryMatcher) continue;
-          for (const h of existing.hooks || []) {
+          for (let hi = (existing.hooks || []).length - 1; hi >= 0; hi--) {
+            const h = existing.hooks[hi];
             if (!h.command || !h.command.includes('orchestray')) continue;
             const name = hookBasename(h);
-            if (name) installedBasenames.add(name);
+            if (!name) continue;
+            // Cross-install dedup: extract the script path from the command;
+            // if it points at an orchestray bin/ that is NOT under our
+            // binPrefix, drop the stale entry so this install's add re-registers
+            // with the canonical path. Skip user-managed entries.
+            if (h.command_managed === true) {
+              installedBasenames.add(name);
+              continue;
+            }
+            const pathMatch = h.command.match(/"([^"]+\/orchestray\/bin\/[^"]+\.js)"/);
+            if (pathMatch && !pathMatch[1].startsWith(ourBinPrefixCheck)) {
+              // The existing hook points at a different orchestray install on
+              // this machine. Two cases:
+              //   1. The OTHER install is real and still on disk — preserve it
+              //      (legitimate dual-install user; v2.0.20 contract). Both fire,
+              //      but they're both real registrations the user opted into.
+              //   2. The OTHER install is gone (dir deleted, install moved) but
+              //      its settings.json entry remains — a leftover. Drop it so
+              //      this install can register cleanly under one path only.
+              const otherFileExists = fs.existsSync(pathMatch[1]);
+              if (!otherFileExists) {
+                existing.hooks.splice(hi, 1);
+                try {
+                  recordDegradation({
+                    kind: 'install_stale_hook_pruned',
+                    severity: 'info',
+                    projectRoot: process.cwd(),
+                    detail: {
+                      event,
+                      matcher: entry.matcher || null,
+                      basename: name,
+                      reason: 'cross_install_path_missing',
+                      schema_version: 1,
+                      dedup_key: 'install_stale_hook_pruned|' + event + '|' + (entry.matcher || '') + '|' + name + '|cross_install_missing',
+                    },
+                  });
+                } catch (_e) { /* fail-open */ }
+                continue; // do NOT mark as installed; let this install re-add
+              }
+              // Other install exists on disk — preserve as a peer per v2.0.20.
+            }
+            installedBasenames.add(name);
           }
         }
 

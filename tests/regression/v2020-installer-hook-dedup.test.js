@@ -213,21 +213,28 @@ describe('v2.0.20 — partial dedup (existing hook kept verbatim, new hook appen
         `audit-event.js must appear exactly once, got ${auditCommands.length}: ${JSON.stringify(auditCommands)}`
       );
 
-      // FN-14 (v2.2.15) contract: the pre-existing PATH is preserved (user's
-      // homedir, node prefix, .js boundary intact); the ARGS are updated to
-      // match canonical. Canonical audit-event.js has no args, so the leading
-      // `start` arg in the prior command must be dropped while the path stays.
-      const priorPathPrefix = 'node "/home/u/.claude/orchestray/bin/audit-event.js"';
+      // v2.2.17 W7c (cross-install dedup) refines this contract: the
+      // pre-existing /home/u/... path points at a script that does NOT exist
+      // on the test machine's disk. Per W7c, stale entries (path-not-on-disk)
+      // are now removed during install rather than preserved, so this install
+      // can register cleanly under THIS install's path. Real dual-install peers
+      // (paths that DO exist on disk) are still preserved per
+      // v2.0.20+FN-14 contract — verified by the
+      // 'fileExists branch preserves real peer' subtest below.
+      //
+      // After install, the only audit-event.js entry should be THIS install's,
+      // pointing at <tmpDir>/.claude/orchestray/bin/audit-event.js.
       assert.ok(
-        auditCommands[0].startsWith(priorPathPrefix),
-        `pre-existing PATH must be preserved (got "${auditCommands[0]}", expected to start with "${priorPathPrefix}")`
+        auditCommands[0].includes('orchestray-hookdedup-test-') ||
+          auditCommands[0].includes(tmpDir),
+        `stale /home/u/... path should be replaced with this install's path (got "${auditCommands[0]}")`
       );
-      // After args-update, no `start` arg should remain (canonical has none).
-      const priorArgsTail = auditCommands[0].slice(priorPathPrefix.length).trim();
+      // No leftover `start` arg from the canonical entry either.
+      const tailMatch = auditCommands[0].match(/audit-event\.js"\s*(.*)$/);
       assert.equal(
-        priorArgsTail,
+        (tailMatch && tailMatch[1]) || '',
         '',
-        `FN-14 should drop non-canonical args; got args tail: "${priorArgsTail}"`
+        `canonical audit-event.js takes no args; got tail: "${(tailMatch && tailMatch[1]) || ''}"`
       );
 
       // collect-context-telemetry.js must be present exactly once.
