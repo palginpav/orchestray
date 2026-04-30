@@ -610,6 +610,11 @@ const configSchema = z.object({
   repo_map_thresholds: repoMapThresholdsSchema.optional(),
   // v2.2.9 B-7.6: TTL for `.orchestray/auto-trigger.json` (seconds; default 3600).
   auto_trigger_ttl_seconds: z.number().int().min(1).optional(),
+  // G-05 (v2.2.14): dossier orphan threshold — positive integer, default 5.
+  // Configures audit-dossier-orphan.js threshold before emitting
+  // `dossier_orphan_threshold_exceeded`. Declared here so config-repair
+  // does not strip user-set values as unknown keys.
+  dossier_orphan_threshold: z.number().int().min(1).optional(),
 }).passthrough(); // R-CONFIG-DRIFT (W9) owns unknown-key warnings; this schema tolerates them.
 
 module.exports = {

@@ -3668,6 +3668,89 @@ function validateHandoffBodyCapConfig(obj) {
 }
 
 // ---------------------------------------------------------------------------
+// dossier_orphan_threshold defaults and loader (G-08 v2.2.13; schema-registered G-05 v2.2.14)
+//
+// dossier_orphan_threshold — positive integer, default 5.
+//   Number of dossier-orphan events within a single orchestration before
+//   `audit-dossier-orphan.js` emits a `dossier_orphan_threshold_exceeded` event.
+//   Read directly as a top-level key from `.orchestray/config.json`.
+//   Range: 1..Infinity (any positive integer). Default 5 per v2.2.13 G-08.
+//
+// NOTE: This is a top-level scalar key (not a nested section), matching how
+// audit-dossier-orphan.js reads it: `cfg.dossier_orphan_threshold`.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_DOSSIER_ORPHAN_THRESHOLD = 5;
+
+/**
+ * Load the `dossier_orphan_threshold` top-level config key from
+ * <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing, unreadable, or malformed config returns
+ * DEFAULT_DOSSIER_ORPHAN_THRESHOLD (5) so the threshold still applies.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ dossier_orphan_threshold: number }}
+ */
+function loadDossierOrphanConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return { dossier_orphan_threshold: DEFAULT_DOSSIER_ORPHAN_THRESHOLD };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return { dossier_orphan_threshold: DEFAULT_DOSSIER_ORPHAN_THRESHOLD };
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { dossier_orphan_threshold: DEFAULT_DOSSIER_ORPHAN_THRESHOLD };
+  }
+
+  const v = parsed.dossier_orphan_threshold;
+  if (Number.isInteger(v) && v >= 1) {
+    return { dossier_orphan_threshold: v };
+  }
+
+  // Key absent or invalid — return default (fail-open).
+  if (v !== undefined && v !== null) {
+    logStderr(
+      'dossier_orphan_threshold must be a positive integer — got ' +
+      JSON.stringify(v) + '; using default ' + DEFAULT_DOSSIER_ORPHAN_THRESHOLD
+    );
+  }
+
+  return { dossier_orphan_threshold: DEFAULT_DOSSIER_ORPHAN_THRESHOLD };
+}
+
+/**
+ * Validate a `dossier_orphan_threshold` value (for config-repair / schema-check paths).
+ *
+ * @param {unknown} v - The raw value from config (may be any type).
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateDossierOrphanThreshold(v) {
+  if (v === undefined || v === null) {
+    // Absent key is valid — caller applies the default.
+    return { valid: true };
+  }
+  if (!Number.isInteger(v) || v < 1) {
+    return {
+      valid: false,
+      errors: [
+        'dossier_orphan_threshold must be a positive integer (>= 1) — got ' + JSON.stringify(v),
+      ],
+    };
+  }
+  return { valid: true };
+}
+
+// ---------------------------------------------------------------------------
 // feature_demand_gate section defaults and loader (R-GATE, v2.1.14)
 //
 // feature_demand_gate.enabled — boolean, default true.
@@ -3935,4 +4018,8 @@ module.exports = {
   DEFAULT_FEATURE_DEMAND_GATE,
   loadFeatureDemandGateConfig,
   validateFeatureDemandGateConfig,
+  // G-05 (v2.2.14): dossier_orphan_threshold — top-level scalar; stops config-repair strip
+  DEFAULT_DOSSIER_ORPHAN_THRESHOLD,
+  loadDossierOrphanConfig,
+  validateDossierOrphanThreshold,
 };
