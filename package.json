@@ -31,7 +31,8 @@
     "lint:specialists": "node bin/validate-specialist.js",
     "lint:config": "node bin/validate-config.js",
     "postinstall": "node -e \"try { require('better-sqlite3') } catch (e) { console.warn('better-sqlite3 not available; FTS5 will be unavailable. Ensure build tools are present or use Node 22.5+'); }\"",
-    "test:release-shape": "ORCHESTRAY_RELEASE_SHAPE_TEST_ENABLED=1 node --test tests/release-only/release-manager-commit-shape.test.js"
+    "test:release-shape": "ORCHESTRAY_RELEASE_SHAPE_TEST_ENABLED=1 node --test tests/release-only/release-manager-commit-shape.test.js",
+    "test:tombstone-probe": "node bin/audit-housekeeper-orphan.js --self-check --force-self-check"
   },
   "keywords": [
     "claude-code",
