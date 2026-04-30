@@ -126,3 +126,72 @@ describe('v2218 W1 — hooks.json SubagentStop bucket position', () => {
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// W3 Stop hook position assertions (appended to same bucket file)
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract ordered command strings from all Stop hook blocks.
+ * @param {object} hooksJson
+ * @returns {string[]}
+ */
+function extractStopCommands(hooksJson) {
+  const blocks = hooksJson.hooks && hooksJson.hooks.Stop;
+  if (!Array.isArray(blocks)) return [];
+
+  const commands = [];
+  for (const block of blocks) {
+    if (!Array.isArray(block.hooks)) continue;
+    for (const h of block.hooks) {
+      if (h && typeof h.command === 'string') {
+        commands.push(h.command);
+      }
+    }
+  }
+  return commands;
+}
+
+describe('v2218 W3 — hooks.json Stop bucket position', () => {
+
+  test('Stop section contains auto-commit-master-on-pm-stop.js', () => {
+    const hooksJson = JSON.parse(fs.readFileSync(HOOKS_PATH, 'utf8'));
+    const commands = extractStopCommands(hooksJson);
+    const idx = commands.findIndex(c => c.includes('auto-commit-master-on-pm-stop.js'));
+    assert.ok(idx >= 0, 'auto-commit-master-on-pm-stop.js must be present in Stop');
+  });
+
+  test('W3 master-commit entry is AFTER audit-dossier-orphan.js in Stop', () => {
+    const hooksJson = JSON.parse(fs.readFileSync(HOOKS_PATH, 'utf8'));
+    const commands = extractStopCommands(hooksJson);
+
+    const dossierIdx = commands.findIndex(c => c.includes('audit-dossier-orphan.js'));
+    const masterIdx  = commands.findIndex(c => c.includes('auto-commit-master-on-pm-stop.js'));
+
+    assert.ok(dossierIdx >= 0, 'audit-dossier-orphan.js must exist in Stop');
+    assert.ok(masterIdx  >= 0, 'auto-commit-master-on-pm-stop.js must exist in Stop');
+    assert.ok(
+      masterIdx > dossierIdx,
+      'W3 master-commit (' + masterIdx + ') must come AFTER audit-dossier-orphan.js (' + dossierIdx + ')'
+    );
+  });
+
+  test('W3 master-commit entry has timeout of 10', () => {
+    const hooksJson = JSON.parse(fs.readFileSync(HOOKS_PATH, 'utf8'));
+    const blocks = hooksJson.hooks && hooksJson.hooks.Stop;
+    assert.ok(Array.isArray(blocks), 'Stop must be an array');
+
+    let found = false;
+    for (const block of blocks) {
+      if (!Array.isArray(block.hooks)) continue;
+      for (const h of block.hooks) {
+        if (h && typeof h.command === 'string' && h.command.includes('auto-commit-master-on-pm-stop.js')) {
+          assert.equal(h.timeout, 10, 'W3 master-commit hook must have timeout: 10');
+          found = true;
+        }
+      }
+    }
+    assert.ok(found, 'auto-commit-master-on-pm-stop.js hook entry must be present');
+  });
+
+});

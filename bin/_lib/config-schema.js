@@ -4022,6 +4022,92 @@ function validateWorktreeAutoCommitConfig(obj) {
 }
 
 // ---------------------------------------------------------------------------
+// master_auto_commit section defaults and loader (W3 v2.2.18)
+//
+// master_auto_commit.enabled — boolean, default true.
+//   When true, the Stop hook auto-commits dirty master tree when an orchestration
+//   is active, so PM-level edits are never silently lost on PM Stop.
+//   Kill switch: set to false here, or set env ORCHESTRAY_MASTER_AUTO_COMMIT_DISABLED=1.
+//   Per feedback_default_on_shipping.md: default is ON; kill switch is the override.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_MASTER_AUTO_COMMIT = Object.freeze({
+  enabled: true,
+});
+
+/**
+ * Load and merge the master_auto_commit config section from
+ * <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing/malformed returns DEFAULT_MASTER_AUTO_COMMIT
+ * so the hook still runs at a safe default.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ enabled: boolean }}
+ */
+function loadMasterAutoCommitConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_MASTER_AUTO_COMMIT);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_MASTER_AUTO_COMMIT);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_MASTER_AUTO_COMMIT);
+  }
+
+  const fromFile = parsed.master_auto_commit;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_MASTER_AUTO_COMMIT);
+  }
+
+  const merged = Object.assign({}, DEFAULT_MASTER_AUTO_COMMIT, sanitizeConfig(fromFile));
+
+  // Validate and warn — always return merged (fail-open).
+  try {
+    const result = validateMasterAutoCommitConfig(merged);
+    if (!result.valid) {
+      logStderr('master_auto_commit config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) {
+    // Validation must never throw
+  }
+
+  return merged;
+}
+
+/**
+ * Validate a master_auto_commit config object.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateMasterAutoCommitConfig(obj) {
+  const errors = [];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['master_auto_commit must be an object'] };
+  }
+
+  if ('enabled' in obj && typeof obj.enabled !== 'boolean') {
+    errors.push(
+      'master_auto_commit.enabled must be a boolean — got ' + JSON.stringify(obj.enabled)
+    );
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
+// ---------------------------------------------------------------------------
 // dual_install section defaults and loader (W7 v2.2.18)
 //
 // dual_install.autoheal_enabled — boolean, default true.
@@ -4217,6 +4303,10 @@ module.exports = {
   DEFAULT_WORKTREE_AUTO_COMMIT,
   loadWorktreeAutoCommitConfig,
   validateWorktreeAutoCommitConfig,
+  // W3 (v2.2.18): master_auto_commit config block
+  DEFAULT_MASTER_AUTO_COMMIT,
+  loadMasterAutoCommitConfig,
+  validateMasterAutoCommitConfig,
   // W7 (v2.2.18): dual_install autoheal config
   DEFAULT_DUAL_INSTALL,
   loadDualInstallConfig,

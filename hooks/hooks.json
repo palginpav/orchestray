@@ -635,6 +635,15 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/auto-commit-master-on-pm-stop.js",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "SubagentStop": [

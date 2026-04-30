@@ -216,6 +216,31 @@ execution proceeds group by group:
 6. **Complete audit trail:** Write orchestration_complete event and archive audit data
    (see `(see phase-close.md §"15. Cost Tracking — Detailed Audit Protocols")` step 3).
 
+### 14.W: Master-Tree Auto-Commit on PM Stop (W3 v2.2.18)
+
+Master-tree edits are auto-committed on PM Stop via `bin/auto-commit-master-on-pm-stop.js`
+when an orchestration is active. The `Stop` hook fires whenever the PM turn ends, so any
+dirty master-tree state is captured automatically with a `wip(orch <id> stop <ts>):` commit.
+
+**What this means in practice:**
+
+- PM does NOT need to manually `git add -A && git commit` between groups to create recovery
+  points. The framework handles it.
+- Voluntary commits remain valid and encouraged — the auto-commit is a no-op on a clean tree.
+- The auto-commit carries `Generated-By: orchestray-auto-commit-master` and is exempted from
+  the `## Handoff` body requirement in `validate-commit-handoff.js`.
+
+**Kill switches (in priority order):**
+
+1. `ORCHESTRAY_MASTER_AUTO_COMMIT_DISABLED=1` — env var (fastest).
+2. `master_auto_commit.enabled: false` in `.orchestray/config.json`.
+
+**Guards (auto-commit skips silently):**
+
+- No active orchestration (`.orchestray/state/orchestration.md` `status` ≠ `active`).
+- Mid-git-operation: `.git/REBASE_HEAD`, `.git/MERGE_HEAD`, `.git/CHERRY_PICK_HEAD`, or `.git/BISECT_LOG` present.
+- Clean master tree (nothing to commit).
+
 ### 14.Y: Mid-task Ambiguity Handling via `ask_user`
 
 When you write delegation prompts for specialists, include this verbatim:
