@@ -479,8 +479,8 @@ contract is documented in `extraction-protocol.md §22b-pre`.
   "match_quality": "strong-match | weak-match | edge-case",
   "skip_category": "contextual-mismatch | stale | superseded | operator-override | forgotten",
   "skip_reason": "<freeform prose, or null>",
-  "cited_confidence": 0.35,
-  "superseded_by": "<name of superseding pattern>"
+  "cited_confidence": null,
+  "superseded_by": "<name of superseding pattern, or null>"
 }
 ```
 
@@ -2391,25 +2391,11 @@ each item in the returned pattern or artifact list carries a `source` field:
   "timestamp": "<ISO 8601>",
   "type": "mcp_tool_call",
   "tool": "pattern_find",
-  "result_preview": {
-    "matches": [
-      {
-        "slug": "audit-fix-verify-triad",
-        "confidence": 0.85,
-        "source": "local"
-      },
-      {
-        "slug": "decomposition-parallel-groups",
-        "confidence": 0.72,
-        "source": "local"
-      },
-      {
-        "slug": "security-review-pre-merge",
-        "confidence": 0.61,
-        "source": "shared"
-      }
-    ]
-  }
+  "result_preview": null,
+  "matches": null,
+  "slug": null,
+  "confidence": null,
+  "source": null
 }
 ```
 
@@ -6120,7 +6106,7 @@ detect token-counting drift.
   "estimated_input_tokens_pre": 3086,
   "actual_input_tokens": 3201,
   "actual_savings_tokens": -115,
-  "quality_signal_status": "success | partial | failure",
+  "quality_signal_status": "success | partial | failure | null",
   "estimation_error_pct": 3.7
 }
 ```
@@ -6924,7 +6910,9 @@ Emitted by `bin/audit-dossier-orphan.js` (Stop-hook tail, post-orchestration) wh
   "timestamp": "ISO 8601",
   "orchestration_id": "<id>",
   "write_count": 3,
-  "inject_count": 0
+  "inject_count": 0,
+  "inject_skip_reason": null,
+  "archive_age_seconds": null
 }
 ```
 
@@ -6933,6 +6921,8 @@ Field notes:
 - `inject_count`: number of `dossier_injected` rows for this `orchestration_id`.
 - A row with `write_count > 0` AND `inject_count == 0` AND no `dossier_injection_skipped(skip_reason ≠ kill_switch_set)` means the inject side is dark — operator must investigate.
 - Skips with `skip_reason == kill_switch_set` are NOT counted as orphans because the operator deliberately suppressed inject.
+- `inject_skip_reason` *(optional)*: the dominant `skip_reason` from paired `dossier_injection_skipped` events for this orchestration. Populated by `bin/_lib/dossier-orphan-escalator.js` when the skip reason is attributable.
+- `archive_age_seconds` *(optional)*: seconds elapsed between the dossier write timestamp and this event emission. Useful for diagnosing time-lag between write and inject path.
 - Optional fields: `skip_count` (count of paired `dossier_injection_skipped` rows), `kill_switch_skip_count`, `archive_source` (`per_orch_archive | live_events_filter`).
 - **`feature_optional: false`** — required for the v2.2.9 anti-regression invariant.
 
@@ -7224,13 +7214,15 @@ Emitted by `bin/release-manager/dual-install-parity-check.js` (v2.2.9 B-6.1, Sub
   "file_path": "relative/path/from/bin.js",
   "divergence_type": "orphan",
   "source_hash": null,
-  "target_hash": "sha256-hex"
+  "target_hash": "sha256-hex",
+  "divergence_pair_signature": null
 }
 ```
 
 Field notes:
 - `divergence_type` ∈ `{orphan, content_mismatch}`. `orphan` = file present in `.claude/orchestray/bin/` but not in `bin/` (a stale installer artefact). `content_mismatch` = same relative path in both but different SHA-256 (dedup pass dropped a hook update; install ran on a divergent branch; etc.).
 - `source_hash` / `target_hash` — SHA-256 hex of the canonical (`bin/`) and installed (`.claude/orchestray/bin/`) copies respectively. `null` when the file is missing on that side (orphans always have `source_hash: null`).
+- `divergence_pair_signature` *(optional)*: a compact signature combining `divergence_type` and both hashes, used to deduplicate per-file events into logical groups. Format: `"<divergence_type>:<source_hash_prefix>:<target_hash_prefix>"`. Absent on older emitters.
 - `feature_optional: false` — this event is REQUIRED to fire on every dual-install divergence; F3's promised-event tracker SHOULD alarm if dark across releases.
 - Kill switch: `ORCHESTRAY_DUAL_INSTALL_CHECK_DISABLED=1` is honored only for non-release SubagentStop invocations. Releases (subagent_type === `release-manager`) always parity-check (scope-lock #3).
 
@@ -7440,13 +7432,17 @@ Emitted by `bin/audit-housekeeper-orphan.js` when the drainer injected the promp
   "request_id": "...",
   "requested_agent": "orchestray-housekeeper",
   "drained_at": "ISO 8601",
-  "drainer_orphan_age_seconds": 75
+  "drainer_orphan_age_seconds": 75,
+  "tombstone_until": null
 }
 ```
 
 Field notes:
 - `drained_at`: ISO8601 timestamp when the drainer marked the row as processed.
 - `drainer_orphan_age_seconds`: seconds elapsed since `drained_at`.
+- `tombstone_until` *(optional)*: ISO 8601 timestamp until which this request_id is
+  tombstoned (suppressed from re-emit). Set by `bin/audit-housekeeper-orphan.js` after
+  the first emit to prevent the re-emit loop. Absent when no tombstone has been written.
 - `feature_optional`: false.
 
 ---
@@ -7878,7 +7874,8 @@ Kill switch: `ORCHESTRAY_CONTRACTS_RUNPOST_AUDIT_DISABLED=1` suppresses the emit
   "task_id": "W-example",
   "reason": "no_contracts_block",
   "schema_version": 1,
-  "timestamp": "2026-01-01T00:00:00.000Z"
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "task_id_inferred": null
 }
 ```
 
@@ -7890,6 +7887,7 @@ Field notes:
   - `task_yaml_read_error` — task YAML file exists but could not be read/parsed.
   - `no_contracts_block` — task YAML loaded successfully but has no `contracts:` block.
 - `schema_version`: always 1.
+- `task_id_inferred` *(optional)*: a best-effort task_id derived from context when the upstream `task_created` emit did not include a `task_id`. Allows the post-condition validator to attempt contract checks even when the upstream emit gap is present. `null` when no inference was possible.
 
 Emitted from: `bin/validate-task-contracts.js` PostToolUse:Agent path (v2.2.13 W5).
 

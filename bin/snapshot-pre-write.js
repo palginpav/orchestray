@@ -252,6 +252,7 @@ function snapshotFile(projectRoot, orchId, spawnId, agentType, filePath) {
       type: 'snapshot_captured',
       version: 1,
       schema_version: 1,
+      timestamp: new Date().toISOString(),
       orchestration_id: orchId,
       spawn_id: spawnId,
       agent_type: agentType,
