@@ -187,6 +187,11 @@ const KNOWN_TOP_LEVEL_KEYS = Object.freeze([
 
   // Meta
   'config_drift_silence',
+
+  // G-05 (v2.2.14): dossier orphan threshold — top-level scalar declared in
+  // config-schema.js; mirrored here so the drift detector stops emitting
+  // "unknown config key" warnings when users set this key.
+  'dossier_orphan_threshold',
 ]);
 
 /**
