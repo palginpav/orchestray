@@ -7433,7 +7433,7 @@ Emitted by `bin/audit-housekeeper-orphan.js` when the drainer injected the promp
   "requested_agent": "orchestray-housekeeper",
   "drained_at": "ISO 8601",
   "drainer_orphan_age_seconds": 75,
-  "tombstone_until": null
+  "tombstone_until": "2026-05-07T16:12:02.186Z"
 }
 ```
 
@@ -9830,3 +9830,277 @@ Emitted from: `bin/mcp-server/lib/audit.js`, called by `bin/mcp-server/server.js
 on every `resources/read` dispatch.
 
 Kill switch: none — emission is intrinsic to the resources/read handler.
+
+---
+
+### `worktree_auto_commit_emitted` event
+
+Emitted when SubagentStop hook successfully auto-commits a dirty linked worktree. Closes the four-time-recurring data-loss bug where uncommitted agent edits were silently discarded by worktree cleanup.
+
+```json
+{
+  "type": "worktree_auto_commit_emitted",
+  "version": 1,
+  "schema_version": 1,
+  "ts": "2026-05-01T10:00:00.000Z",
+  "orchestration_id": "orch-20260501T100000Z-example",
+  "session_id": "sess-abc123",
+  "subagent_type": "developer",
+  "worktree_basename": "agent-afb2aadf57297e722",
+  "files_changed_count": 3,
+  "commit_sha": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+}
+```
+
+Field notes:
+- `ts`: ISO 8601 timestamp of the auto-commit operation.
+- `orchestration_id`: current orchestration ID at time of SubagentStop.
+- `session_id`: Claude Code session ID of the stopping subagent.
+- `subagent_type`: role of the agent whose worktree was committed (e.g. `developer`, `reviewer`).
+- `worktree_basename`: basename of the linked worktree directory (e.g. `agent-afb2aadf57297e722`).
+- `files_changed_count`: number of files included in the auto-commit.
+- `commit_sha`: full 40-char SHA of the resulting commit.
+
+Emitted from: `bin/auto-commit-worktree-on-subagent-stop.js` (W1, v2.2.18).
+
+Kill switch: `ORCHESTRAY_WORKTREE_AUTO_COMMIT_DISABLED=1`.
+
+---
+
+### `worktree_auto_commit_failed` event
+
+Emitted when the W1 auto-commit attempt fails (git commit exited non-zero). `stderr_excerpt` is truncated to first 200 chars.
+
+```json
+{
+  "type": "worktree_auto_commit_failed",
+  "version": 1,
+  "schema_version": 1,
+  "ts": "2026-05-01T10:00:00.000Z",
+  "orchestration_id": "orch-20260501T100000Z-example",
+  "error_code": 128,
+  "stderr_excerpt": "fatal: not a git repository (or any of the parent directories): .git",
+  "subagent_type": null,
+  "worktree_basename": null
+}
+```
+
+Field notes:
+- `ts`: ISO 8601 timestamp of the failed auto-commit attempt.
+- `orchestration_id`: current orchestration ID at time of SubagentStop.
+- `error_code`: exit code from the failing `git commit` process.
+- `stderr_excerpt`: first 200 characters of stderr output from the failing command.
+- `subagent_type` *(optional)*: role of the agent whose worktree failed to commit. Absent when agent role cannot be determined.
+- `worktree_basename` *(optional)*: basename of the linked worktree directory. Absent when the worktree path cannot be resolved.
+
+Emitted from: `bin/auto-commit-worktree-on-subagent-stop.js` (W1, v2.2.18).
+
+Kill switch: `ORCHESTRAY_WORKTREE_AUTO_COMMIT_DISABLED=1`.
+
+---
+
+### `tombstone_until_probe_passed` event
+
+Emitted when `npm run test:tombstone-probe` exits 0 — all 4 invariants pass. `invariants_checked` always equals 4 (value_is_string, value_is_iso, value_is_future, value_within_ttl).
+
+```json
+{
+  "type": "tombstone_until_probe_passed",
+  "version": 1,
+  "schema_version": 1,
+  "ts": "2026-05-01T10:00:00.000Z",
+  "request_id": "req-20260501T100000Z-abc123",
+  "ttl_days": 7,
+  "computed_value": "2026-05-08T10:00:00.000Z",
+  "invariants_checked": 4
+}
+```
+
+Field notes:
+- `ts`: ISO 8601 timestamp of the probe run.
+- `request_id`: the spawn request ID being probed.
+- `ttl_days`: TTL in days applied to compute the tombstone expiry (always 7 in v2.2.18).
+- `computed_value`: the ISO 8601 timestamp computed as `now + ttl_days`.
+- `invariants_checked`: always `4` — value_is_string, value_is_iso, value_is_future, value_within_ttl.
+
+Emitted from: `bin/audit-housekeeper-orphan.js` (`runSelfCheck`, W4, v2.2.18).
+
+Kill switch: `ORCHESTRAY_TOMBSTONE_PROBE_DISABLED=1`.
+
+---
+
+### `tombstone_until_probe_failed` event
+
+Emitted when the AC-11 probe fails an invariant. `failed_assertion` enum: `value_is_string` | `value_is_iso` | `value_is_future` | `value_within_ttl`.
+
+```json
+{
+  "type": "tombstone_until_probe_failed",
+  "version": 1,
+  "schema_version": 1,
+  "ts": "2026-05-01T10:00:00.000Z",
+  "request_id": "req-20260501T100000Z-abc123",
+  "failed_assertion": "value_is_future",
+  "computed_value": "2026-04-30T09:59:59.999Z"
+}
+```
+
+Field notes:
+- `ts`: ISO 8601 timestamp of the probe run.
+- `request_id`: the spawn request ID that failed the probe.
+- `failed_assertion`: which invariant failed. Enum: `value_is_string` | `value_is_iso` | `value_is_future` | `value_within_ttl`.
+- `computed_value`: the value that was computed and tested (the ISO string or non-string that failed).
+
+Emitted from: `bin/audit-housekeeper-orphan.js` (`runSelfCheck`, W4, v2.2.18).
+
+Kill switch: `ORCHESTRAY_TOMBSTONE_PROBE_DISABLED=1`.
+
+---
+
+### `schema_cache_invalidated` event
+
+Emitted by the schema-shadow validator when its cached parse is invalidated by an mtime change to `event-schemas.md`. `cause` enum: `mtime_changed` | `stat_failed` | `manual`. `new_mtime` is null when `cause` is `stat_failed`.
+
+```json
+{
+  "type": "schema_cache_invalidated",
+  "version": 1,
+  "schema_version": 1,
+  "ts": "2026-05-01T10:00:00.000Z",
+  "prior_mtime": 1746093600000,
+  "cause": "mtime_changed",
+  "schema_event_count": 260,
+  "new_mtime": null,
+  "error_code": null
+}
+```
+
+Field notes:
+- `ts`: ISO 8601 timestamp when the invalidation was detected.
+- `prior_mtime`: the mtime (epoch ms) of `event-schemas.md` from the last successful cache load.
+- `cause`: what triggered the invalidation. Enum: `mtime_changed` | `stat_failed` | `manual`.
+- `schema_event_count`: the event-count (shadow `event_count`) of the schema at time of invalidation.
+- `new_mtime` *(optional)*: the new mtime (epoch ms) after stat. Absent (null) when `cause` is `stat_failed`.
+- `error_code` *(optional)*: OS error code when `cause` is `stat_failed` (e.g. `ENOENT`). Absent otherwise.
+
+Emitted from: `bin/_lib/event-schemas-parser.js` (`_emitCacheInvalidation`, W5, v2.2.18).
+
+Kill switch: `ORCHESTRAY_SCHEMA_CACHE_EMIT_DISABLED=1`.
+
+---
+
+### `dual_install_autoheal` event
+
+Emitted when the dual-install parity check successfully overwrites a stale global-install file with local-install bytes. `from_install` is always `local`, `to_install` always `global`.
+
+```json
+{
+  "type": "dual_install_autoheal",
+  "version": 1,
+  "schema_version": 1,
+  "ts": "2026-05-01T10:00:00.000Z",
+  "path": "bin/some-hook.js",
+  "from_install": "local",
+  "to_install": "global",
+  "bytes_replaced": 4096,
+  "local_canonical_sha": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+  "prior_global_sha": "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5"
+}
+```
+
+Field notes:
+- `ts`: ISO 8601 timestamp of the autoheal operation.
+- `path`: project-relative path of the file that was healed (relative to `bin/`).
+- `from_install`: always `"local"` — the local install is the canonical source.
+- `to_install`: always `"global"` — the global install is the stale target.
+- `bytes_replaced`: byte length of the file written.
+- `local_canonical_sha`: SHA-256 hex of the local (source) file.
+- `prior_global_sha`: SHA-256 hex of the global file before overwrite.
+
+Emitted from: `bin/release-manager/dual-install-parity-check.js` (`tryHealGlobalFile`, W7, v2.2.18).
+
+Kill switch: `ORCHESTRAY_DUAL_INSTALL_AUTOHEAL_DISABLED=1`.
+
+---
+
+### `dual_install_autoheal_skipped` event
+
+Emitted when auto-heal would have run but a precondition failed. `reason` enum: `reverse_direction_global_newer` | `local_missing` | `global_missing` | `sha_mismatch_post_write` | `permission_denied` | `write_error` | `race_resolved`.
+
+```json
+{
+  "type": "dual_install_autoheal_skipped",
+  "version": 1,
+  "schema_version": 1,
+  "ts": "2026-05-01T10:00:00.000Z",
+  "path": "bin/some-hook.js",
+  "reason": "reverse_direction_global_newer"
+}
+```
+
+Field notes:
+- `ts`: ISO 8601 timestamp when the skip decision was made.
+- `path`: project-relative path of the file that was not healed.
+- `reason`: why auto-heal was skipped. Enum: `reverse_direction_global_newer` | `local_missing` | `global_missing` | `sha_mismatch_post_write` | `permission_denied` | `write_error` | `race_resolved`.
+
+Emitted from: `bin/release-manager/dual-install-parity-check.js` (`tryHealGlobalFile`, W7, v2.2.18).
+
+Kill switch: `ORCHESTRAY_DUAL_INSTALL_AUTOHEAL_DISABLED=1`.
+
+---
+
+### `tokenwright_bootstrap_applied` event
+
+Emitted when the W8 rolling-median bootstrapper computes a per-agent estimate from at least 3 historical `tokenwright_realized_savings.actual_input_tokens` samples. `pre_estimate` is the static fallback (500); `post_estimate` is the median.
+
+```json
+{
+  "type": "tokenwright_bootstrap_applied",
+  "version": 1,
+  "schema_version": 1,
+  "ts": "2026-05-01T10:00:00.000Z",
+  "agent_type": "developer",
+  "sample_size": 5,
+  "median_actual_tokens": 1240,
+  "pre_estimate": 500,
+  "post_estimate": 1240
+}
+```
+
+Field notes:
+- `ts`: ISO 8601 timestamp of the bootstrap computation.
+- `agent_type`: the agent role for which the estimate was bootstrapped (e.g. `developer`, `reviewer`).
+- `sample_size`: number of historical `actual_input_tokens` samples used to compute the median (always ≥ 3).
+- `median_actual_tokens`: the computed median of the historical sample set.
+- `pre_estimate`: the static fallback value that was in use before bootstrap (always `500` in v2.2.18).
+- `post_estimate`: the new per-agent estimate set by the bootstrapper (equals `median_actual_tokens`).
+
+Emitted from: `bin/_lib/tokenwright/bootstrap-estimator.js` (W8, v2.2.18).
+
+Kill switch: `ORCHESTRAY_TOKENWRIGHT_BOOTSTRAP_DISABLED=1`.
+
+---
+
+### `tokenwright_bootstrap_skipped` event
+
+Emitted when bootstrap was attempted but skipped. `reason` enum: `metrics_file_missing` | `parse_error` | `insufficient_samples`. Note: `kill_switch` is intentionally NOT a reason — kill switches are silent.
+
+```json
+{
+  "type": "tokenwright_bootstrap_skipped",
+  "version": 1,
+  "schema_version": 1,
+  "ts": "2026-05-01T10:00:00.000Z",
+  "agent_type": "developer",
+  "reason": "insufficient_samples"
+}
+```
+
+Field notes:
+- `ts`: ISO 8601 timestamp of the skipped bootstrap attempt.
+- `agent_type`: the agent role for which bootstrap was attempted.
+- `reason`: why bootstrap was skipped. Enum: `metrics_file_missing` | `parse_error` | `insufficient_samples`. `kill_switch` is intentionally omitted — kill switch paths are silent (no event emitted).
+
+Emitted from: `bin/_lib/tokenwright/bootstrap-estimator.js` (W8, v2.2.18).
+
+Kill switch: `ORCHESTRAY_TOKENWRIGHT_BOOTSTRAP_DISABLED=1`.
