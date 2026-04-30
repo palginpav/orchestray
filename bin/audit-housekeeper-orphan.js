@@ -61,6 +61,42 @@ const HOUSEKEEPER_AGENT       = 'orchestray-housekeeper';
 const MAX_LIVE_BYTES          = 64 * 1024 * 1024; // 64 MB defensive cap
 
 // ---------------------------------------------------------------------------
+// Drainer tombstone — prevents the same spawn_drainer_orphaned event from
+// being re-emitted on every Stop fire. Each tombstone expires after 7 days.
+// ---------------------------------------------------------------------------
+
+const TOMBSTONE_TTL_DAYS = 7;
+
+function _tombstonePath(cwd) {
+  return path.join(cwd, '.orchestray', 'state', 'drainer-tombstones.jsonl');
+}
+
+function writeTombstone(cwd, requestId) {
+  const until = new Date(Date.now() + TOMBSTONE_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  try {
+    const dir = path.join(cwd, '.orchestray', 'state');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(_tombstonePath(cwd), JSON.stringify({ request_id: requestId, until }) + '\n');
+  } catch (_e) { /* fail-open */ }
+}
+
+function isTombstoned(cwd, requestId) {
+  const p = _tombstonePath(cwd);
+  if (!fs.existsSync(p)) return false;
+  const now = Date.now();
+  let lines;
+  try {
+    lines = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean);
+  } catch (_e) { return false; }
+  return lines.some(line => {
+    try {
+      const t = JSON.parse(line);
+      return t.request_id === requestId && new Date(t.until).getTime() > now;
+    } catch (_e) { return false; }
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -227,21 +263,26 @@ function main() {
         try { row = JSON.parse(line); } catch (_e) { continue; }
         if (!row || row.requested_agent !== HOUSEKEEPER_AGENT) continue;
         if (!row.drained_at || row.orphan_reported_at) continue;
+        if (isTombstoned(cwd, row.request_id)) continue;
         const drainedMs = tsMs(row.drained_at);
         if (drainedMs == null) continue;
         const age = Date.now() - drainedMs;
         if (age <= ORPHAN_AGE_THRESHOLD_MS) continue;
         if (hasAgentCallAfter(events, row.drained_at)) continue;
         try {
+          const tombstoneUntil = new Date(Date.now() + TOMBSTONE_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
           writeEvent({
             type:                          'spawn_drainer_orphaned',
             version:                       1,
+            timestamp:                     new Date().toISOString(),
             orchestration_id:              orchId,
             request_id:                    row.request_id,
             requested_agent:               row.requested_agent,
             drained_at:                    row.drained_at,
             drainer_orphan_age_seconds:    Math.floor(age / 1000),
+            tombstone_until:               tombstoneUntil,
           }, { cwd });
+          writeTombstone(cwd, row.request_id);
           row.orphan_reported_at = new Date().toISOString();
         } catch (e) {
           process.stderr.write(`audit-housekeeper-orphan: drainer emit failed: ${e && e.message}\n`);

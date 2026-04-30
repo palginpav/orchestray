@@ -110,6 +110,46 @@ function _readOrchestrationEvents(cwd, orchestrationId) {
 }
 
 /**
+ * Derive inject_skip_reason from events for triage.
+ * Returns a string indicating why injection was skipped, or null if no skip events found.
+ *
+ * Priority: explicit skip_reason from dossier_injection_skipped events →
+ *   'no_inject_event_found' when writes exist but zero inject/skip rows.
+ *
+ * @param {object[]} events
+ * @returns {string|null}
+ */
+function deriveInjectSkipReason(events) {
+  for (const ev of events) {
+    if (!ev || ev.type !== 'dossier_injection_skipped') continue;
+    if (typeof ev.skip_reason === 'string' && ev.skip_reason) return ev.skip_reason;
+  }
+  // No skip event at all — injection path never fired.
+  return 'no_inject_event_found';
+}
+
+/**
+ * Derive archive_age_seconds: seconds elapsed since the oldest dossier_written timestamp.
+ * Returns null if no parseable timestamp is found.
+ *
+ * @param {object[]} events
+ * @returns {number|null}
+ */
+function deriveArchiveAgeSeconds(events) {
+  let oldestMs = null;
+  for (const ev of events) {
+    if (!ev || ev.type !== 'dossier_written') continue;
+    const ts = ev.timestamp || ev.ts;
+    if (typeof ts !== 'string') continue;
+    const ms = Date.parse(ts);
+    if (!Number.isFinite(ms)) continue;
+    if (oldestMs === null || ms < oldestMs) oldestMs = ms;
+  }
+  if (oldestMs === null) return null;
+  return Math.round((Date.now() - oldestMs) / 1000);
+}
+
+/**
  * Tally write/inject/skip events for the supplied event list.
  *
  * @param {object[]} events
@@ -286,6 +326,11 @@ function runAudit(opts) {
     const tally = tallyDossierEvents(events);
     if (!isOrphan(tally)) continue;
 
+    // Derive triage fields (§2.9): inject_skip_reason helps distinguish
+    // "inject path skipped" vs "writes legitimate but not consumed".
+    // archive_age_seconds helps identify stale orphans vs fresh ones.
+    const injectSkipReason = deriveInjectSkipReason(events);
+    const archiveAgeSeconds = deriveArchiveAgeSeconds(events);
     const payload = {
       type: 'dossier_write_without_inject_detected',
       version: 1,
@@ -295,7 +340,11 @@ function runAudit(opts) {
       skip_count: tally.skip_count,
       kill_switch_skip_count: tally.kill_switch_skip_count,
       archive_source: source,
+      inject_skip_reason: injectSkipReason,
     };
+    if (archiveAgeSeconds !== null) {
+      payload.archive_age_seconds = archiveAgeSeconds;
+    }
     try {
       writeEvent(payload, { cwd });
     } catch (_e) { /* fail-open */ }
@@ -354,4 +403,6 @@ module.exports = {
   _readOrchestrationEvents,
   _readThreshold,
   _parseJsonl,
+  deriveInjectSkipReason,
+  deriveArchiveAgeSeconds,
 };
