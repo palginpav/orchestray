@@ -837,24 +837,26 @@ function main() {
         const { multipleBlocks, count: srCount } = detectMultipleStructuredResultBlocks(rawAgentTextForP105);
         if (multipleBlocks) {
           const gateDisabled = process.env.ORCHESTRAY_MULTI_STRUCTURED_RESULT_GATE_DISABLED === '1';
-          emitAuditEvent(cwd, {
-            version:          1,
-            timestamp:        new Date().toISOString(),
-            type:             'multiple_structured_result_blocks',
-            hook:             'validate-task-completion',
-            orchestration_id: resolveOrchestrationId(cwd),
-            agent_role:       agentRole,
-            block_count:      srCount,
-            gate_disabled:    gateDisabled,
-            session_id:       event.session_id || null,
-          });
-          process.stderr.write(
-            '[orchestray] validate-task-completion: WARN — ' + (agentRole || 'unknown') +
-            ' output contains ' + srCount + ' `## Structured Result` blocks (expected 1). ' +
-            'Only the last block is parsed. Will exit 2 in v2.2.16. ' +
-            'Kill switch: ORCHESTRAY_MULTI_STRUCTURED_RESULT_GATE_DISABLED=1\n'
-          );
-          // Warn-only in v2.2.15 — no exit 2 here yet.
+          if (!gateDisabled) {
+            emitAuditEvent(cwd, {
+              version:          1,
+              timestamp:        new Date().toISOString(),
+              type:             'multiple_structured_result_blocks',
+              hook:             'validate-task-completion',
+              orchestration_id: resolveOrchestrationId(cwd),
+              agent_role:       agentRole,
+              block_count:      srCount,
+              gate_disabled:    false,
+              session_id:       event.session_id || null,
+            });
+            process.stderr.write(
+              '[orchestray] validate-task-completion: WARN — ' + (agentRole || 'unknown') +
+              ' output contains ' + srCount + ' `## Structured Result` blocks (expected 1). ' +
+              'Only the last block is parsed. Will exit 2 in v2.2.16. ' +
+              'Kill switch: ORCHESTRAY_MULTI_STRUCTURED_RESULT_GATE_DISABLED=1\n'
+            );
+            // Warn-only in v2.2.15 — no exit 2 here yet.
+          }
         }
       }
     } catch (_p105err) { /* fail-open — multi-block check never blocks */ }

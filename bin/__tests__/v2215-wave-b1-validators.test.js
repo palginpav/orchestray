@@ -53,7 +53,7 @@ function writeOrchMarker(tmp, orchId) {
 }
 
 // ---------------------------------------------------------------------------
-// P1-05 — detectMultipleStructuredResultBlocks
+// P1-05 — detectMultipleStructuredResultBlocks (pure function)
 // ---------------------------------------------------------------------------
 
 describe('v2.2.15 P1-05 — detectMultipleStructuredResultBlocks', () => {
@@ -83,6 +83,73 @@ describe('v2.2.15 P1-05 — detectMultipleStructuredResultBlocks', () => {
     const r = detectMultipleStructuredResultBlocks('some output without structured result');
     assert.equal(r.multipleBlocks, false);
     assert.equal(r.count, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P1-05 — emit pipeline integration (single-block/two-block/kill-switch)
+// ---------------------------------------------------------------------------
+
+describe('v2.2.15 P1-05 — emit pipeline integration', () => {
+  const HOOK = path.resolve(__dirname, '..', 'validate-task-completion.js');
+
+  function runHookP105(outputText, env = {}) {
+    const tmp = makeTmp('p105-emit-');
+    writeOrchMarker(tmp, 'orch-test-p105-emit');
+    const baseEnv = { ...process.env };
+    delete baseEnv.ORCHESTRAY_MULTI_STRUCTURED_RESULT_GATE_DISABLED;
+    const payload = {
+      hook_event_name: 'SubagentStop',
+      // Use a synthetic role not in ROLE_SCHEMAS to avoid role-schema gate
+      // interference — the P1-05 check runs before role-schema and is
+      // role-agnostic, so any non-schema role exercises the same code path.
+      subagent_type: 'test-multi-block-p105',
+      cwd: tmp,
+      output: outputText,
+    };
+    const r = spawnSync(NODE, [HOOK], {
+      input: JSON.stringify(payload),
+      encoding: 'utf8',
+      timeout: 10_000,
+      env: { ...baseEnv, ...env },
+    });
+    return { ...r, tmp };
+  }
+
+  test('single block → no multiple_structured_result_blocks event emitted', () => {
+    const output = '## Structured Result\n\n```json\n{"status":"success","summary":"ok","files_changed":[],"files_read":[],"issues":[],"assumptions":[]}\n```';
+    const { status, tmp } = runHookP105(output);
+    const events = readEvents(tmp);
+    cleanup(tmp);
+    assert.equal(status, 0);
+    const multiEvents = events.filter(e => e.type === 'multiple_structured_result_blocks');
+    assert.equal(multiEvents.length, 0, 'no event emitted for single block');
+  });
+
+  test('two blocks → emits multiple_structured_result_blocks with block_count 2 (warn-only, exit 0)', () => {
+    const block = '## Structured Result\n\n```json\n{"status":"success","summary":"done","files_changed":[],"files_read":[],"issues":[],"assumptions":[]}\n```';
+    const output = block + '\n\nSome more content\n\n' + block;
+    const { status, stderr, tmp } = runHookP105(output);
+    const events = readEvents(tmp);
+    cleanup(tmp);
+    // Warn-only in v2.2.15 — must NOT exit 2
+    assert.equal(status, 0, 'exit 0 (warn-only in v2.2.15)');
+    const multiEvent = events.find(e => e.type === 'multiple_structured_result_blocks');
+    assert.ok(multiEvent, 'multiple_structured_result_blocks event must be emitted');
+    assert.equal(multiEvent.block_count, 2, 'block_count must be 2');
+    assert.ok(stderr.includes('WARN'), 'stderr must include WARN');
+  });
+
+  test('kill switch active → no event emitted even with two blocks', () => {
+    const block = '## Structured Result\n\n```json\n{"status":"success","summary":"done","files_changed":[],"files_read":[],"issues":[],"assumptions":[]}\n```';
+    const output = block + '\n\nSome more content\n\n' + block;
+    const { status, tmp } = runHookP105(output, { ORCHESTRAY_MULTI_STRUCTURED_RESULT_GATE_DISABLED: '1' });
+    const events = readEvents(tmp);
+    cleanup(tmp);
+    assert.equal(status, 0);
+    // Kill switch suppresses the event entirely — no multiple_structured_result_blocks event.
+    const multiEvents = events.filter(e => e.type === 'multiple_structured_result_blocks');
+    assert.equal(multiEvents.length, 0, 'no event when kill switch is active');
   });
 });
 
