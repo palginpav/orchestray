@@ -114,7 +114,8 @@ describe('R-SHDW: generator', () => {
     const shadow = JSON.parse(fs.readFileSync(SHADOW_PATH, 'utf8'));
     assert.equal(shadow._meta.version, 1, '_meta.version must be 1');
     assert.ok(shadow._meta.source_hash, '_meta.source_hash must be present');
-    assert.ok(shadow._meta.generated_at, '_meta.generated_at must be present');
+    // generated_at removed in v2.2.14 G-10 (caused dirty git status on every regen)
+    assert.equal(shadow._meta.generated_at, undefined, '_meta.generated_at must be absent');
     assert.ok(shadow._meta.shadow_size_bytes > 0, '_meta.shadow_size_bytes must be positive');
     assert.ok(shadow._meta.event_count >= 5, 'event_count must be >= 5, got ' + shadow._meta.event_count);
     const eventTypes = Object.keys(shadow).filter(k => k !== '_meta');
