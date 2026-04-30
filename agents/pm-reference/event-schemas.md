@@ -8424,3 +8424,104 @@ Field notes:
 Emitted from: `bin/validate-archive.js` (success-path emit; v2.2.13 candidate — declared dark in v2.2.12).
 
 Kill switch: `ORCHESTRAY_ARCHIVE_VALIDATION_DISABLED=1`.
+
+---
+
+### `context_size_hint_parsed_inline` event
+
+**NEW — v2.2.13 W1 (G-01).** Emitted by `bin/preflight-spawn-budget.js` once per
+Agent spawn to record how the `context_size_hint` was resolved. Supersedes the
+now-deleted `context_size_hint_staged` event (which was emitted by the deleted
+`inject-context-size-hint.js` stager hook). The inline parser in
+`preflight-spawn-budget.js` resolves the hint from `tool_input.context_size_hint`
+(native) or from a `context_size_hint: system=N tier2=N handoff=N` line in
+`tool_input.prompt` (prompt_body). If neither source yields values, `source='absent'`
+and the hard-block path fires.
+
+Resolution order and source values:
+- `'tool_input_native'` — `tool_input.context_size_hint` was present with at least one non-zero value.
+- `'prompt_body'` — regex matched the hint line in `tool_input.prompt` after `tool_input_native` failed.
+- `'absent'` — neither source yielded values; hard-block path will fire.
+
+```json
+{
+  "event_type": "context_size_hint_parsed_inline",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx",
+  "subagent_type": "developer",
+  "source": "prompt_body",
+  "schema_version": 1
+}
+```
+
+Required fields: `orchestration_id` (string), `subagent_type` (string), `source` (`'prompt_body'|'tool_input_native'|'absent'`), `schema_version` (1).
+
+Emitted from: `bin/preflight-spawn-budget.js` (v2.2.13 W1, fires once per Agent spawn).
+
+Kill switch: `ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED=1` makes the prompt-body parse step a no-op (source will be `'tool_input_native'` or `'absent'`).
+
+---
+
+### `context_size_hint_staged` event
+
+**DEPRECATED — superseded by `context_size_hint_parsed_inline` (W1, v2.2.13). Slated for retirement v2.2.14 (the producer script `inject-context-size-hint.js` is deleted in this release; only audit-replay traffic remains).**
+
+**BACKFILL declare — v2.2.13.** Previously emitted by the now-deleted
+`bin/inject-context-size-hint.js` stager hook (v2.2.12 W1a). The script was
+deleted in v2.2.13 W1 because `updatedInput` does not propagate between sibling
+`PreToolUse:Agent` hooks. This declare is backfilled for backward compatibility
+with v2.2.12 audit replay (`events.jsonl` rows of this type must validate). The
+84+ `schema_shadow_validation_block` occurrences in pre-v2.2.13 runs were caused
+by this missing declare (root cause of G-09).
+
+```json
+{
+  "event_type": "context_size_hint_staged",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx",
+  "subagent_type": "developer",
+  "task_id": null,
+  "system": 12000,
+  "tier2": 8000,
+  "handoff": 10000,
+  "schema_version": 1
+}
+```
+
+Required fields: `orchestration_id` (string), `subagent_type` (string), `task_id` (string|null), `system` (number), `tier2` (number), `handoff` (number), `schema_version` (1).
+
+Emitted from: `bin/inject-context-size-hint.js` (DELETED in v2.2.13 W1 — no active emit site).
+
+---
+
+### `deprecated_kill_switch_detected` event
+
+**BACKFILL declare — v2.2.13 W1.** Emitted at session start (`bin/boot-validate-config.js`)
+and at spawn time (`bin/preflight-spawn-budget.js`) when a deprecated Orchestray
+kill-switch env var is detected in the environment. The event fires at most once
+per session per handler (gated by a per-pid sentinel file under
+`.orchestray/state/deprecated-env-warned-<token>`). Fail-open: sentinel write
+failure does not suppress the event.
+
+First declared in v2.2.13. Prior claim that it was "declared per v2.2.12 W3 review
+P1-5" was incorrect (verified by grep against the 213-type shadow — count=0).
+
+```json
+{
+  "event_type": "deprecated_kill_switch_detected",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "name": "ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED",
+  "replacement": "ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED",
+  "retires_in": "v2.2.14",
+  "schema_version": 1
+}
+```
+
+Required fields: `name` (string), `replacement` (string), `retires_in` (string), `schema_version` (1).
+
+Emitted from: `bin/boot-validate-config.js` (SessionStart); `bin/preflight-spawn-budget.js` (PreToolUse:Agent).
+
+Kill switch: none (the event IS the deprecation signal; suppressing it would defeat the purpose).
