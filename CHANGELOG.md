@@ -64,7 +64,6 @@ New env vars (set to `1` to disable):
 | `ORCHESTRAY_ORCH_LIFECYCLE_EMIT_DISABLED=1` | `orchestration_start` and `orchestration_complete` lifecycle emits |
 | `ORCHESTRAY_CONTRACTS_RUNPOST_AUDIT_DISABLED=1` | `contracts_runpost_silent_skip` emit on postcondition silent-skip branches |
 | `ORCHESTRAY_DOSSIER_ORPHAN_THRESHOLD_DISABLED=1` | Dossier-orphan threshold escalator |
-| `ORCHESTRAY_HOOKCHAIN_INTEGRATION_TEST_DISABLED=1` | Hook-chain integration test in CI |
 
 **DEPRECATED (retires v2.2.14):** `ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED` — now a no-op; the gated code path was deleted in W1. If still present in `settings.json`, SessionStart emits `deprecated_kill_switch_detected` and prints a stderr warning. Remove it.
 
