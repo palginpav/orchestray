@@ -586,3 +586,6 @@ process.stdout.write(JSON.stringify({ continue: true }));
 
   process.exit(0);
 })();
+
+// v2.2.13 W4 (G-05): export helpers for re-use by emit-orchestration-complete.js.
+module.exports = { readCurrentOrchId, hasOrchComplete };

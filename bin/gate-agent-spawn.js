@@ -238,6 +238,45 @@ if (require.main === module) {
     }
 
     // -----------------------------------------------------------------------
+    // v2.2.13 W4 (G-05): orchestration_start emit on first spawn per orch.
+    // Atomic create-and-fail-if-exists closes the parallel-spawn TOCTOU race
+    // identified in W3-review P1-6.
+    // -----------------------------------------------------------------------
+    {
+      let orchIdForStart = null;
+      try {
+        const oc = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
+        if (oc && oc.orchestration_id) orchIdForStart = oc.orchestration_id;
+      } catch (_e) { /* fail-open */ }
+
+      if (orchIdForStart && process.env.ORCHESTRAY_ORCH_LIFECYCLE_EMIT_DISABLED !== '1') {
+        const sentinelPath = path.join(cwd, '.orchestray', 'state',
+          `orchestration-start-emitted.${orchIdForStart}`);
+        let won = false;
+        try {
+          fs.writeFileSync(sentinelPath, '', { flag: 'wx' }); // atomic create
+          won = true;
+        } catch (e) {
+          if (e && e.code !== 'EEXIST') {
+            // Disk error / permissions — fail open; don't block the spawn.
+          }
+          // EEXIST: another parallel spawn already won; skip emit silently.
+        }
+        if (won) {
+          try {
+            writeEvent({
+              event_type:       'orchestration_start',
+              version:          1,
+              orchestration_id: orchIdForStart,
+              started_at:       new Date().toISOString(),
+              schema_version:   1,
+            }, { cwd });
+          } catch (_e) { /* fail-open */ }
+        }
+      }
+    }
+
+    // -----------------------------------------------------------------------
     // v2.2.9 B-5.3 — Group-boundary discipline gate.
     //
     // Per W1 F-PM-13: PM may spawn an agent for a task in a future group while
