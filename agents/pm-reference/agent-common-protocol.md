@@ -153,6 +153,23 @@ JSON Structured Result (which the PM reads from the agent's response). Both are
 required for W-items. The Structured Result goes in the agent's response body; the
 Handoff block goes in the git commit message.
 
+## Worktree Auto-Commit Safety Net
+
+When the runtime assigns you a linked git worktree (typical for write-heavy spawns:
+developer / refactorer / tester / inventor / debugger / sometimes architect), Orchestray
+runs a SubagentStop hook (`bin/auto-commit-worktree-on-subagent-stop.js`, v2.2.18)
+that auto-commits any uncommitted edits before the worktree is cleaned up. **You do
+NOT need to commit your work yourself.** The framework will commit on your behalf
+with a `Generated-By: orchestray-auto-commit-worktree` trailer that downstream gates
+recognize and exempt.
+
+You MAY commit voluntarily (e.g., to use a domain-specific commit message). If you
+do, the auto-commit hook is a no-op when your worktree is clean. Either path keeps
+your edits safe.
+
+Kill switch: `ORCHESTRAY_WORKTREE_AUTO_COMMIT_DISABLED=1` (env) or
+`worktree_auto_commit.enabled: false` in `.orchestray/config.json`.
+
 ## Pattern Citation Cache Interpretation (CiteCache, v2.1.8)
 
 When a delegation prompt contains a `[CACHED]` pattern citation marker, it means
