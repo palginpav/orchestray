@@ -678,7 +678,20 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-no-deferral.js",
             "timeout": 5
-          },
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/auto-commit-worktree-on-subagent-stop.js",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-task-completion.js",
