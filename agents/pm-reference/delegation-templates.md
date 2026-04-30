@@ -302,6 +302,7 @@ documenter, security-engineer, release-manager, ux-critic, platform-oracle), see
 ### Reviewer Checklist
 
 - [ ] Specific file paths listed? (not "review the changes" -- exact files to examine)
+- [ ] `## Files to Review` section present in the delegation prompt? (`bin/validate-reviewer-scope.js` hard-blocks the spawn otherwise; kill switch `ORCHESTRAY_REVIEWER_SCOPE_HARD_DISABLED=1`.)
 - [ ] Task requirements included? (what the code should do, not just "check for bugs")
 - [ ] Architect design reference linked if applicable? (design doc or KB entry for spec conformance)
 - [ ] `review_dimensions` field set? (`"all"` or a subset of `["code-quality","performance","documentation","operability","api-compat"]`; populated by the PM classifier per `pm.md` §3.RV)

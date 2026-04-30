@@ -8465,7 +8465,7 @@ Kill switch: `ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED=1` makes the pr
 
 ### `context_size_hint_staged` event
 
-**DEPRECATED — superseded by `context_size_hint_parsed_inline` (W1, v2.2.13). Slated for retirement v2.2.14 (the producer script `inject-context-size-hint.js` is deleted in this release; only audit-replay traffic remains).**
+**RETIRED v2.2.14 — superseded by `context_size_hint_parsed_inline` (W1, v2.2.13). The producer script `inject-context-size-hint.js` was deleted in v2.2.13 W1; the env-var read sites that gated it were deleted in v2.2.14 G-04. Declare retained only for audit-replay validity of pre-v2.2.13 `events.jsonl`.**
 
 **BACKFILL declare — v2.2.13.** Previously emitted by the now-deleted
 `bin/inject-context-size-hint.js` stager hook (v2.2.12 W1a). The script was
