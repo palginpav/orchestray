@@ -1152,7 +1152,8 @@ describe('v2.0.18 config block seeds (W9 pattern_decay / W12 anti_pattern_gate /
     // anti_pattern_gate
     assert.ok(cfg.anti_pattern_gate, 'anti_pattern_gate block must be seeded');
     assert.equal(cfg.anti_pattern_gate.enabled, true, 'anti_pattern_gate.enabled must be true');
-    assert.equal(cfg.anti_pattern_gate.min_decayed_confidence, 0.65);
+    // v2.2.17 W3: lowered default from 0.65 → 0.55 per P1-03 LOWER-THRESHOLD.
+    assert.equal(cfg.anti_pattern_gate.min_decayed_confidence, 0.55);
     assert.equal(cfg.anti_pattern_gate.max_advisories_per_spawn, 1);
 
     // state_sentinel

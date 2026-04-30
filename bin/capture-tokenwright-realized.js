@@ -263,9 +263,39 @@ function handleTaskCompleted(event, cwd, cfg) {
     } catch (_e) { /* writePending already logs */ }
 
     // --- Extract tokens from task_completed_metrics ---
-    const metrics = event.task_completed_metrics;
+    let metrics = event.task_completed_metrics;
     const driftBudgetPct = cfg.estimation_drift_budget_pct;
     const estimatedPre   = matched.input_token_estimate || 0;
+
+    // v2.2.17 W7a: when SubagentStop fires without task_completed_metrics
+    // (~50 events/install per W6 §2.8), fall back to the metrics ledger
+    // written by bin/collect-agent-metrics.js. The ledger is populated by an
+    // earlier hook in the same SubagentStop chain so the file is on disk by
+    // the time we look. This converts the no_task_completed_metrics path
+    // from a 100% "unknown" emit into an actionable lookup.
+    if (!metrics) {
+      try {
+        const metricsPath = require('node:path').join(cwd, '.orchestray/metrics/agent_metrics.jsonl');
+        const fsLocal = require('node:fs');
+        if (fsLocal.existsSync(metricsPath)) {
+          const lines = fsLocal.readFileSync(metricsPath, 'utf8').split('\n').filter(Boolean);
+          const wantSpawnKey = matched.spawn_key || '';
+          // Walk newest-first; pick a row matching our agent_type + agentMatchPossiblyByOrch.
+          for (let i = lines.length - 1; i >= 0; i--) {
+            try {
+              const row = JSON.parse(lines[i]);
+              if (row && row.agent_type === agentType && row.orchestration_id === orchestrationId) {
+                if (typeof row.input_tokens === 'number' && row.input_tokens > 0) {
+                  metrics = { input_tokens: row.input_tokens, output_tokens: row.output_tokens || 0 };
+                  break;
+                }
+              }
+            } catch (_e) { /* skip malformed line */ }
+            if (i < lines.length - 50) break; // bounded scan; never walk full file
+          }
+        }
+      } catch (_e) { /* fail-open — fallback never blocks */ }
+    }
 
     if (!metrics) {
       // No metrics object — unknown realized status

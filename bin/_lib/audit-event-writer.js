@@ -943,6 +943,7 @@ module.exports = writeAuditEvent;
 module.exports.writeEvent            = writeEvent;
 module.exports.writeEventWithAliases = writeEventWithAliases;
 module.exports.writeAuditEvent       = writeAuditEvent;
+module.exports.resolveOrchestrationId = resolveOrchestrationId;
 
 // ---------------------------------------------------------------------------
 // _testHooks — exported for B3 unit tests only (not production API)

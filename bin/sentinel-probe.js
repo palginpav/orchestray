@@ -33,7 +33,7 @@ const path = require('node:path');
 
 const { runProbe, _ALLOWED_OPS } = require('./_lib/sentinel-probes');
 const { MAX_INPUT_BYTES }        = require('./_lib/constants');
-const { writeEvent }             = require('./_lib/audit-event-writer');
+const { writeEvent, resolveOrchestrationId } = require('./_lib/audit-event-writer');
 const { resolveSafeCwd }         = require('./_lib/resolve-project-cwd');
 
 // ---------------------------------------------------------------------------
@@ -205,6 +205,7 @@ function runSessionChecks(projectRoot) {
       version:          1,
       schema_version:   1,
       timestamp:        nowTs,
+      orchestration_id: resolveOrchestrationId(projectRoot),
       results,
       overall_status:   overallStatus,
       ts:               nowTs,

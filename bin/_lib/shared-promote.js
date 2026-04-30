@@ -1040,12 +1040,15 @@ function backfillPromoteLog(opts) {
     try {
       // Use process.cwd() as the project root for the audit event — backfill
       // is invoked from install.js which runs in the project root.
-      const { writeEvent } = require('./audit-event-writer');
+      const { writeEvent, resolveOrchestrationId } = require('./audit-event-writer');
       writeEvent({
         type:            'federation_promote_log_backfilled',
         version:         1,
         schema_version:  1,
         timestamp:       now,
+        // v2.2.17 W7a: populate orchestration_id at emit (was autofilled 92×).
+        orchestration_id: typeof resolveOrchestrationId === 'function'
+          ? resolveOrchestrationId(process.cwd()) : 'unknown',
         patterns_added:  added,
         patterns_skipped: skipped,
       }, { cwd: process.cwd() });
@@ -1100,12 +1103,15 @@ function appendFederationTombstone(opts) {
 
   // Emit audit event (best-effort, non-fatal).
   try {
-    const { writeEvent } = require('./audit-event-writer');
+    const { writeEvent, resolveOrchestrationId } = require('./audit-event-writer');
     writeEvent({
       type:           'federation_pattern_tombstoned',
       version:        1,
       schema_version: 1,
       timestamp:      entry.tombstone_at,
+      // v2.2.17 W7a: populate orchestration_id at emit (was autofilled 92×).
+      orchestration_id: typeof resolveOrchestrationId === 'function'
+        ? resolveOrchestrationId(process.cwd()) : 'unknown',
       slug,
       reason,
     }, { cwd: process.cwd() });

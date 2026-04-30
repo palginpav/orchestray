@@ -30,14 +30,17 @@ const SCHEMA_VERSION = 1;
 // ---------------------------------------------------------------------------
 
 let _writeEvent = undefined;
+let _resolveOrchestrationId = undefined;
 function _emitStagingWriteFailed(projectDir, cachePath, op, err) {
   if (_writeEvent === undefined) {
     try {
       // eslint-disable-next-line global-require
       const mod = require('./audit-event-writer');
       _writeEvent = (mod && mod.writeEvent) || null;
+      _resolveOrchestrationId = (mod && mod.resolveOrchestrationId) || null;
     } catch (_e) {
       _writeEvent = null;
+      _resolveOrchestrationId = null;
     }
   }
   if (typeof _writeEvent !== 'function') return;
@@ -47,6 +50,10 @@ function _emitStagingWriteFailed(projectDir, cachePath, op, err) {
     const message = msgRaw.length > 256 ? msgRaw.slice(0, 256) : msgRaw;
     _writeEvent({
       version:       1,
+      // v2.2.17 W7a: populate timestamp + orchestration_id at emit (was autofilled 50×).
+      timestamp:        new Date().toISOString(),
+      orchestration_id: typeof _resolveOrchestrationId === 'function'
+        ? _resolveOrchestrationId(projectDir) : 'unknown',
       type:          'staging_write_failed',
       cwd:           projectDir,
       cache_path:    cachePath,

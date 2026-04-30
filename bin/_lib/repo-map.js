@@ -59,19 +59,30 @@ const DEFAULT_CACHE_DIR_REL = path.join('.orchestray', 'state', 'repo-map-cache'
 // ---------------------------------------------------------------------------
 
 let _writeEvent = undefined;
+let _resolveOrchestrationId = undefined;
 function emitEvent(eventPayload, cwd) {
   if (_writeEvent === undefined) {
     try {
       // eslint-disable-next-line global-require
       const mod = require('./audit-event-writer');
       _writeEvent = (mod && mod.writeEvent) || null;
+      _resolveOrchestrationId = (mod && mod.resolveOrchestrationId) || null;
     } catch (_e) {
       _writeEvent = null;
+      _resolveOrchestrationId = null;
     }
   }
   if (typeof _writeEvent !== 'function') return;
+  // v2.2.17 W7a: populate timestamp + orchestration_id at emit (was autofilled 200×).
+  const enriched = {
+    timestamp:        new Date().toISOString(),
+    orchestration_id: typeof _resolveOrchestrationId === 'function'
+      ? _resolveOrchestrationId(cwd)
+      : 'unknown',
+    ...eventPayload,
+  };
   try {
-    _writeEvent(eventPayload, { cwd });
+    _writeEvent(enriched, { cwd });
   } catch (_e) { /* fail-open */ }
 }
 

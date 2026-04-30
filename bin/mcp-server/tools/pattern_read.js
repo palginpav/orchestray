@@ -77,6 +77,7 @@ async function handle(input, context) {
   // Fail-open: audit failure must not block the tool result.
   try {
     writeAuditEvent({
+      version: 1, // v2.2.17 W7a: populate at emit (was autofilled 150×)
       timestamp: new Date().toISOString(),
       type: 'pattern_read',
       tool: 'pattern_read',
