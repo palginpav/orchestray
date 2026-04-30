@@ -117,13 +117,34 @@ function computeDivergenceAt(canBasenames, liveBasenames) {
       const liveEntries      = liveSettings.hooks[event] || [];
       const canonicalEntries = orchestrayHooks[event]   || [];
 
+      // Aggregate canonical hooks by (event, matcher) across all canonical entries.
+      // hooks.json uses one entry per script for readability, but install.js merges
+      // them all into a single entry per matcher in settings.json. Comparing per-entry
+      // would always detect false drift for no-matcher groups with multiple entries.
+      const canonicalByMatcher = new Map();
       for (const canEntry of canonicalEntries) {
-        const liveEntry = liveEntries.find(e => e.matcher === canEntry.matcher);
-        if (!liveEntry) continue;
+        const key = canEntry.matcher === undefined ? null : canEntry.matcher;
+        const existing = canonicalByMatcher.get(key) || [];
+        canonicalByMatcher.set(key, existing.concat(canEntry.hooks || []));
+      }
 
-        const canBasenames  = (canEntry.hooks || []).map(hookBasename).filter(Boolean);
-        const liveOurs      = (liveEntry.hooks || []).filter(isOurs);
-        const liveOurNames  = liveOurs.map(hookBasename).filter(Boolean);
+      // Aggregate live orchestray hooks by (event, matcher) across all live entries.
+      // settings.json may have one entry per canonical group (fresh install preserves
+      // the 1-hook-per-entry structure from hooks.json) or one merged entry per matcher
+      // (upgrade install). Either way, aggregating gives the right picture.
+      const liveByMatcher = new Map();
+      for (const liveEntry of liveEntries) {
+        const key = liveEntry.matcher === undefined ? null : liveEntry.matcher;
+        const existing = liveByMatcher.get(key) || [];
+        liveByMatcher.set(key, existing.concat((liveEntry.hooks || []).filter(isOurs)));
+      }
+
+      for (const [matcher, canonicalHooks] of canonicalByMatcher) {
+        const liveHooks = liveByMatcher.get(matcher);
+        if (!liveHooks) continue;
+
+        const canBasenames = canonicalHooks.map(hookBasename).filter(Boolean);
+        const liveOurNames = liveHooks.map(hookBasename).filter(Boolean);
 
         // Already canonical — skip.
         if (JSON.stringify(canBasenames) === JSON.stringify(liveOurNames)) continue;
@@ -137,7 +158,7 @@ function computeDivergenceAt(canBasenames, liveBasenames) {
               event_type:          'hook_chain_drift_detected',
               version:             1,
               event,
-              matcher:             canEntry.matcher || null,
+              matcher:             matcher,
               canonical_basenames: canBasenames,
               live_basenames:      liveOurNames,
               divergence_at_index: divergenceAt,
