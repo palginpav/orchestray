@@ -9,10 +9,8 @@
  *                 recomputes when cache is missing or older than window.
  *   --quiet     : suppresses all stdout (table + emit-cache confirmation).
  *
- * Canonical hook command:
+ * Canonical hook command (wired by G-03):
  *   node bin/calibrate-role-budgets.js --emit-cache --if-stale --quiet
- *
- * Wiring of that command in hooks.json is G-03's job (see TODO in commit msg).
  */
 
 const { test, describe, before, after } = require('node:test');

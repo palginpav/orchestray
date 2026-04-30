@@ -112,7 +112,17 @@ function readOrchestrationId() {
  * Fail-open: if the write throws (e.g. missing project root, permission
  * error), log to stderr and return. Audit failures must never block the
  * tool response.
+ *
+ * v2.2.14 G-17 follow-up: when project-root resolution fails (typically
+ * because the MCP server process was launched with cwd=~/.claude/orchestray/
+ * which has no .orchestray/ ancestor), every writeAuditEvent silently routes
+ * to stderr and the row never lands in events.jsonl. To make this visible
+ * the helper emits the diagnosis on the FIRST failure of the session with a
+ * concrete recovery hint, then keeps subsequent failures terse so logs do
+ * not flood. Set ORCHESTRAY_PROJECT_ROOT=<absolute path to project root> in
+ * the MCP server's launch env to bypass cwd-walk resolution.
  */
+let _firstFailWarned = false;
 function writeAuditEvent(event) {
   try {
     const target = paths.getAuditEventsPath();
@@ -122,7 +132,18 @@ function writeAuditEvent(event) {
     // to the same project root.
     writeEvent(event, { cwd: paths.getProjectRoot(), eventsPath: target });
   } catch (err) {
-    logStderr('audit write failed: ' + (err && err.message ? err.message : String(err)));
+    const msg = err && err.message ? err.message : String(err);
+    if (!_firstFailWarned) {
+      _firstFailWarned = true;
+      logStderr(
+        'audit write failed: ' + msg + '\n' +
+        '  ↳ MCP audit events will not land in events.jsonl this session.\n' +
+        '  ↳ Set ORCHESTRAY_PROJECT_ROOT=<abs path to project root> in the MCP\n' +
+        '    server launch env to fix cwd-walk resolution.'
+      );
+    } else {
+      logStderr('audit write failed: ' + msg);
+    }
   }
 }
 

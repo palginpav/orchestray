@@ -157,13 +157,12 @@ Set in `.orchestray/config.json` or as env vars. No session restart required.
 | `orchestration_start` + `orchestration_complete` lifecycle emits (v2.2.13) | — | `ORCHESTRAY_ORCH_LIFECYCLE_EMIT_DISABLED=1` |
 | Contracts postcondition silent-skip audit emit (v2.2.13) | — | `ORCHESTRAY_CONTRACTS_RUNPOST_AUDIT_DISABLED=1` |
 | Dossier-orphan threshold escalator (v2.2.13) | — | `ORCHESTRAY_DOSSIER_ORPHAN_THRESHOLD_DISABLED=1` |
-| Hook-chain integration test in CI (v2.2.13) | — | `ORCHESTRAY_HOOKCHAIN_INTEGRATION_TEST_DISABLED=1` |
-| `schemas/` directory copy in install.js (v2.2.14, fixes node:fs:1012) | — | _No kill switch — correctness restoration_ |
-| `calibrate-role-budgets --if-stale` cache-mtime gate (v2.2.14) | — | _No kill switch — pass `--if-stale` flag to enable_ |
-| `calibrate-role-budgets --quiet` stdout suppression (v2.2.14) | — | _No kill switch — pass `--quiet` flag to enable_ |
-| `pattern_read` + `scout_decision` schema declares + sentinel auto-rearm (v2.2.14) | — | _Re-arms `audit-event-writer` circuit; default-on, no kill switch_ |
-| `context_size_hint` HINT_RE accepts both flat + object forms (v2.2.14) | — | _Parser robustness; no kill switch_ |
-| Mandatory `model:` field surfaced in delegation-templates.md (v2.2.14, doc-block) | — | `ORCHESTRAY_STRICT_MODEL_REQUIRED=0` (already existed; not new in v2.2.14) |
+| `schemas/` directory copy in install.js (fixes node:fs:1012 SessionStart error) (v2.2.14) | — | — |
+| `calibrate-role-budgets --if-stale` cache-mtime gate (v2.2.14) | — | — |
+| `calibrate-role-budgets --quiet` stdout suppression (v2.2.14) | — | — |
+| `pattern_read` + `scout_decision` schema declares + sentinel auto-rearm (v2.2.14) | — | — |
+| `context_size_hint` HINT_RE accepts both flat and object forms (v2.2.14) | — | — |
+| Mandatory `model:` field doc-block in delegation-templates.md (v2.2.14) | — | `ORCHESTRAY_STRICT_MODEL_REQUIRED=0` |
 
 ## Requirements
 

@@ -3318,14 +3318,14 @@ function validateTelemetryConfig(obj) {
 //   When false, shadow injection and staleness checks are disabled.
 //   Kill switch: ORCHESTRAY_DISABLE_SCHEMA_SHADOW=1 env var.
 //
-// event_schema_shadow.miss_threshold_24h — integer, default 3.
+// event_schema_shadow.miss_threshold_24h — integer, default 10 (raised from 3 in v2.2.14 G-07).
 //   Number of shadow misses within 24 hours that trigger the three-strike
 //   auto-disable sentinel (.orchestray/state/.schema-shadow-disabled).
 // ---------------------------------------------------------------------------
 
 const DEFAULT_EVENT_SCHEMA_SHADOW = Object.freeze({
   enabled: true,
-  miss_threshold_24h: 3,
+  miss_threshold_24h: 10,
 });
 
 /**

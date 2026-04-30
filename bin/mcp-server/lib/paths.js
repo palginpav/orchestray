@@ -72,8 +72,16 @@ function getPluginRoot() {
  *
  * Walks up from `process.cwd()` (not __dirname) so callers that chdir into a
  * sandbox/fixture get the expected result. Throws on miss.
+ *
+ * v2.2.14 G-17 follow-up: honor `ORCHESTRAY_PROJECT_ROOT` env var first so
+ * MCP server processes launched with cwd=<install dir> can still route audit
+ * events to the right project (the cwd-walk would otherwise miss).
  */
 function getProjectRoot() {
+  const fromEnv = process.env.ORCHESTRAY_PROJECT_ROOT;
+  if (fromEnv && fromEnv.length > 0) {
+    return path.resolve(fromEnv);
+  }
   const found = walkUpFor(process.cwd(), '.orchestray');
   if (found) return found;
   throw new Error('project root not found (no .orchestray/ in cwd ancestors)');

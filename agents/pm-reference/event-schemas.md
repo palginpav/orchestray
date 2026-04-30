@@ -852,6 +852,38 @@ Field notes:
 
 ---
 
+### `task_completed` event
+
+Emitted by Agent Teams `TaskCompleted` hook (`bin/audit-team-event.js completed`,
+when re-wired). Pairs with `task_created` and is consumed by
+`bin/audit-on-orch-complete.js` (counts `w_items_completed`) and validated
+by `bin/_lib/event-quarantine.js` (required-field shape check).
+
+Schema version: 1
+
+```json
+{
+  "type": "task_completed",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx",
+  "task_id": "task-xxx",
+  "outcome": "success|failure|cancelled",
+  "duration_ms": 12345
+}
+```
+
+Required fields: `orchestration_id` (string), `timestamp` (ISO 8601),
+`task_id` (string), `outcome` (enum), `duration_ms` (integer).
+
+Declared in v2.2.14 G-06 follow-up to satisfy live consumers
+(`audit-on-orch-complete.js:405`, `event-quarantine.js:74`). The
+`TaskCompleted` hook wrapper currently emits `task_created` only;
+emitter wiring for the completed branch lands separately when the
+hook is reactivated.
+
+---
+
 ### `delegation_delta_emit` event
 
 Emitted by `agents/pm.md` Section 3 (R-DELEG-DELTA, v2.2.0) once per `Agent()`

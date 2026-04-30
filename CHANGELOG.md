@@ -5,7 +5,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [2.2.14] - 2026-04-30
 
-v2.2.14 is a **wide-mechanisation sweep** that catches regressions, leftovers, inconsistencies, and non-wired items left behind across the v2.2.0–v2.2.13 series. The headline fix: **every global-install user no longer sees `node:fs:1012` as a SessionStart hook error** — `bin/install.js` was missing the `schemas/` directory in its copy pass since v2.2.9, causing `validate-config.js` to throw `MODULE_NOT_FOUND` on every session start. v2.2.14 also stops the **calibrate-role-budgets.js stdout dump** that burned cache budget on every session, **re-arms the schema-shadow safety net** (which was silently OFF for everyone whose install accumulated 3 unknown-event-type misses), and **reduces PM first-spawn friction** by adding the previously implicit gate-time requirements (`model:`, `context_size_hint:`, `## Files to Review`) directly to the canonical delegation templates. 19 W-items shipped (3 P0 + 11 P1 + 5 P2). Schema registry grows 221 → 223. Tests 5542 → 5633 (+91), 0 failures.
+v2.2.14 is a **wide-mechanisation sweep** that catches regressions, leftovers, inconsistencies, and non-wired items left behind across the v2.2.0–v2.2.13 series. The headline fix: **every global-install user no longer sees `node:fs:1012` as a SessionStart hook error** — `bin/install.js` was missing the `schemas/` directory in its copy pass since v2.2.9, causing `validate-config.js` to throw `MODULE_NOT_FOUND` on every session start. v2.2.14 also stops the **calibrate-role-budgets.js stdout dump** that burned cache budget on every session, **re-arms the schema-shadow safety net** (which was silently OFF for everyone whose install accumulated 3 unknown-event-type misses), and **reduces PM first-spawn friction** by adding the previously implicit gate-time requirements (`model:`, `context_size_hint:`, `## Files to Review`) directly to the canonical delegation templates. 19 W-items shipped (3 P0 + 11 P1 + 5 P2). Schema registry grows 221 → 224 (+3 declares: `pattern_read`, `scout_decision`, `task_completed`). Tests 5542 → 5632 (+90), 0 failures.
 
 ### Fixed — Headline P0s (visible to every user)
 
@@ -29,12 +29,12 @@ Three changes restore the safety net:
 
 ### Reduced — PM first-spawn friction
 
-Three Agent()-spawn-time enforcers each hard-blocked the PM the first time and only unblocked after retry — none of the requirements were surfaced in the canonical delegation scaffolds. Every fresh planning orchestration paid this token cost. v2.2.14 surfaces the requirements at the spot they live:
+Starting an orchestration used to fail and retry three times before the PM had the right shape. Each spawn-time enforcer (`model:` parameter, `context_size_hint:` line, `## Files to Review` section) was mandatory but undocumented in the canonical delegation scaffolds. v2.2.14 puts each requirement at the spot a PM copies its template from:
 
-- **`model:` field is now in every canonical delegation example.** `agents/pm-reference/delegation-templates.md` adds a "Mandatory `model:` field" section with three canonical Agent() spawn-shape examples (haiku / sonnet / opus tiers), each with an inline `// MANDATORY — gate-agent-spawn.js blocks otherwise` comment at the field. Doc-block names the enforcer and `ORCHESTRAY_STRICT_MODEL_REQUIRED=0` kill switch. (G-14)
-- **`context_size_hint` parser accepts both flat and object forms.** PMs writing the JSON object form `{ system: 8000, tier2: 4000, handoff: 12000 }` (which the existing docs showed) into the prompt body got hard-blocked because `bin/preflight-spawn-budget.js` HINT_RE matched only the flat `system=N tier2=N handoff=N` form. v2.2.14 makes the parser accept BOTH forms. delegation-templates.md notes both are accepted; mixed forms still fail loud with a clear spawn-block message. (G-11)
-- **Reviewer pre-spawn checklist surfaces the `## Files to Review` requirement.** `bin/validate-reviewer-scope.js` hard-blocks reviewer spawns lacking the section. The pre-spawn checklist in delegation-templates.md now lists it as the second item, with the kill switch `ORCHESTRAY_REVIEWER_SCOPE_HARD_DISABLED=1` named inline. (G-15)
-- **KB-artifact write allow-list extended to debugger / architect / reviewer.** These three roles' allow-lists were empty in `bin/_lib/role-write-allowlists.js`, blocking even the artifact contracts their PM-issued prompts mandate (we hit this during v2.2.14 PLANNING — the W1 debugger could not write its findings; PM had to transcribe from structured-result). v2.2.14 adds `.orchestray/kb/artifacts/**.md` to all three roles. (G-08)
+- **The `model:` field is now in every canonical Agent() example.** `agents/pm-reference/delegation-templates.md` gains a "Mandatory `model:` field" section with three canonical spawn-shape examples (haiku / sonnet / opus tiers), each with an inline `// MANDATORY — gate-agent-spawn.js blocks otherwise` comment. Doc-block names the enforcer and `ORCHESTRAY_STRICT_MODEL_REQUIRED=0` kill switch. (G-14)
+- **The `context_size_hint` parser accepts both flat and object forms.** PMs writing the JSON object form `{ system: 8000, tier2: 4000, handoff: 12000 }` (which the existing docs showed) into the prompt body used to hit a hard-block because the parser matched only the flat `system=N tier2=N handoff=N` form. v2.2.14 makes the parser accept BOTH forms. delegation-templates.md notes both are accepted; mixed forms still fail loud with a clear hard-block message. (G-11)
+- **The reviewer pre-spawn checklist now lists `## Files to Review` as a required item** (alongside `model:`, which sits at item 1 — the model gate runs first). `bin/validate-reviewer-scope.js` hard-blocks reviewer spawns lacking the section; kill switch `ORCHESTRAY_REVIEWER_SCOPE_HARD_DISABLED=1`. (G-15)
+- **debugger and reviewer can now write `.orchestray/kb/artifacts/**.md`.** These two roles' allow-lists in `bin/_lib/role-write-allowlists.js` did not include the artifacts path, blocking the very artifact contracts their PM-issued prompts mandate (during v2.2.14 PLANNING the W1 debugger could not write its findings; the PM had to transcribe from structured-result). v2.2.14 adds the path explicitly for both roles; architect was already unrestricted (not in `RESTRICTED_ROLES`) and remains so. (G-08)
 
 ### Retired — `ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED`
 
@@ -57,12 +57,13 @@ The env var was a no-op in v2.2.13 (the gated code path was deleted in W1) but t
 - **G-19 closed without code change.** v2.2.14 PLANNING flagged `metrics_query` as an orphan MCP tool config entry — but implementation discovery found `bin/mcp-server/tools/metrics_query.js` exists, has tests, and emits in `audit-on-orch-complete.js`. The audit finding (W2 D2) was false-premise. No action taken. (G-19)
 - **`task_completed` declare deferred.** Two of three "missing declares" from W1 (G-06) were added; the third (`task_completed`) had no current emitter, so declaring it would ship a dead schema. Re-add only when the emitter is re-wired.
 
-### Schema delta — 221 → 223 (+2)
+### Schema delta — 221 → 224 (+3)
 
 | Event | Status | Notes |
 |-------|--------|-------|
 | `pattern_read` | **NEW** | Emits at `bin/mcp-server/tools/pattern_read.js`; introduced v2.1.14, declared v2.2.14 |
 | `scout_decision` | **NEW** | Emits at PM agent §23 scout dispatch; declared v2.2.14 |
+| `task_completed` | **NEW** | Consumed by `audit-on-orch-complete.js` and `event-quarantine.js`; declared in v2.2.14 G-06 follow-up to remove silent-scope-narrowing finding flagged by final reviewer |
 | `context_size_hint_staged` | DEPRECATED → **RETIRED v2.2.14** | Kept for audit-replay only |
 | `install_hook_order_corrected` | **REFORMULATED** | `h` field stripped (was schema-mismatch with degraded.jsonl journal) |
 | `install_hook_order_skipped_interleaved` | **REFORMULATED** | `h` field stripped |
@@ -84,7 +85,7 @@ The env var was a no-op in v2.2.13 (the gated code path was deleted in W1) but t
 
 ### Tests
 
-5633 tests / 5628 pass / 0 fail / 5 skip. +91 new test cases (G-01 / G-02 / G-04 / G-05 / G-06 / G-08 / G-10 / G-11 / G-13 / G-14 / G-16 / G-17 add their own regression suites). 1 skip removed (G-13 un-skipped output_shape_applied).
+5632 tests / 5627 pass / 0 fail / 5 skip (vs v2.2.13 baseline 5542 / 5540 / 0 / 6 — net +90 cases, -1 skip after G-13 un-skipped `output_shape_applied`). New regression suites land for G-01 / G-02 / G-04 / G-05 / G-06 / G-08 / G-09 / G-10 / G-11 / G-13 / G-14 / G-16 / G-17.
 
 ---
 

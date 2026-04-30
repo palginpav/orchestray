@@ -45,9 +45,9 @@ in the prompt body text (rather than passed as a `tool_input` field), the
 - **Flat (canonical):** `context_size_hint: system=8000 tier2=4000 handoff=12000`
 - **Object (also accepted):** `context_size_hint: { system: 8000, tier2: 4000, handoff: 12000 }`
 
-Both parse identically. Mixed forms (e.g. `system: 8000 tier2=4000`) do NOT
-match and trigger the spawn-block. When in doubt, use the flat form — it is
-unambiguous and copy-paste safe.
+When in doubt, use the flat form — it is unambiguous and copy-paste safe. Both
+parse identically. Mixed forms (e.g. `system: 8000 tier2=4000`) do NOT match
+and trigger a hard-block.
 
 **Per-template populating:** Every role's delegation contract below carries an
 implicit `context_size_hint` field. When a template's example shows a YAML or
@@ -57,7 +57,7 @@ the role-specific fields. See `agents/pm.md` § "Pre-Spawn Budget Check
 
 ---
 
-## Mandatory `model:` field (G-14, v2.2.14)
+## Mandatory `model:` field (R-MODEL-GATE, v2.2.14)
 
 Every `Agent()` invocation MUST include `model:` set to one of `"haiku"`, `"sonnet"`, or `"opus"`. The `bin/gate-agent-spawn.js` PreToolUse hook hard-blocks any spawn without it. Kill switch: `ORCHESTRAY_STRICT_MODEL_REQUIRED=0` (not recommended in production — disables routing telemetry and lets misrouted spawns through).
 
@@ -93,9 +93,9 @@ The `model:` field is checked BEFORE any other spawn-time gate. Missing it produ
 
 ```
 [orchestray] Agent() call missing required 'model' parameter.
-Per Section 19 and v2.2.9 B-7.4 (default hard-block), every spawn must
-route to haiku/sonnet/opus explicitly. Set ORCHESTRAY_STRICT_MODEL_REQUIRED=0
-to restore the legacy auto-resolve cascade.
+Add model: "haiku" | "sonnet" | "opus" to the Agent() call.
+Set ORCHESTRAY_STRICT_MODEL_REQUIRED=0 to restore the legacy auto-resolve cascade
+(not recommended in production — disables routing telemetry).
 ```
 
 The PM's routing protocol (`agents/pm.md` §3) computes the right model per task before the spawn — `model:` is the parameter name to plug in the routed value.
@@ -357,8 +357,9 @@ documenter, security-engineer, release-manager, ux-critic, platform-oracle), see
 
 ### Reviewer Checklist
 
+- [ ] `model: "sonnet"` (or "opus") field present? (`gate-agent-spawn.js` hard-blocks otherwise; kill switch `ORCHESTRAY_STRICT_MODEL_REQUIRED=0`.)
 - [ ] Specific file paths listed? (not "review the changes" -- exact files to examine)
-- [ ] `## Files to Review` section present in the delegation prompt? (`bin/validate-reviewer-scope.js` hard-blocks the spawn otherwise; kill switch `ORCHESTRAY_REVIEWER_SCOPE_HARD_DISABLED=1`.)
+- [ ] `## Files to Review` section present in the delegation prompt? (hard-blocks otherwise; kill switch `ORCHESTRAY_REVIEWER_SCOPE_HARD_DISABLED=1`.)
 - [ ] Task requirements included? (what the code should do, not just "check for bugs")
 - [ ] Architect design reference linked if applicable? (design doc or KB entry for spec conformance)
 - [ ] `review_dimensions` field set? (`"all"` or a subset of `["code-quality","performance","documentation","operability","api-compat"]`; populated by the PM classifier per `pm.md` §3.RV)

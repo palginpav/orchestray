@@ -39,7 +39,9 @@ const DECLARED_TYPES = [
 const RECONCILED_AWAY = [
   'agent_spawn',
   'task_started',
-  'task_completed',
+  // task_completed was reconciled-away in v2.2.12 W1c, then re-declared in
+  // v2.2.14 G-06 follow-up because live consumers (audit-on-orch-complete.js,
+  // event-quarantine.js) read it. No longer reconciled-away.
 ];
 
 describe('W1c lifecycle declares — shadow verification', () => {
