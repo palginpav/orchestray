@@ -6,8 +6,9 @@
  *
  * After a `pattern_find` MCP tool call in the spawn's audit window, the agent
  * MUST have called either `pattern_record_application` OR
- * `pattern_record_skip_reason`. Warn v2.2.15 (3-spawn ramp); hard exit 2
- * thereafter.
+ * `pattern_record_skip_reason`. Hard exit 2 on first miss (v2.2.17 promotion;
+ * ramp threshold promoted from 3 to 0). Ramp behavior preserved under env
+ * override ORCHESTRAY_PATTERN_APPLICATION_RAMP_THRESHOLD=N.
  *
  * Kill switch: ORCHESTRAY_PATTERN_APPLICATION_GATE_DISABLED=1
  *
@@ -30,7 +31,9 @@ const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 
 const SCHEMA_VERSION = 1;
-const DEFAULT_RAMP_THRESHOLD = 3;
+// v2.2.17 P1-07 promotion: default threshold is 0 (immediate exit 2 on first miss).
+// Override via ORCHESTRAY_PATTERN_APPLICATION_RAMP_THRESHOLD=N for emergency soft-warn.
+const DEFAULT_RAMP_THRESHOLD = 0;
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -126,18 +126,18 @@ describe('v2.2.15 P1-05 — emit pipeline integration', () => {
     assert.equal(multiEvents.length, 0, 'no event emitted for single block');
   });
 
-  test('two blocks → emits multiple_structured_result_blocks with block_count 2 (warn-only, exit 0)', () => {
+  test('two blocks → emits multiple_structured_result_blocks with block_count 2 (exit 2 in v2.2.17)', () => {
     const block = '## Structured Result\n\n```json\n{"status":"success","summary":"done","files_changed":[],"files_read":[],"issues":[],"assumptions":[]}\n```';
     const output = block + '\n\nSome more content\n\n' + block;
     const { status, stderr, tmp } = runHookP105(output);
     const events = readEvents(tmp);
     cleanup(tmp);
-    // Warn-only in v2.2.15 — must NOT exit 2
-    assert.equal(status, 0, 'exit 0 (warn-only in v2.2.15)');
+    // Promoted to exit 2 in v2.2.17 (was warn-only in v2.2.15).
+    assert.equal(status, 2, 'exit 2 (P1-05 promoted in v2.2.17)');
     const multiEvent = events.find(e => e.type === 'multiple_structured_result_blocks');
     assert.ok(multiEvent, 'multiple_structured_result_blocks event must be emitted');
     assert.equal(multiEvent.block_count, 2, 'block_count must be 2');
-    assert.ok(stderr.includes('WARN'), 'stderr must include WARN');
+    assert.ok(stderr.includes('BLOCKED'), 'stderr must include BLOCKED');
   });
 
   test('kill switch active → no event emitted even with two blocks', () => {
@@ -266,14 +266,15 @@ describe('v2.2.15 P1-07 — validate-pattern-application', () => {
     assert.equal(status, 0);
   });
 
-  test('pattern_find without ack → warn event emitted (ramp, exit 0)', () => {
+  test('pattern_find without ack → blocked event emitted, exit 2 (v2.2.17 promotion)', () => {
     const lines = JSON.stringify({ type: 'mcp_checkpoint_recorded', tool: 'mcp__orchestray__pattern_find', slug: 'p' }) + '\n';
     const { status, tmp } = runHook({ subagent_type: 'developer' }, lines);
     const evts = readEvents(tmp);
     cleanup(tmp);
-    assert.equal(status, 0);
-    const warnEvt = evts.find(e => e.type === 'pattern_application_gate_warn');
-    assert.ok(warnEvt, 'should emit pattern_application_gate_warn');
+    // Promoted from ramp/warn-only (threshold=3) to immediate block (threshold=0) in v2.2.17.
+    assert.equal(status, 2, 'exit 2 when ack missing (P1-07 promoted in v2.2.17)');
+    const blockEvt = evts.find(e => e.type === 'pattern_application_gate_blocked');
+    assert.ok(blockEvt, 'should emit pattern_application_gate_blocked');
   });
 
   test('kill switch → bypass entirely (exit 0)', () => {

@@ -9740,6 +9740,34 @@ Kill switch: `ORCHESTRAY_LINT_DOESNOTTHROW_ORPHAN_DISABLED=1`.
 
 ---
 
+### `lint_doesnotthrow_orphan_blocked`
+
+Emitted by `bin/lint-doesnotthrow-orphan.js` (PreToolUse:Bash matcher on `npm test` /
+`node --test`) when one or more orphan `assert.doesNotThrow(...)` calls are detected.
+Promoted to exit-2 in v2.2.17 (was warn-only in v2.2.15).
+
+```json
+{
+  "type": "lint_doesnotthrow_orphan_blocked",
+  "version": 1,
+  "schema_version": 1,
+  "findings_count": 2,
+  "kill_switch_active": false,
+  "orchestration_id": "orch-20260101T000000Z-example"
+}
+```
+
+Field notes:
+- `findings_count`: total number of orphan doesNotThrow findings across all test files.
+- `kill_switch_active`: always `false` when this event is emitted (kill switch path
+  exits 0 without emitting). Reserved for future instrumentation.
+
+Emitted from: `bin/lint-doesnotthrow-orphan.js` (PreToolUse:Bash CLI wrapper).
+
+Kill switch: `ORCHESTRAY_LINT_DOESNOTTHROW_ORPHAN_DISABLED=1`.
+
+---
+
 ### `mcp_allowlist_stale_entry_warn` event
 
 Emitted by `bin/_lib/mcp-tool-allowlist-derive.js` (C-02, v2.2.15 P1-02) when

@@ -828,8 +828,8 @@ function main() {
     const agentRole = identifyAgentRole(event);
     const structuredResult = extractStructuredResult(event);
 
-    // ── P1-05 (v2.2.15): Multiple Structured Result block detector.
-    // Warn-only in v2.2.15. Hard exit 2 in v2.2.16 if rate > 0.
+    // ── P1-05 (v2.2.17): Multiple Structured Result block detector.
+    // Hard exit 2 when multiple blocks detected (promoted from warn-only in v2.2.15).
     try {
       const rawAgentTextForP105 = [event.result, event.output, event.agent_output]
         .find(v => typeof v === 'string' && v.length > 0) || '';
@@ -850,12 +850,16 @@ function main() {
               session_id:       event.session_id || null,
             });
             process.stderr.write(
-              '[orchestray] validate-task-completion: WARN — ' + (agentRole || 'unknown') +
+              '[orchestray] validate-task-completion: BLOCKED — ' + (agentRole || 'unknown') +
               ' output contains ' + srCount + ' `## Structured Result` blocks (expected 1). ' +
-              'Only the last block is parsed. Will exit 2 in v2.2.16. ' +
+              'Only one Structured Result block is allowed per agent output. ' +
               'Kill switch: ORCHESTRAY_MULTI_STRUCTURED_RESULT_GATE_DISABLED=1\n'
             );
-            // Warn-only in v2.2.15 — no exit 2 here yet.
+            process.stdout.write(JSON.stringify({
+              continue: false,
+              reason: 'multiple_structured_result_blocks:' + srCount + '_blocks_found',
+            }));
+            process.exit(2);
           }
         }
       }
