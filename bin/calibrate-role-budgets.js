@@ -21,6 +21,7 @@
  * Usage:
  *   node bin/calibrate-role-budgets.js [--window-days N] [--cwd /path/to/project]
  *   node bin/calibrate-role-budgets.js --emit-cache [--window-days N] [--cwd ...]
+ *   node bin/calibrate-role-budgets.js --emit-cache --if-stale [--quiet] [--cwd ...]
  *
  * Options:
  *   --window-days N    Look back N days of events (default: 14)
@@ -31,6 +32,13 @@
  *                      .orchestray/state/role-budgets.json in the wrapped form
  *                      that bin/_lib/output-shape.js consumes (W7 F-003 fix,
  *                      v2.2.0). Without this flag the tool prints to stdout only.
+ *   --if-stale         Skip recompute if role-budgets.json mtime is newer than
+ *                      window-days. Exits 0 silently when cache is fresh.
+ *                      Forces recompute when cache is missing or older than window.
+ *                      (v2.2.14 G-02 — fixes SessionStart cache-budget burn)
+ *   --quiet            Suppress the recommendation table on stdout. When combined
+ *                      with --emit-cache, the cache file is the sole deliverable.
+ *                      Exits 0 with no stdout in --quiet --emit-cache mode.
  *
  * Output:
  *   A recommendation table printed to stdout. No files are written unless
@@ -78,6 +86,8 @@ const windowDays  = parseInt(getArg('--window-days', '14'), 10);
 const minSamples  = parseInt(getArg('--min-samples', '10'), 10);
 const cwdArg      = getArg('--cwd', process.cwd());
 const emitCache   = hasFlag('--emit-cache');
+const ifStale     = hasFlag('--if-stale');
+const quiet       = hasFlag('--quiet');
 
 if (hasFlag('--help') || hasFlag('-h')) {
   process.stdout.write(`
@@ -95,6 +105,9 @@ Options:
   --emit-cache       Write .orchestray/state/role-budgets.json from the
                      recommendations (wrapped form consumed by
                      bin/_lib/output-shape.js getRoleLengthCap()).
+  --if-stale         Skip recompute when cache is fresher than window-days.
+                     Exit 0 silently. Recompute when cache missing or stale.
+  --quiet            Suppress recommendation table. Cache file is deliverable.
   --help             Show this help
 
 Output: recommendation table to stdout. Does NOT write to config.json.
@@ -148,6 +161,23 @@ function percentile(sortedArr, p) {
 
 function main() {
   const cwd = path.resolve(cwdArg);
+
+  // --if-stale: exit 0 silently when cache is fresher than window-days.
+  // Prevents unconditional recompute on every SessionStart (v2.2.14 G-02).
+  if (ifStale) {
+    const cachePath = path.join(cwd, '.orchestray', 'state', 'role-budgets.json');
+    const windowMs  = windowDays * 24 * 60 * 60 * 1000;
+    try {
+      const stat = fs.statSync(cachePath);
+      if (Date.now() - stat.mtimeMs < windowMs) {
+        // Cache is fresh — skip recompute entirely. No stdout, no stderr.
+        process.exit(0);
+      }
+    } catch (_e) {
+      // File missing or unreadable — fall through to recompute.
+    }
+  }
+
   const eventsPath = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
 
   if (!fs.existsSync(eventsPath)) {
@@ -232,38 +262,40 @@ function main() {
     }
   }
 
-  // Print report
-  process.stdout.write(`\n=== calibrate-role-budgets.js ===\n`);
-  process.stdout.write(`v2.1.16 actor — does NOT auto-run in v2.1.15\n`);
-  process.stdout.write(`Window: last ${windowDays} days | min_samples: ${minSamples} | date: ${today}\n\n`);
-
-  process.stdout.write(
-    `${'Role'.padEnd(20)} ${'N'.padStart(5)} ${'p50'.padStart(8)} ${'p75'.padStart(8)} ${'p95'.padStart(8)} ${'Recommended'.padStart(12)} Note\n`
-  );
-  process.stdout.write(`${'-'.repeat(85)}\n`);
-
-  for (const r of rows) {
-    const p50s = r.p50 !== null ? String(r.p50) : '-';
-    const p75s = r.p75 !== null ? String(r.p75) : '-';
-    const p95s = r.p95 !== null ? String(r.p95) : '-';
-    const recs = r.recommended !== null ? String(r.recommended) : String(r.tier_default) + '*';
-    const note = r.note || '';
+  // Print report (suppressed when --quiet is set)
+  if (!quiet) {
+    process.stdout.write(`\n=== calibrate-role-budgets.js ===\n`);
+    process.stdout.write(`v2.1.16 actor — does NOT auto-run in v2.1.15\n`);
+    process.stdout.write(`Window: last ${windowDays} days | min_samples: ${minSamples} | date: ${today}\n\n`);
 
     process.stdout.write(
-      `${r.role.padEnd(20)} ${String(r.n).padStart(5)} ${p50s.padStart(8)} ${p75s.padStart(8)} ${p95s.padStart(8)} ${recs.padStart(12)} ${note}\n`
+      `${'Role'.padEnd(20)} ${'N'.padStart(5)} ${'p50'.padStart(8)} ${'p75'.padStart(8)} ${'p95'.padStart(8)} ${'Recommended'.padStart(12)} Note\n`
     );
-  }
+    process.stdout.write(`${'-'.repeat(85)}\n`);
 
-  process.stdout.write(`\n* = tier default (thin/no telemetry); value unchanged from current config.\n\n`);
+    for (const r of rows) {
+      const p50s = r.p50 !== null ? String(r.p50) : '-';
+      const p75s = r.p75 !== null ? String(r.p75) : '-';
+      const p95s = r.p95 !== null ? String(r.p95) : '-';
+      const recs = r.recommended !== null ? String(r.recommended) : String(r.tier_default) + '*';
+      const note = r.note || '';
 
-  process.stdout.write(`To apply recommendations, update .orchestray/config.json role_budgets manually:\n`);
-  for (const r of rows) {
-    if (r.recommended !== null) {
-      process.stdout.write(`  "${r.role}": { "budget_tokens": ${r.recommended}, "source": "${r.source}", "calibrated_at": "${today}" },\n`);
+      process.stdout.write(
+        `${r.role.padEnd(20)} ${String(r.n).padStart(5)} ${p50s.padStart(8)} ${p75s.padStart(8)} ${p95s.padStart(8)} ${recs.padStart(12)} ${note}\n`
+      );
     }
-  }
 
-  process.stdout.write(`\nThis script does NOT write to config.json. Operator must commit the changes.\n`);
+    process.stdout.write(`\n* = tier default (thin/no telemetry); value unchanged from current config.\n\n`);
+
+    process.stdout.write(`To apply recommendations, update .orchestray/config.json role_budgets manually:\n`);
+    for (const r of rows) {
+      if (r.recommended !== null) {
+        process.stdout.write(`  "${r.role}": { "budget_tokens": ${r.recommended}, "source": "${r.source}", "calibrated_at": "${today}" },\n`);
+      }
+    }
+
+    process.stdout.write(`\nThis script does NOT write to config.json. Operator must commit the changes.\n`);
+  }
 
   // --emit-cache: write the wrapped form consumed by bin/_lib/output-shape.js.
   // Atomic replace via temp-file + rename so a partial write cannot corrupt
@@ -309,8 +341,10 @@ function main() {
 
     fs.writeFileSync(tmpPath, JSON.stringify(cacheBody, null, 2) + '\n', 'utf8');
     fs.renameSync(tmpPath, cachePath);
-    process.stdout.write('\n[--emit-cache] wrote ' + cachePath + ' (' +
-      Object.keys(role_budgets).length + ' roles).\n');
+    if (!quiet) {
+      process.stdout.write('\n[--emit-cache] wrote ' + cachePath + ' (' +
+        Object.keys(role_budgets).length + ' roles).\n');
+    }
   }
 }
 
@@ -321,6 +355,8 @@ module.exports = {
   ROLE_MODEL_TIER,
   percentile,
   main,
+  // Exported for tests that need to inspect parsed flag state.
+  _flags: { emitCache, ifStale, quiet, windowDays, minSamples },
 };
 
 if (require.main === module) {
