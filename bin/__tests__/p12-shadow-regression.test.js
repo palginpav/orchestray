@@ -62,15 +62,14 @@ describe('output_shape_applied — schema-md documentation', () => {
   });
 });
 
-describe('output_shape_applied — schema-shadow plumbing (deferred)', () => {
-  // PM regens shadow once at end of P1.2 + P1.3 + P1.4. Until then, skip.
-  test.skip('output_shape_applied present in event-schemas.shadow.json (TODO: P1.3 regen)', () => {
+describe('output_shape_applied — schema-shadow plumbing', () => {
+  test('output_shape_applied present in event-schemas.shadow.json', () => {
     if (!fs.existsSync(SCHEMAS_SHADOW)) {
       assert.fail('event-schemas.shadow.json missing — PM coordinates regen at merge time');
     }
     const shadow = JSON.parse(fs.readFileSync(SCHEMAS_SHADOW, 'utf8'));
-    const events = shadow && shadow.events ? Object.keys(shadow.events) : [];
+    const events = Object.keys(shadow).filter((k) => k !== '_meta');
     assert.ok(events.includes('output_shape_applied'),
-      'shadow must list output_shape_applied after P1.3 regen pass');
+      'shadow must list output_shape_applied');
   });
 });

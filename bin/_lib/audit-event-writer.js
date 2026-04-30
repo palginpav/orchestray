@@ -73,7 +73,7 @@ const SHADOW_REL_CONFIG = path.join('.orchestray', 'config.json');
  * loadShadowConfig — copied locally to avoid circular dependency).
  */
 function loadShadowConfig(cwd) {
-  const defaults = { enabled: true, miss_threshold_24h: 3 };
+  const defaults = { enabled: true, miss_threshold_24h: 10 };
   try {
     const raw    = fs.readFileSync(path.join(cwd, SHADOW_REL_CONFIG), 'utf8');
     const parsed = JSON.parse(raw);
@@ -488,7 +488,7 @@ function writeEvent(eventPayload, opts) {
             cwd,
             validation.event_type || 'unknown',
             sourceHash,
-            cfg && cfg.miss_threshold_24h ? cfg.miss_threshold_24h : 3
+            cfg && cfg.miss_threshold_24h ? cfg.miss_threshold_24h : 10
           );
         } catch (_e) { /* fail-open */ }
         try { atomicAppendJsonl(eventsPath, filledPayload); } catch (_e) { /* fail-open */ }
