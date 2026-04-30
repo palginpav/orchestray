@@ -334,6 +334,16 @@ function main() {
     const status = (typeof sr.status === 'string') ? sr.status.toLowerCase() : '';
     if (status === 'success' && WATCHED_ROLES.has(role)) {
       const headBody = readHeadCommitBody(cwd);
+
+      // W1 auto-commits (v2.2.18) carry this trailer; their bodies are intentionally
+      // minimal and do not include a `## Handoff` block. Exempting them prevents
+      // `commit_handoff_body_missing` false positives.
+      const AUTO_COMMIT_TRAILER = 'Generated-By: orchestray-auto-commit-worktree';
+      if (headBody !== null && headBody.includes(AUTO_COMMIT_TRAILER)) {
+        process.stdout.write(JSON.stringify({ continue: true }) + '\n');
+        process.exit(0);
+      }
+
       if (headBody !== null && !/^##\s+Handoff\b/m.test(headBody)) {
         const gateDisabled = process.env.ORCHESTRAY_COMMIT_HANDOFF_GATE_DISABLED === '1';
         const threshold = (() => {

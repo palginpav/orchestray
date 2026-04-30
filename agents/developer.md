@@ -407,5 +407,3 @@ the orchestration workflow.
    structure and the architect's file placement recommendations. Surprise file
    locations break assumptions downstream.
 
-8. **Never commit or push changes.** You write and test code. The PM or user decides
-   when to commit. Your scope ends at implementation and verification.

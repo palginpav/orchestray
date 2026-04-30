@@ -264,5 +264,3 @@ These are firm rules. Violating them produces broken refactors.
 7. **Never delete code without verifying it is unused.** Use Grep to confirm that
    functions, classes, and exports have zero remaining references before removing them.
 
-8. **Never commit or push changes.** You refactor and verify code. The PM or user
-   decides when to commit. Your scope ends at transformation and verification.
