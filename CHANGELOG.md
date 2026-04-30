@@ -52,7 +52,7 @@ v2.2.17 picks up the deferred backlog from v2.2.15 (which v2.2.16's same-day FN-
 
 ### Tests
 
-- 5796 total / 5790 pass / 0 fail / 6 skipped (vs v2.2.16 baseline 5778/5773/0/5 — net +18 tests, 0 fails).
+- 5790 total / 5790 pass / 0 fail / 0 skipped (vs v2.2.16 baseline 5778/5773/0/5 — net +12 effective tests; the 6 skipped tests from v2.2.16 are retired in v2.2.17: 3 SUPERSEDED `resolveActualTokens` first-turn-only tests (replaced by v2.2.8 b-estimation-alignment), 2 empty `test.skip()` stubs from v2.2.9 B-1.1 housekeeper-delegation supersession, 1 env-gated release-shape test moved to `tests/release-only/` so it runs only via `npm run test:release-shape` and no longer skips in `npm test`).
 
 ### Migration notes
 
