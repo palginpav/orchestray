@@ -38,6 +38,17 @@ The hint is advisory — the hook fails open on missing or zero values, so
 omitting the hint never blocks the spawn but disables soft-warn telemetry for
 that spawn.
 
+**Inline prompt-body forms (G-11, v2.2.14):** When `context_size_hint` is embedded
+in the prompt body text (rather than passed as a `tool_input` field), the
+`bin/preflight-spawn-budget.js` parser accepts TWO equivalent forms:
+
+- **Flat (canonical):** `context_size_hint: system=8000 tier2=4000 handoff=12000`
+- **Object (also accepted):** `context_size_hint: { system: 8000, tier2: 4000, handoff: 12000 }`
+
+Both parse identically. Mixed forms (e.g. `system: 8000 tier2=4000`) do NOT
+match and trigger the spawn-block. When in doubt, use the flat form — it is
+unambiguous and copy-paste safe.
+
 **Per-template populating:** Every role's delegation contract below carries an
 implicit `context_size_hint` field. When a template's example shows a YAML or
 JSON contract, the PM SHOULD include the `context_size_hint` block alongside
