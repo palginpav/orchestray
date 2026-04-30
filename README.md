@@ -167,9 +167,12 @@ Set in `.orchestray/config.json` or as env vars. No session restart required.
 | Commit-body `## Handoff` warn-then-block ramp (v2.2.15) | — | `ORCHESTRAY_COMMIT_HANDOFF_GATE_DISABLED=1` (downgrades to warn); `ORCHESTRAY_COMMIT_HANDOFF_RAMP_THRESHOLD=N` (default 3) |
 | Hook double-fire skip + SessionStart dual-install version-mismatch surfacing (v2.2.15) | — | `ORCHESTRAY_DOUBLE_FIRE_SKIP_GATE_DISABLED=1` |
 | Multiple `## Structured Result` warn event (v2.2.15) | — | `ORCHESTRAY_MULTI_STRUCTURED_RESULT_GATE_DISABLED=1` |
-| `assert.doesNotThrow` orphan-test lint (v2.2.15, telemetry-first warn) | — | `ORCHESTRAY_LINT_DOESNOTTHROW_ORPHAN_DISABLED=1` |
+| `assert.doesNotThrow` orphan-test lint (v2.2.15 warn → v2.2.17 exit-2) | — | `ORCHESTRAY_LINT_DOESNOTTHROW_ORPHAN_DISABLED=1` |
 | MCP server↔pm.md tool-allowlist parity (v2.2.15) | — | `ORCHESTRAY_LINT_MCP_ALLOWLIST_PARITY_DISABLED=1` |
 | `EVENT_TYPES`↔schema-declares enum parity (v2.2.15) | — | `ORCHESTRAY_LINT_EVENT_TYPES_ENUM_PARITY_DISABLED=1` |
+| Cross-install stale hook-path pruning (v2.2.17) | — | `ORCHESTRAY_INSTALL_CROSS_INSTALL_DEDUP_DISABLED=1` |
+| Pattern-application acknowledgement exit-2 (v2.2.17, was warn in v2.2.15) | — | `ORCHESTRAY_PATTERN_APPLICATION_GATE_DISABLED=1`; soft-warn: `ORCHESTRAY_PATTERN_APPLICATION_RAMP_THRESHOLD=N` |
+| Multiple `## Structured Result` blocks exit-2 (v2.2.17, was warn in v2.2.15) | — | `ORCHESTRAY_MULTI_STRUCTURED_RESULT_GATE_DISABLED=1` |
 
 ## Requirements
 

@@ -3,6 +3,62 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.2.17] - 2026-04-30
+
+v2.2.17 picks up the deferred backlog from v2.2.15 (which v2.2.16's same-day FN-16 hotfix couldn't absorb) and ships a telemetry-driven hardening pass targeting the noisiest signals from the v2.2.16 audit log. Every gate ships default-on with a kill switch; no config changes required.
+
+### Added — Deferred items from v2.2.15
+
+- **Pattern-confidence gate lowered from 0.65 → 0.55.** After two releases of telemetry on the 0.65 floor (v2.2.15 + v2.2.16), false-positive risk is sized. Patterns that scored above 0.55 but below 0.65 were silently skipped; they now apply. Affects `bin/_lib/config-schema.js`, `bin/install.js`, `bin/gate-agent-spawn.js`, and `bin/post-upgrade-sweep.js`. (P1-03 LOWER-THRESHOLD)
+- **Two remaining confidence-decayed patterns stamped.** `decomposition-parallel-file-exclusive-plugin-update` and `decomposition-release-cluster-maxturns-prebump` receive evidence-boost stamps, completing the P1-03 EVIDENCE-BOOST pass that v2.2.15 started for 4 of 6 patterns. (P1-03 EVIDENCE-BOOST)
+- **`assert.doesNotThrow` orphan-test lint promoted from warn to exit-2.** New CLI wrapper `bin/lint-doesnotthrow-orphan.js` hooks into `PreToolUse:Bash` for `npm test` / `node --test` invocations. Two real orphan tests surfaced by C-01 in v2.2.15 are fixed in this release (shape assertions replacing bare `doesNotThrow` calls in `emit-compression-telemetry-r1.test.js` and `v222-hooks-config-bucket-c.test.js`). Kill switch: `ORCHESTRAY_LINT_DOESNOTTHROW_ORPHAN_DISABLED=1`. (C-01 ramp)
+- **Release-manager diff-shape gate re-scoped to previous release tag.** The `≥10-file diff` shape test now diffs against the previous release tag (`v2.2.16` at this release) rather than `HEAD~1`, which only saw the 2-file version-bump commit and made the gate useless. New `npm run test:release-shape` script; `agents/release-manager.md` Step 3b documents the gate. (C-05)
+- **Multiple `## Structured Result` blocks now exit-2.** Was warn-only in v2.2.15; promoted after observing rate >0 in the v2.2.16 audit log. Kill switch: `ORCHESTRAY_MULTI_STRUCTURED_RESULT_GATE_DISABLED=1`. (P1-05 promote)
+- **Pattern-application acknowledgement gate promoted to exit-2 (immediate, threshold=0).** Roles that called `pattern_find` must follow with `pattern_record_application` or `pattern_record_skip_reason`. Was warn-only. Kill switch: `ORCHESTRAY_PATTERN_APPLICATION_GATE_DISABLED=1`; soft-warn override via `ORCHESTRAY_PATTERN_APPLICATION_RAMP_THRESHOLD=N`. (P1-07 promote)
+- **Documenter agent now requires a `## Structured Result` block.** `agents/documenter.md` ships the standard structured-result requirement block. Eliminates `pre_done_checklist_failed` events for documenter spawns (8 observed in v2.2.16 audit log).
+
+### Added — Hardening pass (telemetry-driven from v2.2.16)
+
+- **Top-3 schema-shadow-validation noise sources relaxed.** `mcp_tool_call`, `tokenwright_realized_savings`, and `pattern_skip_enriched` schemas accept new optional fields they were seeing in the wild. Expected ~86.6% reduction in `schema_shadow_validation_block` volume.
+- **8 emit sites now populate `timestamp`, `orchestration_id`, and `version` at write time.** Previously relying on autofill, which missed on fast-path branches. Affected sites: `snapshot_captured`, `sentinel_probe_session`, `repo_map_built`, `pattern_read`, `federation_promote_log_backfilled`, `federation_pattern_tombstoned`, `agent_start`, `task_created`.
+- **Tokenwright disk-fallback when SubagentStop fires without `task_completed_metrics`.** `bin/capture-tokenwright-realized.js` now walks `.orchestray/metrics/agent_metrics.jsonl` (last 50 rows) for a matching `agent_type + orchestration_id + spawn_key` row before declaring savings "unknown". Reduces unknown-savings entries in cost rollups.
+- **Drainer tombstone prevents repeat orphan re-emission.** `bin/audit-housekeeper-orphan.js` writes `.orchestray/state/drainer-tombstones.jsonl` (TTL 7 days, compacts at >500 entries). Same `request_id` was being re-emitted up to 56 times across sessions.
+- **Context-telemetry cache: corrupt-file preserved as forensic artifact.** `bin/_lib/context-telemetry-cache.js` renames a corrupt cache file to `.corrupt-${timestamp}` instead of unlinking on `JSON.parse` failure. Operators can inspect what caused corruption.
+- **Cross-install stale hook-path dedup.** `bin/install.js` mergeHooks now removes orchestray-shaped hook entries pointing at paths that no longer exist on disk (left over from a removed peer install). Real peer entries (file exists) are preserved per v2.0.20. Kill switch: `ORCHESTRAY_INSTALL_CROSS_INSTALL_DEDUP_DISABLED=1`.
+- **Dossier orphan instrumentation extended.** `bin/audit-dossier-orphan.js` adds `inject_skip_reason` and `archive_age_seconds` to `dossier_write_without_inject_detected` payloads, making the cause of orphan dossiers visible without log archaeology.
+- **Dual-install parity check deduped per file.** `bin/release-manager/dual-install-parity-check.js` uses a `divergence_pair_signature` to prevent duplicate entries when both installs report the same file pair as divergent.
+
+### Fixed
+
+- Two `assert.doesNotThrow` orphan tests replaced with explicit shape assertions (`emit-compression-telemetry-r1.test.js:229`, `v222-hooks-config-bucket-c.test.js:32`). Both were testing "hooks.json is valid JSON" without asserting the parsed shape.
+
+### Schema delta
+
+- 259 → 260 (+1 net: `lint_doesnotthrow_orphan_blocked` added; 3 existing schemas relaxed with new optional fields — backward-compatible).
+- Shadow regen content-stable (260 event types, 12669 bytes, two consecutive runs produce identical output).
+
+### Hooks chain delta
+
+- +1 entry: `bin/lint-doesnotthrow-orphan.js` (`PreToolUse:Bash`)
+
+### Kill switches added
+
+| Env var | What it disables |
+|---------|-----------------|
+| `ORCHESTRAY_LINT_DOESNOTTHROW_ORPHAN_DISABLED=1` | C-01 lint: `assert.doesNotThrow` orphan detection now exits 2 (was warn-only in v2.2.15) |
+| `ORCHESTRAY_INSTALL_CROSS_INSTALL_DEDUP_DISABLED=1` | `bin/install.js` stale peer-install hook-path pruning |
+| `ORCHESTRAY_PATTERN_APPLICATION_GATE_DISABLED=1` | Pattern-application acknowledgement gate (exits 2 on missing `pattern_record_*`) |
+| `ORCHESTRAY_PATTERN_APPLICATION_RAMP_THRESHOLD=N` | Soft-warn override: emit warn-only for first N spawns before exit 2 |
+
+### Tests
+
+- 5796 total / 5790 pass / 0 fail / 6 skipped (vs v2.2.16 baseline 5778/5773/0/5 — net +18 tests, 0 fails).
+
+### Migration notes
+
+- Restart Claude Code after upgrading.
+- No config changes required — every gate ships default-on with kill switch.
+
 ## [2.2.16] - 2026-04-30
 
 v2.2.16 is a same-day hotfix for one v2.2.15 install regression. v2.2.15's FN-16 prune logic was over-aggressive: it deleted every script in the install target's `bin/` whose basename was missing from canonical `hooks/hooks.json`, even when that script is intentionally shipped in source for subprocess invocation. The six audit scripts retired from canonical hooks by v2.2.10 F1 (they run as subprocesses launched by `audit-on-orch-complete.js`, not as hooks) — `archive-orch-events`, `audit-housekeeper-orphan`, `audit-pm-emit-coverage`, `audit-promised-events`, `audit-round-archive-hook`, `scan-cite-labels` — were getting clobbered on every install, immediately failing the install-integrity hash sweep with `ENOENT: no such file or directory`.
