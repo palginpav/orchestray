@@ -280,12 +280,20 @@ function handleTaskCompleted(event, cwd, cfg) {
         if (fsLocal.existsSync(metricsPath)) {
           const lines = fsLocal.readFileSync(metricsPath, 'utf8').split('\n').filter(Boolean);
           const wantSpawnKey = matched.spawn_key || '';
-          // Walk newest-first; pick a row matching our agent_type + agentMatchPossiblyByOrch.
+          // Walk newest-first; pick a row matching our agent_type + orchestration_id
+          // AND spawn_key when available (W9 reviewer F-4: match was previously
+          // computed but unused, causing multi-spawn collision in the same orch).
           for (let i = lines.length - 1; i >= 0; i--) {
             try {
               const row = JSON.parse(lines[i]);
               if (row && row.agent_type === agentType && row.orchestration_id === orchestrationId) {
-                if (typeof row.input_tokens === 'number' && row.input_tokens > 0) {
+                // When spawn_key is known, require an exact match — multiple
+                // spawns of the same agent_type in one orchestration must not
+                // alias each other's metrics.
+                const spawnKeyOk = !wantSpawnKey ||
+                  row.spawn_key === wantSpawnKey ||
+                  !('spawn_key' in row); // legacy rows without spawn_key are allowed as a fallback
+                if (spawnKeyOk && typeof row.input_tokens === 'number' && row.input_tokens > 0) {
                   metrics = { input_tokens: row.input_tokens, output_tokens: row.output_tokens || 0 };
                   break;
                 }

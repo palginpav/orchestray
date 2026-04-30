@@ -555,7 +555,7 @@ function identifyAgentRole(event) {
   for (const c of candidates) {
     if (typeof c === 'string' && c.length > 0) {
       // S-001 (v2.2.0 fix-pass): trim whitespace AND strip embedded NUL/zero-width
-      // bytes so a near-equivalent like 'haiku-scout ' or 'haiku-scout '
+      // bytes so a near-equivalent like 'haiku-scout ' or 'haiku-scout\x00'
       // does not silently bypass READ_ONLY_AGENTS strict-equality Set membership.
       // Defensive against future Claude Code payload-shape changes (CWE-178).
       // S-001 (v2.2.0 fix-pass round 2): NFKC-normalize first, then strip

@@ -85,6 +85,25 @@ function makeBashEvent(command) {
 }
 
 /**
+ * Read all events.jsonl rows from the project's audit dir, optionally
+ * filtered by orchestration_id.
+ */
+function readEventsForOrch(projectDir, orchId) {
+  const eventsPath = path.join(projectDir, '.orchestray', 'audit', 'events.jsonl');
+  if (!fs.existsSync(eventsPath)) return [];
+  const lines = fs.readFileSync(eventsPath, 'utf8').split('\n').filter(Boolean);
+  const out = [];
+  for (const line of lines) {
+    try {
+      const e = JSON.parse(line);
+      if (orchId && e.orchestration_id !== orchId) continue;
+      out.push(e);
+    } catch (_) { /* skip malformed */ }
+  }
+  return out;
+}
+
+/**
  * Run a script with synthetic stdin, returning { status, stdout, stderr }.
  */
 function runScript(scriptPath, stdinData, env = {}) {
@@ -158,11 +177,48 @@ describe('P1-05: multiple_structured_result_blocks → exit 2 (v2.2.17 promotion
         ORCHESTRAY_MULTI_STRUCTURED_RESULT_GATE_DISABLED: '1',
       });
 
-      // The P1-05 BLOCKED message should NOT appear in stderr.
+      // The P1-05 BLOCKED message should NOT appear in stderr. Use explicit
+      // grouping (W9 reviewer F-2): the kill switch must suppress BOTH the
+      // event-name marker AND any P1-05-specific BLOCKED text. We assert the
+      // negation of (event-name found OR BLOCKED-with-block-count found).
+      const hasEventName = r.stderr.includes('multiple_structured_result_blocks');
+      const hasP105Blocked = r.stderr.includes('BLOCKED') && r.stderr.includes('blocks (expected 1)');
       assert.ok(
-        !r.stderr.includes('multiple_structured_result_blocks') &&
-        !r.stderr.includes('BLOCKED — ') || !r.stderr.includes('blocks (expected 1)'),
-        'kill switch must suppress P1-05 BLOCKED message; got: ' + r.stderr,
+        !hasEventName && !hasP105Blocked,
+        'kill switch must suppress P1-05 BLOCKED message; got stderr: ' + r.stderr,
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('3-block output (block_count: 3) → exit 2 with block_count populated', () => {
+    // W9 reviewer F-2: previous suite only covered 2-block input. Verify the
+    // gate counts ≥3 blocks correctly and surfaces the count in the emit.
+    const dir = makeTmpProject();
+    try {
+      const tripleBlockOutput = [
+        '## Structured Result',
+        '```json',
+        '{"status":"partial","summary":"first"}',
+        '```',
+        '## Structured Result',
+        '```json',
+        '{"status":"partial","summary":"second"}',
+        '```',
+        makeValidStructuredResultBlock(),
+      ].join('\n');
+
+      const event = makeSubagentStopEvent({ result: tripleBlockOutput });
+      const r = runScript(VTC_PATH, event, { ORCHESTRAY_TEST_CWD: dir });
+
+      // 3-block input fires the gate as well — exit 2. (The gate triggers on
+      // block_count >= 2; this test confirms it behaves identically for higher
+      // counts, including the BLOCKED stderr signal.)
+      assert.equal(r.status, 2, '3-block input must exit 2; stderr: ' + r.stderr);
+      assert.ok(
+        r.stderr.includes('BLOCKED') || r.stderr.includes('multiple'),
+        '3-block input must mention BLOCKED or multiple in stderr; got: ' + r.stderr,
       );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

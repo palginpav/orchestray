@@ -71,12 +71,33 @@ function _tombstonePath(cwd) {
   return path.join(cwd, '.orchestray', 'state', 'drainer-tombstones.jsonl');
 }
 
+// W9 reviewer F-6: compaction threshold. When the tombstone file has more than
+// MAX_TOMBSTONE_LINES rows, the next writeTombstone call also drops expired
+// entries. Single-writer assumption: housekeeper drainer is the only writer.
+// (Concurrent writers would risk lost entries between read and write; the
+// drainer scheduler ensures only one process holds this responsibility.)
+const MAX_TOMBSTONE_LINES = 500;
+
 function writeTombstone(cwd, requestId) {
   const until = new Date(Date.now() + TOMBSTONE_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
   try {
     const dir = path.join(cwd, '.orchestray', 'state');
     fs.mkdirSync(dir, { recursive: true });
-    fs.appendFileSync(_tombstonePath(cwd), JSON.stringify({ request_id: requestId, until }) + '\n');
+    const p = _tombstonePath(cwd);
+    fs.appendFileSync(p, JSON.stringify({ request_id: requestId, until }) + '\n');
+    // Periodic compaction — drop expired entries when the file grows too large.
+    try {
+      const stat = fs.statSync(p);
+      if (stat.size > MAX_TOMBSTONE_LINES * 90 /* approx bytes/line */) {
+        const all = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean);
+        if (all.length > MAX_TOMBSTONE_LINES) {
+          const now = Date.now();
+          const live = all.map(l => { try { return JSON.parse(l); } catch (_e) { return null; } })
+            .filter(t => t && new Date(t.until).getTime() > now);
+          fs.writeFileSync(p, live.map(JSON.stringify).join('\n') + (live.length ? '\n' : ''));
+        }
+      }
+    } catch (_e) { /* compaction is best-effort */ }
   } catch (_e) { /* fail-open */ }
 }
 
@@ -258,6 +279,14 @@ function main() {
     const approvedPath = path.join(cwd, '.orchestray', 'state', 'spawn-approved.jsonl');
     if (fs.existsSync(approvedPath)) {
       const lines = fs.readFileSync(approvedPath, 'utf8').split('\n').filter(Boolean);
+      // W9 reviewer F-5: track newly-emitted request_ids in a Set so the
+      // post-loop re-stamp can apply orphan_reported_at to the right rows.
+      // The previous code mutated `row.orphan_reported_at` inside the loop
+      // but then re-parsed the original line strings post-loop, dropping
+      // the mutation entirely. The tombstone is the authoritative idempotency
+      // mechanism; orphan_reported_at is now also correctly persisted as a
+      // belt-and-braces marker for legacy code paths that read it.
+      const newlyEmitted = new Set();
       for (const line of lines) {
         let row;
         try { row = JSON.parse(line); } catch (_e) { continue; }
@@ -283,14 +312,20 @@ function main() {
             tombstone_until:               tombstoneUntil,
           }, { cwd });
           writeTombstone(cwd, row.request_id);
-          row.orphan_reported_at = new Date().toISOString();
+          newlyEmitted.add(row.request_id);
         } catch (e) {
           process.stderr.write(`audit-housekeeper-orphan: drainer emit failed: ${e && e.message}\n`);
         }
       }
-      // Persist orphan_reported_at idempotency markers.
+      // Persist orphan_reported_at idempotency markers — re-parse and stamp
+      // any row whose request_id was emitted in this run.
+      const nowIso = new Date().toISOString();
       const updated = lines.map(l => {
-        try { return JSON.parse(l); } catch (_e) { return null; }
+        try {
+          const r = JSON.parse(l);
+          if (r && newlyEmitted.has(r.request_id)) r.orphan_reported_at = nowIso;
+          return r;
+        } catch (_e) { return null; }
       }).filter(Boolean);
       fs.writeFileSync(approvedPath, updated.map(JSON.stringify).join('\n') + '\n');
     }

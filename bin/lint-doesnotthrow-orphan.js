@@ -31,7 +31,10 @@ const { MAX_INPUT_BYTES }         = require('./_lib/constants');
 const { resolveSafeCwd }          = require('./_lib/resolve-project-cwd');
 
 // Commands that indicate a test-runner invocation.
-const TEST_RUNNER_RE = /\b(?:npm\s+test|node\s+--test|node\s+-test)\b/;
+// v2.2.17 W9 reviewer F-10: dropped invalid `node -test` (single-dash) variant.
+// Node's test runner flag is `--test` (double-dash); single-dash would parse as
+// `-t -e -s -t` which is not a real invocation.
+const TEST_RUNNER_RE = /\b(?:npm\s+test|node\s+--test)\b/;
 
 function emitEvent(cwd, record) {
   try {

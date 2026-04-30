@@ -253,6 +253,97 @@ describe('v2.0.20 — partial dedup (existing hook kept verbatim, new hook appen
   });
 });
 
+describe('v2.2.17 W7c — cross-install dedup (real peer preserved when file exists)', () => {
+  test('pre-existing audit-event.js whose path EXISTS on disk is preserved as a peer', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      // Simulate a real dual-install scenario: create a "global install" dir
+      // OUTSIDE this install's binPrefix, place an audit-event.js file there,
+      // and seed settings.json with a hook entry pointing at it.
+      const peerDir = path.join(tmpDir, 'fake-peer-install', '.claude', 'orchestray', 'bin');
+      fs.mkdirSync(peerDir, { recursive: true });
+      const peerScript = path.join(peerDir, 'audit-event.js');
+      fs.writeFileSync(peerScript, '// fake peer install audit-event.js\n');
+      // The peer hook command must contain "orchestray" so the dedup loop
+      // recognises it as orchestray-shaped.
+      const peerCommand = `node "${peerScript}"`;
+      writePreexistingSettings(tmpDir, {
+        hooks: {
+          SubagentStart: [
+            { hooks: [{ type: 'command', command: peerCommand, timeout: 5 }] },
+          ],
+        },
+      });
+
+      const result = runInstall(tmpDir);
+      assert.equal(result.status, 0, `install failed: ${result.stderr}`);
+
+      const settings = readSettings(tmpDir);
+      const allCommands = (settings.hooks.SubagentStart || [])
+        .filter(e => e.matcher === undefined)
+        .flatMap(e => (e.hooks || []).map(h => h.command || ''));
+
+      // The peer audit-event.js path must be preserved.
+      const peerAudit = allCommands.filter(c => c.includes(peerScript));
+      assert.equal(
+        peerAudit.length, 1,
+        `peer install's audit-event.js (path on disk) must be preserved, got: ${JSON.stringify(allCommands)}`,
+      );
+
+      // This install's audit-event.js was NOT added (peer's basename already
+      // in installedBasenames). Verified by counting basenames: should be exactly 1.
+      const allAudit = allCommands.filter(c => c.includes('audit-event.js'));
+      assert.equal(
+        allAudit.length, 1,
+        `audit-event.js basename should appear exactly once when peer exists; got ${allAudit.length}`,
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('kill switch ORCHESTRAY_INSTALL_CROSS_INSTALL_DEDUP_DISABLED=1 disables the prune branch', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      // Same fictional /home/u/... path as the v2.0.20 test — file does NOT
+      // exist. Without the kill switch, v2.2.17 W7c prunes it. WITH the kill
+      // switch, the entry is preserved (v2.0.20-style peer behaviour).
+      const fictionalCommand =
+        'node "/home/u/.claude/orchestray/bin/audit-event.js" start';
+      writePreexistingSettings(tmpDir, {
+        hooks: {
+          SubagentStart: [
+            { hooks: [{ type: 'command', command: fictionalCommand, timeout: 5 }] },
+          ],
+        },
+      });
+
+      // Run install with kill switch active.
+      const result = spawnSync(process.execPath, [SCRIPT, '--local'], {
+        encoding: 'utf8',
+        timeout: 15000,
+        cwd: tmpDir,
+        env: { ...process.env, ORCHESTRAY_INSTALL_CROSS_INSTALL_DEDUP_DISABLED: '1' },
+      });
+      assert.equal(result.status, 0, `install failed: ${result.stderr}`);
+
+      const settings = readSettings(tmpDir);
+      const allCommands = (settings.hooks.SubagentStart || [])
+        .filter(e => e.matcher === undefined)
+        .flatMap(e => (e.hooks || []).map(h => h.command || ''));
+
+      // The fictional /home/u path must be preserved (kill switch active).
+      const fictional = allCommands.filter(c => c.includes('/home/u/.claude/orchestray'));
+      assert.equal(
+        fictional.length, 1,
+        `with kill switch, fictional /home/u/... path must be preserved; got: ${JSON.stringify(allCommands)}`,
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+});
+
 describe('v2.0.20 — full idempotency (install twice, no duplicates)', () => {
   test('running the installer twice produces identical settings.json', () => {
     const tmpDir = makeTmpDir();

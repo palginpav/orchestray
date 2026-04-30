@@ -1581,6 +1581,14 @@ function mergeHooks(targetDir) {
         // signal (32 events seen on this dev box at v2.2.16). Fix: REPLACE
         // existing orchestray-shaped hooks whose path differs from THIS
         // install's binPrefix — collapses both registrations into one.
+        //
+        // Kill switch (W9 reviewer F-3): ORCHESTRAY_INSTALL_CROSS_INSTALL_DEDUP_DISABLED=1
+        // restores the v2.2.15-and-earlier behaviour (cross-install entries are
+        // treated as peers without the file-existence prune). Use when an
+        // operator wants to keep multiple stale install paths in settings.json
+        // for any reason.
+        const crossInstallDedupDisabled =
+          process.env.ORCHESTRAY_INSTALL_CROSS_INSTALL_DEDUP_DISABLED === '1';
         const installedBasenames = new Set();
         const ourBinPrefixCheck = path.join(targetDir, 'orchestray', 'bin') + path.sep;
         for (const existing of settings.hooks[event]) {
@@ -1608,6 +1616,14 @@ function mergeHooks(targetDir) {
               //   2. The OTHER install is gone (dir deleted, install moved) but
               //      its settings.json entry remains — a leftover. Drop it so
               //      this install can register cleanly under one path only.
+              //
+              // Kill switch (W9 reviewer F-3): when crossInstallDedupDisabled,
+              // skip the file-existence prune entirely — preserve the stale
+              // entry as a v2.0.20-style peer.
+              if (crossInstallDedupDisabled) {
+                installedBasenames.add(name);
+                continue;
+              }
               const otherFileExists = fs.existsSync(pathMatch[1]);
               if (!otherFileExists) {
                 existing.hooks.splice(hi, 1);

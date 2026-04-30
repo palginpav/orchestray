@@ -117,9 +117,18 @@ function readCache(projectDir) {
     try {
       parsed = JSON.parse(raw);
     } catch (_syntaxErr) {
-      // Corrupt cache file — start fresh and delete to avoid re-tripping on
-      // every subsequent read (50 SyntaxError events per session observed).
-      try { fs.unlinkSync(cachePath); } catch (_e) {} // best-effort delete
+      // Corrupt cache file — start fresh; rename rather than unlink so the
+      // forensic evidence of the original corrupt content survives
+      // (W9 reviewer F-11). 50 SyntaxError events per session observed before
+      // the rename — without the rename we'd re-trip on every read.
+      try {
+        const corrupt = `${cachePath}.corrupt-${Date.now()}`;
+        fs.renameSync(cachePath, corrupt);
+      } catch (_e) {
+        // Rename failed (e.g., file vanished mid-read or permission denied)
+        // — fall back to unlink so we still avoid the re-trip loop.
+        try { fs.unlinkSync(cachePath); } catch (_e2) {}
+      }
       return _skeleton(null);
     }
     if (!parsed || typeof parsed !== 'object' || parsed.schema_version !== SCHEMA_VERSION) {
