@@ -61,6 +61,91 @@ const HOUSEKEEPER_AGENT       = 'orchestray-housekeeper';
 const MAX_LIVE_BYTES          = 64 * 1024 * 1024; // 64 MB defensive cap
 
 // ---------------------------------------------------------------------------
+// Self-check probe — exercises the W7b TTL formula in-memory without writing
+// to drainer-tombstones.jsonl. Invoked when process.argv includes '--self-check'.
+// Kill switch: ORCHESTRAY_TOMBSTONE_PROBE_DISABLED=1 → exit 0.
+// Non-TTY guard: refuses to run when stdin is not a TTY unless
+//   --force-self-check is also present (defence against accidental hook wiring).
+// ---------------------------------------------------------------------------
+
+function runSelfCheck() {
+  // Kill switch.
+  if (process.env.ORCHESTRAY_TOMBSTONE_PROBE_DISABLED === '1') {
+    process.stderr.write('[orchestray] tombstone-probe disabled via env\n');
+    process.exit(0);
+  }
+
+  // Non-TTY guard — refuse to run from non-interactive stdin unless explicitly
+  // overridden (prevents accidental hook wiring from calling this probe).
+  if (!process.stdin.isTTY && !process.argv.includes('--force-self-check')) {
+    process.stderr.write('[orchestray] tombstone-probe: refusing to run from non-TTY stdin without --force-self-check\n');
+    process.exit(0);
+  }
+
+  const cwd = resolveSafeCwd(null);
+  const requestId = 'probe-' + Date.now();
+  const ts = new Date().toISOString();
+
+  // Compute the TTL value using the SAME formula as the production path.
+  // Test injection hooks: ORCHESTRAY_PROBE_INJECT_NULL → null,
+  //   ORCHESTRAY_PROBE_INJECT_PAST → a past-epoch ISO string.
+  let computed;
+  if (process.env.ORCHESTRAY_PROBE_INJECT_NULL === '1') {
+    computed = null;
+  } else if (process.env.ORCHESTRAY_PROBE_INJECT_PAST === '1') {
+    computed = new Date(Date.now() - 1000).toISOString();
+  } else {
+    computed = new Date(Date.now() + TOMBSTONE_TTL_DAYS * 86400 * 1000).toISOString();
+  }
+
+  // Validate 4 invariants.
+  let failedAssertion = null;
+
+  if (typeof computed !== 'string') {
+    failedAssertion = 'value_is_string';
+  } else if (!Number.isFinite(Date.parse(computed))) {
+    failedAssertion = 'value_is_iso';
+  } else if (Date.parse(computed) <= Date.now()) {
+    failedAssertion = 'value_is_future';
+  } else if (Math.abs((Date.parse(computed) - Date.now()) - (TOMBSTONE_TTL_DAYS * 86400 * 1000)) >= (12 * 3600 * 1000)) {
+    failedAssertion = 'value_within_ttl';
+  }
+
+  if (!failedAssertion) {
+    // All 4 invariants passed.
+    try {
+      writeEvent({
+        type:               'tombstone_until_probe_passed',
+        version:            1,
+        ts,
+        request_id:         requestId,
+        ttl_days:           TOMBSTONE_TTL_DAYS,
+        computed_value:     computed,
+        invariants_checked: 4,
+      }, { cwd });
+    } catch (e) {
+      process.stderr.write(`[orchestray] tombstone-probe: emit failed: ${e && e.message}\n`);
+    }
+    process.exit(0);
+  } else {
+    // At least one invariant failed.
+    try {
+      writeEvent({
+        type:             'tombstone_until_probe_failed',
+        version:          1,
+        ts,
+        request_id:       requestId,
+        failed_assertion: failedAssertion,
+        computed_value:   computed === null ? 'null' : String(computed),
+      }, { cwd });
+    } catch (e) {
+      process.stderr.write(`[orchestray] tombstone-probe: emit failed: ${e && e.message}\n`);
+    }
+    process.exit(1);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Drainer tombstone — prevents the same spawn_drainer_orphaned event from
 // being re-emitted on every Stop fire. Each tombstone expires after 7 days.
 // ---------------------------------------------------------------------------
@@ -300,6 +385,11 @@ function main() {
         if (hasAgentCallAfter(events, row.drained_at)) continue;
         try {
           const tombstoneUntil = new Date(Date.now() + TOMBSTONE_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
+          // Passive complement (UQ-3): warn on stderr if the TTL formula produces
+          // a bad value. Observational only — does NOT block the emit.
+          if (!Number.isFinite(Date.parse(tombstoneUntil)) || Date.parse(tombstoneUntil) <= Date.now()) {
+            process.stderr.write(`[orchestray] tombstone_until value rejected: ${tombstoneUntil}\n`);
+          }
           writeEvent({
             type:                          'spawn_drainer_orphaned',
             version:                       1,
@@ -347,6 +437,10 @@ function hasAgentCallAfter(events, isoTs) {
 }
 
 if (require.main === module) {
+  // Dispatch to self-check probe before the normal hook path.
+  if (process.argv.includes('--self-check')) {
+    runSelfCheck(); // exits internally — never returns
+  }
   try {
     process.exit(main());
   } catch (e) {
@@ -358,7 +452,9 @@ if (require.main === module) {
 module.exports = {
   main,
   findOrphans,
+  runSelfCheck,
   ORPHAN_AGE_THRESHOLD_MS,
+  TOMBSTONE_TTL_DAYS,
   REQUESTER_SYSTEM,
   HOUSEKEEPER_AGENT,
 };

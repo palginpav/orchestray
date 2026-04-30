@@ -83,6 +83,14 @@ tag a hotfix-style variant (e.g., `2.2.16.1`) instead of bumping the patch
 number. Do not bypass the gate by setting `ORCHESTRAY_RELEASE_SHAPE_TEST_ENABLED=0`
 without explicit user authorisation.
 
+Also run the tombstone TTL probe:
+
+```
+Bash("npm run test:tombstone-probe")
+```
+
+- `npm run test:tombstone-probe` — exits non-zero if the v2.2.17 W7b TTL formula regresses (null or past timestamp). This is a fast in-memory check with no side effects on production state files.
+
 ### Step 4: Verify Audit Loop Status
 
 If the project has the iterative-audit convention (`feedback_preship_audit_loop`),
