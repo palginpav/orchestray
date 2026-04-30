@@ -35,6 +35,8 @@ budget_warn — pre-spawn context-size budget exceeded (hook, v2.1.15)
 phase_slice_fallback — phase-slice hook degraded path (no orchestration / unknown phase / missing slice file) (hook, v2.1.15 W8)
 phase_slice_injected — phase-slice hook positive path (slice pointer staged into PM additionalContext) (hook, v2.1.16 W9 R-PHASE-INJ)
 repo_map_built / repo_map_parse_failed / repo_map_grammar_load_failed / repo_map_cache_unavailable — Aider-style repo map events (v2.1.17 W8 R-AIDER-FULL)
+master_auto_commit_emitted / master_auto_commit_failed — PM Stop master auto-commit lifecycle (hook, v2.2.18 W3)
+dossier_compensation_inject / dossier_compensation_skipped — SessionStart orphan-dossier compensation (hook, v2.2.18 W6)
 
 END CONDITIONAL-LOAD NOTICE -->
 
@@ -8351,7 +8353,7 @@ Captured-at version: v2.2.12.
 
 Field notes:
 - `orchestration_id`: Unique ID for this orchestration run. Format: `orch-<timestamp>-<slug>`.
-- `task`: The task description passed to `ox state start` by the PM.
+- `task`: *(optional)* The task description passed to `ox state init` by the PM. May be `null` when `--task` flag is omitted; `ox state init` warns on stderr in that case (v2.2.18 W9.3). Consumers must handle `null`.
 - `started_at`: Same value as `timestamp` at emit time; preserved separately for downstream consumers that compute duration without relying on field position.
 - `schema_version`: Always `1` (v2.2.12 baseline).
 
@@ -9830,3 +9832,137 @@ Emitted from: `bin/mcp-server/lib/audit.js`, called by `bin/mcp-server/server.js
 on every `resources/read` dispatch.
 
 Kill switch: none — emission is intrinsic to the resources/read handler.
+
+---
+
+### `master_auto_commit_emitted` event (v2.2.18 W3)
+
+Emitted when the W3 PM Stop hook successfully auto-commits a dirty master tree
+during an active orchestration. Closes the parallel-to-W1 data-loss path on
+master by ensuring any in-flight PM changes are committed before session end.
+
+```json
+{
+  "type": "master_auto_commit_emitted",
+  "version": 1,
+  "timestamp": "2026-04-30T00:00:00.000Z",
+  "orchestration_id": "orch-20260430T000000Z-example",
+  "current_phase": "execute",
+  "files_changed_count": 3,
+  "commit_sha": "abc1234"
+}
+```
+
+Field notes:
+- `current_phase`: The orchestration phase active at the time of the auto-commit
+  (e.g. `execute`, `verify`, `close`). Derived from `.orchestray/state/orchestration.md`.
+- `files_changed_count`: Number of files included in the auto-commit. Integer ≥ 1.
+- `commit_sha`: Short SHA of the auto-commit (7–12 hex chars). Truncated from the
+  full SHA for readability; not a stability guarantee.
+
+Emitted from: `bin/pm-stop-auto-commit.js` (W3 PM Stop hook).
+
+Kill switch: `ORCHESTRAY_MASTER_AUTO_COMMIT_DISABLED=1`.
+
+---
+
+### `master_auto_commit_failed` event (v2.2.18 W3)
+
+Emitted when the W3 master auto-commit attempt fails (git commit exited non-zero).
+`stderr_excerpt` is truncated to the first 200 characters of git's stderr output.
+The PM Stop hook continues (fail-open) after emitting this event.
+
+```json
+{
+  "type": "master_auto_commit_failed",
+  "version": 1,
+  "timestamp": "2026-04-30T00:00:00.000Z",
+  "orchestration_id": "orch-20260430T000000Z-example",
+  "error_code": "git_exit_nonzero",
+  "stderr_excerpt": "error: nothing to commit, working tree clean"
+}
+```
+
+Field notes:
+- `error_code`: Short categorisation string. Typical values:
+  `git_exit_nonzero` (git commit returned non-zero), `spawn_failed` (could not
+  spawn git process), `read_error` (failed to read working-tree state).
+- `stderr_excerpt`: First 200 characters of git stderr. Truncated with `...` appended
+  if longer. Empty string when stderr was unavailable.
+
+Emitted from: `bin/pm-stop-auto-commit.js` (W3 PM Stop hook).
+
+Kill switch: `ORCHESTRAY_MASTER_AUTO_COMMIT_DISABLED=1`.
+
+---
+
+### `dossier_compensation_inject` event (v2.2.18 W6)
+
+Emitted when the W6 SessionStart compensation logic re-injects an orphaned dossier
+(write_count > 0, inject_count === 0) into the new session's `additionalContext`.
+This closes the loop that `dossier_write_without_inject_detected` (audit-dossier-orphan.js)
+surfaces: instead of only detecting the orphan, the SessionStart hook now actively
+compensates by re-injecting the dossier.
+
+```json
+{
+  "type": "dossier_compensation_inject",
+  "version": 1,
+  "timestamp": "2026-04-30T00:00:00.000Z",
+  "dossier_path": ".orchestray/state/resilience-dossier.json",
+  "archive_age_seconds": 120,
+  "previous_inject_count": 0
+}
+```
+
+Field notes:
+- `dossier_path`: Absolute or project-relative path to the dossier file that was
+  re-injected. Typically `.orchestray/state/resilience-dossier.json`.
+- `archive_age_seconds`: Seconds elapsed since the dossier file's `mtime`. Used for
+  observability; the compensation hard-cap is 30 days (2,592,000 seconds).
+- `previous_inject_count`: Always `0` when this event fires (compensation only fires
+  when inject_count === 0). Reserved for future use if the threshold is relaxed.
+
+Emitted from: `bin/inject-resilience-dossier.js` `_tryDossierCompensation()` (W6).
+
+Kill switch: `ORCHESTRAY_DOSSIER_COMPENSATION_DISABLED=1` or
+`config.dossier_compensation.enabled === false` (emits `dossier_compensation_skipped` instead).
+
+---
+
+### `dossier_compensation_skipped` event (v2.2.18 W6)
+
+Emitted when compensation was attempted but skipped. Unlike W8's silent kill-switch
+convention, W6 explicitly emits this event so operators can diagnose why compensation
+did not run in a given session.
+
+```json
+{
+  "type": "dossier_compensation_skipped",
+  "version": 1,
+  "timestamp": "2026-04-30T00:00:00.000Z",
+  "reason": "all_archives_stale",
+  "dossier_path": ".orchestray/state/resilience-dossier.json",
+  "archive_age_seconds": 2700000
+}
+```
+
+Field notes:
+- `reason`: Enumeration. Valid values:
+  - `all_archives_stale` — dossier file mtime is older than 30 days; stale dossiers
+    are not re-injected because they may describe a completed/irrelevant orchestration.
+  - `signal_unavailable` — could not read or parse the audit log or dossier file;
+    compensation cannot proceed without the signal.
+  - `size_cap_exceeded` — dossier is larger than 25 KB (the rough additionalContext
+    budget); re-injection is skipped to avoid overflowing the context cap.
+  - `kill_switch_via_env` — `ORCHESTRAY_DOSSIER_COMPENSATION_DISABLED=1` was set.
+  - `kill_switch_via_config` — `config.dossier_compensation.enabled === false`.
+- `dossier_path`: *(optional)* Path to the dossier file when known. Absent when the
+  skip fires before the file path is resolved (e.g. `signal_unavailable` on log read).
+- `archive_age_seconds`: *(optional)* Seconds since the dossier's mtime. Present when
+  the stale or size-cap checks are performed.
+
+Emitted from: `bin/inject-resilience-dossier.js` `_tryDossierCompensation()` (W6).
+
+Kill switch: none for this skip event itself — it is the observability signal for the
+kill-switch conditions above.
