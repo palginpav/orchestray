@@ -18,6 +18,7 @@
 const ROLE_WRITE_ALLOWLISTS = {
   reviewer: [
     '.orchestray/kb/**',
+    '.orchestray/kb/artifacts/**.md',   // G-08: explicit artifact write (covered by kb/** but stated for clarity)
     '.orchestray/audit/**',
   ],
   tester: [
@@ -49,7 +50,9 @@ const ROLE_WRITE_ALLOWLISTS = {
     'agents/pm-reference/event-schemas.shadow.json',
     'agents/pm-reference/event-schemas.tier2-index.json',
   ],
-  debugger: [], // fully read-only — no writes allowed
+  debugger: [
+    '.orchestray/kb/artifacts/**.md',  // G-08: debugger may write findings artifacts (v2.2.14)
+  ],
 };
 
 /**
