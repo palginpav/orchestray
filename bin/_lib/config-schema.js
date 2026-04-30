@@ -4021,6 +4021,95 @@ function validateWorktreeAutoCommitConfig(obj) {
   return errors.length === 0 ? { valid: true } : { valid: false, errors };
 }
 
+// ---------------------------------------------------------------------------
+// dual_install section defaults and loader (W7 v2.2.18)
+//
+// dual_install.autoheal_enabled — boolean, default true.
+//   When true, the dual-install parity check will automatically overwrite the
+//   global install file with the local install file when divergence is detected
+//   and local is canonical (local mtime >= global mtime).
+//
+//   Kill switch env: ORCHESTRAY_DUAL_INSTALL_AUTOHEAL_DISABLED=1 (highest precedence).
+//   Per feedback_update_both_installs.md: local is canonical, global gets healed.
+//
+//   Set to false to disable auto-heal for all divergences (manual /orchestray:update
+//   remains the recommended resolution path when auto-heal is off).
+// ---------------------------------------------------------------------------
+
+const DEFAULT_DUAL_INSTALL = Object.freeze({
+  autoheal_enabled: true,
+});
+
+/**
+ * Load and merge the dual_install config section from <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing/malformed returns DEFAULT_DUAL_INSTALL so the
+ * auto-heal behavior still applies at safe defaults.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ autoheal_enabled: boolean }}
+ */
+function loadDualInstallConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_DUAL_INSTALL);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_DUAL_INSTALL);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_DUAL_INSTALL);
+  }
+
+  const fromFile = parsed.dual_install;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_DUAL_INSTALL);
+  }
+
+  const merged = Object.assign({}, DEFAULT_DUAL_INSTALL, sanitizeConfig(fromFile));
+
+  try {
+    const result = validateDualInstallConfig(merged);
+    if (!result.valid) {
+      logStderr('dual_install config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) {
+    // Validation must never throw
+  }
+
+  return merged;
+}
+
+/**
+ * Validate a dual_install config object.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateDualInstallConfig(obj) {
+  const errors = [];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['dual_install must be an object'] };
+  }
+
+  if ('autoheal_enabled' in obj && typeof obj.autoheal_enabled !== 'boolean') {
+    errors.push(
+      'dual_install.autoheal_enabled must be a boolean — got ' + JSON.stringify(obj.autoheal_enabled)
+    );
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
 module.exports = {
   DEFAULT_MCP_ENFORCEMENT,
   loadMcpEnforcement,
@@ -4128,4 +4217,8 @@ module.exports = {
   DEFAULT_WORKTREE_AUTO_COMMIT,
   loadWorktreeAutoCommitConfig,
   validateWorktreeAutoCommitConfig,
+  // W7 (v2.2.18): dual_install autoheal config
+  DEFAULT_DUAL_INSTALL,
+  loadDualInstallConfig,
+  validateDualInstallConfig,
 };
