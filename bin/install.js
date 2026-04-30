@@ -1358,11 +1358,25 @@ function mergeHooks(targetDir) {
             // Reason 2 only: also remove the stale script file from the install
             // dir so future SessionStart fires don't trip schema-shadow miss
             // counters via undeclared writeEvent calls.
+            //
+            // v2.2.16 hotfix: ONLY delete the install-target file when the
+            // source `bin/` does NOT also ship the script. Some scripts
+            // (archive-orch-events, audit-housekeeper-orphan, audit-pm-emit-coverage,
+            // audit-promised-events, audit-round-archive-hook, scan-cite-labels)
+            // are intentionally absent from canonical hooks.json (per v2.2.10 F1
+            // they are invoked as subprocesses by audit-on-orch-complete.js, not
+            // as hooks) but ARE shipped in source. The v2.2.15 prune wrongly
+            // deleted them on every install, breaking subprocess invocation
+            // and tripping the install integrity hash sweep.
             if (noLongerCanonical) {
-              try {
-                fs.unlinkSync(scriptPath);
-                prunedFiles++;
-              } catch (_e) { /* best effort */ }
+              const srcBinPath = path.join(pkgRoot, 'bin', base);
+              const shippedInSource = fs.existsSync(srcBinPath);
+              if (!shippedInSource) {
+                try {
+                  fs.unlinkSync(scriptPath);
+                  prunedFiles++;
+                } catch (_e) { /* best effort */ }
+              }
             }
           }
         }

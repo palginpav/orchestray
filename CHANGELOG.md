@@ -3,6 +3,26 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.2.16] - 2026-04-30
+
+v2.2.16 is a same-day hotfix for one v2.2.15 install regression. v2.2.15's FN-16 prune logic was over-aggressive: it deleted every script in the install target's `bin/` whose basename was missing from canonical `hooks/hooks.json`, even when that script is intentionally shipped in source for subprocess invocation. The six audit scripts retired from canonical hooks by v2.2.10 F1 (they run as subprocesses launched by `audit-on-orch-complete.js`, not as hooks) — `archive-orch-events`, `audit-housekeeper-orphan`, `audit-pm-emit-coverage`, `audit-promised-events`, `audit-round-archive-hook`, `scan-cite-labels` — were getting clobbered on every install, immediately failing the install-integrity hash sweep with `ENOENT: no such file or directory`.
+
+### Fixed
+
+- **Install no longer deletes shipped subprocess scripts.** `bin/install.js` FN-16 prune now checks `fs.existsSync(<pkgRoot>/bin/<basename>)` before unlinking. When the source still ships the script, the install-target copy stays. Stale-file deletion still runs for files that are absent from both canonical hooks AND source (the original FN-16 intent). Operators who hit the v2.2.15 install integrity error will see it self-heal on the next `/orchestray:update` to v2.2.16.
+
+### Tests
+
+- `bin/__tests__/v2216-fn16-shipped-source-prune-fix.test.js`: 3 cases — happy path (no prune when source ships the script), correct prune when source does NOT ship, source-bin existence check survives upgrade-removal scenarios.
+
+### Schema delta
+
+- 259 → 259 (no event-schema changes).
+
+### Compatibility
+
+- npm consumers on v2.2.15 must bump to v2.2.16 to install cleanly. v2.2.15 is left tagged on the registry (rollback target if needed); the integrity-hash failure on v2.2.15 install was warn-only (the install completed and tests still passed against the partial copy), so this hotfix is non-blocking but strongly recommended.
+
 ## [2.2.15] - 2026-04-30
 
 v2.2.15 finishes the wide-mechanisation push that v2.2.14 started: every prose-only enforcement rule that audit could find a place for in code became a hook or a test. The headline fix is a v2.2.14 carry-over — the **MCP audit log misroute** that some operators saw when their MCP server cwd lacked an ancestor `.orchestray/` directory is finally fixed (audit events now route correctly, and `mcp_audit_routing_failed` advisory fires loud when they cannot). v2.2.15 also closes a **silent v2.2.14 regression**: a duplicate copy of the schema parser inside the emit-validator was re-disabling the schema-shadow safety net the moment its own copy of the parsing rules drifted; both validators now share one canonical parser. Six new mechanical gates ship default-on with kill switches, `zod` 4.4.1 is now the validation baseline (with a packaging fix so the MCP server actually finds it after install), and the install integrity sweep now warns if your global and project-local Orchestray installs disagree on version.
