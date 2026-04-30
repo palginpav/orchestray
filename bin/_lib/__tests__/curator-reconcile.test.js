@@ -471,7 +471,7 @@ describe('reconcile() — rationale as opaque field', () => {
 
       const rationale = {
         schema_version: 1,
-        one_line: 'Promoted: decayed_conf 0.74 above 0.65 floor.',
+        one_line: 'Promoted: decayed_conf 0.74 above 0.55 floor.',
         signals: { confidence: 0.82, decayed_confidence: 0.74, times_applied: 4, age_days: 23, category: 'routing', skip_penalty: 0 },
         guardrails_checked: [],
         considered_alternatives: [],
