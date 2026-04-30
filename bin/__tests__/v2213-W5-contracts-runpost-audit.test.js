@@ -194,6 +194,72 @@ describe('W5 — post-phase no_task_yaml branch', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Test 1b: Post-phase — no task_id resolvable → contracts_runpost_silent_skip{reason:'no_task_id'}
+// (v2.2.13 final-review F-02: 4th silent-skip branch instrumented.)
+// ---------------------------------------------------------------------------
+describe('W5 — post-phase no_task_id branch (final-review F-02)', () => {
+  test('Test 1b: no resolvable task_id → emits contracts_runpost_silent_skip with reason=no_task_id', () => {
+    const tmp = makeTmpProject({ orchestrationId: 'orch-w5-t1b' });
+    try {
+      // Send PostToolUse payload with NO task_id field — resolveTaskId returns null
+      const res = spawnSync('node', [HOOK], {
+        input: JSON.stringify({
+          hook_event_name: 'PostToolUse',
+          hook_type: 'PostToolUse',
+          tool_name: 'Agent',
+          tool_input: { subagent_type: 'developer' }, // no task_id, no description
+          tool_response: '',
+          cwd: tmp,
+        }),
+        cwd: tmp,
+        encoding: 'utf8',
+        timeout: 10_000,
+        env: { ...process.env, ORCHESTRAY_CONTRACTS_RUNPOST_AUDIT_DISABLED: '' },
+      });
+      assert.ok(res.status === 0 || res.status === null, 'hook must exit 0 (fail-open)');
+      const events = readEvents(tmp);
+      const skipEvents = events.filter(e =>
+        e.event_type === 'contracts_runpost_silent_skip' && e.reason === 'no_task_id'
+      );
+      assert.equal(skipEvents.length, 1, 'exactly 1 contracts_runpost_silent_skip{reason:no_task_id}');
+      assert.equal(skipEvents[0].schema_version, 1);
+      assert.equal(skipEvents[0].task_id, 'unknown');
+      assert.ok(typeof skipEvents[0].orchestration_id === 'string');
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
+  test('Test 1b-kill: ORCHESTRAY_CONTRACTS_RUNPOST_AUDIT_DISABLED=1 suppresses no_task_id emit', () => {
+    const tmp = makeTmpProject({ orchestrationId: 'orch-w5-t1b-kill' });
+    try {
+      const res = spawnSync('node', [HOOK], {
+        input: JSON.stringify({
+          hook_event_name: 'PostToolUse',
+          hook_type: 'PostToolUse',
+          tool_name: 'Agent',
+          tool_input: { subagent_type: 'developer' },
+          tool_response: '',
+          cwd: tmp,
+        }),
+        cwd: tmp,
+        encoding: 'utf8',
+        timeout: 10_000,
+        env: { ...process.env, ORCHESTRAY_CONTRACTS_RUNPOST_AUDIT_DISABLED: '1' },
+      });
+      assert.ok(res.status === 0 || res.status === null);
+      const events = readEvents(tmp);
+      const skipEvents = events.filter(e =>
+        e.event_type === 'contracts_runpost_silent_skip' && e.reason === 'no_task_id'
+      );
+      assert.equal(skipEvents.length, 0, 'kill switch must suppress no_task_id emit');
+    } finally {
+      cleanup(tmp);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Test 2: Post-phase — task_yaml_read_error → contracts_runpost_silent_skip{reason:'task_yaml_read_error'}
 // We trigger this by writing a valid YAML, loading it once (to prime parse cache),
 // then making it unreadable via chmod. We use the module-level emitSkipped

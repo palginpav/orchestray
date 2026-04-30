@@ -159,9 +159,11 @@ describe('v2.2.13 W1 — deprecated env-var detection in boot-validate-config', 
       }
     }
 
-    // Sentinel was already present → no warn should have been written
+    // Sentinel was already present → no warn should have been written.
+    // v2.2.13 final-review F-03: substring updated to match the post-ux-critic
+    // message (was 'DEPRECATED env var ...'; now 'DEPRECATED: ...').
     const deprecatedWarnings = stderrLines.filter(l =>
-      l.includes('DEPRECATED env var ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED'),
+      l.includes('DEPRECATED: ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED'),
     );
     assert.equal(deprecatedWarnings.length, 0, 'sentinel must suppress re-emit');
 

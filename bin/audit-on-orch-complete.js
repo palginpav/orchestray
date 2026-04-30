@@ -493,9 +493,17 @@ function runDecisionRecorders(cwd, orchId) {
   }
 }
 
+// v2.2.13 W4 (G-05): export helpers for re-use by emit-orchestration-complete.js.
+// Exports must be defined BEFORE the driver block so requiring the module does
+// not run the hook driver (which would write a spurious `{continue:true}` envelope
+// to stdout — see v2.2.13 final-review F-01).
+module.exports = { readCurrentOrchId, hasOrchComplete };
+
 // ---------------------------------------------------------------------------
-// Main
+// Main — only run when invoked as the hook script, not on require().
 // ---------------------------------------------------------------------------
+
+if (require.main === module) {
 
 // Always emit continue envelope immediately so a mid-stream failure still
 // produces a valid hook response.
@@ -587,5 +595,4 @@ process.stdout.write(JSON.stringify({ continue: true }));
   process.exit(0);
 })();
 
-// v2.2.13 W4 (G-05): export helpers for re-use by emit-orchestration-complete.js.
-module.exports = { readCurrentOrchId, hasOrchComplete };
+} // end if (require.main === module)

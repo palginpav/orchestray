@@ -8565,6 +8565,10 @@ differed from canonical and was auto-fixed. Only fires for Layout A (no peers),
 Layout B (peers contiguous before), and Layout C (peers contiguous after). Layout D
 (interleaved) is logged separately via `install_hook_order_skipped_interleaved`.
 
+> **Note:** Recorded in `.orchestray/state/degraded.jsonl` (not `events.jsonl`) via
+> `recordDegradation` per W3-Q5 architect settle; declared here for cross-reference.
+> Activation-ratio rollups that scan `events.jsonl` will not see these rows.
+
 ```json
 {
   "event_type": "install_hook_order_corrected",
@@ -8598,6 +8602,10 @@ peer (non-orchestray) hooks are interleaved with orchestray hooks in a live
 Orchestray does NOT auto-reorder in this case — the chain may have been hand-tuned
 by an operator. A single-line stderr warning is also written. Fires even when
 `ORCHESTRAY_INSTALL_HOOK_REORDER_DISABLED=1`.
+
+> **Note:** Recorded in `.orchestray/state/degraded.jsonl` (not `events.jsonl`) via
+> `recordDegradation` per W3-Q5 architect settle; declared here for cross-reference.
+> Activation-ratio rollups that scan `events.jsonl` will not see these rows.
 
 ```json
 {
