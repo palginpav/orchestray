@@ -68,7 +68,8 @@ function readEvents(root) {
     return fs.readFileSync(eventsPath(root), 'utf8')
       .split('\n')
       .filter(Boolean)
-      .map(l => JSON.parse(l));
+      .map(l => JSON.parse(l))
+      .filter(e => e.type !== 'audit_event_autofilled'); /* v2.2.15: filter P1-13 diagnostic emit */
   } catch (_e) { return []; }
 }
 

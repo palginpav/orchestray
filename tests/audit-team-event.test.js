@@ -52,7 +52,8 @@ function readEventsJsonl(auditDir) {
   return fs.readFileSync(p, 'utf8')
     .split('\n')
     .filter(l => l.trim())
-    .map(l => JSON.parse(l));
+    .map(l => JSON.parse(l))
+      .filter(e => e.type !== 'audit_event_autofilled'); /* v2.2.15: filter P1-13 diagnostic emit */
 }
 
 // ---------------------------------------------------------------------------
@@ -433,8 +434,8 @@ describe('events.jsonl append behavior', () => {
       }
 
       const eventsPath = path.join(auditDir, 'events.jsonl');
-      const lines = fs.readFileSync(eventsPath, 'utf8').split('\n').filter(l => l.trim());
-      assert.equal(lines.length, 3, 'should have 3 lines');
+      const lines = fs.readFileSync(eventsPath, 'utf8').split('\n').filter(l => l.trim() && !l.includes('"audit_event_autofilled"'));
+      assert.equal(lines.length, 3, 'should have 3 lines (excluding P1-13 autofill telemetry)');
       for (const line of lines) {
         assert.doesNotThrow(() => JSON.parse(line), `Line should be valid JSON: ${line.slice(0, 80)}`);
       }

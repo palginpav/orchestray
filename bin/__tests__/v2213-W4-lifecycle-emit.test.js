@@ -61,7 +61,7 @@ function readEvents(tmp) {
   return fs.readFileSync(eventsPath, 'utf8')
     .split('\n').filter(Boolean)
     .map(l => { try { return JSON.parse(l); } catch (_) { return null; } })
-    .filter(Boolean);
+    .filter(e => e && e.type !== 'audit_event_autofilled'); /* v2.2.15: filter P1-13 */
 }
 
 function cleanup(tmp) {

@@ -97,10 +97,9 @@ function readRatioEvents(auditDir) {
     if (!line.trim()) continue;
     try {
       const obj = JSON.parse(line);
-      if (
-        obj.type === 'event_activation_ratio' ||
-        obj.event_type === 'event_activation_ratio'
-      ) {
+      // v2.2.15: filter by obj.type ONLY (audit_event_autofilled rows include
+      // event_type:'event_activation_ratio' but type:'audit_event_autofilled').
+      if (obj.type === 'event_activation_ratio') {
         results.push(obj);
       }
     } catch (_e) { /* skip */ }

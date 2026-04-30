@@ -834,6 +834,42 @@ function install(targetDir) {
     say('  \x1b[33m⚠\x1b[0m schemas/ not found in source; skipping');
   }
 
+  // 3d-zod (v2.2.15 P1-11 install fix): bin/_lib/config-schema.js requires
+  // 'zod' at module-load. Without copying node_modules/zod into the install
+  // target, MCP server boots with MODULE_NOT_FOUND on every session. zod 4.x
+  // has zero transitive deps so a single-package copy is sufficient.
+  // Use fs.cpSync (not copyJsTree) because zod's CommonJS entry point is
+  // index.cjs which copyJsTree's .js-only filter excludes. cpSync also
+  // preserves the package.json + .d.ts files needed by editor tooling.
+  const zodSrc = path.join(pkgRoot, 'node_modules', 'zod');
+  if (fs.existsSync(zodSrc) && fs.statSync(zodSrc).isDirectory()) {
+    const zodDst = path.join(targetDir, 'orchestray', 'node_modules', 'zod');
+    fs.cpSync(zodSrc, zodDst, {
+      recursive: true,
+      // Skip src/ (TypeScript source — runtime uses index.cjs / index.js) and
+      // locales/ (~MB of i18n strings; v2.2.15 only uses zod's English errors).
+      filter: (s) => {
+        // Skip src/ (TypeScript source — runtime uses index.cjs/index.js).
+        // KEEP locales/ — zod's index.cjs requires '../locales/index.cjs' even
+        // when only English errors are surfaced (v2.2.15 P1-11 install fix).
+        const base = path.basename(s);
+        if (base === 'src') return false;
+        return true;
+      },
+    });
+    let zodFileCount = 0;
+    const countWalk = (dir) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (e.isDirectory()) countWalk(path.join(dir, e.name));
+        else if (e.isFile()) { zodFileCount++; track(path.relative(targetDir, path.join(dir, e.name))); }
+      }
+    };
+    countWalk(zodDst);
+    say(`  \x1b[32m✓\x1b[0m Installed node_modules/zod (${zodFileCount} files)`);
+  } else {
+    say('  \x1b[33m⚠\x1b[0m node_modules/zod not found in source; mcp-server boot will fail');
+  }
+
   // 3d post-install verification (FN-20 v2.2.15): fork validate-config.js
   // against a tmp fixture. The prior bare `require.resolve('../schemas')`
   // confirmed the path resolved but never exercised require()'d submodules
