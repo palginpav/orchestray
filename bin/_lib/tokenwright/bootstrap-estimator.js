@@ -77,10 +77,12 @@ function computeMedian(values) {
  */
 function _emit(type, payload, cwd) {
   try {
+    const ts = new Date().toISOString();
     const event = Object.assign({}, payload, {
       version:   1,
       type,
-      timestamp: new Date().toISOString(),
+      ts,
+      timestamp: ts,
     });
     writeEvent(event, { cwd });
   } catch (err) {
