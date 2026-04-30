@@ -251,6 +251,13 @@ function cmdStateInit(positionals, flags, dryRun) {
   const task   = flags.task || null;
   const now    = new Date().toISOString();
 
+  // W9.3: warn when --task is not provided so operators know the
+  // orchestration_start event will have task=null (schema allows it but
+  // downstream analytics and the orphan detector rely on the task label).
+  if (!task) {
+    process.stderr.write('[orchestray] ox state init: --task is recommended; orchestration_start event will have task=null\n');
+  }
+
   if (marker && marker.orchestration_id === orchId) {
     // Idempotent no-op.
     process.stdout.write(JSON.stringify({ noop: true, reason: `orchestration ${orchId} already active` }) + '\n');

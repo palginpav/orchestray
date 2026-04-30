@@ -52,6 +52,22 @@ const { peekOrchestrationId } = require('./_lib/peek-orchestration-id');
 
 const FENCE_OPEN = '<orchestray-resilience-dossier>';
 const FENCE_CLOSE = '</orchestray-resilience-dossier>';
+
+// ---------------------------------------------------------------------------
+// W6 — Dossier compensation constants
+// ---------------------------------------------------------------------------
+
+/**
+ * Hard cap for compensation: dossiers older than this are considered stale
+ * and will NOT be re-injected. 30 days in milliseconds.
+ */
+const COMPENSATION_STALE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Size cap for compensation: dossiers larger than this (bytes) are skipped
+ * to avoid exceeding the additionalContext budget.
+ */
+const COMPENSATION_SIZE_CAP_BYTES = 25 * 1024; // 25 KB
 const DOSSIER_STANDING_INSTRUCTION =
   'The block above is the authoritative post-compaction snapshot of the PM\'s ' +
   'orchestration state, written atomically to disk after every PM Stop / ' +
@@ -547,6 +563,209 @@ function _makeEnvelopeOutput(hookEventName, additionalContext) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// W6 — Dossier compensation helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse JSONL content into an array of objects. Best-effort (skips malformed lines).
+ *
+ * @param {string} content
+ * @returns {object[]}
+ */
+function _parseJsonlLines(content) {
+  const out = [];
+  if (!content) return out;
+  for (const line of content.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const obj = JSON.parse(line);
+      if (obj && typeof obj === 'object') out.push(obj);
+    } catch (_e) { /* skip malformed */ }
+  }
+  return out;
+}
+
+/**
+ * Check whether the dossier was written in a previous session without being
+ * injected back. If so, perform compensation injection.
+ *
+ * W6 compensation logic (v2.2.18):
+ *   - Kill switch: ORCHESTRAY_DOSSIER_COMPENSATION_DISABLED=1 OR
+ *     config.dossier_compensation.enabled === false → emit
+ *     dossier_compensation_skipped(reason: kill_switch_via_env|kill_switch_via_config)
+ *     and return null (fall through to normal inject path).
+ *   - Read the live events.jsonl; tally write/inject counts.
+ *   - If write_count > 0 AND inject_count === 0:
+ *       - Age check (30 days): if dossier mtime > 30 days → skipped(all_archives_stale).
+ *       - Size check (25 KB): if dossier > 25 KB → skipped(size_cap_exceeded).
+ *       - Otherwise: inject and emit dossier_compensation_inject.
+ *   - Returns the inject output object on compensation-inject, null otherwise.
+ *   - Never throws; all errors emit dossier_compensation_skipped(signal_unavailable).
+ *
+ * NOTE: kill_switch reason values are explicitly emitted here (unlike the W8
+ * pattern) so operators can see WHY compensation did not run. This is a
+ * deliberate departure from the W8 silent-kill-switch convention.
+ *
+ * @param {string} cwd
+ * @param {string} dossierPath
+ * @param {object} cfg  - Parsed resilience config.
+ * @returns {object|null}  Hook output if compensation-injected, null otherwise.
+ */
+function _tryDossierCompensation(cwd, dossierPath, cfg) {
+  // Kill switch: env var.
+  if (process.env.ORCHESTRAY_DOSSIER_COMPENSATION_DISABLED === '1') {
+    _audit(cwd, {
+      type: 'dossier_compensation_skipped',
+      version: 1,
+      reason: 'kill_switch_via_env',
+    });
+    return null;
+  }
+
+  // Kill switch: config.
+  const compCfg = cfg && cfg.dossier_compensation;
+  if (compCfg && compCfg.enabled === false) {
+    _audit(cwd, {
+      type: 'dossier_compensation_skipped',
+      version: 1,
+      reason: 'kill_switch_via_config',
+    });
+    return null;
+  }
+
+  try {
+    // Read the live audit log and tally write/inject events.
+    const livePath = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
+    if (!_exists(livePath)) {
+      // No audit log — cannot determine orphan status; skip silently.
+      _audit(cwd, {
+        type: 'dossier_compensation_skipped',
+        version: 1,
+        reason: 'signal_unavailable',
+      });
+      return null;
+    }
+
+    let events;
+    try {
+      events = _parseJsonlLines(fs.readFileSync(livePath, 'utf8'));
+    } catch (_e) {
+      _audit(cwd, {
+        type: 'dossier_compensation_skipped',
+        version: 1,
+        reason: 'signal_unavailable',
+      });
+      return null;
+    }
+
+    let writeCount = 0;
+    let injectCount = 0;
+    for (const ev of events) {
+      if (!ev || typeof ev.type !== 'string') continue;
+      if (ev.type === 'dossier_written') writeCount += 1;
+      else if (ev.type === 'dossier_injected') injectCount += 1;
+    }
+
+    // Only compensate when dossier was written but never injected.
+    if (writeCount === 0 || injectCount > 0) return null;
+
+    // Dossier must exist for compensation.
+    if (!_exists(dossierPath)) return null;
+
+    // Age check: skip if dossier is older than 30 days.
+    let stat;
+    try {
+      stat = fs.statSync(dossierPath);
+    } catch (_e) {
+      _audit(cwd, {
+        type: 'dossier_compensation_skipped',
+        version: 1,
+        reason: 'signal_unavailable',
+        dossier_path: dossierPath,
+      });
+      return null;
+    }
+    const ageMs = Date.now() - stat.mtimeMs;
+    const archiveAgeSeconds = Math.round(ageMs / 1000);
+
+    if (ageMs > COMPENSATION_STALE_MS) {
+      _audit(cwd, {
+        type: 'dossier_compensation_skipped',
+        version: 1,
+        reason: 'all_archives_stale',
+        dossier_path: dossierPath,
+        archive_age_seconds: archiveAgeSeconds,
+      });
+      return null;
+    }
+
+    // Size check: skip if dossier > 25 KB.
+    if (stat.size > COMPENSATION_SIZE_CAP_BYTES) {
+      _audit(cwd, {
+        type: 'dossier_compensation_skipped',
+        version: 1,
+        reason: 'size_cap_exceeded',
+        dossier_path: dossierPath,
+        archive_age_seconds: archiveAgeSeconds,
+      });
+      return null;
+    }
+
+    // Read and parse the dossier for injection.
+    let raw;
+    try {
+      raw = fs.readFileSync(dossierPath, 'utf8');
+    } catch (_e) {
+      _audit(cwd, {
+        type: 'dossier_compensation_skipped',
+        version: 1,
+        reason: 'signal_unavailable',
+        dossier_path: dossierPath,
+        archive_age_seconds: archiveAgeSeconds,
+      });
+      return null;
+    }
+
+    const parsed = parseDossier(raw);
+    if (!parsed.ok) {
+      _audit(cwd, {
+        type: 'dossier_compensation_skipped',
+        version: 1,
+        reason: 'signal_unavailable',
+        dossier_path: dossierPath,
+        archive_age_seconds: archiveAgeSeconds,
+      });
+      return null;
+    }
+
+    // Build the additionalContext payload (uses same path as normal inject).
+    const { finalContext } = _buildAdditionalContext(raw, parsed.dossier, cwd);
+
+    // Emit compensation event.
+    _audit(cwd, {
+      type: 'dossier_compensation_inject',
+      version: 1,
+      dossier_path: dossierPath,
+      archive_age_seconds: archiveAgeSeconds,
+      previous_inject_count: 0,
+    });
+
+    return _makeEnvelopeOutput('SessionStart', finalContext);
+
+  } catch (_e) {
+    // Top-level safety net — fail-open.
+    try {
+      _audit(cwd, {
+        type: 'dossier_compensation_skipped',
+        version: 1,
+        reason: 'signal_unavailable',
+      });
+    } catch (_e2) { /* swallow */ }
+    return null;
+  }
+}
+
 /**
  * SessionStart handler — injects the dossier exactly once per compaction/resume.
  * Unlike UserPromptSubmit, there is no lock/counter: SessionStart fires exactly
@@ -580,6 +799,17 @@ function handleSessionStart(event) {
 
     const stateDir = path.join(cwd, '.orchestray', 'state');
     const dossierPath = path.join(stateDir, 'resilience-dossier.json');
+
+    // W6 — Dossier compensation: if a previous session wrote the dossier
+    // but never injected it (orphan pattern), re-inject it now synchronously
+    // before the normal inject path. Falls through (returns null) when
+    // compensation is not applicable. The normal inject path that follows
+    // will then run. When compensation fires successfully, we return early
+    // so the normal inject path does NOT double-inject.
+    const compensationOutput = _tryDossierCompensation(cwd, dossierPath, cfg);
+    if (compensationOutput !== null) {
+      return { output: compensationOutput, action: 'compensation_injected' };
+    }
 
     if (!_exists(dossierPath)) {
       // SKIP-15: dossier file missing (SessionStart cold-start).
@@ -811,4 +1041,7 @@ module.exports = {
   _buildAdditionalContext,
   SKIP_REASON,
   _emitInjectionSkipped,
+  _tryDossierCompensation,
+  COMPENSATION_STALE_MS,
+  COMPENSATION_SIZE_CAP_BYTES,
 };
