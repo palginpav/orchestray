@@ -9,10 +9,14 @@
  *
  * The shadow has the shape:
  *   {
- *     "_meta": { version, source_hash, generated_at, shadow_size_bytes },
+ *     "_meta": { version, source_hash, shadow_size_bytes },
  *     "<event_type>": { version, required, optional, enum_dialect_hash },
  *     ...
  *   }
+ *
+ * Note: generated_at was removed in v2.2.14 G-10 — the timestamp caused the
+ * file to appear modified in git status on every regen even when no event
+ * schema changed. source_hash is sufficient to detect staleness.
  *
  * Output target: ≤ 8 KB. Script errors out if the shadow exceeds this limit.
  * (Raised from 4 KB to 8 KB in v2.1.16 W12-fix F-005 — the v2.1.16 file landed
@@ -22,8 +26,9 @@
  *
  * Usage: node bin/regen-schema-shadow.js [--cwd <dir>]
  *
- * Idempotent: running multiple times produces the same output when the source
- * file has not changed (source_hash is stable).
+ * Idempotent: running multiple times with unchanged source produces byte-
+ * identical output and does NOT write the file (mtime preserved, git status
+ * stays clean). File is only written when content actually changes.
  *
  * Fail contract (when run standalone):
  *   - Exits 0 on success.
@@ -122,7 +127,8 @@ function main(cwd) {
     _meta: {
       version: 1,
       source_hash: sourceHash,
-      generated_at: new Date().toISOString(),
+      // generated_at intentionally omitted (v2.2.14 G-10): timestamp made the
+      // file dirty in git status on every regen even when nothing changed.
       shadow_size_bytes: 0, // filled in after serialization
       event_count: events.length,
     },
@@ -170,7 +176,21 @@ function main(cwd) {
     // Best-effort sentinel clear
   }
 
-  fs.writeFileSync(outPath, finalJson + '\n', 'utf8');
+  // Write-only-on-content-diff (v2.2.14 G-10): skip the write when the
+  // generated content is byte-identical to what's already on disk. This keeps
+  // git status clean and preserves the file mtime on no-op regens.
+  const newContent = finalJson + '\n';
+  let existingContent = null;
+  try {
+    existingContent = fs.readFileSync(outPath, 'utf8');
+  } catch (_e) {
+    // File doesn't exist yet — proceed with write
+  }
+  if (existingContent === newContent) {
+    return shadow; // no-op: content unchanged
+  }
+
+  fs.writeFileSync(outPath, newContent, 'utf8');
 
   return shadow;
 }
