@@ -8530,15 +8530,20 @@ Emitted from: `bin/inject-context-size-hint.js` (DELETED in v2.2.13 W1 — no ac
 
 ### `deprecated_kill_switch_detected` event
 
-**BACKFILL declare — v2.2.13 W1.** Emitted at session start (`bin/boot-validate-config.js`)
-and at spawn time (`bin/preflight-spawn-budget.js`) when a deprecated Orchestray
-kill-switch env var is detected in the environment. The event fires at most once
-per session per handler (gated by a per-pid sentinel file under
-`.orchestray/state/deprecated-env-warned-<token>`). Fail-open: sentinel write
-failure does not suppress the event.
+**DORMANT v2.2.14 — declared but no current emitters.** v2.2.14 G-04 fully retired
+`ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED` (the only env var that ever
+triggered this event); both emit sites in `bin/boot-validate-config.js` and
+`bin/preflight-spawn-budget.js` were deleted alongside the env-var read sites.
+The declare is retained so the event type can be re-activated for the next
+env-var deprecation cycle without a schema regression. Until then, this event
+is expected to remain at `o:0` in the shadow.
 
-First declared in v2.2.13. Prior claim that it was "declared per v2.2.12 W3 review
-P1-5" was incorrect (verified by grep against the 213-type shadow — count=0).
+Originally introduced in v2.2.13 W1 to fire at session start
+(`bin/boot-validate-config.js`) and spawn time (`bin/preflight-spawn-budget.js`)
+when a deprecated Orchestray kill-switch env var was detected. The fire-once
+gating used a per-pid sentinel file under
+`.orchestray/state/deprecated-env-warned-<token>`; fail-open on sentinel
+write failure.
 
 ```json
 {

@@ -67,7 +67,7 @@ process.stdin.on('end', () => {
  */
 function loadShadowConfig(cwd) {
   const configPath = path.join(cwd, '.orchestray', 'config.json');
-  const defaults = { enabled: true, miss_threshold_24h: 3 };
+  const defaults = { enabled: true, miss_threshold_24h: 10 };
   try {
     const raw    = fs.readFileSync(configPath, 'utf8');
     const parsed = JSON.parse(raw);
