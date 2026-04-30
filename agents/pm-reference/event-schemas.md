@@ -8626,3 +8626,82 @@ Required fields: `event` (string), `matcher` (string|null), `peer_basenames` (st
 Emitted from: `bin/install.js` (mergeHooks reorder step, install-time).
 
 Kill switch: none — the warn fires regardless of `ORCHESTRAY_INSTALL_HOOK_REORDER_DISABLED` (informational; decoupled from the auto-fix flag).
+
+---
+
+## v2.2.14 additions
+
+### `pattern_read` event
+
+Audit row emitted by `bin/mcp-server/tools/pattern_read.js` each time the
+`pattern_read` MCP tool successfully fetches a pattern body. One row per tool
+invocation. Introduced in v2.1.14 R-CAT (catalog mode default). Written via
+`bin/mcp-server/lib/audit.js` `writeAuditEvent` to `.orchestray/audit/events.jsonl`.
+
+The event enables zero-read auditing: operators can confirm which pattern slugs are
+actually fetched (vs. merely surfaced by `pattern_find`) and correlate reads against
+downstream application or skip records.
+
+```json
+{
+  "version": 1,
+  "type": "pattern_read",
+  "timestamp": "ISO 8601",
+  "tool": "pattern_read",
+  "slug": "my-pattern-slug",
+  "orchestration_id": "orch-xxx | null"
+}
+```
+
+Required fields: `type` (string), `timestamp` (ISO 8601), `tool` (`"pattern_read"`), `slug` (string), `orchestration_id` (string | null).
+
+Emitted from: `bin/mcp-server/tools/pattern_read.js` (line 79–86, fail-open try/catch).
+
+Kill switch: none — the emit is unconditional on a non-not-found result. Fail-open: audit failure never blocks the tool result.
+
+---
+
+### `scout_decision` event
+
+Audit row emitted by the PM agent (Section 23 haiku-routing decision rule) each time it
+evaluates whether a file operation should be routed to a `haiku-scout` sub-agent or
+handled inline. One row per `Read`/`Glob`/`Grep` evaluation. Written via
+`bin/_lib/audit-event-writer.js` to `.orchestray/audit/events.jsonl`.
+
+The event provides a per-decision record so operators can distinguish files that
+triggered scout spawns from those that were exempted (e.g., by blocked-path rules),
+and compute the exemption rate over time.
+
+```json
+{
+  "version": 1,
+  "type": "scout_decision",
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx | null",
+  "file_path": "/abs/path/to/target",
+  "file_bytes": 109213,
+  "scout_min_bytes": 12288,
+  "decision": "scout_spawn_required | exempt_path_observed | inline_forced | below_threshold",
+  "caller_role": "pm | pm-router",
+  "schema_version": 1
+}
+```
+
+Required fields: `type` (string), `timestamp` (ISO 8601), `file_path` (string), `file_bytes` (number), `scout_min_bytes` (number), `decision` (string), `caller_role` (string).
+
+Optional fields: `orchestration_id` (string | null), `schema_version` (number).
+
+Field notes:
+- `decision`: tag emitted by the PM's routing branch. Common values: `scout_spawn_required`
+  (file exceeds threshold and is not exempt), `exempt_path_observed` (file matches a
+  `scout_blocked_paths` glob), `inline_forced` (PM decided to read inline despite size),
+  `below_threshold` (file is smaller than `scout_min_bytes`).
+- `caller_role`: the agent role performing the evaluation (typically `"pm"` or the
+  legacy `"pm-router"` label used before v2.2.13).
+- `scout_min_bytes`: the configured threshold at decision time (default 12288). Captured
+  per row so threshold changes are auditable post-hoc.
+
+Emitted from: PM agent prose (Section 23 haiku-routing decision rule) via `writeAuditEvent`.
+
+Kill switch: `haiku_routing.enabled: false` in `.orchestray/config.json` disables the
+haiku-routing feature; `scout_decision` rows are not emitted when routing is disabled.
