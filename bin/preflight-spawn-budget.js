@@ -256,8 +256,8 @@ process.stdin.on('end', () => {
     // session deprecation event and warn, gated by a sentinel file.
     if (process.env.ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED === '1') {
       const orchStateDir = require('path').join(cwd, '.orchestray', 'state');
-      const sentinelToken = 'preflight-' + process.pid;
-      const sentinelPath = require('path').join(orchStateDir, 'deprecated-env-warned-' + sentinelToken);
+      // Shared sentinel (no pid component) so boot + preflight dedupe per session.
+      const sentinelPath = require('path').join(orchStateDir, 'deprecated-env-warned-context-hint');
       try {
         if (!require('fs').existsSync(sentinelPath)) {
           try {
@@ -265,8 +265,10 @@ process.stdin.on('end', () => {
             require('fs').writeFileSync(sentinelPath, new Date().toISOString() + '\n', { flag: 'wx' });
           } catch (_) { /* fail-open — sentinel write failure is non-fatal */ }
           process.stderr.write(
-            '[orchestray] DEPRECATED env var ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED detected; ' +
-            'remove from .claude/settings.json env block (gated path no longer exists; retires v2.2.14).\n'
+            '[orchestray] DEPRECATED: ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED is a no-op as of ' +
+            'v2.2.13 and will be removed in v2.2.14. Remove it from .claude/settings.json — the inline ' +
+            'prompt-body parser (v2.2.13) now satisfies the context_size_hint gate automatically. ' +
+            '(If you need to disable inline parsing, use ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED=1.)\n'
           );
           try {
             let orchId = 'unknown';
@@ -360,10 +362,10 @@ process.stdin.on('end', () => {
         process.stdout.write(JSON.stringify({
           type: 'block',
           message: `[orchestray] Spawn blocked: the "${role}" agent was spawned without a context_size_hint. ` +
-                   `All Agent spawns must include context_size_hint with non-zero system/tier2/handoff values ` +
-                   `either in tool_input.context_size_hint or as a "context_size_hint: system=N tier2=N handoff=N" ` +
-                   `line in the prompt body. ` +
-                   `To suppress: ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED=1 (disables the warn event and block).`,
+                   `To fix: include "context_size_hint: system=N tier2=N handoff=N" as a line in the delegation ` +
+                   `prompt (or pass tool_input.context_size_hint with non-zero system/tier2/handoff values). ` +
+                   `To disable this gate entirely (not recommended in production): ` +
+                   `ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED=1.`,
         }) + '\n');
         process.exit(2);
       }

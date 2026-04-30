@@ -114,8 +114,8 @@ function maybeWarnDeprecatedContextHintEnvVar(cwd) {
   if (process.env.ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED !== '1') return;
   try {
     const stateDir = path.join(cwd, '.orchestray', 'state');
-    const sentinelToken = 'boot-' + process.pid;
-    const sentinelPath = path.join(stateDir, 'deprecated-env-warned-' + sentinelToken);
+    // Shared sentinel (no pid component) so boot + preflight dedupe per session.
+    const sentinelPath = path.join(stateDir, 'deprecated-env-warned-context-hint');
     if (fs.existsSync(sentinelPath)) return;
 
     // Write sentinel first (fail-open if it fails — we still warn).
@@ -125,8 +125,10 @@ function maybeWarnDeprecatedContextHintEnvVar(cwd) {
     } catch (_) { /* sentinel write failure is non-fatal */ }
 
     process.stderr.write(
-      '[orchestray] DEPRECATED env var ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED detected; ' +
-      'remove from .claude/settings.json env block (gated path no longer exists; retires v2.2.14).\n'
+      '[orchestray] DEPRECATED: ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED is a no-op as of ' +
+      'v2.2.13 and will be removed in v2.2.14. Remove it from .claude/settings.json — the inline ' +
+      'prompt-body parser (v2.2.13) now satisfies the context_size_hint gate automatically. ' +
+      '(If you need to disable inline parsing, use ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED=1.)\n'
     );
 
     // Emit telemetry event (best-effort).

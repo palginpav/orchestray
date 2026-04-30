@@ -1360,9 +1360,11 @@ function mergeHooks(targetDir) {
             },
           });
           process.stderr.write(
-            `[orchestray:install] hook chain ${event}:${canEntry.matcher || '*'} has interleaved` +
-            ` peer hooks; orchestray will not auto-reorder. Run '/orchestray:status hooks' for` +
-            ` the canonical-vs-live diff and reorder manually.\n`
+            `[orchestray:install] Cannot auto-reorder ${event}:${canEntry.matcher || '*'} hooks: ` +
+            `your settings.json has non-orchestray hooks mixed between orchestray hooks, and ` +
+            `auto-reorder could break that arrangement. Run '/orchestray:status hooks' to see ` +
+            `the current vs. expected order, then move orchestray hooks to run before (or after) ` +
+            `your other hooks as a block. Re-run '/orchestray:update' to apply.\n`
           );
           continue;
         }

@@ -150,7 +150,9 @@ function computeDivergenceAt(canBasenames, liveBasenames) {
 
     if (driftFound) {
       process.stderr.write(
-        '[orchestray] hook chain order drift detected; run `/orchestray:update` to auto-fix.\n'
+        '[orchestray] Hook chain order drift detected (warn-only, session is functional). ' +
+        'Run `/orchestray:update` to restore canonical order — out-of-order hooks may miss events ' +
+        'in future versions. To silence until next install, set ORCHESTRAY_HOOK_ORDER_VALIDATION_DISABLED=1.\n'
       );
     }
 

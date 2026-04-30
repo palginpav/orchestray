@@ -95,8 +95,12 @@ describe('v2.2.13 W1 — deprecated env-var detection in boot-validate-config', 
     // Boot may fail (exit non-zero) due to config validation, but the
     // deprecation warn should still fire before exit — fail-open principle.
     assert.ok(
-      r.stderr.includes('DEPRECATED env var ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED'),
+      r.stderr.includes('DEPRECATED: ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED'),
       'stderr must contain the DEPRECATED warning; got: ' + r.stderr,
+    );
+    assert.ok(
+      r.stderr.includes('ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED'),
+      'stderr must include replacement env var name (UX critique F-04); got: ' + r.stderr,
     );
 
     const events = readEvents(tmpRoot);
@@ -113,7 +117,7 @@ describe('v2.2.13 W1 — deprecated env-var detection in boot-validate-config', 
     const r = runBoot(tmpRoot, {});
 
     assert.ok(
-      !r.stderr.includes('DEPRECATED env var ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED'),
+      !r.stderr.includes('DEPRECATED: ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED'),
       'stderr must NOT contain the DEPRECATED warning when env var is unset; got: ' + r.stderr,
     );
 
@@ -124,10 +128,10 @@ describe('v2.2.13 W1 — deprecated env-var detection in boot-validate-config', 
 
   // ── Test 3: sentinel present → re-emit suppressed ──────────────────────
   test('sentinel file present → event does NOT re-emit (per-session dedup)', () => {
-    // Write a sentinel that matches the boot-validate-config.js pattern
-    // (boot-<pid>). We use the test process pid as a known sentinel token.
+    // v2.2.13 UX critique F-01: shared sentinel (no pid component) so boot
+    // and preflight dedupe across the whole session.
     const stateDir = path.join(tmpRoot, '.orchestray', 'state');
-    const sentinelPath = path.join(stateDir, 'deprecated-env-warned-boot-' + process.pid);
+    const sentinelPath = path.join(stateDir, 'deprecated-env-warned-context-hint');
     fs.writeFileSync(sentinelPath, new Date().toISOString() + '\n', 'utf8');
 
     // Run boot in the SAME process pid so the sentinel matches.
