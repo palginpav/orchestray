@@ -3,6 +3,91 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.2.14] - 2026-04-30
+
+v2.2.14 is a **wide-mechanisation sweep** that catches regressions, leftovers, inconsistencies, and non-wired items left behind across the v2.2.0–v2.2.13 series. The headline fix: **every global-install user no longer sees `node:fs:1012` as a SessionStart hook error** — `bin/install.js` was missing the `schemas/` directory in its copy pass since v2.2.9, causing `validate-config.js` to throw `MODULE_NOT_FOUND` on every session start. v2.2.14 also stops the **calibrate-role-budgets.js stdout dump** that burned cache budget on every session, **re-arms the schema-shadow safety net** (which was silently OFF for everyone whose install accumulated 3 unknown-event-type misses), and **reduces PM first-spawn friction** by adding the previously implicit gate-time requirements (`model:`, `context_size_hint:`, `## Files to Review`) directly to the canonical delegation templates. 19 W-items shipped (3 P0 + 11 P1 + 5 P2). Schema registry grows 221 → 223. Tests 5542 → 5633 (+91), 0 failures.
+
+### Fixed — Headline P0s (visible to every user)
+
+- **`node:fs:1012` SessionStart hook error eliminated.** Every Orchestray user with a global install at `~/.claude/orchestray/` saw `Failed with non-blocking status code: node:fs:1012` on every session start. Root cause: `bin/install.js` copied only `bin/` and `release-manager/` to the install target; the `schemas/` directory (introduced in v2.2.9 B-7, six files, required by `bin/validate-config.js:34`'s `require('../schemas')`) was never wired into the copy pass. The script threw `MODULE_NOT_FOUND` from `node:fs` deep inside `require()` resolution, and Claude Code surfaced the first stderr line — the Node internal-module frame `node:fs:1012` — as the "non-blocking status code." Fixed: install.js now copies `schemas/` to `<targetDir>/orchestray/schemas/` (sibling of `bin/`, not under it) with a post-install `require.resolve` verification. (G-01)
+- **`calibrate-role-budgets.js --if-stale` flag now works.** The script was wired into `~/.claude/settings.json` SessionStart with `--emit-cache --if-stale`, but `--if-stale` was silently dropped by the arg parser. The script ran unconditionally on every session, dumping a 213-line recommendation table to stdout, which Claude Code injects into `additionalContext`. Cache budget burned every session. Fixed: `--if-stale` now checks the `role-budgets.json` mtime against a window (default 14 days) and exits 0 silently when fresh. New `--quiet` flag suppresses the stdout dump even when recompute is needed (the cache file IS the deliverable). (G-02)
+- **`calibrate-role-budgets.js` is now in canonical `hooks/hooks.json`.** The hook was wired manually in user settings.json but never canonicalised, so the v2.2.13 SessionStart drift validator emitted `hook_chain_drift_detected` on every session for every operator. Fixed: hook now lands in `hooks/hooks.json` as the last SessionStart group with `--emit-cache --if-stale --quiet`; install.js mergeHooks propagates it on next install/upgrade. The drift validator's matcher-aggregation logic was also fixed so installs with one-entry-per-script SessionStart layouts no longer false-positive on canonical-vs-live mismatches. (G-03)
+
+### Re-armed — Schema-shadow safety net
+
+The `audit-event-writer` 3-strike circuit at `bin/_lib/audit-event-writer.js:376` was silently OFF on most installs because three event types emitted in production were never declared in `agents/pm-reference/event-schemas.md`:
+
+- **`pattern_read`** — emitted by `bin/mcp-server/tools/pattern_read.js` since v2.1.14 R-CAT, never declared (35 misses on this install).
+- **`scout_decision`** — emitted by PM Section 23 scout dispatch, never declared (5 misses).
+- **`task_completed`** — referenced in event-schemas.md prose but had no current emitter; left undeclared rather than ship a dead schema.
+
+Three changes restore the safety net:
+
+- **`pattern_read` and `scout_decision` are now declared.** Schema registry grows 221 → 223. Validation re-engages on the next session. (G-06)
+- **`bin/regen-schema-shadow.js` now auto-deletes the `.schema-shadow-disabled` sentinel** on a successful run, so a single regen re-arms the circuit (was already in code; G-06 confirmed the path and added regression tests). (G-06)
+- **`miss_threshold_24h` default raised from 3 → 10.** Three misses in 24h was hair-trigger under normal MCP activity (the `pattern_read` traffic alone tripped it within minutes). The threshold now buys operators time to ship a declare before validation goes silent. (G-07)
+
+### Reduced — PM first-spawn friction
+
+Three Agent()-spawn-time enforcers each hard-blocked the PM the first time and only unblocked after retry — none of the requirements were surfaced in the canonical delegation scaffolds. Every fresh planning orchestration paid this token cost. v2.2.14 surfaces the requirements at the spot they live:
+
+- **`model:` field is now in every canonical delegation example.** `agents/pm-reference/delegation-templates.md` adds a "Mandatory `model:` field" section with three canonical Agent() spawn-shape examples (haiku / sonnet / opus tiers), each with an inline `// MANDATORY — gate-agent-spawn.js blocks otherwise` comment at the field. Doc-block names the enforcer and `ORCHESTRAY_STRICT_MODEL_REQUIRED=0` kill switch. (G-14)
+- **`context_size_hint` parser accepts both flat and object forms.** PMs writing the JSON object form `{ system: 8000, tier2: 4000, handoff: 12000 }` (which the existing docs showed) into the prompt body got hard-blocked because `bin/preflight-spawn-budget.js` HINT_RE matched only the flat `system=N tier2=N handoff=N` form. v2.2.14 makes the parser accept BOTH forms. delegation-templates.md notes both are accepted; mixed forms still fail loud with a clear spawn-block message. (G-11)
+- **Reviewer pre-spawn checklist surfaces the `## Files to Review` requirement.** `bin/validate-reviewer-scope.js` hard-blocks reviewer spawns lacking the section. The pre-spawn checklist in delegation-templates.md now lists it as the second item, with the kill switch `ORCHESTRAY_REVIEWER_SCOPE_HARD_DISABLED=1` named inline. (G-15)
+- **KB-artifact write allow-list extended to debugger / architect / reviewer.** These three roles' allow-lists were empty in `bin/_lib/role-write-allowlists.js`, blocking even the artifact contracts their PM-issued prompts mandate (we hit this during v2.2.14 PLANNING — the W1 debugger could not write its findings; PM had to transcribe from structured-result). v2.2.14 adds `.orchestray/kb/artifacts/**.md` to all three roles. (G-08)
+
+### Retired — `ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED`
+
+The env var was a no-op in v2.2.13 (the gated code path was deleted in W1) but the deprecation-warn site lingered. v2.2.14 deletes every `process.env` read site and the `maybeWarnDeprecatedContextHintEnvVar` function from `bin/boot-validate-config.js`. The hard-block path is now unconditional. The CHANGELOG promise from v2.2.13 ("retires v2.2.14") is honoured. The `context_size_hint_staged` declare flips from DEPRECATED → **RETIRED v2.2.14** (kept for audit-replay validity of pre-v2.2.13 events.jsonl). (G-04, G-18)
+
+### Schema cleanup — install_hook_order h-field strip
+
+`install_hook_order_corrected` and `install_hook_order_skipped_interleaved` declared an `h` (hash) schema field, but those events use `recordDegradation` to write to `degraded.jsonl` — not `writeEvent` to `events.jsonl`. The `h` field is an events.jsonl correlator; its presence on degraded-journal events was a category mismatch that confused schema validation. Fixed: declares' example payloads now use `[]` for the array fields, which causes `computeEnumDialectHash` to return `'none'` and the regen omits `h`. The events still land in `degraded.jsonl` (correct journal for advisories). (G-09)
+
+### Quality-of-life
+
+- **`event-schemas.shadow.json` no longer shows as modified on every release commit.** `bin/regen-schema-shadow.js` drops the `_meta.generated_at` timestamp (no functional use) and writes only when content actually differs (`fs.writeFileSync` is gated behind a content-diff check). Working tree stays clean across regen runs. (G-10)
+- **`dossier_orphan_threshold` is registered.** The v2.2.13 G-08 escalator read the config key, but `bin/_lib/config-schema.js` did not declare it, so config-repair stripped any user-set value as unknown. Fixed: declared with default 5, type integer, min 1. (G-05)
+- **`p12-shadow-regression.test.js:67 output_shape_applied` un-skipped.** The event has `o:5` in the shadow now (per v2.2.13's lift); the deferred-skip TODO is stale. Test fixed to read top-level keys (the shadow doesn't nest events under `.events`) and re-enabled. (G-13)
+- **`HOOKCHAIN_INTEGRATION_TEST_DISABLED` removed from CHANGELOG kill-switch table.** The flag is read only by the test file; it was misclassified as a production kill switch in v2.2.13's table. Prose in v2.2.13 entry preserved (it's history); the kill-switch summary table is now accurate. (G-12)
+- **Lifecycle emit + MCP tool-call regression tests.** New test fixtures drive `bin/gate-agent-spawn.js` + `bin/emit-orchestration-complete.js` (G-16, 11 cases) and `emitHandlerEntry` + server.js dispatch (G-17, 6 cases) end-to-end and assert events land in `events.jsonl`. G-17 surfaced an info finding that production MCP tool-call exit-phase events may misroute when the MCP server process cwd lacks an ancestor `.orchestray/` (left as v2.2.15+ candidate). (G-16, G-17)
+
+### Audit-corrected during implementation
+
+- **G-19 closed without code change.** v2.2.14 PLANNING flagged `metrics_query` as an orphan MCP tool config entry — but implementation discovery found `bin/mcp-server/tools/metrics_query.js` exists, has tests, and emits in `audit-on-orch-complete.js`. The audit finding (W2 D2) was false-premise. No action taken. (G-19)
+- **`task_completed` declare deferred.** Two of three "missing declares" from W1 (G-06) were added; the third (`task_completed`) had no current emitter, so declaring it would ship a dead schema. Re-add only when the emitter is re-wired.
+
+### Schema delta — 221 → 223 (+2)
+
+| Event | Status | Notes |
+|-------|--------|-------|
+| `pattern_read` | **NEW** | Emits at `bin/mcp-server/tools/pattern_read.js`; introduced v2.1.14, declared v2.2.14 |
+| `scout_decision` | **NEW** | Emits at PM agent §23 scout dispatch; declared v2.2.14 |
+| `context_size_hint_staged` | DEPRECATED → **RETIRED v2.2.14** | Kept for audit-replay only |
+| `install_hook_order_corrected` | **REFORMULATED** | `h` field stripped (was schema-mismatch with degraded.jsonl journal) |
+| `install_hook_order_skipped_interleaved` | **REFORMULATED** | `h` field stripped |
+
+`event-schemas.shadow.json` shrinks slightly (no `generated_at`); content-stable across regen runs.
+
+### Hook chain delta — +1 entry
+
+| Change | Hook | Hook point |
+|--------|------|-----------|
+| ADDED | `bin/calibrate-role-budgets.js --emit-cache --if-stale --quiet` | `SessionStart` (last group, 15s timeout) |
+
+### Migration notes
+
+- **Remove `ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED` from `~/.claude/settings.json`.** Already a no-op in v2.2.13; deleted in v2.2.14, no warning emitted.
+- **Restart Claude Code after upgrading.** Hook definitions are cached at session start.
+- **No config changes required** — all new behaviour is default-on.
+- **Sentinel auto-deletes** — `.orchestray/state/.schema-shadow-disabled` is removed on the first successful regen post-upgrade. No manual intervention needed.
+
+### Tests
+
+5633 tests / 5628 pass / 0 fail / 5 skip. +91 new test cases (G-01 / G-02 / G-04 / G-05 / G-06 / G-08 / G-10 / G-11 / G-13 / G-14 / G-16 / G-17 add their own regression suites). 1 skip removed (G-13 un-skipped output_shape_applied).
+
+---
+
 ## [2.2.13] - 2026-04-30
 
 v2.2.13 closes the structural break introduced by v2.2.12 W1a: the `inject-context-size-hint.js` stager hook was functionally inert because Claude Code does not propagate `updatedInput` between sibling `PreToolUse:Agent` hooks, so every Agent() spawn hard-blocked until operators set a manual kill switch. The fix folds the prompt-body parser directly into the spawn-budget preflight script and deletes the stager. A new hook-chain integration test prevents the same class of bug from reaching production again. Install now auto-repairs drifted hook ordering on upgrade, and SessionStart validates live ordering on every session start. Two previously declared-dark lifecycle events (`orchestration_start` and `orchestration_complete`) now fire in production. Shadow registry grows 213 → 221.

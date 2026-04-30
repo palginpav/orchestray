@@ -145,6 +145,7 @@ Set in `.orchestray/config.json` or as env vars. No session restart required.
 | Loop-kind taxonomy disambiguation (v2.2.11) | — | `ORCHESTRAY_LOOP_KIND_DISAMBIGUATION_DISABLED=1` |
 | `*_failed` rename-cycle alias emit (v2.2.11) | — | `ORCHESTRAY_RENAME_CYCLE_ALIAS_DISABLED=1` |
 | `context_size_hint` stager hook (**DELETED v2.2.13** — replaced by inline parser in preflight; kill switch is a no-op) | — | `ORCHESTRAY_CTX_HINT_STAGER_DISABLED=1` |
+| `ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED` (**RETIRED v2.2.14** — env var was a no-op since v2.2.13; all read sites deleted; remove from `~/.claude/settings.json`) | — | _retired; no longer read_ |
 | Contracts validation hard-fail (v2.2.12, reverts to warn) | — | `ORCHESTRAY_CONTRACTS_PARSE_GATE_DISABLED=1` |
 | `*_failed` deprecation stderr warn (v2.2.12) | — | `ORCHESTRAY_DEPRECATED_NAME_WARN_DISABLED=1` |
 | Archive validation success-path emit (v2.2.12) | — | `ORCHESTRAY_ARCHIVE_VALIDATION_SUCCESS_EMIT_DISABLED=1` |
@@ -157,6 +158,12 @@ Set in `.orchestray/config.json` or as env vars. No session restart required.
 | Contracts postcondition silent-skip audit emit (v2.2.13) | — | `ORCHESTRAY_CONTRACTS_RUNPOST_AUDIT_DISABLED=1` |
 | Dossier-orphan threshold escalator (v2.2.13) | — | `ORCHESTRAY_DOSSIER_ORPHAN_THRESHOLD_DISABLED=1` |
 | Hook-chain integration test in CI (v2.2.13) | — | `ORCHESTRAY_HOOKCHAIN_INTEGRATION_TEST_DISABLED=1` |
+| `schemas/` directory copy in install.js (v2.2.14, fixes node:fs:1012) | — | _No kill switch — correctness restoration_ |
+| `calibrate-role-budgets --if-stale` cache-mtime gate (v2.2.14) | — | _No kill switch — pass `--if-stale` flag to enable_ |
+| `calibrate-role-budgets --quiet` stdout suppression (v2.2.14) | — | _No kill switch — pass `--quiet` flag to enable_ |
+| `pattern_read` + `scout_decision` schema declares + sentinel auto-rearm (v2.2.14) | — | _Re-arms `audit-event-writer` circuit; default-on, no kill switch_ |
+| `context_size_hint` HINT_RE accepts both flat + object forms (v2.2.14) | — | _Parser robustness; no kill switch_ |
+| Mandatory `model:` field surfaced in delegation-templates.md (v2.2.14, doc-block) | — | `ORCHESTRAY_STRICT_MODEL_REQUIRED=0` (already existed; not new in v2.2.14) |
 
 ## Requirements
 
