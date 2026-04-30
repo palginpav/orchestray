@@ -21,16 +21,24 @@ const path   = require('path');
 // shared parser so the validator and regen-schema-shadow.js / tier2-index can
 // never disagree about which slugs the source declares. The dual-parser drift
 // was the root cause of the v2.2.14 G-08 schema-shadow auto-disable (W2-01 P0).
-const { parseEventSchemas } = require('./event-schemas-parser');
-
-const SCHEMA_REL_PATH = path.join('agents', 'pm-reference', 'event-schemas.md');
+//
+// W5 (v2.2.18) — mtime-based cache invalidation: getSchemas() now delegates
+// file reading and caching to parseEventSchemasFromFile(), which re-parses
+// whenever event-schemas.md's mtime changes mid-session. The validator's own
+// Map cache (eventsArray → Map) is keyed by the array reference returned from
+// the parser so it is always consistent with the parser's cache state.
+const { parseEventSchemas, parseEventSchemasFromFile } = require('./event-schemas-parser');
 
 // ---------------------------------------------------------------------------
-// Process-level cache: one parse per process invocation
+// Validator-level Map cache: rebuilt whenever the parser cache is invalidated
 // ---------------------------------------------------------------------------
 
-let _cachedSchemas = null; // Map<string, { required: string[], version: number }>
-let _cacheSourcePath = null;
+// _cachedSchemasMap is the Map<slug, { required, version }> built from the
+// last-returned array from parseEventSchemasFromFile.  We key it against the
+// array reference so that when the parser re-parses (mtime changed), we also
+// rebuild the Map.
+let _cachedSchemasMap  = null; // Map<string, { required: string[], version: number }>
+let _cachedEventsArray = null; // the Array reference the Map was built from
 
 /**
  * Build the validator's `Map<slug, { required, version }>` from the canonical
@@ -56,30 +64,63 @@ function parseSchemas(content) {
 }
 
 /**
- * Load (or return cached) event schemas.
+ * Convert an events array to the validator's Map shape, reusing the cached Map
+ * when the events array reference is unchanged (i.e. no mtime invalidation).
+ *
+ * @param {Array} events
+ * @returns {Map<string, { required: string[], version: number }>}
+ */
+function _eventsToMap(events) {
+  if (_cachedEventsArray === events && _cachedSchemasMap !== null) {
+    return _cachedSchemasMap; // same array ref → parser cache still valid
+  }
+  const schemas = new Map();
+  for (const ev of events) {
+    if (!ev || typeof ev.slug !== 'string') continue;
+    if (schemas.has(ev.slug)) continue;
+    schemas.set(ev.slug, {
+      required: Array.isArray(ev.required) ? ev.required.slice() : [],
+      version:  typeof ev.version === 'number' ? ev.version : 1,
+    });
+  }
+  _cachedEventsArray = events;
+  _cachedSchemasMap  = schemas;
+  return schemas;
+}
+
+/**
+ * Load (or return cached) event schemas, with mtime-based invalidation.
+ *
+ * The `cwd` parameter is retained for API compatibility with existing callers.
+ * When the canonical SCHEMA_PATH in the parser matches the requested path,
+ * parseEventSchemasFromFile() is used (mtime-aware). For non-canonical paths
+ * (e.g. test stubs in tmpDirs), we fall back to a direct file read.
  *
  * @param {string} cwd - Project root.
  * @returns {Map<string, { required: string[], version: number }>|null}
  */
 function getSchemas(cwd) {
-  const schemaPath = path.join(cwd, SCHEMA_REL_PATH);
+  const { SCHEMA_PATH } = require('./event-schemas-parser');
+  const requestedPath = path.join(cwd, 'agents', 'pm-reference', 'event-schemas.md');
 
-  if (_cachedSchemas !== null && _cacheSourcePath === schemaPath) {
-    return _cachedSchemas;
+  // Canonical path — use the mtime-aware parser cache.
+  if (requestedPath === SCHEMA_PATH) {
+    try {
+      const events = parseEventSchemasFromFile();
+      const map    = _eventsToMap(events);
+      if (!map || map.size === 0) return null;
+      return map;
+    } catch (_e) {
+      return null;
+    }
   }
 
+  // Non-canonical path (test stubs) — read directly, no mtime tracking.
   try {
-    const content = fs.readFileSync(schemaPath, 'utf8');
+    const content = fs.readFileSync(requestedPath, 'utf8');
     const parsed  = parseSchemas(content);
-    // Empty or unparseable schema content is functionally equivalent to an
-    // unreadable file — treat both as the "schema unavailable" signal so the
-    // gateway falls through to the warnings path rather than dropping every
-    // event as "unknown type". Tests run in tmpDirs with stub schema files
-    // and depend on this behavior.
     if (!parsed || parsed.size === 0) return null;
-    _cachedSchemas   = parsed;
-    _cacheSourcePath = schemaPath;
-    return _cachedSchemas;
+    return parsed;
   } catch (_e) {
     return null;
   }
@@ -152,10 +193,16 @@ function validateEvent(cwd, eventPayload) {
 
 /**
  * Clear the process-level cache (for testing).
+ * Also resets the parser's file cache so tests can simulate a fresh process.
  */
 function clearCache() {
-  _cachedSchemas = null;
-  _cacheSourcePath = null;
+  _cachedSchemasMap  = null;
+  _cachedEventsArray = null;
+  // Also reset the parser's mtime cache so tests can simulate file changes.
+  try {
+    const { clearFileCache } = require('./event-schemas-parser');
+    clearFileCache();
+  } catch (_) {}
 }
 
 module.exports = { validateEvent, getSchemas, parseSchemas, clearCache };

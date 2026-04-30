@@ -20,13 +20,144 @@
  *   parseEventSchemasWithRanges(content) — extended shape adding line_range +
  *                                          short_doc + section_text for the
  *                                          tier2-index sidecar.
+ *   parseEventSchemasFromFile()— mtime-aware cached parse of the canonical
+ *                                event-schemas.md. Use this instead of reading
+ *                                the file manually — it re-parses automatically
+ *                                when the file changes mid-session.
+ *   clearFileCache()           — reset the file-level cache (for testing).
  *
  * The two parse functions share the same section walk so they cannot diverge
  * on slug coverage. parseEventSchemasWithRanges is a strict superset; the
  * shadow generator deliberately ignores the extra fields.
+ *
+ * W5 (v2.2.18) — mtime-based cache invalidation:
+ *   parseEventSchemasFromFile() stat()s the schema file on every call and
+ *   re-parses only when mtimeMs changes. This ensures that mid-session edits
+ *   to event-schemas.md take effect immediately on the next validate() call
+ *   without requiring a process restart.
  */
 
 const crypto = require('crypto');
+const fs     = require('fs');
+const path   = require('path');
+
+// ---------------------------------------------------------------------------
+// File-level mtime cache (W5, v2.2.18)
+// ---------------------------------------------------------------------------
+
+// Canonical path to the schema source file — relative to this module's
+// location: bin/_lib/ → ../../agents/pm-reference/event-schemas.md
+const SCHEMA_PATH = path.resolve(__dirname, '..', '..', 'agents', 'pm-reference', 'event-schemas.md');
+
+let _fileCachedSchemas  = null;  // Array<EventSchema> | null
+let _fileCachedMtimeMs  = 0;     // mtimeMs of the file at last parse
+
+/**
+ * Emit a schema_cache_invalidated event to the audit log.
+ * Must never throw under any error condition.
+ *
+ * @param {{ prior_mtime: number, new_mtime: number|null, cause: string, error_code?: string }} payload
+ */
+function _emitCacheInvalidation(payload) {
+  try {
+    const evt = Object.assign(
+      { event_type: 'schema_cache_invalidated', ts: new Date().toISOString(), version: '2.2.18' },
+      payload
+    );
+    // Route through the canonical audit writer when available.
+    // Use a dynamic require to avoid circular-dependency issues at module load
+    // time (audit-event-writer → schema-emit-validator → event-schemas-parser).
+    let wrote = false;
+    try {
+      const writer = require('./audit-event-writer');
+      if (typeof writer.writeEvent === 'function') {
+        writer.writeEvent(evt, { skipValidation: true });
+        wrote = true;
+      }
+    } catch (_) { /* writer unavailable — fall through to raw append */ }
+
+    if (!wrote) {
+      // Fallback: direct fs.appendFileSync to the events.jsonl
+      // process.cwd() gives the project root inside Claude Code hooks.
+      const eventsPath = path.join(process.cwd(), '.orchestray', 'audit', 'events.jsonl');
+      try {
+        fs.appendFileSync(eventsPath, JSON.stringify(evt) + '\n');
+      } catch (_) { /* silently ignore — audit writer is best-effort */ }
+    }
+  } catch (_) { /* outer safety net — _emitCacheInvalidation must never throw */ }
+}
+
+/**
+ * Return parsed event schemas, re-reading event-schemas.md only when its
+ * mtime has changed since the last parse.
+ *
+ * Env override: if ORCHESTRAY_SCHEMA_CACHE_INVALIDATION_DISABLED=1, the
+ * mtime check is skipped and the first-parse cache is used for the process
+ * lifetime (legacy behavior, useful for profiling or debugging).
+ *
+ * @returns {Array<EventSchema>} — same shape as parseEventSchemas(content).
+ * @throws  {Error}             — only when no cache exists AND stat/read fails.
+ */
+function parseEventSchemasFromFile() {
+  // Legacy mode: skip mtime checks (opt-in escape hatch).
+  if (process.env.ORCHESTRAY_SCHEMA_CACHE_INVALIDATION_DISABLED === '1') {
+    if (_fileCachedSchemas !== null) return _fileCachedSchemas;
+    const content = fs.readFileSync(SCHEMA_PATH, 'utf8');
+    _fileCachedSchemas = parseEventSchemas(content);
+    _fileCachedMtimeMs = 0; // sentinel: mtime tracking disabled
+    return _fileCachedSchemas;
+  }
+
+  // Stat the file to get current mtime (≤5ms budget per spec).
+  let currentMtimeMs;
+  try {
+    currentMtimeMs = fs.statSync(SCHEMA_PATH).mtimeMs;
+  } catch (statErr) {
+    if (_fileCachedSchemas !== null) {
+      // Degraded: file deleted or unreadable mid-session — keep last-known cache.
+      _emitCacheInvalidation({
+        prior_mtime: _fileCachedMtimeMs,
+        new_mtime:   null,
+        cause:       'stat_failed',
+        error_code:  statErr.code || 'UNKNOWN',
+      });
+      return _fileCachedSchemas;
+    }
+    // No cache at all — hard fail so callers can handle gracefully.
+    throw statErr;
+  }
+
+  // Cache hit: mtime unchanged.
+  if (_fileCachedSchemas !== null && currentMtimeMs === _fileCachedMtimeMs) {
+    return _fileCachedSchemas;
+  }
+
+  // Cache miss: re-parse.
+  const priorMtime = _fileCachedMtimeMs;
+  const content    = fs.readFileSync(SCHEMA_PATH, 'utf8');
+  _fileCachedSchemas = parseEventSchemas(content);
+  _fileCachedMtimeMs = currentMtimeMs;
+
+  // Emit invalidation event only on a real mid-session cache miss (not on
+  // the very first parse where priorMtime is 0).
+  if (priorMtime > 0) {
+    _emitCacheInvalidation({
+      prior_mtime: priorMtime,
+      new_mtime:   currentMtimeMs,
+      cause:       'mtime_changed',
+    });
+  }
+
+  return _fileCachedSchemas;
+}
+
+/**
+ * Reset the file-level mtime cache.  For testing only.
+ */
+function clearFileCache() {
+  _fileCachedSchemas = null;
+  _fileCachedMtimeMs = 0;
+}
 
 // ---------------------------------------------------------------------------
 // Heading patterns
@@ -330,4 +461,9 @@ module.exports = {
   parseFeatureOptional,
   parseEventSchemas,
   parseEventSchemasWithRanges,
+  parseEventSchemasFromFile,
+  clearFileCache,
+  // Expose for testing only — not part of the public API.
+  _getFileCacheState: () => ({ mtimeMs: _fileCachedMtimeMs, hasCache: _fileCachedSchemas !== null }),
+  SCHEMA_PATH,
 };
