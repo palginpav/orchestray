@@ -34,6 +34,8 @@ const path = require('node:path');
 const os   = require('node:os');
 const crypto = require('node:crypto');
 
+const { parseFrontmatter: _parseFrontmatter } = require('../_lib/frontmatter-parse');
+
 const {
   runKbRefsSweep,
   _isThrottled,
@@ -113,15 +115,15 @@ function writePatternFile(projectDir, slug, content) {
 
 /**
  * Parse YAML frontmatter from a markdown string.
- * Returns a plain object with string values.
+ * Returns a plain object. String values only (for test assertions).
  */
 function parseFrontmatter(content) {
-  const m = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!m) return {};
+  const result = _parseFrontmatter(content);
+  if (!result) return {};
+  // Coerce all values to strings to match prior test-helper behavior.
   const obj = {};
-  for (const line of m[1].split(/\r?\n/)) {
-    const kv = /^([^:]+):\s*(.*)$/.exec(line);
-    if (kv) obj[kv[1].trim()] = kv[2].trim();
+  for (const [k, v] of Object.entries(result.frontmatter)) {
+    obj[k] = v === null ? '' : String(v);
   }
   return obj;
 }

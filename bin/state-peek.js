@@ -17,6 +17,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+const { parseFrontmatter: _parseFrontmatter } = require('./_lib/frontmatter-parse');
+
 const BASE = process.argv[2] ? path.resolve(process.argv[2]) : process.cwd();
 const ORCH_DIR = path.join(BASE, '.orchestray');
 
@@ -37,23 +39,13 @@ function statSafe(p) {
 }
 
 /**
- * Parse a YAML-ish frontmatter block (lines between --- markers).
- * Returns a flat object of key: value pairs (string values only).
- * Only used for simple single-line values; does not handle multiline or arrays.
+ * Parse frontmatter, returning a flat object of key:value pairs.
+ * Returns {} when content is falsy or has no frontmatter block.
  */
 function parseFrontmatter(text) {
-  const result = {};
-  if (!text) return result;
-  const match = text.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return result;
-  for (const line of match[1].split('\n')) {
-    const colon = line.indexOf(':');
-    if (colon < 1) continue;
-    const key = line.slice(0, colon).trim();
-    const value = line.slice(colon + 1).trim();
-    result[key] = value;
-  }
-  return result;
+  if (!text) return {};
+  const result = _parseFrontmatter(text);
+  return result ? result.frontmatter : {};
 }
 
 /**

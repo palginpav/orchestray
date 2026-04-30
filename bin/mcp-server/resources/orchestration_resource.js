@@ -27,6 +27,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const paths = require('../lib/paths');
+const { parseFrontmatter: _parseFrontmatter } = require('../../_lib/frontmatter-parse');
 
 function _root(context) {
   return (context && context.projectRoot) || null;
@@ -42,18 +43,8 @@ function _root(context) {
  */
 function parseFrontmatter(text) {
   if (typeof text !== 'string') return {};
-  // Use \r?\n throughout so CRLF checkouts (Windows) are handled correctly.
-  const m = /^---\r?\n([\s\S]*?)\r?\n---/m.exec(text);
-  if (!m) return {};
-  const result = {};
-  for (const line of m[1].split(/\r?\n/)) {
-    const colon = line.indexOf(':');
-    if (colon === -1) continue;
-    const key = line.slice(0, colon).trim();
-    const val = line.slice(colon + 1).trim();
-    if (key) result[key] = val;
-  }
-  return result;
+  const result = _parseFrontmatter(text);
+  return result ? result.frontmatter : {};
 }
 
 /**
