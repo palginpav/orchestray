@@ -3,6 +3,64 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.2.18] - 2026-04-30
+
+v2.2.18 closes a four-time-recurring data-loss bug where agent edits in linked git worktrees were silently discarded during worktree cleanup. It also lands a deterministic post-ship probe for the v2.2.17 drainer-tombstone fix, and reduces the dominant audit-log noise sources by an estimated 80%+ (schema-shadow caching, tokenwright drift, dual-install divergence, dossier injection gap). Every gate ships default-on with a kill switch; no config changes required.
+
+### Added — Worktree data-loss bug closed (four-time recurrence)
+
+- **Agent worktree edits are now automatically committed on agent exit.** When a specialized agent (architect, developer, refactorer, tester, inventor, security-engineer) finishes work in a git worktree without committing, Orchestray now creates a `wip(auto):` commit on the worktree branch before teardown. Previously, uncommitted worktree edits vanished silently during cleanup — this bug recurred four times across releases, including the live loss of a 325-line architect artifact during this release's planning. Kill switch: `ORCHESTRAY_WORKTREE_AUTO_COMMIT_DISABLED=1` or `worktree_auto_commit.enabled: false`. Pre-existing locked worktrees with no commits cannot be salvaged — those edits were already lost; v2.2.18 prevents future occurrences.
+- **PM master-tree edits are now automatically committed when the PM exits an active orchestration.** If the PM edits files on the master branch during orchestration and exits (e.g., post-compact recovery, interrupted planning round), Orchestray commits those edits with a `wip(orch ... stop ...):` message before the session closes. Kill switch: `ORCHESTRAY_MASTER_AUTO_COMMIT_DISABLED=1` or `master_auto_commit.enabled: false`.
+- **Contradicting "Never commit" instructions removed from agent definitions.** Developer and refactorer agents previously instructed agents never to commit. These lines directly contradicted the new auto-commit safety net and have been removed. Agent common protocol now documents the auto-commit behavior explicitly.
+- **Auto-commit trailers exempted from the `## Handoff` body gate.** The `commit_handoff_body_missing` gate no longer fires when HEAD contains a `Generated-By: orchestray-auto-commit-worktree` or `Generated-By: orchestray-auto-commit-master` trailer. Voluntary developer commits still require `## Handoff`.
+
+### Added — Post-ship verification probe
+
+- **`npm run test:tombstone-probe` exercises the v2.2.17 drainer-tombstone TTL formula in-process.** The probe runs four invariant checks on the `tombstone_until` formula and exits non-zero if the formula regresses to null or a past timestamp. Pre-publish verification now includes this probe. Kill switch: `ORCHESTRAY_TOMBSTONE_PROBE_DISABLED=1`.
+
+### Added — Telemetry-driven hardening (top-5 audit signals from v2.2.17)
+
+- **Schema validator now picks up live edits to `event-schemas.md` mid-session.** Previously the schema was compiled once at session start; any mid-session schema relaxation required a restart. v2.2.18 adds mtime-based cache invalidation (≤100ms stat-TTL overhead). `schema_shadow_validation_block` volume for previously-relaxed event types drops to zero within the same session after a schema edit. Kill switch: `ORCHESTRAY_SCHEMA_CACHE_INVALIDATION_DISABLED=1`. Note: edits made within the 100ms TTL window may experience up to 100ms of stale validation before re-parse triggers.
+- **Resilience dossier now auto-injects on the next session if the previous session wrote one but never read it.** Post-compact recovery was silently failing when a dossier was written but not injected into `additionalContext`. v2.2.18 detects this condition at SessionStart and compensates. Stale dossiers (>30 days) are skipped. Kill switch: `ORCHESTRAY_DOSSIER_COMPENSATION_DISABLED=1` or `dossier_compensation.enabled: false`.
+- **Dual-install divergence is now auto-healed on detection.** When the global Orchestray install diverges from the project-local install, Orchestray overwrites the stale global file with the local canonical bytes. Prevents mixed-version hook execution (e.g., local=v2.2.17, global=v2.2.15). Kill switch: `ORCHESTRAY_DUAL_INSTALL_AUTOHEAL_DISABLED=1` or `dual_install.autoheal_enabled: false`.
+- **Pre-spawn token estimate now uses a rolling median of the last 10 historical samples per agent type.** Was a static 500-token estimate. Researcher agents were seeing 900%+ drift. With bootstrapping, drift drops below 15% within 3 spawns. Falls back to 500 when fewer than 3 samples exist. Kill switch: `ORCHESTRAY_TOKENWRIGHT_BOOTSTRAP_DISABLED=1` or `tokenwright.bootstrap_enabled: false`.
+- **Schema field-alignment micro-fixes.** `orchestration_start.task` relaxed from required to optional (null when `ox state init` is called without `--task`; CLI now warns). `ts` field added to the audit-event-writer autofill allowlist alongside `timestamp` — any emit forgetting either field is now auto-rescued. Both fixes eliminate recurring `schema_shadow_validation_block` entries in the audit log.
+
+### Maintenance
+
+- **Frontmatter parsing consolidated into a single shared module.** Five hand-rolled `parseFrontmatter` instances across `bin/` (validate-specialist, state-peek, auto-commit-master-on-pm-stop, mcp-server orchestration_resource, kb-refs-sweep test) now delegate to a new `bin/_lib/frontmatter-parse.js` that wraps the canonical mcp-server parser. Behavioral equivalence preserved across all five sites; new 12-case test suite covers the shared module.
+
+### Schema delta
+
+- 260 → 273 (+13 net additions: 13 new event types, all backward-compatible; `orchestration_start.task` relaxed required→optional; `spawn_drainer_orphaned` example updated from null to real ISO timestamp sample)
+- Shadow regen content-stable (273 event types, two consecutive runs produce identical output)
+
+### Hooks chain delta
+
+- +2 entries: `bin/auto-commit-worktree-on-subagent-stop.js` (`SubagentStop`), `bin/auto-commit-master-on-pm-stop.js` (`Stop`)
+
+### Kill switches added
+
+| Env var | Config key | What it disables |
+|---------|-----------|-----------------|
+| `ORCHESTRAY_WORKTREE_AUTO_COMMIT_DISABLED=1` | `worktree_auto_commit.enabled: false` | Worktree auto-commit on SubagentStop |
+| `ORCHESTRAY_MASTER_AUTO_COMMIT_DISABLED=1` | `master_auto_commit.enabled: false` | Master-tree auto-commit on PM Stop |
+| `ORCHESTRAY_TOMBSTONE_PROBE_DISABLED=1` | — | Drainer-tombstone self-check probe (exits 0 with notice) |
+| `ORCHESTRAY_SCHEMA_CACHE_INVALIDATION_DISABLED=1` | — | Schema mtime invalidation (reverts to start-of-session compile) |
+| `ORCHESTRAY_DOSSIER_COMPENSATION_DISABLED=1` | `dossier_compensation.enabled: false` | Dossier orphan compensation at SessionStart |
+| `ORCHESTRAY_DUAL_INSTALL_AUTOHEAL_DISABLED=1` | `dual_install.autoheal_enabled: false` | Dual-install divergence auto-heal |
+| `ORCHESTRAY_TOKENWRIGHT_BOOTSTRAP_DISABLED=1` | `tokenwright.bootstrap_enabled: false` | Rolling-median token estimate bootstrapper |
+
+### Tests
+
+- 5881 total / 5881 pass / 0 fail / 0 skipped (vs v2.2.17 baseline 5790/5790/0/0 — net +91 effective tests across W1–W9, gap-coverage, and S-2 frontmatter-parse consolidation)
+
+### Migration notes
+
+- Restart Claude Code after upgrading.
+- No config changes required — every gate ships default-on with kill switch.
+- Pre-existing locked worktree branches with no commits cannot be salvaged — those edits were already lost. v2.2.18 prevents future occurrences.
+
 ## [2.2.17] - 2026-04-30
 
 v2.2.17 picks up the deferred backlog from v2.2.15 (which v2.2.16's same-day FN-16 hotfix couldn't absorb) and ships a telemetry-driven hardening pass targeting the noisiest signals from the v2.2.16 audit log. Every gate ships default-on with a kill switch; no config changes required.

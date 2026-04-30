@@ -173,6 +173,13 @@ Set in `.orchestray/config.json` or as env vars. No session restart required.
 | Cross-install stale hook-path pruning (v2.2.17) | — | `ORCHESTRAY_INSTALL_CROSS_INSTALL_DEDUP_DISABLED=1` |
 | Pattern-application acknowledgement exit-2 (v2.2.17, was warn in v2.2.15) | — | `ORCHESTRAY_PATTERN_APPLICATION_GATE_DISABLED=1`; soft-warn: `ORCHESTRAY_PATTERN_APPLICATION_RAMP_THRESHOLD=N` |
 | Multiple `## Structured Result` blocks exit-2 (v2.2.17, was warn in v2.2.15) | — | `ORCHESTRAY_MULTI_STRUCTURED_RESULT_GATE_DISABLED=1` |
+| Worktree auto-commit on SubagentStop (v2.2.18) | `worktree_auto_commit.enabled: false` | `ORCHESTRAY_WORKTREE_AUTO_COMMIT_DISABLED=1` |
+| Master-tree auto-commit on PM Stop (v2.2.18) | `master_auto_commit.enabled: false` | `ORCHESTRAY_MASTER_AUTO_COMMIT_DISABLED=1` |
+| Drainer-tombstone self-check probe (v2.2.18) | — | `ORCHESTRAY_TOMBSTONE_PROBE_DISABLED=1` |
+| Schema mtime-based cache invalidation (v2.2.18) | — | `ORCHESTRAY_SCHEMA_CACHE_INVALIDATION_DISABLED=1` |
+| Dossier orphan compensation at SessionStart (v2.2.18) | `dossier_compensation.enabled: false` | `ORCHESTRAY_DOSSIER_COMPENSATION_DISABLED=1` |
+| Dual-install divergence auto-heal (v2.2.18) | `dual_install.autoheal_enabled: false` | `ORCHESTRAY_DUAL_INSTALL_AUTOHEAL_DISABLED=1` |
+| Rolling-median token estimate bootstrapper (v2.2.18) | `tokenwright.bootstrap_enabled: false` | `ORCHESTRAY_TOKENWRIGHT_BOOTSTRAP_DISABLED=1` |
 
 ## Requirements
 

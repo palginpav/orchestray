@@ -102,43 +102,9 @@ function detectMidGitOperation(projectRoot) {
   return null;
 }
 
-/**
- * Parse YAML-like frontmatter from a markdown file.
- * Looks for lines of the form:  key: value
- * between leading --- delimiters.
- *
- * @param {string} content
- * @returns {Object.<string, string>}
- */
-function parseFrontmatter(content) {
-  const result = {};
-  // Frontmatter block is between the first two '---' lines.
-  const lines = content.split('\n');
-  let inFrontmatter = false;
-  let found = false;
-  for (const line of lines) {
-    if (line.trim() === '---') {
-      if (!inFrontmatter) {
-        inFrontmatter = true;
-        continue;
-      } else {
-        break; // end of frontmatter
-      }
-    }
-    if (!inFrontmatter) {
-      if (!found) break; // no leading ---
-      break;
-    }
-    found = true;
-    const colonIdx = line.indexOf(':');
-    if (colonIdx > 0) {
-      const key = line.slice(0, colonIdx).trim();
-      const val = line.slice(colonIdx + 1).trim();
-      result[key] = val;
-    }
-  }
-  return result;
-}
+// S-2 (v2.2.18): parseFrontmatter consolidated into bin/_lib/frontmatter-parse.js.
+// Local hand-rolled parser removed; behavior preserved via the shared module.
+const { parseFrontmatter } = require('./_lib/frontmatter-parse');
 
 /**
  * Read orchestration state from .orchestray/state/orchestration.md.
@@ -156,11 +122,16 @@ function readOrchestrationState(projectRoot) {
     return null;
   }
   try {
-    const fm = parseFrontmatter(content);
+    const parsed = parseFrontmatter(content);
+    // Shared module returns null on missing/malformed frontmatter.
+    // Treat null the same way the legacy parser treated `{}` — return a
+    // best-effort state object with sentinel defaults so the caller's
+    // gating logic (status === 'active') remains valid.
+    const fm = (parsed && parsed.frontmatter) ? parsed.frontmatter : {};
     return {
-      status:          fm.status          || '',
+      status:           fm.status           || '',
       orchestration_id: fm.orchestration_id || 'unknown',
-      current_phase:   fm.current_phase   || fm.phase || 'unknown',
+      current_phase:    fm.current_phase    || fm.phase || 'unknown',
     };
   } catch (_e) {
     return null;
