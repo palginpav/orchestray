@@ -77,6 +77,7 @@ const { writeEvent } = require('../_lib/audit-event-writer');
 const { resolveSafeCwd } = require('../_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('../_lib/orchestration-state');
 const { MAX_INPUT_BYTES } = require('../_lib/constants');
+const { loadDualInstallConfig } = require('../_lib/config-schema');
 
 const RELEASE_MANAGER_ROLE = 'release-manager';
 
@@ -294,6 +295,219 @@ function emitDivergenceEvents(cwd, divergences) {
 }
 
 // ---------------------------------------------------------------------------
+// Auto-heal arm (W7 v2.2.18)
+//
+// When a content_mismatch divergence is detected, attempt to heal the global
+// install from the local install (local is canonical per
+// feedback_update_both_installs.md — /orchestray:update writes local first).
+//
+// Heal direction: local (cwd/.claude/orchestray/bin/) → global (~/.claude/orchestray/bin/)
+// when localStat.mtimeMs >= globalStat.mtimeMs.
+//
+// Kill switch (highest precedence): ORCHESTRAY_DUAL_INSTALL_AUTOHEAL_DISABLED=1
+// Config key (second precedence): dual_install.autoheal_enabled (default: true)
+// ---------------------------------------------------------------------------
+
+/**
+ * Attempt to heal one divergent global-install file from the local-install
+ * canonical version. Emits `dual_install_autoheal` on success or
+ * `dual_install_autoheal_skipped` with a reason on skip.
+ *
+ * @param {{
+ *   cwd: string,
+ *   relPath: string,
+ *   localInstallPath: string,
+ *   globalInstallPath: string,
+ * }} opts
+ */
+function tryHealGlobalFile({ cwd, relPath, localInstallPath, globalInstallPath }) {
+  const ts = new Date().toISOString();
+
+  // Defense: local must exist.
+  if (!fs.existsSync(localInstallPath)) {
+    try {
+      writeEvent({
+        type: 'dual_install_autoheal_skipped',
+        version: 1,
+        timestamp: ts,
+        path: relPath,
+        reason: 'local_missing',
+      }, { cwd });
+    } catch (_e) { /* fail-open */ }
+    return;
+  }
+
+  // Defense: global must exist (orphan-in-source edge case; we never create
+  // new global files, only update existing ones).
+  if (!fs.existsSync(globalInstallPath)) {
+    try {
+      writeEvent({
+        type: 'dual_install_autoheal_skipped',
+        version: 1,
+        timestamp: ts,
+        path: relPath,
+        reason: 'global_missing',
+      }, { cwd });
+    } catch (_e) { /* fail-open */ }
+    return;
+  }
+
+  let localStat, globalStat;
+  try {
+    localStat  = fs.statSync(localInstallPath);
+    globalStat = fs.statSync(globalInstallPath);
+  } catch (_e) {
+    // Stat failed — skip silently (fail-open)
+    return;
+  }
+
+  // Heal direction: local canonical when localStat.mtimeMs >= globalStat.mtimeMs.
+  // If global is strictly newer, user may have just run /orchestray:update on the
+  // global side and local hasn't caught up — do not clobber.
+  if (localStat.mtimeMs < globalStat.mtimeMs) {
+    try {
+      writeEvent({
+        type: 'dual_install_autoheal_skipped',
+        version: 1,
+        timestamp: ts,
+        path: relPath,
+        reason: 'reverse_direction_global_newer',
+      }, { cwd });
+    } catch (_e) { /* fail-open */ }
+    return;
+  }
+
+  let localBytes, globalShaBefore;
+  try {
+    localBytes     = fs.readFileSync(localInstallPath);
+    globalShaBefore = crypto.createHash('sha256').update(fs.readFileSync(globalInstallPath)).digest('hex');
+  } catch (_e) {
+    // Read failure — skip silently (fail-open)
+    return;
+  }
+
+  const localSha = crypto.createHash('sha256').update(localBytes).digest('hex');
+
+  // Race check: if hashes already match (another agent healed between detection
+  // and our heal attempt), skip silently.
+  if (localSha === globalShaBefore) {
+    try {
+      writeEvent({
+        type: 'dual_install_autoheal_skipped',
+        version: 1,
+        timestamp: ts,
+        path: relPath,
+        reason: 'race_resolved',
+      }, { cwd });
+    } catch (_e) { /* fail-open */ }
+    return;
+  }
+
+  // Write global file from local bytes.
+  try {
+    fs.writeFileSync(globalInstallPath, localBytes);
+  } catch (e) {
+    const reason = (e && e.code === 'EACCES') ? 'permission_denied' : 'write_error';
+    try {
+      writeEvent({
+        type: 'dual_install_autoheal_skipped',
+        version: 1,
+        timestamp: ts,
+        path: relPath,
+        reason,
+      }, { cwd });
+    } catch (_e) { /* fail-open */ }
+    return;
+  }
+
+  // Verify post-write: re-hash global file and compare with local.
+  let globalShaAfter;
+  try {
+    globalShaAfter = crypto.createHash('sha256').update(fs.readFileSync(globalInstallPath)).digest('hex');
+  } catch (_e) {
+    // Cannot verify — treat as mismatch.
+    globalShaAfter = null;
+  }
+
+  if (globalShaAfter !== localSha) {
+    try {
+      writeEvent({
+        type: 'dual_install_autoheal_skipped',
+        version: 1,
+        timestamp: ts,
+        path: relPath,
+        reason: 'sha_mismatch_post_write',
+        expected_sha: localSha,
+        actual_sha: globalShaAfter,
+      }, { cwd });
+    } catch (_e) { /* fail-open */ }
+    return;
+  }
+
+  // Success.
+  try {
+    writeEvent({
+      type: 'dual_install_autoheal',
+      version: 1,
+      timestamp: ts,
+      path: relPath,
+      from_install: 'local',
+      to_install: 'global',
+      bytes_replaced: localBytes.length,
+      local_canonical_sha: localSha,
+      prior_global_sha: globalShaBefore,
+    }, { cwd });
+  } catch (_e) { /* fail-open */ }
+}
+
+/**
+ * Run the auto-heal arm for all content_mismatch divergences.
+ * Orphan divergences (file in local install but not in source) are skipped —
+ * we only heal content mismatches, not structural differences.
+ *
+ * @param {string} cwd
+ * @param {Array<{file_path: string, divergence_type: string}>} divergences
+ */
+function runAutoHeal(cwd, divergences) {
+  // Kill switch (highest precedence): env var.
+  if (process.env.ORCHESTRAY_DUAL_INSTALL_AUTOHEAL_DISABLED === '1') {
+    return;
+  }
+
+  // Config key (second precedence): dual_install.autoheal_enabled (default: true).
+  let autohealEnabled = true;
+  try {
+    const cfg = loadDualInstallConfig(cwd);
+    autohealEnabled = cfg.autoheal_enabled;
+  } catch (_e) {
+    // Fail-open: use default true
+  }
+  if (!autohealEnabled) return;
+
+  const home = process.env.HOME || process.env.USERPROFILE;
+  if (!home) return;
+
+  const globalInstallRoot = path.join(home, '.claude', 'orchestray', 'bin');
+  const localInstallRoot  = path.join(cwd, '.claude', 'orchestray', 'bin');
+
+  // Only heal if global install root exists (single-install repos skip silently).
+  if (!fs.existsSync(globalInstallRoot)) return;
+  if (!fs.existsSync(localInstallRoot)) return;
+
+  for (const d of divergences) {
+    // Only heal content mismatches — orphans indicate structural drift that
+    // auto-heal shouldn't paper over.
+    if (d.divergence_type !== 'content_mismatch') continue;
+
+    const relPath         = d.file_path;
+    const localInstallPath  = path.join(localInstallRoot, relPath);
+    const globalInstallPath = path.join(globalInstallRoot, relPath);
+
+    tryHealGlobalFile({ cwd, relPath, localInstallPath, globalInstallPath });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Hook entry point
 // ---------------------------------------------------------------------------
 
@@ -505,6 +719,11 @@ function main() {
     // Emit one event per divergence for the rollup / observability layer.
     emitDivergenceEvents(cwd, result.divergences);
 
+    // Auto-heal arm (W7 v2.2.18): attempt to overwrite stale global-install
+    // files with the canonical local-install bytes when local is newer or equal.
+    // Heal is advisory-only — it never changes exit codes or blocking behavior.
+    runAutoHeal(cwd, result.divergences);
+
     // Build a human-readable list for stderr.
     const lines = result.divergences.map(d => {
       if (d.divergence_type === 'orphan') {
@@ -542,6 +761,9 @@ module.exports = {
   consumePendingDoubleFireWarn,
   isSessionStart,
   _divergencePairSignature,
+  // W7 (v2.2.18) auto-heal exports for testability.
+  tryHealGlobalFile,
+  runAutoHeal,
 };
 
 if (require.main === module) {
