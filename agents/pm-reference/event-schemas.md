@@ -8525,3 +8525,96 @@ Required fields: `name` (string), `replacement` (string), `retires_in` (string),
 Emitted from: `bin/boot-validate-config.js` (SessionStart); `bin/preflight-spawn-budget.js` (PreToolUse:Agent).
 
 Kill switch: none (the event IS the deprecation signal; suppressing it would defeat the purpose).
+
+---
+
+### `hook_chain_drift_detected` event
+
+Emitted by `bin/validate-hook-order.js` (SessionStart) when the orchestray-origin
+hook order in the live `settings.json` differs from the canonical order in
+`hooks/hooks.json`. Warn-only — never blocks the session. Auto-fix is applied at
+install time (`bin/install.js` G-04 reorder step).
+
+```json
+{
+  "event_type": "hook_chain_drift_detected",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "event": "PreToolUse",
+  "matcher": "Agent|Explore|Task",
+  "canonical_basenames": ["check-pause-sentinel.js", "gate-cost-budget.js"],
+  "live_basenames": ["gate-cost-budget.js", "check-pause-sentinel.js"],
+  "divergence_at_index": 0,
+  "schema_version": 1
+}
+```
+
+Required fields: `event` (string), `matcher` (string|null), `canonical_basenames` (string[]), `live_basenames` (string[]), `divergence_at_index` (number|null), `schema_version` (1).
+
+Emitted from: `bin/validate-hook-order.js` (SessionStart).
+
+Kill switch: `ORCHESTRAY_HOOK_ORDER_VALIDATION_DISABLED=1` exits the validator immediately; no event emitted.
+
+---
+
+### `install_hook_order_corrected` event
+
+Emitted by `bin/install.js` (`mergeHooks` reorder step, v2.2.13 W3 G-04) once per
+corrected `(event, matcher)` group when the orchestray hook order in `settings.json`
+differed from canonical and was auto-fixed. Only fires for Layout A (no peers),
+Layout B (peers contiguous before), and Layout C (peers contiguous after). Layout D
+(interleaved) is logged separately via `install_hook_order_skipped_interleaved`.
+
+```json
+{
+  "event_type": "install_hook_order_corrected",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "event": "PreToolUse",
+  "matcher": "Agent|Explore|Task",
+  "before_hash": "a1b2c3d4e5f6",
+  "after_hash": "f6e5d4c3b2a1",
+  "before_basenames": ["gate-cost-budget.js", "check-pause-sentinel.js"],
+  "after_basenames": ["check-pause-sentinel.js", "gate-cost-budget.js"],
+  "divergence_at_index": 0,
+  "peer_layout": "none",
+  "schema_version": 1
+}
+```
+
+Required fields: `event` (string), `matcher` (string|null), `before_hash` (string), `after_hash` (string), `before_basenames` (string[]), `after_basenames` (string[]), `divergence_at_index` (number|null), `peer_layout` (`'none'|'before'|'after'`), `schema_version` (1).
+
+Emitted from: `bin/install.js` (mergeHooks reorder step, install-time).
+
+Kill switch: `ORCHESTRAY_INSTALL_HOOK_REORDER_DISABLED=1` skips auto-reorder for Layouts A/B/C; event not emitted. Layout D warn (`install_hook_order_skipped_interleaved`) fires regardless.
+
+---
+
+### `install_hook_order_skipped_interleaved` event
+
+Emitted by `bin/install.js` (`mergeHooks` reorder step, v2.2.13 W3 G-04) when
+peer (non-orchestray) hooks are interleaved with orchestray hooks in a live
+`(event, matcher)` group and the orchestray order has drifted from canonical.
+Orchestray does NOT auto-reorder in this case — the chain may have been hand-tuned
+by an operator. A single-line stderr warning is also written. Fires even when
+`ORCHESTRAY_INSTALL_HOOK_REORDER_DISABLED=1`.
+
+```json
+{
+  "event_type": "install_hook_order_skipped_interleaved",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "event": "PreToolUse",
+  "matcher": "Agent|Explore|Task",
+  "peer_basenames": ["third-party-gate.js"],
+  "orchestray_basenames": ["gate-cost-budget.js", "check-pause-sentinel.js"],
+  "live_basenames": ["gate-cost-budget.js", "third-party-gate.js", "check-pause-sentinel.js"],
+  "schema_version": 1
+}
+```
+
+Required fields: `event` (string), `matcher` (string|null), `peer_basenames` (string[]), `orchestray_basenames` (string[]), `live_basenames` (string[]), `schema_version` (1).
+
+Emitted from: `bin/install.js` (mergeHooks reorder step, install-time).
+
+Kill switch: none — the warn fires regardless of `ORCHESTRAY_INSTALL_HOOK_REORDER_DISABLED` (informational; decoupled from the auto-fix flag).

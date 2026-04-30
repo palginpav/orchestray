@@ -1292,6 +1292,128 @@ function mergeHooks(targetDir) {
     }
   }
 
+  // v2.2.13 W3 (G-04): deterministic hook-chain reordering per (event, matcher).
+  // Append-only behaviour above this line preserved for backward compat; this
+  // step runs AFTER append-and-dedup completes.
+  {
+    const crypto = require('node:crypto');
+    // isOurs: any hook whose command path goes through an 'orchestray' directory.
+    const isOurs = h => (h.command || '').includes('orchestray');
+    // hookBasename2: re-declared here (hookBasename above is closure-scoped to the else block).
+    const hookBasename2 = h => {
+      const m = (h.command || '').match(/\/bin\/([^\s"']+)/);
+      return m ? path.basename(m[1]) : null;
+    };
+
+    // Classify where peer (non-orchestray) hooks sit relative to ours in a live hooks array.
+    // Returns 'none' | 'before' | 'after' | 'interleaved'.
+    function classifyPeerLayout(hooks) {
+      const withIndex = hooks.map((h, i) => ({ h, i }));
+      const peerIdxs  = withIndex.filter(x => !isOurs(x.h)).map(x => x.i);
+      const ourIdxs   = withIndex.filter(x =>  isOurs(x.h)).map(x => x.i);
+      if (peerIdxs.length === 0) return 'none';
+      if (ourIdxs.length === 0) return 'none'; // no ours at all — nothing to reorder
+      const maxOurIdx  = Math.max(...ourIdxs);
+      const minOurIdx  = Math.min(...ourIdxs);
+      if (peerIdxs.every(i => i < minOurIdx)) return 'before';
+      if (peerIdxs.every(i => i > maxOurIdx)) return 'after';
+      return 'interleaved';
+    }
+
+    for (const event of Object.keys(orchestrayHooks)) {
+      const liveEntries      = settings.hooks[event] || [];
+      const canonicalEntries = orchestrayHooks[event] || [];
+      for (const canEntry of canonicalEntries) {
+        const liveEntry = liveEntries.find(e => e.matcher === canEntry.matcher);
+        if (!liveEntry) continue;
+
+        const canBasenames  = (canEntry.hooks || []).map(hookBasename2).filter(Boolean);
+        const ourLive       = (liveEntry.hooks || []).filter(isOurs);
+        const ourLiveNames  = ourLive.map(hookBasename2).filter(Boolean);
+        // Already canonical — skip.
+        if (JSON.stringify(canBasenames) === JSON.stringify(ourLiveNames)) continue;
+
+        const layout        = classifyPeerLayout(liveEntry.hooks || []);
+        const liveBasenames = (liveEntry.hooks || []).map(hookBasename2).filter(Boolean);
+        const divergenceAt  = (() => {
+          for (let i = 0; i < Math.min(canBasenames.length, ourLiveNames.length); i++) {
+            if (canBasenames[i] !== ourLiveNames[i]) return i;
+          }
+          return canBasenames.length === ourLiveNames.length
+            ? null
+            : Math.min(canBasenames.length, ourLiveNames.length);
+        })();
+
+        if (layout === 'interleaved') {
+          // Layout D — DO NOT reorder. Warn-only (informational; fires even with kill switch).
+          recordDegradation({
+            kind:        'install_hook_order_skipped_interleaved',
+            severity:    'warn',
+            projectRoot: process.cwd(),
+            detail: {
+              event,
+              matcher:              canEntry.matcher || null,
+              peer_basenames:       (liveEntry.hooks || []).filter(h => !isOurs(h)).map(hookBasename2).filter(Boolean),
+              orchestray_basenames: ourLiveNames,
+              live_basenames:       liveBasenames,
+              schema_version:       1,
+            },
+          });
+          process.stderr.write(
+            `[orchestray:install] hook chain ${event}:${canEntry.matcher || '*'} has interleaved` +
+            ` peer hooks; orchestray will not auto-reorder. Run '/orchestray:status hooks' for` +
+            ` the canonical-vs-live diff and reorder manually.\n`
+          );
+          continue;
+        }
+
+        // Layouts A / B / C: skip reorder if kill switch set, but interleaved warn above still fires.
+        if (process.env.ORCHESTRAY_INSTALL_HOOK_REORDER_DISABLED === '1') continue;
+
+        // Auto-reorder: peers preserved at head (B), tail (C), or absent (A).
+        // Orphaned live orchestray hooks (present in live but absent from canonical,
+        // e.g. scripts from a prior version that weren't pruned yet) are preserved
+        // at the end of the orchestray slice — reorder changes order, never drops.
+        const before     = JSON.stringify(liveEntry.hooks);
+        const peers      = (liveEntry.hooks || []).filter(h => !isOurs(h));
+        const canNameSet = new Set(canBasenames);
+        const canonicalOrdered = canBasenames
+          .map(name => ourLive.find(h => hookBasename2(h) === name))
+          .filter(Boolean);
+        const orphanedLive = ourLive.filter(h => {
+          const n = hookBasename2(h);
+          return n && !canNameSet.has(n);
+        });
+        const reorderedOurs = [...canonicalOrdered, ...orphanedLive];
+        liveEntry.hooks = layout === 'before'
+          ? [...peers, ...reorderedOurs]
+          : layout === 'after'
+            ? [...reorderedOurs, ...peers]
+            : reorderedOurs; // layout === 'none'
+
+        const after = JSON.stringify(liveEntry.hooks);
+        if (before !== after) {
+          recordDegradation({
+            kind:        'install_hook_order_corrected',
+            severity:    'info',
+            projectRoot: process.cwd(),
+            detail: {
+              event,
+              matcher:             canEntry.matcher || null,
+              before_hash:         crypto.createHash('sha256').update(before).digest('hex').slice(0, 12),
+              after_hash:          crypto.createHash('sha256').update(after).digest('hex').slice(0, 12),
+              before_basenames:    liveBasenames,
+              after_basenames:     canBasenames,
+              divergence_at_index: divergenceAt,
+              peer_layout:         layout,
+              schema_version:      1,
+            },
+          });
+        }
+      }
+    }
+  }
+
   fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n');
 }
 
