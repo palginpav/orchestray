@@ -57,7 +57,7 @@ Display the output as-is.
 - The gate is treated as enabled across sessions for 30 days.
 
 If `<name>` is not a recognized gate slug (see below), print a warning:
-"Warning: '<name>' is not a recognized gate slug for v2.1.14. Recognized: pattern_extraction, archetype_cache."
+"Warning: '<name>' is not a recognized gate slug. Recognized: pattern_extraction, archetype_cache."
 Then proceed anyway (the write still happens — user may be operating on a future slug).
 
 ---
@@ -98,11 +98,10 @@ ORCHESTRAY_DISABLE_DEMAND_GATE=1), show:
 
 ## Notes
 
-- Gate slugs recognized in v2.1.14: `pattern_extraction`, `archetype_cache`
-  (only protocols with wired tier2_invoked emitters are eligible; see R-GATE docs).
-- The 6 unwired protocols (drift_sentinel, consequence_forecast, replay_analysis,
-  auto_documenter, disagreement_protocol, cognitive_backpressure) become eligible
-  in v2.1.15 when R-TGATE-PM wires their emitters.
+- Recognized gate slugs: `pattern_extraction`, `archetype_cache`. New protocols
+  become eligible automatically when their `tier2_invoked` emitter is wired in
+  `bin/_lib/feature-demand-tracker.js#WIRED_EMITTER_PROTOCOLS`.
+  (Only protocols with wired tier2_invoked emitters are eligible; see R-GATE docs.)
 - To quarantine a feature, add it to `quarantine_candidates` in `.orchestray/config.json`:
   ```json
   { "feature_demand_gate": { "quarantine_candidates": ["pattern_extraction"] } }

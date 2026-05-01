@@ -2,7 +2,7 @@
 name: state
 description: Inspect and manage Orchestray runtime state
 disable-model-invocation: true
-argument-hint: "peek"
+argument-hint: "[peek] | gc | pause [--reason=<msg>] | pause --resume | cancel"
 ---
 
 # Orchestray State Management

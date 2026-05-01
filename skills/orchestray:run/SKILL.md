@@ -9,18 +9,14 @@ argument-hint: "[--preview] [--context <file>] [task description]"
 
 You are receiving this because the user invoked `/orchestray:run`. Orchestrate the following task using your multi-agent delegation protocol.
 
-<!-- W8 v2.0.18: --preview flag handling (UX2)
-  If $ARGUMENTS contains the token "--preview" (anywhere in the string):
-    1. Strip "--preview" from $ARGUMENTS to obtain the clean task description.
-    2. The effective invocation prompt is the task description below PLUS the
-       PREVIEW MODE instruction appended at the end of this file.
-  If "--preview" is NOT present: proceed normally with the standard protocol.
--->
+<!-- Flag parsing rules:
 
-<!-- v2.2.8 Item 8: --context <file> flag parsing.
-  If $ARGUMENTS contains one or more `--context <file>` tokens (repeatable):
-    1. Strip every `--context <path>` token pair from $ARGUMENTS to get the
-       clean task description.
+  --preview flag: if $ARGUMENTS contains "--preview" (anywhere), strip it and
+    append the PREVIEW MODE instruction (see trailer comment) to the invocation prompt.
+    The PM halts after decomposition without spawning agents.
+
+  --context <file> flag (repeatable): if $ARGUMENTS contains one or more `--context <file>` tokens:
+    1. Strip every `--context <path>` token pair from $ARGUMENTS.
     2. Resolve each path: relative paths against current cwd, absolute paths
        used as-is, `~/...` expanded against $HOME. Files that don't exist
        must be reported but do not abort.
@@ -96,7 +92,7 @@ After orchestration completes:
 
 ---
 
-<!-- W8 v2.0.18: PREVIEW MODE instruction block (UX2)
+<!-- PREVIEW MODE instruction block
 
 If the string "--preview" appeared anywhere in $ARGUMENTS, append the following
 instruction to your invocation prompt. This is the only change --preview makes.
@@ -119,4 +115,9 @@ PREVIEW MODE — perform decomposition and complexity scoring only. Do the follo
 5. Do NOT spawn any subagents.
 6. Stop after displaying the preview table and print:
    "Preview only. Re-issue `/orchestray:run <task>` (without --preview) to execute."
+-->
+
+<!-- Implementation history:
+  - W8 v2.0.18 (UX2): added --preview flag handling.
+  - v2.2.8 Item 8: added --context <file> flag parsing.
 -->

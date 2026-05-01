@@ -155,7 +155,7 @@ to nested).
 | `telemetry.tier2_tracking.enabled` | boolean | `true` | Emit `tier2_load`, `tier2_invoked`, and `feature_gate_eval` telemetry events. Disable with `false` or `ORCHESTRAY_DISABLE_TIER2_TELEMETRY=1`. |
 | `block_a_zone_caching.enabled` | boolean | `true` | Assemble PM Block A from three explicit zones with zone-boundary markers and hash tracking. Disable to revert to passive context injection. |
 | `max_turns_overrides` | object/null | `null` | Per-agent override for the `maxTurns` ceiling. When `null`, each agent's frontmatter `maxTurns` is the ceiling. When set to an object (e.g., `{"reviewer": 50, "debugger": 60}`), the override replaces the frontmatter ceiling for those agents. Values 5-200. Set this when agents consistently hit their turn limit on legitimate large tasks. |
-| `retrieval.scorer_variant` | string | `"baseline"` | Which ranking scorer `pattern_find` uses. One of `baseline` (unchanged, current default), `skip-down` (patterns you have skipped rank lower), `local-success` (patterns that succeeded in this project rank higher), or `composite` (both signals combined). Default stays `baseline` in v2.1.13; default flip planned for v2.2.0 once cross-install shadow data crosses threshold. Unknown values coerce to `baseline` with a one-time warning. |
+| `retrieval.scorer_variant` | string | `"baseline"` | Which ranking scorer `pattern_find` uses. One of `baseline` (unchanged, current default), `skip-down` (patterns you have skipped rank lower), `local-success` (patterns that succeeded in this project rank higher), or `composite` (both signals combined). Default stays `baseline`; default flip to `composite` is planned once cross-install shadow data crosses threshold. Unknown values coerce to `baseline` with a one-time warning. |
 | `retrieval.synonyms_enabled` | boolean | `true` | Expand `pattern_find` queries with a conservative ~44-entry synonym list (e.g., "bug" ↔ "debug" ↔ "defect" ↔ "correction"). Every expansion is auditable via the response's `match_reasons` field. Set to `false` to disable all expansion. |
 | `config_drift_silence` | array of strings | `[]` | Top-level config keys to silence from the boot-time drift warning emitter. Use when a custom key is intentional (e.g., a third-party integration seed). Example: `["my_custom_key"]`. |
 | `mcp_enforcement.pattern_find` | string | `"hook"` | Enforcement mode for the `pattern_find` MCP tool. One of: "hook" (gate requires MCP checkpoint), "prompt" (warn only, allow spawn), "allow" (fully skip enforcement). |
@@ -259,8 +259,8 @@ are recorded in the audit trail but have no effect on agent behavior.
      ```
      Federation enabled. Patterns from all projects on this machine are now eligible to be shared to ~/.orchestray/shared/.
 
-     Note: v2.1.0 shares patterns across projects on THIS machine only. Cross-machine sync is planned for v2.2.
-     To manually sync to another machine today: /orchestray:learn export all → copy the export dir → /orchestray:learn import <path>
+     Note: Patterns are shared across projects on THIS machine only. Cross-machine sync uses manual export/import:
+     /orchestray:learn export all → copy the export dir → /orchestray:learn import <path>
 
      If any project should never share patterns (NDA work, client projects, personal data), run:
        /orchestray:config set federation.sensitivity private
@@ -445,7 +445,7 @@ Display all `federation.*` config values for this project, plus a scan of detect
    | federation.sensitivity         | private                  |
    | federation.shared_dir_path     | ~/.orchestray/shared     |
 
-   Note: v2.1.0 shares patterns across projects on THIS machine only. Cross-machine sync is planned for v2.2.
+   Note: Patterns are shared across projects on THIS machine only. Cross-machine sync uses manual export/import.
    ```
 
 3. **If `federation.shared_dir_enabled` is `true`**, also display a project scan advisory:

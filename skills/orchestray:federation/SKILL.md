@@ -13,7 +13,7 @@ The user wants to check the federation state for this project.
 
 ### Step 0 — Parse arguments
 
-`$ARGUMENTS` must be `status` (the only supported subcommand in v2.1.2).
+`$ARGUMENTS` must be `status` (the only supported subcommand).
 
 If `$ARGUMENTS` is empty or anything other than `status`, emit:
 
@@ -21,7 +21,10 @@ If `$ARGUMENTS` is empty or anything other than `status`, emit:
 Usage: /orchestray:federation status
   status — show federation state, shared tier contents, and recent activity
 
-Subcommands held for v2.1.3: enable, disable, check, doctor
+To enable or disable federation, use:
+  /orchestray:config set federation.shared_dir_enabled true   (or false)
+
+To inspect the shared directory directly: ls ~/.orchestray/shared/patterns/
 ```
 
 Then stop.
@@ -282,4 +285,4 @@ Notes for rendering:
 
 ---
 
-_v2.1.2 — held for v2.1.3: `enable`, `disable`, `check` (round-trip test), `doctor` (auto-diagnose)._
+_`enable`, `disable`, `check`, and `doctor` subcommands are not yet implemented. Use `/orchestray:config set federation.shared_dir_enabled true` to enable federation._

@@ -60,7 +60,7 @@ function main() {
   // Warn if not a recognized slug (but proceed anyway).
   if (!WIRED_EMITTER_PROTOCOLS.includes(slug)) {
     process.stderr.write(
-      `Warning: '${slug}' is not a recognized gate slug for v2.1.14. ` +
+      `Warning: '${slug}' is not a recognized gate slug. ` +
       `Recognized: ${WIRED_EMITTER_PROTOCOLS.join(', ')}.\n`
     );
   }

@@ -2,7 +2,7 @@
 name: issue
 description: Orchestrate implementation from a GitHub issue
 disable-model-invocation: true
-argument-hint: <issue-number or GitHub URL>
+argument-hint: "<issue-number or GitHub URL>"
 ---
 
 # Issue-to-Orchestration

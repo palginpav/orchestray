@@ -125,8 +125,10 @@ function handle(event) {
 
     // Emit banner to stderr.
     const slugList = quarantined.join(', ');
+    const firstSlug = quarantined[0] || '<name>';
     process.stderr.write(
-      `[orchestray] Quarantined this session: ${slugList}. Re-enable with \`/orchestray:feature wake <name>\`.\n`
+      `[orchestray] Quarantined this session: ${slugList}.\n` +
+      `Re-enable per slug: \`/orchestray:feature wake ${firstSlug}\`. Persist 30d: add --persist.\n`
     );
   } catch (_e) {
     // Fail-open

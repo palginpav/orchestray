@@ -12,7 +12,7 @@ re-runs a single W-item in the currently active orchestration, with an optional
 prompt override. Use `--cascade` to also re-run any downstream W-items that
 depended on the redone one.
 
-## W8 v2.0.18 — Redo Protocol (UX3)
+## Redo Protocol
 
 ### Argument Parsing
 
@@ -52,14 +52,14 @@ node bin/redo-wave-item.js <W-id> --prompt="$TMPFILE" [--cascade]
 rm -f "$TMPFILE"
 ```
 
-### Cascade Behaviour (OQ-TA-2: batch-confirm)
+### Cascade Behaviour
 
 When `--cascade` is supplied:
 - The script reads `.orchestray/state/task-graph.md` to compute the transitive
   closure of downstream dependents.
 - It prints the **full list** once upfront, then asks for a **single y/N
   confirmation** before taking any action.
-- This is the OQ-TA-2 locked design: batch-confirm once, not interactive per item.
+- Batch-confirm once, not interactive per item.
 - On `y`: writes `.orchestray/state/redo.pending` with the W-id list in
   dependency order and emits one `w_item_redo_requested` audit event per item.
 - On `N` (or any other input): aborts cleanly with no state written.
@@ -96,3 +96,7 @@ After the redo script completes:
 - Report what was queued for redo (the W-id list from `redo.pending`).
 - If the user declined the confirmation, report that the redo was aborted.
 - If no active orchestration was found, surface the guard message.
+
+<!-- Implementation history:
+  - W8 v2.0.18 (UX3): initial redo protocol (batch-confirm cascade, OQ-TA-2 design).
+-->

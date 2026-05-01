@@ -538,7 +538,7 @@ Kill switch: `ORCHESTRAY_ACTIVATION_RATIO_EMIT_DISABLED=1`.
 
 ### `metrics_query`
 
-The primary interface for v2.0.17 cache and cost telemetry. Reads
+The primary interface for cache and cost telemetry. Reads
 `.orchestray/metrics/agent_metrics.jsonl` and
 `.orchestray/metrics/orchestration_rollup.jsonl`.
 
