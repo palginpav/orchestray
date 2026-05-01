@@ -53,6 +53,7 @@ const { writeEvent }     = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { requireGuard }   = require('./_lib/double-fire-guard');
+const { shouldFireFromThisInstall } = require('./_lib/install-path-priority');
 
 const PREFIX_CACHE_DIR_REL = path.join('.orchestray', 'state', 'spawn-prefix-cache');
 const DOSSIER_REL          = path.join('.orchestray', 'state', 'resilience-dossier.json');
@@ -386,6 +387,31 @@ process.stdin.on('data', (chunk) => {
   }
 });
 process.stdin.on('end', () => {
+  // ----------------------------------------------------------------------
+  // v2.2.21 G3-W1-T1 — Dual-install pre-fire dedup.
+  //
+  // When BOTH `~/.claude/orchestray/` (global) AND
+  // `<projectRoot>/.claude/orchestray/` (local) installs exist, Claude Code
+  // fires the same hook twice (once per install path) 7-30 ms apart. The
+  // post-fire `bin/_lib/double-fire-guard.js` cannot fully suppress the
+  // duplicate because each fire is a separate Node.js process: by the time
+  // the file-backed dedup catches the sibling-install race, the second
+  // hook has already partially executed and emitted a null-payload
+  // `audit_event_autofilled` surrogate (T2 F-01, CRITICAL — 4× audit-volume
+  // amplification on `mcp_tool_call`, 2× on every other event type).
+  //
+  // The fix: short-circuit GLOBAL fires when LOCAL also exists, BEFORE any
+  // work happens (no stdin parse, no config read, no schema validation).
+  // Kill switch ORCHESTRAY_DUAL_INSTALL_BYPASS_DISABLED=1 reverts to the
+  // v2.2.20 behaviour (both fire; post-fire guard handles dedup). See
+  // bin/_lib/install-path-priority.js for the resolution rules.
+  // ----------------------------------------------------------------------
+  if (!shouldFireFromThisInstall(__filename)) {
+    try { emitContinue(); } catch (_e) { /* swallow */ }
+    process.exit(0);
+    return;
+  }
+
   // Top-level try/catch: ANY unexpected exception → fail-open silent allow.
   let cwd = '';
   let orchestration_id = null;

@@ -36,6 +36,7 @@
  */
 
 const fs   = require('fs');
+const os   = require('os');
 const path = require('path');
 
 // ---------------------------------------------------------------------------
@@ -74,6 +75,73 @@ function stageSessionStartWarn(stateDir, payload) {
       'utf8'
     );
   } catch (_e) { /* fail-open */ }
+}
+
+// ---------------------------------------------------------------------------
+// v2.2.21 G3-W1-T1 — Sibling-install pair classifier.
+//
+// Defence-in-depth on top of bin/_lib/install-path-priority.js
+// (`shouldFireFromThisInstall`). If a caller bypasses the pre-fire dedup
+// (e.g., kill switch ORCHESTRAY_DUAL_INSTALL_BYPASS_DISABLED=1, or the
+// hook calls requireGuard from outside the standard stdin-end handler),
+// we still want the post-fire guard to recognise the global↔local sibling
+// pair and emit metadata that downstream consumers can use to attribute
+// the duplicate to install-pair racing rather than a generic same-process
+// re-entry.
+//
+// `detectSiblingInstallPair(callerA, callerB)` returns:
+//   - 'sibling-install-pair' when one caller is under `~/.claude/orchestray/`
+//     and the other is under `<projectRoot>/.claude/orchestray/`.
+//   - 'same-install' otherwise (same process double-fire / same install path
+//     / unrelated paths — the v2.2.20 behaviour).
+//
+// We do NOT realpath the inputs here: callers register raw `__filename` in
+// the journal and we compare textually. Any symlink-collapsing happened at
+// the install-path-priority layer where it matters; here we just classify
+// the observed pair.
+// ---------------------------------------------------------------------------
+
+const _GLOBAL_INSTALL_FRAGMENT = path.sep + path.join('.claude', 'orchestray') + path.sep;
+const _LOCAL_INSTALL_FRAGMENT  = _GLOBAL_INSTALL_FRAGMENT;
+
+function _isUnderGlobalInstall(callerPath) {
+  if (typeof callerPath !== 'string' || !callerPath) return false;
+  let home;
+  try { home = os.homedir(); } catch (_e) { return false; }
+  if (!home) return false;
+  const root = home + path.sep + '.claude' + path.sep + 'orchestray' + path.sep;
+  return callerPath.startsWith(root);
+}
+
+function _isUnderLocalInstall(callerPath) {
+  // A "local install" caller is anything matching `<X>/.claude/orchestray/...`
+  // where `<X>` is NOT the user's home directory. The caller_path lives
+  // outside `~/.claude/orchestray/` AND contains the standard install
+  // fragment.
+  if (typeof callerPath !== 'string' || !callerPath) return false;
+  if (_isUnderGlobalInstall(callerPath)) return false;
+  return callerPath.indexOf(_LOCAL_INSTALL_FRAGMENT) !== -1;
+}
+
+/**
+ * Classify the relationship between two caller paths. Used by requireGuard
+ * to tag `hook_double_fire_detected` events with `pair_type` so consumers
+ * can distinguish dual-install racing from same-process re-entry.
+ *
+ * @param {string} callerA
+ * @param {string} callerB
+ * @returns {'sibling-install-pair'|'same-install'}
+ */
+function detectSiblingInstallPair(callerA, callerB) {
+  const aGlobal = _isUnderGlobalInstall(callerA);
+  const aLocal  = _isUnderLocalInstall(callerA);
+  const bGlobal = _isUnderGlobalInstall(callerB);
+  const bLocal  = _isUnderLocalInstall(callerB);
+
+  if ((aGlobal && bLocal) || (aLocal && bGlobal)) {
+    return 'sibling-install-pair';
+  }
+  return 'same-install';
 }
 
 /**
@@ -270,6 +338,23 @@ function requireGuard({ guardName, dedupKey, ttlMs, stateDir, callerPath, orches
       };
       appendEntry(filePath, suppressEntry);
 
+      // v2.2.21 G3-W1-T1: classify the pair internally for diagnostics.
+      // We do NOT add pair_type to the emitted event because the canonical
+      // schema (agents/pm-reference/event-schemas.md, owned by a separate
+      // task in this release) has `optional: []` for hook_double_fire_detected
+      // — adding a field here would trigger schema_shape_violation. The
+      // classifier is exposed via module exports for unit-test assertions
+      // and for any future hook that wants to log sibling-install racing
+      // separately from same-install re-entry.
+      //
+      // Defence-in-depth: install-path-priority.js should have already
+      // short-circuited the GLOBAL fire BEFORE we got here, so observing
+      // a 'sibling-install-pair' from this guard in the wild indicates
+      // either (a) ORCHESTRAY_DUAL_INSTALL_BYPASS_DISABLED=1 is set, or
+      // (b) a hook is missing the pre-fire short-circuit.
+      const pairType = detectSiblingInstallPair(existing.caller_path, callerPath);
+      void pairType; // reserved for future schema-aware emission
+
       const doubleFireEvent = {
         type:             'hook_double_fire_detected',
         event_type:       'hook_double_fire_detected',
@@ -324,4 +409,6 @@ module.exports = {
   stageSessionStartWarn,
   FN47_FIRE_THRESHOLD,
   FN47_DELTA_MS_MAX,
+  // v2.2.21 G3-W1-T1 — sibling-install pair classifier.
+  detectSiblingInstallPair,
 };
