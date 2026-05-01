@@ -10428,3 +10428,58 @@ Emitted from: `bin/inject-resilience-dossier.js` `_tryDossierCompensation()` (W6
 
 Kill switch: none for this skip event itself — it is the observability signal for the
 kill-switch conditions above.
+
+---
+
+### `state_file_corrupt` event (v2.2.21 W4-T18 F-15)
+
+Emitted when a JSON state file fails to parse (SyntaxError), triggering automatic
+truncation to the default value (`{}` for objects, `[]` for arrays). This event
+is the observability signal for the corrupt-state self-heal path in `safeReadJson`.
+
+```json
+{
+  "type": "state_file_corrupt",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "path": "/abs/path/to/.orchestray/state/context-telemetry.json",
+  "reason": "Expected property name or '}' in JSON at position 1 (line 1 column 2)"
+}
+```
+
+Field notes:
+- `path`: Absolute path to the corrupt file. Truncated to 512 chars.
+- `reason`: The SyntaxError message from `JSON.parse`. Truncated to 512 chars.
+
+Emitted from: `bin/_lib/state-gc.js` `safeReadJson()`.
+
+Kill switch: none — this event fires only when corruption is detected. Consumers
+should treat it as a diagnostic signal and verify the file after the event fires.
+
+---
+
+### `schema_unknown_type_warn` event (v2.1.15 audit-event-writer)
+
+Advisory event emitted when `writeEvent()` receives a payload whose `type` is not
+declared in `event-schemas.md`. Instead of dropping the unknown event (which would
+lose observability), the writer emits the original event as-is and then emits this
+advisory. The 3-strike miss counter is still incremented.
+
+```json
+{
+  "type": "schema_unknown_type_warn",
+  "version": 1,
+  "unknown_event_type": "some_undeclared_type",
+  "schema_ref": "agents/pm-reference/event-schemas.md"
+}
+```
+
+Field notes:
+- `unknown_event_type`: The `type` field from the rejected payload.
+- `schema_ref`: Path to the authoritative schema file. Always
+  `"agents/pm-reference/event-schemas.md"`.
+
+Emitted from: `bin/_lib/audit-event-writer.js` `writeEvent()` unknown-type branch.
+
+Kill switch: none — this is a diagnostic-only advisory. Suppress by declaring the
+event type in `event-schemas.md` so the unknown-type branch no longer fires.

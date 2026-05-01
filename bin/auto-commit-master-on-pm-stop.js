@@ -35,6 +35,8 @@ const { resolveSafeCwd }           = require('./_lib/resolve-project-cwd');
 const { writeEvent }               = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES }          = require('./_lib/constants');
 const { loadMasterAutoCommitConfig } = require('./_lib/config-schema');
+// === v2.2.21 W4-T18: state-gc invocation ===
+const stateGc = require('./_lib/state-gc');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -284,6 +286,13 @@ process.stdin.on('end', () => {
       },
       { cwd }
     );
+  } catch (_e) { /* fail-open */ }
+
+  // === v2.2.21 W4-T18: state-gc invocation ===
+  // Prune unbounded state accumulators once per PM stop (F-02, F-03, F-08).
+  // Fail-open: GC errors must never block PM shutdown.
+  try {
+    stateGc.runOnce(cwd);
   } catch (_e) { /* fail-open */ }
 
   process.exit(0);
