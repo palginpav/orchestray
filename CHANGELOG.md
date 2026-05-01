@@ -3,6 +3,88 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.2.21] - 2026-05-01
+
+v2.2.21 is the final polish release in the v2.2.x family before v2.3.0. It closes 109 quality findings surfaced by a five-dossier audit (PM self-review, reviewer, debugger, ux-critic, security-engineer) and a follow-up final review — every finding fixed in this release, none deferred.
+
+Three of the closures are critical security fixes operators should know about. First, the dual-install hook double-fire that was inflating audit-event volume by 4× and corrupting telemetry rollups is gone — a cross-process priority gate now ensures only one install runs each hook. Second, a `auto_approve` spawn-bypass: any agent with the Write tool could previously mint a synthetic system-housekeeper spawn by writing the right JSONL row; spawn requests now require an HMAC signature and an origin allowlist. Third, a path-traversal escape in the per-role write allowlist let `documenter`/`tester`/`release-manager` write outside the project tree by including `..` segments — the gate now hard-blocks any path containing traversal segments.
+
+Beyond security, the cost estimator has been recalibrated for the Opus 4.7 tokenizer (it was running roughly 35% under reality on Opus 4.7 spawns), the schema-shadow validator no longer self-disables when its own emit fails validation, the statusline stays empty when the session is idle instead of flickering, eight new kill switches now carry an explicit Default column, and the audit log gets a janitor: stale state files are GC'd, the audit JSONL rotates on size, and corrupt cache files self-heal instead of crashing. README and CLAUDE.md were swept for stale claims, every SKILL is grep-clean of v2.0.18/v2.1.x version-pin strings, and CHANGELOG entries for v2.2.17 and v2.2.18 were rewritten in plain language to match this project's user-facing voice.
+
+All changes ship default-on with kill switches; no config changes required. Restart Claude Code after upgrading.
+
+### Security
+
+- **`auto_approve` spawn-bypass closed.** Previously any agent with the Write tool could write a JSONL row to the spawn-requests queue with `auto_approve: true` and `requester_agent: "worker:dev"` and the drainer would treat it as a legitimate system-housekeeper spawn. Spawn requests now require an HMAC signature and an origin allowlist; forged rows hard-block with `auto_approve_origin_unverified`. Kill switch: `ORCHESTRAY_AUTO_APPROVE_ALLOWLIST_DISABLED=1`.
+- **Path-traversal escape in per-role write allowlist closed.** The allowlist regex was not anchored, letting `documenter`, `tester`, `release-manager` and similar restricted roles write `../../../etc/foo.md`. Any path containing `..` traversal segments now hard-blocks with `role_write_path_blocked{reason: "traversal_segment_present"}` before the allowlist is consulted. Kill switch: `ORCHESTRAY_ROLE_WRITE_TRAVERSAL_DISABLED=1`.
+- **Dual-install hook double-fire closed.** When both the global Orchestray install (under `~/.claude/orchestray/`) and the project-local install (under `<repo>/.claude/orchestray/`) were present, every hook fired twice. This inflated audit-event volume by 4×, corrupted telemetry rollups, and caused spurious schema-shadow blocks. A new install-path priority gate runs every hook from a single canonical install (project-local wins when present, global is the fallback) and emits a one-time `dual_install_bypass_skipped` audit event so operators can see the suppression at a glance. Kill switch: `ORCHESTRAY_DUAL_INSTALL_BYPASS_DISABLED=1`.
+
+### Added
+
+- **Reviewer audit mode.** When the reviewer is dispatched in audit mode (no diff to inspect, just dossier review), the `## Git Diff` block can be `_n/a — audit-mode dispatch_` and the gate accepts it without warning. Previously every audit-mode reviewer needed a placeholder diff. Kill switch: `ORCHESTRAY_REVIEWER_AUDIT_MODE_DISABLED=1`.
+- **Acceptance-rubric gate for design roles.** Architect and similar design-role spawns now hard-block when the delegation prompt is missing the `acceptance_rubric:` block. The block is what makes design output verifiable; previously the gate only warned. Kill switch: `ORCHESTRAY_T15_ACCEPTANCE_RUBRIC_DISABLED=1`.
+- **Statusline idle suppression.** The statusline now emits an empty string when zero subagents are active and context fill is below the warn threshold, instead of showing a flickering empty placeholder. Active orchestrations and warn-tier conditions still render normally.
+- **Migration banner ledger.** When you upgrade through several versions in one step, you no longer see one banner per intermediate version — the first session after upgrade emits a single summary banner with a `View each in /orchestray:doctor migrations` link. Kill switch: `ORCHESTRAY_MIGRATION_BANNERS_ALL=1` reverts to the per-version banner stream.
+- **Install chmod hardening.** Every hook-wired script under `bin/` is set to mode `0755` after install, and `hooks/hooks.json` invokes scripts via `node ${CLAUDE_PLUGIN_ROOT}/bin/<script>.js` so a missing exec bit cannot silently break a hook. Kill switch: `ORCHESTRAY_INSTALL_CHMOD_DISABLED=1`.
+
+### Fixed
+
+- **Cost estimator now correctly accounts for the Opus 4.7 tokenizer.** Opus 4.7 uses a new tokenizer that consumes up to ~35% more tokens than Opus 4.6 for the same input. The cost helpers (and the metrics collector) now apply the calibration so estimates and rollups match billing. Historical rollups remain at the old value to preserve audit history.
+- **Schema-shadow validator no longer self-disables.** When the validator's own `audit_event_autofilled` emit failed schema validation, it would tombstone itself and skip further validation for the rest of the session. The schema entry for `audit_event_autofilled` is now declared correctly and the regen script's docstring matches the live `{v, r, o}` shape and 16384-byte cap.
+- **Cross-reference rot in PM prose.** `agents/pm.md` referenced section numbers that no longer existed (renumbering had not been propagated). A new validator scans every `Section N` reference and asserts its anchor exists; the audit consumed this scan and renumbered/repointed every stale reference.
+- **Reviewer-dimension scoping kill switch is no longer overloaded.** A single env var was both the warn-gate disable and the block-gate disable; we split them so operators can downgrade the gate from block to warn without disabling the warn telemetry too.
+- **Quoted-key `context_size_hint` parses correctly.** The preflight budget parser previously rejected `context_size_hint: { "system": 22000, "tier2": 0, "handoff": 12000 }` because the keys were quoted; both quoted and bare keys are now accepted.
+- **Block-style errors mirror to stderr.** When the preflight gate emits a `{type: "block", ...}` JSON envelope, the actionable fix instructions are now also mirrored to stderr so the operator can see them without parsing the JSON.
+- **State accumulator no longer grows unbounded.** A new janitor GC's stale `.orchestray/state/` JSON files, the audit JSONL rotates on size (oldest content lands in `.3`), and corrupt cache files (`context-telemetry.json` and similar) self-heal — they emit a `state_file_corrupt` event and auto-truncate to `{}` instead of crashing the next read. Kill switch: `ORCHESTRAY_STATE_GC_DISABLED=1`.
+- **Pattern-find collision noise suppressed.** When pattern-find matches dozens of equivalent paths, the audit log now gets a single summary event instead of one event per match. The summary still carries the full collision count; individual rows are emitted only when the winning tier is non-local (i.e. when the collision actually matters).
+- **`task_validation_failed` events carry a categorical reason code.** Previously the reason was free-form text, making aggregation difficult. Each blocking validation now carries a stable `reason_code` and the `no_deferral_block` event carries a `scan_source` field so operators can tell which scanner caught the deferral phrase.
+- **Ghost emit `event_promised_but_dark` no longer false-positives on event types that have not been observed yet.** The promised-event tracker now seeds itself from the live shadow on first run, so freshly added events are not flagged as dark on day one.
+- **Error messages are now actionable.** Every blocking-error message includes a literal example of the corrected syntax (e.g. `model: "sonnet"` rather than just "missing model"). Stale "Section 19" / "v2.2.9 B-7.4" pins were rewritten with inline action descriptions.
+
+### Under the hood
+
+- The `bin/_lib/cost-helpers.js` module is now the single source of truth for model pricing — `bin/collect-agent-metrics.js` imports from it. Deleting an entry there now fails both consumers' tests instead of silently drifting one out of date.
+- A new `bin/_lib/path-containment.js` helper centralizes transcript-path containment checks. Three previous consumers (deferral validator, compression telemetry, task-completion validator) now share the same implementation; attacker-supplied `../../../etc/passwd` returns `''` and emits `transcript_path_containment_failed`.
+- A new `bin/_lib/security-sensitive-paths.js` is byte-equal to the path list in pm.md §3.RV; a parity test fails if either drifts. The Agent-tool gate now blocks any non-PM, non-curate-runner agent declaring `Agent(...)` in tools, and `bin/context-shield.js` now extends the event-schemas-full-load block to all agent roles instead of just PM.
+- Frontmatter parsing in five `bin/` sites (added in v2.2.18) now flows through the canonical shared module; the v2.2.21 audit caught two regressions there and the parity test now covers them.
+- README's "Key commands" table was reconciled with `CLAUDE.md` — every `/orchestray:*` command in the docs appears in both, and a parity test enforces it. Troubleshooting gained four entries covering v2.2.13–v2.2.20 (Dimensions/Diff gate, context-hint ramp, commit-handoff body, worktree-edit-loss fix).
+- Every SKILL frontmatter is grep-clean of `v2.0.18`, `v2.1.0`, `v2.1.14`, `v2.1.15`, and `v2.2` "future-promise" strings. A new lint test prevents regression. Every SKILL `argument-hint:` is double-quoted and every `name:` matches its directory base name.
+- CHANGELOG entries for v2.2.17 and v2.2.18 were rewritten in plain user-readable language. The v2.2.18 opener no longer references `FN-\d+` finding IDs or "drainer-tombstone" / "deferred backlog" jargon. A new test greps both openers for those patterns and fails on any hit.
+- `KILL_SWITCHES.md` now has a "Default" column on every entry derived from `bin/_lib/config-schema.js`, and §1 + §6 are case-insensitive alphabetical (a test enforces both).
+- The handoff contract gained a canonical output-shape mapping table and an "Enforced by:" column per role.
+- Several low-priority polish items — audit-event version normalization, `dynamic_agent_cleanup` auto-emit, `.legacy` TTL header, kill-switch tier-ordering reconciliation, always-on dimension parity test, truncation-stderr surface — landed together as a single bundle with a parity test.
+
+### Schema delta
+
+- 277 → 285 (+8 net additions, all backward-compatible)
+- New event types include `dual_install_bypass_skipped`, `state_file_corrupt`, `pattern_find_collisions_summary`, `auto_approve_origin_unverified`, `transcript_path_containment_failed`, `repo_map_sentinel_wait` (carried forward from v2.2.20), and `audit_event_autofilled` (now correctly schema-shadowed)
+- Shadow regen content-stable (285 event types, two consecutive runs produce identical output)
+
+### Kill switches added
+
+| Env var | Config key | What it disables |
+|---------|-----------|-----------------|
+| `ORCHESTRAY_AUTO_APPROVE_ALLOWLIST_DISABLED=1` | — | HMAC + origin allowlist on `auto_approve` spawn requests (reverts to v2.2.20 unverified behavior) |
+| `ORCHESTRAY_DUAL_INSTALL_BYPASS_DISABLED=1` | — | Cross-process install-path priority gate (reverts to both installs firing) |
+| `ORCHESTRAY_ROLE_WRITE_TRAVERSAL_DISABLED=1` | — | Hard-block on `..` segments in per-role write paths |
+| `ORCHESTRAY_T15_ACCEPTANCE_RUBRIC_DISABLED=1` | — | Acceptance-rubric gate for design-role spawns |
+| `ORCHESTRAY_REVIEWER_AUDIT_MODE_DISABLED=1` | — | Reviewer audit-mode `## Git Diff` placeholder accept |
+| `ORCHESTRAY_STATE_GC_DISABLED=1` | — | State accumulator GC, JSONL rotation, corrupt-state self-heal |
+| `ORCHESTRAY_INSTALL_CHMOD_DISABLED=1` | — | Install-time chmod 0755 sweep over hook-wired bin scripts |
+| `ORCHESTRAY_MIGRATION_BANNERS_ALL=1` | — | Reverts migration banner ledger to per-version stream (default-off; opt-in) |
+
+### Tests
+
+- 5934 → 6344 total / 6344 pass / 0 fail / 0 skipped (net +410 tests across W1 dual-install + auto_approve + traversal, W2 path-containment + chmod + preflight + reviewer-gate + migration-banner, W3 cross-ref + delegation-templates + README + SKILLs + error-messages + CHANGELOG + KILL_SWITCHES, W4 promised-event + schema-shadow + state-GC + cost-helpers + collision-summary, W5 tokenwright + security-paths + statusline polish bundle)
+
+### Migration notes
+
+- Restart Claude Code after upgrading.
+- No config changes required — every gate ships default-on with kill switch.
+- **Cost rollup recalibration:** Opus 4.7 spawn cost estimates and post-spawn rollups will read ~35% higher than they did in v2.2.20 because the tokenizer correction is now applied. Billing is unchanged; this brings the estimator into agreement with billing. Historical rollups are not retroactively recalibrated.
+- **Audit-event volume drop:** if you operated with both global and local Orchestray installs, expect a 4× drop in audit-event volume after upgrading. This is the dual-install double-fire fix removing duplicate emissions; rollups stay correct.
+- **Migration banner consolidation:** if you upgrade through several versions, the first session after upgrade emits a single consolidated banner instead of one per version. To restore the old per-version banner stream for one session, set `ORCHESTRAY_MIGRATION_BANNERS_ALL=1`.
+
 ## [2.2.20] - 2026-05-01
 
 v2.2.20 is a polish pass on four items deferred from v2.2.19. L1 compression gets hardened documentation and a regression test locking the corpus-zero-drops property. A ghost event left over from v2.2.19 planning is removed and gated against reintroduction. The archetype advisory cache now starts warm — a 10-archetype seed catalog ships with the install and is loaded once per project on first use. And concurrent subagent spawns no longer stampede into N redundant repo-map cold builds; a cross-process sentinel serializes the work so waiters get the result as soon as the first builder finishes.
