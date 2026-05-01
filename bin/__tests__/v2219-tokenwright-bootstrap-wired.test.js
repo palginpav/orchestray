@@ -110,9 +110,14 @@ function readPending(root) {
 
 describe('v2219-S2-bootstrap-wired', () => {
 
-  test('1. no historical samples → static fallback 500 used as inTokEst', () => {
+  test('1. no historical samples → bytes/4 used as inTokEst (W#9 audit-fix)', () => {
+    // W#9 (v2.2.19 audit-fix R1): when inBytes is supplied AND samples < 3,
+    // bootstrapEstimate returns Math.round(inBytes / 4) instead of STATIC_FALLBACK=500.
+    // This preserves the prior bytes/4 baseline for new agent_types and avoids the
+    // synthetic regression flash that the static-fallback path produced when L1
+    // gets re-enabled in v2.2.20. STATIC_FALLBACK is still used when inBytes is
+    // not supplied (caller must explicitly pass it for the bytes/4 baseline).
     const root = makeTmpRoot();
-    // No events.jsonl written — bootstrap will see 0 samples and return STATIC_FALLBACK=500.
     const prompt = 'Hello researcher, please investigate the following topic: tokenwright.';
     const result = runInject(root, 'researcher', prompt);
 
@@ -121,8 +126,10 @@ describe('v2219-S2-bootstrap-wired', () => {
     const entries = readPending(root);
     assert.ok(entries.length > 0, 'should have written a pending journal entry');
     const entry = entries[0];
-    assert.equal(entry.input_token_estimate, 500,
-      'static fallback of 500 expected when no samples; got ' + entry.input_token_estimate);
+    const expectedBytesQuarter = Math.round(Buffer.byteLength(prompt, 'utf8') / 4);
+    assert.equal(entry.input_token_estimate, expectedBytesQuarter,
+      'bytes/4 baseline expected when no samples and inBytes supplied; got ' +
+      entry.input_token_estimate + ' (expected ' + expectedBytesQuarter + ')');
   });
 
   test('2. sufficient samples present → rolling median used, not bytes/4', () => {

@@ -216,16 +216,21 @@ describe('v2.2.19 T8 Fix 1b — dedup gate: multiple Stop fires → at most one 
     assert.equal(_hasEmittedOrphan(cwd, orchId), false, 'no sentinel → has not emitted');
   });
 
-  test('_hasEmittedOrphan returns true after maybeEmitThreshold increments the counter', () => {
-    const { maybeEmitThreshold } = require(ORPHAN_MODULE);
+  test('_hasEmittedOrphan returns true after _markOrphanEmitted writes the dedicated sentinel', () => {
+    // E#2 (v2.2.19 audit-fix R1): dedup now uses dossier-orphan-emitted.<orchId>
+    // sentinel file, NOT the counter file written by maybeEmitThreshold. This
+    // decouples dedup from the threshold escalator — when
+    // ORCHESTRAY_DOSSIER_ORPHAN_THRESHOLD_DISABLED=1 suppresses the counter
+    // write, dedup must still work. The dedicated sentinel survives that gate.
+    const { _markOrphanEmitted } = require(ORPHAN_MODULE);
     const cwd    = makeTmpDir();
     const orchId = 'orch-sentinel-check';
 
-    // Prime the counter by calling maybeEmitThreshold once (simulates prior orphan emission).
-    maybeEmitThreshold(cwd, orchId);
+    // Mark the orphan as emitted via the dedicated sentinel-write helper.
+    _markOrphanEmitted(cwd, orchId);
 
     assert.equal(_hasEmittedOrphan(cwd, orchId), true,
-      'sentinel present with count=1 → already emitted');
+      'dedicated sentinel present → already emitted (decoupled from threshold escalator)');
   });
 });
 
