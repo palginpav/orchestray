@@ -46,6 +46,7 @@ const {
 const { checkDoubleFire }    = require('./_lib/tokenwright/double-fire-guard');
 const { sweepJournal }       = require('./_lib/tokenwright/journal-sweep');
 const { verifyLoadBearing, DEFAULT_LOAD_BEARING_SECTIONS } = require('./_lib/tokenwright/verify-load-bearing');
+const { bootstrapEstimate }  = require('./_lib/tokenwright/bootstrap-estimator');
 
 // ---------------------------------------------------------------------------
 // Per-process skip-event dedup cache (suppress duplicate skips per reason)
@@ -254,6 +255,17 @@ process.stdin.on('end', () => {
       emitPassthrough(toolInput); process.exit(0); return;
     }
 
+    // S1 kill switch: tokenwright.l1_compression_enabled (v2.2.19).
+    // Default false until heading-list audit is complete (revival planned for v2.2.20).
+    // See .orchestray/kb/artifacts/v2219-compression-rca.md §Symptom 1.
+    const l1Enabled = cfg.tokenwright && typeof cfg.tokenwright.l1_compression_enabled === 'boolean'
+      ? cfg.tokenwright.l1_compression_enabled
+      : false; // default-off
+    if (!l1Enabled) {
+      emitSkip(cfg, orchId, agentType, 'kill_switch_config', 'tokenwright.l1_compression_enabled=false');
+      emitPassthrough(toolInput); process.exit(0); return;
+    }
+
     // Level: off
     if (level === 'off') {
       emitSkip(cfg, orchId, agentType, 'level_off', 'ORCHESTRAY_COMPRESSION_LEVEL=off');
@@ -344,7 +356,9 @@ process.stdin.on('end', () => {
 
     const outBytes   = Buffer.byteLength(finalPrompt, 'utf8');
     const ratio      = inBytes > 0 ? outBytes / inBytes : 1;
-    const inTokEst   = Math.round(inBytes / 4);
+    // S2: use bootstrapEstimate (rolling-median from historical actuals) when sufficient
+    // history exists; falls back to bytes/4 internally when < 3 samples (W8, v2.2.18).
+    const inTokEst   = bootstrapEstimate(agentType, { cwd, config: cfg });
     const outTokEst  = Math.round(outBytes / 4);
     const ttlHours   = (cfg.compression && typeof cfg.compression.pending_journal_ttl_hours === 'number')
       ? cfg.compression.pending_journal_ttl_hours : 24;

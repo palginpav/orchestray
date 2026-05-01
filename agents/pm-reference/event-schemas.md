@@ -6296,6 +6296,8 @@ Field notes:
 - `delta_ms`: milliseconds between first and second fire.
 - `first_caller` / `second_caller`: `__filename` from each invocation, allowing identification of which install path fired.
 - Kill switch: `ORCHESTRAY_DISABLE_DOUBLE_FIRE_GUARD=1` or `compression.double_fire_guard_enabled: false`.
+- `guard_name` (**optional**): always `"tokenwright"` for this event; emitted by the shim from the generalized double-fire guard payload (v2.2.19).
+- `fast_fire_count` (**optional**): cumulative count of double-fire detections within the current orchestration for this guard; emitted when the generalized guard tracks repeat offenders (v2.2.19).
 
 ### `tokenwright_journal_truncated` event
 
