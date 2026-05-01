@@ -449,6 +449,13 @@ function handleUserPromptSubmit(event) {
     });
 
     if (truncated) {
+      // v2.2.21 W-OP-6: surface truncation to stderr alongside the audit event so
+      // operators see it without grepping events.jsonl. Single line, no PII.
+      process.stderr.write(
+        `[orchestray] dossier truncated: ${Buffer.byteLength(raw, 'utf8')} bytes ` +
+        `> ${NATIVE_ENVELOPE_MAX_CHARS} cap. Full dossier remains at ` +
+        `.orchestray/state/resilience-dossier.json.\n`
+      );
       recordDegradation({
         kind: 'dossier_inject_failed',
         severity: 'warn',
