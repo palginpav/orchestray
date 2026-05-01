@@ -64,10 +64,12 @@ function makeValidStructuredResultBlock(overrides = {}) {
  * Build a synthetic SubagentStop event JSON.
  */
 function makeSubagentStopEvent(overrides = {}) {
+  // v2.2.21 F-17: 'test-session' is now suppressed by validate-task-completion.js.
+  // Tests that need the gate to run must use a non-test session_id.
   return JSON.stringify({
     hook_event_name: 'SubagentStop',
     agent_role: 'developer',
-    session_id: 'test-session',
+    session_id: 'v2217-ramp-test',
     result: '',
     ...overrides,
   });

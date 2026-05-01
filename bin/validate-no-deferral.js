@@ -111,19 +111,22 @@ function isReleasePhase(cwd, event) {
  * v2.2.21 T4 F3: `transcript_path` is validated via the shared
  * `validateTranscriptPath` guard before any fs read. On containment failure
  * an audit event `transcript_path_containment_failed` is emitted and the
- * function returns '' as if the path were absent.
+ * function returns text:'' as if the path were absent.
+ *
+ * v2.2.21 W4-T20 (I-SE-2): also returns `scan_source` enum so audit events can
+ * record which surface was scanned: 'output' | 'transcript_tail'.
  *
  * @param {object} event
  * @param {string} [cwd] - Resolved project root; required for path containment check.
- * @returns {string}
+ * @returns {{ text: string, scan_source: 'output' | 'transcript_tail' }}
  */
 function collectOutput(event, cwd) {
-  if (!event) return '';
+  if (!event) return { text: '', scan_source: 'output' };
   if (typeof event.output === 'string' && event.output.length > 0) {
-    return event.output.slice(-MAX_SCAN_BYTES);
+    return { text: event.output.slice(-MAX_SCAN_BYTES), scan_source: 'output' };
   }
   if (typeof event.result === 'string' && event.result.length > 0) {
-    return event.result.slice(-MAX_SCAN_BYTES);
+    return { text: event.result.slice(-MAX_SCAN_BYTES), scan_source: 'output' };
   }
   if (typeof event.transcript_path === 'string' && event.transcript_path.length > 0) {
     const safePath = validateTranscriptPath(
@@ -141,21 +144,21 @@ function collectOutput(event, cwd) {
       const stat = fs.statSync(safePath);
       const size = stat.size;
       if (size <= MAX_SCAN_BYTES) {
-        return fs.readFileSync(safePath, 'utf8');
+        return { text: fs.readFileSync(safePath, 'utf8'), scan_source: 'transcript_tail' };
       }
       const fd = fs.openSync(safePath, 'r');
       try {
         const buf = Buffer.alloc(MAX_SCAN_BYTES);
         const read = fs.readSync(fd, buf, 0, MAX_SCAN_BYTES, size - MAX_SCAN_BYTES);
-        return buf.slice(0, read).toString('utf8');
+        return { text: buf.slice(0, read).toString('utf8'), scan_source: 'transcript_tail' };
       } finally {
         try { fs.closeSync(fd); } catch (_) { /* ignore */ }
       }
     } catch (_) {
-      return '';
+      return { text: '', scan_source: 'transcript_tail' };
     }
   }
-  return '';
+  return { text: '', scan_source: 'output' };
 }
 
 /**
@@ -239,8 +242,8 @@ function main() {
         process.exit(0);
       }
 
-      const output = collectOutput(event, cwd);
-      const match = findDeferral(output);
+      const { text: outputText, scan_source: scanSource } = collectOutput(event, cwd);
+      const match = findDeferral(outputText);
       if (!match.matched) {
         process.stdout.write(JSON.stringify({ continue: true }));
         process.exit(0);
@@ -253,6 +256,7 @@ function main() {
         phrase: match.phrase,
         context: match.context,
         strict: !!match.strict,
+        scan_source: scanSource,
         session_id: event.session_id || null,
       });
 

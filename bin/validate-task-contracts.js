@@ -238,23 +238,12 @@ function runPre(event, cwd) {
 function runPost(event, cwd) {
   const taskId = resolveTaskId(event);
   if (!taskId) {
-    // v2.2.13 final-review F-02: 4th silent-skip branch instrumented.
-    // Without this emit, postcondition fast-paths because the task ID is
-    // unresolvable look identical in events.jsonl to a postcondition gate
-    // that wasn't invoked at all.
-    if (process.env.ORCHESTRAY_CONTRACTS_RUNPOST_AUDIT_DISABLED !== '1') {
-      try {
-        const { writeEvent } = require('./_lib/audit-event-writer');
-        writeEvent({
-          event_type:       'contracts_runpost_silent_skip',
-          version:          1,
-          orchestration_id: peekOrchestrationId(cwd) || 'unknown',
-          task_id:          'unknown',
-          reason:           'no_task_id',
-          schema_version:   1,
-        }, { cwd });
-      } catch (_e) { /* fail-open */ }
-    }
+    // F-18 (v2.2.21 W4-T20): when task_id is null, this is an intentional skip
+    // (non-orchestrated hook invocation). Emitting contracts_runpost_silent_skip
+    // here generates noise — every SubagentStop without a task_id fires the event.
+    // Suppress the emit entirely for the null-task_id path; the other branches
+    // (no_task_yaml, task_yaml_read_error, no_contracts_block) still emit because
+    // those paths have a resolvable task_id and provide useful signal.
     return;
   }
 

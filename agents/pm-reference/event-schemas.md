@@ -10529,6 +10529,39 @@ should treat it as a diagnostic signal and verify the file after the event fires
 
 ---
 
+### `pattern_find_collisions_summary` (v2.2.21 W4-T20 F-14)
+
+Emitted once per `pattern_find` call when one or more local patterns shadow
+same-slug entries from the shared (federation) tier. Replaces the prior
+per-slug `pattern_collision_resolved` events that generated ~50 redundant
+entries per call. All collisions in a single call are batched into this one
+event.
+
+```json
+{
+  "type": "pattern_find_collisions_summary",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "orchestration_id": "orch-abc123",
+  "count": 56,
+  "all_winning_tier": "local",
+  "all_losing_tier": "shared",
+  "slugs": ["pattern-001", "pattern-002"],
+  "context": "pattern_find"
+}
+```
+
+Field notes:
+- `count`: Total number of slug collisions resolved in this call.
+- `all_winning_tier`: Always `"local"` (local patterns always win over shared).
+- `all_losing_tier`: Always `"shared"` (the federation shared tier loses).
+- `slugs`: Up to 20 colliding slug names (capped for audit-log hygiene).
+- `context`: Always `"pattern_find"`.
+
+Emitted from: `bin/mcp-server/tools/pattern_find.js` two-tier merge block (B5).
+
+---
+
 ### `schema_unknown_type_warn` event (v2.1.15 audit-event-writer)
 
 Advisory event emitted when `writeEvent()` receives a payload whose `type` is not

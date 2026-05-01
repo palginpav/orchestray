@@ -456,17 +456,21 @@ async function handle(input, context) {
         }
       }
 
-      // Emit one pattern_collision_resolved event per colliding slug.
-      // Fail-open: event emission must never block the lookup.
-      for (const slug of collidingSlugs) {
+      // === v2.2.21 W4-T20: F-14 collision summary — replace per-slug events ===
+      // Emit ONE summary event instead of one per colliding slug (56 events → 1).
+      // Per-slug events were generating ~50 redundant audit entries per pattern_find
+      // call when federation is enabled and shared tier has many slugs matching local.
+      if (collidingSlugs.length > 0) {
         try {
+          const allLocal = collidingSlugs.every(() => true); // winning_tier always 'local' here
           writeAuditEvent({
             timestamp: new Date().toISOString(),
-            type: 'pattern_collision_resolved',
+            type: 'pattern_find_collisions_summary',
             orchestration_id: readOrchestrationId(),
-            slug,
-            winning_tier: 'local',
-            losing_tier: 'shared',
+            count: collidingSlugs.length,
+            all_winning_tier: 'local',
+            all_losing_tier: 'shared',
+            slugs: collidingSlugs.slice(0, 20), // cap for audit-log hygiene
             context: 'pattern_find',
           });
         } catch (_err) {

@@ -194,11 +194,14 @@ describe('W5 — post-phase no_task_yaml branch', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Test 1b: Post-phase — no task_id resolvable → contracts_runpost_silent_skip{reason:'no_task_id'}
-// (v2.2.13 final-review F-02: 4th silent-skip branch instrumented.)
+// Test 1b: Post-phase — no task_id resolvable → silent return (no emit).
+// F-18 (v2.2.21 W4-T20): the prior no_task_id emit was suppressed because it
+// fired on every non-orchestrated SubagentStop, generating noise. The hook now
+// returns early without emitting contracts_runpost_silent_skip when task_id is
+// null — the intentional-skip case produces no observable signal.
 // ---------------------------------------------------------------------------
 describe('W5 — post-phase no_task_id branch (final-review F-02)', () => {
-  test('Test 1b: no resolvable task_id → emits contracts_runpost_silent_skip with reason=no_task_id', () => {
+  test('Test 1b: no resolvable task_id → exits 0, emits NO contracts_runpost_silent_skip (F-18)', () => {
     const tmp = makeTmpProject({ orchestrationId: 'orch-w5-t1b' });
     try {
       // Send PostToolUse payload with NO task_id field — resolveTaskId returns null
@@ -218,13 +221,11 @@ describe('W5 — post-phase no_task_id branch (final-review F-02)', () => {
       });
       assert.ok(res.status === 0 || res.status === null, 'hook must exit 0 (fail-open)');
       const events = readEvents(tmp);
+      // F-18: no_task_id path is silent — no event emitted.
       const skipEvents = events.filter(e =>
         e.event_type === 'contracts_runpost_silent_skip' && e.reason === 'no_task_id'
       );
-      assert.equal(skipEvents.length, 1, 'exactly 1 contracts_runpost_silent_skip{reason:no_task_id}');
-      assert.equal(skipEvents[0].schema_version, 1);
-      assert.equal(skipEvents[0].task_id, 'unknown');
-      assert.ok(typeof skipEvents[0].orchestration_id === 'string');
+      assert.equal(skipEvents.length, 0, 'F-18: no contracts_runpost_silent_skip emitted for no_task_id path');
     } finally {
       cleanup(tmp);
     }
