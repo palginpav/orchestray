@@ -983,9 +983,10 @@ subset of `["code-quality", "performance", "documentation", "operability",
 1. Kill switch (config or env) → `"all"`.
 2. Empty diff (`files_changed.length === 0`) → `"all"` with rationale
    `"empty diff — defensive fallback"`.
-3. **Security-sensitive paths present** (any path in `auth/`, `crypto/`,
-   `secrets`, `bin/validate-`, `hooks/hooks.json`, `.claude/settings.json`,
-   `mcp-server/`, or containing `permission`, `token`, `password`, `key`) →
+3. **Security-sensitive paths present** (canonical list: `bin/_lib/security-sensitive-paths.js`
+   `SECURITY_SENSITIVE_PATHS` — includes `auth/`, `crypto/`, `secrets`, `bin/validate-`,
+   `hooks/hooks.json`, `.claude/settings.json`, `mcp-server/`, and paths containing
+   `permission`, `token`, `password`, or `key`) →
    `["code-quality", "operability", "api-compat"]`. (Security stays in core,
    always loaded.)
 4. **Doc-only diff** (every path matches `**/*.md`, `docs/**`, `README*`, or

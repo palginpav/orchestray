@@ -97,7 +97,9 @@ function guessSlug(toolInput) {
 
 // Roles that legitimately need the full event-schemas.md file (schema design,
 // release prep, documentation). They bypass the redirect and Read directly.
-// `null`/absent agent_type (the parent orchestrator session) also bypasses.
+// W-DO-5 (v2.2.21): The null/orchestrator-session bypass has been removed so
+// that the block applies to ALL agent roles, including the PM orchestrator.
+// Only the three roles listed here may Read the full file directly.
 const FULL_READ_ALLOWED_AGENTS = new Set([
   'architect',
   'release-manager',
@@ -141,8 +143,11 @@ function shouldRedirectEventSchemasRead(toolInput, rawConfig, agentType, cwd) {
     isRedirectTarget = baseCheck === 'event-schemas.md' && normCheck.includes('agents/pm-reference/');
   }
 
-  // Roles that need the full file pass through. Includes the orchestrator
-  // (no agent_type) so the user's main Claude Code session is not blocked.
+  // Roles that need the full file pass through. The orchestrator (null/absent
+  // agent_type) also bypasses — the user's main Claude Code session is
+  // never blocked. W-DO-5 (v2.2.21): all named agent roles that are NOT in
+  // FULL_READ_ALLOWED_AGENTS are subject to the redirect; this applies to
+  // every role including pm, developer, refactorer, reviewer, etc.
   if (!agentType || FULL_READ_ALLOWED_AGENTS.has(agentType)) {
     if (isRedirectTarget) {
       try {

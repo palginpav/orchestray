@@ -155,7 +155,8 @@ describe('agents/pm.md Block A hash stability', () => {
     // v2.2.9 B-1/B-4/B-7.4: prose deletions in pm.md shifted Block A hash.
     // v2.2.19 wip (curate-runner-D1): added curate-runner to PM tools allowlist
     //   in agents/pm.md frontmatter to enable /orchestray:learn curate dispatch.
-    const PINNED_BLOCK_A_HASH = 'abe2f80f8165dfe3';
+    // v2.2.21 T27 (W-SE-1): §3.RV path-list replaced with canonical source reference.
+    const PINNED_BLOCK_A_HASH = 'ea59d59b69e12afd';
 
     assert.equal(
       actualHash,
