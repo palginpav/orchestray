@@ -32,7 +32,7 @@ If this is the FIRST user prompt in a session AND `.orchestray/` directory does 
 display a brief one-time orientation before proceeding:
 
 > Orchestray is active. For complex tasks (score 4+/12), I'll automatically orchestrate
-> across specialist agents (architect, developer, refactorer, inventor, researcher, reviewer, debugger, tester, documenter, security-engineer, release-manager, ux-critic, platform-oracle).
+> across 13 specialist agents (architect, developer, refactorer, inventor, researcher, reviewer, debugger, tester, documenter, security-engineer, release-manager, ux-critic, platform-oracle), plus two internal utility agents (project-intent, curate-runner) used silently for repo-onboarding and KB curation.
 >
 > - Just type your task naturally — I'll decide whether to orchestrate
 > - `/orchestray:config` — view or adjust settings
@@ -282,11 +282,9 @@ When the score meets or exceeds the threshold, enter orchestration mode:
    If `confirm_before_execute` is false or not set, skip this step and proceed directly.
 
 4. **Execute** the task graph group by group:
-   - For parallel groups (multiple tasks with no inter-dependencies): follow Section 14
-     (Parallel Execution Protocol, in phase-execute.md)
-   - For sequential tasks or single-task groups: follow Section 2 delegation patterns
-   - After each agent completes: display running costs (Section 15, step 2),
-     evaluate for re-plan signals (Section 16, in phase-verify.md)
+   - For parallel groups (multiple tasks with no inter-dependencies): follow Section 14 (Parallel Execution Protocol, in phase-execute.md).
+   - For sequential tasks or single-task groups: follow Section 2 delegation patterns.
+   - After each agent completes: display running costs (Section 15, step 2, in phase-close.md), evaluate for re-plan signals (Section 16, in phase-verify.md).
 
 5. **Report results** per Section 8 (Communication Protocol), including cost summary
    from Section 15, step 3.
@@ -605,19 +603,11 @@ dispatches), Section 12 Complexity Scoring (any Explore-based fact-gathering),
 and every spawn covered by the existing "Model and Effort Assignment at
 Spawn" rule above.
 
-### Before Spawning: Write routing.jsonl First
+### Before Spawning: Write routing.jsonl First (REQUIRED)
 
-- **Before every `Agent()` call**, write a routing.jsonl row (task_id + agent_type + model + ...). The hook hard-blocks spawns with no matching row. See §14 "Step 0" in `phase-execute.md` for the `ox routing add` canonical form and primary match-key rules.
+Before every `Agent()` call, append a routing.jsonl row (task_id + agent_type + model + effort + score) to `.orchestray/state/routing.jsonl`. The `PreToolUse:Agent` hook (`bin/gate-agent-spawn.js`) hard-blocks spawns with no matching row.
 
-### Durable Routing Decision (REQUIRED)
-
-As the final step of Section 13 decomposition, BEFORE spawning any agent in Group 1, write one routing entry per subtask to `.orchestray/state/routing.jsonl` (one JSON object per line, append-only). Each entry records the complexity score, assigned model, assigned effort, and score breakdown for that specific subtask. Schema in `bin/_lib/routing-lookup.js`.
-
-This file is the SINGLE SOURCE OF TRUTH for routing during the orchestration. The `PreToolUse:Agent` hook (`bin/gate-agent-spawn.js`) validates every `Agent()` call against this file. If no entry matches the spawn's (agent_type, description), the hook blocks the spawn. If the entry's `model` doesn't match the `model` parameter you pass to `Agent()`, the hook blocks.
-
-**Dynamic spawns** (audit, debug, reviewer re-runs triggered mid-orchestration): you must append a new routing entry for any task not in the original decomposition BEFORE calling `Agent()`. The hook treats dynamic spawns identically — no entry, no spawn.
-
-**Re-planning and verify-fix re-spawns:** append a new entry with a fresh timestamp. The hook matches the MOST RECENT entry for `(agent_type, description)`, so re-spawns automatically pick up the latest routing.
+The canonical write protocol — `ox routing add` form, primary `(task_id, agent_type)` match key, dynamic-spawn rules, and re-plan timestamp behavior — lives in Section 14 "Step 0" (in phase-execute.md). Follow it for every spawn, including dynamic and re-plan re-spawns. Do not duplicate the protocol here.
 
 ### Delegation Delta Pre-Render (R-DELEG-DELTA, v2.2.0)
 
@@ -764,7 +754,7 @@ background; later spawns within the same session pick up the warm cache.
 When spawning a dynamic agent (Section 17, in phase-execute.md), first create the agent definition file in
 `agents/`, then spawn using `Agent('{name}')`. After the agent completes and results are
 processed, delete the definition file. Dynamic agents follow the same result format
-(Section 6) and KB protocol (Section 10, in phase-contract.md) as core agents.
+(Section 4, "Agent Result Handling") and KB protocol (Section 10, in phase-contract.md) as core agents.
 
 ### New Agent Delegation Patterns
 
@@ -1413,7 +1403,11 @@ Run ONLY after orchestration completion.
 
 ---
 
-## 17. Feature Demand Gate (R-GATE-AUTO, v2.1.15)
+## 22a. Feature Demand Gate (R-GATE-AUTO, v2.1.15)
+
+> **Renumbered in v2.2.21:** Previously `## 17.` in pm.md; renamed to `## 22a.` to disambiguate from
+> Section 17 (Dynamic Agent Spawning Protocol) in phase-execute.md. External references to
+> "Section 17 (Feature Demand Gate)" should be updated to "Section 22a".
 
 The feature-demand gate moved from observer mode (v2.1.14 advisory) to **auto-active**
 in v2.1.15. The default value of `feature_demand_gate.shadow_mode` is now `false`.
@@ -1835,7 +1829,7 @@ Load these reference files conditionally based on the situation:
 | `enable_personas` is true | `agents/pm-reference/adaptive-personas.md` |
 | `enable_replay_analysis` is true | `agents/pm-reference/replay-analysis.md` |
 | `v2017_experiments.prompt_caching === 'on'` AND about to spawn subagents | `agents/pm-reference/prompt-caching-protocol.md` |
-| `v2017_experiments.adaptive_verbosity === 'on'` AND `adaptive_verbosity.enabled === true` | `agents/pm-reference/tier1-orchestration.md.legacy` §3.Y |
+| `v2017_experiments.adaptive_verbosity === 'on'` AND `adaptive_verbosity.enabled === true` | `agents/pm-reference/adaptive-verbosity.md` (v2.2.21 canonical Tier-2 home; the `.legacy` monolith is reserved for the branch-(b) full-monolith rollback path only) |
 | Section 13 decomposition active (score ≥ 4) | `agents/pm-reference/pipeline-templates.md` |
 | `enable_repo_map` is true AND repo map generation/staleness check is this turn | `agents/pm-reference/repo-map-protocol.md` |
 | `pattern_extraction_enabled` is true (orchestration complete AND `auto_learning.extract_on_complete.enabled === true`) | `agents/pm-reference/extraction-protocol.md` |
@@ -1854,6 +1848,7 @@ These files are loaded regardless of orchestration mode when their content is ne
 - `agents/pm-reference/scoring-rubrics.md` — for complexity scoring (Section 12)
 - `agents/pm-reference/specialist-protocol.md` — for specialist checks (Sections 20, 21)
 - `agents/pm-reference/delegation-templates.md` — for delegation prompts (Section 3)
+- `agents/pm-reference/agent-common-protocol.md` — for KB write protocol, Structured Result field reference, slug validation, and Commit Message Discipline for W-Items (referenced from `phase-contract.md §11.5` and from every core agent's KB-write step)
 
 ### Tier-2 Loading Discipline
 

@@ -523,11 +523,16 @@ describe('agents/pm.md dispatch-table adaptive_verbosity row', () => {
     );
   });
 
-  test('dispatch row references tier1-orchestration.md §3.Y', () => {
+  test('dispatch row references the adaptive-verbosity reference file', () => {
     const c = getContent();
+    // v2.2.21 G3-W3-T9: canonical Tier-2 home migrated from
+    // tier1-orchestration.md.legacy §3.Y → agents/pm-reference/adaptive-verbosity.md.
+    // The dispatch table must point to the new file. The legacy §3.Y content
+    // still lives in tier1-orchestration-rare.md (for rare-path bundle reads)
+    // and in tier1-orchestration.md.legacy (branch-(b) full-monolith rollback).
     assert.ok(
-      /tier1-orchestration\.md/.test(c) && /§3\.Y/.test(c),
-      'dispatch row must reference tier1-orchestration.md §3.Y'
+      /adaptive-verbosity\.md/.test(c),
+      'dispatch row must reference agents/pm-reference/adaptive-verbosity.md (the v2.2.21 canonical Tier-2 home)'
     );
   });
 

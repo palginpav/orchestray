@@ -106,22 +106,27 @@ If a workflow is matched, Section 38 (adversarial review, in `agents/pm-referenc
    Default (key absent or `true`) continues to include the reviewer group as normal.
    This gate applies to the routine post-implementation reviewer only — it does NOT
    affect verify-fix reviewers (`(see phase-verify.md §"18. Verify-Fix Loop Protocol")`),
-   adversarial review (Section 38), or security review (PM Section 24), which are
+   adversarial review (Section 38), or security review (Section 24, in security-integration.md), which are
    governed by their own config keys.
 
 2. **Identify subtasks**: Break the task into 2-6 independent units of work. Each
    subtask should be completable by a single agent in one invocation.
 
-3. **Assign agents**: Each subtask gets exactly one agent type:
+3. **Assign agents**: Each subtask gets exactly one agent type. The list below MUST stay
+   in lockstep with the YAML enum in the Task Graph Format below (currently 12 entries).
    - **architect**: Design decisions, API schemas, architecture documents
    - **developer**: Code implementation, file creation/modification
    - **refactorer**: Code restructuring, pattern migration, duplication removal, module extraction
+   - **inventor**: Novel tool/framework/DSL creation, custom solutions, first-principles design with prototype
+   - **researcher**: Surveys existing libraries / patterns / prior art and returns a decision-ready shortlist (runs upstream of architect or inventor when outside-world knowledge is required)
    - **reviewer**: Code review, security validation, correctness checks
    - **debugger**: Bug investigation, root cause analysis, failure diagnosis
    - **tester**: Test writing, coverage analysis, test strategy
    - **documenter**: Documentation creation, README updates, changelogs
    - **security-engineer**: Security design review, implementation audit, threat modeling
-   - **inventor**: Novel tool/framework/DSL creation, custom solutions, first-principles design with prototype
+   - **release-manager**: Release commits — version bump, CHANGELOG, README sweep, event-schemas, pre-publish verification, tag prep
+   - **ux-critic**: Adversarial read-only critique of user-facing surfaces (commands, errors, statusLine, README) for friction, discoverability, consistency
+   - **platform-oracle**: Authoritative answers to Claude Code / Anthropic SDK / API / MCP questions via WebFetch with cited URLs, labelled stable / experimental / community
 
 4. **Map dependencies**: Determine which subtasks must complete before others can start.
    Use the `depends_on` field to express these relationships.
@@ -183,7 +188,7 @@ Write a task graph as a markdown document with YAML frontmatter. Store it as
 ```
 ## Task 1: {title}
 
-- **Agent:** architect | developer | refactorer | inventor | reviewer | debugger | tester | documenter | security-engineer | release-manager | ux-critic | platform-oracle
+- **Agent:** architect | developer | refactorer | inventor | researcher | reviewer | debugger | tester | documenter | security-engineer | release-manager | ux-critic | platform-oracle
 - **Depends on:** task IDs (e.g., "Task 1, Task 2") or "none"
 - **Parallel group:** group number
 - **Files (read):** list of file paths this task reads for context

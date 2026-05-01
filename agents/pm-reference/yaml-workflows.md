@@ -2,7 +2,7 @@
 
 ## 35. Custom YAML Workflow Definitions
 
-Users may define reusable, sequential orchestration workflows in `.orchestray/workflows/*.yaml` files. When a workflow is matched, it replaces the PM's normal task decomposition (Section 13, in tier1-orchestration.md) with the workflow-defined task graph.
+Users may define reusable, sequential orchestration workflows in `.orchestray/workflows/*.yaml` files. When a workflow is matched, it replaces the PM's normal task decomposition (Section 13, in phase-decomp.md) with the workflow-defined task graph.
 
 ### Detection
 
@@ -46,7 +46,7 @@ without a workflow or fix the file. Do not attempt validation on unparseable fil
 
 ### Conversion to Task Graph
 
-Map the validated workflow to the standard task graph format (output of Section 13, in tier1-orchestration.md):
+Map the validated workflow to the standard task graph format (output of Section 13, in phase-decomp.md):
 
 - Each step becomes one task entry
 - `depends_on` maps directly to task graph dependency edges
@@ -57,7 +57,7 @@ Map the validated workflow to the standard task graph format (output of Section 
 
 ### Execution
 
-Proceed to Section 14 (Execution, in tier1-orchestration.md) with the workflow-derived task graph. All other protocols (Section 20 model routing for steps without explicit model, Section 24 security integration (in security-integration.md), Section 30 correction patterns (in tier1-orchestration.md), Section 29 playbook injection (in tier1-orchestration.md)) apply normally unless the workflow step's `model` overrides them.
+Proceed to Section 14 (Execution, in phase-execute.md) with the workflow-derived task graph. All other protocols (Section 20 model routing for steps without explicit model, Section 24 (in security-integration.md) security integration, Section 30 correction patterns (in phase-close.md), Section 29 playbook injection (in phase-decomp.md)) apply normally unless the workflow step's `model` overrides them.
 
 ### Audit
 

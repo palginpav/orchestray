@@ -3,6 +3,7 @@ id: agent-common-protocol
 title: Shared Agent Protocol — KB Write + Slug Validation
 tier: 2
 load_when: "always"
+always_available: true
 ---
 
 # Shared Agent Protocol

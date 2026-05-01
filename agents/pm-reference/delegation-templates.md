@@ -212,23 +212,47 @@ review_dimensions:
   invariant: "Correctness and Security are always reviewed; they cannot appear in this list."
 ```
 
-**Delegation prompt block — insert immediately after `## Context`:**
+**Delegation prompt block — insert immediately after `## Context`.**
+Copy-paste one of the two forms below (full or scoped):
 
 ```
 ## Dimensions to Apply
-{review_dimensions: "all" | bulleted list}
 
-For each item in the bulleted list, Read the matching fragment file BEFORE forming
-findings:
+<!-- FORM A: full review (review_dimensions: "all") -->
 - code-quality   → agents/reviewer-dimensions/code-quality.md
 - performance    → agents/reviewer-dimensions/performance.md
 - documentation  → agents/reviewer-dimensions/documentation.md
 - operability    → agents/reviewer-dimensions/operability.md
 - api-compat     → agents/reviewer-dimensions/api-compat.md
 
-If the value is "all", Read all five files. Correctness and Security are always
-reviewed and live in your core prompt — do NOT request fragment files for them.
+Read all five files before forming findings. Correctness and Security are
+always reviewed and live in your core prompt — do NOT request fragment files
+for them.
 ```
+
+```
+## Dimensions to Apply
+
+<!-- FORM B: scoped review — include only the applicable lines -->
+- code-quality   → agents/reviewer-dimensions/code-quality.md
+- performance    → agents/reviewer-dimensions/performance.md
+
+Read the listed files before forming findings. Correctness and Security are
+always reviewed and live in your core prompt — do NOT request fragment files
+for them.
+```
+
+The heading `## Dimensions to Apply` MUST appear verbatim — `validate-reviewer-dimensions.js`
+checks for this exact heading followed by at least one bullet. For audit/discovery
+dispatches with no implementation diff, the `## Git Diff` section body may be:
+
+```
+## Git Diff
+
+_n/a — audit-mode dispatch_
+```
+
+This satisfies `validate-reviewer-git-diff.js` without a real diff.
 
 When `review_dimension_scoping.enabled` is `false` (kill switch) or the env var
 `ORCHESTRAY_DISABLE_REVIEWER_SCOPING=1` is set, the PM falls back to
@@ -357,14 +381,20 @@ documenter, security-engineer, release-manager, ux-critic, platform-oracle), see
 
 ### Reviewer Checklist
 
+> **Hook gauntlet:** reviewer spawns pass through four sequential hooks. Each fires
+> independently and reports only the first violation it detects, so a fresh PM that
+> misses one item discovers requirements one hook at a time across multiple retries.
+> Complete ALL items before spawning.
+
 - [ ] `model: "sonnet"` (or "opus") field present? (`gate-agent-spawn.js` hard-blocks otherwise; kill switch `ORCHESTRAY_STRICT_MODEL_REQUIRED=0`.)
-- [ ] Specific file paths listed? (not "review the changes" -- exact files to examine)
-- [ ] `## Files to Review` section present in the delegation prompt? (hard-blocks otherwise; kill switch `ORCHESTRAY_REVIEWER_SCOPE_HARD_DISABLED=1`.)
+- [ ] Specific file paths listed? (not "review the changes" — exact files to examine)
+- [ ] `## Files to Review` section present in the delegation prompt? (`validate-reviewer-scope.js` hard-blocks otherwise; kill switch `ORCHESTRAY_REVIEWER_SCOPE_HARD_DISABLED=1`.)
+- [ ] `## Dimensions to Apply` block present with the explicit bullet list of all applicable fragment file paths? (`validate-reviewer-dimensions.js` hard-blocks if the heading or bullet list is missing; kill switch `ORCHESTRAY_REVIEWER_DIMENSIONS_GATE_DISABLED=1`.) Use the copy-pastable block in "Reviewer Delegation: Dimension Scoping" above.
+- [ ] `## Git Diff` section present? (`validate-reviewer-git-diff.js` hard-blocks if absent; for audit/discovery dispatches with no implementation diff, use `_n/a — audit-mode dispatch_` as the body; kill switch `ORCHESTRAY_REVIEWER_GIT_DIFF_GATE_DISABLED=1`.)
+- [ ] `context_size_hint:` line present in the prompt body? (`bin/preflight-spawn-budget.js` emits a soft warn on missing hint; flat form `context_size_hint: system=N tier2=N handoff=N` is canonical.)
 - [ ] Task requirements included? (what the code should do, not just "check for bugs")
 - [ ] Architect design reference linked if applicable? (design doc or KB entry for spec conformance)
 - [ ] `review_dimensions` field set? (`"all"` or a subset of `["code-quality","performance","documentation","operability","api-compat"]`; populated by the PM classifier per `pm.md` §3.RV)
-- [ ] `## Dimensions to Apply` block included with the explicit list of fragment file paths the reviewer must Read?
-- [ ] Git diff included? (per the Reviewer Delegation: Git Diff Inclusion protocol above)
 - [ ] Exploration hygiene stated? (delegation says: "Use Glob for structure and Grep with `output_mode: files_with_matches` to locate candidates; Read only files you intend to act on. The Repository Map is authoritative for project layout — do not Glob the whole repo to re-discover structure.")
 
 ---

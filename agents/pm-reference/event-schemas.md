@@ -2043,7 +2043,7 @@ Cross-ref: emitted by `bin/state-gc.js` immediately after each `fs.rmSync()` cal
 
 ---
 
-## Section 24: Redo Event (W8 v2.0.18)
+## Section 24a: Redo Event (W8 v2.0.18)
 
 ### `w_item_redo_requested`
 

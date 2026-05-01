@@ -5,6 +5,14 @@ poorly and generates alternative strategies to guide future decision-making.
 
 ---
 
+## Section 43: Friction Detection and Replay Analysis (overview)
+
+Cross-reference anchor for `agents/pm.md` §4.RA. The full protocol is split across
+the four numbered subsections below (43a friction detection, 43b counterfactual
+generation, 43c replay-pattern writing, 43d replay-pattern application).
+
+---
+
 ## 43a. Friction Signal Detection
 
 **Integration point:** Section 15 step 3, step 7.4 — after persona refresh check (step 7.3)

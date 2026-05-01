@@ -52,27 +52,49 @@ structure blocks.
 
 These are optional, additive extensions. Emit what applies; omit the rest.
 
+The "Enforced by:" annotation for each role indicates which hook (if any) validates a
+field beyond the §2 baseline. Fields with no "Enforced by" are advisory — they are
+expected by downstream agents and scorers but not hard-blocked by a hook.
+
 ### architect
 - `design_decisions` — array of `{decision: string, rationale: string}`
 - `alternatives_considered` — array of strings, one per rejected option
 - `open_questions` — array of strings; empty means no unresolved questions
+
+_Enforced by:_ `validate-task-completion.js` (T15 hard-tier baseline only; no
+additional role-specific hook).
 
 ### developer
 - `tests_added` — array of test file paths
 - `tests_passing` — boolean; MUST reflect an actual run, not a projection
 - `commits` — array of `"<sha> <subject>"` strings, one per commit created
 
+_Enforced by:_ `validate-task-completion.js` (T15 hard-tier baseline). No additional
+hook enforces `tests_passing`; structural scorer (B4) cross-checks `files_changed`
+against git index.
+
 ### reviewer
 - `verdict` — enum `"APPROVE" | "APPROVE_WITH_NITS" | "BLOCK"`
 - `findings_by_severity` — object `{error: N, warning: N, info: N}`
+
+_Enforced by:_ `validate-task-completion.js` (T15 hard-tier baseline). `verdict` is
+additionally checked by the PM's verify-fix loop when deciding whether to re-delegate.
+Reviewer SPAWN requirements (not output fields) are enforced by: `validate-reviewer-scope.js`,
+`validate-reviewer-dimensions.js`, `validate-reviewer-git-diff.js`, and
+`bin/preflight-spawn-budget.js`.
 
 ### refactorer
 - `behavior_preserved` — `{value: boolean, rationale: string}` (one sentence)
 - `surface_unchanged` — boolean (public API / export shape untouched)
 
+_Enforced by:_ `validate-task-completion.js` (T15 hard-tier baseline). No additional
+hook; behavioral preservation is verified manually via tests_before / tests_after.
+
 ### tester
 - `test_suite_result` — object `{total: N, pass: N, fail: N}`
 - `new_tests_added` — array of test file paths
+
+_Enforced by:_ `validate-task-completion.js` (T15 hard-tier baseline).
 
 ### release-manager
 - `version_bumped` — string (the new version, e.g. `"2.1.9"`)
@@ -81,49 +103,95 @@ These are optional, additive extensions. Emit what applies; omit the rest.
 - `npm_publish_verified` — boolean (per I-09; must be true before tag)
 - `tag_created` — boolean
 
+_Enforced by:_ `validate-task-completion.js` (T15 hard-tier baseline). `validate-no-deferral.js`
+additionally scans the release agent's output for deferral phrases on SubagentStop.
+
 ### documenter
 - `files_documented` — array of paths
 - `canonical_source_checked` — boolean (per I-07 — did you grep the canonical
   source before tightening claim language?)
 
+_Enforced by:_ `validate-task-completion.js` (T15 hard-tier baseline). No additional
+hook; `canonical_source_checked: true` is advisory (required by this contract, not hard-blocked).
+
 ### ux-critic
 - `surfaces_reviewed` — array of strings (command names, error IDs, file paths)
 - `consistency_findings` — array of `{surface: string, finding: string}`
+
+_Enforced by:_ `validate-task-completion.js` (T15 warn-tier — logs `task_completion_warn`
+but does not block).
 
 ### researcher
 - `verdict` — enum `"RECOMMEND" | "DO_NOT_RECOMMEND" | "NEEDS_MORE_INFO"`
 - `top_pick` — string (the recommended option / library / approach)
 - `sources_cited` — array of URLs, minimum 3
 
+_Enforced by:_ `validate-task-completion.js` (T15 warn-tier). `validate-researcher-citations.js`
+additionally enforces `sources_cited` minimum-count (3 URLs) on SubagentStop.
+
 ### debugger
 - `root_cause` — string (one-sentence causal claim)
 - `repro_confirmed` — boolean (did you reproduce before hypothesising?)
 - `fix_location_hint` — string (file path + approximate line range)
 
+_Enforced by:_ `validate-task-completion.js` (T15 warn-tier).
+
 ### security-engineer
 - `threats_found` — array of `{threat: string, severity: string, location: string}`
 - `severity_breakdown` — object `{critical: N, high: N, medium: N, low: N, info: N}`
 
+_Enforced by:_ `validate-task-completion.js` (T15 warn-tier).
+
 ### platform-oracle
 - `claims` — array of `{text: string, stability_tier: "stable" | "experimental" | "community", source_url: string}`
+
+_Enforced by:_ `validate-task-completion.js` (T15 warn-tier — `output_shape: none`
+roles are not hard-blocked; the structured result is still expected but advisory).
 
 ### inventor
 - `novel_mechanism` — string (one-sentence description of what is new)
 - `prototyped` — boolean (does a runnable sketch exist, even if throwaway?)
+
+_Enforced by:_ `validate-task-completion.js` (T15 warn-tier).
 
 ### curator (specialist)
 - `compact_delta_bytes` — integer (KB removed / added to KB)
 - `facts_deduped` — integer
 - `decisions_promoted` — integer
 
+_Enforced by:_ No dedicated hook; PM verifies post-run via audit events.
+
 ### pattern-extractor (specialist)
 - `patterns_found` — integer
 - `patterns_promoted` — integer (moved from proposed → active)
 - `run_id` — string (the extractor run identifier)
 
+_Enforced by:_ No dedicated hook.
+
 ### release-manager (specialist variant)
 - Same as the release-manager core role above; specialists inherit the role's
   required fields and may add a `release_kind` string (e.g. `"patch"`, `"minor"`).
+
+---
+
+## 4a. Output Shape Mapping (canonical reference — W-AC-3)
+
+Every agent definition declares an `output_shape` frontmatter field. `bin/_lib/output-shape.js`
+(`decideShape`) reads this field to decide which output addendum to inject after the agent
+completes. This table is the single source of truth for what each value means and which
+agents use it.
+
+| `output_shape` | Meaning | Addendum triggered | Agents |
+|---|---|---|---|
+| `hybrid` | Mix of structured JSON result + human-readable prose. Full §2 baseline enforced. | Structured Result schema reminder + prose length guidance | architect, developer, reviewer, refactorer, inventor, debugger, documenter, release-manager |
+| `structured-only` | Output is primarily machine-parseable. Prose summary is brief. | Structured Result schema reminder only | tester, researcher |
+| `prose-heavy` | Output is primarily a human-readable report. Structured Result is still required but the prose body is the primary deliverable. | Report formatting guidance + Structured Result schema reminder | security-engineer, ux-critic |
+| `none` | No meaningful output shape — agent produces no artifact or returns platform facts inline. Structured Result is still emitted (warn-tier) but no addendum is injected. | None | platform-oracle, project-intent |
+
+**When adding a new specialist agent:** choose `hybrid` unless the specialist produces
+only a report (`prose-heavy`), only tabular data (`structured-only`), or is a lookup-only
+query agent (`none`). Use `hybrid` when in doubt — it is the most broadly validated shape
+and the T15 hook is calibrated for it.
 
 ## 5. Emission protocol
 

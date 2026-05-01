@@ -155,7 +155,12 @@ describe('agents/pm.md Block A hash stability', () => {
     // v2.2.9 B-1/B-4/B-7.4: prose deletions in pm.md shifted Block A hash.
     // v2.2.19 wip (curate-runner-D1): added curate-runner to PM tools allowlist
     //   in agents/pm.md frontmatter to enable /orchestray:learn curate dispatch.
-    const PINNED_BLOCK_A_HASH = 'abe2f80f8165dfe3';
+    // v2.2.21 G3-W3-T9 (cross-ref rot bundle): Block A changes spanning E-CO-1..4
+    //   + W-OP-3..4 + I-DO-1..4 — section-anchor fixes, §17→§22a rename, routing
+    //   protocol consolidation pointer, onboarding banner utility-agent note,
+    //   adaptive-verbosity dispatch redirect, agent-common-protocol added to
+    //   Always-Available list. Approved as a single sweep PR per the polish plan.
+    const PINNED_BLOCK_A_HASH = '6c8088eceeb21e3f';
 
     assert.equal(
       actualHash,

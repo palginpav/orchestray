@@ -159,4 +159,4 @@ During Section 13 decomposition:
 3. Load the matching template as the starting decomposition
 4. Adjust for task-specific needs (add/remove agents, change parallelism)
 5. Check if `tdd_mode` is enabled and archetype is "New Feature" — if so, use TDD variant
-6. Check if security review is applicable (see PM Section 24)
+6. Check if security review is applicable (see Section 24, in security-integration.md)
