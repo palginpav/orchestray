@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * audit-firing-nightly.js — self-firing daily firing-audit cron (v2.2.10 F3).
+ * audit-firing-nightly.js — self-firing daily firing-audit cron (v2.2.21 F3/F-05 fix).
  *
  * Why this exists
  * ---------------
@@ -18,11 +18,17 @@
  *      sentinel exists for today, exit 0 silently.
  *   2. Loads `agents/pm-reference/event-schemas.shadow.json`. Skips event
  *      types with `feature_optional: true` (shadow flag `f === 1`).
- *   3. Reads `.orchestray/audit/events.jsonl`, counts fires in the last 24h.
- *   4. Emits one `event_activation_ratio` summary row:
+ *   3. Scans `.orchestray/audit/events.jsonl` over the last 30 days, aggregates
+ *      per-event-type fire counts, and writes them to
+ *      `.orchestray/state/promised-event-tracker.last-run.json` BEFORE dark
+ *      detection. This populates the tracker that was previously always empty
+ *      (F-05 fix).
+ *   4. Counts fires in the last 24h for the activation-ratio metric.
+ *   5. Emits one `event_activation_ratio` summary row:
  *        { numerator, denominator, ratio, dark_count, window_label:"daily" }
- *   5. Emits one `event_promised_but_dark` row per dark event type.
- *   6. Writes the day-sentinel so subsequent same-day SessionStarts skip.
+ *   6. Emits one `event_promised_but_dark` row per event type with 0 fires
+ *      over the 30-day window.
+ *   7. Writes the day-sentinel so subsequent same-day SessionStarts skip.
  *
  * Kill switch
  * -----------
@@ -49,8 +55,11 @@ const { loadShadow, tally24hFires, computeRatios } = require('./_lib/firing-audi
 // Constants
 // ---------------------------------------------------------------------------
 
-const WINDOW_MS      = 24 * 60 * 60 * 1000;   // 24 hours
-const WINDOW_LABEL   = 'daily';
+const WINDOW_MS        = 24 * 60 * 60 * 1000;      // 24 hours (activation-ratio window)
+const WINDOW_LABEL     = 'daily';
+const TRACKER_WINDOW_MS = 30 * 24 * 60 * 60 * 1000; // 30 days (tracker population window)
+const TRACKER_WINDOW_DAYS = 30;
+const MAX_EVENTS_FILE_BYTES = 256 * 1024 * 1024;   // 256 MB guard
 
 // ---------------------------------------------------------------------------
 // Sentinel helpers
@@ -93,6 +102,106 @@ function sentinelExists(cwd, dateLabel) {
     return false;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Tracker helpers (F-05 fix)
+// ---------------------------------------------------------------------------
+
+/**
+ * Scan events.jsonl over a rolling window and return a count map for ALL
+ * event types observed (not just those in shadow). This is a broader scan
+ * than tally24hFires — we want to populate the tracker even for types not yet
+ * in shadow to detect future regressions.
+ *
+ * @param {string} eventsPath - Absolute path to events.jsonl.
+ * @param {number} windowStartMs - Epoch ms for the start of the window.
+ * @returns {Object.<string, number>} event_type → fire count within window.
+ */
+function tallyAllFires30d(eventsPath, windowStartMs) {
+  const counts = Object.create(null);
+
+  let stat;
+  try {
+    stat = fs.statSync(eventsPath);
+  } catch (_e) {
+    return counts;
+  }
+  if (stat.size === 0 || stat.size > MAX_EVENTS_FILE_BYTES) return counts;
+
+  let text;
+  try {
+    text = fs.readFileSync(eventsPath, 'utf8');
+  } catch (_e) {
+    return counts;
+  }
+
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+
+    // Timestamp check first — skip lines outside the window.
+    const tsMatch = line.match(/"timestamp"\s*:\s*"([^"]+)"/);
+    if (tsMatch) {
+      const ts = Date.parse(tsMatch[1]);
+      if (!isNaN(ts) && ts < windowStartMs) continue;
+    }
+
+    // Extract event type. Both "type" and "event_type" field names appear in
+    // the events.jsonl depending on the emitter.
+    const typeMatch = line.match(/"(?:event_type|type)"\s*:\s*"([^"]+)"/);
+    if (!typeMatch) continue;
+    const eventType = typeMatch[1];
+    // Skip internal audit-infrastructure events that are not user-facing types.
+    if (eventType === 'audit_event_autofilled') continue;
+    counts[eventType] = (counts[eventType] || 0) + 1;
+  }
+
+  return counts;
+}
+
+/**
+ * Write the promised-event tracker file with 30-day fire counts for all
+ * registered event types. This is the primary fix for F-05: the tracker was
+ * always `{event_types:{}}` because no writer populated it with counts.
+ *
+ * Format:
+ *   {
+ *     event_types: { [event_type]: count },
+ *     window_days: 30,
+ *     generated_at: "<ISO>",
+ *   }
+ *
+ * @param {string} cwd
+ * @param {string[]} registeredTypes - All non-optional event types from shadow.
+ * @param {Object.<string, number>} fireCounts30d - Result of tallyAllFires30d.
+ * @param {string} nowIso - Current time as ISO string.
+ */
+function writeTracker(cwd, registeredTypes, fireCounts30d, nowIso) {
+  const stateDir = path.join(cwd, '.orchestray', 'state');
+  const file     = path.join(stateDir, 'promised-event-tracker.last-run.json');
+
+  // Build the event_types map: every registered type gets a count (0 if not seen).
+  const eventTypesMap = Object.create(null);
+  for (const t of registeredTypes) {
+    eventTypesMap[t] = fireCounts30d[t] || 0;
+  }
+
+  const payload = {
+    event_types:  eventTypesMap,
+    window_days:  TRACKER_WINDOW_DAYS,
+    generated_at: nowIso,
+  };
+
+  try {
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(payload, null, 2), { mode: 0o600 });
+  } catch (e) {
+    process.stderr.write(`audit-firing-nightly: tracker write failed: ${e.message}\n`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sentinel helpers
+// ---------------------------------------------------------------------------
 
 /**
  * Write today's sentinel file. Best-effort; failures are logged.
@@ -143,11 +252,25 @@ function main() {
   const shadow = loadShadow(cwd);
   if (!shadow) return 0;
 
-  // Tally 24h fires from the live audit log.
   const eventsPath   = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
+  const nowIso       = nowDate.toISOString();
+
+  // --- F-05 FIX: Populate the tracker BEFORE dark detection ---
+  // Scan the last 30 days to get per-event-type fire counts. This is what
+  // fills promised-event-tracker.last-run.json which was always empty before.
+  const trackerWindowStartMs = nowMs - TRACKER_WINDOW_MS;
+  const fireCounts30d = tallyAllFires30d(eventsPath, trackerWindowStartMs);
+
+  // All non-optional registered event types (used to ensure every registered
+  // type appears in the tracker, even if it never fired).
+  const allRegisteredTypes = Array.from(shadow.entries.keys());
+  writeTracker(cwd, allRegisteredTypes, fireCounts30d, nowIso);
+  // --- end F-05 fix ---
+
+  // Tally 24h fires for the activation-ratio metric (separate, narrower window).
   const windowStartMs = nowMs - WINDOW_MS;
-  const eventTypes   = Array.from(shadow.entries.keys());
-  const fireMap      = tally24hFires(eventsPath, eventTypes, windowStartMs);
+  const eventTypes    = allRegisteredTypes;
+  const fireMap       = tally24hFires(eventsPath, eventTypes, windowStartMs);
 
   // Compute ratios.
   const { numerator, denominator, ratio, darkCount, darkTypes } = computeRatios(shadow, fireMap);
@@ -167,18 +290,20 @@ function main() {
     process.stderr.write(`audit-firing-nightly: emit event_activation_ratio failed: ${e.message}\n`);
   }
 
-  // Emit one event_promised_but_dark row per dark type.
-  const nowIso = nowDate.toISOString();
+  // Emit one event_promised_but_dark row per dark type (dark = zero 24h fires,
+  // non-optional). Enrich with the 30d total_fire_count from the tracker so
+  // consumers know whether the event is truly never-fired vs. just quiet today.
   for (const darkType of darkTypes) {
+    const totalFireCount = fireCounts30d[darkType] || 0;
     try {
       writeEvent({
-        type:       'event_promised_but_dark',
-        version:    1,
-        event_type: darkType,
-        days_dark:  null,   // not tracked by nightly; use full tracker for age data
+        type:                    'event_promised_but_dark',
+        version:                 1,
+        event_type:              darkType,
+        days_dark:               null,   // age tracking delegated to audit-promised-events
         first_seen_in_shadow_at: null,
-        total_fire_count: 0,
-        window_label: WINDOW_LABEL,
+        total_fire_count:        totalFireCount,
+        window_label:            WINDOW_LABEL,
       }, { cwd });
     } catch (e) {
       process.stderr.write(`audit-firing-nightly: emit event_promised_but_dark(${darkType}) failed: ${e.message}\n`);
@@ -200,4 +325,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { main, utcDateLabel, sentinelPath };
+module.exports = { main, utcDateLabel, sentinelPath, tallyAllFires30d, writeTracker };
