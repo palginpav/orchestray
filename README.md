@@ -38,6 +38,12 @@ That's it. Orchestray scores complexity, decomposes the task, routes agents, run
 |---------|-------------|
 | `/orchestray:run [task]` | Trigger orchestration; `--preview` shows plan first |
 | `/orchestray:status` | Active orchestration state |
+| `/orchestray:config` | View or change any of ~80 settings; `show federation` for federation state |
+| `/orchestray:kb` | List, view, or add knowledge-base entries from past orchestrations |
+| `/orchestray:review-pr <PR>` | Review a GitHub pull request with the reviewer agent |
+| `/orchestray:learn-doc <url>` | Distill a URL into a reusable skill pack future agents auto-load |
+| `/orchestray:federation status` | Show federation state and shared tier contents |
+| `/orchestray:playbooks` | Manage project-specific playbooks that customize agent behavior |
 | `/orchestray:resume` | Resume an interrupted orchestration |
 | `/orchestray:loop` | Iterate-until primitive for tasks that need repeated adjustment |
 | `/orchestray:rollback` | Restore workspace to a pre-spawn snapshot |
@@ -49,11 +55,16 @@ That's it. Orchestray scores complexity, decomposes the task, routes agents, run
 | `/orchestray:update` | Update Orchestray to the latest version |
 | `/orchestray:report` | Full audit report with cost breakdown |
 | `/orchestray:issue [#/url]` | Orchestrate from a GitHub issue |
-| `/orchestray:redo <W-id>` | Re-run a planning item; `--cascade` to update dependents |
-| `/orchestray:watch` | Live-tail a running orchestration |
-| `/orchestray:state peek` | Inspect raw Orchestray runtime state |
 | `/orchestray:feature` | Inspect or wake quarantined feature gates |
 | `/orchestray:doctor` | Health probes; `--deep` for install-integrity check |
+
+### Recovery / debugging
+
+| Command | What it does |
+|---------|-------------|
+| `/orchestray:redo <task-id>` | Re-run a task; `--cascade` to update dependents |
+| `/orchestray:watch` | Live-tail a running orchestration |
+| `/orchestray:state` | Inspect (`peek`), pause, cancel, or gc orchestration state |
 
 ## Agent roles
 
@@ -79,7 +90,7 @@ Five specialist templates also ship: translator, ui-ux-designer, database-migrat
 ## How it works
 
 - PM scores every prompt (0–12). Score below threshold → normal Claude Code. Score at or above threshold → orchestration.
-- PM decomposes the task into subtasks, routes each to the right agent (Haiku / Sonnet / Opus by complexity), and runs independent subtasks in parallel.
+- PM decomposes the task into tasks, routes each to the right agent (Haiku / Sonnet / Opus by complexity), and runs independent tasks in parallel.
 - Each agent delivers a structured result. Reviewer failures route back to Developer with specific feedback (verify-fix loop).
 - On close, Orchestray archives per-orchestration events, extracts patterns, and emits a cost rollup visible in `/orchestray:analytics`.
 - Session resilience: if context compacts mid-orchestration, Orchestray writes a dossier before compaction and re-injects it on the next message.
@@ -130,6 +141,18 @@ Since v2.2.12, Contracts validation is a hard-fail (exit 2). If a task YAML `## 
 
 **MCP grounding missing blocks pm / researcher / debugger / architect spawns** (`agent_mcp_grounding_missing`)
 v2.2.10 promotes the MCP grounding gate from warning to hard-block (exit 2) for these four roles. The server-side prefetch hook normally satisfies the gate automatically before each spawn. If the gate fires unexpectedly (e.g. in a custom spawn path that bypasses the prefetch hook), verify that `bin/prefetch-mcp-grounding.js` is registered as `PreToolUse:Agent` in your hooks configuration. Set `ORCHESTRAY_MCP_GROUNDING_GATE_DISABLED=1` as an emergency bypass.
+
+**Reviewer spawn blocked on missing `## Dimensions to Apply` or `## Git Diff` (v2.2.15+)** (`reviewer_dimensions_gate_blocked` / `reviewer_git_diff_check_failed`)
+The PM must include both blocks in the reviewer delegation prompt. To downgrade to warn-only: `ORCHESTRAY_REVIEWER_DIMENSIONS_GATE_DISABLED=1`, `ORCHESTRAY_REVIEWER_GIT_DIFF_GATE_DISABLED=1`. See `agents/pm-reference/delegation-templates.md` for the canonical template.
+
+**Spawn blocked after 3 missing `context_size_hint` lines (v2.2.15+)** (`context_size_hint_missing_after_ramp`)
+Add `context_size_hint: system=N tier2=N handoff=N` to your delegation prompt. Threshold tunable: `ORCHESTRAY_CONTEXT_SIZE_HINT_RAMP_THRESHOLD=N`. Full bypass: `ORCHESTRAY_CONTEXT_SIZE_HINT_GATE_DISABLED=1`.
+
+**Developer / release-manager success spawn blocked on missing `## Handoff` commit body (v2.2.15+)** (`commit_handoff_body_missing_after_ramp`)
+Every developer/release-manager success commit needs `## Handoff` in the body. Auto-commits (worktree/master) are exempt. Bypass: `ORCHESTRAY_COMMIT_HANDOFF_GATE_DISABLED=1`.
+
+**Worktree edits silently lost on agent exit (resolved in v2.2.18; restart Claude Code if upgrading)**
+Resolved in v2.2.18. Agents now `wip(auto):` commit before teardown. If you are on v2.2.17 or earlier and have uncommitted worktree work, upgrade immediately. Pre-existing locked worktrees with no commits cannot be salvaged.
 
 ## License
 
