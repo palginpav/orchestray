@@ -34,7 +34,13 @@ const DEFAULTS = Object.freeze({
   enabled: true,
   scout_min_bytes: 12288,
   scout_blocked_ops: Object.freeze(['Edit', 'Write', 'Bash']),
-  scout_blocked_paths: Object.freeze(['.orchestray/state/*', 'agents/**', 'bin/**']),
+  scout_blocked_paths: Object.freeze([
+    '.orchestray/state/*',
+    '.orchestray/audit/*',
+    'bin/_lib/_haiku-routing-rule.js',
+    '.git/**',
+    'node_modules/**',
+  ]),
 });
 
 /**
