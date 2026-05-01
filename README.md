@@ -180,6 +180,8 @@ Set in `.orchestray/config.json` or as env vars. No session restart required.
 | Dossier orphan compensation at SessionStart (v2.2.18) | `dossier_compensation.enabled: false` | `ORCHESTRAY_DOSSIER_COMPENSATION_DISABLED=1` |
 | Dual-install divergence auto-heal (v2.2.18) | `dual_install.autoheal_enabled: false` | `ORCHESTRAY_DUAL_INSTALL_AUTOHEAL_DISABLED=1` |
 | Rolling-median token estimate bootstrapper (v2.2.18) | `tokenwright.bootstrap_enabled: false` | `ORCHESTRAY_TOKENWRIGHT_BOOTSTRAP_DISABLED=1` |
+| Reviewer `## Dimensions to Apply` auto-inject on spawn (v2.2.19) | — | `ORCHESTRAY_REVIEWER_DIMENSIONS_GATE_DISABLED=1` (downgrades inject+block to warn) |
+| L1 prompt compression (v2.2.19, default-off) | `tokenwright.l1_compression_enabled: true` | — (re-enable only; compression is off by default in v2.2.19) |
 
 ## Requirements
 

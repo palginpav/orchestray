@@ -3,6 +3,59 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.2.19] - 2026-05-01
+
+v2.2.19 is a focused wiring pass: 10 token-saving features from a 14.5-hour audit that were present as code but never actually executing. The reviewer dimension-scoping hook now fires on every reviewer spawn (was wired in prose only). The phase-slice loader now reliably picks up the right context slice (was falling back to the legacy monolith 75% of the time). The tokenwright realized-savings formula stops inflating negative savings. The dossier orphan detector stops firing on clean sessions. The haiku-scout now covers the PM's largest reads instead of blocking them. And the archetype-advisory cache actually writes entries instead of staying empty forever. All changes are default-on with kill switches; no config changes required.
+
+### Added
+
+- **Reviewer dimension-scoping is now actually wired.** A new `inject-review-dimensions` hook fires on every reviewer spawn and inserts a `## Dimensions to Apply` block into the reviewer's context. In v2.2.18 this behavior was documented in PM prose but never executed — reviewer spawns saw zero scoping events. Kill switch: `ORCHESTRAY_REVIEWER_DIMENSIONS_WARN_DISABLED=1` (warn gate) / `ORCHESTRAY_REVIEWER_DIMENSIONS_GATE_DISABLED=1` (block gate).
+- **Archetype advisory cache now writes entries.** `inject-archetype-advisory` calls `recordApplication()` on each serve. Previously the write path had zero callers — the cache stayed empty across every session and every spawn was a cold-cache miss. Cold-cache bootstrap (populating the cache from historical data) is a v2.2.20 follow-up.
+- **Curate-runner dispatcher** bridges the PM curator-spawn lockout introduced in v2.2.17, so `/orchestray:learn curate` resumes normal operation. (D1)
+
+### Fixed
+
+- **Phase-slice loader now accepts both `phase:` and `current_phase:` YAML keys.** A key asymmetry caused the loader to fall back to the legacy monolith on 75% of orchestration spawns, negating the token savings the phase-slice feature was designed to deliver. Both key forms are now accepted; no config change required.
+- **Tokenwright realized-savings no longer reports negative values.** `resolveActualTokens` was falling back to the session-cumulative `event.usage.input_tokens` counter when transcript containment failed. This inflated the baseline, making savings appear negative (researcher role was showing −53k tokens). The fallback now records savings as unknown rather than corrupting the rollup.
+- **Dossier orphan detector stops firing on clean sessions.** The orphan auditor now skips emission when no `SessionStart(compact|resume)` occurred in the current session — preventive writes during normal sessions are not orphans. Additionally, the detector now deduplicates per orchestration lifetime, emitting at most once per orchestration ID.
+- **Dual-install parity check no longer flags source-only files.** `SOURCE_ONLY_ALLOWLIST` (covering `install.js` and similar files that intentionally differ between source and install target) is now respected. These files were previously flagged as `content_mismatch` on every parity scan, drowning out real divergence signals.
+- **Haiku-scout now covers PM large reads.** `scout_blocked_paths` defaults narrowed to volatile state directories and build trees only. The previous defaults blocked `agents/**` and `bin/**` — the PM's entire large-read workload — routing all of those reads inline instead of to haiku. Operators with custom `scout_blocked_paths` config retain their values unchanged.
+- **L1 compression kill switch defaults to off.** `tokenwright.l1_compression_enabled` defaults to `false` in v2.2.19. The `safe-l1` compression technique generated 77 events and saved 0 bytes in v2.2.18. Compression telemetry volume drops to ~0/hour. Revival planned for v2.2.20 alongside a heading-list audit. Kill switch: `tokenwright.l1_compression_enabled: true` to re-enable early.
+- **`compression_double_fire_detected` schema compliance.** The `dedup_key` field is renamed to `dedup_token` to match the declared schema. Gated behind the L1 compression flag; activates with v2.2.20 re-enable.
+
+### Under the hood
+
+- `rehydration_skipped_clean` schema relaxed — `counter`, `max`, and `bytes_would_inject` fields are now optional (were required, causing spurious schema-shadow blocks on clean-session events).
+- `session_start` audit event emitted from `inject-resilience-dossier` for the orphan detector's `SessionStart(compact|resume)` check.
+- `dossier-orphan-emitted.<orchId>` sentinel decoupled from the threshold escalator so both mechanisms operate independently.
+- `bootstrapEstimate` uses `bytes/4` as the cold-cache baseline (was a static 500-token fallback, causing 900%+ drift on first spawn).
+- `diff_text` passed to the archetype classifier for future-proofing.
+- `inject-review-dimensions` audit event carries an explicit `ts` field — no autofill dependency.
+- 5 pre-existing test contracts updated to match the behaviors v2.2.19 deliberately changed (resolveActualTokens unknown fallback, `dedup_token` rename, pm.md hash, quarantine fixture for `review_dimension_scoping_applied`).
+
+### Schema delta
+
+- 273 → 275 (+2 net: `review_dimension_scoping_applied` added; `rehydration_skipped_clean` relaxed from required to optional fields — backward-compatible)
+- Shadow regen content-stable (275 event types, two consecutive runs produce identical output)
+
+### Kill switches added
+
+| Env var | Config key | What it disables |
+|---------|-----------|-----------------|
+| `ORCHESTRAY_REVIEWER_DIMENSIONS_GATE_DISABLED=1` | — | Reviewer `## Dimensions to Apply` block gate (downgrades to warn) |
+| — | `tokenwright.l1_compression_enabled: true` | Re-enables L1 compression (default-off in v2.2.19) |
+
+### Tests
+
+- 5934 total / 5934 pass / 0 fail / 0 skipped (vs v2.2.18 baseline 5881/5881/0/0 — net +53 tests across R-RV-DIMS, phase-slice, orphan dedup, dual-install allowlist, scout, archetype, and stale-contract updates)
+
+### Migration notes
+
+- Restart Claude Code after upgrading.
+- No config changes required — every gate ships default-on with kill switch.
+- **`scout_blocked_paths` default change**: if you have no custom config, PM large reads of `agents/**` and `bin/**` now route to haiku-scout instead of inline. If you rely on inline routing for those paths, add them back via `haiku_routing.blocked_paths` in `.orchestray/config.json`.
+- **Compression telemetry drops to ~0/hour**: this is intentional. The safe-l1 technique was producing zero savings; v2.2.20 will revive it with a corrected implementation.
+
 ## [2.2.18] - 2026-04-30
 
 v2.2.18 closes a four-time-recurring data-loss bug where agent edits in linked git worktrees were silently discarded during worktree cleanup. It also lands a deterministic post-ship probe for the v2.2.17 drainer-tombstone fix, and reduces the dominant audit-log noise sources by an estimated 80%+ (schema-shadow caching, tokenwright drift, dual-install divergence, dossier injection gap). Every gate ships default-on with a kill switch; no config changes required.
