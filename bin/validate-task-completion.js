@@ -49,6 +49,8 @@ const { validateCrossField } = require('./_lib/t15-cross-field');
 // HANDOFF_CONTRACT_SUFFIX so the agent-side prompt and the hook-side
 // enforcement can never drift apart.
 const { HANDOFF_REQUIRED_SECTIONS } = require('./_lib/handoff-contract-text');
+// v2.2.21 T4 F7: shared path-containment guard for artifact-body reads.
+const { validateTranscriptPath } = require('./_lib/path-containment');
 
 // ---------------------------------------------------------------------------
 // R-DX2 (v2.1.11): Artifact-path fields and placeholder rejection
@@ -289,6 +291,10 @@ const KNOWN_EVENT_TYPES = new Set([
   'researcher_citations_gate_blocked',
   // P1-10 (v2.2.15): platform-oracle grounding gate
   'platform_oracle_grounding_gate_blocked',
+  // v2.2.21 T7 (PM-4): reviewer git-diff audit-mode acceptance
+  'reviewer_git_diff_audit_mode_accepted',
+  // v2.2.21 T9 (T4 F3/F4/F7): shared transcript-path containment guard
+  'transcript_path_containment_failed',
 ]);
 
 /**
@@ -665,10 +671,13 @@ function checkArtifactBodySizes(structuredResult, projectRoot, capConfig) {
       if (!looksLikePath(v.trim())) continue;
 
       // Try to read the file — wrap in try/catch (non-fatal per contract).
+      // v2.2.21 T4 F7: belt-and-braces containment check (defense-in-depth;
+      // primary gate runs earlier in the pipeline before this function is reached).
       let content;
       try {
-        const resolved = path.resolve(projectRoot, v.trim());
-        content = fs.readFileSync(resolved, 'utf8');
+        const safePath = validateTranscriptPath(v.trim(), projectRoot);
+        if (!safePath) continue; // outside allowed roots — skip silently
+        content = fs.readFileSync(safePath, 'utf8');
       } catch (_) {
         // Missing or unreadable file: not a block trigger per spec.
         continue;
@@ -1007,6 +1016,53 @@ function main() {
           );
         }
       }
+
+      // === v2.2.21 W2-T7: design-role acceptance_rubric enforcement ===
+      // W-OP-5 (T1): handoff-contract.md §3 requires `acceptance_rubric` for
+      // design-producing roles but the T15 hook did not enforce it.
+      // Kill switch: ORCHESTRAY_T15_ACCEPTANCE_RUBRIC_DISABLED=1.
+      if (structuredResult && agentRole &&
+          process.env.ORCHESTRAY_T15_ACCEPTANCE_RUBRIC_DISABLED !== '1' &&
+          !isRoleHardDisabled(agentRole, process.env)) {
+        const DESIGN_TIER = new Set([
+          'architect', 'inventor', 'refactorer', 'researcher', 'security-engineer',
+        ]);
+        if (DESIGN_TIER.has(agentRole)) {
+          const rubric = structuredResult.acceptance_rubric;
+          const rubricMissing = rubric === undefined || rubric === null ||
+            (typeof rubric === 'string' && rubric.trim() === '') ||
+            (typeof rubric === 'object' && !Array.isArray(rubric) &&
+              Object.keys(rubric).length === 0) ||
+            (Array.isArray(rubric) && rubric.length === 0);
+          if (rubricMissing) {
+            emitAuditEvent(cwd, {
+              version:          1,
+              timestamp:        new Date().toISOString(),
+              type:             'pre_done_checklist_failed',
+              hook:             'validate-task-completion',
+              orchestration_id: resolveOrchestrationId(cwd),
+              agent_role:       agentRole,
+              tier:             'hard',
+              missing_sections: ['acceptance_rubric'],
+              reason:           'acceptance_rubric_required_for_design_role',
+              session_id:       event.session_id || null,
+            });
+            process.stderr.write(
+              '[orchestray] validate-task-completion: BLOCKED — ' + agentRole +
+              ' Structured Result is missing `acceptance_rubric` field. ' +
+              'Design-producing roles must include an acceptance rubric ' +
+              '(see agents/pm-reference/handoff-contract.md §3 and rubric-format.md). ' +
+              'Kill switch: ORCHESTRAY_T15_ACCEPTANCE_RUBRIC_DISABLED=1\n'
+            );
+            process.stdout.write(JSON.stringify({
+              continue: false,
+              reason: 'acceptance_rubric_required_for_design_role',
+            }));
+            process.exit(2);
+          }
+        }
+      }
+      // === end v2.2.21 W2-T7 ===
 
       // v2.2.9 B-2.1: per-role schema validation (16/38 W2 findings collapse here).
       // Runs AFTER the generic-section check above so missing-section rejections take

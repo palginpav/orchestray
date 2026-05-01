@@ -103,6 +103,10 @@ function runSweepForBanner(projectDir, sentinelPath, sessionId) {
     env: Object.assign({}, process.env, {
       ORCHESTRAY_TEST_SENTINEL_PATH: sentinelPath,
       HOME: fakeHome,
+      // v2.2.21 W2-T8: dispatch collapses >2 banners into a single summary
+      // line; this regression asserts on banner content text, so request the
+      // verbatim-fire path via the documented escape hatch.
+      ORCHESTRAY_MIGRATION_BANNERS_ALL: '1',
     }),
   });
   return {

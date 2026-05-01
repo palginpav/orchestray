@@ -251,7 +251,9 @@ process.stdin.on('end', () => {
     const HINT_RE_FLAT = /^\s*`?context_size_hint:\s*system=(\d+)\s+tier2=(\d+)\s+handoff=(\d+)/m;
     // Object form regex: JSON-like { system: N, tier2: N, handoff: N } with
     // flexible whitespace around punctuation (handles copy-paste from docs).
-    const HINT_RE_OBJ  = /^\s*`?context_size_hint:\s*\{\s*system\s*:\s*(\d+)\s*,\s*tier2\s*:\s*(\d+)\s*,\s*handoff\s*:\s*(\d+)\s*\}/m;
+    // Also accepts double-quoted keys ("system", "tier2", "handoff") — LLM-generated
+    // prompts naturally produce JSON-with-quotes form. PM-1 fix (v2.2.21).
+    const HINT_RE_OBJ  = /^\s*`?context_size_hint:\s*\{\s*"?system"?\s*:\s*(\d+)\s*,\s*"?tier2"?\s*:\s*(\d+)\s*,\s*"?handoff"?\s*:\s*(\d+)\s*\}/m;
 
     let systemSize  = (toolInput.context_size_hint && toolInput.context_size_hint.system)  || 0;
     let tier2Size   = (toolInput.context_size_hint && toolInput.context_size_hint.tier2)   || 0;
@@ -334,13 +336,16 @@ process.stdin.on('end', () => {
       } catch (_e) {
         // Audit emit failure does not prevent the block
       }
-      process.stdout.write(JSON.stringify({
-        type: 'block',
-        message: `[orchestray] Spawn blocked: the "${role}" agent was spawned without a context_size_hint. ` +
+      const _missingMsg = `[orchestray] Spawn blocked: the "${role}" agent was spawned without a context_size_hint. ` +
                  `To fix: include "context_size_hint: system=N tier2=N handoff=N" as a line in the delegation ` +
                  `prompt (or pass tool_input.context_size_hint with non-zero system/tier2/handoff values). ` +
                  `To disable this gate entirely (not recommended in production): ` +
-                 `ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED=1.`,
+                 `ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED=1.`;
+      // PM-2 fix (v2.2.21): mirror to stderr so Claude Code's error reporter shows the actionable instruction.
+      process.stderr.write(_missingMsg + '\n');
+      process.stdout.write(JSON.stringify({
+        type: 'block',
+        message: _missingMsg,
       }) + '\n');
       process.exit(2);
     }
@@ -396,10 +401,13 @@ process.stdin.on('end', () => {
 
       if (result.action === 'block') {
         // Hard-block: deny spawn with exit 2
+        const _budgetMsg = `[orchestray] Spawn blocked: the "${role}" agent's context (${computedSize} tokens) exceeds its budget limit (${result.budget} tokens). ` +
+                   `To proceed: (1) break the task into smaller subtasks, or (2) set "budget_enforcement.hard_block": false in .orchestray/config.json to allow this spawn with a warning instead of a block.`;
+        // PM-2 fix (v2.2.21): mirror to stderr so Claude Code's error reporter shows the actionable instruction.
+        process.stderr.write(_budgetMsg + '\n');
         process.stdout.write(JSON.stringify({
           type: 'block',
-          message: `[orchestray] Spawn blocked: the "${role}" agent's context (${computedSize} tokens) exceeds its budget limit (${result.budget} tokens). ` +
-                   `To proceed: (1) break the task into smaller subtasks, or (2) set "budget_enforcement.hard_block": false in .orchestray/config.json to allow this spawn with a warning instead of a block.`,
+          message: _budgetMsg,
         }) + '\n');
         process.exit(2);
       }

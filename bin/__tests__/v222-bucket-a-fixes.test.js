@@ -243,15 +243,16 @@ describe('v2.2.2 A4 — validate-reviewer-scope backtick + heading tolerance', (
     assert.equal(r.scoped, false);
   });
 
-  test('only 2 backticked bullets → NOT scoped (threshold is 3)', () => {
-    // Use a heading that does NOT match the existing FILE_MARKER list.
+  test('2 backticked bullets → IS scoped (v2.2.21 W-CQ-6: threshold lowered from 3 to 1)', () => {
+    // v2.2.21 T7: BULLET_PATH_THRESHOLD lowered from 3 to 1 to stop false-rejecting
+    // 1-2 file hotfix/scoped reviews (W-CQ-6 finding). Two bullets are now accepted.
     const prompt = [
       'Just check these things:',
       '- `src/foo.ts`',
       '- `src/bar.ts`',
     ].join('\n');
     const r = reviewerScopeMod.evaluateScope(prompt);
-    assert.equal(r.scoped, false, 'two bullets should still fall below threshold; got ' + r.evidence);
+    assert.equal(r.scoped, true, 'two bullets should now be scoped (threshold is 1); got ' + r.evidence);
   });
 });
 

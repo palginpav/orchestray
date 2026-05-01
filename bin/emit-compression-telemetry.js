@@ -33,6 +33,7 @@ const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { writeEvent } = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
+const { validateTranscriptPath } = require('./_lib/path-containment');
 
 // ---------------------------------------------------------------------------
 // Compression marker patterns
@@ -117,16 +118,38 @@ function resolveOrchestrationId(cwd) {
  *
  * Returns null if the transcript is missing, unreadable, or has no user entry.
  *
+ * v2.2.21 T4 F4: path is validated via the shared `validateTranscriptPath`
+ * guard before any fs read. On containment failure a
+ * `transcript_path_containment_failed` event is emitted and null is returned.
+ *
  * @param {string|null|undefined} transcriptPath
+ * @param {string} [cwd] - Resolved project root for containment check.
  * @returns {string|null}
  */
-function readDelegationPrompt(transcriptPath) {
+function readDelegationPrompt(transcriptPath, cwd) {
   if (!transcriptPath || typeof transcriptPath !== 'string') return null;
+
+  const safePath = validateTranscriptPath(
+    transcriptPath,
+    cwd || process.cwd(),
+    (eventType, reason) => {
+      try {
+        writeEvent({
+          type: eventType,
+          reason,
+          raw_path: String(transcriptPath).slice(0, 200),
+          timestamp: new Date().toISOString(),
+        }, { cwd: cwd || process.cwd() });
+      } catch (_e) { /* telemetry must never crash the hook */ }
+    },
+  );
+  if (!safePath) return null;
+
   let raw;
   try {
     // Read only the first 64 KB — delegation prompts are large but bounded.
     const HEAD_BYTES = 64 * 1024;
-    const fd = fs.openSync(transcriptPath, 'r');
+    const fd = fs.openSync(safePath, 'r');
     try {
       const buf = Buffer.alloc(HEAD_BYTES);
       const bytesRead = fs.readSync(fd, buf, 0, HEAD_BYTES, 0);
@@ -220,7 +243,7 @@ function handleSubagentStart(event) {
   const agentType = event.agent_type || null;
   const ts = new Date().toISOString();
 
-  const promptText = readDelegationPrompt(event.agent_transcript_path);
+  const promptText = readDelegationPrompt(event.agent_transcript_path, cwd);
   if (!promptText) {
     // No prompt text available — nothing to grep. Exit cleanly.
     return { eventsEmitted: [] };

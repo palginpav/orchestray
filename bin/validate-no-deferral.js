@@ -40,6 +40,7 @@ const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { writeEvent } = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { recordDegradation } = require('./_lib/degraded-journal');
+const { validateTranscriptPath } = require('./_lib/path-containment');
 
 // Outputs bigger than this are sliced down from the tail to keep the hook fast.
 const MAX_SCAN_BYTES = 100 * 1024; // 100 KB
@@ -107,10 +108,16 @@ function isReleasePhase(cwd, event) {
  * Return the stdout-like text from the hook payload: either `output`, the
  * last 100 KB of the `transcript_path` file, or the raw `prompt` field.
  *
+ * v2.2.21 T4 F3: `transcript_path` is validated via the shared
+ * `validateTranscriptPath` guard before any fs read. On containment failure
+ * an audit event `transcript_path_containment_failed` is emitted and the
+ * function returns '' as if the path were absent.
+ *
  * @param {object} event
+ * @param {string} [cwd] - Resolved project root; required for path containment check.
  * @returns {string}
  */
-function collectOutput(event) {
+function collectOutput(event, cwd) {
   if (!event) return '';
   if (typeof event.output === 'string' && event.output.length > 0) {
     return event.output.slice(-MAX_SCAN_BYTES);
@@ -119,13 +126,24 @@ function collectOutput(event) {
     return event.result.slice(-MAX_SCAN_BYTES);
   }
   if (typeof event.transcript_path === 'string' && event.transcript_path.length > 0) {
+    const safePath = validateTranscriptPath(
+      event.transcript_path,
+      cwd || process.cwd(),
+      (eventType, reason) => emitAuditEvent(cwd || process.cwd(), {
+        timestamp: new Date().toISOString(),
+        type: eventType,
+        reason,
+        raw_path: String(event.transcript_path).slice(0, 200),
+      }),
+    );
+    if (!safePath) return '';
     try {
-      const stat = fs.statSync(event.transcript_path);
+      const stat = fs.statSync(safePath);
       const size = stat.size;
       if (size <= MAX_SCAN_BYTES) {
-        return fs.readFileSync(event.transcript_path, 'utf8');
+        return fs.readFileSync(safePath, 'utf8');
       }
-      const fd = fs.openSync(event.transcript_path, 'r');
+      const fd = fs.openSync(safePath, 'r');
       try {
         const buf = Buffer.alloc(MAX_SCAN_BYTES);
         const read = fs.readSync(fd, buf, 0, MAX_SCAN_BYTES, size - MAX_SCAN_BYTES);
@@ -221,7 +239,7 @@ function main() {
         process.exit(0);
       }
 
-      const output = collectOutput(event);
+      const output = collectOutput(event, cwd);
       const match = findDeferral(output);
       if (!match.matched) {
         process.stdout.write(JSON.stringify({ continue: true }));

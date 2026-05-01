@@ -1191,16 +1191,14 @@ function install(targetDir) {
     );
   } catch (_e) { /* tolerate — probe is best-effort */ }
 
-  // v2.1.0: emit a one-time advisory on first install of this major feature version.
-  // Only fires when upgrading from v2.0.x (prevVersion starts with "2.0.") or on a
-  // fresh install (prevVersion === null) onto a v2.1.0 package.
-  // The message is informational and non-blocking; stderr keeps it out of pipe output.
-  if (VERSION.startsWith('2.1.') && (prevVersion === null || (prevVersion && prevVersion.startsWith('2.0.')))) {
-    process.stderr.write(
-      '\n  [orchestray] v2.1.0 ships federation + FTS5 + curator. All are opt-in.\n' +
-      '  See /orchestray:config show federation and /orchestray:learn --help for details.\n\n'
-    );
-  }
+  // === v2.2.21 W2-T8: federation banner cleanup ===
+  // The legacy `if (VERSION.startsWith('2.1.') ...)` federation banner that
+  // formerly lived here is dead code on v2.2.x installs (the guard never
+  // matches). Federation, FTS5, and curator are now documented in README.md
+  // and KILL_SWITCHES.md, so an install-time advisory adds no information
+  // beyond what `/orchestray:federation status` and `/orchestray:config show
+  // federation` already surface on demand. Deleted per F-11.
+  // === end v2.2.21 W2-T8 ===
 
   // U-2 fix: RESTART reminder appears BEFORE "Done!" so it is not missed.
   // FN-23: final-ceremony block stays on stdout — this is the user-visible

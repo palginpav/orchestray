@@ -47,6 +47,7 @@ const {
 const { writeEvent } = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { recordDegradation } = require('./_lib/degraded-journal');
+const { dispatch: dispatchMigrationBanners } = require('./_lib/migration-banner-ledger');
 
 // ──────────────────────────────────────────────────────────────────────────────
 // v2.0.21: upgrade-pending warning
@@ -173,104 +174,18 @@ function emitUpgradePendingWarning(sessionId, cwd) {
       'one-time reminder. RESTART to load new agents (this message won\'t repeat).' +
       gatedSuffix + '\n'
     );
-    // v2.1.14 R-FLAGS: emit drift-sentinel migration note as a separate line so it
-    // is not buried after the "won't repeat" boundary marker of the restart reminder.
-    process.stderr.write(
-      '[orchestray] v2.1.14 migration: enable_drift_sentinel default is now false. ' +
-      'If you rely on drift-sentinel output, add \'"enable_drift_sentinel": true\' to ' +
-      '.orchestray/config.json before your next orchestration.\n'
-    );
-    // v2.1.16 R-AUTODOC-OFF: auto_document default flipped from true to false.
-    // The reviewer's documentation pass on every orchestration covers docs gaps,
-    // so the auto-spawn was redundant insurance on typical workloads.
-    process.stderr.write(
-      '[orchestray] v2.1.16 migration: auto_document default is now false. ' +
-      'The documenter agent no longer auto-spawns after every orchestration — ' +
-      'the reviewer\'s documentation pass already audits docs drift. ' +
-      'To restore prior behavior, add \'"auto_document": true\' to ' +
-      '.orchestray/config.json.\n'
-    );
-    // v2.1.16 R-AT-FLAG: announce the agent_teams namespace rename + dual-gate.
-    process.stderr.write(
-      '[orchestray] v2.1.16 migration (R-AT-FLAG): the top-level "enable_agent_teams" key ' +
-      'is renamed to the "agent_teams": { "enabled": ... } block. The legacy key is honored ' +
-      'for one release with a deprecation warning. Default flips to OFF in v2.1.16. ' +
-      'To re-enable Agent Teams, set BOTH \'"agent_teams": {"enabled": true}\' in ' +
-      '.orchestray/config.json AND CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 in your environment, ' +
-      'then read agents/pm-reference/agent-teams-decision.md before using team mode.\n'
-    );
-    // v2.2.0 P2.1 + P2.2: name the three default-on flips on first session
-    // post-upgrade so a regression-detecting user knows which switch to flip
-    // (per locked-scope §default-on policy and feedback_default_on_shipping.md).
-    // F-003 (v2.2.0 fix-pass).
-    process.stderr.write(
-      '[orchestray] v2.2.0 migration: Block-Z prefix is enabled by default ' +
-      '(caching.block_z.enabled: true). To opt out for the current session, ' +
-      'set ORCHESTRAY_DISABLE_BLOCK_Z=1. Permanent disable in .orchestray/config.json.\n'
-    );
-    process.stderr.write(
-      '[orchestray] v2.2.0 migration: 4-slot cache-breakpoint manifest is enabled by ' +
-      'default (caching.engineered_breakpoints.enabled: true; strict_invariant stays ' +
-      'false in v2.2.0). Kill switch: ORCHESTRAY_DISABLE_ENGINEERED_BREAKPOINTS=1.\n'
-    );
-    process.stderr.write(
-      '[orchestray] v2.2.0 migration: Haiku scout for PM I/O is enabled by default ' +
-      '(haiku_routing.enabled: true, scout_min_bytes: 12288). Per-session opt-out: ' +
-      'ORCHESTRAY_HAIKU_ROUTING_DISABLED=1. Permanent disable in .orchestray/config.json.\n'
-    );
-    // v2.2.0 P3.3: housekeeper Haiku is enabled by default. Tools FROZEN at
-    // [Read, Glob]; three-layer enforcement (frontmatter + runtime hook + CI test);
-    // drift detector quarantines on any agent-file mutation. Per locked-scope D-5.
-    process.stderr.write(
-      '[orchestray] v2.2.0 migration: orchestray-housekeeper Haiku subagent is enabled ' +
-      'by default (haiku_routing.housekeeper_enabled: true). Tools FROZEN at [Read, Glob]; ' +
-      'drift detector quarantines on any baseline mismatch. Per-session opt-out: ' +
-      'ORCHESTRAY_HOUSEKEEPER_DISABLED=1. Permanent disable in .orchestray/config.json.\n'
-    );
-    // v2.2.0 pre-ship F-003 (cross-phase fix-pass): five additional Phase-1/3
-    // default-on flips were unannounced in the original v2.2.0 banner. Per
-    // locked-scope §default-on policy, EVERY default-on flip must be visible
-    // at upgrade time so a regression-detecting user knows which switch to
-    // flip. The five below complete the 9-flip set.
-    // P1.2 — Output Shape Pipeline (caveman + length cap + structured outputs).
-    process.stderr.write(
-      '[orchestray] v2.2.0 migration: Output Shape Pipeline is enabled by default ' +
-      '(output_shape.enabled: true; caveman_enabled, length_cap_enabled, structured_outputs_enabled all true). ' +
-      'Caveman style + length caps apply to prose-heavy roles; structured outputs flip per ' +
-      'output_shape.staged_flip_allowlist (default ["researcher","tester"] in v2.2.0). ' +
-      'No env override; permanent disable per flag in .orchestray/config.json.\n'
-    );
-    // P1.3 — Pre-Materialized Tier-2 Index (chunked schema lookup).
-    process.stderr.write(
-      '[orchestray] v2.2.0 migration: Tier-2 chunked schema index is enabled by default ' +
-      '(pm_protocol.tier2_index.enabled: true). The PM uses mcp__orchestray__schema_get for ' +
-      'event-schemas.md instead of full-file Reads. ' +
-      'No env override; permanent disable: set pm_protocol.tier2_index.enabled: false in .orchestray/config.json.\n'
-    );
-    // P1.3 D-8 — full-file Read of event-schemas.md is BLOCKED (most user-impacting).
-    process.stderr.write(
-      '[orchestray] v2.2.0 migration: legacy full-file Read of event-schemas.md is BLOCKED by ' +
-      'default (event_schemas.full_load_disabled: true). Reads emit ' +
-      'event_schemas_full_load_blocked advisory and the PM is expected to use ' +
-      'mcp__orchestray__schema_get for chunked lookup. ' +
-      'To restore legacy full-file Read, set event_schemas.full_load_disabled: false ' +
-      'in .orchestray/config.json. No env override.\n'
-    );
-    // P3.2 — delegation-delta spawn-context active.
-    process.stderr.write(
-      '[orchestray] v2.2.0 migration: delegation-delta spawn-context is enabled by default ' +
-      '(pm_protocol.delegation_delta.enabled: true). Subsequent spawns within the same ' +
-      'orchestration receive only the delta against the prior delegation prompt. ' +
-      'Per-session opt-out: ORCHESTRAY_DISABLE_DELEGATION_DELTA=1. ' +
-      'Permanent disable: set pm_protocol.delegation_delta.enabled: false in .orchestray/config.json.\n'
-    );
-    // P3.1 — multi-round audit digests.
-    process.stderr.write(
-      '[orchestray] v2.2.0 migration: multi-round audit digests are enabled by default ' +
-      '(audit.round_archive.enabled: true). Each verify-fix round closure emits ' +
-      'audit_round_closed/audit_round_archived telemetry and writes a per-orchestration digest. ' +
-      'No env override; permanent disable: set audit.round_archive.enabled: false in .orchestray/config.json.\n'
-    );
+    // v2.2.21 W2-T8 (F-02 fix): replace the 13 unconditional migration banners
+    // with a version-keyed ledger dispatch. Banners only fire when prevVersion
+    // is older than each banner's introducedIn; >2 banners collapse into a
+    // single summary line pointing at /orchestray:doctor migrations.
+    // The banner BODIES live in bin/_lib/migration-banner-ledger.js as a
+    // single source of truth. Pass-through env var ORCHESTRAY_MIGRATION_BANNERS_ALL=1
+    // restores legacy "fire everything" behaviour for regression-test pinning.
+    dispatchMigrationBanners({
+      prevVersion: data.previous_version || null,
+      currentVersion: data.version || null,
+      stderr: process.stderr,
+    });
     recordDegradation({
       kind: 'agent_registry_stale',
       severity: 'warn',
@@ -294,53 +209,12 @@ function emitUpgradePendingWarning(sessionId, cwd) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// v2.1.7 Bundle D: one-time resilience-live notice
-// ──────────────────────────────────────────────────────────────────────────────
-
-/**
- * Emit a one-time stderr notice that resilience shipped LIVE by default in
- * v2.1.7 and point operators at the kill-switch env var + config key.
- *
- * Dedup sentinel lives in `.orchestray/state/.resilience-live-noticed-2017`
- * so the message fires exactly once per upgraded install. Additionally
- * dedup-keyed per-session via `/tmp/orchestray-resilience-notice-<session>`
- * so that if the sweep runs multiple times in-session (shouldn't, but
- * defense in depth) the user only sees it once.
- *
- * Fresh installs (which already have the `resilience` config block) get the
- * sentinel seeded by `install.js` and see no notice — the behavior is only
- * surprising on an upgrade from v2.1.6, hence the one-time reminder.
- *
- * Fail-open: any I/O error is swallowed silently.
- *
- * @param {string} cwd       - Absolute project directory path.
- * @param {string|null} sessionId - Sanitized session id from hook payload.
- */
-function emitResilienceLiveNotice(cwd, sessionId) {
-  try {
-    const stateDir = path.join(cwd, '.orchestray', 'state');
-    const sentinelPath = path.join(stateDir, '.resilience-live-noticed-2017');
-    if (existsSilent(sentinelPath)) return;
-
-    // Per-session dedup.
-    const sid = sessionId ? String(sessionId).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 64) : 'unknown';
-    const sessionMarker = path.join(os.tmpdir(), 'orchestray-resilience-notice-' + sid);
-    if (existsSilent(sessionMarker)) return;
-
-    process.stderr.write(
-      '[orchestray] v2.1.7: compaction-resilience dossier is LIVE by default. ' +
-      'After auto-compact, the PM re-hydrates from .orchestray/state/resilience-dossier.json. ' +
-      'Disable with ORCHESTRAY_RESILIENCE_DISABLED=1 or resilience.enabled:false in .orchestray/config.json.\n'
-    );
-
-    // Best-effort: write the sentinel so future sessions skip the notice.
-    touchSilent(sentinelPath, stateDir);
-    try { fs.writeFileSync(sessionMarker, '1', 'utf8'); } catch (_e) { /* ignore */ }
-  } catch (_e) {
-    // Fail-open.
-  }
-}
-
+// v2.2.21 W2-T8 NOTE: the v2.1.7 resilience-live banner formerly lived here as
+// a stand-alone helper (`emitResilienceLiveNotice`) with its own
+// `.resilience-live-noticed-2017` sentinel. It is now an entry in the
+// migration-banner ledger (bin/_lib/migration-banner-ledger.js), gated by
+// the same prevVersion < 2.1.7 filter all other migration banners use. The
+// orphan sentinel file is left in place on legacy installs (harmless).
 // ──────────────────────────────────────────────────────────────────────────────
 // W8 helper: additive config.json migration (2013-W8-config-migration)
 // ──────────────────────────────────────────────────────────────────────────────
@@ -2543,12 +2417,9 @@ function main() {
       // per-session marker handles in-session deduplication).
       emitUpgradePendingWarning(sessionId, cwd);
 
-      // v2.1.7 Bundle D: one-time notice that resilience is live by default.
-      // Emitted once per upgraded install (sentinel file in state dir).
-      // No-op on fresh installs — install.js creates the sentinel pre-emptively
-      // so fresh users don't see the notice. Kill-switch reminder is valuable
-      // either way, but only surprising on an upgrade.
-      emitResilienceLiveNotice(cwd, sessionId);
+      // v2.2.21 W2-T8: the v2.1.7 resilience-live banner is now part of the
+      // migration-banner-ledger dispatch invoked from emitUpgradePendingWarning
+      // (above). The previous emitResilienceLiveNotice helper has been removed.
 
       // ── v2.2.6: tokenwright self-probe (once per install) ──────────────────
       // install.js writes `.orchestray/state/tokenwright-self-probe-needed` on

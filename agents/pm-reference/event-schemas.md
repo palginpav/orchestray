@@ -3889,6 +3889,34 @@ Field notes:
 
 ---
 
+### `transcript_path_containment_failed`
+
+Emitted by hook scripts that read user-supplied transcript paths
+(`bin/validate-no-deferral.js`, `bin/emit-compression-telemetry.js`,
+`bin/validate-task-completion.js`) when a caller-supplied path fails the shared
+`validateTranscriptPath` containment guard in `bin/_lib/path-containment.js`
+(v2.2.21 T4 hardening). The hook continues (fail-open), but the path is not read.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "transcript_path_containment_failed",
+  "reason": "<dotdot_in_path|outside_allowed_roots|realpath_cwd_failed|realpath_failed>",
+  "raw_path": "<first 200 chars of the rejected path>"
+}
+```
+
+Field notes:
+- `reason`: `dotdot_in_path` — raw `..` component found before realpath resolution.
+  `outside_allowed_roots` — resolved path is outside cwd, `~/.claude`, and `os.tmpdir()`.
+  `realpath_cwd_failed` — could not resolve the project root itself.
+  `realpath_failed` — could not resolve the supplied path.
+- `raw_path`: The raw (unresolved) path as supplied by the hook payload, truncated to
+  200 characters to bound log size.
+- This event is emitted on a best-effort basis and never blocks the hook (exit 0).
+
+---
+
 ### `pre_done_checklist_failed`
 
 Emitted by `bin/validate-task-completion.js` (wired as `SubagentStop` / `TaskCompleted`)
@@ -8332,6 +8360,31 @@ Field notes:
 - `spawn_id`: agent_id or task_id from the spawn payload; null if unavailable.
 - `schema_version`: always `1` in this release.
 - Warn-only: does not block the spawn. Kill switch: `ORCHESTRAY_REVIEWER_GIT_DIFF_CHECK_DISABLED=1`.
+
+---
+
+### `reviewer_git_diff_audit_mode_accepted` event
+
+Emitted by `bin/validate-reviewer-git-diff.js` (PreToolUse:Agent, v2.2.21 T7 PM-4)
+when a reviewer spawn prompt includes a `## Git Diff` section whose body contains
+an audit-mode marker (`_n/a — audit-mode dispatch_` or `_n/a, audit-mode_`). This
+indicates a legitimate audit/discovery-mode review that has no implementation diff.
+Kill switch: `ORCHESTRAY_REVIEWER_AUDIT_MODE_DISABLED=1` disables this acceptance path.
+
+```json
+{
+  "type": "reviewer_git_diff_audit_mode_accepted",
+  "version": 1,
+  "schema_version": 1,
+  "spawn_id": "subagent-abc123",
+  "timestamp": "2026-01-01T00:00:00.000Z"
+}
+```
+
+Field notes:
+- `spawn_id`: agent_id or task_id from the spawn payload; null if unavailable.
+- `schema_version`: always `1` in this release.
+- Non-blocking: emitted when the audit-mode path short-circuits to `continue: true`.
 
 ---
 

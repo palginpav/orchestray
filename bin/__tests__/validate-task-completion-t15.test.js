@@ -219,6 +219,8 @@ describe('validate-task-completion — integration (T15)', () => {
       output: '## Structured Result\n```json\n' + JSON.stringify({
         status: 'success', summary: 'ok', files_changed: [], files_read: [], issues: [], assumptions: [],
         sources_cited: ['https://a.example', 'https://b.example', 'https://c.example'],
+        // v2.2.21 T7: researcher is design-tier; acceptance_rubric required.
+        acceptance_rubric: 'r',
       }) + '\n```\n',
     });
     assert.equal(r.status, 0, 'fully-compliant researcher payload should pass T15');

@@ -263,13 +263,16 @@ const ROLE_FIXTURES = [
   ['debugger',         makeBaseResult({ repro_confirmed: true, fix_location_hint: 'f' }), 'root_cause'],
   ['tester',           makeBaseResult({ test_plan_block_present: true }),                  'test_suite_result'],
   ['documenter',       makeBaseResult(),                                                    'canonical_source_checked'],
-  ['refactorer',       makeBaseResult({ plan_block: 'p', test_baseline_post_diff: 'd' }), 'behavior_preserved'],
-  ['inventor',         makeBaseResult({ prototype_executed: true }),                        'verdict'],
-  ['security-engineer',makeBaseResult({ severity_breakdown: {}, security_mode: 'design' }),'threats_found'],
+  // v2.2.21 T7: design-tier roles (refactorer, inventor, security-engineer, researcher)
+  // now require acceptance_rubric. Fixtures include it so the test isolates the
+  // NEXT missing field (the original intent of each fixture).
+  ['refactorer',       makeBaseResult({ plan_block: 'p', test_baseline_post_diff: 'd', acceptance_rubric: 'r' }), 'behavior_preserved'],
+  ['inventor',         makeBaseResult({ prototype_executed: true, acceptance_rubric: 'r' }),                       'verdict'],
+  ['security-engineer',makeBaseResult({ severity_breakdown: {}, security_mode: 'design', acceptance_rubric: 'r' }),'threats_found'],
   ['release-manager',  makeBaseResult({ changelog_user_readable: true }),                  'version_parity_checked'],
   ['ux-critic',        makeBaseResult({ personas_used: ['power_user'], findings_count: 0 }),'surfaces_reviewed'],
   ['platform-oracle',  makeBaseResult({ webfetch_urls: ['https://a.com'] }),               'claims'],
-  ['researcher',       makeBaseResult(),                                                    'sources_cited'],
+  ['researcher',       makeBaseResult({ acceptance_rubric: 'r' }),                         'sources_cited'],
   ['project-intent',   makeBaseResult(),                                                    'output_regex'],
 ];
 
@@ -339,13 +342,14 @@ const ROLE_VALID_FIXTURES = [
   ['debugger',          makeBaseResult({ root_cause: 'root', repro_confirmed: true, fix_location_hint: 'f' })],
   ['tester',            makeBaseResult({ test_suite_result: { total: 1, pass: 1, fail: 0 }, test_plan_block_present: true })],
   ['documenter',        makeBaseResult({ canonical_source_checked: true })],
-  ['refactorer',        makeBaseResult({ behavior_preserved: true, plan_block: 'p', test_baseline_post_diff: 'd' })],
-  ['inventor',          makeBaseResult({ verdict: 'novel', prototype_executed: true })],
-  ['security-engineer', makeBaseResult({ threats_found: [], severity_breakdown: {}, security_mode: 'design' })],
+  // v2.2.21 T7: design-tier roles now require acceptance_rubric.
+  ['refactorer',        makeBaseResult({ behavior_preserved: true, plan_block: 'p', test_baseline_post_diff: 'd', acceptance_rubric: 'r' })],
+  ['inventor',          makeBaseResult({ verdict: 'novel', prototype_executed: true, acceptance_rubric: 'r' })],
+  ['security-engineer', makeBaseResult({ threats_found: [], severity_breakdown: {}, security_mode: 'design', acceptance_rubric: 'r' })],
   ['release-manager',   makeBaseResult({ version_parity_checked: true, changelog_user_readable: true })],
   ['ux-critic',         makeBaseResult({ surfaces_reviewed: [], personas_used: ['power_user'], findings_count: 0 })],
   ['platform-oracle',   makeBaseResult({ claims: [], webfetch_urls: [] })],
-  ['researcher',        makeBaseResult({ sources_cited: ['https://a.com', 'https://b.com', 'https://c.com'] })],
+  ['researcher',        makeBaseResult({ sources_cited: ['https://a.com', 'https://b.com', 'https://c.com'], acceptance_rubric: 'r' })],
 ];
 
 describe('v229-b2 — integration: valid complete results pass for all roles', () => {

@@ -40,16 +40,16 @@ const FILE_MARKERS = [
   /(^|\n)\s*#{1,3}\s*(verification|files?\s+to\s+(?:verify|read|review|check))\b/i,
 ];
 
-// Count bulleted list items that look like repo paths. Three or more is
-// accepted as evidence of an explicit file list (the common case is a bullet
-// list of 3+ files under the review heading).
+// Count bulleted list items that look like repo paths. One or more is
+// accepted as evidence of an explicit file list (W-CQ-6: lowered from 3 to 1
+// in v2.2.21 to avoid false-rejecting 1-2 file hotfix/scoped reviews).
 //
 // v2.2.2 Fix A4: optional backticks on each side of the path token. The
 // project's house style wraps paths in backticks (e.g. `` - `src/foo.ts` ``).
 // Without this tolerance the regex matched 0 bullets in well-scoped operator
 // prompts (false-positive rate was empirically 100% in v2.2.1 telemetry).
 const BULLET_PATH_RE = /(?:^|\n)[\t ]*[-*][\t ]+`?[\w./-]+\.[a-z0-9]{1,6}`?(?:\b|$)/gi;
-const BULLET_PATH_THRESHOLD = 3;
+const BULLET_PATH_THRESHOLD = 1; // v2.2.21 W-CQ-6: was 3, now 1
 
 /**
  * Determine whether the reviewer spawn has an explicit file list.
@@ -76,7 +76,7 @@ function evaluateScope(promptBody) {
     return { scoped: true, evidence: 'bullet-list paths (' + bulletMatches.length + ')' };
   }
 
-  return { scoped: false, evidence: 'no files:/scope: marker, <' + BULLET_PATH_THRESHOLD + ' bullet paths' };
+  return { scoped: false, evidence: 'no files:/scope: marker and no bullet-list paths found' };
 }
 
 function shouldValidate(event) {
