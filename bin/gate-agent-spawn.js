@@ -95,9 +95,33 @@ if (require.main === module) {
     if (mcpEnforcement.global_kill_switch === true && isKnownDispatch) {
       // In kill-switch mode, we still enforce 2.0.11 model-validity checks on
       // known dispatches but skip the new 2.0.12 MCP-checkpoint gate entirely.
+      // Emit kill_switch_activated event for observability (I-SE-3).
+      try {
+        writeEvent({
+          type:           'kill_switch_activated',
+          version:        1,
+          schema_version: 1,
+          timestamp:      new Date().toISOString(),
+          switch_name:    'global_kill_switch',
+          tool_name:      toolName,
+          source:         'gate-agent-spawn',
+        }, { cwd });
+      } catch (_ksEvErr) { /* fail-open */ }
       // Fall through to the existing routing.jsonl validation below.
     } else if (mcpEnforcement.global_kill_switch === true) {
       // Kill switch on AND unknown tool — just exit 0 (degraded to 2.0.11 behavior).
+      // Emit kill_switch_activated event for observability (I-SE-3).
+      try {
+        writeEvent({
+          type:           'kill_switch_activated',
+          version:        1,
+          schema_version: 1,
+          timestamp:      new Date().toISOString(),
+          switch_name:    'global_kill_switch',
+          tool_name:      toolName,
+          source:         'gate-agent-spawn',
+        }, { cwd });
+      } catch (_ksEvErr) { /* fail-open */ }
       process.exit(0);
     } else {
       // Unknown-tool policy (only when NOT in kill-switch mode)
@@ -229,6 +253,61 @@ if (require.main === module) {
             }
           }
         }
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // W-AC-4 (v2.2.21): non-PM/non-curate-runner Agent() tool block.
+    //
+    // Anti-pattern #3: a non-PM agent declaring Agent() in its tools allowlist
+    // creates a rogue orchestration path outside the PM's planning loop.
+    // Only the pm and curate-runner roles are authorized to call Agent().
+    //
+    // Detection: the hook payload carries `agent_type` (the calling agent's
+    // role). If it is set, non-empty, and NOT pm/curate-runner, block.
+    // Absent agent_type (orchestrator session) is allowed through — the parent
+    // session has no role restriction.
+    //
+    // Kill switch: ORCHESTRAY_NON_PM_AGENT_GATE_DISABLED=1.
+    // Fail-open: any error in this block allows the spawn.
+    // -----------------------------------------------------------------------
+    {
+      try {
+        const callerRole = event.agent_type || null;
+        const AUTHORIZED_AGENT_ROLES = new Set(['pm', 'curate-runner']);
+        if (
+          callerRole &&
+          !AUTHORIZED_AGENT_ROLES.has(callerRole) &&
+          process.env.ORCHESTRAY_NON_PM_AGENT_GATE_DISABLED !== '1'
+        ) {
+          const nonPmMsg =
+            "[orchestray] gate-agent-spawn: non_pm_agent_declares_agent_tool — " +
+            "agent role '" + callerRole + "' is not authorized to call Agent(). " +
+            "Only 'pm' and 'curate-runner' may spawn sub-agents. " +
+            "Emergency override: set ORCHESTRAY_NON_PM_AGENT_GATE_DISABLED=1.";
+          process.stderr.write(nonPmMsg + '\n');
+          try {
+            writeEvent({
+              type:           'non_pm_agent_spawn_blocked',
+              version:        1,
+              schema_version: 1,
+              timestamp:      new Date().toISOString(),
+              caller_role:    callerRole,
+              tool_name:      toolName,
+              source:         'gate-agent-spawn',
+            }, { cwd });
+          } catch (_npEvErr) { /* fail-open on emit */ }
+          process.stdout.write(JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'deny',
+              permissionDecisionReason: nonPmMsg,
+            },
+          }));
+          process.exit(2);
+        }
+      } catch (_nonPmErr) {
+        // Fail-open: any error → allow.
       }
     }
 

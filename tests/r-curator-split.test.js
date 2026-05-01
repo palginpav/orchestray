@@ -222,10 +222,19 @@ describe('Test 5: behavior-equivalence', () => {
     );
   });
 
-  test('original curator.md is retired', () => {
+  test('curator.md shim exists (I-CQ-1/I-AC-3: curate-runner Agent(curator) must resolve)', () => {
+    // v2.2.21 T27: curator.md is now a live thin shim so Agent(curator) calls
+    // from curate-runner resolve correctly. The full content lives in
+    // curator.md.legacy and the curator-stages/ directory.
     assert.ok(
-      !fs.existsSync(path.join(AGENTS_DIR, 'curator.md')),
-      'curator.md must be renamed to curator.md.legacy'
+      fs.existsSync(path.join(AGENTS_DIR, 'curator.md')),
+      'curator.md shim must exist for Agent(curator) resolution'
+    );
+    // Shim must reference the stage files, not duplicate the full legacy content.
+    const shimContent = fs.readFileSync(path.join(AGENTS_DIR, 'curator.md'), 'utf8');
+    assert.ok(
+      shimContent.includes('curator-stages/'),
+      'curator.md shim must reference agents/curator-stages/ directory'
     );
   });
 

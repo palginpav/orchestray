@@ -27,19 +27,10 @@ const ALL_OPTIONAL = [
   'api-compat',
 ];
 
-const SECURITY_PATH_PATTERNS = [
-  /(^|\/)auth\//i,
-  /(^|\/)crypto\//i,
-  /secrets?/i,
-  /(^|\/)bin\/validate-/i,
-  /(^|\/)hooks\/hooks\.json$/,
-  /(^|\/)\.claude\/settings\.json$/,
-  /(^|\/)mcp-server\//,
-  /permission/i,
-  /token/i,
-  /password/i,
-  /(^|\/|[^a-z])key([^a-z]|$)/i,
-];
+const { SECURITY_SENSITIVE_PATHS } = require('./security-sensitive-paths');
+
+// Alias for local use — canonical list lives in security-sensitive-paths.js.
+const SECURITY_PATH_PATTERNS = SECURITY_SENSITIVE_PATHS;
 
 function isDocPath(p) {
   // R-RV-DIMS F-001 fix (v2.1.16 W12-fix): exclude UI/CLI archetype paths from
