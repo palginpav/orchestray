@@ -3,6 +3,10 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+- Removed unimplemented `active_phase_slice_changed` event reference (was a v2.2.19 doc-only artifact with no producers or consumers); regression test prevents reintroduction.
+
 ## [2.2.19] - 2026-05-01
 
 v2.2.19 is a focused wiring pass: 10 token-saving features from a 14.5-hour audit that were present as code but never actually executing. The reviewer dimension-scoping hook now fires on every reviewer spawn (was wired in prose only). The phase-slice loader now reliably picks up the right context slice (was falling back to the legacy monolith 75% of the time). The tokenwright realized-savings formula stops inflating negative savings. The dossier orphan detector stops firing on clean sessions. The haiku-scout now covers the PM's largest reads instead of blocking them. And the archetype-advisory cache actually writes entries instead of staying empty forever. All changes are default-on with kill switches; no config changes required.
