@@ -36,6 +36,7 @@ const {
 function makeProjectDir() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'v229-orphan-'));
   fs.mkdirSync(path.join(tmp, '.orchestray', 'audit'), { recursive: true });
+  fs.mkdirSync(path.join(tmp, '.orchestray', 'state'), { recursive: true });
   return tmp;
 }
 
@@ -125,9 +126,14 @@ describe('v2.2.9 B-3.3 — runAudit emits dossier_write_without_inject_detected'
   test('Anti-regression: dossier_written without paired inject → orphan event fires', () => {
     const cwd = makeProjectDir();
     writeLiveEvents(cwd, [
+      // v2.2.19 Fix 1a: resume-opportunity gate requires a SessionStart(compact|resume)
+      // event to be present before the orphan detector will fire. Add it here so this
+      // test correctly represents the "real orphan after compact/resume" scenario.
+      { type: 'session_start', orchestration_id: 'orch-orphan-1', source: 'compact', timestamp: '2026-04-28T17:59:00.000Z' },
       { type: 'dossier_written', orchestration_id: 'orch-orphan-1', version: 1, timestamp: '2026-04-28T18:00:00.000Z' },
       { type: 'dossier_written', orchestration_id: 'orch-orphan-1', version: 1, timestamp: '2026-04-28T18:01:00.000Z' },
       // No dossier_injected, no non-kill-switch skip.
+      { type: 'session_start', orchestration_id: 'orch-healthy-1', source: 'compact', timestamp: '2026-04-28T17:59:00.000Z' },
       { type: 'dossier_written', orchestration_id: 'orch-healthy-1', version: 1, timestamp: '2026-04-28T18:00:00.000Z' },
       { type: 'dossier_injected', orchestration_id: 'orch-healthy-1', version: 1, timestamp: '2026-04-28T18:00:01.000Z' },
     ]);
@@ -152,6 +158,9 @@ describe('v2.2.9 B-3.3 — runAudit emits dossier_write_without_inject_detected'
   test('Kill-switch-only skips → STILL fires orphan (the regression class we are fixing)', () => {
     const cwd = makeProjectDir();
     writeLiveEvents(cwd, [
+      // v2.2.19 Fix 1a: resume-opportunity gate — include a SessionStart(compact)
+      // so the orphan detector correctly identifies this as a post-compact orphan.
+      { type: 'session_start', orchestration_id: 'orch-kill-only', source: 'compact', timestamp: '2026-04-28T17:59:00.000Z' },
       { type: 'dossier_written', orchestration_id: 'orch-kill-only', version: 1, timestamp: '2026-04-28T18:00:00.000Z' },
       { type: 'dossier_injection_skipped', skip_reason: 'kill_switch_set', orchestration_id: 'orch-kill-only', version: 1, timestamp: '2026-04-28T18:00:01.000Z' },
     ]);

@@ -180,10 +180,17 @@ function handleUserPromptSubmit(event) {
     const dossierPath = path.join(stateDir, 'resilience-dossier.json');
 
     if (!_exists(lockPath)) {
+      // Schema compliance (v2.2.19 Fix 3): add counter, max, bytes_would_inject
+      // as required by event-schemas.md. For no-lock, no injection has occurred:
+      // counter=0 (no injections consumed), max from config, bytes_would_inject=0
+      // (no dossier read at this point).
       _audit(cwd, {
         type: 'rehydration_skipped_clean',
         reason: 'no-lock',
         orchestration_id: null,
+        counter: 0,
+        max: cfg.max_inject_turns,
+        bytes_would_inject: 0,
       });
       // SKIP-3: no compact-signal.lock — UPS turn is not a post-compact recovery turn.
       _emitInjectionSkipped(cwd, SKIP_REASON.NOT_SESSION_START, {

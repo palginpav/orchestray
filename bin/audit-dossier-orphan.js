@@ -203,6 +203,50 @@ function isOrphan(tally) {
 }
 
 /**
+ * Returns true if the orchestration had at least one `SessionStart` event with
+ * `source=compact` or `source=resume`. Without such an event, dossier writes
+ * are preventive snapshots — not load-bearing recovery state — so "no paired
+ * inject" is expected and should NOT be flagged as an orphan.
+ *
+ * @param {object[]} events - Already-loaded event list for the orchestration.
+ * @returns {boolean}
+ */
+function _hasResumeOpportunity(events) {
+  for (const ev of events) {
+    if (!ev || typeof ev.type !== 'string') continue;
+    // SessionStart hook events appear in events.jsonl with type 'session_start'
+    // or as hook_event_name payloads. The inject hook records them via writeEvent
+    // as type 'session_start' with a `source` field.
+    if (ev.type === 'session_start' || ev.hook_event_name === 'SessionStart') {
+      const src = ev.source || ev.session_source;
+      if (src === 'compact' || src === 'resume') return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Returns true if the orphan detector has already emitted
+ * `dossier_write_without_inject_detected` for this orchestration_id in a prior
+ * Stop hook invocation. Uses the per-orch counter sentinel file as the gate:
+ * a counter value > 0 means at least one orphan event was previously emitted.
+ *
+ * @param {string} cwd
+ * @param {string} orchId
+ * @returns {boolean}
+ */
+function _hasEmittedOrphan(cwd, orchId) {
+  const counterPath = path.join(cwd, '.orchestray', 'state', `dossier-orphan-counter.${orchId}`);
+  try {
+    const raw = fs.readFileSync(counterPath, 'utf8').trim();
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0;
+  } catch (_e) {
+    return false; // file absent — no prior emission
+  }
+}
+
+/**
  * Discover orchestration_ids that have at least one `dossier_written` row.
  * Looks at the live audit log (per-orch archives are derivative from the same
  * live log).
@@ -326,6 +370,16 @@ function runAudit(opts) {
     const tally = tallyDossierEvents(events);
     if (!isOrphan(tally)) continue;
 
+    // Fix 1a — Resume-opportunity gate: skip emission if there was no
+    // SessionStart(compact|resume) for this orchestration. Dossier writes
+    // without a compaction trigger are preventive snapshots, not orphans.
+    if (!_hasResumeOpportunity(events)) continue;
+
+    // Fix 1b — Dedup gate: emit at most once per orchestration lifetime.
+    // The counter sentinel file records prior emissions; if already > 0,
+    // skip re-emission on subsequent Stop hook fires.
+    if (_hasEmittedOrphan(cwd, orchId)) continue;
+
     // Derive triage fields (§2.9): inject_skip_reason helps distinguish
     // "inject path skipped" vs "writes legitimate but not consumed".
     // archive_age_seconds helps identify stale orphans vs fresh ones.
@@ -351,6 +405,9 @@ function runAudit(opts) {
     orphans.push(payload);
 
     // Threshold escalator: increment per-orch counter; emit once on crossing.
+    // NOTE: maybeEmitThreshold also writes the counter file. The dedup gate
+    // above reads this same file — so after the first emission, subsequent
+    // Stop fires will see counter > 0 and skip re-emission.
     maybeEmitThreshold(cwd, orchId);
   }
 
@@ -405,4 +462,6 @@ module.exports = {
   _parseJsonl,
   deriveInjectSkipReason,
   deriveArchiveAgeSeconds,
+  _hasResumeOpportunity,
+  _hasEmittedOrphan,
 };

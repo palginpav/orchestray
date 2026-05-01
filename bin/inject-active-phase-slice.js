@@ -102,17 +102,20 @@ function readPhaseFromOrchestration(cwd) {
     return null;
   }
 
-  // v2.2.2 Fix A3: parser accepts BOTH formats. The documented YAML
-  // frontmatter (`current_phase:`) per phase-contract.md, AND the bold-list
-  // format the PM actually writes today (`- **phase**: <value>` or
-  // `- **current_phase**: <value>`). Old YAML archives still parse via the
-  // first strategy; live PM-written files parse via the second.
+  // v2.2.2 Fix A3 / v2.2.19 T7: parser accepts BOTH formats.
+  // The documented YAML frontmatter key is `current_phase:` per
+  // phase-contract.md, BUT the PM also writes bare `phase:` (same as
+  // auto-commit-master-on-pm-stop.js:134 and write-resilience-dossier.js:226
+  // which already accept both). Two-pass: `current_phase:` takes precedence;
+  // fall back to `phase:` when only the short key is present.
 
   // Strategy 1: YAML frontmatter (documented in phase-contract.md)
   const fmMatch = text.match(/^---\n([\s\S]*?)\n---/);
   if (fmMatch) {
     const fm = fmMatch[1];
-    const phaseMatch = fm.match(/^current_phase:\s*([^\n#]+)/m);
+    const phaseMatch =
+      fm.match(/^current_phase:\s*([^\n#]+)/m) ||
+      fm.match(/^phase:\s*([^\n#]+)/m);
     if (phaseMatch) {
       return phaseMatch[1].trim().toLowerCase().replace(/^["']|["']$/g, '');
     }
