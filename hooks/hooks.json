@@ -164,6 +164,11 @@
           },
           {
             "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/inject-review-dimensions.js",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/inject-spawn-agent-hint.js",
             "timeout": 5
           },

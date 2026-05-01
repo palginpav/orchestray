@@ -5907,6 +5907,77 @@ R-EVENT-NAMING. Source: PM via `ox events append`.
 
 ---
 
+### `review_dimension_scoping_applied` event
+
+Emitted by `bin/inject-review-dimensions.js` (v2.2.19 R-RV-DIMS) on every
+reviewer `Agent()` spawn. Documents whether the `## Dimensions to Apply` block
+was injected, idempotently skipped (PM already authored it), or suppressed by
+a kill switch. Modeled byte-for-byte on `output_shape_applied` so analytics
+can group both behind a single "applied-lever" view.
+
+Required fields: `orchestration_id`, `timestamp`, `review_dimensions`.
+All other fields are nullable per R-EVENT-NAMING.
+
+```json
+{
+  "version": 1,
+  "type": "review_dimension_scoping_applied",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id, or null>",
+  "session_id": "uuid-or-null",
+  "task_id": null,
+  "spawn_id": "<event.tool_use_id or null>",
+  "review_dimensions": "all",
+  "rationale": "security-sensitive path: bin/validate-foo.js",
+  "files_changed_count": 3,
+  "files_changed_source": "developer_agent_stop",
+  "kill_switch_active": false,
+  "kill_switch_source": null,
+  "injected": true,
+  "idempotent_skip": false,
+  "reason": "classifier-rule-3"
+}
+```
+
+Field notes:
+
+- `version`: integer, `1`. Bump on breaking changes.
+- `type`: literal `"review_dimension_scoping_applied"`.
+- `orchestration_id`: nullable string. Resolved from `.orchestray/audit/current-orchestration.json`.
+  `null` when no active orchestration (e.g. reviewer spawned standalone).
+- `session_id`: Claude Code session UUID from hook payload. Nullable.
+- `task_id`: always `null` — same constraint as `output_shape_applied` (the Agent
+  tool payload at PreToolUse:Agent does not carry a task_id).
+- `spawn_id`: `event.tool_use_id` when present, else `null`. Lets analytics correlate
+  with `agent_start.spawn_id`.
+- `review_dimensions`: enum `"all"` OR sorted `string[]` from
+  `["code-quality","performance","documentation","operability","api-compat"]`.
+  Invariant: never contains `"correctness"` or `"security"`.
+- `rationale`: diagnostic string from `classifyReviewDimensions().rationale`.
+- `files_changed_count`: integer ≥ 0. Cardinality of the input `files_changed` array.
+- `files_changed_source`: enum `"developer_agent_stop" | "empty_no_developer" |
+  "empty_kill_switch" | "empty_idempotent_skip"`. Which §2 branch fired.
+- `kill_switch_active`: `true` when either kill switch tripped.
+- `kill_switch_source`: enum `"config" | "env" | null`.
+- `injected`: `true` when the hook appended the block to the prompt.
+- `idempotent_skip`: `true` when the prompt already contained the block.
+- `reason`: short diagnostic string (≤ 80 chars). Examples: `"classifier-rule-3"`,
+  `"kill_switch=env"`, `"idempotent"`, `"empty-no-developer"`.
+
+Cardinality: ~1-3 rows per orchestration (one per reviewer spawn). 90-day rollup
+is the R-RV-DIMS firing-rate dashboard, mirroring `output_shape_applied`'s role
+for P1.2.
+
+Cross-references: `bin/inject-review-dimensions.js` (emit source);
+`bin/_lib/classify-review-dimensions.js` (classifier); design doc
+`.orchestray/kb/decisions/v2219-rv-dims-wiring.md`.
+
+Schema stability: additive-only. Absence of this event on reviewer spawns when
+the master kill switch (`ORCHESTRAY_DISABLE_REVIEW_DIMS_HOOK=1`) fires — that
+is the only case where no event is emitted.
+
+---
+
 ### `tier2_index_lookup` event
 
 Emitted by `bin/_lib/tier2-index.js` (via the `schema_get` MCP verb or

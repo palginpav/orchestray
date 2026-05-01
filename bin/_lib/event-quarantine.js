@@ -119,6 +119,9 @@ const QUARANTINE_ALLOWLIST = {
   config_key_seeded: [
     'orchestration_id', 'timestamp', 'key',
   ],
+  review_dimension_scoping_applied: [
+    'orchestration_id', 'timestamp', 'review_dimensions',
+  ],
 };
 
 // ---------------------------------------------------------------------------
