@@ -54,6 +54,7 @@ const { resolveSafeCwd }              = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { writeEvent }                  = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES }             = require('./_lib/constants');
+const { signRow }                     = require('./_lib/spawn-hmac');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -219,8 +220,11 @@ process.stdout.write(JSON.stringify({ continue: true }));  // always emit early
     }
 
     // Build and append the synthetic spawn request.
+    // v2.2.21 W1-T2: HMAC-sign the row so the drainer can prove the writer
+    // had read access to ~/.claude/orchestray/.spawn-hmac-key. Without the
+    // signature the drainer denies with auto_approve_origin_unverified.
     const requestId = newRequestId();
-    const request = {
+    const requestUnsigned = {
       request_id:       requestId,
       orchestration_id: orchId,
       requester_agent:  REQUESTER_SYSTEM,
@@ -233,6 +237,7 @@ process.stdout.write(JSON.stringify({ continue: true }));  // always emit early
       status:           'pending',
       ts:               new Date().toISOString(),
     };
+    const request = signRow(requestUnsigned);
     appendSpawnRequest(cwd, request);
 
     // Emit `spawn_requested` so downstream observers (and the

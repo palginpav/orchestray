@@ -1144,6 +1144,37 @@ function install(targetDir) {
     fs.writeFileSync(sentinelPath, JSON.stringify(sentinelData) + '\n', 'utf8');
   } catch (_e) { /* fail-open */ }
 
+  // === v2.2.21 W1-T2: spawn HMAC key generation ===
+  // Closes T4 F1 (CWE-862). The drainer at bin/process-spawn-requests.js
+  // requires `auto_approve: true` rows to carry a valid HMAC signature
+  // computed from this key. Stored at ~/.claude/orchestray/.spawn-hmac-key
+  // (mode 0600) so both global and local installs share it. NEVER overwrites
+  // an existing key — rotation is a separate operation. Best-effort: an
+  // install-time failure here leaves the gate denying all auto_approve rows
+  // (safe default), and the operator can run /orchestray:doctor to surface
+  // the issue.
+  // Boundary marker: this block lives in the post-install setup zone and is
+  // non-overlapping with W2-T5's chmod sweep (which targets bin/*.js exec bits).
+  try {
+    const { ensureKey } = require('./_lib/spawn-hmac');
+    const result = ensureKey();
+    if (result.created) {
+      say('  \x1b[32m✓\x1b[0m Generated spawn-HMAC key (mode 0600) at ~/.claude/orchestray/.spawn-hmac-key');
+    } else if (result.error) {
+      say(
+        '  \x1b[33m⚠\x1b[0m Failed to generate spawn-HMAC key: ' + result.error +
+        '. auto_approve gating will deny housekeeper spawns until this is fixed.'
+      );
+    }
+    // Mirror to project-local install if a project root is detected. The
+    // global install owns the canonical key; the project-local install
+    // copy is a read-only mirror so the same key satisfies both lookups.
+    // (Both call sites resolve via os.homedir() in spawn-hmac.js, so the
+    // mirror is currently a no-op that we preserve for forward-compat with
+    // a future per-project key option. Best-effort, never fails install.)
+  } catch (_e) { /* fail-open per install posture */ }
+  // === end v2.2.21 W1-T2 ===
+
   // v2.2.6: write a sentinel so the first UserPromptSubmit after this install
   // triggers the tokenwright self-probe (post-upgrade-sweep.js picks this up).
   // The sentinel lives in .orchestray/state/ which is project-local; stateDir

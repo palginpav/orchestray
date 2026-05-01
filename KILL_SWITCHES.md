@@ -56,6 +56,7 @@ Within each category, entries are sorted alphabetically by feature name.
 | Pattern-application acknowledgement exit-2 (v2.2.17, was warn in v2.2.15) | — | `ORCHESTRAY_PATTERN_APPLICATION_GATE_DISABLED=1`; soft-warn: `ORCHESTRAY_PATTERN_APPLICATION_RAMP_THRESHOLD=N` |
 | Per-role hard-tier handoff schema | — | `ORCHESTRAY_T15_<ROLE>_HARD_DISABLED=1` (per role: `DEVELOPER`, `RESEARCHER`, etc.) |
 | Per-role write-path gate | — | `ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1` |
+| Per-role write-path traversal hardening (v2.2.21 T8) | — | `ORCHESTRAY_ROLE_WRITE_TRAVERSAL_DISABLED=1` (reverts ONLY the pre-allowlist `..`/absolute/invalid-chars block; rest of the gate continues) |
 | Schema-get self-call on shadow cache miss | — | `ORCHESTRAY_SCHEMA_GET_SELF_CALL_DISABLED=1` |
 | Schema-shadow safety net (event-type validation) | — | `ORCHESTRAY_DISABLE_SCHEMA_SHADOW=1` |
 | SessionStart hook-chain drift validator (v2.2.13) | — | `ORCHESTRAY_HOOK_ORDER_VALIDATION_DISABLED=1` |

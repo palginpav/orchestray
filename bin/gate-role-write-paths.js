@@ -26,31 +26,21 @@ const { resolveSafeCwd }    = require('./_lib/resolve-project-cwd');
 const { writeEvent }         = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES }    = require('./_lib/constants');
 const { recordDegradation }  = require('./_lib/degraded-journal');
-const { ROLE_WRITE_ALLOWLISTS, RESTRICTED_ROLES } = require('./_lib/role-write-allowlists');
+const {
+  ROLE_WRITE_ALLOWLISTS,
+  RESTRICTED_ROLES,
+  COMPILED_ALLOWLISTS,
+  compileGlob,
+} = require('./_lib/role-write-allowlists');
 
 // ---------------------------------------------------------------------------
 // Glob-to-regex converter (no dependencies — minimatch is not in scope).
-// Supports: ** (any segments), * (within one segment), plain strings.
+// Compilation lives in `_lib/role-write-allowlists.js` so the unit test can
+// inspect the compiled regex map directly. `globToRegex` is re-exported here
+// for backward compat with existing call sites.
 // ---------------------------------------------------------------------------
 
-/**
- * Convert a glob pattern to a RegExp.
- *
- * @param {string} glob
- * @returns {RegExp}
- */
-function globToRegex(glob) {
-  // Escape regex metacharacters except * and ?.
-  let regStr = glob
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&') // escape regex special chars
-    .replace(/\*\*/g, '\x00')              // sentinel for **
-    .replace(/\*/g, '[^/]*')              // * → any segment chars
-    .replace(/\x00/g, '.*');              // ** → any chars (incl. /)
-  // Anchor: must match full (relative) path, possibly with leading ./
-  return new RegExp('^(?:\\./)?' + regStr + '$');
-}
-
-const _compiledAllowlists = {};
+const globToRegex = compileGlob;
 
 /**
  * Get the compiled (RegExp[]) allowlist for a role.
@@ -59,10 +49,51 @@ const _compiledAllowlists = {};
  * @returns {RegExp[]}
  */
 function getAllowlistRegexes(role) {
-  if (_compiledAllowlists[role]) return _compiledAllowlists[role];
-  const patterns = ROLE_WRITE_ALLOWLISTS[role] || [];
-  _compiledAllowlists[role] = patterns.map(globToRegex);
-  return _compiledAllowlists[role];
+  return COMPILED_ALLOWLISTS[role] || [];
+}
+
+// ---------------------------------------------------------------------------
+// v2.2.21 T8 — pre-allowlist path-traversal hardening (CWE-22).
+// ---------------------------------------------------------------------------
+
+// Canonical regex from agents/pm.md §0.5 outcome-probe scan AND
+// bin/_lib/sentinel-probes.js _DOTDOT_RE. Three independent uses of the same
+// pattern stay in sync because they all describe the same invariant.
+const _CHAR_ALLOWLIST_RE = /^[a-zA-Z0-9_./-]+$/;
+const _DOTDOT_SEGMENT_RE = /(^|\/)\.\.(\/|$)/;
+
+/**
+ * Pre-allowlist path validation. Returns a {ok, reason} envelope.
+ *
+ * Three rejections, all hard-block:
+ *   - `invalid_chars`            — relPath contains chars outside [A-Za-z0-9_./-]
+ *   - `traversal_segment_present`— relPath contains a `..` path segment
+ *   - `absolute_path`            — original write target was an absolute path
+ *
+ * Skipped entirely when `ORCHESTRAY_ROLE_WRITE_TRAVERSAL_DISABLED=1` is set;
+ * the rest of the gate (allowlist enforcement) continues regardless.
+ *
+ * @param {string} originalTarget - The raw `tool_input.file_path` value (pre-resolve).
+ * @param {string} relPath        - The cwd-relative form derived from originalTarget.
+ * @returns {{ok: boolean, reason: string|null}}
+ */
+function validatePathPreAllowlist(originalTarget, relPath) {
+  if (process.env.ORCHESTRAY_ROLE_WRITE_TRAVERSAL_DISABLED === '1') {
+    return { ok: true, reason: null };
+  }
+  if (typeof originalTarget === 'string' && path.isAbsolute(originalTarget)) {
+    return { ok: false, reason: 'absolute_path' };
+  }
+  if (typeof relPath !== 'string' || relPath.length === 0) {
+    return { ok: false, reason: 'invalid_chars' };
+  }
+  if (!_CHAR_ALLOWLIST_RE.test(relPath)) {
+    return { ok: false, reason: 'invalid_chars' };
+  }
+  if (_DOTDOT_SEGMENT_RE.test(relPath)) {
+    return { ok: false, reason: 'traversal_segment_present' };
+  }
+  return { ok: true, reason: null };
 }
 
 /**
@@ -202,6 +233,37 @@ function main() {
       relPath = targetPath;
     }
 
+    // v2.2.21 T8 — Pre-allowlist hardening (CWE-22). MUST run BEFORE the
+    // allowlist regex check: the allowlist patterns are compiled with `**`
+    // expansions that can match `../../../etc/foo.md` if reached. Reject any
+    // `..` segment, absolute path, or non-portable character now.
+    const pre = validatePathPreAllowlist(targetPath, relPath);
+    if (!pre.ok) {
+      emitAuditEvent(cwd, {
+        timestamp: new Date().toISOString(),
+        type: 'role_write_path_blocked',
+        hook: 'gate-role-write-paths',
+        agent_role: role,
+        attempted_path: relPath,
+        allowlist_matched: false,
+        allowlist: ROLE_WRITE_ALLOWLISTS[role] || [],
+        reason: pre.reason,
+        session_id: event.session_id || null,
+      });
+      process.stderr.write(
+        '[orchestray] gate-role-write-paths: BLOCKED — ' + role + ' attempted to write "' +
+        String(targetPath).slice(0, 200) + '" (relPath="' + relPath + '"); reason=' + pre.reason + '.\n' +
+        'Path-traversal hardening: hardcoded reject before allowlist check.\n' +
+        'Kill switch (this check only): ORCHESTRAY_ROLE_WRITE_TRAVERSAL_DISABLED=1\n' +
+        'Kill switch (entire gate):     ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1\n'
+      );
+      process.stdout.write(JSON.stringify({
+        continue: false,
+        reason: 'role_write_path_blocked:' + role + ':' + pre.reason,
+      }));
+      process.exit(2);
+    }
+
     if (isPathAllowed(role, relPath)) {
       process.stdout.write(JSON.stringify({ continue: true }));
       process.exit(0);
@@ -234,6 +296,7 @@ module.exports = {
   extractTargetPath,
   resolveRole,
   globToRegex,
+  validatePathPreAllowlist,
 };
 
 if (require.main === module) {

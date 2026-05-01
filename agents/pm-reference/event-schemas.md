@@ -7511,7 +7511,8 @@ Field notes:
 ### `role_write_path_blocked` event
 
 Emitted by `bin/gate-role-write-paths.js` (PreToolUse:Write|Edit|MultiEdit) when a
-write-gated role attempts to write outside its allowlist (v2.2.9 B-2.4).
+write-gated role attempts to write outside its allowlist (v2.2.9 B-2.4) or when
+the v2.2.21 path-traversal hardening trips before the allowlist is consulted.
 Kill switch: `ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1`.
 
 ```json
@@ -7524,6 +7525,7 @@ Kill switch: `ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1`.
   "attempted_path": "<relative-path>",
   "allowlist_matched": false,
   "allowlist": ["..."],
+  "reason": "<traversal_segment_present|absolute_path|invalid_chars|null>",
   "session_id": "<session-id|null>"
 }
 ```
@@ -7531,6 +7533,13 @@ Kill switch: `ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1`.
 Field notes:
 - Gated roles: `reviewer`, `tester`, `documenter`, `release-manager`, `debugger`.
 - `allowlist_matched` is always `false` when this event fires.
+- `reason` (v2.2.21 T8, optional): one of
+  - `traversal_segment_present` — relPath contains a `..` path component.
+  - `absolute_path`              — original write target was absolute.
+  - `invalid_chars`              — relPath contained chars outside `[A-Za-z0-9_./-]`.
+  - `null` (or omitted)          — pre-allowlist checks passed; the block came
+    from the allowlist regex failing to match.
+- Kill switch (pre-allowlist hardening only): `ORCHESTRAY_ROLE_WRITE_TRAVERSAL_DISABLED=1`.
 
 ---
 

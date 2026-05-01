@@ -34,6 +34,7 @@ const path = require('node:path');
 
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
+const { verifyRow } = require('./_lib/spawn-hmac');
 
 // Import helpers from the spawn_agent tool module.
 const {
@@ -43,6 +44,19 @@ const {
   DEFAULT_QUOTA,
   DEFAULT_AUTO_APPROVE_THRESHOLD_PCT,
 } = require('./mcp-server/tools/spawn_agent');
+
+// === v2.2.21 W1-T2: auto_approve origin allowlist (CWE-862 closure) ===
+// Only requesters in this set may carry `auto_approve: true`. New entries
+// require both code review and an explicit threat-model addendum (see
+// .orchestray/kb/artifacts/v2221-T4-security-findings.md § F1).
+const SYSTEM_REQUESTER_ALLOWLIST = new Set([
+  'system:housekeeper-trigger',
+]);
+
+// F8 closure: stale rows whose orchestration_id != active orch get evicted
+// after this age. 5 minutes = ample slack for a legitimate row queued just
+// before an orchestration boundary, while bounding JSONL growth.
+const STALE_ROW_TTL_MS = 5 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Drain stdin (required for Claude Code hook scripts to avoid EPIPE)
@@ -209,7 +223,44 @@ function run() {
   }
 
   // --- Read pending requests ---
-  const entries = readSpawnRequests(cwd);
+  let entries = readSpawnRequests(cwd);
+
+  // F8 closure (v2.2.21): TTL-evict pending rows whose orchestration_id does
+  // not match the active orch and whose age exceeds STALE_ROW_TTL_MS. Without
+  // this, forged or abandoned rows accumulate unbounded in spawn-requests.jsonl
+  // (the drainer otherwise filters but never deletes them).
+  let evictedAny = false;
+  const nowMs = Date.now();
+  const beforeLen = entries.length;
+  entries = entries.filter((e) => {
+    if (!e || typeof e !== 'object') return false;       // drop malformed
+    if (e.status !== 'pending') return true;             // keep terminal rows
+    if (e.orchestration_id === orchId) return true;      // keep current-orch
+    let ageMs = Infinity;
+    if (typeof e.ts === 'string') {
+      const parsed = Date.parse(e.ts);
+      if (!Number.isNaN(parsed)) ageMs = nowMs - parsed;
+    }
+    const stale = ageMs > STALE_ROW_TTL_MS;
+    if (stale) {
+      evictedAny = true;
+      emitEvent(cwd, {
+        type: 'spawn_request_evicted',
+        version: 1,
+        schema_version: 1,
+        orchestration_id: orchId,
+        request_id: e.request_id,
+        evicted_orchestration_id: e.orchestration_id || null,
+        reason: 'stale_orchestration_id_ttl',
+        age_ms: Number.isFinite(ageMs) ? ageMs : null,
+      });
+    }
+    return !stale;
+  });
+  if (evictedAny || entries.length !== beforeLen) {
+    writeSpawnRequests(cwd, entries);
+  }
+
   const pending = entries.filter(e => e && e.status === 'pending' && e.orchestration_id === orchId);
 
   if (pending.length === 0) {
@@ -283,9 +334,55 @@ function run() {
     // generated synthetic requests (e.g. `spawn-housekeeper-on-trigger.js`
     // queueing a housekeeper run after a KB write) where user approval is
     // not appropriate. Quota and max-depth checks above still apply.
+    //
+    // v2.2.21 W1-T2 (CWE-862 closure): the auto_approve flag is no longer
+    // self-attesting. The row's `requester_agent` must appear in
+    // SYSTEM_REQUESTER_ALLOWLIST AND the row must carry a valid HMAC
+    // signature derived from ~/.claude/orchestray/.spawn-hmac-key. Failing
+    // either condition → spawn_denied{auto_approve_origin_unverified}. Kill
+    // switch ORCHESTRAY_AUTO_APPROVE_ALLOWLIST_DISABLED=1 reverts to the
+    // v2.2.20 unverified behavior for emergency rollback.
     if (req && req.auto_approve === true) {
-      approved = true;
-      approveReason = 'system_auto_approve';
+      const allowlistDisabled = process.env.ORCHESTRAY_AUTO_APPROVE_ALLOWLIST_DISABLED === '1';
+      if (allowlistDisabled) {
+        approved = true;
+        approveReason = 'system_auto_approve_allowlist_disabled';
+      } else {
+        const requesterAllowed = SYSTEM_REQUESTER_ALLOWLIST.has(req.requester_agent);
+        const sigValid = verifyRow(req);
+        if (requesterAllowed && sigValid) {
+          approved = true;
+          approveReason = 'system_auto_approve';
+        } else {
+          // Hard-deny the row. Skip the budget branch entirely.
+          entries[idx] = Object.assign({}, req, {
+            status: 'denied',
+            decided_at: new Date().toISOString(),
+            reason: 'auto_approve_origin_unverified',
+          });
+          changed = true;
+          emitEvent(cwd, {
+            type: 'spawn_denied',
+            version: 1,
+            schema_version: 1,
+            orchestration_id: orchId,
+            request_id: req.request_id,
+            decision_source: 'auto',
+            reason: 'auto_approve_origin_unverified',
+            requester_agent: req.requester_agent || null,
+            requester_in_allowlist: requesterAllowed,
+            signature_valid: sigValid,
+          });
+          process.stderr.write(
+            '[orchestray] Reactive spawn request DENIED: auto_approve_origin_unverified' +
+            ' (requester=' + (req.requester_agent || 'unknown') +
+            ', allowlist=' + requesterAllowed +
+            ', signature_valid=' + sigValid + ').' +
+            ' Run `/orchestray:spawn-requests` to review.\n'
+          );
+          continue;
+        }
+      }
     } else if (budget.remaining_usd !== null) {
       const threshold = budget.remaining_usd * thresholdPct;
       approved = maxCost < threshold;
