@@ -52,7 +52,7 @@ test('B-7.4: default — Agent() without model is hard-blocked', () => {
   }, env);
   assert.equal(result && result.status, 2, 'must exit 2 by default');
   const stderr = (result && result.stderr || '').toString();
-  assert.match(stderr, /missing required 'model' parameter/);
+  assert.match(stderr, /Missing required `model` parameter/);
 });
 
 test('B-7.4: ORCHESTRAY_STRICT_MODEL_REQUIRED=0 disables the gate (legacy auto-resolve)', () => {
