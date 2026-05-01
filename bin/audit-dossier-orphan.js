@@ -226,24 +226,58 @@ function _hasResumeOpportunity(events) {
 }
 
 /**
+ * Validate that an orchestration ID is safe to use in a file path.
+ * W#8 (v2.2.19 audit-fix R1): guards path.join against injection when orchId
+ * reaches sentinel/counter file construction.
+ *
+ * @param {string} orchId
+ * @returns {boolean}
+ */
+function _isValidOrchId(orchId) {
+  if (!orchId || typeof orchId !== 'string') return false;
+  return /^[A-Za-z0-9_-]+$/.test(orchId);
+}
+
+/**
  * Returns true if the orphan detector has already emitted
  * `dossier_write_without_inject_detected` for this orchestration_id in a prior
- * Stop hook invocation. Uses the per-orch counter sentinel file as the gate:
- * a counter value > 0 means at least one orphan event was previously emitted.
+ * Stop hook invocation. Reads from a dedicated sentinel file (NOT the counter
+ * file written by maybeEmitThreshold).
+ *
+ * E#2 (v2.2.19 audit-fix R1): using a separate sentinel decouples dedup from
+ * the threshold escalator. When ORCHESTRAY_DOSSIER_ORPHAN_THRESHOLD_DISABLED=1
+ * suppresses the counter write, dedup must still work correctly. Prior
+ * implementation keyed on the counter file — that broke dedup as a side-effect
+ * of the threshold kill switch.
  *
  * @param {string} cwd
  * @param {string} orchId
  * @returns {boolean}
  */
 function _hasEmittedOrphan(cwd, orchId) {
-  const counterPath = path.join(cwd, '.orchestray', 'state', `dossier-orphan-counter.${orchId}`);
+  if (!_isValidOrchId(orchId)) return false; // W#8 validation
+  const sentinelPath = path.join(cwd, '.orchestray', 'state', `dossier-orphan-emitted.${orchId}`);
+  return _existsFile(sentinelPath);
+}
+
+/**
+ * Write the per-orchestration orphan-emitted sentinel so subsequent Stop hook
+ * invocations skip re-emitting for the same orchestration.
+ *
+ * E#2 (v2.2.19 audit-fix R1): called immediately after writeEvent in runAudit,
+ * before maybeEmitThreshold. This ensures dedup fires even when the threshold
+ * kill switch suppresses the counter write.
+ *
+ * @param {string} cwd
+ * @param {string} orchId
+ */
+function _markOrphanEmitted(cwd, orchId) {
+  if (!_isValidOrchId(orchId)) return; // W#8 validation
   try {
-    const raw = fs.readFileSync(counterPath, 'utf8').trim();
-    const n = parseInt(raw, 10);
-    return Number.isFinite(n) && n > 0;
-  } catch (_e) {
-    return false; // file absent — no prior emission
-  }
+    const sentinelPath = path.join(cwd, '.orchestray', 'state', `dossier-orphan-emitted.${orchId}`);
+    fs.mkdirSync(path.dirname(sentinelPath), { recursive: true });
+    fs.writeFileSync(sentinelPath, new Date().toISOString(), 'utf8');
+  } catch (_e) { /* fail-open */ }
 }
 
 /**
@@ -309,7 +343,7 @@ function _readThreshold(cwd) {
  * @param {string} orchId
  */
 function maybeEmitThreshold(cwd, orchId) {
-  if (!orchId) return;
+  if (!_isValidOrchId(orchId)) return; // W#8: validate before path.join
   if (process.env.ORCHESTRAY_DOSSIER_ORPHAN_THRESHOLD_DISABLED === '1') return;
 
   const threshold = _readThreshold(cwd);
@@ -404,10 +438,13 @@ function runAudit(opts) {
     } catch (_e) { /* fail-open */ }
     orphans.push(payload);
 
+    // E#2 (v2.2.19 audit-fix R1): write the dedup sentinel immediately after
+    // emit, BEFORE maybeEmitThreshold. This guarantees the sentinel exists even
+    // when ORCHESTRAY_DOSSIER_ORPHAN_THRESHOLD_DISABLED=1 suppresses the counter
+    // write that the old _hasEmittedOrphan relied on.
+    _markOrphanEmitted(cwd, orchId);
+
     // Threshold escalator: increment per-orch counter; emit once on crossing.
-    // NOTE: maybeEmitThreshold also writes the counter file. The dedup gate
-    // above reads this same file — so after the first emission, subsequent
-    // Stop fires will see counter > 0 and skip re-emission.
     maybeEmitThreshold(cwd, orchId);
   }
 
@@ -464,4 +501,6 @@ module.exports = {
   deriveArchiveAgeSeconds,
   _hasResumeOpportunity,
   _hasEmittedOrphan,
+  _markOrphanEmitted,
+  _isValidOrchId,
 };

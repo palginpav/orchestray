@@ -795,7 +795,8 @@ tracking). Emitted by `bin/collect-agent-metrics.js` on `SubagentStop` and
   "estimated_cost_opus_baseline_usd": 0.456,
   "transcript_path": "/path/to/transcript.jsonl",
   "model_used": "sonnet|opus|haiku|null|unknown_team_member",
-  "turns_used": 12
+  "turns_used": 12,
+  "files_changed": ["<path | null, optional array parsed from ## Structured Result>"]
 }
 ```
 
@@ -3600,12 +3601,21 @@ failures.
   "reason": "no-lock" | "counter_exhausted" | "no-dossier" | "completed" |
             "shadow_mode" | "kill-switch",
   "orchestration_id": "<id | null>",
-  "counter": <int, only with counter_exhausted>,
-  "max": <int, only with counter_exhausted>,
+  "counter": "<int|null, optional — present only with counter_exhausted>",
+  "max": "<int|null, optional — present only with counter_exhausted>",
   "lock_source": "<compact|resume|null>",
-  "bytes_would_inject": <int, only with shadow_mode>
+  "bytes_would_inject": "<int|null, optional — present only with shadow_mode>"
 }
 ```
+
+E#4 (v2.2.19 audit-fix R1): `counter`, `max`, and `bytes_would_inject` are
+**optional** fields. The `<int|null, optional>` notation causes the schema
+parser (`bin/_lib/event-schemas-parser.js:241`) to classify them as optional
+(value text contains "null"), so emit sites that omit these fields (e.g.
+`no-dossier`, `completed` paths) do not trigger `schema_shape_violation` rows.
+Analytics readers that compute injection budget MUST filter by
+`reason === 'counter_exhausted'` before reading `counter`/`max`, and filter
+by `reason === 'shadow_mode'` before reading `bytes_would_inject`.
 
 ### Degraded-journal `kind` additions (v2.1.7 Bundle D)
 
@@ -8400,6 +8410,35 @@ Field notes:
 - `outcome`: always `"failed"` in v2.2.11 (the alias fires only when the original `*_failed` event fires).
 - `schema_version`: always 1 (v2.2.11 baseline).
 - Transitional: retire in v2.2.13.
+
+---
+
+### `session_start` event
+
+Emitted by `bin/inject-resilience-dossier.js` `handleSessionStart()` at the top
+of every SessionStart hook invocation (source=compact|resume). Provides a
+production-side anchor for `audit-dossier-orphan.js` `_hasResumeOpportunity()`
+which keys on this event type to determine whether a compaction/resume session
+start occurred since the last dossier write.
+
+```json
+{
+  "type": "session_start",
+  "timestamp": "<ISO 8601>",
+  "source": "compact | resume",
+  "orchestration_id": "<id | null>"
+}
+```
+
+Field notes:
+- `source`: value of the `source` field from the Claude Code SessionStart hook
+  payload (canonical field name is `source`, not `session_source`); defaults
+  to `"compact"` when absent.
+- `orchestration_id`: peeked from `.orchestray/audit/current-orchestration.json`
+  at emit time; `null` when no active orchestration.
+
+Kill switch: none (emitted regardless of `resilience.enabled` to preserve
+audit trail even when injection is disabled).
 
 ---
 

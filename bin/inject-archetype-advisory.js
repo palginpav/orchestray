@@ -250,6 +250,13 @@ function handleUserPromptSubmit(event) {
       // so the analytics rollup can compute hit-rate = served / (served + miss).
       // Mirrors the recordAdvisoryServed style; fail-open per audit-event contract.
       recordCacheMiss(cwd, signature, orchestrationId);
+      // Info #13 (v2.2.19 audit-fix R1): cold-cache bootstrap note.
+      // recordApplication() requires an archetypeId from a matched record, so it
+      // cannot be called here (no match). Bootstrapping the cache from the no-match
+      // path requires a separate seeding mechanism (e.g. a setup command that
+      // pre-populates archetype records from known task signatures). Deferred to a
+      // follow-up: the v2.2.19 fix only wires the match-path (S2 below). Analytics
+      // can detect cold-cache status by comparing miss_count vs min_prior_applications.
       exitWithKillSwitch();
       return;
     }

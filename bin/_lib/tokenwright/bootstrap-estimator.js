@@ -3,6 +3,13 @@
 /**
  * bootstrap-estimator.js — Rolling-median pre-spawn token estimator (W8, v2.2.18).
  *
+ * E#5 / W9 note (v2.2.19 audit-fix R1): This module is inert in production when
+ * tokenwright.l1_compression_enabled=false (default since v2.2.19 safe-l1 kill-switch).
+ * The S2 wire in inject-tokenwright.js calls bootstrapEstimate() after the L1 kill
+ * switch, so this code only executes when L1 is re-enabled. Tested at unit level;
+ * integration tests activate in v2.2.20 L1 revival.
+ *
+ *
  * Problem: static bytes/4 formula drifts 900% on researcher agents and ~5x on
  * developer/tester/reviewer. This module replaces the static fallback with a
  * rolling median of the last 10 `tokenwright_realized_savings.actual_input_tokens`
@@ -195,7 +202,10 @@ function isConfigEnabled(opts) {
  *
  * If >= MIN_SAMPLES historical actual_input_tokens samples exist for the
  * agent_type, returns the rolling median of the last MAX_SAMPLES of them.
- * Otherwise returns STATIC_FALLBACK (500).
+ * Otherwise returns a bytes/4 estimate when `opts.inBytes` is supplied, or
+ * STATIC_FALLBACK (500) when not — this avoids synthetic regression on cold
+ * cache (W#9 / v2.2.19 audit-fix R1: STATIC_FALLBACK=500 understates reality
+ * for large prompts; bytes/4 is a better cold-start baseline).
  *
  * Events emitted:
  *   - tokenwright_bootstrap_applied   when median is used
@@ -205,6 +215,11 @@ function isConfigEnabled(opts) {
  * @param {object} [opts]
  * @param {string} [opts.cwd]           — project root (default: process.cwd())
  * @param {object} [opts.config]        — loaded config object (for bootstrap_enabled flag)
+ * @param {number} [opts.inBytes]       — W#9: byte length of the prompt being spawned;
+ *                                        when supplied AND samples < MIN_SAMPLES,
+ *                                        returns Math.round(inBytes/4) instead of
+ *                                        STATIC_FALLBACK so cold-cache estimates track
+ *                                        actual prompt size rather than a fixed 500.
  * @returns {number}  estimated input tokens
  */
 function bootstrapEstimate(agentType, opts) {
@@ -227,7 +242,10 @@ function bootstrapEstimate(agentType, opts) {
       agent_type: agentType,
       reason:     error,
     }, cwd);
-    return STATIC_FALLBACK;
+    // W#9: use bytes/4 when inBytes is available, otherwise STATIC_FALLBACK.
+    return (opts && typeof opts.inBytes === 'number' && opts.inBytes > 0)
+      ? Math.round(opts.inBytes / 4)
+      : STATIC_FALLBACK;
   }
 
   if (samples.length < MIN_SAMPLES) {
@@ -236,7 +254,12 @@ function bootstrapEstimate(agentType, opts) {
       reason:      'insufficient_samples',
       sample_size: samples.length,
     }, cwd);
-    return STATIC_FALLBACK;
+    // W#9: bytes/4 is a better cold-start estimate than STATIC_FALLBACK=500
+    // for prompts larger than ~2000 bytes. Rolling median takes over once
+    // MIN_SAMPLES (3) historical actuals are available.
+    return (opts && typeof opts.inBytes === 'number' && opts.inBytes > 0)
+      ? Math.round(opts.inBytes / 4)
+      : STATIC_FALLBACK;
   }
 
   const median = computeMedian(samples);

@@ -180,10 +180,11 @@ function handleUserPromptSubmit(event) {
     const dossierPath = path.join(stateDir, 'resilience-dossier.json');
 
     if (!_exists(lockPath)) {
-      // Schema compliance (v2.2.19 Fix 3): add counter, max, bytes_would_inject
-      // as required by event-schemas.md. For no-lock, no injection has occurred:
-      // counter=0 (no injections consumed), max from config, bytes_would_inject=0
-      // (no dossier read at this point).
+      // Info #11 (v2.2.19 audit-fix R1): for no-lock, the inject path is not
+      // running this turn — counter/max/bytes are not meaningful. Schema marks
+      // these fields as optional (null-valued); we include them here anyway as
+      // zero-placeholders for consistency with counter_exhausted path telemetry.
+      // Analytics MUST filter by reason==='no-lock' before interpreting these values.
       _audit(cwd, {
         type: 'rehydration_skipped_clean',
         reason: 'no-lock',
@@ -802,6 +803,27 @@ function handleSessionStart(event) {
     }
 
     const cwd = resolveSafeCwd(event && event.cwd);
+
+    // E#1 (v2.2.19 audit-fix R1): emit session_start so audit-dossier-orphan.js
+    // _hasResumeOpportunity() has a real production event to key on.
+    // Prior to this emit the audit log contained zero `session_start` rows in
+    // production; the orphan detector synthesised them in tests only.
+    // Dossier is not yet loaded here — orchestration_id injected after parse below.
+    // We emit a provisional row now and do NOT update it post-parse (audit events
+    // are append-only). The `source` derives from the SessionStart hook payload
+    // field `source` (compact|resume) per Claude Code's hook contract.
+    // NOTE: the hook payload field is `source`, NOT `session_source` — both names
+    // exist in Claude Code docs but empirical testing confirms `source` is canonical.
+    try {
+      _audit(cwd, {
+        type: 'session_start',
+        source: (event && typeof event.source === 'string')
+          ? event.source
+          : 'compact',
+        orchestration_id: peekOrchestrationId(cwd),
+      });
+    } catch (_e) { /* fail-open — audit failure must never block inject path */ }
+
     const cfg = loadResilienceConfig(cwd);
     if (!cfg.enabled || cfg.kill_switch) {
       // SKIP-14: config disabled / config kill_switch (SessionStart path).
