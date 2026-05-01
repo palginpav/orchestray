@@ -49,6 +49,11 @@ function checkDoubleFire({ dedupToken, callerPath, stateDir, orchestrationId }) 
   if (result.doubleFireEvent) {
     result.doubleFireEvent.type = 'compression_double_fire_detected';
     result.doubleFireEvent.event_type = 'compression_double_fire_detected';
+    // S3 fix (v2.2.19): rename dedup_key → dedup_token so the emitted event
+    // matches the compression_double_fire_detected schema (which uses dedup_token).
+    // The generalized guard uses dedup_key; the tokenwright schema predates that rename.
+    result.doubleFireEvent.dedup_token = result.doubleFireEvent.dedup_key;
+    delete result.doubleFireEvent.dedup_key;
   }
   return result;
 }
