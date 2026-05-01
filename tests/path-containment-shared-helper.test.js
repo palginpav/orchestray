@@ -124,11 +124,14 @@ describe('validateTranscriptPath — shared helper', () => {
 describe('validate-no-deferral collectOutput — T4 F3', () => {
   const { collectOutput } = require(path.join(REPO_ROOT, 'bin/validate-no-deferral'));
 
-  test('returns "" for attacker-supplied transcript_path ../../../etc/passwd', () => {
+  // v2.2.21 W4-T20: collectOutput now returns { text, scan_source } per I-SE-2
+  // (T25 worktree). Tests updated to extract `text` from the returned object.
+
+  test('returns text:"" for attacker-supplied transcript_path ../../../etc/passwd', () => {
     const dir = makeSandbox();
     try {
       const result = collectOutput({ transcript_path: '../../../etc/passwd' }, dir);
-      assert.strictEqual(result, '', 'traversal path must be blocked and return empty string');
+      assert.strictEqual(result.text, '', 'traversal path must be blocked and return empty text');
     } finally {
       cleanup(dir);
     }
@@ -152,7 +155,8 @@ describe('validate-no-deferral collectOutput — T4 F3', () => {
       const legit = path.join(dir, 'transcript.txt');
       fs.writeFileSync(legit, 'all clear');
       const result = collectOutput({ transcript_path: legit }, dir);
-      assert.strictEqual(result, 'all clear');
+      assert.strictEqual(result.text, 'all clear');
+      assert.strictEqual(result.scan_source, 'transcript_tail');
     } finally {
       cleanup(dir);
     }

@@ -139,7 +139,7 @@ function collectOutput(event, cwd) {
         raw_path: String(event.transcript_path).slice(0, 200),
       }),
     );
-    if (!safePath) return '';
+    if (!safePath) return { text: '', scan_source: 'transcript_tail' };
     try {
       const stat = fs.statSync(safePath);
       const size = stat.size;
