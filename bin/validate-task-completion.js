@@ -289,6 +289,13 @@ const KNOWN_EVENT_TYPES = new Set([
   'researcher_citations_gate_blocked',
   // P1-10 (v2.2.15): platform-oracle grounding gate
   'platform_oracle_grounding_gate_blocked',
+  // F-14 (v2.2.21 W4-T20): collision summary replaces per-slug events
+  'pattern_find_collisions_summary',
+  // v2.2.21: contracts runpost silent skip (existing) + no_deferral_block (additive)
+  'contracts_runpost_silent_skip',
+  'no_deferral_block',
+  // v2.2.21: task subject missing (additive field reason_code)
+  'task_subject_missing',
 ]);
 
 /**
@@ -763,6 +770,15 @@ function main() {
       process.exit(0);
     }
 
+    // === v2.2.21 W4-T20: test-session suppression ===
+    // Suppress all audit emits when running inside a Claude Code test harness (F-17).
+    // session_id === 'test-session' is set by Claude Code during internal test runs;
+    // events written in this context leak into the real audit log (events.jsonl).
+    if (event.session_id === 'test-session') {
+      process.stdout.write(JSON.stringify({ continue: true }));
+      process.exit(0);
+    }
+
     // Accepted wiring: TaskCompleted (Agent Teams) and SubagentStop (normal
     // single-subagent orchestrations). Any other event name is a pass-through.
     // v2.1.9 design-spec §5 I-12 requires the T15 gate on SubagentStop so
@@ -810,12 +826,15 @@ function main() {
       const reason = !event.task_id && !event.task_subject
         ? 'missing task_id and task_subject'
         : (!event.task_id ? 'missing task_id' : 'missing task_subject');
+      // W-OP-2 (v2.2.21 W4-T20): reason_code enum for downstream consumers.
+      const reasonCode = !event.task_id ? 'no_task_id' : 'no_task_subject';
       emitAuditEvent(cwd, {
         timestamp: new Date().toISOString(),
         type: 'task_validation_failed',
         hook: 'validate-task-completion',
         orchestration_id: resolveOrchestrationId(cwd),
         reason,
+        reason_code: reasonCode,
         payload_keys: Object.keys(event).sort(),
       });
       process.stderr.write(

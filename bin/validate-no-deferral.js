@@ -107,37 +107,40 @@ function isReleasePhase(cwd, event) {
  * Return the stdout-like text from the hook payload: either `output`, the
  * last 100 KB of the `transcript_path` file, or the raw `prompt` field.
  *
+ * I-SE-2 (v2.2.21 W4-T20): also returns scan_source enum so audit events can
+ * record which surface was scanned: 'output' | 'transcript_tail'.
+ *
  * @param {object} event
- * @returns {string}
+ * @returns {{ text: string, scan_source: 'output' | 'transcript_tail' }}
  */
 function collectOutput(event) {
-  if (!event) return '';
+  if (!event) return { text: '', scan_source: 'output' };
   if (typeof event.output === 'string' && event.output.length > 0) {
-    return event.output.slice(-MAX_SCAN_BYTES);
+    return { text: event.output.slice(-MAX_SCAN_BYTES), scan_source: 'output' };
   }
   if (typeof event.result === 'string' && event.result.length > 0) {
-    return event.result.slice(-MAX_SCAN_BYTES);
+    return { text: event.result.slice(-MAX_SCAN_BYTES), scan_source: 'output' };
   }
   if (typeof event.transcript_path === 'string' && event.transcript_path.length > 0) {
     try {
       const stat = fs.statSync(event.transcript_path);
       const size = stat.size;
       if (size <= MAX_SCAN_BYTES) {
-        return fs.readFileSync(event.transcript_path, 'utf8');
+        return { text: fs.readFileSync(event.transcript_path, 'utf8'), scan_source: 'transcript_tail' };
       }
       const fd = fs.openSync(event.transcript_path, 'r');
       try {
         const buf = Buffer.alloc(MAX_SCAN_BYTES);
         const read = fs.readSync(fd, buf, 0, MAX_SCAN_BYTES, size - MAX_SCAN_BYTES);
-        return buf.slice(0, read).toString('utf8');
+        return { text: buf.slice(0, read).toString('utf8'), scan_source: 'transcript_tail' };
       } finally {
         try { fs.closeSync(fd); } catch (_) { /* ignore */ }
       }
     } catch (_) {
-      return '';
+      return { text: '', scan_source: 'transcript_tail' };
     }
   }
-  return '';
+  return { text: '', scan_source: 'output' };
 }
 
 /**
@@ -221,8 +224,8 @@ function main() {
         process.exit(0);
       }
 
-      const output = collectOutput(event);
-      const match = findDeferral(output);
+      const { text: outputText, scan_source: scanSource } = collectOutput(event);
+      const match = findDeferral(outputText);
       if (!match.matched) {
         process.stdout.write(JSON.stringify({ continue: true }));
         process.exit(0);
@@ -235,6 +238,7 @@ function main() {
         phrase: match.phrase,
         context: match.context,
         strict: !!match.strict,
+        scan_source: scanSource,
         session_id: event.session_id || null,
       });
 

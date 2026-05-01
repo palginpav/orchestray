@@ -74,9 +74,16 @@ function extractTaskSubjectFromPrompt(promptBody) {
  * @param {object} toolInput  — the tool_input sub-object from the hook payload.
  * @returns {{ valid: boolean, reason: string, foundSubject?: string }}
  */
+/**
+ * reason_code enum values for task_validation_failed events (W-OP-2, v2.2.21):
+ *   empty_description    — description field is empty string or whitespace-only
+ *   short_description    — description field is present but below MIN_DESCRIPTION_LENGTH
+ *   no_subject_field     — no description, task_subject, or subject field present at all
+ *   no_prompt_marker     — prompt body is present but contains no task_subject: marker
+ */
 function evaluateSpawn(toolInput) {
   if (!toolInput || typeof toolInput !== 'object') {
-    return { valid: false, reason: 'tool_input missing or non-object' };
+    return { valid: false, reason: 'tool_input missing or non-object', reason_code: 'no_subject_field' };
   }
 
   // Explicit subject fields win first.
@@ -102,7 +109,23 @@ function evaluateSpawn(toolInput) {
     return { valid: true, reason: 'prompt task_subject marker', foundSubject: bodySubject };
   }
 
-  return { valid: false, reason: 'no description, task_subject, or prompt marker found' };
+  // Prompt present but no marker found.
+  if (typeof toolInput.prompt === 'string' && toolInput.prompt.length > 0) {
+    return { valid: false, reason: 'no description, task_subject, or prompt marker found', reason_code: 'no_prompt_marker' };
+  }
+
+  // No description field at all (subject + description both absent, no prompt).
+  if (typeof toolInput.description !== 'string') {
+    return { valid: false, reason: 'no description, task_subject, or prompt marker found', reason_code: 'no_subject_field' };
+  }
+
+  // Description present but empty or whitespace-only.
+  if (toolInput.description.trim().length === 0) {
+    return { valid: false, reason: 'no description, task_subject, or prompt marker found', reason_code: 'empty_description' };
+  }
+
+  // Description present but below minimum length.
+  return { valid: false, reason: 'no description, task_subject, or prompt marker found', reason_code: 'short_description' };
 }
 
 /**
@@ -205,6 +228,7 @@ function main() {
       hook: 'validate-task-subject',
       subagent_type: (event.tool_input && event.tool_input.subagent_type) || null,
       reason: evaluation.reason,
+      reason_code: evaluation.reason_code || 'no_subject_field',
       session_id: event.session_id || null,
       payload_keys: event.tool_input ? Object.keys(event.tool_input).sort() : [],
     };
