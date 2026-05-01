@@ -84,35 +84,35 @@ function appendDroppedDuplicate(cwd, row, reasonCode) {
   }
 }
 
-// Module-level fallback pricing per 1M tokens (current Anthropic rates as of 2026).
-// Used ONLY when loadCostBudgetCheckConfig() fails (fail-open contract).
-// The authoritative source is mcp_server.cost_budget_check.pricing_table in
-// .orchestray/config.json; these values mirror that table to keep them in sync.
-// Per 2014-scope-proposal.md §W3.
-const PRICING = {
-  opus:   { input: 5.00,  output: 25.00 },
-  sonnet: { input: 3.00,  output: 15.00 },
-  haiku:  { input: 1.00,  output: 5.00  },
-};
+// Pricing is now sourced from the single-source-of-truth in cost-helpers.js.
+// Local PRICING table removed to eliminate duplication (F-12 fix).
+const { getPricing: _getCostHelpersPricing, BUILTIN_PRICING_TABLE } = require('./_lib/cost-helpers');
 
 /**
- * Build a normalized pricing lookup from a config pricing_table or the PRICING fallback.
+ * Build a normalized pricing lookup from a config pricing_table or the BUILTIN_PRICING_TABLE
+ * fallback from cost-helpers.js.
  * Config table uses { input_per_1m, output_per_1m }; internal callers expect { input, output }.
  *
  * @param {object|null} configPricingTable - From loadCostBudgetCheckConfig().pricing_table, or null.
  * @returns {object} Map of tier → { input: number, output: number }
  */
 function buildPricingMap(configPricingTable) {
-  if (!configPricingTable || typeof configPricingTable !== 'object') return PRICING;
+  // Build fallback from BUILTIN_PRICING_TABLE (authoritative source in cost-helpers.js).
+  const fallback = {};
+  for (const [tier, entry] of Object.entries(BUILTIN_PRICING_TABLE)) {
+    fallback[tier] = { input: entry.input_per_1m, output: entry.output_per_1m };
+  }
+
+  if (!configPricingTable || typeof configPricingTable !== 'object') return fallback;
   const result = {};
   for (const [tier, entry] of Object.entries(configPricingTable)) {
     if (entry && typeof entry.input_per_1m === 'number' && typeof entry.output_per_1m === 'number') {
       result[tier] = { input: entry.input_per_1m, output: entry.output_per_1m };
     }
   }
-  // Ensure all three tiers are populated; fall back to PRICING for any missing tier.
+  // Ensure all three tiers are populated; fall back to BUILTIN_PRICING_TABLE for any missing tier.
   for (const tier of ['opus', 'sonnet', 'haiku']) {
-    if (!result[tier]) result[tier] = PRICING[tier];
+    if (!result[tier]) result[tier] = fallback[tier];
   }
   return result;
 }
@@ -120,22 +120,23 @@ function buildPricingMap(configPricingTable) {
 /**
  * Detect pricing tier from resolved model or agent_type string.
  * Explicit model assignment from routing takes priority over agent_type inference.
- * Default to sonnet rates for unknown agent types.
+ * Delegates to cost-helpers.js getPricing for model-id resolution (including the
+ * Opus 4.7 tokenizer multiplier), then converts { input_per_1m, output_per_1m }
+ * to the local { input, output } shape expected by estimateCost().
  *
  * @param {string} agentType
  * @param {string|null} modelUsed
  * @param {object} pricingMap - Normalized pricing map from buildPricingMap().
  */
 function getPricing(agentType, modelUsed, pricingMap) {
-  const p = pricingMap || PRICING;
-  // Explicit model assignment from routing takes priority
+  // Prefer explicit model ID if available — delegates to cost-helpers.js which
+  // applies the Opus 4.7 tokenizer multiplier and is the single source of truth.
   if (modelUsed) {
-    const m = modelUsed.toLowerCase();
-    if (m.includes('opus')) return p.opus;
-    if (m.includes('haiku')) return p.haiku;
-    if (m.includes('sonnet')) return p.sonnet;
+    const rates = _getCostHelpersPricing(modelUsed);
+    return { input: rates.input_per_1m, output: rates.output_per_1m };
   }
-  // Fallback to agent_type detection (pre-routing compatibility)
+  // Fallback: agent_type detection using pricingMap (pre-routing compatibility).
+  const p = pricingMap || buildPricingMap(null);
   const t = (agentType || '').toLowerCase();
   if (t.includes('opus')) return p.opus;
   if (t.includes('haiku')) return p.haiku;
@@ -551,13 +552,13 @@ process.stdin.on('end', () => {
     }
 
     // Load pricing table from config (single source of truth per §W3).
-    // Falls back to module-level PRICING constant if config is unavailable.
-    let pricingMap = PRICING;
+    // Falls back to BUILTIN_PRICING_TABLE (from cost-helpers.js) if config is unavailable.
+    let pricingMap = buildPricingMap(null);
     try {
       const costCfg = loadCostBudgetCheckConfig(cwd);
       pricingMap = buildPricingMap(costCfg.pricing_table);
     } catch (_pricingErr) {
-      // Fail-open: use module-level PRICING fallback
+      // Fail-open: use buildPricingMap(null) fallback (derives from BUILTIN_PRICING_TABLE)
     }
 
     // Estimate cost based on resolved model (or agent_type fallback) and token usage
