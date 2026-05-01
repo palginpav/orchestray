@@ -20,6 +20,10 @@
  *
  * Exit codes: always 0 (fail-open — must never block SessionStart)
  *
+ * Note: historyMinePass reads .orchestray/audit/events.jsonl in full
+ * (not streaming). Bounded to a single execution per project by the
+ * sentinel guard at .orchestray/state/.archetype-seeder-done.
+ *
  * Sentinel: .orchestray/state/.archetype-seeder-done
  * Kill switch: ORCHESTRAY_ARCHETYPE_SEEDER_DISABLED=1 (env) or
  *              context_compression_v218.archetype_cache.seeder_disabled: true (config)
@@ -165,9 +169,12 @@ function mergeNoDowngrade(existingRecords, seedRecords, now) {
  * Map pm_decision values to outcome strings.
  */
 function pmDecisionToOutcome(decision) {
-  if (decision === 'accepted' || decision === 'adapted') return 'success';
   if (decision === 'overridden') return 'overridden';
-  return 'success';
+  if (decision === 'accepted' || decision === 'adapted') return 'success';
+  // Unrecognised decision values (e.g. 'deferred', 'skipped') must not silently
+  // misreport as 'success'. Return 'unknown' and let callers decide whether to
+  // skip the elevation (see historyMinePass caller).
+  return 'unknown';
 }
 
 /**
@@ -217,7 +224,13 @@ function historyMinePass(cwd, records) {
             rec.failed_uses = (rec.failed_uses || 0) + 1;
           }
           rec.last_orch_id = ev.orchestration_id || rec.last_orch_id;
-          rec.last_outcome = pmDecisionToOutcome(ev.pm_decision);
+          const outcome = pmDecisionToOutcome(ev.pm_decision);
+          // Skip writing 'unknown' outcomes to the persisted cache — they would
+          // misrepresent future decision values (e.g. 'deferred', 'skipped') as
+          // an intentional state. Only persist recognised outcomes.
+          if (outcome !== 'unknown') {
+            rec.last_outcome = outcome;
+          }
 
           // Update last_used_ts if event timestamp is newer
           if (ev.timestamp) {
@@ -337,7 +350,7 @@ function runSeeder(opts) {
         skipped_count: skippedCount,
         trigger:      trigger,
         dry_run:      false,
-      }, { cwd, skipValidation: true });
+      }, { cwd });
     } catch (_e) { /* fail-open */ }
   }
 

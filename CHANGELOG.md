@@ -7,6 +7,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - L1 prompt compression default-off posture is now explicit in config-defaults; defense-in-depth additions to load-bearing headings; regression test locks corpus-zero-drops property.
 - Removed unimplemented `active_phase_slice_changed` event reference (was a v2.2.19 doc-only artifact with no producers or consumers); regression test prevents reintroduction.
+- Archetype advisory cache now warm on first orchestration: a 10-archetype seed catalog ships with the install and a SessionStart hook seeds the per-project cache once (kill switch `ORCHESTRAY_ARCHETYPE_SEEDER_DISABLED=1`).
+- Concurrent subagent spawns no longer trigger N redundant repo-map cold builds: a cross-process sentinel deduplicates so only one process builds while waiters poll briefly for the result (kill switch `ORCHESTRAY_REPO_MAP_SENTINEL_DISABLED=1`).
 
 ## [2.2.19] - 2026-05-01
 

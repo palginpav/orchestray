@@ -258,9 +258,11 @@ process.stdin.on('end', () => {
     // S1 kill switch: tokenwright.l1_compression_enabled (v2.2.19).
     // Default false until heading-list audit is complete (revival planned for v2.2.20).
     // See .orchestray/kb/artifacts/v2219-compression-rca.md §Symptom 1.
+    // Default sourced from config-defaults.js — single source of truth for kill-switch defaults.
+    const { defaults: _configDefaults } = require('./_lib/config-defaults');
     const l1Enabled = cfg.tokenwright && typeof cfg.tokenwright.l1_compression_enabled === 'boolean'
       ? cfg.tokenwright.l1_compression_enabled
-      : false; // default-off
+      : _configDefaults.tokenwright.l1_compression_enabled;
     if (!l1Enabled) {
       emitSkip(cfg, orchId, agentType, 'kill_switch_config', 'tokenwright.l1_compression_enabled=false');
       emitPassthrough(toolInput); process.exit(0); return;
