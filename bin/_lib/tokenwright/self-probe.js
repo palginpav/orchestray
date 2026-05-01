@@ -23,7 +23,14 @@ const fs   = require('fs');
 const os   = require('os');
 const path = require('path');
 
-// Resolve project root relative to this file (bin/_lib/tokenwright/self-probe.js → ../../..)
+// Referenced via module object (not destructured) so tests can monkeypatch
+// individual exports on the cached module without re-requiring.
+const _installPriority = require('../install-path-priority');
+
+// Resolve package root relative to this file (bin/_lib/tokenwright/self-probe.js → ../../..)
+// Used for reading package.json version and writing probe state files.
+// NOTE: do NOT use PKG_ROOT for detecting local install — it points to the
+// Orchestray source tree, not the user's project. Use process.cwd() for that.
 const PKG_ROOT = path.resolve(__dirname, '..', '..', '..');
 
 // ---------------------------------------------------------------------------
@@ -128,13 +135,15 @@ function checkConfig() {
 /**
  * Step 3 — Transcript path probe.
  * Locates the most recent transcript under ~/.claude/projects/ and verifies
- * resolveActualTokens can parse at least one assistant usage entry.
+ * the path is resolvable and readable. This is a path-existence check, not a
+ * token-parse check — a fresh install may have transcripts with no agent spawn
+ * entries yet (resolveActualTokens would return source:'fallback'), which
+ * previously caused a false transcript_token_path_not_resolves failure.
  *
  * @returns {boolean} transcript_token_path_resolves
  */
 function checkTranscriptResolution() {
   try {
-    const { resolveActualTokens } = require('./resolve-actual-tokens');
     const projectsDir = path.join(os.homedir(), '.claude', 'projects');
     if (!fs.existsSync(projectsDir)) return false;
 
@@ -163,14 +172,12 @@ function checkTranscriptResolution() {
       } catch (_e) { /* skip */ }
     }
 
+    // Path resolves = we found a readable transcript file.
+    // We do not require token parsing to succeed — a transcript with no agent
+    // spawn messages still proves the path resolution works correctly.
     if (!bestPath) return false;
-
-    const result = resolveActualTokens(
-      { agent_transcript_path: bestPath },
-      path.join(os.homedir(), '.claude')
-    );
-    // If tokens > 0 and source is transcript, probe passed
-    return result.source === 'transcript' && result.tokens > 0;
+    fs.accessSync(bestPath, fs.constants.R_OK);
+    return true;
   } catch (_e) {
     return false;
   }
@@ -311,23 +318,21 @@ function checkSyntheticEmission() {
  * @returns {boolean}
  */
 function detectGlobalInstall() {
-  try {
-    return fs.existsSync(path.join(os.homedir(), '.claude', 'orchestray', 'bin', 'inject-tokenwright.js'));
-  } catch (_e) {
-    return false;
-  }
+  return _installPriority.isGlobalInstallPresent();
 }
 
 /**
- * Detect whether local project install exists (<pkgRoot>/.claude/orchestray/bin/).
+ * Detect whether local project install exists (<projectRoot>/.claude/orchestray/bin/).
+ *
+ * Uses process.cwd() as the project root — the user's working directory where
+ * Orchestray was installed. PKG_ROOT (the Orchestray source tree) is NOT used
+ * here because it always points to the install origin, never the user's project.
+ *
+ * @param {string} [projectRoot] — optional override (used by tests).
  * @returns {boolean}
  */
-function detectLocalInstall() {
-  try {
-    return fs.existsSync(path.join(PKG_ROOT, '.claude', 'orchestray', 'bin', 'inject-tokenwright.js'));
-  } catch (_e) {
-    return false;
-  }
+function detectLocalInstall(projectRoot) {
+  return _installPriority.isLocalInstallPresent(projectRoot || process.cwd());
 }
 
 /**
@@ -351,12 +356,19 @@ function readInstalledVersion() {
  * Run the self-probe and return the tokenwright_self_probe payload.
  *
  * @param {object} [opts]
- * @param {boolean} [opts.force]  — if true, ignore the sentinel gate and always run
+ * @param {boolean} [opts.force]        — if true, ignore the sentinel gate and always run
+ * @param {string}  [opts.projectRoot]  — override for user's project root (used by tests).
+ *                                        Defaults to process.cwd(). Determines whether a
+ *                                        local install is present at <projectRoot>/.claude/.
  * @returns {object} tokenwright_self_probe payload
  */
 function runSelfProbe(opts) {
   opts = opts || {};
   const nowTs = new Date().toISOString();
+  // Caller-supplied projectRoot lets tests inject a tmpdir without touching process.cwd().
+  const projectRoot = (opts.projectRoot && typeof opts.projectRoot === 'string')
+    ? opts.projectRoot
+    : process.cwd();
 
   const sentinelPath  = path.join(PKG_ROOT, '.orchestray', 'state', 'tokenwright-self-probe-needed');
   const lastRunPath   = path.join(PKG_ROOT, '.orchestray', 'state', 'tokenwright-self-probe-last.json');
@@ -375,7 +387,7 @@ function runSelfProbe(opts) {
           timestamp:                           nowTs,
           version_installed:                   readInstalledVersion(),
           global_install_present:              detectGlobalInstall(),
-          local_install_present:               detectLocalInstall(),
+          local_install_present:               detectLocalInstall(projectRoot),
           hook_dedup_clean:                    null,
           compression_block_in_config:         null,
           transcript_token_path_resolves:      null,
@@ -402,7 +414,7 @@ function runSelfProbe(opts) {
   const fixtureEmittedRealized     = emitResults.fixture_emitted_realized_savings;
 
   const globalInstallPresent = detectGlobalInstall();
-  const localInstallPresent  = detectLocalInstall();
+  const localInstallPresent  = detectLocalInstall(projectRoot);
   const versionInstalled     = readInstalledVersion();
 
   // Collect failures
