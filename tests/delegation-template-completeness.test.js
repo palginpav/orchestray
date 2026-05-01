@@ -25,15 +25,20 @@ const fs = require('fs');
 const path = require('path');
 
 const REPO_ROOT = (() => {
-  // Resolve repo root via git-common-dir so the test runs from any worktree.
+  // Resolve repo root via git-toplevel so the test runs from any worktree.
+  // (rev-parse --git-common-dir returns a path RELATIVE to cwd; use --show-toplevel
+  // for an absolute path, or fall back to __dirname/..)
   try {
     const { execSync } = require('child_process');
-    const out = execSync('git rev-parse --git-common-dir', { cwd: __dirname }).toString().trim();
-    // .git or worktrees/X — parent of .git is repo root.
-    return path.resolve(path.dirname(out));
-  } catch (_) {
-    return path.resolve(__dirname, '..');
-  }
+    const top = execSync('git rev-parse --show-toplevel', { cwd: __dirname }).toString().trim();
+    if (top && fs.existsSync(top)) {
+      // If we're in a worktree, --show-toplevel is the worktree root, but
+      // delegation-templates.md is committed to master — both worktree and master
+      // have it. Use this directly.
+      return top;
+    }
+  } catch (_) { /* fall through */ }
+  return path.resolve(__dirname, '..');
 })();
 
 const TEMPLATE_PATH = path.join(REPO_ROOT, 'agents', 'pm-reference', 'delegation-templates.md');
@@ -47,13 +52,13 @@ describe('v2.2.21 W3-T10 — delegation-templates reviewer template completeness
 
   test('reviewer template includes ## Dimensions to Apply heading + bullet list', () => {
     const content = fs.readFileSync(TEMPLATE_PATH, 'utf8');
-    // Locate a reviewer-related section, then assert the dimensions block appears nearby.
-    assert.match(content, /## Dimensions to Apply/i,
-      'delegation-templates.md must include a ## Dimensions to Apply heading');
-    // Expect at least 3 dimension bullets within the same neighborhood (correctness/security/etc.).
-    const idx = content.search(/## Dimensions to Apply/i);
+    // Anchor on a real H2 heading (line start), not an inline mention.
+    assert.match(content, /^## Dimensions to Apply/im,
+      'delegation-templates.md must include a ## Dimensions to Apply H2 heading');
+    // Find the FIRST line-start heading and inspect the next 600 chars for bullets.
+    const idx = content.search(/^## Dimensions to Apply/im);
     const slice = content.slice(idx, idx + 600);
-    const bulletCount = (slice.match(/^- [a-z]/gim) || []).length;
+    const bulletCount = (slice.match(/^- [a-zA-Z]/gm) || []).length;
     assert.ok(bulletCount >= 3,
       `Dimensions to Apply section must have >= 3 bullet entries; got ${bulletCount}`);
   });
