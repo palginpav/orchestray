@@ -6906,10 +6906,12 @@ omitted them. Closes the v2.2.8 silent-drop class (W4 RCA-9: 64/74 = 86% of
 {
   "type": "audit_event_autofilled",
   "version": 1,
-  "timestamp": "ISO 8601",
-  "orchestration_id": "orch-xxx",
+  "timestamp": null,
+  "orchestration_id": null,
   "event_type": "agent_stop",
-  "fields_autofilled": ["version", "session_id"]
+  "fields_autofilled": ["version", "session_id"],
+  "schema_version": null,
+  "schema_state": null
 }
 ```
 
@@ -6922,8 +6924,15 @@ Field notes:
   `session_id`).
 - Recursion-guarded: this telemetry row never re-triggers itself, even if its
   own emit goes through the schema-unreadable or skipValidation path.
+- `schema_version`: *(optional)* Schema version of the autofilled event, populated
+  when the schema for `event_type` is readable at emit time.
+- `schema_state`: *(optional)* Present only on the schema-unreadable branch (P1-13,
+  v2.2.15 W2-07). Value is "unreadable" when the autofill could not consult the
+  event schema entry. Absent on the normal (schema-readable) path.
 - Kill switch: `ORCHESTRAY_AUDIT_AUTOFILL_DISABLED=1` reverts the writer to
   the pre-F1 two-field behavior, which suppresses this event entirely.
+- Updated v2.2.21 W4-T17 (F-19): confirmed highest-volume emitter; added optional
+  `schema_version` and `schema_state` fields to match actual emitter shape.
 
 ### `orchestration_events_archived` event
 

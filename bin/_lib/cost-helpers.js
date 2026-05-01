@@ -100,6 +100,47 @@ function loadReservationTTLMs(cwd) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Opus 4.7 tokenizer multiplier.
+ *
+ * Anthropic's Opus 4.7 uses a new tokenizer that consumes ~35% more tokens
+ * than Opus 4.6 for the same text. Per-token pricing is unchanged ($5/$25 per 1M),
+ * but effective cost is ~35% higher for the same prompt.
+ *
+ * Source: platform-oracle Opus 4.7 research — see
+ *   .orchestray/kb/artifacts/v218-claude-design-research.md §"Risks and Gotchas" item 5.
+ */
+const OPUS_47_TOKENIZER_MULTIPLIER = 1.35;
+
+/**
+ * Return per-1M-token rates for a model ID string.
+ *
+ * Recognises full model IDs (e.g. `claude-opus-4-7`, `claude-opus-4.7`,
+ * `claude-sonnet-4-6`, `claude-haiku-4-5`) and short aliases (`opus`, `sonnet`,
+ * `haiku`). Falls back to sonnet rates for unknown strings.
+ *
+ * Opus 4.7 applies a 1.35× tokenizer multiplier to both input and output rates.
+ *
+ * @param {string} modelId - Model ID or alias string.
+ * @returns {{ input_per_1m: number, output_per_1m: number }}
+ */
+function getPricing(modelId) {
+  const m = (modelId || '').toLowerCase();
+  // Check for Opus 4.7 specifically — must come before the generic opus check.
+  if (m.includes('opus-4-7') || m.includes('opus-4.7')) {
+    const base = BUILTIN_PRICING_TABLE.opus;
+    return {
+      input_per_1m: base.input_per_1m * OPUS_47_TOKENIZER_MULTIPLIER,
+      output_per_1m: base.output_per_1m * OPUS_47_TOKENIZER_MULTIPLIER,
+    };
+  }
+  if (m.includes('opus'))   return BUILTIN_PRICING_TABLE.opus;
+  if (m.includes('haiku'))  return BUILTIN_PRICING_TABLE.haiku;
+  if (m.includes('sonnet')) return BUILTIN_PRICING_TABLE.sonnet;
+  // Default: sonnet rates for unknown model strings.
+  return BUILTIN_PRICING_TABLE.sonnet;
+}
+
+/**
  * Get per-1M-token rates for a given model tier from the pricing table.
  * Falls back to BUILTIN_PRICING_TABLE when the config table is missing the tier.
  *
@@ -344,7 +385,9 @@ module.exports = {
   DEFAULT_RESERVATION_TTL_MS,
   GC_NOOP_BELOW_BYTES,
   GC_OPPORTUNISTIC_TRIGGER_BYTES,
+  OPUS_47_TOKENIZER_MULTIPLIER,
   loadReservationTTLMs,
+  getPricing,
   getRatesForTier,
   readCostCaps,
   loadRawConfig,

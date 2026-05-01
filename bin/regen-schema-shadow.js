@@ -10,20 +10,21 @@
  *
  * The shadow has the shape:
  *   {
- *     "_meta": { version, source_hash, shadow_size_bytes },
- *     "<event_type>": { version, required, optional, enum_dialect_hash },
+ *     "_meta": { version, source_hash, shadow_size_bytes, event_count },
+ *     "<event_type>": { v, r, o [, h] [, f] },
  *     ...
  *   }
+ *
+ * Compact entry keys: v=version, r=required_count, o=optional_count,
+ * h=enum_dialect_hash (omitted when "none"), f=1 when feature_optional: true.
  *
  * Note: generated_at was removed in v2.2.14 G-10 — the timestamp caused the
  * file to appear modified in git status on every regen even when no event
  * schema changed. source_hash is sufficient to detect staleness.
  *
- * Output target: ≤ 8 KB. Script errors out if the shadow exceeds this limit.
- * (Raised from 4 KB to 8 KB in v2.1.16 W12-fix F-005 — the v2.1.16 file landed
- * at 4052/4096 bytes leaving only 44 bytes of headroom, and v2.1.17's
- * R-DOCUMENTER-EVENT + R-ARCHETYPE-EVENT were guaranteed to overflow the cap.
- * 8 KB still sits well under PIPE_BUF on every supported platform.)
+ * Output target: ≤ 16 KB. Script errors out if the shadow exceeds this limit.
+ * (Raised from 8 KB to 12 KB in v2.2.9; then to 16 KB in v2.2.11 to absorb
+ * new event types. 16 KB still sits well under Linux PIPE_BUF (65536).)
  *
  * Usage: node bin/regen-schema-shadow.js [--cwd <dir>]
  *
