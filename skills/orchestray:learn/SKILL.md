@@ -7,9 +7,10 @@ argument-hint: "[orchestration-id] | share <slug> | unshare <slug> | list [--sha
 
 # Pattern Extraction
 
-> **Scope note:** v2.1.0 shares patterns across projects on THIS machine only. Cross-machine
-> sync is planned for v2.2. To manually sync to another machine today:
-> `/orchestray:learn export all` → copy the export dir → `/orchestray:learn import <path>`. To inspect federation state (enabled/disabled, shared tier contents, collisions): `/orchestray:federation status`.
+> **Scope note:** Patterns are shared across projects on THIS machine only. Cross-machine
+> sync uses manual export/import: `/orchestray:learn export all` → copy the export dir →
+> `/orchestray:learn import <path>`. To inspect federation state (enabled/disabled, shared
+> tier contents, collisions): `/orchestray:federation status`.
 
 The user wants to extract reusable patterns from a completed orchestration.
 
@@ -476,24 +477,24 @@ Remove a pattern from the shared tier. Your local copy is preserved.
 
 ### promote <slug> [--dry-run] _(deprecated — use `share`)_
 
-> Warning: 'promote' is deprecated and will be removed in v2.2. Use 'share' instead.
+> Warning: 'promote' is deprecated. Use 'share' instead.
 
 This command is an alias for `share`. All arguments are forwarded to the `share` command unchanged. The deprecation warning is emitted once, then execution proceeds normally.
 
-**What changed:** In v2.0, `promote` copied patterns to `.orchestray/team-patterns/` and deleted the local copy. In v2.1.0, sharing copies patterns to `~/.orchestray/shared/patterns/` and the local copy is preserved. If you relied on the delete-local behavior, manually remove `.orchestray/patterns/<slug>.md` after sharing.
+**What changed:** `promote` previously copied patterns to `.orchestray/team-patterns/` and deleted the local copy. Now, sharing copies patterns to `~/.orchestray/shared/patterns/` and the local copy is preserved. If you relied on the delete-local behavior, manually remove `.orchestray/patterns/<slug>.md` after sharing.
 
 **Example:**
 ```
 /orchestray:learn promote anti-pattern-escape-hatches
 # same as: /orchestray:learn share anti-pattern-escape-hatches
-# emits: Warning: 'promote' is deprecated and will be removed in v2.2. Use 'share' instead.
+# emits: Warning: 'promote' is deprecated. Use 'share' instead.
 ```
 
 ---
 
 ### list-shared _(deprecated — use `list --shared`)_
 
-> Warning: 'list-shared' is deprecated; use 'list --shared' instead. This alias will be removed in v2.2.
+> Warning: 'list-shared' is deprecated; use 'list --shared' instead.
 
 This command is an alias for `list --shared`. The deprecation warning is emitted once, then execution proceeds normally as `list --shared`.
 
@@ -501,14 +502,14 @@ This command is an alias for `list --shared`. The deprecation warning is emitted
 ```
 /orchestray:learn list-shared
 # same as: /orchestray:learn list --shared
-# emits: Warning: 'list-shared' is deprecated; use 'list --shared' instead. This alias will be removed in v2.2.
+# emits: Warning: 'list-shared' is deprecated; use 'list --shared' instead.
 ```
 
 ---
 
 ### revoke-shared <slug> _(deprecated — use `unshare`)_
 
-> Warning: 'revoke-shared' is deprecated; use 'unshare' instead. This alias will be removed in v2.2.
+> Warning: 'revoke-shared' is deprecated; use 'unshare' instead.
 
 This command is an alias for `unshare`. All arguments are forwarded to `unshare` unchanged. The deprecation warning is emitted once, then execution proceeds normally.
 
@@ -516,7 +517,7 @@ This command is an alias for `unshare`. All arguments are forwarded to `unshare`
 ```
 /orchestray:learn revoke-shared anti-pattern-escape-hatches
 # same as: /orchestray:learn unshare anti-pattern-escape-hatches
-# emits: Warning: 'revoke-shared' is deprecated; use 'unshare' instead. This alias will be removed in v2.2.
+# emits: Warning: 'revoke-shared' is deprecated; use 'unshare' instead.
 ```
 
 ### correct [description]
@@ -638,7 +639,7 @@ Manually trigger validation of all pending outcome probes.
 
 ---
 
-## Curator (v2.1.0)
+## Curator
 
 The curator is an Orchestray specialist agent that maintains pattern-corpus hygiene. It
 is **invoked manually only** — there is no scheduler and no automatic trigger. Default

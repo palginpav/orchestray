@@ -28,7 +28,7 @@ const path = require('path');
 
 // ---------------------------------------------------------------------------
 // Build-time emitter allowlist — only these protocol slugs are quarantine-eligible.
-// Update this list when R-TGATE-PM wires the remaining 6 protocols (v2.1.15).
+// Update this list when new emitters are wired (add the slug and its tier2_invoked event name below).
 // ---------------------------------------------------------------------------
 
 const WIRED_EMITTER_PROTOCOLS = [

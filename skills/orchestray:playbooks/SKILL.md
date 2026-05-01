@@ -2,7 +2,7 @@
 name: playbooks
 description: Manage project-specific playbook files
 disable-model-invocation: true
-argument-hint: [list|add|view|remove|help] [name]
+argument-hint: "[list|add|view|remove|help] [name]"
 ---
 
 # Playbook Management

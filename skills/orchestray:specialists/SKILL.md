@@ -2,7 +2,7 @@
 name: specialists
 description: List, view, edit, and remove persistent specialists
 disable-model-invocation: true
-argument-hint: list | view {name} | remove {name} | edit {name}
+argument-hint: "list | view {name} | remove {name} | edit {name}"
 ---
 
 # Specialist Management

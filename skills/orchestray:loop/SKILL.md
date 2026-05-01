@@ -1,5 +1,5 @@
 ---
-name: orchestray:loop
+name: loop
 description: Run a tight single-agent loop until a completion promise is met or limits hit
 disable-model-invocation: true
 argument-hint: "[--agent <type>] [--max-iterations <n>] [--completion-promise <string>] [--cost-cap-usd <n>] [--cancel] <prompt>"
