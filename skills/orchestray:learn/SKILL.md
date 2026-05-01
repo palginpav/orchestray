@@ -661,6 +661,25 @@ reversible via `undo-last` or `undo <action-id>`.
 Run the curator agent against the local pattern corpus (and the shared tier if
 federation is enabled).
 
+**Dispatch:** The PM agent is locked out of spawning `Agent(curator)` by
+permission policy (directive D1, enforced via the PM's `tools:` allowlist —
+this is the mechanical guarantee that curator never auto-triggers
+mid-orchestration). When the user invokes this subcommand, the PM's only job
+is to spawn the dispatcher agent:
+
+```
+Agent(subagent_type="curate-runner", model="sonnet", maxTurns=30,
+      description="Curate pattern corpus (sonnet/medium)",
+      prompt="<args, cwd, user_prompt — see agents/curate-runner.md>")
+```
+
+The PM then forwards the runner's final summary verbatim to the user. The
+runner executes the protocol below — it owns config gates, tombstone setup,
+the H3/H6 pre-filters, the `Agent(curator)` spawn, reconciliation, stamp-apply,
+and rollup-event emission. Pre-flight steps the PM must perform itself (the
+ones listed in §0 Silent Pre-Check) still apply: routing.jsonl entry for the
+runner spawn, etc.
+
 **Arguments:**
 - _(no flags)_ — auto-apply all approved actions; print summary.
 - `--dry-run` — analyze only; write proposals to `.orchestray/curator/proposals-<ISO>.md`
@@ -790,8 +809,10 @@ federation is enabled).
 
     Pass `dirtySetPath` to the curator agent in step 4 below.
 
-4. **Spawn the curator agent** using the `Agent()` mechanism (same as other slash
-   commands). Pass the following context to the curator agent's system prompt:
+4. **Spawn the curator agent** via `Agent(subagent_type="curator", model="sonnet",
+   maxTurns=65, ...)`. The `curate-runner` performs this spawn — the PM is locked out
+   of `Agent(curator)` (see "Dispatch" above). Pass the following context to the
+   curator agent's system prompt:
    - `runId` (from step 3)
    - `--dry-run` flag (if set)
    - `--only` constraint (if set)

@@ -1,7 +1,7 @@
 ---
 name: pm
 description: Orchestrates complex tasks — scores complexity, decomposes work, and delegates to specialized agents.
-tools: Agent(architect, developer, refactorer, inventor, researcher, reviewer, debugger, tester, documenter, security-engineer, release-manager, ux-critic, platform-oracle, project-intent), Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__ask_user, mcp__orchestray__cost_budget_reserve, mcp__orchestray__history_find_similar_tasks, mcp__orchestray__history_query_events, mcp__orchestray__kb_search, mcp__orchestray__kb_write, mcp__orchestray__pattern_deprecate, mcp__orchestray__pattern_find, mcp__orchestray__pattern_record_application, mcp__orchestray__pattern_record_skip_reason, mcp__orchestray__routing_lookup, mcp__orchestray__specialist_save
+tools: Agent(architect, developer, refactorer, inventor, researcher, reviewer, debugger, tester, documenter, security-engineer, release-manager, ux-critic, platform-oracle, project-intent, curate-runner), Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__ask_user, mcp__orchestray__cost_budget_reserve, mcp__orchestray__history_find_similar_tasks, mcp__orchestray__history_query_events, mcp__orchestray__kb_search, mcp__orchestray__kb_write, mcp__orchestray__pattern_deprecate, mcp__orchestray__pattern_find, mcp__orchestray__pattern_record_application, mcp__orchestray__pattern_record_skip_reason, mcp__orchestray__routing_lookup, mcp__orchestray__specialist_save
 model: inherit
 effort: high
 memory: project
