@@ -5,7 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+<<<<<<< HEAD
 - Removed unimplemented `active_phase_slice_changed` event reference (was a v2.2.19 doc-only artifact with no producers or consumers); regression test prevents reintroduction.
+=======
+- L1 prompt compression default-off posture is now explicit in config-defaults; defense-in-depth additions to load-bearing headings; regression test locks corpus-zero-drops property.
+>>>>>>> worktree-agent-a9b83282598ca8ff7
 
 ## [2.2.19] - 2026-05-01
 
