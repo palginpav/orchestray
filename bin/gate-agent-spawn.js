@@ -407,10 +407,11 @@ if (require.main === module) {
           }, { cwd });
         } catch (_evErr) { /* fail-open on emit */ }
         const strictMsg =
-          "[orchestray] Agent() call missing required 'model' parameter. " +
-          "Per Section 19 and v2.2.9 B-7.4 (default hard-block), every spawn must " +
-          "route to haiku/sonnet/opus explicitly. " +
-          "Set ORCHESTRAY_STRICT_MODEL_REQUIRED=0 to restore the legacy auto-resolve cascade.";
+          "[orchestray] Missing required `model` parameter on Agent() call.\n" +
+          "Fix: pass model=<haiku|sonnet|opus>. Example:\n" +
+          "  Agent(subagent_type: \"developer\", model: \"sonnet\", description: \"...\", prompt: \"...\")\n" +
+          "See agents/pm.md §19 (Model Routing Protocol) for routing rules.\n" +
+          "Kill switch (NOT recommended in production): ORCHESTRAY_STRICT_MODEL_REQUIRED=0";
         process.stderr.write(strictMsg + '\n');
         process.stdout.write(JSON.stringify({
           hookSpecificOutput: {

@@ -1003,9 +1003,14 @@ function main() {
             process.exit(0);
           }
           process.stderr.write(
-            'Pre-done checklist failed for ' + agentRole + ': Structured Result is missing ' +
-            'required section(s): ' + check.missing.join(', ') + '.\n' +
-            'See agents/pm-reference/agent-common-protocol.md for the schema.\n'
+            '[orchestray] validate-task-completion: BLOCKED — ' + agentRole +
+            ' Structured Result missing required field(s): ' + check.missing.join(', ') + '.\n' +
+            'Required: `status`, `summary`, `files_changed`, `files_read`, `issues`, `assumptions`.\n' +
+            'Example fix:\n' +
+            '  ```json\n' +
+            '  { "status": "complete", "summary": "...", "files_changed": [], "files_read": [], "issues": [], "assumptions": [] }\n' +
+            '  ```\n' +
+            'See agents/pm-reference/handoff-contract.md §10 for the JSON schema.\n'
           );
           process.stdout.write(JSON.stringify({ continue: false, reason: 'pre_done_checklist_failed:' + agentRole }));
           process.exit(2);
@@ -1083,9 +1088,15 @@ function main() {
             session_id: event.session_id || null,
           });
           process.stderr.write(
-            '[orchestray] validate-task-completion: ROLE-SCHEMA violation for ' + agentRole + ':\n' +
+            '[orchestray] validate-task-completion: BLOCKED — ROLE-SCHEMA violation for ' + agentRole + ':\n' +
             violations.map(v => '  - ' + v.field + ': ' + v.reason).join('\n') + '\n' +
-            'See bin/_lib/role-schemas.js for the per-role contract.\n'
+            'Required: `status`, `summary`, `files_changed`, `files_read`, `issues`, `assumptions`.\n' +
+            'Common causes: missing_required_field, wrong_type, below_minimum.\n' +
+            'Example fix:\n' +
+            '  ```json\n' +
+            '  { "status": "complete", "summary": "...", "files_changed": [], "files_read": [], "issues": [], "assumptions": [] }\n' +
+            '  ```\n' +
+            'See agents/pm-reference/handoff-contract.md §10 for the JSON schema.\n'
           );
           process.stdout.write(JSON.stringify({ continue: false, reason: 't15_role_schema_violation:' + agentRole }));
           process.exit(2);
@@ -1119,7 +1130,8 @@ function main() {
               '[orchestray] validate-task-completion: CROSS-FIELD violation for ' +
               (agentRole || 'unknown') + ':\n' +
               cfResult.violations.map(v => '  - ' + v.rule + ' (' + v.field + '): ' + v.actual).join('\n') + '\n' +
-              'See agents/pm-reference/handoff-contract.md §2 for cross-field rules.\n'
+              'Required: `status`, `summary`, `files_changed`, `files_read`, `issues`, `assumptions`.\n' +
+              'See agents/pm-reference/handoff-contract.md §10 for the JSON schema.\n'
             );
           }
         } catch (_cfErr) { /* fail-open — cross-field check must never block */ }
