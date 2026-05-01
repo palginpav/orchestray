@@ -1,3 +1,8 @@
+<!-- v2.2.21: scheduled for removal in v2.3.0 unless rollback proves necessary -->
+<!-- TTL: this .legacy shim is the branch (b) full-monolith fallback only — the -->
+<!-- canonical Tier-2 protocols live across the phase-*.md slices since v2.1.15. -->
+<!-- Delete-on-release once phase_slice_loading.enabled has not been observed -->
+<!-- false in production telemetry for the v2.2.21 → v2.3.0 window. -->
 <!-- PM Reference: Loaded by Section Loading Protocol when orchestrating (complexity score >= threshold) -->
 
 # Tier 1: Orchestration Protocols

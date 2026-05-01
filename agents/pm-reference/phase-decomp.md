@@ -91,6 +91,16 @@ If a workflow is matched, Section 38 (adversarial review, in `agents/pm-referenc
    Use the matched archetype's template as the starting decomposition strategy.
    Log: "Archetype: {name}".
 
+   <!-- I-CQ-2 (v2.2.21): pipeline-templates.md is loaded automatically by the
+   Tier-2 dispatch table (pm.md §"Section Loading Protocol") when decomposition
+   is active (complexity score ≥ 4). Step 1b's read instruction is therefore
+   redundant in the common path — but kept for the score < 4 escape route where
+   the Tier-2 dispatch never fires. -->
+   > Note: `pipeline-templates.md` is loaded automatically by Tier-2 dispatch
+   > when decomposition is active (complexity score ≥ 4). The explicit Read
+   > here is the fallback for direct phase-decomp invocations that bypass
+   > Tier-2 dispatch.
+
    > See `agents/pm-reference/pipeline-templates.md` §"Archetype Classification" for
    > the complete list of archetypes, keyword triggers, and agent-flow templates.
    > Do not duplicate or override the archetype list here.

@@ -193,6 +193,14 @@ function withAutofill(event, cwd) {
   // see the field name they expect.
   if (out.event_type && !out.type) out.type = out.event_type;
   if (out.type && !out.event_type) out.event_type = out.type;
+  // I-OP-1 (v2.2.21): normalize version fields so EVERY emitted event ends up
+  // with both `version` and `schema_version` set to the same integer. Some
+  // historical emit sites (`bin/audit-*.js` per the I-OP-1 finding) omit the
+  // version field entirely and rely on the autofill below. The mirror below
+  // bridges legacy <-> canonical names; the autofill at the bottom of this
+  // function fills `version` when neither is set; the trailing mirror then
+  // sets `schema_version` from the autofilled `version`. After this function
+  // returns, an emitted payload with `type` is guaranteed to carry both names.
   if (typeof out.schema_version === 'number' && typeof out.version !== 'number') {
     out.version = out.schema_version;
   }
@@ -265,8 +273,44 @@ function withAutofill(event, cwd) {
   if (typeof out.version === 'number' && typeof out.schema_version !== 'number') {
     out.schema_version = out.version;
   }
+  // I-OP-1 (v2.2.21): also fill the reverse direction so a payload that
+  // arrived with only `schema_version` (rare — legacy callers) ends up with
+  // both `version` and `schema_version` post-normalization. The earlier
+  // mirror at the top of this function handles the normal case; this trailing
+  // mirror catches a `version` field cleared by an autofill resolver that
+  // returned undefined while a `schema_version` was already present.
+  if (typeof out.schema_version === 'number' && typeof out.version !== 'number') {
+    out.version = out.schema_version;
+  }
 
   return { filled: out, autofilled };
+}
+
+/**
+ * Public helper: ensure an event payload carries both `version` and
+ * `schema_version` set to 1 (or to whatever value either field already
+ * carries). Idempotent. Never throws.
+ *
+ * I-OP-1 (v2.2.21): exposed so callers that emit events through paths that
+ * bypass the gateway (rare; mostly legacy `bin/audit-*.js`) can pre-normalize
+ * before writing. Most callers should keep using `writeEvent()` directly.
+ *
+ * @param {object} event
+ * @returns {object} the same event, mutated in place
+ */
+function normalizeVersionFields(event) {
+  if (!event || typeof event !== 'object') return event;
+  if (typeof event.version === 'number' && typeof event.schema_version !== 'number') {
+    event.schema_version = event.version;
+  }
+  if (typeof event.schema_version === 'number' && typeof event.version !== 'number') {
+    event.version = event.schema_version;
+  }
+  if (typeof event.version !== 'number' && typeof event.schema_version !== 'number') {
+    event.version = 1;
+    event.schema_version = 1;
+  }
+  return event;
 }
 
 /**
@@ -943,10 +987,11 @@ function writeEventWithAliases(eventPayload, opts) {
 }
 
 module.exports = writeAuditEvent;
-module.exports.writeEvent            = writeEvent;
-module.exports.writeEventWithAliases = writeEventWithAliases;
-module.exports.writeAuditEvent       = writeAuditEvent;
+module.exports.writeEvent             = writeEvent;
+module.exports.writeEventWithAliases  = writeEventWithAliases;
+module.exports.writeAuditEvent        = writeAuditEvent;
 module.exports.resolveOrchestrationId = resolveOrchestrationId;
+module.exports.normalizeVersionFields = normalizeVersionFields;
 
 // ---------------------------------------------------------------------------
 // _testHooks — exported for B3 unit tests only (not production API)

@@ -36,8 +36,12 @@ function makeTmpProject(configOverrides) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-statusline-test-'));
   fs.mkdirSync(path.join(dir, '.orchestray', 'state'), { recursive: true });
 
+  // F-19 (v2.2.21): these legacy tests pre-date idle suppression and assert
+  // the always-render shape. Pin idle_suppression: false so the legacy
+  // assertions stay valid; F-19 behaviour has its own dedicated suite at
+  // tests/statusline-idle-suppress.test.js + tests/statusline-active-block.test.js.
   const config = Object.assign(
-    { context_statusbar: { enabled: true, width_cap: 120, pressure_thresholds: { warn: 75, critical: 90 } } },
+    { context_statusbar: { enabled: true, width_cap: 120, pressure_thresholds: { warn: 75, critical: 90 }, idle_suppression: false } },
     configOverrides
   );
   fs.writeFileSync(

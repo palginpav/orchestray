@@ -1,3 +1,8 @@
+<!-- v2.2.21: scheduled for removal in v2.3.0 unless rollback proves necessary -->
+<!-- TTL: this .legacy shim is a kill-switch fallback only; the canonical curator -->
+<!-- now lives across agents/curator-stages/. Delete-on-release once -->
+<!-- ORCHESTRAY_DISABLE_CURATOR_STAGES has not been observed in production telemetry -->
+<!-- for the v2.2.21 → v2.3.0 window. -->
 ---
 name: curator
 description: AI-driven pattern lifecycle manager for cross-project federation; invoked via /orchestray:learn curate

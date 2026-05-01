@@ -170,6 +170,60 @@ function findDeferral(output) {
   return { matched: false };
 }
 
+// W-PE-1 (v2.2.21): per-process deferral-scan cache.
+// Long-running release orchestrations re-scan the same transcript tail on
+// every SubagentStop. The cache key is (orchestration_id, agent_id, file_size)
+// so a tail that grew between scans correctly invalidates. Cache lives only
+// for the hook's process lifetime — each SubagentStop spawns a fresh node
+// process, so the cache is effectively per-hook-instance and provides no
+// cross-process speedup. The intended win is INSIDE a hook process when
+// findDeferral() is called more than once during a single invocation (e.g.
+// future ExtensionPoints that scan output and transcript_path separately).
+//
+// Persistent cross-process caching deferred — would require a state file
+// at .orchestray/state/no-deferral-scan-cache.json. Not landed here because
+// it adds I/O per hook (the very thing the cache should reduce) and the
+// hook is already <100ms per invocation. The in-memory cache is the
+// minimum-friction win that addresses the W-PE-1 finding without trading
+// I/O for compute.
+const _findDeferralCache = new Map();
+const _FIND_DEFERRAL_CACHE_MAX_ENTRIES = 64;
+
+/**
+ * Cache wrapper around findDeferral(). Same semantics as the inner function;
+ * NEVER throws. Cache key is the output content's tail prefix to avoid
+ * caching by raw output (which would defeat the cache because every call
+ * has a fresh string).
+ *
+ * @param {string} output
+ * @param {{ orchestration_id?: string|null, agent_id?: string|null }} [keyParts]
+ * @returns {{ matched: boolean, phrase?: string, context?: string, strict?: boolean }}
+ */
+function findDeferralCached(output, keyParts) {
+  if (typeof output !== 'string' || output.length === 0) {
+    return { matched: false };
+  }
+  const orchId = keyParts && keyParts.orchestration_id ? String(keyParts.orchestration_id) : '';
+  const agentId = keyParts && keyParts.agent_id ? String(keyParts.agent_id) : '';
+  // Use length + first/last 32 chars as a cheap identity proxy. The output
+  // string is up to MAX_SCAN_BYTES (100K), so a 64-char fingerprint is fast.
+  const head = output.slice(0, 32);
+  const tail = output.slice(-32);
+  const key = orchId + ' ' + agentId + ' ' + output.length + ' ' + head + ' ' + tail;
+
+  if (_findDeferralCache.has(key)) {
+    return _findDeferralCache.get(key);
+  }
+  const result = findDeferral(output);
+  // LRU eviction: when full, drop the oldest insertion.
+  if (_findDeferralCache.size >= _FIND_DEFERRAL_CACHE_MAX_ENTRIES) {
+    const firstKey = _findDeferralCache.keys().next().value;
+    if (firstKey !== undefined) _findDeferralCache.delete(firstKey);
+  }
+  _findDeferralCache.set(key, result);
+  return result;
+}
+
 function emitAuditEvent(cwd, record) {
   try {
     const auditDir = path.join(cwd, '.orchestray', 'audit');
@@ -222,7 +276,10 @@ function main() {
       }
 
       const output = collectOutput(event);
-      const match = findDeferral(output);
+      const match = findDeferralCached(output, {
+        orchestration_id: event && event.orchestration_id,
+        agent_id: event && (event.subagent_type || event.agent_id),
+      });
       if (!match.matched) {
         process.stdout.write(JSON.stringify({ continue: true }));
         process.exit(0);
@@ -265,8 +322,11 @@ module.exports = {
   DEFERRAL_PATTERNS,
   isReleasePhase,
   findDeferral,
+  findDeferralCached,
   collectOutput,
   MAX_SCAN_BYTES,
+  // Internal handle for tests — clears the cache to ensure deterministic runs.
+  _resetFindDeferralCache: () => { _findDeferralCache.clear(); },
 };
 
 if (require.main === module) {
