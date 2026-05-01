@@ -3,12 +3,19 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [2.2.20] - 2026-05-01
 
-- L1 prompt compression default-off posture is now explicit in config-defaults; defense-in-depth additions to load-bearing headings; regression test locks corpus-zero-drops property.
-- Removed unimplemented `active_phase_slice_changed` event reference (was a v2.2.19 doc-only artifact with no producers or consumers); regression test prevents reintroduction.
-- Archetype advisory cache now warm on first orchestration: a 10-archetype seed catalog ships with the install and a SessionStart hook seeds the per-project cache once (kill switch `ORCHESTRAY_ARCHETYPE_SEEDER_DISABLED=1`).
-- Concurrent subagent spawns no longer trigger N redundant repo-map cold builds: a cross-process sentinel deduplicates so only one process builds while waiters poll briefly for the result (kill switch `ORCHESTRAY_REPO_MAP_SENTINEL_DISABLED=1`).
+v2.2.20 is a polish pass on four items deferred from v2.2.19. L1 compression gets hardened documentation and a regression test locking the corpus-zero-drops property. A ghost event left over from v2.2.19 planning is removed and gated against reintroduction. The archetype advisory cache now starts warm — a 10-archetype seed catalog ships with the install and is loaded once per project on first use. And concurrent subagent spawns no longer stampede into N redundant repo-map cold builds; a cross-process sentinel serializes the work so waiters get the result as soon as the first builder finishes.
+
+### Added
+
+- **Archetype advisory cache now warm on first orchestration.** A 10-archetype seed catalog ships with the install and a SessionStart hook seeds the per-project cache once on first use. Previously every new project started cold, causing the advisory to fall back to generic guidance on the first orchestration. Kill switch: `ORCHESTRAY_ARCHETYPE_SEEDER_DISABLED=1`.
+- **Concurrent subagent spawns no longer trigger redundant repo-map cold builds.** A cross-process sentinel ensures only one process builds the repo map while other spawns poll briefly for the result. Previously N simultaneous spawns each started their own cold build, wasting time and tokens proportional to parallelism. Kill switch: `ORCHESTRAY_REPO_MAP_SENTINEL_DISABLED=1`.
+
+### Fixed
+
+- **L1 compression kill switch documented and regression-locked.** The default-off posture for L1 compression is now explicit in config-defaults with defense-in-depth heading protection; a regression test locks the corpus-zero-drops property so a future re-enable cannot silently regress the behavior.
+- **Ghost event `active_phase_slice_changed` removed.** This event was referenced in v2.2.19 planning docs but never had a producer or consumer — it was a doc-only artifact. The reference is removed and a regression test prevents reintroduction.
 
 ## [2.2.19] - 2026-05-01
 
