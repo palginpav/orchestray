@@ -52,6 +52,7 @@ const {
   describeSignature,
   findMatch,
   loadConfig,
+  recordApplication,
   recordBlacklisted,
 } = require('./_lib/archetype-cache');
 
@@ -252,6 +253,19 @@ function handleUserPromptSubmit(event) {
       exitWithKillSwitch();
       return;
     }
+
+    // S2 (v2.2.19): record this advisory application so prior_applications_count
+    // increments on each serve and the cache can eventually meet the
+    // min_prior_applications guardrail (default 3). Without this call the cache
+    // write-path was never exercised: recordApplication() existed but had zero
+    // callers, producing a 100% miss rate indefinitely.
+    // We record 'success' here because serving the advisory is the application
+    // event; the PM's pm_decision (accepted/adapted/overridden) is recorded
+    // separately via recordAdvisoryServed after decomposition.
+    // Fail-open: any error in recordApplication must not block the advisory.
+    try {
+      recordApplication(match.archetypeId, orchestrationId, 'success', sigDetails, cwd);
+    } catch (_re) { /* fail-open */ }
 
     // Load the archetype record to get its task graph content
     const archetypeContent = loadArchetypeContent(cwd, match.archetypeId);
