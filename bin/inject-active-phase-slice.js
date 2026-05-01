@@ -140,10 +140,51 @@ function resolveSliceForPhase(phase) {
   return PHASE_TO_FILE[phase] || null;
 }
 
+// I-PE-1 (v2.2.21): mtime-cache short-circuit threshold.
+// When the active-phase-slice.md was written < 5 seconds ago AND the source
+// slice file was not modified since the destination's mtime, skip the
+// re-write. UserPromptSubmit fires on every turn; if the same phase has
+// already been staged less than 5 s ago, the copy is wasted I/O.
+const STAGE_SLICE_SKIP_WINDOW_MS = 5000;
+
+/**
+ * Decide whether the existing active-phase-slice.md is fresh enough to
+ * skip re-staging. Returns true only when:
+ *   - destination exists
+ *   - destination's mtime is within STAGE_SLICE_SKIP_WINDOW_MS
+ *   - destination's mtime >= source's mtime (no fresh edit to the slice)
+ *   - destination's size matches the source's size (sanity check)
+ *
+ * Any error → false (force re-stage). Fail-open.
+ */
+function _shouldSkipReStage(srcPath, dstPath) {
+  try {
+    const dstStat = fs.statSync(dstPath);
+    const srcStat = fs.statSync(srcPath);
+    const dstAgeMs = Date.now() - dstStat.mtimeMs;
+    // dstAgeMs can go slightly negative due to filesystem mtime sub-millisecond
+    // resolution and Date.now() granularity (observed ~-0.2ms on Linux 6.18).
+    // Treat any "in the future" mtime as effectively age 0 — clock skew that
+    // far exceeds STAGE_SLICE_SKIP_WINDOW_MS is its own problem and the
+    // resulting re-stage is harmless.
+    const ageClamped = dstAgeMs < 0 ? 0 : dstAgeMs;
+    if (ageClamped > STAGE_SLICE_SKIP_WINDOW_MS) return false;
+    if (srcStat.mtimeMs > dstStat.mtimeMs) return false;
+    if (srcStat.size !== dstStat.size) return false;
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
+
 function stageSlice(cwd, sliceFileName) {
   const src = path.join(cwd, SLICES_DIR_RELATIVE, sliceFileName);
   if (!fs.existsSync(src)) return false;
   const dst = path.join(cwd, STATE_DIR, ACTIVE_SLICE);
+  // I-PE-1: skip when freshly staged and source unchanged.
+  if (_shouldSkipReStage(src, dst)) {
+    return true;
+  }
   try {
     fs.mkdirSync(path.dirname(dst), { recursive: true });
     fs.copyFileSync(src, dst);
@@ -283,5 +324,8 @@ module.exports = {
   resolveSliceForPhase,
   readPhaseFromOrchestration,
   emitInjectedEvent,
+  stageSlice,
+  _shouldSkipReStage,
+  STAGE_SLICE_SKIP_WINDOW_MS,
   PHASE_TO_FILE,
 };

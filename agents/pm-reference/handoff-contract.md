@@ -403,6 +403,75 @@ pattern-accuracy review tasks — all other reviewer calls use the default proje
 Agents may always pass `fields: null` or omit the argument to get the full legacy
 response. There is no config gate. Rollback is reverting the 5 agent prompt edits.
 
+### Per-role output token budget reference (v2.2.21, W-AC-1 / W-AC-2)
+
+Every spawn carries an `**Output token budget:** ≤ {N} tokens; structured JSON
+exempt.` line in its prompt suffix, computed by `bin/_lib/output-shape.js
+decideShape(role)` and injected by `bin/inject-output-shape.js`. The numeric N
+is sourced from operator-emitted p95 telemetry at
+`.orchestray/state/role-budgets.json` when present; fallback is the
+model-tier default (Haiku 30K / Sonnet 50K / Opus 80K). The role → category →
+T15 tier mapping below is the SINGLE SOURCE OF TRUTH that agents and the
+T15 hook (`bin/validate-task-completion.js`) read in lock-step.
+
+| Role               | Output category   | T15 tier (v2.2.9+) | Default cap (tier_default) |
+|--------------------|-------------------|--------------------|---------------------------:|
+| developer          | hybrid            | hard               | 50K (sonnet)               |
+| architect          | hybrid            | hard               | 80K (opus)                 |
+| reviewer           | hybrid            | hard               | 50K (sonnet)               |
+| refactorer         | hybrid            | hard               | 50K (sonnet)               |
+| tester             | structured-only   | hard               | 50K (sonnet)               |
+| documenter         | hybrid            | hard               | 50K (sonnet)               |
+| release-manager    | hybrid            | hard               | 50K (sonnet)               |
+| inventor           | hybrid            | hard               | 80K (opus)                 |
+| debugger           | hybrid            | hard               | 50K (sonnet)               |
+| researcher         | structured-only   | hard               | 50K (sonnet)               |
+| security-engineer  | prose-heavy       | hard               | 50K (sonnet)               |
+| ux-critic          | prose-heavy       | hard               | 50K (sonnet)               |
+| platform-oracle    | none              | hard               | (no cap)                   |
+| project-intent     | none              | hard (haiku)       | (no cap)                   |
+
+**v2.2.9 B-2.1 promotion (W-AC-1 reconciliation):** all 14 core roles are now
+in `HARD_TIER` (`bin/validate-task-completion.js:328`). The legacy split that
+§6 above describes ("7 hard-tier + 6 warn-tier") was correct in v2.1.9 but
+superseded in v2.2.9 — `WARN_TIER` is now an empty set, and per-role demotion
+is via `ORCHESTRAY_T15_<ROLE>_HARD_DISABLED=1` env vars rather than a static
+tier list. The W-AC-1 finding flagged this drift; this table is the
+post-promotion ground truth. §6 is being kept verbatim for v2.2.9 archival
+context but the table here is authoritative.
+
+**Source of truth contract** (W-AC-1 / W-AC-2 fix):
+- `T15 tier` column matches `HARD_TIER_ROLES` and `WARN_TIER_ROLES` in
+  `bin/validate-task-completion.js`. Drift between this table and the JS
+  constant is caught by the CI parity test
+  (`tests/polish-surface-bundle.test.js`).
+- `Output category` column matches `ROLE_CATEGORY_MAP` in
+  `bin/_lib/output-shape.js`. Drift is caught by the existing output-shape
+  drift detector.
+- `Default cap` column tracks `MODEL_TIER_DEFAULTS` × `ROLE_MODEL_TIER` in
+  `bin/_lib/output-shape.js`. Operator p95 telemetry can override per-role
+  via `.orchestray/state/role-budgets.json` (see §10 above and the
+  `getRoleLengthCap()` resolver).
+
+**Canonical Agent() invocation shape** (resolves W-AC-2 — the keyword vs object
+syntax inconsistency between `delegation-templates.md §"Mandatory model:
+field"` and `pm.md`): the PM SHOULD prefer the keyword form because it is the
+form the Claude Code Agent tool documents, and it is the form the
+`bin/inject-output-shape.js` hook examines on `tool_input`:
+
+```
+Agent(
+  subagent_type="developer",
+  model="sonnet",
+  effort="medium",
+  prompt="...",
+)
+```
+
+The object form (`Agent({ subagent_type: "developer", ... })`) is accepted by
+the runtime but inverts argument inspection in tooling and complicates hook
+authoring; do not introduce it in new prose.
+
 ## 11. Artifact body cap & detail pointer
 
 ### 11.1 Target body cap

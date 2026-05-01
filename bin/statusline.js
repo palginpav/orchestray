@@ -252,6 +252,33 @@ function render(cache, payload, config) {
   const payloadSessionId = payload.session_id || null;
   const stale = payloadSessionId && cacheSessionId && cacheSessionId !== payloadSessionId;
 
+  // F-19 (v2.2.21): idle-mode suppression.
+  // When zero subagents are active AND the parent session's prompt fill is
+  // below the warn threshold, the statusline carries no actionable signal —
+  // it is just visual noise. Return '' (Claude Code renders no line).
+  // Active path (any subagent OR fill ≥ warn threshold OR stale cache) is
+  // unchanged; the full block still renders.
+  // Kill switch: `idle_suppression: false` in the context_statusbar config
+  // block restores the always-render behaviour.
+  if (config.idle_suppression !== false && !stale) {
+    const subagentCount = (Array.isArray(cache.active_subagents) ? cache.active_subagents.length : 0);
+    if (subagentCount === 0) {
+      const promptTokens = (cache.session && cache.session.tokens && cache.session.tokens.total_prompt) || 0;
+      // Resolve the parent context window and threshold the same way the active
+      // path does, so suppression and active rendering use a single rule.
+      const idlePayloadModel = (payload.model && payload.model.id) || null;
+      const idlePayloadDisplay = (payload.model && payload.model.display_name) || null;
+      const idleSessionModel = idlePayloadModel || (cache.session && cache.session.model) || null;
+      const idleWindow = resolveContextWindow(idleSessionModel, idlePayloadDisplay);
+      const idleThresholds = config.pressure_thresholds || { warn: 75, critical: 90 };
+      const idlePct = idleWindow > 0 ? (promptTokens / idleWindow) * 100 : 0;
+      if (idlePct < idleThresholds.warn) {
+        // Idle: zero subagents, ctx fill below warn — suppress.
+        return '';
+      }
+    }
+  }
+
   // Resolve model info from payload (preferred) or cache.
   const payloadModel   = (payload.model && payload.model.id) || null;
   const payloadDisplay = (payload.model && payload.model.display_name) || null;
@@ -343,7 +370,7 @@ process.stdin.on('end', () => {
     // Load config (fail-open to defaults).
     let config;
     try { config = loadContextStatusbarConfig(projectDir); } catch (_e) {
-      config = { enabled: true, unicode: false, color: false, width_cap: 120, pressure_thresholds: { warn: 75, critical: 90 } };
+      config = { enabled: true, unicode: false, color: false, width_cap: 120, pressure_thresholds: { warn: 75, critical: 90 }, idle_suppression: true };
     }
 
     // Read the telemetry cache (fail-open to skeleton).

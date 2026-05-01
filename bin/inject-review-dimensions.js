@@ -94,6 +94,41 @@ function resolveOrchestrationId(cwd) {
 
 const MAX_EVENTS_SCAN_ROWS = 200;
 
+// W-PE-2 (v2.2.21): per-orchestration files_changed cache.
+// Path: <cwd>/.orchestray/state/files-changed-cache.json
+// Schema: { "<orchestration_id>": { "<developer_task_id>": { files_changed: string[],
+//          mtime_ms: <int>, events_size_at_write: <int> } } }
+// Invalidation: cache entry is dropped when events.jsonl size grew beyond
+// `events_size_at_write` (a new developer agent_stop may have arrived).
+//
+// Why a file cache, not an in-memory map: the hook spawns one Node process per
+// reviewer Agent() call, so in-memory state has no cross-spawn lifetime.
+// The cache file is small (one entry per developer task per orchestration);
+// reads are best-effort and fail-open.
+const FILES_CHANGED_CACHE_REL = path.join('.orchestray', 'state', 'files-changed-cache.json');
+const FILES_CHANGED_CACHE_MAX_BYTES = 64 * 1024; // 64K cap; clip on read
+
+function _readFilesChangedCache(cwd) {
+  try {
+    const p = path.join(cwd, FILES_CHANGED_CACHE_REL);
+    const stat = fs.statSync(p);
+    if (stat.size > FILES_CHANGED_CACHE_MAX_BYTES) return {};
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch (_e) {
+    return {};
+  }
+}
+
+function _writeFilesChangedCache(cwd, cache) {
+  try {
+    const p = path.join(cwd, FILES_CHANGED_CACHE_REL);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(cache), 'utf8');
+  } catch (_e) {
+    // fail-open — cache is an optimization, never required for correctness
+  }
+}
+
 /**
  * @param {string} cwd
  * @param {string|null} orchestration_id
@@ -105,6 +140,27 @@ function resolveFilesChanged(cwd, orchestration_id) {
   }
 
   const eventsPath = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
+  let eventsSize = 0;
+  try { eventsSize = fs.statSync(eventsPath).size; } catch (_e) { /* fall through */ }
+
+  // W-PE-2: cache lookup.
+  // The cache key is (orchestration_id, "_latest"). We don't bind by
+  // developer_task_id because the reviewer hook only knows the orchestration —
+  // the developer task is whichever the LATEST developer agent_stop pointed to.
+  // We invalidate on events.jsonl growth (a new developer stop may have
+  // changed the answer).
+  const cache = _readFilesChangedCache(cwd);
+  const orchEntry = cache[orchestration_id];
+  if (orchEntry && orchEntry._latest && typeof orchEntry._latest.events_size_at_write === 'number') {
+    if (orchEntry._latest.events_size_at_write === eventsSize &&
+        Array.isArray(orchEntry._latest.files_changed)) {
+      return {
+        files_changed: orchEntry._latest.files_changed.slice(),
+        source: orchEntry._latest.source || 'developer_agent_stop',
+      };
+    }
+  }
+
   let raw;
   try {
     raw = fs.readFileSync(eventsPath, 'utf8');
@@ -148,6 +204,19 @@ function resolveFilesChanged(cwd, orchestration_id) {
           .map((f) => f.trim());
         const deduped = [...new Set(files)];
         if (deduped.length > 0) {
+          // W-PE-2: write cache entry. Best-effort; never throws.
+          try {
+            const cacheNext = cache && typeof cache === 'object' ? Object.assign({}, cache) : {};
+            cacheNext[orchestration_id] = Object.assign({}, cacheNext[orchestration_id] || {}, {
+              _latest: {
+                files_changed: deduped,
+                source: 'developer_agent_stop',
+                events_size_at_write: eventsSize,
+                ts: new Date().toISOString(),
+              },
+            });
+            _writeFilesChangedCache(cwd, cacheNext);
+          } catch (_e) { /* fail-open */ }
           return { files_changed: deduped, source: 'developer_agent_stop' };
         }
       }

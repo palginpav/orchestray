@@ -1,4 +1,8 @@
-<!-- Preserved verbatim from v2.1.15 for one release. Will be removed in v2.1.17. -->
+<!-- v2.2.21: scheduled for removal in v2.3.0 unless rollback proves necessary -->
+<!-- TTL: this .legacy shim has long outlived its original v2.1.17 sunset. The -->
+<!-- canonical repo-map protocol now lives in pm.md §9.5-9.6 + bin/_lib/repo-map.js. -->
+<!-- Delete-on-release once no kill-switch path references this file in v2.2.21 → v2.3.0. -->
+<!-- Preserved verbatim from v2.1.15. Original v2.1.17 sunset missed; renewed for v2.3.0. -->
 # Repository Map Protocol
 
 Comprehensive generation, maintenance, and filtering protocol for the repository map.

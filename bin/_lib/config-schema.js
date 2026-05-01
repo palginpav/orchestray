@@ -1924,6 +1924,12 @@ function isExperimentActive(cfg, flagName) {
 //
 // context_statusbar.pressure_thresholds.warn     — integer 0-100, default 75.
 // context_statusbar.pressure_thresholds.critical — integer 0-100, default 90.
+//
+// context_statusbar.idle_suppression — boolean, default true (v2.2.21 F-19).
+//   When true, the statusline emits '' (no line) when zero subagents are
+//   active AND parent prompt fill is below the warn threshold. The signal-free
+//   "[ctx 12% 24K/200K opus]" line is suppressed because it carries no
+//   actionable info. Set to false to restore the always-render behaviour.
 // ---------------------------------------------------------------------------
 
 const DEFAULT_CONTEXT_STATUSBAR = Object.freeze({
@@ -1932,6 +1938,7 @@ const DEFAULT_CONTEXT_STATUSBAR = Object.freeze({
   color:   false,
   width_cap: 120,
   pressure_thresholds: Object.freeze({ warn: 75, critical: 90 }),
+  idle_suppression: true,
 });
 
 /**
@@ -1950,6 +1957,7 @@ function loadContextStatusbarConfig(cwd) {
     color:    DEFAULT_CONTEXT_STATUSBAR.color,
     width_cap: DEFAULT_CONTEXT_STATUSBAR.width_cap,
     pressure_thresholds: Object.assign({}, DEFAULT_CONTEXT_STATUSBAR.pressure_thresholds),
+    idle_suppression: DEFAULT_CONTEXT_STATUSBAR.idle_suppression,
   };
 
   const configPath = path.join(cwd, '.orchestray', 'config.json');
@@ -2022,6 +2030,9 @@ function validateContextStatusbarConfig(obj) {
         errors.push('context_statusbar.pressure_thresholds.critical must be 0-100');
       }
     }
+  }
+  if ('idle_suppression' in obj && typeof obj.idle_suppression !== 'boolean') {
+    errors.push('context_statusbar.idle_suppression must be a boolean');
   }
   return errors.length === 0 ? { valid: true } : { valid: false, errors };
 }

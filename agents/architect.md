@@ -5,7 +5,7 @@ description: Analyzes requirements and designs implementation approach.
   decisions, or technical design documents before implementation begins.
   Does NOT write implementation code -- produces design specs that the
   developer agent implements.
-tools: Read, Glob, Grep, Bash, Write, mcp__orchestray__ask_user, mcp__orchestray__pattern_find, mcp__orchestray__kb_search
+tools: Read, Glob, Grep, Bash, Write, mcp__orchestray__ask_user, mcp__orchestray__pattern_find, mcp__orchestray__kb_search, mcp__orchestray__history_query_events
 model: inherit
 effort: xhigh # default: xhigh (Opus 4.7 recommended default per Anthropic). max available via explicit override.
 memory: project
@@ -79,7 +79,15 @@ constraints and patterns that code alone cannot reveal.
   compact catalog. Fetch the underlying file via the returned URI only when the
   excerpt makes the entry plainly relevant. Legacy fallback: pass
   `fields: ["uri", "section", "excerpt"]` with `mode: "full"`.
-- **When to skip both:** trivial single-file additions where prior art is unlikely and the
+- **`mcp__orchestray__history_query_events`** -- call when the design touches a
+  surface that has been re-designed before (e.g., an audit-event schema, a
+  hook contract, a kill-switch surface). Pass `event_types` filter to narrow,
+  e.g. `["design_doc_written", "verify_fix_fail", "schema_shape_violation"]`.
+  Use the returned rows to learn whether prior designs at this surface
+  oscillated or held — design-replay scenarios benefit from this signal more
+  than a raw codebase Grep does. Skip when the surface is genuinely new (no
+  prior history would surface).
+- **When to skip all three:** trivial single-file additions where prior art is unlikely and the
   MCP round-trip cost exceeds the benefit.
 
 ### Step 2: Explore the Codebase

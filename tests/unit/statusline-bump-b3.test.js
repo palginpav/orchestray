@@ -33,7 +33,9 @@ function makeTmpProject() {
   fs.mkdirSync(path.join(dir, '.orchestray', 'state'), { recursive: true });
   fs.writeFileSync(
     path.join(dir, '.orchestray', 'config.json'),
-    JSON.stringify({ context_statusbar: { enabled: true, width_cap: 200, pressure_thresholds: { warn: 75, critical: 90 } } }),
+    // F-19 (v2.2.21): pin idle_suppression: false for these B-3 unit tests so the
+    // legacy "[ctx" assertions stay valid when zero subagents are active.
+    JSON.stringify({ context_statusbar: { enabled: true, width_cap: 200, pressure_thresholds: { warn: 75, critical: 90 }, idle_suppression: false } }),
     'utf8'
   );
   return dir;
