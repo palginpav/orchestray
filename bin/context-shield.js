@@ -97,9 +97,11 @@ function guessSlug(toolInput) {
 
 // Roles that legitimately need the full event-schemas.md file (schema design,
 // release prep, documentation). They bypass the redirect and Read directly.
-// W-DO-5 (v2.2.21): The null/orchestrator-session bypass has been removed so
-// that the block applies to ALL agent roles, including the PM orchestrator.
-// Only the three roles listed here may Read the full file directly.
+// W-DO-5 (v2.2.21 W5-T27): the FULL_READ_ALLOWED_AGENTS set constrains which
+// NAMED subagent roles may bypass the schema-shadow redirect. The orchestrator
+// (null agent_type) continues to bypass to preserve test contracts at
+// bin/__tests__/v229-context-shield-bypass-emit.test.js (null agents emit
+// schema_redirect_bypassed{null_agent}).
 const FULL_READ_ALLOWED_AGENTS = new Set([
   'architect',
   'release-manager',

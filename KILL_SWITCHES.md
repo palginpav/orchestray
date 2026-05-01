@@ -97,6 +97,8 @@ Within each category, entries are sorted case-insensitive alphabetically by feat
 | Dossier-orphan threshold escalator (v2.2.13) | — | `ORCHESTRAY_DOSSIER_ORPHAN_THRESHOLD_DISABLED=1` | default-on |
 | Dossier orphan compensation at SessionStart (v2.2.18) | `dossier_compensation.enabled: false` | `ORCHESTRAY_DOSSIER_COMPENSATION_DISABLED=1` | default-on |
 
+| State accumulator GC + corrupt-state self-heal (v2.2.21 W4-T18) | — | `ORCHESTRAY_STATE_GC_DISABLED=1` | default-on |
+
 ## 6. Telemetry & audit
 
 | Feature | Config key | Env var | Default |

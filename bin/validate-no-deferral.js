@@ -299,7 +299,8 @@ function findDeferralCached(output, ctx) {
   try {
     const orch = (ctx && ctx.orchestration_id) || 'unknown';
     const agent = (ctx && ctx.agent_id) || 'unknown';
-    // Cheap hash: length + first/last 64 chars (LRU eviction handles dedup correctness).
+    // Cheap hash: length + first/last 64 chars (FIFO eviction is workload-equivalent
+    // here — insert-once-per-completion call pattern means LRU vs FIFO is identical).
     const sample = typeof output === 'string'
       ? `${output.length}:${output.slice(0, 64)}:${output.slice(-64)}`
       : 'non-string';

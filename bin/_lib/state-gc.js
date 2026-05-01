@@ -177,7 +177,7 @@ function _pruneJsonlByTtl(filePath, cutoffMs) {
     if (tsMs !== null && tsMs < cutoffMs) {
       dropped++;
     } else {
-      // No parseable timestamp → keep (fail-open).
+      // Keep: no parseable timestamp (fail-open) OR timestamp within TTL window.
       keptLines.push(line);
       kept++;
     }

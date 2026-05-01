@@ -1737,7 +1737,7 @@ project (`bin/pre-compact-archive.js`). See commit `8761fb2` for the full invest
 
 ---
 
-## Kill Switch Activated Event
+### `kill_switch_activated`
 
 IMPLEMENTED (as of 2.0.13, task 2013-W7). Emitted by `bin/emit-kill-switch-event.js`
 (called from the `skills/orchestray:config` skill write path) immediately after a
@@ -6894,6 +6894,51 @@ Emitted by `bin/process-spawn-requests.js` when a spawn request fails the cost c
 Field notes:
 - `reason` ∈ `{above_threshold, quota_exhausted, max_depth_exceeded, user_explicit}`.
 - Max-depth default: 2 (a reactive-spawned agent cannot itself reactive-spawn).
+
+
+### `spawn_request_evicted` event
+
+Emitted by `bin/process-spawn-requests.js` (v2.2.21 W1-T7 F8) when the drainer
+TTL-evicts a stale spawn-request row whose `orchestration_id` doesn't match the
+active orchestration AND whose row age exceeds 5 minutes.
+
+```json
+{
+  "type": "spawn_request_evicted",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "<active-orch>",
+  "evicted_orchestration_id": "<orch-on-row>",
+  "request_id": "...",
+  "reason": "stale_orchestration_id_ttl",
+  "age_ms": 320000
+}
+```
+
+Field notes:
+- Closes a v2.2.20 unbounded-growth class on `.orchestray/state/spawn-requests.jsonl`.
+- Fail-open: drainer continues even if eviction emit fails.
+
+### `non_pm_agent_spawn_blocked` event
+
+Emitted by `bin/gate-agent-spawn.js` (v2.2.21 W5-T27 W-AC-4) when an agent
+declaring `Agent(...)` in its tools allowlist is neither `pm` nor
+`curate-runner` (the only two roles allowed to spawn subagents).
+
+```json
+{
+  "type": "non_pm_agent_spawn_blocked",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "caller_role": "developer",
+  "tool_name": "Agent",
+  "source": "gate-agent-spawn"
+}
+```
+
+Field notes:
+- Hard-block: exit 2 with reason `non_pm_agent_declares_agent_tool`.
+- Kill switch: `ORCHESTRAY_NON_PM_AGENT_BLOCK_DISABLED=1`.
 
 ### `audit_event_autofilled` event
 

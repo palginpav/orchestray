@@ -462,7 +462,6 @@ async function handle(input, context) {
       // call when federation is enabled and shared tier has many slugs matching local.
       if (collidingSlugs.length > 0) {
         try {
-          const allLocal = collidingSlugs.every(() => true); // winning_tier always 'local' here
           writeAuditEvent({
             timestamp: new Date().toISOString(),
             type: 'pattern_find_collisions_summary',
