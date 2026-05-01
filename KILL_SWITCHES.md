@@ -151,3 +151,4 @@ Within each category, entries are sorted alphabetically by feature name.
 | Spawn-approved drainer (housekeeper E2E) | — | `ORCHESTRAY_SPAWN_DRAINER_DISABLED=1` |
 | Workspace snapshots | — | `ORCHESTRAY_DISABLE_SNAPSHOTS=1` |
 | Worktree auto-commit on SubagentStop (v2.2.18) | `worktree_auto_commit.enabled: false` | `ORCHESTRAY_WORKTREE_AUTO_COMMIT_DISABLED=1` |
+| Repo-map cross-process sentinel (v2.2.20) | `repo_map.sentinel_enabled: false` | `ORCHESTRAY_REPO_MAP_SENTINEL_DISABLED=1` |
