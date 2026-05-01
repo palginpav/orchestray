@@ -3750,6 +3750,37 @@ blacklist suppression IS a miss from the analytics perspective.
 
 ---
 
+### `archetype_cache_seeder_ran`
+
+Emitted by `bin/seed-archetype-cache.js` after a successful seeder run (v2.2.20 T6).
+Written once per project (guarded by sentinel). Also emitted on `--force` re-runs.
+
+**Required fields:** `timestamp`, `version`, `seed_count`, `mined_count`, `merged_count`, `skipped_count`, `trigger`
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "archetype_cache_seeder_ran",
+  "version": 1,
+  "seed_count": 10,
+  "mined_count": 0,
+  "merged_count": 10,
+  "skipped_count": 0,
+  "trigger": "session_start",
+  "dry_run": false
+}
+```
+
+Field notes:
+- `seed_count`: Number of seeds in the shipped catalog attempted.
+- `mined_count`: Number of history-mine elevations applied from events.jsonl.
+- `merged_count`: Number of new records added (not already in cache).
+- `skipped_count`: Number of records already present (counts preserved via no-downgrade rule).
+- `trigger`: `"session_start"` when invoked via hook; `"cli"` when invoked directly.
+- `dry_run`: Always `false` in production; `true` only during `--dry-run` CLI invocation (event not emitted on dry-run).
+
+---
+
 ### archetype_cache_blacklisted (degraded-journal entry)
 
 Written to `.orchestray/state/degraded.jsonl` (NOT to events.jsonl) when a cache match

@@ -96,6 +96,15 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/seed-archetype-cache.js",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PreToolUse": [

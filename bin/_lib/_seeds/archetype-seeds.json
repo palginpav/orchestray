@@ -1,0 +1,122 @@
+[
+  {
+    "archetype_id": "474114d0fc32",
+    "archetype_name": "release-impl",
+    "prior_applications_count": 3,
+    "failed_uses": 0,
+    "last_outcome": "success",
+    "last_orch_id": "seeded",
+    "agentSet": "architect,developer,release-manager,reviewer",
+    "fileBucket": "M",
+    "keywords": "bump,changelog,implement,npm,publish",
+    "scoreBucket": "6"
+  },
+  {
+    "archetype_id": "5459be41500b",
+    "archetype_name": "audit-fix",
+    "prior_applications_count": 3,
+    "failed_uses": 0,
+    "last_outcome": "success",
+    "last_orch_id": "seeded",
+    "agentSet": "developer,reviewer",
+    "fileBucket": "M",
+    "keywords": "audit,bugs,corrections,errors,feedback",
+    "scoreBucket": "5"
+  },
+  {
+    "archetype_id": "f69513da358a",
+    "archetype_name": "single-feature",
+    "prior_applications_count": 3,
+    "failed_uses": 0,
+    "last_outcome": "success",
+    "last_orch_id": "seeded",
+    "agentSet": "architect,developer,reviewer,tester",
+    "fileBucket": "S",
+    "keywords": "api,build,component,design,feature",
+    "scoreBucket": "5"
+  },
+  {
+    "archetype_id": "2d33d72a48c2",
+    "archetype_name": "doc-only",
+    "prior_applications_count": 3,
+    "failed_uses": 0,
+    "last_outcome": "success",
+    "last_orch_id": "seeded",
+    "agentSet": "documenter",
+    "fileBucket": "S",
+    "keywords": "changelog,clarify,docs,documentation,improve",
+    "scoreBucket": "2"
+  },
+  {
+    "archetype_id": "baba5eaf8dcf",
+    "archetype_name": "refactor",
+    "prior_applications_count": 3,
+    "failed_uses": 0,
+    "last_outcome": "success",
+    "last_orch_id": "seeded",
+    "agentSet": "refactorer,reviewer",
+    "fileBucket": "M",
+    "keywords": "cleanup,code,extract,improve,quality",
+    "scoreBucket": "4"
+  },
+  {
+    "archetype_id": "3d656b0ddf25",
+    "archetype_name": "debug-fix",
+    "prior_applications_count": 3,
+    "failed_uses": 0,
+    "last_outcome": "success",
+    "last_orch_id": "seeded",
+    "agentSet": "debugger,developer,reviewer",
+    "fileBucket": "S",
+    "keywords": "analysis,bug,cause,crash,debug",
+    "scoreBucket": "4"
+  },
+  {
+    "archetype_id": "439ba6c0053b",
+    "archetype_name": "test-only",
+    "prior_applications_count": 3,
+    "failed_uses": 0,
+    "last_outcome": "success",
+    "last_orch_id": "seeded",
+    "agentSet": "tester",
+    "fileBucket": "S",
+    "keywords": "assertions,coverage,integration,spec,testing",
+    "scoreBucket": "3"
+  },
+  {
+    "archetype_id": "620438912088",
+    "archetype_name": "security-audit",
+    "prior_applications_count": 3,
+    "failed_uses": 0,
+    "last_outcome": "success",
+    "last_orch_id": "seeded",
+    "agentSet": "reviewer,security-engineer",
+    "fileBucket": "M",
+    "keywords": "assessment,audit,model,risk,security",
+    "scoreBucket": "5"
+  },
+  {
+    "archetype_id": "a586a08506ba",
+    "archetype_name": "multi-agent-complex",
+    "prior_applications_count": 3,
+    "failed_uses": 0,
+    "last_outcome": "success",
+    "last_orch_id": "seeded",
+    "agentSet": "architect,developer,reviewer,tester",
+    "fileBucket": "M",
+    "keywords": "architecture,complex,components,design,implement",
+    "scoreBucket": "8"
+  },
+  {
+    "archetype_id": "00df73fc20f2",
+    "archetype_name": "config-update",
+    "prior_applications_count": 3,
+    "failed_uses": 0,
+    "last_outcome": "success",
+    "last_orch_id": "seeded",
+    "agentSet": "developer",
+    "fileBucket": "XS",
+    "keywords": "change,config,configuration,flag,parameter",
+    "scoreBucket": "2"
+  }
+]
