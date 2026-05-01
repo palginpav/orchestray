@@ -72,7 +72,7 @@ v2.2.19 is a focused wiring pass: 10 token-saving features from a 14.5-hour audi
 
 ## [2.2.18] - 2026-04-30
 
-v2.2.18 closes a four-time-recurring data-loss bug where agent edits in linked git worktrees were silently discarded during worktree cleanup. It also lands a deterministic post-ship probe for the v2.2.17 drainer-tombstone fix, and reduces the dominant audit-log noise sources by an estimated 80%+ (schema-shadow caching, tokenwright drift, dual-install divergence, dossier injection gap). Every gate ships default-on with a kill switch; no config changes required.
+v2.2.18 closes a four-time-recurring data-loss bug where agent edits in linked git worktrees were silently discarded during worktree cleanup. It also adds a self-checking probe that verifies the repeat-emission fix from v2.2.17 is working correctly, and reduces the dominant audit-log noise sources by an estimated 80%+ (schema-shadow caching, token-estimate drift, dual-install divergence, dossier injection gap). Every gate ships default-on with a kill switch; no config changes required.
 
 ### Added — Worktree data-loss bug closed (four-time recurrence)
 
@@ -130,7 +130,7 @@ v2.2.18 closes a four-time-recurring data-loss bug where agent edits in linked g
 
 ## [2.2.17] - 2026-04-30
 
-v2.2.17 picks up the deferred backlog from v2.2.15 (which v2.2.16's same-day FN-16 hotfix couldn't absorb) and ships a telemetry-driven hardening pass targeting the noisiest signals from the v2.2.16 audit log. Every gate ships default-on with a kill switch; no config changes required.
+v2.2.17 ships six new structural gates that fail loudly when an agent or commit skips a required artifact — closing gaps that caused silent data loss and undetected regressions in earlier releases. Pattern matching becomes more inclusive (threshold lowered so previously ignored patterns now apply). Audit-log noise drops significantly via schema relaxations targeting the top recurring false-positive sources. Every gate ships default-on with a kill switch; no config changes required.
 
 ### Added — Deferred items from v2.2.15
 
