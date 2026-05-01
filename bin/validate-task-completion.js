@@ -523,7 +523,8 @@ function validateStructuredResult(result) {
     if (key === 'summary') {
       if (typeof val !== 'string' || val.trim().length === 0) missing.push(key);
     } else if (key === 'status') {
-      if (typeof val !== 'string' || val.trim().length === 0) missing.push(key);
+      const ALLOWED_STATUS = new Set(['success', 'partial', 'failure']);
+      if (typeof val !== 'string' || !ALLOWED_STATUS.has(val.trim())) missing.push(key);
     } else {
       // files_changed / files_read / issues must be arrays (empty allowed).
       if (!Array.isArray(val)) missing.push(key);
