@@ -211,8 +211,62 @@ function shouldFireFromThisInstall(scriptPath, opts) {
   }
 }
 
+/**
+ * Returns true iff the GLOBAL install (~/.claude/orchestray/bin/inject-tokenwright.js)
+ * exists on disk. v2.2.21 W5-T26 — used by tokenwright self-probe.
+ */
+function isGlobalInstallPresent() {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const sentinel = path.join(resolveGlobalInstallRoot(), 'bin', 'inject-tokenwright.js');
+    return fs.existsSync(sentinel);
+  } catch (_e) {
+    return false;
+  }
+}
+
+/**
+ * Returns true iff a LOCAL install
+ * (`<projectRoot>/.claude/orchestray/bin/inject-tokenwright.js`) exists on disk.
+ * v2.2.21 W5-T26 — accepts an explicit projectRoot so callers can pass
+ * process.cwd() or event.cwd. Falls back to process.cwd() if omitted.
+ */
+function isLocalInstallPresent(projectRoot) {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const root = projectRoot || process.cwd();
+    const sentinel = path.join(root, '.claude', 'orchestray', 'bin', 'inject-tokenwright.js');
+    return fs.existsSync(sentinel);
+  } catch (_e) {
+    return false;
+  }
+}
+
+/**
+ * Resolve the active install bin directory for the given project root.
+ * Prefers LOCAL when both are present (matches shouldFireFromThisInstall semantics).
+ * v2.2.21 W5-T26 — used by tokenwright self-probe to locate the canonical hook.
+ */
+function resolveActiveInstallBin(projectRoot) {
+  const path = require('path');
+  const root = projectRoot || process.cwd();
+  if (isLocalInstallPresent(root)) {
+    return path.join(root, '.claude', 'orchestray', 'bin');
+  }
+  if (isGlobalInstallPresent()) {
+    return path.join(resolveGlobalInstallRoot(), 'bin');
+  }
+  return null;
+}
+
 module.exports = {
   shouldFireFromThisInstall,
+  // v2.2.21 W5-T26 (additive): individual probes for self-probe.js consumers.
+  isGlobalInstallPresent,
+  isLocalInstallPresent,
+  resolveActiveInstallBin,
   // Internals exported for unit tests only — not a stable contract.
   __internal: {
     resolveGlobalInstallRoot,

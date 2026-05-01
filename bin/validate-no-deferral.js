@@ -283,10 +283,48 @@ function main() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// v2.2.21 W5-T28 W-PE-1: in-process LRU memo for findDeferral.
+// Cache key: (orchestration_id, agent_id, output content hash). Cache size: 64.
+// Fail-open: cache errors fall through to direct findDeferral call.
+// ---------------------------------------------------------------------------
+const _findDeferralCache = new Map();
+const _FIND_DEFERRAL_CACHE_MAX = 64;
+
+function _resetFindDeferralCache() {
+  _findDeferralCache.clear();
+}
+
+function findDeferralCached(output, ctx) {
+  try {
+    const orch = (ctx && ctx.orchestration_id) || 'unknown';
+    const agent = (ctx && ctx.agent_id) || 'unknown';
+    // Cheap hash: length + first/last 64 chars (LRU eviction handles dedup correctness).
+    const sample = typeof output === 'string'
+      ? `${output.length}:${output.slice(0, 64)}:${output.slice(-64)}`
+      : 'non-string';
+    const key = `${orch}:${agent}:${sample}`;
+    if (_findDeferralCache.has(key)) {
+      return _findDeferralCache.get(key);
+    }
+    const result = findDeferral(output);
+    if (_findDeferralCache.size >= _FIND_DEFERRAL_CACHE_MAX) {
+      const oldest = _findDeferralCache.keys().next().value;
+      _findDeferralCache.delete(oldest);
+    }
+    _findDeferralCache.set(key, result);
+    return result;
+  } catch (_e) {
+    return findDeferral(output);
+  }
+}
+
 module.exports = {
   DEFERRAL_PATTERNS,
   isReleasePhase,
   findDeferral,
+  findDeferralCached,
+  _resetFindDeferralCache,
   collectOutput,
   MAX_SCAN_BYTES,
 };

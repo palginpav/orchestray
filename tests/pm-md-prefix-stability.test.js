@@ -157,8 +157,8 @@ describe('agents/pm.md Block A hash stability', () => {
     //   in agents/pm.md frontmatter to enable /orchestray:learn curate dispatch.
     // v2.2.21 G3-W3-T9 (cross-ref rot bundle): §17→§22a rename + cross-ref fixes.
     // v2.2.21 G3-W5-T27 (W-SE-1): §3.RV path-list replaced with canonical source reference.
-    // PM will re-pin after W5 merge completes (both changes in flight).
-    const PINNED_BLOCK_A_HASH = 'PENDING_W5_MERGE';
+    // Re-pinned by PM at end of v2.2.21 W5 merge (both changes incorporated).
+    const PINNED_BLOCK_A_HASH = '47f186e788366e33';
 
     assert.equal(
       actualHash,
