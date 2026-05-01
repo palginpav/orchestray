@@ -35,6 +35,7 @@ budget_warn — pre-spawn context-size budget exceeded (hook, v2.1.15)
 phase_slice_fallback — phase-slice hook degraded path (no orchestration / unknown phase / missing slice file) (hook, v2.1.15 W8)
 phase_slice_injected — phase-slice hook positive path (slice pointer staged into PM additionalContext) (hook, v2.1.16 W9 R-PHASE-INJ)
 repo_map_built / repo_map_parse_failed / repo_map_grammar_load_failed / repo_map_cache_unavailable — Aider-style repo map events (v2.1.17 W8 R-AIDER-FULL)
+repo_map_sentinel_wait — cross-process cold-init sentinel coordination (v2.2.20 T7)
 
 END CONDITIONAL-LOAD NOTICE -->
 
@@ -5379,6 +5380,51 @@ persisted.
 `reason` values (extensible):
 
 - `cache_dir_not_writable` — `fs.writeFileSync` probe failed.
+
+Schema stability: additive-only.
+
+
+---
+
+### `repo_map_sentinel_wait` event (v2.2.20 T7 cross-process sentinel)
+
+Emitted by `bin/_lib/repo-map.js` when a concurrent cold-cache caller enters
+the cross-process sentinel poll loop. Fires at most once per `buildRepoMap()`
+call that enters the waiter path. The `outcome` field tells operators whether
+sentinel coordination succeeded (`cache_hit`), the sentinel was gone but the
+cache was absent (`sentinel_gone_no_cache`), a stale sentinel was evicted
+(`stale_sentinel_evicted`), or the poll exhausted (`timeout`).
+
+Kill switch: `ORCHESTRAY_REPO_MAP_SENTINEL_DISABLED=1` env var or
+`repo_map.sentinel_enabled: false` in `.orchestray/config.json` suppresses
+this event entirely.
+
+```json
+{
+  "version": 1,
+  "type": "repo_map_sentinel_wait",
+  "timestamp": "2026-05-01T10:00:00.000Z",
+  "orchestration_id": "orch-1777200000",
+  "cwd": "/home/user/project",
+  "rounds_waited": 3,
+  "outcome": "cache_hit",
+  "sentinel_age_ms": null
+}
+```
+
+Fields:
+
+- `cwd`: absolute project root the build ran against.
+- `rounds_waited`: integer 1–10 — number of 500 ms poll ticks completed.
+- `outcome`: one of:
+  - `cache_hit` — waiter found a valid cache after sentinel cleared.
+  - `sentinel_gone_no_cache` — sentinel cleared but no valid cache found.
+  - `stale_sentinel_evicted` — sentinel age exceeded 60 s TTL; evicted.
+  - `timeout` — 10 poll rounds exhausted (5 s total) with no resolution.
+- `sentinel_age_ms`: integer (ms), present only when `outcome = stale_sentinel_evicted`.
+
+Feature-notes: `feature_optional: true` — only emitted when the sentinel
+mechanism is triggered (concurrent cold-cache callers in the same second).
 
 Schema stability: additive-only.
 

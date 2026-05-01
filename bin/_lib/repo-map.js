@@ -240,6 +240,175 @@ async function harvestTags({ cwd, files, cacheDir, cacheWritable, skippedGrammar
 }
 
 // ---------------------------------------------------------------------------
+// Sentinel helpers (v2.2.20 T7 — cross-process cold-init deduplication)
+// ---------------------------------------------------------------------------
+
+const SENTINEL_POLL_INTERVAL_MS = 500;
+const SENTINEL_POLL_ROUNDS      = 10;    // max wait = 5 000 ms
+const SENTINEL_TTL_MS           = 60_000; // 60 s staleness threshold
+
+/**
+ * Check whether the cross-process sentinel is disabled via env var or config.
+ * Fail-open: any config read error defaults to sentinel ENABLED.
+ */
+function _isSentinelDisabled(cwd) {
+  if (process.env.ORCHESTRAY_REPO_MAP_SENTINEL_DISABLED === '1') return true;
+  try {
+    const cfg = _loadRepoMapConfig(cwd);
+    if (cfg && cfg.sentinel_enabled === false) return true;
+  } catch (_e) { /* fail-open */ }
+  return false;
+}
+
+/**
+ * Lazy-load repo_map config from .orchestray/config.json.
+ * Returns the repo_map sub-object, or {} on any error.
+ */
+function _loadRepoMapConfig(cwd) {
+  try {
+    const cfgPath = path.join(cwd, '.orchestray', 'config.json');
+    const raw = fs.readFileSync(cfgPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed.repo_map === 'object' && parsed.repo_map) || {};
+  } catch (_e) {
+    return {};
+  }
+}
+
+/**
+ * Re-run the cache-hit check (manifest + aggregate SHA). Returns {map, stats}
+ * on hit, null on miss. Extracted from the main cache-hit block at L296-344.
+ */
+function _tryCacheHit(cacheDir, cwd, grammarManifestSha, languages, t0, budget) {
+  try {
+    const existing = cache.loadManifest(cacheDir);
+    if (!existing
+        || existing.schema_version      !== cache.SCHEMA_VERSION
+        || existing.tree_sitter_runtime !== cache.TREE_SITTER_RUNTIME
+        || existing.grammar_manifest_sha !== grammarManifestSha) return null;
+    const candidatePaths = discoverFiles(cwd, languages);
+    const currentFiles = {};
+    for (const p of candidatePaths) {
+      const sha = cache.getBlobSha(cwd, p);
+      if (sha) currentFiles[p] = { blob_sha: sha };
+    }
+    if (cache.computeAggregateSha(currentFiles) !== existing.aggregate_sha) return null;
+    const cached = cache.readGraph(cacheDir);
+    if (!cached || !cached.scores || !cached.tagsByFile) return null;
+    const tagsByFile = new Map();
+    for (const [k, v] of Object.entries(cached.tagsByFile)) {
+      tagsByFile.set(k, v);
+    }
+    const ranked = Object.entries(cached.scores)
+      .sort((a, b) => b[1] - a[1])
+      .map((e) => e[0]);
+    const totalFiles = ranked.length;
+    const renderBudget = (typeof budget === 'number' && budget > 0) ? budget : 2000;
+    const { map, tokens } = render.binarySearchK(ranked, tagsByFile, totalFiles, renderBudget);
+    const ms = t0 ? Number((process.hrtime.bigint() - t0) / 1000000n) : 0;
+    const stats = {
+      files_parsed:    Object.keys(cached.tagsByFile).length,
+      symbols_ranked:  Object.keys(cached.scores).length,
+      cache_hit:       true,
+      ms:              ms,
+      token_count:     tokens,
+      skipped_files:   0,
+      skipped_grammars: [],
+    };
+    emitEvent({
+      version:        1,
+      type:           'repo_map_built',
+      cwd:            cwd,
+      files_parsed:   stats.files_parsed,
+      symbols_ranked: stats.symbols_ranked,
+      ms:             stats.ms,
+      cache_hit:      true,
+      token_count:    stats.token_count,
+    }, cwd);
+    return { map, stats };
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
+ * Poll for the sentinel to disappear (builder finished) or go stale (builder crashed).
+ * Returns a cache-hit result object on success, null when caller should become builder.
+ *
+ * @param {string} sentinelPath - Absolute path to the sentinel file.
+ * @param {string} cacheDir     - Cache directory root.
+ * @param {string} cwd          - Project root.
+ * @param {string} grammarManifestSha
+ * @param {string[]} languages
+ * @param {number} pollIntervalMs - Poll cadence in ms (injectable for tests).
+ */
+async function _waitForSentinelClear(sentinelPath, cacheDir, cwd,
+  grammarManifestSha, languages, pollIntervalMs, tokenBudget) {
+  const interval = (typeof pollIntervalMs === 'number' && pollIntervalMs > 0)
+    ? pollIntervalMs
+    : SENTINEL_POLL_INTERVAL_MS;
+
+  for (let i = 0; i < SENTINEL_POLL_ROUNDS; i++) {
+    await new Promise((r) => setTimeout(r, interval));
+
+    let stat;
+    try { stat = fs.statSync(sentinelPath); }
+    catch (_e) { stat = null; }
+
+    if (stat === null) {
+      // Sentinel gone — builder finished (or crashed and cleaned up).
+      const hit = _tryCacheHit(cacheDir, cwd, grammarManifestSha, languages, null, tokenBudget);
+      if (hit) {
+        emitEvent({
+          version:       1,
+          type:          'repo_map_sentinel_wait',
+          cwd:           cwd,
+          rounds_waited: i + 1,
+          outcome:       'cache_hit',
+        }, cwd);
+        return hit;
+      }
+      // Sentinel gone but no cache — builder may have failed; fall out.
+      emitEvent({
+        version:       1,
+        type:          'repo_map_sentinel_wait',
+        cwd:           cwd,
+        rounds_waited: i + 1,
+        outcome:       'sentinel_gone_no_cache',
+      }, cwd);
+      return null;
+    }
+
+    // Stale sentinel check
+    const age = Date.now() - stat.mtimeMs;
+    if (age > SENTINEL_TTL_MS) {
+      // Force-remove stale sentinel; caller becomes new builder.
+      try { fs.unlinkSync(sentinelPath); } catch (_e2) { /* best effort */ }
+      emitEvent({
+        version:          1,
+        type:             'repo_map_sentinel_wait',
+        cwd:              cwd,
+        rounds_waited:    i + 1,
+        outcome:          'stale_sentinel_evicted',
+        sentinel_age_ms:  age,
+      }, cwd);
+      return null;
+    }
+    // Sentinel still live — loop and poll again.
+  }
+
+  // Poll rounds exhausted.
+  emitEvent({
+    version:       1,
+    type:          'repo_map_sentinel_wait',
+    cwd:           cwd,
+    rounds_waited: SENTINEL_POLL_ROUNDS,
+    outcome:       'timeout',
+  }, cwd);
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // buildRepoMap
 // ---------------------------------------------------------------------------
 
@@ -351,16 +520,81 @@ async function buildRepoMap(opts) {
 
   // Cold path. If async-cold-init requested AND we have no graph cache,
   // kick off a background build and return empty immediately.
+  //
+  // v2.2.20 T7: cross-process sentinel guards against N subagents each
+  // spawning their own _doFullBuild when the cache is cold. The sentinel
+  // lives at <cacheDir>/.building. Only one process wins the atomic
+  // fs.openSync('wx') and becomes the builder; others poll and return
+  // a cache hit once the build completes.
   if (coldInitAsync && cacheWritable) {
-    if (!_backgroundBuilds.has(cwd)) {
-      const promise = _doFullBuild({
-        cwd, cacheDir, languages, tokenBudget,
-        cacheWritable, grammarManifestSha, t0,
-      }).finally(() => _backgroundBuilds.delete(cwd));
-      _backgroundBuilds.set(cwd, promise);
-      // Don't await — caller gets empty map, next call sees warm cache.
+    const sentinelDisabled = _isSentinelDisabled(cwd);
+
+    if (!sentinelDisabled) {
+      const sentinelPath = path.join(cacheDir, '.building');
+
+      // --- STEP 1: Attempt atomic sentinel creation (exactly-one-winner) ---
+      let iBuilder = false;
+      try {
+        // 'wx' = O_CREAT | O_EXCL — fails if file exists; atomic on POSIX + NTFS
+        const fd = fs.openSync(sentinelPath, 'wx');
+        fs.writeSync(fd, new Date().toISOString());
+        fs.closeSync(fd);
+        iBuilder = true;
+      } catch (e) {
+        if (e.code !== 'EEXIST') {
+          // Disk-full, permission error, etc. — fail-open; treat self as builder
+          iBuilder = true;
+        }
+        // EEXIST = another process is already building — become a waiter
+      }
+
+      if (!iBuilder) {
+        // --- STEP 2: Bounded poll as a waiter ---
+        const pollInterval = (typeof opts._testSentinelPollInterval === 'number')
+          ? opts._testSentinelPollInterval
+          : 500;
+        const waitResult = await _waitForSentinelClear(sentinelPath, cacheDir,
+          cwd, grammarManifestSha, languages, pollInterval, tokenBudget);
+        if (waitResult !== null) return waitResult; // cache hit after wait
+        // Wait exhausted or sentinel became stale — retry sentinel acquisition once
+        try {
+          const fd2 = fs.openSync(sentinelPath, 'wx');
+          fs.writeSync(fd2, new Date().toISOString());
+          fs.closeSync(fd2);
+          iBuilder = true;
+        } catch (_e2) {
+          // Still contested — give up and return empty map (current behavior)
+          return { map: '', stats: emptyStats() };
+        }
+      }
+
+      if (iBuilder) {
+        // --- STEP 3: Builder path — fire-and-forget, clean sentinel in finally ---
+        if (!_backgroundBuilds.has(cwd)) {
+          const promise = _doFullBuild({
+            cwd, cacheDir, languages, tokenBudget,
+            cacheWritable, grammarManifestSha, t0,
+          }).finally(() => {
+            _backgroundBuilds.delete(cwd);
+            try { fs.unlinkSync(sentinelPath); } catch (_e) { /* ENOENT is fine */ }
+          });
+          _backgroundBuilds.set(cwd, promise);
+          // Don't await — caller gets empty map, next call sees warm cache.
+        }
+        return { map: '', stats: emptyStats() };
+      }
+    } else {
+      // Sentinel disabled — use pre-v2.2.20 behavior (per-process dedup only)
+      if (!_backgroundBuilds.has(cwd)) {
+        const promise = _doFullBuild({
+          cwd, cacheDir, languages, tokenBudget,
+          cacheWritable, grammarManifestSha, t0,
+        }).finally(() => _backgroundBuilds.delete(cwd));
+        _backgroundBuilds.set(cwd, promise);
+        // Don't await — caller gets empty map, next call sees warm cache.
+      }
+      return { map: '', stats: emptyStats() };
     }
-    return { map: '', stats: emptyStats() };
   }
 
   // Synchronous cold build.
