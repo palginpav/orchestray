@@ -49,6 +49,8 @@ const {
   computeSourceHash,
 }                                      = require('./load-schema-shadow');
 const { peekOrchestrationId }          = require('./peek-orchestration-id');
+// === v2.2.21 W4-T18: state-gc safeReadJson for corrupt state-file self-heal (F-15) ===
+const { safeReadJson }                 = require('./state-gc');
 
 // ---------------------------------------------------------------------------
 // Internal state
@@ -93,11 +95,13 @@ function loadShadowConfig(cwd) {
 
 /**
  * Read the active orchestration_id from .orchestray/audit/current-orchestration.json.
+ * Uses safeReadJson to emit state_file_corrupt + auto-truncate on SyntaxError (F-15).
  */
 function resolveOrchestrationId(cwd) {
   try {
     const orchFile = getCurrentOrchestrationFile(cwd);
-    const orchData = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
+    // safeReadJson handles SyntaxError: emits state_file_corrupt, truncates to {}.
+    const orchData = safeReadJson(orchFile, {});
     if (orchData && orchData.orchestration_id) return orchData.orchestration_id;
   } catch (_e) { /* fail-open */ }
   return 'unknown';
