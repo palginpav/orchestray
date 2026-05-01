@@ -215,9 +215,10 @@ function checkParity(cwd) {
   for (const [relPath, sourceAbs] of sourceFiles) {
     if (!targetFiles.has(relPath)) continue;
     // Honor SOURCE_ONLY_ALLOWLIST in pass 2 (mirrors pass 1 skip logic).
-    // Source-only files (e.g. install.js, __tests__/) legitimately differ
-    // between source tree and install tree — they must not be flagged as
-    // content mismatches.
+    // Info #12 (v2.2.19 audit-fix R1): source-only files (e.g. install.js)
+    // and dev-only directory contents (e.g. __tests__/, _tools/) legitimately
+    // differ between source tree and install tree — they must not be flagged
+    // as content mismatches.
     if (isSourceOnlyAllowed(relPath)) continue;
     let sourceHash, targetHash;
     try {

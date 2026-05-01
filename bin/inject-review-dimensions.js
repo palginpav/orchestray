@@ -133,10 +133,17 @@ function resolveFilesChanged(cwd, orchestration_id) {
       row.agent_type === 'developer' &&
       row.orchestration_id === orchestration_id
     ) {
-      // Structured result may be nested; try common paths.
-      const sr = row.structured_result || row.structured_result_parsed;
-      if (sr && Array.isArray(sr.files_changed) && sr.files_changed.length > 0) {
-        const files = sr.files_changed
+      // E#3 / W#6 (v2.2.19 audit-fix R1): agent_stop rows now carry
+      // `files_changed` as a top-level field (parsed from transcript's
+      // ## Structured Result block by collect-agent-metrics.js). The prior
+      // `row.structured_result` path never fired in production — production
+      // SubagentStop payloads do not carry structured_result. Drop the
+      // `|| row.structured_result_parsed` fallback (one canonical field name).
+      const filesFromStop = Array.isArray(row.files_changed) ? row.files_changed
+        : (row.structured_result && Array.isArray(row.structured_result.files_changed)
+            ? row.structured_result.files_changed : null);
+      if (filesFromStop && filesFromStop.length > 0) {
+        const files = filesFromStop
           .filter((f) => typeof f === 'string' && f.trim().length > 0)
           .map((f) => f.trim());
         const deduped = [...new Set(files)];
@@ -220,6 +227,10 @@ function emitScopingEvent(cwd, fields) {
   try {
     const payload = Object.assign(
       {
+        // Info #15 (v2.2.19 audit-fix R1): explicit timestamp removes autofill
+        // dependency for a required field — audit-event-writer still overwrites
+        // with the same value, but the event validates without relying on autofill.
+        timestamp: new Date().toISOString(),
         version: 1,
         type: 'review_dimension_scoping_applied',
         orchestration_id: null,
@@ -328,6 +339,10 @@ process.stdin.on('end', () => {
       kill_switch_source = 'config';
     }
 
+    // Info #16 (v2.2.19 audit-fix R1): kill-switch precedence note.
+    // Classifier owns kill-switch precedence (Rule 1). We replicate it here
+    // for early-exit telemetry — both layers must agree. Removing classifier
+    // Rule 1 also requires removing this short-circuit.
     if (kill_switch_active) {
       emitScopingEvent(cwd, {
         orchestration_id,
@@ -391,11 +406,22 @@ process.stdin.on('end', () => {
     }
     const { files_changed, source: files_changed_source } = filesResult;
 
+    // W#7 (v2.2.19 audit-fix R1): extract diff_text from the prompt's ## Git Diff
+    // section and pass it to the classifier. Future-proofs the classifier surface
+    // so content-based routing (e.g. diff contains .schema.json) works without
+    // requiring files_changed to carry schema file names.
+    let diff_text = null;
+    try {
+      const diffMatch = prompt.match(/^##\s+Git\s+Diff\s*\n([\s\S]*?)(?=\n##\s|\s*$)/im);
+      if (diffMatch && diffMatch[1]) diff_text = diffMatch[1].trim() || null;
+    } catch (_de) { /* fail-open */ }
+
     // Classify dimensions.
     let classification;
     try {
       classification = classifyReviewDimensions({
         files_changed,
+        diff_text,
         config: cfg,
       });
     } catch (err) {

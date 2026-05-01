@@ -356,9 +356,12 @@ process.stdin.on('end', () => {
 
     const outBytes   = Buffer.byteLength(finalPrompt, 'utf8');
     const ratio      = inBytes > 0 ? outBytes / inBytes : 1;
-    // S2: use bootstrapEstimate (rolling-median from historical actuals) when sufficient
-    // history exists; falls back to bytes/4 internally when < 3 samples (W8, v2.2.18).
-    const inTokEst   = bootstrapEstimate(agentType, { cwd, config: cfg });
+    // S2 wire (v2.2.19): bootstrapEstimate — wired but inert when
+    // l1_compression_enabled=false (default since v2.2.19 safe-l1 kill-switch).
+    // Activates with v2.2.20 L1 revival per heading-list audit. When active,
+    // uses rolling-median from historical actuals; falls back to bytes/4
+    // when < 3 samples (W9: inBytes passed so cold-cache avoids STATIC_FALLBACK=500).
+    const inTokEst   = bootstrapEstimate(agentType, { cwd, config: cfg, inBytes });
     const outTokEst  = Math.round(outBytes / 4);
     const ttlHours   = (cfg.compression && typeof cfg.compression.pending_journal_ttl_hours === 'number')
       ? cfg.compression.pending_journal_ttl_hours : 24;

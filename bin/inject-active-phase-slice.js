@@ -108,6 +108,9 @@ function readPhaseFromOrchestration(cwd) {
   // auto-commit-master-on-pm-stop.js:134 and write-resilience-dossier.js:226
   // which already accept both). Two-pass: `current_phase:` takes precedence;
   // fall back to `phase:` when only the short key is present.
+  // Info #10 (v2.2.19 audit-fix R1): when BOTH keys are present and disagree,
+  // `current_phase` wins (canonical per phase-contract.md §82). The regex
+  // match ordering below enforces this: current_phase match is tried first.
 
   // Strategy 1: YAML frontmatter (documented in phase-contract.md)
   const fmMatch = text.match(/^---\n([\s\S]*?)\n---/);

@@ -353,16 +353,38 @@ process.stdin.on('end', () => {
     }
 
     let turnsUsed = 0;
+    // E#3 (v2.2.19 audit-fix R1): parse files_changed from the transcript's
+    // last assistant message ## Structured Result block. Production agent_stop
+    // events do not carry structured_result on the hook payload (the SubagentStop
+    // hook API only exposes last_assistant_message/usage/session_id etc.).
+    // Approach: scan transcript JSONL in reverse for the last assistant-role entry,
+    // extract the ## Structured Result JSON fence, parse files_changed array.
+    // Falls back to [] on any error (fail-open per audit contract).
+    let transcriptFilesChanged = [];
 
     try {
       if (transcriptPath && fs.existsSync(transcriptPath)) {
         const content = fs.readFileSync(transcriptPath, 'utf8');
         const lines = content.split('\n').filter((l) => l.trim());
+
+        // Single-pass: collect usage + find last assistant message text.
+        let lastAssistantText = null;
         for (const line of lines) {
           try {
             const entry = JSON.parse(line);
             const role = entry.role || entry.type || (entry.message && entry.message.role);
-            if (role === 'assistant') turnsUsed++;
+            if (role === 'assistant') {
+              turnsUsed++;
+              // Capture the text of every assistant entry; last one wins.
+              const msgContent = entry.content || (entry.message && entry.message.content);
+              if (typeof msgContent === 'string' && msgContent.length > 0) {
+                lastAssistantText = msgContent;
+              } else if (Array.isArray(msgContent)) {
+                // Claude API content blocks: [{type:'text', text:'...'}]
+                const textBlock = msgContent.find((b) => b && b.type === 'text' && typeof b.text === 'string');
+                if (textBlock) lastAssistantText = textBlock.text;
+              }
+            }
             const usage = entry.usage || (entry.message && entry.message.usage);
             if (usage) {
               totalUsage.input_tokens += Number(usage.input_tokens) || 0;
@@ -372,6 +394,26 @@ process.stdin.on('end', () => {
             }
           } catch (_e) {
             // Skip malformed lines silently
+          }
+        }
+
+        // Extract files_changed from ## Structured Result block in last assistant turn.
+        if (lastAssistantText) {
+          try {
+            // Match a ```json ... ``` fence that follows ## Structured Result heading.
+            const srMatch = lastAssistantText.match(
+              /##\s+Structured\s+Result[\s\S]*?```(?:json)?\s*([\s\S]*?)```/i
+            );
+            if (srMatch && srMatch[1]) {
+              const parsed = JSON.parse(srMatch[1].trim());
+              if (parsed && Array.isArray(parsed.files_changed)) {
+                transcriptFilesChanged = parsed.files_changed
+                  .filter((f) => typeof f === 'string' && f.trim().length > 0)
+                  .map((f) => f.trim());
+              }
+            }
+          } catch (_parseErr) {
+            // Structured result block absent or malformed — files_changed stays []
           }
         }
       }
@@ -562,6 +604,12 @@ process.stdin.on('end', () => {
         transcript_path: transcriptPath,
         model_used: resolvedModel,
         turns_used: turnsUsed,
+        // E#3 (v2.2.19 audit-fix R1): files_changed parsed from transcript's last
+        // ## Structured Result block. Empty array when transcript is absent, the
+        // agent did not emit a structured result, or the agent type never changes
+        // files (reviewer, debugger, etc.). inject-review-dimensions.js reads this
+        // field from agent_stop rows to determine which dimension subset to apply.
+        files_changed: transcriptFilesChanged,
       };
     }
 
