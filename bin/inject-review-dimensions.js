@@ -410,9 +410,17 @@ process.stdin.on('end', () => {
     // section and pass it to the classifier. Future-proofs the classifier surface
     // so content-based routing (e.g. diff contains .schema.json) works without
     // requiring files_changed to carry schema file names.
+    //
+    // R2-N1 (v2.2.19 audit-fix R2): the lookahead must capture content up to the
+    // NEXT `## ` heading or end-of-string, NOT match at internal blank lines. The
+    // prior regex `(?=\n##\s|\s*$)` with /m flag treated `^` as line-start, so
+    // `\s*$` matched at every blank line between git-diff hunks, truncating the
+    // captured diff. Tightened to `(?=\n##\s|$)` without /m flag — `$` now means
+    // true end-of-string only. Drop /im flags; use a leading `(?:^|\n)` anchor
+    // instead so the heading still matches at line start.
     let diff_text = null;
     try {
-      const diffMatch = prompt.match(/^##\s+Git\s+Diff\s*\n([\s\S]*?)(?=\n##\s|\s*$)/im);
+      const diffMatch = prompt.match(/(?:^|\n)##\s+Git\s+Diff\s*\n([\s\S]*?)(?=\n##\s|$)/i);
       if (diffMatch && diffMatch[1]) diff_text = diffMatch[1].trim() || null;
     } catch (_de) { /* fail-open */ }
 

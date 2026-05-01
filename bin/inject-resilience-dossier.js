@@ -814,12 +814,23 @@ function handleSessionStart(event) {
     // field `source` (compact|resume) per Claude Code's hook contract.
     // NOTE: the hook payload field is `source`, NOT `session_source` — both names
     // exist in Claude Code docs but empirical testing confirms `source` is canonical.
+    //
+    // R2-N2 (v2.2.19 audit-fix R2): when `event.source` is absent or non-string,
+    // emit `source='unknown'` (NOT 'compact'). The prior default of 'compact'
+    // masked any future Claude Code payload-shape drift in the audit log —
+    // operators looking at session_start events couldn't tell whether the source
+    // was genuinely 'compact' or just the fallback default. Adding `source_origin`
+    // distinguishes payload-derived values from the default fallback for
+    // analytics. The orphan auditor's _hasResumeOpportunity matches on
+    // {compact, resume} explicitly, so 'unknown' will NOT trigger the gate —
+    // which is correct: an unknown-source session_start event should not be
+    // treated as a confirmed compact/resume opportunity.
     try {
+      const hasExplicitSource = event && typeof event.source === 'string' && event.source.length > 0;
       _audit(cwd, {
         type: 'session_start',
-        source: (event && typeof event.source === 'string')
-          ? event.source
-          : 'compact',
+        source: hasExplicitSource ? event.source : 'unknown',
+        source_origin: hasExplicitSource ? 'payload' : 'default_fallback',
         orchestration_id: peekOrchestrationId(cwd),
       });
     } catch (_e) { /* fail-open — audit failure must never block inject path */ }
