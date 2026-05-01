@@ -41,6 +41,12 @@ function makePayload(statusValue) {
     files_read: [],
     issues: [],
     assumptions: [],
+    // developer role-schema fields (bin/_lib/role-schemas.js:27-33).
+    // Without these, validate-task-completion exits 2 on a developer payload
+    // for ROLE-SCHEMA reasons — not status-enum reasons. Including them
+    // ensures the test truly isolates the status-enum check.
+    self_check_passed: true,
+    tests_added_or_existing: 'no test changes — enum-validator regression fixture',
   };
   const output = [
     'Agent completed task.',
@@ -75,36 +81,31 @@ describe('E1 regression — status enum validation', () => {
     );
   });
 
-  test('accepts status:"success" without triggering a status block', () => {
+  // T11 N1 fix: assert exit 0 directly for valid enum values rather than
+  // conditionally checking only when status===2. Without this, a broken
+  // validator that exits 1 unconditionally would pass these acceptance tests.
+  test('accepts status:"success" with exit code 0', () => {
     const { status, stderr } = run(makePayload('success'));
-    // A "developer" agent on a hard tier is blocked (exit 2) if structured result is invalid.
-    // If we get exit 2 it must NOT be because of the status field.
-    if (status === 2) {
-      assert.ok(
-        !stderr.includes('"status"') && !stderr.toLowerCase().includes('missing: ["status"'),
-        `"success" triggered a status block. stderr: ${stderr.slice(0, 300)}`
-      );
-    }
+    assert.strictEqual(
+      status, 0,
+      `"success" should produce exit 0, got exit ${status}. stderr: ${stderr.slice(0, 300)}`
+    );
   });
 
-  test('accepts status:"partial" without triggering a status block', () => {
+  test('accepts status:"partial" with exit code 0', () => {
     const { status, stderr } = run(makePayload('partial'));
-    if (status === 2) {
-      assert.ok(
-        !stderr.includes('"status"') && !stderr.toLowerCase().includes('missing: ["status"'),
-        `"partial" triggered a status block. stderr: ${stderr.slice(0, 300)}`
-      );
-    }
+    assert.strictEqual(
+      status, 0,
+      `"partial" should produce exit 0, got exit ${status}. stderr: ${stderr.slice(0, 300)}`
+    );
   });
 
-  test('accepts status:"failure" without triggering a status block', () => {
+  test('accepts status:"failure" with exit code 0', () => {
     const { status, stderr } = run(makePayload('failure'));
-    if (status === 2) {
-      assert.ok(
-        !stderr.includes('"status"') && !stderr.toLowerCase().includes('missing: ["status"'),
-        `"failure" triggered a status block. stderr: ${stderr.slice(0, 300)}`
-      );
-    }
+    assert.strictEqual(
+      status, 0,
+      `"failure" should produce exit 0, got exit ${status}. stderr: ${stderr.slice(0, 300)}`
+    );
   });
 
   test('rejects empty string status', () => {

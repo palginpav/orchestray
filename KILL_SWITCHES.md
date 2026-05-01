@@ -143,13 +143,13 @@ Within each category, entries are sorted alphabetically by feature name.
 
 | Feature | Config key | Env var |
 |---------|-----------|---------|
+| Archetype cache cold-cache seeder (v2.2.20) | `context_compression_v218.archetype_cache.seeder_disabled: true` | `ORCHESTRAY_ARCHETYPE_SEEDER_DISABLED=1` |
 | CHANGELOG↔shadow naming firewall | — | `ORCHESTRAY_CHANGELOG_FIREWALL_DISABLED=1` (non-release commits only — release commits cannot opt out) |
 | Haiku scout (file ops) | `haiku_routing.enabled: false` | — |
 | Housekeeper auto-spawn | — | `ORCHESTRAY_HOUSEKEEPER_AUTO_SPAWN_DISABLED=1` |
 | Loop primitive | — | `ORCHESTRAY_DISABLE_LOOP=1` |
 | Master-tree auto-commit on PM Stop (v2.2.18) | `master_auto_commit.enabled: false` | `ORCHESTRAY_MASTER_AUTO_COMMIT_DISABLED=1` |
+| Repo-map cross-process sentinel (v2.2.20) | `repo_map.sentinel_enabled: false` | `ORCHESTRAY_REPO_MAP_SENTINEL_DISABLED=1` |
 | Spawn-approved drainer (housekeeper E2E) | — | `ORCHESTRAY_SPAWN_DRAINER_DISABLED=1` |
 | Workspace snapshots | — | `ORCHESTRAY_DISABLE_SNAPSHOTS=1` |
 | Worktree auto-commit on SubagentStop (v2.2.18) | `worktree_auto_commit.enabled: false` | `ORCHESTRAY_WORKTREE_AUTO_COMMIT_DISABLED=1` |
-| Archetype cache cold-cache seeder (v2.2.20) | `context_compression_v218.archetype_cache.seeder_disabled: true` | `ORCHESTRAY_ARCHETYPE_SEEDER_DISABLED=1` |
-| Repo-map cross-process sentinel (v2.2.20) | `repo_map.sentinel_enabled: false` | `ORCHESTRAY_REPO_MAP_SENTINEL_DISABLED=1` |
