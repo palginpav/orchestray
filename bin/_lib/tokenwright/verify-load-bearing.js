@@ -31,6 +31,14 @@ const DEFAULT_LOAD_BEARING_SECTIONS = [
   '## Project Persona',
   '## Project Intent',
   '## Context from Previous Agent',
+  // v2.2.20 defense-in-depth additions (T5): headings that appear frequently in the
+  // production corpus and must survive compression if L1 is ever re-enabled.
+  // Corpus evidence: see .orchestray/kb/artifacts/v2220-l1-revival-design.md §4.
+  '## Constraints',
+  '## Goal',
+  '## Mission',
+  '## Handoff Contract',
+  '## Output',
 ];
 
 /**

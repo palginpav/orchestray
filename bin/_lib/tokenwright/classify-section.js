@@ -42,8 +42,10 @@ const DEFAULT_PRESERVE_HEADINGS = Object.freeze([
   '## Context from Previous Agent',
 ]);
 
-// Headings whose bodies are typically redundant across spawns and are
-// safe to dedup against earlier blocks in the same prompt.
+// Inert placeholder — schema-level reservation, intentionally produces 0 dedup matches
+// in production. v2.2.20 audit (n=477) found 0/477 prompts matched any of these headings.
+// DO NOT remove: Layer-2 Haiku scoring may reuse the constant; removing triggers a five-test
+// rewrite for zero behavioural benefit. See .orchestray/kb/artifacts/v2220-l1-revival-design.md §3.
 const DEDUP_ELIGIBLE_HEADINGS = Object.freeze([
   '## Prior Reviewer Findings',
   '## Prior Findings',
@@ -52,10 +54,10 @@ const DEDUP_ELIGIBLE_HEADINGS = Object.freeze([
   '## KB References',
 ]);
 
-// Headings whose bodies are eligible for Layer-2 Haiku block-scoring.
-// (W1+W2 ships only Layer 1; this list is reserved for W4 but documented
-// here so the classifier can attach the right `kind` field early —
-// makes the W4 rollout a one-line change in inject-tokenwright.js.)
+// Inert placeholder — schema-level reservation, intentionally produces 0 score matches
+// in production. v2.2.20 audit confirmed 0/477 prompts matched any of these headings.
+// DO NOT remove: reserved for Layer-2 Haiku block-scoring rollout.
+// See .orchestray/kb/artifacts/v2220-l1-revival-design.md §3.
 const SCORE_ELIGIBLE_HEADINGS = Object.freeze([
   '## Task Description',
   '## Context Paragraph',
