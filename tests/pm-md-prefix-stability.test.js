@@ -153,7 +153,9 @@ describe('agents/pm.md Block A hash stability', () => {
     //   - housekeeper delegation: Section 23f rewritten with explicit Agent() call
     //     syntax, trigger conditions table, and routing.jsonl requirement
     // v2.2.9 B-1/B-4/B-7.4: prose deletions in pm.md shifted Block A hash.
-    const PINNED_BLOCK_A_HASH = '855d35a61c9a2af1';
+    // v2.2.19 wip (curate-runner-D1): added curate-runner to PM tools allowlist
+    //   in agents/pm.md frontmatter to enable /orchestray:learn curate dispatch.
+    const PINNED_BLOCK_A_HASH = 'abe2f80f8165dfe3';
 
     assert.equal(
       actualHash,

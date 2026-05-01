@@ -137,7 +137,12 @@ test('5. Tokenwright backward compat: checkDoubleFire shim', (t) => {
   assert.ok(r2.doubleFireEvent !== null);
   // guard_name should be 'tokenwright' for backward compat
   assert.equal(r2.doubleFireEvent.guard_name, 'tokenwright');
-  assert.equal(r2.doubleFireEvent.dedup_key, 'tok-1');
+  // v2.2.19 T9 fix S3: shim renames dedup_key → dedup_token to match the
+  // compression_double_fire_detected schema (which has always required
+  // dedup_token, not dedup_key — the shim previously emitted the wrong field
+  // name and every emission was blocked by schema-shape-violation).
+  assert.equal(r2.doubleFireEvent.dedup_token, 'tok-1');
+  assert.equal(r2.doubleFireEvent.dedup_key, undefined, 'dedup_key field should be removed by shim (v2.2.19)');
 });
 
 test('6. Kill switch: ORCHESTRAY_DISABLE_DOUBLE_FIRE_GUARD=1 bypasses guard', (t) => {

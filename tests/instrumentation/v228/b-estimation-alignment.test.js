@@ -172,9 +172,10 @@ test('Issue-B: readFirstUserMessageTokens skips system/assistant entries to find
 });
 
 // ---------------------------------------------------------------------------
-// Test 6: resolveActualTokens — falls back to hook_event when no user message
+// Test 6: resolveActualTokens — returns "unknown" when transcript provided but
+// has no user message (v2.2.19 T9 contract change)
 // ---------------------------------------------------------------------------
-test('Issue-B: resolveActualTokens falls back to hook_event when transcript has no user message', (t) => {
+test('Issue-B: resolveActualTokens returns unknown when transcript has no user message (v2.2.19 T9)', (t) => {
   const tmpDir = makeTmpDir(t);
   const transcriptPath = path.join(tmpDir, 'no-user.jsonl');
 
@@ -190,6 +191,10 @@ test('Issue-B: resolveActualTokens falls back to hook_event when transcript has 
   };
   const result = resolveActualTokens(event, tmpDir);
 
-  assert.equal(result.source, 'hook_event', 'must fall back to hook_event when no user message in transcript');
-  assert.equal(result.tokens, 300, 'must use hook_event tokens');
+  // v2.2.19 T9 fix S2: when transcript path is provided but no user message can be
+  // resolved, do NOT fall back to event.usage.input_tokens (session-cumulative for
+  // multi-turn agents — produces large negative savings). Return source='unknown'
+  // instead. Apples-to-oranges comparison is worse than missing data.
+  assert.equal(result.source, 'unknown', 'source must be "unknown" when transcript has no user message (v2.2.19 T9)');
+  assert.notEqual(result.tokens, 300, 'must NOT fall back to hook_event tokens');
 });

@@ -99,7 +99,11 @@ test('resolveActualTokens: rejects transcript outside containment, falls back', 
   fs.writeFileSync(transcriptPath, JSON.stringify(entry) + '\n', 'utf8');
 
   // cwd is tmpDir; foreignDir is NOT inside tmpDir and NOT inside ~/.claude
-  // So the transcript should fail containment. Fall back to hook_event.
+  // So the transcript should fail containment.
+  //
+  // v2.2.19 T9 fix S2: when transcript path was provided but containment-rejected,
+  // do NOT fall back to event.usage.input_tokens (session-cumulative for multi-turn
+  // agents — produces large negative savings). Return source='unknown' instead.
   const event = {
     agent_transcript_path: transcriptPath,
     usage: { input_tokens: 42 },
@@ -108,7 +112,7 @@ test('resolveActualTokens: rejects transcript outside containment, falls back', 
 
   // The tokens from the foreign transcript (9999) must NOT appear
   assert.notEqual(result.tokens, 9999, 'must not use tokens from outside containment');
-  // Should have fallen back to hook_event
-  assert.equal(result.tokens, 42, 'must fall back to hook_event tokens');
-  assert.equal(result.source, 'hook_event', 'source must be hook_event after containment rejection');
+  // v2.2.19: must NOT fall back to hook_event tokens (deliberate contract change)
+  assert.notEqual(result.source, 'hook_event', 'must not fall back to hook_event after containment rejection (v2.2.19)');
+  assert.equal(result.source, 'unknown', 'source must be "unknown" after containment rejection (v2.2.19 T9)');
 });
