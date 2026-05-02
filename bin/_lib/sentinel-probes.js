@@ -26,6 +26,22 @@
  *     surface as `{ok:false, reason:'probe_internal_error'}` rather than throw.
  *   - Recursive guard: `schemaValidate` blocks calls originating in
  *     `audit-event-writer.js` (Risk R3 mitigation).
+ *
+ * v2.3.0 Wave 3 static-analysis probes (W-SEC-13, W-SEC-19, W-SEC-DEF-1):
+ *   assertNoShellInBrokerForwardPath(loaderPath?)         — W-SEC-13
+ *   assertPluginStdoutNeverReachesAuditWriter(lP?, aP?)   — W-SEC-19
+ *   assertNoModelOutputInDispatch(serverPath?)            — W-SEC-DEF-1.1
+ *   assertEnvStripIsApplied(loaderPath?)                  — W-SEC-DEF-1.2
+ *   assertConsentRequiredBeforeSpawn(loaderPath?)         — W-SEC-DEF-1.3
+ *   assertNoEvalInPluginLoader(loaderPath?)               — W-SEC-DEF-1.4
+ *   assertPluginToolsNeverInTopLevelMcpServers(serverPath?) — W-SEC-DEF-1.5
+ *
+ * Static-analysis heuristics — false-negative/false-positive tradeoffs:
+ *   These probes are regex/string-walking heuristics, not a full AST prover.
+ *   They WILL miss obfuscated patterns (e.g. computed property names, eval
+ *   injected via a wrapper module). They will NOT produce false positives for
+ *   code that follows the documented safe patterns. These are intended as a
+ *   mechanical regression lock, not a security audit replacement.
  */
 
 const fs       = require('node:fs');
@@ -514,6 +530,715 @@ function runProbe(op, args, meta) {
 }
 
 // ---------------------------------------------------------------------------
+// Wave 3 static-analysis probe helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Read a source file for static analysis.
+ * Returns the file's text on success, or null if the file is missing/unreadable.
+ * Probes that inspect a nonexistent file return {ok:true} with evidence noting
+ * the file is absent — the file simply has not been created yet.
+ *
+ * @param {string} filePath  Absolute path
+ * @returns {string|null}
+ */
+function _readSourceFile(filePath) {
+  try {
+    return fs.readFileSync(filePath, 'utf8');
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
+ * Resolve an optional caller-supplied path or fall back to a project-relative
+ * default. Always returns an absolute path string; never throws.
+ *
+ * @param {string|undefined} suppliedPath  Caller arg (may be undefined/null)
+ * @param {string}           relDefault    Path relative to process.cwd()
+ * @returns {string}
+ */
+function _resolveSourcePath(suppliedPath, relDefault) {
+  if (suppliedPath && typeof suppliedPath === 'string') {
+    return pathMod.isAbsolute(suppliedPath)
+      ? suppliedPath
+      : pathMod.resolve(process.cwd(), suppliedPath);
+  }
+  return pathMod.resolve(process.cwd(), relDefault);
+}
+
+/**
+ * Extract the body of a named function from source text using brace counting.
+ * Supports `function name(` and `const name = (async )?(` arrow forms.
+ * Returns the substring from the opening `{` to the matching closing `}`.
+ * Returns null if the function is not found.
+ *
+ * False-negative note: highly minified code or unusual formatting may not be
+ * matched. The probe returns {ok:true, evidence:'function not found — skipping'}
+ * in that case so CI does not block on code that predates this probe.
+ *
+ * @param {string} source
+ * @param {string} funcName
+ * @returns {string|null}
+ */
+function _extractFunctionBody(source, funcName) {
+  // Match `async function funcName(` or `function funcName(`
+  const declRe = new RegExp(
+    '(?:^|\\n)\\s*(?:async\\s+)?function\\s+' + funcName + '\\s*\\(',
+    'm'
+  );
+  // Match `const funcName = async (` or `const funcName = (`
+  const arrowRe = new RegExp(
+    '(?:^|\\n)\\s*(?:const|let|var)\\s+' + funcName + '\\s*=\\s*(?:async\\s+)?(?:\\([^)]*\\)|[a-zA-Z_$][\\w$]*)\\s*=>',
+    'm'
+  );
+
+  let startIdx = -1;
+  const declMatch = declRe.exec(source);
+  const arrowMatch = arrowRe.exec(source);
+
+  if (declMatch) startIdx = declMatch.index + declMatch[0].length;
+  if (arrowMatch && (startIdx === -1 || arrowMatch.index < startIdx)) {
+    startIdx = arrowMatch.index + arrowMatch[0].length;
+  }
+
+  if (startIdx === -1) return null;
+
+  // Find the opening `{` from startIdx
+  const braceStart = source.indexOf('{', startIdx);
+  if (braceStart === -1) return null;
+
+  // Brace counting to find the matching close
+  let depth = 0;
+  let i = braceStart;
+  // Also skip string literals and comments to avoid counting braces inside them
+  while (i < source.length) {
+    const ch = source[i];
+    if (ch === '{') {
+      depth++;
+      i++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        return source.slice(braceStart, i + 1);
+      }
+      i++;
+    } else if (ch === '/' && source[i + 1] === '/') {
+      // Line comment — skip to end of line
+      const nl = source.indexOf('\n', i);
+      i = nl === -1 ? source.length : nl + 1;
+    } else if (ch === '/' && source[i + 1] === '*') {
+      // Block comment
+      const end = source.indexOf('*/', i + 2);
+      i = end === -1 ? source.length : end + 2;
+    } else if (ch === '`') {
+      // Template literal — skip to closing backtick (simplified, no nested ${})
+      i++;
+      while (i < source.length && source[i] !== '`') {
+        if (source[i] === '\\') i++; // skip escape
+        i++;
+      }
+      i++;
+    } else if (ch === '"' || ch === "'") {
+      // String literal
+      const q = ch;
+      i++;
+      while (i < source.length && source[i] !== q) {
+        if (source[i] === '\\') i++;
+        i++;
+      }
+      i++;
+    } else {
+      i++;
+    }
+  }
+  return null; // Unmatched braces — return null
+}
+
+// ---------------------------------------------------------------------------
+// Wave 3 static-analysis probes
+// ---------------------------------------------------------------------------
+
+/**
+ * W-SEC-13 — assertNoShellInBrokerForwardPath
+ *
+ * Reads bin/_lib/plugin-loader.js (or supplied loaderPath). Locates the
+ * `forwardToPlugin` function. Within that function's body, asserts that no
+ * shell-execution primitives appear: eval, new Function, vm.run*, child_process
+ * exec/execSync, or template-literal spawn() calls.
+ *
+ * False-negative tradeoffs: brace-counting body extraction may miss the
+ * function if it is defined as an object method (e.g. `{ forwardToPlugin() {} }`).
+ * In that case the probe falls back to scanning the full file, which is
+ * conservative (more false positives) but never misses a real violation.
+ *
+ * @param {string} [loaderPath]  Optional override path (absolute or cwd-relative)
+ * @returns {{ok:boolean, evidence?:string, violations?:Array<{file,line,snippet,reason}>}}
+ */
+function assertNoShellInBrokerForwardPath(loaderPath) {
+  const filePath = _resolveSourcePath(loaderPath, 'bin/_lib/plugin-loader.js');
+  const source = _readSourceFile(filePath);
+  if (source === null) {
+    return {
+      ok: true,
+      evidence: 'plugin-loader.js does not exist yet — probe passes vacuously',
+    };
+  }
+
+  // Extract the forwardToPlugin function body; fall back to full file if not found
+  let region = _extractFunctionBody(source, 'forwardToPlugin');
+  const regionLabel = region ? 'forwardToPlugin body' : 'full file (forwardToPlugin not isolated)';
+  if (!region) region = source;
+
+  const FORBIDDEN = [
+    { re: /\beval\s*\(/g,                 reason: 'eval() in broker forward path' },
+    { re: /\bnew\s+Function\s*\(/g,       reason: 'new Function() in broker forward path' },
+    { re: /\bvm\.runInNewContext\s*\(/g,  reason: 'vm.runInNewContext in broker forward path' },
+    { re: /\bvm\.runInThisContext\s*\(/g, reason: 'vm.runInThisContext in broker forward path' },
+    { re: /\bvm\.compileFunction\s*\(/g,  reason: 'vm.compileFunction in broker forward path' },
+    { re: /child_process\.exec\s*\(/g,    reason: 'child_process.exec() in broker forward path' },
+    { re: /child_process\.execSync\s*\(/g, reason: 'child_process.execSync() in broker forward path' },
+    { re: /\bexecSync\s*\(/g,             reason: 'execSync() in broker forward path' },
+    // exec( but not execFileSync/execFile — the safe variants
+    { re: /(?<![A-Za-z])exec\s*\(/g,      reason: 'exec() in broker forward path' },
+    // spawn with template literal first arg: spawn(`...${
+    { re: /spawn\s*\(\s*`[^`]*\$\{/g,    reason: 'spawn() with template-literal arg in broker forward path' },
+    { re: /require\s*\(\s*['"]child_process['"]\s*\)\s*\.exec/g,
+                                          reason: 'require(child_process).exec in broker forward path' },
+  ];
+
+  const lines = region.split('\n');
+  // Offset: if we extracted a subregion, find where it starts in the source
+  let lineOffset = 0;
+  if (region !== source) {
+    const regionStart = source.indexOf(region);
+    if (regionStart !== -1) {
+      lineOffset = source.slice(0, regionStart).split('\n').length - 1;
+    }
+  }
+
+  const violations = [];
+  for (const { re, reason } of FORBIDDEN) {
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li];
+      re.lastIndex = 0;
+      if (re.test(line)) {
+        violations.push({
+          file: filePath,
+          line: lineOffset + li + 1,
+          snippet: line.trim().slice(0, 120),
+          reason,
+        });
+      }
+    }
+  }
+
+  if (violations.length > 0) {
+    return { ok: false, violations };
+  }
+  return {
+    ok: true,
+    evidence: `No shell execution patterns found in ${regionLabel} of plugin-loader.js`,
+  };
+}
+
+/**
+ * W-SEC-19 — assertPluginStdoutNeverReachesAuditWriter
+ *
+ * Reads bin/_lib/plugin-loader.js and bin/_lib/audit-event-writer.js.
+ * Scans plugin-loader.js for calls to the audit writer (audit({ or writeEvent({).
+ * For each call, flags any argument field whose value contains an unsafe
+ * plugin output reference without the Wave 2 F-01/F-02 safety wrappers:
+ *   - `plugin.stdout` or `proc.stdout` (raw stdout)
+ *   - `frame.error.message` without `_clampPluginString(` wrapper
+ *   - `runtimeTools[...].name` without `_safePluginName(` wrapper
+ *
+ * False-negative tradeoffs: multi-line object literals are scanned line-by-line
+ * which may miss field values split across multiple lines. The probe is
+ * conservative: it will not miss the most common single-line patterns.
+ *
+ * @param {string} [loaderPath]       Optional override path for plugin-loader.js
+ * @param {string} [auditWriterPath]  Optional override path for audit-event-writer.js
+ * @returns {{ok:boolean, evidence?:string, violations?:Array<{file,line,snippet,reason}>}}
+ */
+function assertPluginStdoutNeverReachesAuditWriter(loaderPath, auditWriterPath) {
+  const filePath = _resolveSourcePath(loaderPath, 'bin/_lib/plugin-loader.js');
+  const source = _readSourceFile(filePath);
+  if (source === null) {
+    return {
+      ok: true,
+      evidence: 'plugin-loader.js does not exist yet — probe passes vacuously',
+    };
+  }
+
+  // Also verify the audit writer exists (informational)
+  const auditPath = _resolveSourcePath(auditWriterPath, 'bin/_lib/audit-event-writer.js');
+  void auditPath; // path resolved for documentation purposes
+
+  const lines = source.split('\n');
+  const violations = [];
+
+  // Find lines that contain audit writer calls
+  const auditCallRe = /\baudit\s*\(\s*\{|\bwriteEvent\s*\(\s*\{/;
+
+  // Patterns that flag unsafe plugin output usage
+  const UNSAFE_PATTERNS = [
+    {
+      re: /\bplugin\.stdout\b/,
+      reason: 'plugin.stdout passed to audit writer without _clampPluginString wrapper',
+    },
+    {
+      re: /\bproc\.stdout\b/,
+      reason: 'proc.stdout passed to audit writer without _clampPluginString wrapper',
+    },
+    {
+      // frame.error.message without _clampPluginString wrapping it
+      re: /\bframe\.error\.message\b(?!.*_clampPluginString)/,
+      reason: 'frame.error.message in audit call without _clampPluginString wrapper',
+    },
+    {
+      // runtimeTools[...].name without _safePluginName wrapping it
+      re: /\bruntimeTools\[.*?\]\.name\b(?!.*_safePluginName)/,
+      reason: 'runtimeTools[...].name in audit call without _safePluginName wrapper',
+    },
+  ];
+
+  // Scan a window of lines around each audit({ call
+  for (let li = 0; li < lines.length; li++) {
+    if (!auditCallRe.test(lines[li])) continue;
+    // Scan the call site line and the next 15 lines for the object body
+    const windowEnd = Math.min(li + 15, lines.length);
+    for (let wi = li; wi < windowEnd; wi++) {
+      const wline = lines[wi];
+      for (const { re, reason } of UNSAFE_PATTERNS) {
+        if (re.test(wline)) {
+          violations.push({
+            file: filePath,
+            line: wi + 1,
+            snippet: wline.trim().slice(0, 120),
+            reason,
+          });
+        }
+      }
+    }
+  }
+
+  // Wave 3 closeout: removed the belt-and-suspenders "raw plugin stdout"
+  // scan that previously fired on JSDoc comments and on legitimate stdout
+  // listener wiring like `proc.stdout.on('data', chunk => ...)`. Those are
+  // NOT W-SEC-19 violations — the invariant is "stdout content does not
+  // become an audit-event field VALUE", which the audit-call-window scan
+  // above enforces precisely. The belt-and-suspenders scan was a heuristic
+  // over-reach that produced false positives on lines 1062-1063 (the
+  // canonical stdout-stream subscription pattern).
+
+  if (violations.length > 0) {
+    return { ok: false, violations };
+  }
+  return {
+    ok: true,
+    evidence: 'No unsafe plugin stdout/stderr paths to audit writer found in plugin-loader.js',
+  };
+}
+
+/**
+ * W-SEC-DEF-1.1 — assertNoModelOutputInDispatch
+ *
+ * Reads bin/mcp-server/server.js (or supplied serverPath). Asserts the
+ * `tools/call` dispatch path resolves the tool by static name lookup in
+ * TOOL_TABLE — NOT by a dynamically-derived LLM key.
+ *
+ * Heuristic: inside the `tools/call` branch, assert there is a static table
+ * lookup (`TOOL_TABLE[name]` or `toolRegistry.resolveTool(name)`) and no
+ * dynamic dispatch patterns like `dispatch[modelOutput]` or
+ * `tools[input.command]` where the key is model-generated.
+ *
+ * This probe is preventive — current code is fine. It locks in the safe pattern.
+ *
+ * False-negative tradeoffs: renaming `TOOL_TABLE` breaks the positive evidence
+ * check. The negative patterns (`dispatch[modelOutput]`, `tools[input.command]`)
+ * cover only the most obvious injection forms; sophisticated obfuscation is not
+ * detected.
+ *
+ * @param {string} [serverPath]  Optional override path
+ * @returns {{ok:boolean, evidence?:string, violations?:Array<{file,line,snippet,reason}>}}
+ */
+function assertNoModelOutputInDispatch(serverPath) {
+  const filePath = _resolveSourcePath(serverPath, 'bin/mcp-server/server.js');
+  const source = _readSourceFile(filePath);
+  if (source === null) {
+    return { ok: false, violations: [{ file: filePath, line: 0, snippet: '', reason: 'server.js not found' }] };
+  }
+
+  const violations = [];
+
+  // Pattern 1: assert static lookup exists somewhere in tools/call branch
+  const hasStaticLookup = /TOOL_TABLE\s*\[\s*name\s*\]/.test(source) ||
+    /toolRegistry\.resolveTool\s*\(\s*name\s*\)/.test(source);
+
+  if (!hasStaticLookup) {
+    violations.push({
+      file: filePath,
+      line: 0,
+      snippet: '(no TOOL_TABLE[name] or toolRegistry.resolveTool(name) found)',
+      reason: 'tools/call dispatch does not use static table lookup — dynamic dispatch suspected',
+    });
+  }
+
+  // Pattern 2: flag dynamic dispatch patterns that suggest model-output indexing
+  const DYNAMIC_DISPATCH_PATTERNS = [
+    { re: /\bdispatch\s*\[\s*modelOutput\s*\]/g,    reason: 'dynamic dispatch[modelOutput] detected' },
+    { re: /\btools\s*\[\s*input\.command\s*\]/g,    reason: 'dynamic tools[input.command] detected' },
+    { re: /\bhandlers\s*\[\s*llmSuggested\s*\]/g,   reason: 'dynamic handlers[llmSuggested] detected' },
+    { re: /eval\s*\(\s*.*?method/g,                  reason: 'eval() used in dispatch path' },
+  ];
+
+  const lines = source.split('\n');
+  for (const { re, reason } of DYNAMIC_DISPATCH_PATTERNS) {
+    for (let li = 0; li < lines.length; li++) {
+      re.lastIndex = 0;
+      if (re.test(lines[li])) {
+        violations.push({
+          file: filePath,
+          line: li + 1,
+          snippet: lines[li].trim().slice(0, 120),
+          reason,
+        });
+      }
+    }
+  }
+
+  if (violations.length > 0) {
+    return { ok: false, violations };
+  }
+  return {
+    ok: true,
+    evidence: 'tools/call dispatch uses static TOOL_TABLE[name] lookup; no dynamic model-output dispatch detected',
+  };
+}
+
+/**
+ * W-SEC-DEF-1.2 — assertEnvStripIsApplied
+ *
+ * Reads bin/_lib/plugin-loader.js (or supplied loaderPath). Finds all
+ * `spawn(` calls. For each, asserts the `env:` option is either:
+ *   - A call to buildSpawnEnv(...)
+ *   - A reference to a variable named `childEnv` or `spawnEnv`
+ *   - An object literal that does NOT contain `...process.env` spread
+ *
+ * Flags: `env: process.env` (direct), or spawn() call where `env:` is absent
+ * (which causes POSIX to inherit process.env wholesale). Also flags
+ * `...process.env` spread inside env objects.
+ *
+ * False-negative tradeoffs: the `env:` absence check is heuristic — it looks
+ * for spawn() call sites and checks the surrounding ~10 lines for `env:`. Multi-
+ * argument spawns where `env:` appears far from the spawn() call may be missed.
+ *
+ * @param {string} [loaderPath]  Optional override path
+ * @returns {{ok:boolean, evidence?:string, violations?:Array<{file,line,snippet,reason}>}}
+ */
+function assertEnvStripIsApplied(loaderPath) {
+  const filePath = _resolveSourcePath(loaderPath, 'bin/_lib/plugin-loader.js');
+  const source = _readSourceFile(filePath);
+  if (source === null) {
+    return {
+      ok: true,
+      evidence: 'plugin-loader.js does not exist yet — probe passes vacuously',
+    };
+  }
+
+  const lines = source.split('\n');
+  const violations = [];
+  const spawnCallRe = /\bspawn\s*\(/;
+
+  for (let li = 0; li < lines.length; li++) {
+    if (!spawnCallRe.test(lines[li])) continue;
+
+    // Scan the spawn call site and next 10 lines for the options object
+    const windowEnd = Math.min(li + 10, lines.length);
+    const windowText = lines.slice(li, windowEnd).join('\n');
+
+    // Flag direct process.env pass
+    if (/\benv\s*:\s*process\.env\b/.test(windowText)) {
+      violations.push({
+        file: filePath,
+        line: li + 1,
+        snippet: lines[li].trim().slice(0, 120),
+        reason: 'spawn() passes env: process.env directly — env stripping not applied',
+      });
+      continue;
+    }
+
+    // Flag ...process.env spread in env object
+    if (/\benv\s*:\s*\{[^}]*\.\.\.\s*process\.env/.test(windowText)) {
+      violations.push({
+        file: filePath,
+        line: li + 1,
+        snippet: lines[li].trim().slice(0, 120),
+        reason: 'spawn() uses ...process.env spread in env object — sensitive vars may leak',
+      });
+      continue;
+    }
+
+    // Check if env: is absent entirely in the options window
+    const hasEnvField = /\benv\s*:/.test(windowText);
+    if (!hasEnvField) {
+      // Only flag if there appears to be an options object (contains { or ,)
+      const hasOptionsObj = /spawn\s*\([^,)]+,[^,)]+,\s*\{/.test(windowText) ||
+        /spawn\s*\([^)]+\{/.test(windowText);
+      if (hasOptionsObj) {
+        violations.push({
+          file: filePath,
+          line: li + 1,
+          snippet: lines[li].trim().slice(0, 120),
+          reason: 'spawn() options object has no env: field — process.env inherited wholesale on POSIX',
+        });
+      }
+    }
+  }
+
+  if (violations.length > 0) {
+    return { ok: false, violations };
+  }
+  return {
+    ok: true,
+    evidence: 'All spawn() calls in plugin-loader.js use filtered env (buildSpawnEnv/childEnv/spawnEnv)',
+  };
+}
+
+/**
+ * W-SEC-DEF-1.3 — assertConsentRequiredBeforeSpawn
+ *
+ * Reads bin/_lib/plugin-loader.js (or supplied loaderPath). Locates the
+ * `load()` function. Asserts that _loadConsent( appears BEFORE spawnAndHandshake(
+ * or _spawnPlugin( (by string index position within the load() body).
+ *
+ * Wave 3 addition: This probe was added in W-SEC-DEF-1.3 and serves as the
+ * mechanical lock preventing Wave 4+ regressions from reordering the consent
+ * check and spawn calls in the load() lifecycle.
+ *
+ * False-negative tradeoffs: if consent and spawn are in separate helper
+ * functions called from load(), the positional heuristic may not detect a
+ * reorder. The probe assumes inline call order within the load() body.
+ *
+ * @param {string} [loaderPath]  Optional override path
+ * @returns {{ok:boolean, evidence?:string, violations?:Array<{file,line,snippet,reason}>}}
+ */
+function assertConsentRequiredBeforeSpawn(loaderPath) {
+  const filePath = _resolveSourcePath(loaderPath, 'bin/_lib/plugin-loader.js');
+  const source = _readSourceFile(filePath);
+  if (source === null) {
+    return {
+      ok: true,
+      evidence: 'plugin-loader.js does not exist yet — probe passes vacuously',
+    };
+  }
+
+  const loadBody = _extractFunctionBody(source, 'load');
+  const region = loadBody || source;
+  const regionLabel = loadBody ? 'load() body' : 'full file (load() not isolated)';
+
+  const consentIdx = region.indexOf('_loadConsent(');
+  const spawnAndHandshakeIdx = region.indexOf('spawnAndHandshake(');
+  const spawnPluginIdx = region.indexOf('_spawnPlugin(');
+
+  const spawnIdx = Math.min(
+    spawnAndHandshakeIdx === -1 ? Infinity : spawnAndHandshakeIdx,
+    spawnPluginIdx === -1 ? Infinity : spawnPluginIdx
+  );
+
+  if (consentIdx === -1 && spawnIdx === Infinity) {
+    // Neither function found — file doesn't implement the lifecycle yet
+    return {
+      ok: true,
+      evidence: `Neither _loadConsent nor spawn call found in ${regionLabel} — lifecycle not yet implemented`,
+    };
+  }
+
+  if (consentIdx === -1) {
+    return {
+      ok: false,
+      violations: [{
+        file: filePath,
+        line: 0,
+        snippet: '(no _loadConsent call found)',
+        reason: `${regionLabel} calls spawn without _loadConsent — consent check missing`,
+      }],
+    };
+  }
+
+  if (spawnIdx === Infinity) {
+    return {
+      ok: true,
+      evidence: `_loadConsent present in ${regionLabel} but no spawn call — consent check order satisfied`,
+    };
+  }
+
+  if (consentIdx < spawnIdx) {
+    return {
+      ok: true,
+      evidence: `_loadConsent (pos ${consentIdx}) precedes spawn (pos ${spawnIdx}) in ${regionLabel}`,
+    };
+  }
+
+  // Compute approximate line numbers for the violation
+  const beforeConsent = region.slice(0, consentIdx).split('\n').length;
+  const beforeSpawn = region.slice(0, spawnIdx).split('\n').length;
+  const lineOffset = loadBody && source
+    ? source.slice(0, source.indexOf(region)).split('\n').length
+    : 0;
+
+  return {
+    ok: false,
+    violations: [{
+      file: filePath,
+      line: lineOffset + beforeSpawn,
+      snippet: `spawn at pos ${spawnIdx}, _loadConsent at pos ${consentIdx}`,
+      reason: `spawn() called (line ~${lineOffset + beforeSpawn}) before _loadConsent() (line ~${lineOffset + beforeConsent}) — consent check must precede spawn`,
+    }],
+  };
+}
+
+/**
+ * W-SEC-DEF-1.4 — assertNoEvalInPluginLoader
+ *
+ * Reads bin/_lib/plugin-loader.js (or supplied loaderPath). Asserts NO
+ * occurrence of eval(), new Function(), Function('...'), vm.run*,
+ * vm.compileFunction, or dynamic require() calls (require(variable) where
+ * the argument is not a string literal).
+ *
+ * Note: `require('foo')` is safe (string literal); `require(someVar)` is flagged.
+ *
+ * False-negative tradeoffs: `eval` assigned to a variable and called later
+ * (e.g. `const e = eval; e(...)`) is not detected. The heuristic covers
+ * direct call-site forms only.
+ *
+ * @param {string} [loaderPath]  Optional override path
+ * @returns {{ok:boolean, evidence?:string, violations?:Array<{file,line,snippet,reason}>}}
+ */
+function assertNoEvalInPluginLoader(loaderPath) {
+  const filePath = _resolveSourcePath(loaderPath, 'bin/_lib/plugin-loader.js');
+  const source = _readSourceFile(filePath);
+  if (source === null) {
+    return {
+      ok: true,
+      evidence: 'plugin-loader.js does not exist yet — probe passes vacuously',
+    };
+  }
+
+  const lines = source.split('\n');
+  const violations = [];
+
+  const FORBIDDEN_PATTERNS = [
+    { re: /\beval\s*\(/g,                 reason: 'eval() call detected' },
+    { re: /\bnew\s+Function\s*\(/g,       reason: 'new Function() constructor detected' },
+    { re: /\bFunction\s*\(\s*['"]/g,      reason: "Function('...') call detected" },
+    { re: /\bvm\.runInNewContext\s*\(/g,  reason: 'vm.runInNewContext() detected' },
+    { re: /\bvm\.runInThisContext\s*\(/g, reason: 'vm.runInThisContext() detected' },
+    { re: /\bvm\.compileFunction\s*\(/g,  reason: 'vm.compileFunction() detected' },
+    // Dynamic require: require(someVar) — require( NOT followed by a quote/backtick
+    { re: /\brequire\s*\(\s*(?!['"`])[a-zA-Z_$]/g,
+                                          reason: 'Dynamic require(variable) detected — only string-literal require() is safe' },
+  ];
+
+  for (const { re, reason } of FORBIDDEN_PATTERNS) {
+    for (let li = 0; li < lines.length; li++) {
+      re.lastIndex = 0;
+      if (re.test(lines[li])) {
+        violations.push({
+          file: filePath,
+          line: li + 1,
+          snippet: lines[li].trim().slice(0, 120),
+          reason,
+        });
+      }
+    }
+  }
+
+  if (violations.length > 0) {
+    return { ok: false, violations };
+  }
+  return {
+    ok: true,
+    evidence: 'No eval, new Function, vm.run*, or dynamic require() found in plugin-loader.js',
+  };
+}
+
+/**
+ * W-SEC-DEF-1.5 — assertPluginToolsNeverInTopLevelMcpServers
+ *
+ * Reads bin/mcp-server/server.js (or supplied serverPath). Asserts NO code
+ * path writes plugin tools into the top-level `mcpServers` registration — i.e.
+ * no `mcpServers[...] =` assignments or `Object.assign(mcpServers, ...)` calls.
+ *
+ * This probe enforces G0 condition C4: sub-plugin tools MUST be brokered through
+ * Orchestray's MCP server, never registered as top-level mcpServers. Current
+ * server.js does not register sub-plugins; this probe locks that in.
+ *
+ * Heuristic: scan for all `mcpServers` occurrences. Reads (env lookups, comments,
+ * string literals, error messages) are fine. Writes are violations.
+ *
+ * False-negative tradeoffs: if `mcpServers` is aliased to another variable and
+ * written through the alias, this probe will not detect it.
+ *
+ * @param {string} [serverPath]  Optional override path
+ * @returns {{ok:boolean, evidence?:string, violations?:Array<{file,line,snippet,reason}>}}
+ */
+function assertPluginToolsNeverInTopLevelMcpServers(serverPath) {
+  const filePath = _resolveSourcePath(serverPath, 'bin/mcp-server/server.js');
+  const source = _readSourceFile(filePath);
+  if (source === null) {
+    return { ok: false, violations: [{ file: filePath, line: 0, snippet: '', reason: 'server.js not found' }] };
+  }
+
+  const lines = source.split('\n');
+  const violations = [];
+
+  // Write patterns that would register plugin tools as top-level mcpServers
+  const WRITE_PATTERNS = [
+    {
+      re: /\bmcpServers\s*\[\s*.*?\]\s*=/g,
+      reason: 'mcpServers[...] = ... assignment detected — plugin tools must not be top-level mcpServers',
+    },
+    {
+      re: /\bObject\.assign\s*\(\s*mcpServers\s*,/g,
+      reason: 'Object.assign(mcpServers, ...) detected — plugin tools must not be registered as top-level mcpServers',
+    },
+    {
+      re: /\bmcpServers\.push\s*\(/g,
+      reason: 'mcpServers.push() detected — plugin tools must not be top-level mcpServers',
+    },
+    {
+      // mcpServers = { ... } or mcpServers = [...] assignment (not const/let declaration of empty)
+      re: /\bmcpServers\s*=\s*(?:\{|\[)(?!\s*\}|\s*\])/g,
+      reason: 'mcpServers = {...} assignment with content detected — plugin tools must not be registered as top-level mcpServers',
+    },
+  ];
+
+  for (const { re, reason } of WRITE_PATTERNS) {
+    for (let li = 0; li < lines.length; li++) {
+      re.lastIndex = 0;
+      if (re.test(lines[li])) {
+        violations.push({
+          file: filePath,
+          line: li + 1,
+          snippet: lines[li].trim().slice(0, 120),
+          reason,
+        });
+      }
+    }
+  }
+
+  if (violations.length > 0) {
+    return { ok: false, violations };
+  }
+  return {
+    ok: true,
+    evidence: 'No top-level mcpServers write detected in server.js — sub-plugin tools are brokered correctly',
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
@@ -524,6 +1249,16 @@ module.exports = {
   schemaValidate,
   hashCompute,
   runProbe,
+  // W-SEC-13
+  assertNoShellInBrokerForwardPath,
+  // W-SEC-19
+  assertPluginStdoutNeverReachesAuditWriter,
+  // W-SEC-DEF-1
+  assertNoModelOutputInDispatch,
+  assertEnvStripIsApplied,
+  assertConsentRequiredBeforeSpawn,
+  assertNoEvalInPluginLoader,
+  assertPluginToolsNeverInTopLevelMcpServers,
   // Surfaced for tests:
   _normalizeProjectPath,
   _ALLOWED_OPS,

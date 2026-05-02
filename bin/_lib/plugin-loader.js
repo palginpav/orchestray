@@ -69,7 +69,9 @@
  */
 
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const fs   = require('fs');
+const os   = require('os');
 const path = require('path');
 
 const { _register, _unregister, _isCoreTool } = require('../mcp-server/lib/tool-registry');
@@ -78,6 +80,7 @@ const { compileToolInputSchema }              = require('./plugin-input-schema-v
 const { buildNamespacedName, parseNamespacedName } = require('./plugin-namespace');
 const { redactArgs }                          = require('./plugin-redact');
 const { writeEvent }                          = require('./audit-event-writer');
+const { isInsideAllowed, safeRealpath }       = require('./path-containment');
 
 // Wave 2 closeout (reviewer F-01, F-02): the same kebab-case regex used by
 // plugin-manifest-schema. Used here to filter plugin-controlled tool names
@@ -92,6 +95,156 @@ function _clampPluginString(s, maxLen = _PLUGIN_STRING_MAX) {
   if (typeof s !== 'string') return String(s);
   if (s.length <= maxLen) return s;
   return s.slice(0, maxLen - 1) + '…';
+}
+
+// ---------------------------------------------------------------------------
+// W-SEC-7: manifest+entrypoint fingerprint (Wave 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Deterministic JSON canonicalizer. Sorts object keys alphabetically; arrays
+ * preserve order. Used as the manifest input to the SHA-256 fingerprint so
+ * identical-by-value manifests produce identical fingerprints regardless of
+ * key insertion order.
+ *
+ * @param {*} value
+ * @returns {string}
+ */
+function canonicalizeJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return '[' + value.map(canonicalizeJson).join(',') + ']';
+  const keys = Object.keys(value).sort();
+  return '{' + keys.map(k => JSON.stringify(k) + ':' + canonicalizeJson(value[k])).join(',') + '}';
+}
+
+/**
+ * W-SEC-7: SHA-256 fingerprint covering BOTH the manifest AND the entrypoint
+ * file bytes. Length-prefixed concat — uint32-BE manifest length || canonical
+ * JSON bytes || uint32-BE entrypoint length || raw entrypoint bytes — prevents
+ * field-boundary ambiguity (a fingerprint cannot collide by smearing manifest
+ * bytes into entrypoint bytes).
+ *
+ * Closes the v2.3.0 G0 C2 gap left by Wave 2 (which trusted the on-disk
+ * manifest verbatim with no integrity binding to the executable).
+ *
+ * @param {object} manifest    - already parseManifest-validated
+ * @param {string} entrypointAbs - absolute path to plugin entrypoint
+ * @returns {string} hex SHA-256 digest
+ */
+function computeFingerprint(manifest, entrypointAbs) {
+  const canonical = canonicalizeJson(manifest);
+  const manifestBuf  = Buffer.from(canonical, 'utf8');
+  const entrypointBuf = fs.readFileSync(entrypointAbs); // throws if missing — caller decides handling
+  const lenBuf = Buffer.allocUnsafe(8);
+  lenBuf.writeUInt32BE(manifestBuf.length, 0);
+  lenBuf.writeUInt32BE(entrypointBuf.length, 4);
+  return crypto.createHash('sha256')
+    .update(lenBuf.slice(0, 4))
+    .update(manifestBuf)
+    .update(lenBuf.slice(4, 8))
+    .update(entrypointBuf)
+    .digest('hex');
+}
+
+// ---------------------------------------------------------------------------
+// W-SEC-DEF-2: defense-in-depth observation helpers (Wave 3)
+//
+// Pure observers — none of these reject or mutate. Each maps to a single audit
+// event type. Wave 5 W-DOC-* will document the user-facing patterns.
+// ---------------------------------------------------------------------------
+
+const _SENSITIVE_ARG_KEY_RE = /password|token|secret|api[_-]?key|auth/i;
+const _DANGEROUS_TOOL_NAME_RE = /eval|exec|shell|system|spawn|kill/i;
+const _NETWORK_HINT_RE = /\b(http|https|fetch|url|request|download|websocket|socket)\b/i;
+const _RESPONSE_INJECTION_RE = /(ignore|disregard)[^.\n]{0,40}?(previous|prior|above|earlier)/i;
+const _RESPONSE_INJECTION_PREFIXES = ['<|', '<|im_start', '###system', '### system'];
+
+/**
+ * Scan an args object's TOP-LEVEL keys for sensitive-name matches. Returns an
+ * array of matched keys (empty if none). Top-level only (mirrors redactor's
+ * coarse pass) — emit-only, never blocks.
+ * @param {object|null|undefined} args
+ * @returns {string[]}
+ */
+function _scanSensitiveArgKeys(args) {
+  if (!args || typeof args !== 'object') return [];
+  const matched = [];
+  for (const k of Object.keys(args)) {
+    // Skip __proto__ / prototype / constructor (Wave 1 redactor convention).
+    if (k === '__proto__' || k === 'prototype' || k === 'constructor') continue;
+    if (_SENSITIVE_ARG_KEY_RE.test(k)) matched.push(k);
+  }
+  return matched;
+}
+
+/**
+ * Inspect tool definitions reported by handshake. Returns the first tool name
+ * that matches the dangerous-name pattern, or null. Caller emits one event
+ * per match (we surface the FIRST match to keep the audit trail bounded).
+ * @param {Array<{name: string}>} toolDecls
+ * @returns {{tool: string} | null}
+ */
+function _findDangerousToolName(toolDecls) {
+  if (!Array.isArray(toolDecls)) return null;
+  for (const t of toolDecls) {
+    if (t && typeof t.name === 'string' && _DANGEROUS_TOOL_NAME_RE.test(t.name)) {
+      return { tool: t.name };
+    }
+  }
+  return null;
+}
+
+/**
+ * Capability-inconsistency heuristic: if the manifest's capabilities.network
+ * is explicitly false, but any tool's description text suggests network use,
+ * we surface that as an info-level event (warn-tier observability).
+ *
+ * Manifest schema does not currently require a capabilities object — Wave 1
+ * `parseManifest` accepts manifests without it — so we treat absent as "no
+ * claim" and emit nothing in that case.
+ *
+ * @param {object} manifest
+ * @returns {{tool: string, hint: string} | null}
+ */
+function _findCapabilityInconsistency(manifest) {
+  if (!manifest || typeof manifest !== 'object') return null;
+  const caps = manifest.capabilities;
+  if (!caps || typeof caps !== 'object') return null;
+  if (caps.network !== false) return null; // not asserting "no network"
+  const tools = Array.isArray(manifest.tools) ? manifest.tools : [];
+  for (const t of tools) {
+    if (!t || typeof t.description !== 'string') continue;
+    const m = t.description.match(_NETWORK_HINT_RE);
+    if (m) return { tool: t.name, hint: m[0] };
+  }
+  return null;
+}
+
+/**
+ * Inspect a plugin tool-call response for prompt-injection markers. Pure
+ * observation — never mutates the response. Returns the matched marker
+ * (string) on suspicion, null otherwise.
+ *
+ * Heuristic only: looks at `result.content[*].text` for text-type entries.
+ * @param {*} result
+ * @returns {string | null}
+ */
+function _scanResponseForInjection(result) {
+  if (!result || typeof result !== 'object') return null;
+  const content = Array.isArray(result.content) ? result.content : [];
+  for (const item of content) {
+    if (!item || item.type !== 'text' || typeof item.text !== 'string') continue;
+    const text = item.text;
+    if (text.length === 0) continue;
+    // Prefix check — lossless leading-whitespace tolerance.
+    const trimmedStart = text.replace(/^\s+/, '');
+    for (const pfx of _RESPONSE_INJECTION_PREFIXES) {
+      if (trimmedStart.startsWith(pfx)) return pfx;
+    }
+    const m = text.match(_RESPONSE_INJECTION_RE);
+    if (m) return m[0];
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -133,8 +286,26 @@ const DEFAULT_OPTS = Object.freeze({
   maxPluginsPerPath: 50,
   /** Discovery cap: max scan paths processed. */
   maxScanPaths: 3,
-  /** Wave 2 stub for W-SEC-4 (Wave 3 wires this to plugin-consents.json). */
-  requireConsent: false,
+  /**
+   * W-SEC-4 (Wave 3): when true (default), load() reads
+   * plugin-consents.json under an O_EXCL advisory lock and only proceeds if a
+   * consent record exists whose fingerprint matches the current
+   * manifest+entrypoint fingerprint. Per feedback_default_on_shipping the
+   * default is now true; legacy tests opt out by passing `requireConsent: false`.
+   *
+   * TODO Wave 4 W-CFG-1: wire .orchestray/config.json so this can be
+   * configured per-install without code changes.
+   */
+  requireConsent: true,
+  /**
+   * W-SEC-4 (Wave 3): explicit consent-file path override. When unset, falls
+   * back to ~/.orchestray/state/plugin-consents.json (or cwd-local if HOME
+   * is unset, preserving worktree isolation in CI).
+   *
+   * TODO Wave 4 W-CFG-1: read this from .orchestray/config.json so users can
+   * relocate state without env vars.
+   */
+  consentFile: null,
   /** Override hook for tests: replaces the writeEvent dependency. */
   audit: writeEvent,
   /** Override hook for tests: replaces the tool-registry dependency. */
@@ -268,6 +439,7 @@ function createLoader(userOpts) {
    * @property {number}   restartAttempts
    * @property {number}   readySinceMs
    * @property {Set<string>} registeredToolNames
+   * @property {string}   fingerprint                    // W-SEC-7 SHA-256 hex; '' until scan computes it
    */
 
   /** @type {Map<string, PluginState>} */
@@ -299,7 +471,9 @@ function createLoader(userOpts) {
   // transition() instead of hidden direct ps.state= assignments.
   const ALLOWED_TRANSITIONS = Object.freeze({
     unknown:    new Set(['discovered', 'unloaded']),
-    discovered: new Set(['consented', 'unloaded']),
+    // Wave 3 W-SEC-4: consent-required / fingerprint-mismatch-consent /
+    // consent-lock-error all transition discovered → dead before any spawn.
+    discovered: new Set(['consented', 'dead', 'unloaded']),
     consented:  new Set(['loading', 'unloaded']),
     loading:    new Set(['ready', 'dead', 'unloaded']),
     ready:      new Set(['degraded', 'dead', 'unloaded']),
@@ -337,6 +511,227 @@ function createLoader(userOpts) {
         && ps.readySinceMs > 0
         && Date.now() - ps.readySinceMs >= opts.restartResetWindowMs) {
       ps.restartAttempts = 0;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // W-SEC-4 (Wave 3): consent file read/write under O_EXCL advisory lock,
+  // W-SEC-6 (Wave 3): atomic write via temp+rename.
+  //
+  // Lock semantics: <consentFile>.lock created via fs.openSync('wx'); held
+  // only across read+parse+close (NOT across plugin spawn). Failing to acquire
+  // the lock fails closed (throws lock_contention) — Wave 4 W-CLI-1 may add a
+  // bounded retry, but Wave 3 prefers explicit failure over silent races.
+  //
+  // TODO Wave 4 W-CFG-1: read consentFile path from .orchestray/config.json.
+  // TODO Wave 4 W-CLI-1: /orchestray:plugin approve must call _writeConsent.
+  // TODO Wave 4 W-EVT-1: register the new audit event types
+  //   (entrypoint_mismatch, plugin_sensitive_arg_detected,
+  //   plugin_capability_inconsistency, plugin_dangerous_name,
+  //   plugin_response_injection_suspected) in event-schemas.md.
+  // -------------------------------------------------------------------------
+
+  function _consentFilePath() {
+    if (opts.consentFile) return opts.consentFile;
+    const home = process.env.HOME || os.homedir();
+    if (home) return path.join(home, '.orchestray', 'state', 'plugin-consents.json');
+    return path.join(process.cwd(), '.orchestray', 'state', 'plugin-consents.json');
+  }
+
+  /**
+   * Resolve and validate the consent directory: realpath must exist and must
+   * be inside the project cwd or the user's claude/orchestray homes. Returns
+   * the resolved directory string, or null if the directory does not yet
+   * exist (caller treats as "no consents recorded").
+   *
+   * @returns {string | null}
+   */
+  function _consentDirSafe(consentPath) {
+    const dir = path.dirname(consentPath);
+    let realDir;
+    try {
+      realDir = fs.realpathSync(dir);
+    } catch (err) {
+      if (err && err.code === 'ENOENT') return null;
+      throw err;
+    }
+    // safeRealpath / isInsideAllowed defense-in-depth. When the caller did
+    // NOT override the consent path (production default → ~/.orchestray/state),
+    // require the realpath to resolve inside cwd, HOME, or ~/.claude. When the
+    // caller DID override (test fixtures pass per-tmpdir consent files,
+    // /orchestray:plugin approve-rooted), trust the explicit choice — the
+    // file at least had a successful realpath, so it is not an arbitrary
+    // attacker-supplied symlink target.
+    //
+    // TODO Wave 4 W-CFG-1: replace this with a config-driven allowlist so
+    // operators on shared filesystems can pin the consent path explicitly.
+    if (opts.consentFile) {
+      // Caller-supplied path: accept after realpath success. The caller owns
+      // the trust boundary in this branch.
+      return realDir;
+    }
+    const cwdAbs = safeRealpath(process.cwd());
+    const home   = process.env.HOME || os.homedir() || '';
+    const allowedRoots = [cwdAbs];
+    if (home) {
+      allowedRoots.push(safeRealpath(home));
+      allowedRoots.push(path.join(safeRealpath(home), '.claude'));
+    }
+    for (const root of allowedRoots) {
+      if (!root) continue;
+      if (realDir === root || realDir.startsWith(root + path.sep)) return realDir;
+    }
+    // Fall back to isInsideAllowed for compatibility with the shared util.
+    if (home && isInsideAllowed(realDir, cwdAbs, safeRealpath(path.join(home, '.claude')))) {
+      return realDir;
+    }
+    throw new Error(`plugin-consents.json path outside allowed roots: ${realDir}`);
+  }
+
+  /**
+   * Acquire the consent-file advisory lock by creating <path>.lock with O_EXCL.
+   * @param {string} consentPath
+   * @returns {number} fd — caller MUST close in finally.
+   * @throws Error('plugin-consents.json lock contention') on EEXIST.
+   */
+  function _acquireConsentLock(consentPath) {
+    const lockPath = consentPath + '.lock';
+    try {
+      // Ensure dir exists for the lock file itself.
+      fs.mkdirSync(path.dirname(consentPath), { recursive: true });
+    } catch (_e) { /* swallow */ }
+    try {
+      return fs.openSync(lockPath, 'wx');
+    } catch (err) {
+      if (err && err.code === 'EEXIST') {
+        // v3-002 FIX (Wave 3 closeout): stale-lock recovery. Hold time is
+        // microseconds (read+parse+close); a lock older than 10s implies a
+        // crashed prior holder. Mirrors the bin/_lib/atomic-append.js pattern.
+        // Without this, a single Node crash mid-lock breaks ALL subsequent
+        // plugin loads until manual `rm <consentPath>.lock`.
+        try {
+          const st = fs.statSync(lockPath);
+          if (Date.now() - st.mtimeMs > 10_000) {
+            try { fs.unlinkSync(lockPath); } catch (_e) { /* ignore */ }
+            try { return fs.openSync(lockPath, 'wx'); }
+            catch (retryErr) {
+              if (retryErr && retryErr.code === 'EEXIST') {
+                throw new Error(
+                  `plugin-consents.json lock contention at ${lockPath} — ` +
+                  'another orchestray process appears to be holding the lock; ' +
+                  'if no other orchestray is running, delete the .lock file manually'
+                );
+              }
+              throw retryErr;
+            }
+          }
+        } catch (statErr) {
+          if (statErr && statErr.code === 'ENOENT') {
+            // Lock disappeared between EEXIST and statSync — race resolved itself; retry.
+            try { return fs.openSync(lockPath, 'wx'); }
+            catch (_e) { /* fall through to throw below */ }
+          }
+        }
+        throw new Error(
+          `plugin-consents.json lock contention at ${lockPath} — ` +
+          'another orchestray process appears to be holding the lock; ' +
+          'if no other orchestray is running, delete the .lock file manually'
+        );
+      }
+      throw err;
+    }
+  }
+
+  function _releaseConsentLock(consentPath, fd) {
+    try { fs.closeSync(fd); } catch (_e) { /* ignore */ }
+    try { fs.unlinkSync(consentPath + '.lock'); } catch (_e) { /* ignore */ }
+  }
+
+  /**
+   * Read the consent record for `pluginName` under the advisory lock.
+   * Returns null if no consent file, no record, or revoked.
+   *
+   * @param {string} pluginName
+   * @returns {{approved_at: string, fingerprint: string, revoked?: boolean} | null}
+   */
+  function _loadConsent(pluginName) {
+    const consentPath = _consentFilePath();
+    const safeDir = _consentDirSafe(consentPath);
+    if (safeDir === null) return null; // dir absent — no consents recorded
+    if (!fs.existsSync(consentPath)) return null;
+
+    const fd = _acquireConsentLock(consentPath);
+    try {
+      let raw;
+      try {
+        raw = fs.readFileSync(consentPath, 'utf8');
+      } catch (_e) { return null; }
+      let parsed;
+      try { parsed = JSON.parse(raw); }
+      catch (_e) { return null; } // corrupt file → fail closed (treat as no consent)
+      if (!parsed || typeof parsed !== 'object') return null;
+      // Wave 1 plugin-manifest scrubPrototype convention — refuse __proto__ keys.
+      if (Object.prototype.hasOwnProperty.call(parsed, '__proto__')) return null;
+      const rec = parsed[pluginName];
+      if (!rec || typeof rec !== 'object') return null;
+      if (rec.revoked === true) return null;
+      return rec;
+    } finally {
+      _releaseConsentLock(consentPath, fd);
+    }
+  }
+
+  /**
+   * Write a consent record atomically: read current map under the lock,
+   * splice in the new entry, write to a sibling temp file, then rename
+   * (W-SEC-6). Merges with existing entries — does NOT overwrite other
+   * plugins' consents.
+   *
+   * @param {string} pluginName
+   * @param {string} fingerprint
+   * @returns {{approved_at: string, fingerprint: string, revoked: boolean}}
+   */
+  function _writeConsent(pluginName, fingerprint) {
+    const consentPath = _consentFilePath();
+    _consentDirSafe(consentPath);
+    fs.mkdirSync(path.dirname(consentPath), { recursive: true });
+
+    const fd = _acquireConsentLock(consentPath);
+    try {
+      let current = {};
+      if (fs.existsSync(consentPath)) {
+        try {
+          const parsed = JSON.parse(fs.readFileSync(consentPath, 'utf8'));
+          if (parsed && typeof parsed === 'object'
+              && !Object.prototype.hasOwnProperty.call(parsed, '__proto__')) {
+            current = parsed;
+          }
+        } catch (_e) { current = {}; }
+      }
+      const record = {
+        approved_at: new Date().toISOString(),
+        fingerprint,
+        revoked: false,
+      };
+      current[pluginName] = record;
+      const tmpPath = consentPath + '.tmp.' + process.pid + '.' + Date.now() + '.' + Math.floor(Math.random() * 1e9);
+      // v3-003 FIX (Wave 3 closeout): fsync the temp file BEFORE rename so a
+      // system crash between write and rename cannot leave a renamed-but-zero-
+      // byte consent file. POSIX rename is atomic for the directory entry,
+      // but the temp file's data may still be in page cache. fsync forces a
+      // page-cache flush. Cost is one disk-sync per consent grant —
+      // infrequent operation. Mirrors git's commit-graph writer.
+      const tmpFd = fs.openSync(tmpPath, 'w');
+      try {
+        fs.writeSync(tmpFd, JSON.stringify(current, null, 2));
+        try { fs.fsyncSync(tmpFd); } catch (_e) { /* fsync may fail on some FS; rename still proceeds */ }
+      } finally {
+        fs.closeSync(tmpFd);
+      }
+      fs.renameSync(tmpPath, consentPath);
+      return record;
+    } finally {
+      _releaseConsentLock(consentPath, fd);
     }
   }
 
@@ -433,6 +828,26 @@ function createLoader(userOpts) {
         }
         seenPluginNames.set(manifest.name, scanPath);
 
+        // W-SEC-7: compute manifest+entrypoint fingerprint at discovery time.
+        // The fingerprint is re-computed at spawn time and any drift transitions
+        // the plugin to dead with reason=entrypoint_mismatch. If the entrypoint
+        // file is missing the plugin is rejected here — load() would fail later
+        // anyway, but failing fast surfaces the operator-visible reason.
+        const entrypointAbs = path.join(pluginRoot, manifest.entrypoint);
+        let fingerprint;
+        try {
+          fingerprint = computeFingerprint(manifest, entrypointAbs);
+        } catch (err) {
+          audit({
+            type: 'plugin_install_rejected',
+            plugin_name: manifest.name,
+            scan_path: scanPath,
+            reason: 'entrypoint_unreadable',
+            error: _clampPluginString(String(err && err.message ? err.message : err)),
+          });
+          continue;
+        }
+
         // Materialize/refresh the FSM record.
         let ps = state.get(manifest.name);
         if (!ps) {
@@ -442,6 +857,7 @@ function createLoader(userOpts) {
         ps.scan_path = scanPath;
         ps.rootDir   = pluginRoot;
         ps.manifest  = manifest;
+        ps.fingerprint = fingerprint;
         if (ps.state === 'unknown') {
           transition(ps, 'discovered');
           audit({
@@ -449,6 +865,9 @@ function createLoader(userOpts) {
             plugin_name: manifest.name,
             plugin_version: manifest.version,
             scan_path: scanPath,
+            // Truncated for log brevity. Full fingerprint stays in ps for
+            // the spawn-time re-verification compare.
+            fingerprint: fingerprint.slice(0, 16),
           });
         }
 
@@ -487,6 +906,7 @@ function createLoader(userOpts) {
       restartAttempts: 0,
       readySinceMs: 0,
       registeredToolNames: new Set(),
+      fingerprint: '',
     };
   }
 
@@ -506,26 +926,124 @@ function createLoader(userOpts) {
     const ps = state.get(pluginName);
     if (!ps) throw new Error(`plugin-loader.load: unknown plugin "${pluginName}"`);
 
-    // TODO Wave 3 W-SEC-4: gate this transition on plugin-consents.json read
-    // with file lock. For Wave 2 we accept opts.requireConsent=false as the
-    // explicit "test-only" stub. When Wave 3 lands, this branch reads the
-    // consent file (with safeRealpath + fs.openSync('wx') lock) and only
-    // transitions if the fingerprint matches a consented entry.
+    // W-SEC-4 + W-SEC-7 (Wave 3): consent gate. When opts.requireConsent
+    // (default true), read plugin-consents.json under the O_EXCL advisory
+    // lock and require the consent record's fingerprint to match the
+    // currently-discovered manifest+entrypoint fingerprint.
     if (ps.state === 'discovered') {
-      if (opts.requireConsent) {
-        return { state: ps.state, plugin_name: pluginName };
+      if (!opts.requireConsent) {
+        // Wave 2 / explicit-opt-out path (tests, dev). Still emit an audit
+        // event so the bypass is observable in the trail.
+        transition(ps, 'consented');
+        audit({
+          type: 'plugin_consent_granted',
+          plugin_name: pluginName,
+          granted_via: 'require_consent_disabled',
+        });
+      } else {
+        let record;
+        try {
+          record = _loadConsent(pluginName);
+        } catch (err) {
+          // Lock contention or path-containment failure — fail closed.
+          audit({
+            type: 'plugin_install_rejected',
+            plugin_name: pluginName,
+            reason: 'consent_lock_error',
+            error: _clampPluginString(String(err && err.message ? err.message : err)),
+          });
+          transitionDead(ps, 'consent_lock_error',
+            _clampPluginString(String(err && err.message ? err.message : err)));
+          return { state: ps.state, plugin_name: pluginName };
+        }
+        if (!record) {
+          audit({
+            type: 'plugin_install_rejected',
+            plugin_name: pluginName,
+            reason: 'consent_required',
+          });
+          transitionDead(ps, 'consent_required', 'no consent record in plugin-consents.json');
+          return { state: ps.state, plugin_name: pluginName };
+        }
+        if (record.fingerprint !== ps.fingerprint) {
+          audit({
+            type: 'plugin_install_rejected',
+            plugin_name: pluginName,
+            reason: 'fingerprint_mismatch_consent',
+            consent_fingerprint: typeof record.fingerprint === 'string'
+              ? record.fingerprint.slice(0, 16) : '<invalid>',
+            current_fingerprint: ps.fingerprint.slice(0, 16),
+          });
+          transitionDead(ps, 'fingerprint_mismatch_consent',
+            'consent fingerprint does not match current manifest+entrypoint');
+          return { state: ps.state, plugin_name: pluginName };
+        }
+        transition(ps, 'consented');
+        audit({
+          type: 'plugin_consent_granted',
+          plugin_name: pluginName,
+          granted_via: 'consent_file',
+          fingerprint: ps.fingerprint.slice(0, 16),
+        });
       }
-      transition(ps, 'consented');
-      audit({
-        type: 'plugin_consent_granted',
-        plugin_name: pluginName,
-        granted_via: 'wave2_stub_auto_consent',
-      });
     }
 
     if (ps.state !== 'consented' && ps.state !== 'dead') {
       // Not in a state from which load() makes sense.
       return { state: ps.state, plugin_name: pluginName };
+    }
+
+    // v3-001 FIX (Wave 3 closeout): when state=dead from a prior consent
+    // failure, the restart timer in transitionDead can re-enter load() with
+    // state=dead. The discovered-only consent gate above (line 889) doesn't
+    // re-fire, which previously let the dead→loading→spawn path proceed
+    // WITHOUT consent. Per `feedback_no_close_out_deferral` we re-validate
+    // consent here. If still invalid, we exhaust the restart budget so the
+    // loader does not keep retrying. If consent was granted between fail and
+    // restart (user ran /orchestray:plugin approve in another shell), the
+    // plugin proceeds normally and we audit the recovery.
+    if (ps.state === 'dead' && opts.requireConsent) {
+      let record;
+      try {
+        record = _loadConsent(pluginName);
+      } catch (err) {
+        audit({
+          type: 'plugin_install_rejected',
+          plugin_name: pluginName,
+          reason: 'consent_lock_error',
+          error: _clampPluginString(String(err && err.message ? err.message : err)),
+        });
+        ps.restartAttempts = opts.maxRestartAttempts;  // exhaust budget; stop retrying
+        return { state: ps.state, plugin_name: pluginName };
+      }
+      if (!record) {
+        audit({
+          type: 'plugin_install_rejected',
+          plugin_name: pluginName,
+          reason: 'consent_required',
+        });
+        ps.restartAttempts = opts.maxRestartAttempts;
+        return { state: ps.state, plugin_name: pluginName };
+      }
+      if (record.fingerprint !== ps.fingerprint) {
+        audit({
+          type: 'plugin_install_rejected',
+          plugin_name: pluginName,
+          reason: 'fingerprint_mismatch_consent',
+          consent_fingerprint: typeof record.fingerprint === 'string'
+            ? record.fingerprint.slice(0, 16) : '<invalid>',
+          current_fingerprint: ps.fingerprint.slice(0, 16),
+        });
+        ps.restartAttempts = opts.maxRestartAttempts;
+        return { state: ps.state, plugin_name: pluginName };
+      }
+      // Consent valid now (granted between fail and restart). Audit recovery.
+      audit({
+        type: 'plugin_consent_granted',
+        plugin_name: pluginName,
+        granted_via: 'consent_file_after_dead',
+        fingerprint: ps.fingerprint.slice(0, 16),
+      });
     }
 
     transition(ps, 'loading');
@@ -573,6 +1091,33 @@ function createLoader(userOpts) {
       const e = new Error(`entrypoint is a symlink (W-SEC-1): ${entrypointAbs}`);
       e._reason = 'symlink_at_spawn';
       throw e;
+    }
+
+    // W-SEC-7a (Wave 3): re-compute the manifest+entrypoint fingerprint right
+    // before spawn and compare against the value captured at discovery time.
+    // Any drift means the manifest or entrypoint was modified between consent
+    // and spawn — refuse to spawn and transition dead with a discrete reason.
+    if (ps.fingerprint) {
+      let liveFingerprint;
+      try {
+        liveFingerprint = computeFingerprint(ps.manifest, entrypointAbs);
+      } catch (err) {
+        const e = new Error(`fingerprint recompute failed: ${err.message}`);
+        e._reason = 'entrypoint_unreadable';
+        throw e;
+      }
+      if (liveFingerprint !== ps.fingerprint) {
+        audit({
+          type: 'plugin_install_rejected',
+          plugin_name: ps.plugin_name,
+          reason: 'entrypoint_mismatch',
+          discovered_fingerprint: ps.fingerprint.slice(0, 16),
+          live_fingerprint: liveFingerprint.slice(0, 16),
+        });
+        const e = new Error('manifest or entrypoint changed between consent and spawn');
+        e._reason = 'entrypoint_mismatch';
+        throw e;
+      }
     }
 
     // W-LOAD-2: spawn in detached process group with env-strip (W-SEC-16).
@@ -694,6 +1239,28 @@ function createLoader(userOpts) {
       const e = new Error('manifest divergence between declared and runtime tools');
       e._reason = 'manifest_divergence';
       throw e;
+    }
+
+    // W-SEC-DEF-2 (Wave 3): defense-in-depth observation. Pure observers,
+    // never reject — Wave 5 W-DOC-* will document the patterns to operators.
+    // TODO Wave 4 W-EVT-1: register these event types in event-schemas.md.
+    const dangerous = _findDangerousToolName(ps.manifest.tools);
+    if (dangerous) {
+      audit({
+        type: 'plugin_dangerous_name',
+        plugin_name: ps.plugin_name,
+        tool: _safePluginName(dangerous.tool),
+      });
+    }
+    const capInconsistency = _findCapabilityInconsistency(ps.manifest);
+    if (capInconsistency) {
+      audit({
+        type: 'plugin_capability_inconsistency',
+        plugin_name: ps.plugin_name,
+        tool: _safePluginName(capInconsistency.tool),
+        hint: _clampPluginString(capInconsistency.hint, 64),
+        manifest_capability: 'network=false',
+      });
     }
 
     // Compile each declared input schema (W-SEC-9). Failure transitions dead.
@@ -915,6 +1482,20 @@ function createLoader(userOpts) {
       return mcpError(`input validation failed: ${JSON.stringify(validator.errors || [])}`);
     }
 
+    // W-SEC-DEF-2 (Wave 3): observe sensitive-arg names BEFORE we forward.
+    // The redactor (W-REDACT-1) already scrubs values from the audit log;
+    // this signal records the FACT that a sensitive-named arg was passed.
+    // TODO Wave 4 W-EVT-1: register plugin_sensitive_arg_detected.
+    const sensitiveKeys = _scanSensitiveArgKeys(args);
+    if (sensitiveKeys.length > 0) {
+      audit({
+        type: 'plugin_sensitive_arg_detected',
+        plugin_name: parsed.pluginName,
+        tool: parsed.toolName,
+        matched_keys: sensitiveKeys,
+      });
+    }
+
     audit({
       type: 'plugin_tool_invoked',
       plugin_name: parsed.pluginName,
@@ -929,6 +1510,18 @@ function createLoader(userOpts) {
         opts.toolCallTimeoutMs,
         `tool call timeout ${opts.toolCallTimeoutMs}ms`
       );
+      // W-SEC-DEF-2 (Wave 3): scan response for prompt-injection markers.
+      // Pure observation — never alter the response. Emit-only.
+      // TODO Wave 4 W-EVT-1: register plugin_response_injection_suspected.
+      const inj = _scanResponseForInjection(result);
+      if (inj) {
+        audit({
+          type: 'plugin_response_injection_suspected',
+          plugin_name: parsed.pluginName,
+          tool: parsed.toolName,
+          marker: _clampPluginString(inj, 64),
+        });
+      }
       // Recovery: a degraded plugin that produces a successful call returns
       // to ready (G2 §10).
       if (ps.state === 'degraded') {
@@ -1128,6 +1721,12 @@ function createLoader(userOpts) {
       transitionDead,
       buildSpawnEnv,
       ALLOWED_TRANSITIONS,
+      // Wave 3 W-SEC-4 / W-SEC-6 / W-SEC-7 surface for tests.
+      _loadConsent,
+      _writeConsent,
+      _consentFilePath,
+      _acquireConsentLock,
+      _releaseConsentLock,
     },
   };
 }
@@ -1142,4 +1741,7 @@ module.exports = {
   // Exposed for unit-testing the env-strip helper directly without spinning
   // up a full loader instance.
   _buildSpawnEnv: buildSpawnEnv,
+  // Wave 3 W-SEC-7 fingerprint helpers exposed for direct unit testing.
+  _computeFingerprint: computeFingerprint,
+  _canonicalizeJson: canonicalizeJson,
 };
