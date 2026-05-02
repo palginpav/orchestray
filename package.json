@@ -20,6 +20,7 @@
     ".claude-plugin/"
   ],
   "dependencies": {
+    "ajv": "^8.20.0",
     "better-sqlite3": "^11",
     "graphology": "0.26.0",
     "graphology-metrics": "^2.4.0",

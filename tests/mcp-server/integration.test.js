@@ -252,7 +252,7 @@ describe('A. protocol handshake', () => {
         assert.equal(result.protocolVersion, PROTOCOL_VERSION);
         assert.ok(result.capabilities, 'capabilities must be present');
         assert.ok(result.capabilities.tools, 'capabilities.tools must be present');
-        assert.equal(result.capabilities.tools.listChanged, false);
+        assert.equal(result.capabilities.tools.listChanged, true); // W-REG-2: flipped to true (Wave 4 W-LISTCH-1 will emit the notifications)
         assert.ok(result.capabilities.resources, 'capabilities.resources must be present (Stage 2 addition)');
         assert.equal(result.capabilities.resources.listChanged, false);
         assert.equal(result.capabilities.resources.subscribe, false);

@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "name": "fake-plugin",
+  "version": "1.0.0",
+  "description": "Test fixture for plugin-loader Wave 2 smoke tests; echoes its argument back as text.",
+  "entrypoint": "server.js",
+  "transport": "stdio",
+  "runtime": "node",
+  "tools": [
+    {
+      "name": "echo",
+      "description": "Echoes the input text back unchanged.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string" }
+        },
+        "required": ["text"]
+      }
+    }
+  ]
+}

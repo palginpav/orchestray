@@ -49,6 +49,7 @@ const { handleAskUser } = require('./elicit/ask_user');
 const { toolError } = require('./lib/tool-result');
 const { recordDegradation } = require('../_lib/degraded-journal');
 const { verifyManifestOnBoot } = require('../_lib/install-manifest');
+const toolRegistry = require('./lib/tool-registry');
 
 // Stage 2 tool handlers
 const patternDeprecate = require('./tools/pattern_deprecate');
@@ -240,6 +241,11 @@ const TOOL_TABLE = Object.freeze({
   },
 });
 
+// Activate the layered tool registry with the canonical TOOL_TABLE.
+// After this call, toolRegistry.listTools() and toolRegistry.resolveTool()
+// reflect the full core set. The overlay is empty until Wave 2+ plugins load.
+toolRegistry.initCoreTools(TOOL_TABLE);
+
 const RESOURCE_HANDLERS = Object.freeze({
   pattern: patternResource,
   history: historyResource,
@@ -373,7 +379,7 @@ async function dispatchRequest(config, msg) {
   }
 
   if (method === 'initialize') {
-    const capabilities = { tools: { listChanged: false } };
+    const capabilities = { tools: { listChanged: true } };
     if (isServerEnabled(config)) {
       capabilities.elicitation = {};
       // Stage 2: advertise resources capability when the server is enabled.
@@ -392,8 +398,12 @@ async function dispatchRequest(config, msg) {
   if (method === 'tools/list') {
     const tools = [];
     if (isServerEnabled(config)) {
-      for (const [name, entry] of Object.entries(TOOL_TABLE)) {
-        if (isToolEnabled(config, name)) tools.push(entry.definition);
+      // Route through the layered registry so plugin overlays (Wave 2+) are
+      // included automatically. listTools() returns core-first, overlay-second
+      // in insertion order — identical to the old Object.entries(TOOL_TABLE)
+      // loop when the overlay is empty (v2.3.0 GA).
+      for (const definition of toolRegistry.listTools()) {
+        if (isToolEnabled(config, definition.name)) tools.push(definition);
       }
     }
     sendResult(id, { tools });
@@ -409,7 +419,7 @@ async function dispatchRequest(config, msg) {
       return;
     }
 
-    const entry = TOOL_TABLE[name];
+    const entry = toolRegistry.resolveTool(name);
     if (!entry) {
       // Per §3.5: unknown tool name returns a tool-result error, not JSON-RPC.
       sendResult(id, toolError('unknown tool: ' + String(name)));
