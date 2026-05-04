@@ -446,6 +446,62 @@ function createLoader(userOpts) {
   const state = new Map();
 
   // -------------------------------------------------------------------------
+  // W-LISTCH-1 (Wave 4): tools/list_changed dual-path emission
+  //
+  //   Path A: notifications/tools/list_changed JSON-RPC notification via
+  //           opts.notifySink — Claude Code may pick this up and re-fetch
+  //           tools/list mid-session.
+  //   Path B: .orchestray/state/plugin-tools-changed.flag file — written so
+  //           bin/check-plugin-tools-changed-flag.js (W-LISTCH-2 hook) can
+  //           surface a "Restart Claude Code" hint on the next session start.
+  //           This is the FALLBACK for cases where Claude Code does NOT
+  //           reliably re-fetch on the notification.
+  //
+  // Both paths fire after every successful overlay mutation (post-load
+  // handshake, post-unload). Kill switches mirror W-CFG-1:
+  //   opts.notify_list_changed === false → skip Path A
+  //   opts.restart_flag_check  === false → skip Path B
+  //
+  // W-LISTCH-1 satisfied: _postOverlayMutation() is invoked after each
+  // registry._register/registry._unregister callsite (post-handshake load,
+  // unload, dead-state cleanup); notifySink is wired via server.js.
+  // -------------------------------------------------------------------------
+  function _emitListChanged() {
+    if (opts.notify_list_changed === false) return;
+    if (typeof opts.notifySink !== 'function') return;
+    try {
+      opts.notifySink({
+        jsonrpc: '2.0',
+        method:  'notifications/tools/list_changed',
+        params:  {},
+      });
+    } catch (err) {
+      audit({ type: 'plugin_notify_failed', error: _clampPluginString(String(err && err.message || err)) });
+    }
+  }
+
+  function _writeListChangedFlag() {
+    if (opts.restart_flag_check === false) return;
+    try {
+      const root = opts.projectRoot || process.cwd();
+      const flagDir = path.join(root, '.orchestray', 'state');
+      fs.mkdirSync(flagDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(flagDir, 'plugin-tools-changed.flag'),
+        new Date().toISOString() + '\n'
+      );
+    } catch (err) {
+      // Non-fatal — Path A notification may still work.
+      audit({ type: 'plugin_flag_write_failed', error: _clampPluginString(String(err && err.message || err)) });
+    }
+  }
+
+  function _postOverlayMutation() {
+    _emitListChanged();
+    _writeListChangedFlag();
+  }
+
+  // -------------------------------------------------------------------------
   // FSM helpers (W-LOAD-1)
   //
   // Allowed transitions (G2 §5):
@@ -691,7 +747,7 @@ function createLoader(userOpts) {
    * @param {string} fingerprint
    * @returns {{approved_at: string, fingerprint: string, revoked: boolean}}
    */
-  function _writeConsent(pluginName, fingerprint) {
+  function _writeConsent(pluginName, fingerprint, extraFields = {}) {
     const consentPath = _consentFilePath();
     _consentDirSafe(consentPath);
     fs.mkdirSync(path.dirname(consentPath), { recursive: true });
@@ -708,11 +764,10 @@ function createLoader(userOpts) {
           }
         } catch (_e) { current = {}; }
       }
-      const record = {
-        approved_at: new Date().toISOString(),
-        fingerprint,
-        revoked: false,
-      };
+      const record = Object.assign(
+        { approved_at: new Date().toISOString(), fingerprint, revoked: false },
+        extraFields  // applied LAST so callers can override defaults
+      );
       current[pluginName] = record;
       const tmpPath = consentPath + '.tmp.' + process.pid + '.' + Date.now() + '.' + Math.floor(Math.random() * 1e9);
       // v3-003 FIX (Wave 3 closeout): fsync the temp file BEFORE rename so a
@@ -1291,6 +1346,7 @@ function createLoader(userOpts) {
         },
         handler,
       });
+      _postOverlayMutation();
       ps.registeredToolNames.add(namespacedName);
     }
 
@@ -1566,6 +1622,7 @@ function createLoader(userOpts) {
     for (const name of ps.registeredToolNames) {
       try { registry._unregister(name); } catch (_e) { /* ignore */ }
     }
+    _postOverlayMutation();
     ps.registeredToolNames.clear();
     ps.compiledValidators.clear();
 
@@ -1626,6 +1683,7 @@ function createLoader(userOpts) {
     for (const name of ps.registeredToolNames) {
       try { registry._unregister(name); } catch (_e) { /* ignore */ }
     }
+    _postOverlayMutation();
     ps.registeredToolNames.clear();
     ps.compiledValidators.clear();
 

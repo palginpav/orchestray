@@ -51,6 +51,18 @@ const { recordDegradation } = require('../_lib/degraded-journal');
 const { verifyManifestOnBoot } = require('../_lib/install-manifest');
 const toolRegistry = require('./lib/tool-registry');
 
+// W-LISTCH-1 (Wave 4): plugin-loader instantiation + dual-path notify wire-in.
+// createPluginLoader wires the MCP tool overlay at runtime. When the loader
+// instantiates successfully, tools/list merges core + plugin tools automatically
+// and tools/list_changed notifications flow to MCP stdout via opts.notifySink.
+// Kill switches: config.plugin_loader.enabled (master), .notify_list_changed,
+// .restart_flag_check, .dry_run. All default true/false per config-defaults.js.
+//
+// ajv is now copied by install.js alongside zod (W-DEPS-1 follow-up); the
+// deferred require remains here as a defense-in-depth guard for future install
+// regressions, not as a hard requirement.
+const { writeEvent: writePluginAuditEvent } = require('../_lib/audit-event-writer');
+
 // Stage 2 tool handlers
 const patternDeprecate = require('./tools/pattern_deprecate');
 const patternFind = require('./tools/pattern_find');
@@ -78,6 +90,14 @@ const orchestrationResource = require('./resources/orchestration_resource');
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'orchestray';
+
+// W-LISTCH-1: module-scope plugin-loader instance. Declared here so rl.on('close')
+// and SIGINT/SIGTERM handlers can call pluginLoader?.shutdown() without closures
+// over main()'s local scope. null = loader disabled or bringup failed.
+let pluginLoader = null;
+// Idempotency guard: first signal/close wins; prevents double-shutdown on SIGINT
+// (which triggers rl.close(), which would fire rl.on('close') a second time).
+let shutdownStarted = false;
 
 /**
  * Resolve the server version. The MCP server runs in two layouts:
@@ -402,7 +422,11 @@ async function dispatchRequest(config, msg) {
       // included automatically. listTools() returns core-first, overlay-second
       // in insertion order — identical to the old Object.entries(TOOL_TABLE)
       // loop when the overlay is empty (v2.3.0 GA).
-      for (const definition of toolRegistry.listTools()) {
+      for (const definition of toolRegistry.listTools({
+        pluginStateAccessor: pluginLoader ? (n) => pluginLoader.getState(n) : undefined,
+        maxBytes: config.plugin_loader?.lifecycle?.tools_response_max_bytes ?? 1048576,
+        audit:    writePluginAuditEvent,
+      })) {
         if (isToolEnabled(config, definition.name)) tools.push(definition);
       }
     }
@@ -672,6 +696,40 @@ function main() {
 
   const config = loadConfig();
 
+  // W-LISTCH-1: instantiate plugin loader iff enabled (default: true).
+  // Fail-open: any exception during bringup is logged and pluginLoader stays
+  // null. The server continues to serve core tools in that degraded state.
+  // Require is deferred here (not at module top) because plugin-loader.js
+  // transitively requires 'ajv', which install.js does not copy. See comment
+  // above near writePluginAuditEvent for rationale.
+  if (config.plugin_loader?.enabled !== false) {
+    const pl = config.plugin_loader || {};
+    const lc = pl.lifecycle || {};
+    try {
+      const { createLoader: createPluginLoader } = require('../_lib/plugin-loader');
+      pluginLoader = createPluginLoader({
+        audit:              writePluginAuditEvent,
+        projectRoot:        process.cwd(),
+        registry:           toolRegistry,
+        // Path A wire-in: thread writeFrame so notifications/tools/list_changed
+        // reaches MCP stdout on every successful overlay mutation.
+        notifySink:         writeFrame,
+        notify_list_changed: pl.notify_list_changed !== false,
+        restart_flag_check:  pl.restart_flag_check  !== false,
+        dry_run:             !!pl.dry_run,
+        // Lifecycle tuning from config (mirrors DEFAULT_OPTS keys).
+        ...(lc.max_restart_attempts  != null && { maxRestartAttempts:    lc.max_restart_attempts }),
+        ...(lc.restart_backoff_ms    != null && { restartBackoffMs:      lc.restart_backoff_ms }),
+        ...(lc.restart_reset_window_ms != null && { restartResetWindowMs: lc.restart_reset_window_ms }),
+        ...(lc.tool_call_timeout_ms  != null && { toolCallTimeoutMs:     lc.tool_call_timeout_ms }),
+        ...(lc.spawn_timeout_ms      != null && { spawnTimeoutMs:        lc.spawn_timeout_ms }),
+      });
+    } catch (err) {
+      logStderr('plugin-loader bringup failed: ' + (err && err.message));
+      // pluginLoader remains null; server serves core tools only.
+    }
+  }
+
   // Fail-open install-integrity verify (non-fatal; runs inline before the
   // ready banner). Drift (if any) is journaled to .orchestray/state/degraded.jsonl
   // and surfaced via /orchestray:doctor --deep. The outer try/catch is
@@ -703,21 +761,52 @@ function main() {
     });
   });
 
-  rl.on('close', () => {
+  rl.on('close', async () => {
     rejectAllPendingElicitations('stdin closed');
+    // W-LISTCH-1: shut down loader before exit. shutdownStarted guards against
+    // double-invocation when SIGINT triggers both onSignal and rl.on('close').
+    if (!shutdownStarted && pluginLoader) {
+      shutdownStarted = true;
+      // Race against 5 s — a hung plugin must not block MCP server exit forever.
+      await Promise.race([
+        pluginLoader.shutdown(),
+        new Promise((resolve) => setTimeout(() => {
+          logStderr('plugin-loader shutdown timed out (5s), forcing exit');
+          resolve();
+        }, 5000)),
+      ]).catch((err) => logStderr('plugin-loader shutdown error: ' + (err && err.message)));
+    }
     process.exit(0);
   });
 
-  const onSignal = (sig) => {
+  const onSignal = async (sig) => {
     logStderr('received ' + sig + ', shutting down');
     rejectAllPendingElicitations(sig);
+    // W-LISTCH-1: shut down loader; first caller wins via shutdownStarted flag.
+    if (!shutdownStarted && pluginLoader) {
+      shutdownStarted = true;
+      await Promise.race([
+        pluginLoader.shutdown(),
+        new Promise((resolve) => setTimeout(() => {
+          logStderr('plugin-loader shutdown timed out (5s), forcing exit');
+          resolve();
+        }, 5000)),
+      ]).catch((err) => logStderr('plugin-loader shutdown error: ' + (err && err.message)));
+    }
     try { rl.close(); } catch (_e) { /* swallow */ }
     process.exit(0);
   };
-  process.on('SIGINT', () => onSignal('SIGINT'));
-  process.on('SIGTERM', () => onSignal('SIGTERM'));
+  process.on('SIGINT',  () => onSignal('SIGINT').catch((e) => logStderr('SIGINT handler error: ' + (e && e.message))));
+  process.on('SIGTERM', () => onSignal('SIGTERM').catch((e) => logStderr('SIGTERM handler error: ' + (e && e.message))));
 
   logStderr('orchestray-mcp server ready (protocol ' + PROTOCOL_VERSION + ')');
+
+  // W-LISTCH-1: fire-and-forget discovery scan on startup (default-on per
+  // feedback_default_on_shipping). NEVER auto-load — loading requires explicit
+  // user consent via the slash-command CLI. Skip if discovery is disabled.
+  if (pluginLoader && config.plugin_loader?.discovery?.enabled !== false) {
+    pluginLoader.scan().catch((err) => logStderr('plugin scan failed: ' + (err && err.message)));
+  }
 }
 
 if (require.main === module) {

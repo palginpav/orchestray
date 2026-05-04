@@ -4207,6 +4207,329 @@ function validateDualInstallConfig(obj) {
   return errors.length === 0 ? { valid: true } : { valid: false, errors };
 }
 
+// ---------------------------------------------------------------------------
+// plugin_loader section defaults and loader (W-CFG-1 Wave 4 plugin-loader config)
+//
+// plugin_loader.enabled — boolean, default true.
+//   Master kill-switch. Set false to disable the plugin loader entirely.
+//   Env override: ORCHESTRAY_PLUGIN_LOADER_DISABLED=1 → enabled = false.
+//
+// plugin_loader.discovery.enabled — boolean, default true.
+//   Enable automatic plugin discovery on startup.
+//   Env override: ORCHESTRAY_PLUGIN_DISCOVERY_DISABLED=1 → discovery.enabled = false.
+//
+// plugin_loader.discovery.scan_paths — array of strings or null, default null.
+//   Additional directories to scan for plugins. null = use built-in defaults only.
+//
+// plugin_loader.consent.require_explicit_grant — boolean, default true.
+//   Require user grant before activating a newly discovered plugin.
+//
+// plugin_loader.consent.auto_approve_unsigned — boolean, default false.
+//   Auto-approve plugins that have no signature file. Keep false in production.
+//
+// plugin_loader.lifecycle.max_restart_attempts — integer >= 0, default 3.
+//   Max times the loader restarts a crashed plugin before marking it failed-permanent.
+//
+// plugin_loader.lifecycle.restart_backoff_ms — array of positive integers, default [1000,5000,30000].
+//   Delay (ms) between each restart attempt (index = attempt number; last value reused if exhausted).
+//
+// plugin_loader.lifecycle.restart_reset_window_ms — positive integer, default 300000 (5 min).
+//   If a plugin runs without crashing for this many ms, its restart counter resets.
+//
+// plugin_loader.lifecycle.tool_call_timeout_ms — positive integer, default 60000 (1 min).
+//   Timeout for a single MCP tool call routed through the plugin. Exceeding this aborts the call.
+//
+// plugin_loader.lifecycle.spawn_timeout_ms — positive integer, default 10000 (10 s).
+//   Timeout for spawning the plugin subprocess. Exceeding this kills and retries.
+//
+// plugin_loader.lifecycle.tools_response_max_bytes — positive integer, default 1048576 (1 MiB).
+//   Maximum response payload size (bytes) from a plugin tool call.
+//
+// plugin_loader.telemetry.emit_tool_invocation_events — boolean, default true.
+//   Emit orchestray events for each tool invocation through a plugin.
+//
+// plugin_loader.telemetry.redact_args — boolean, default true.
+//   Redact tool call arguments before emitting telemetry events (prevents secret leakage).
+//
+// plugin_loader.notify_list_changed — boolean, default true.
+//   Emit an event when the active plugin list changes (plugin added, removed, or failed-permanent).
+//
+// plugin_loader.restart_flag_check — boolean, default true.
+//   Before each tool call, check if the plugin has a restart-required flag file.
+//
+// plugin_loader.dry_run — boolean, default false.
+//   Discover and validate plugins but do not activate them.
+//   Env override: ORCHESTRAY_PLUGIN_LOADER_DRY_RUN=1 → dry_run = true.
+//
+// Env override ORCHESTRAY_PLUGIN_DISABLE=<csv> — comma-separated list of plugin ids
+//   to force-disable at runtime. Resolved by plugin-loader.js at init; not stored here.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_PLUGIN_LOADER = Object.freeze({
+  enabled: true,
+  discovery: Object.freeze({
+    enabled: true,
+    scan_paths: null,
+  }),
+  consent: Object.freeze({
+    require_explicit_grant: true,
+    auto_approve_unsigned: false,
+  }),
+  lifecycle: Object.freeze({
+    max_restart_attempts: 3,
+    restart_backoff_ms: Object.freeze([1000, 5000, 30000]),
+    restart_reset_window_ms: 300000,
+    tool_call_timeout_ms: 60000,
+    spawn_timeout_ms: 10000,
+    tools_response_max_bytes: 1048576,
+  }),
+  telemetry: Object.freeze({
+    emit_tool_invocation_events: true,
+    redact_args: true,
+  }),
+  notify_list_changed: true,
+  restart_flag_check: true,
+  dry_run: false,
+});
+
+/**
+ * Load and merge the plugin_loader config section from <cwd>/.orchestray/config.json.
+ *
+ * Env override resolution (applied after file merge, before return):
+ *   ORCHESTRAY_PLUGIN_LOADER_DISABLED=1    → enabled = false
+ *   ORCHESTRAY_PLUGIN_DISCOVERY_DISABLED=1 → discovery.enabled = false
+ *   ORCHESTRAY_PLUGIN_LOADER_DRY_RUN=1     → dry_run = true
+ *
+ * Fail-open contract: missing/malformed returns DEFAULT_PLUGIN_LOADER so the
+ * loader still runs at safe defaults rather than crashing.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {object} Merged plugin_loader config with all top-level keys guaranteed present.
+ */
+function loadPluginLoaderConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return _applyPluginLoaderEnvOverrides(_deepMergePluginLoader(DEFAULT_PLUGIN_LOADER, {}));
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return _applyPluginLoaderEnvOverrides(_deepMergePluginLoader(DEFAULT_PLUGIN_LOADER, {}));
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return _applyPluginLoaderEnvOverrides(_deepMergePluginLoader(DEFAULT_PLUGIN_LOADER, {}));
+  }
+
+  const fromFile = parsed.plugin_loader;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return _applyPluginLoaderEnvOverrides(_deepMergePluginLoader(DEFAULT_PLUGIN_LOADER, {}));
+  }
+
+  const merged = _deepMergePluginLoader(DEFAULT_PLUGIN_LOADER, sanitizeConfig(fromFile));
+
+  // Validate and warn — always return merged (fail-open).
+  try {
+    const result = validatePluginLoaderConfig(merged);
+    if (!result.valid) {
+      logStderr('plugin_loader config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) {
+    // Validation must never throw.
+  }
+
+  return _applyPluginLoaderEnvOverrides(merged);
+}
+
+/**
+ * Deep-merge plugin_loader sub-sections (discovery, consent, lifecycle, telemetry)
+ * from a file override into the defaults. Top-level scalar keys are shallow-merged.
+ * Sub-object keys override at the sub-key level (file wins, missing keys fall back to defaults).
+ *
+ * @param {object} base - DEFAULT_PLUGIN_LOADER shape.
+ * @param {object} override - User-supplied (sanitized) override object.
+ * @returns {object} Merged result.
+ */
+function _deepMergePluginLoader(base, override) {
+  const result = Object.assign({}, base, override);
+
+  // Merge sub-sections that are plain objects.
+  for (const key of ['discovery', 'consent', 'lifecycle', 'telemetry']) {
+    const baseSection  = base[key];
+    const fileSection  = override[key];
+    if (fileSection && typeof fileSection === 'object' && !Array.isArray(fileSection)) {
+      result[key] = Object.assign({}, baseSection, sanitizeConfig(fileSection));
+    } else {
+      result[key] = Object.assign({}, baseSection);
+    }
+  }
+
+  // restart_backoff_ms: accept array from file, otherwise keep default.
+  const lc = result.lifecycle;
+  if (override.lifecycle) {
+    const fileLc = override.lifecycle;
+    const backoff = fileLc.restart_backoff_ms;
+    if (Array.isArray(backoff) && backoff.length > 0 && backoff.every(v => typeof v === 'number' && v > 0)) {
+      lc.restart_backoff_ms = backoff.slice(); // mutable copy; no freeze needed at runtime
+    } else {
+      lc.restart_backoff_ms = base.lifecycle.restart_backoff_ms.slice();
+    }
+  } else {
+    lc.restart_backoff_ms = base.lifecycle.restart_backoff_ms.slice();
+  }
+
+  return result;
+}
+
+/**
+ * Apply env-var overrides to a merged plugin_loader config object.
+ * Mutates and returns the object.
+ *
+ * @param {object} cfg
+ * @returns {object}
+ */
+function _applyPluginLoaderEnvOverrides(cfg) {
+  if (process.env.ORCHESTRAY_PLUGIN_LOADER_DISABLED === '1') {
+    cfg.enabled = false;
+  }
+  if (process.env.ORCHESTRAY_PLUGIN_DISCOVERY_DISABLED === '1') {
+    cfg.discovery = Object.assign({}, cfg.discovery, { enabled: false });
+  }
+  if (process.env.ORCHESTRAY_PLUGIN_LOADER_DRY_RUN === '1') {
+    cfg.dry_run = true;
+  }
+  return cfg;
+}
+
+/**
+ * Validate a plugin_loader config object (as returned by loadPluginLoaderConfig).
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validatePluginLoaderConfig(obj) {
+  const errors = [];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['plugin_loader config must be an object'] };
+  }
+
+  if ('enabled' in obj && typeof obj.enabled !== 'boolean') {
+    errors.push('plugin_loader.enabled must be a boolean — got ' + JSON.stringify(obj.enabled));
+  }
+
+  if ('dry_run' in obj && typeof obj.dry_run !== 'boolean') {
+    errors.push('plugin_loader.dry_run must be a boolean — got ' + JSON.stringify(obj.dry_run));
+  }
+
+  if ('notify_list_changed' in obj && typeof obj.notify_list_changed !== 'boolean') {
+    errors.push('plugin_loader.notify_list_changed must be a boolean — got ' + JSON.stringify(obj.notify_list_changed));
+  }
+
+  if ('restart_flag_check' in obj && typeof obj.restart_flag_check !== 'boolean') {
+    errors.push('plugin_loader.restart_flag_check must be a boolean — got ' + JSON.stringify(obj.restart_flag_check));
+  }
+
+  // discovery sub-section
+  if ('discovery' in obj) {
+    const d = obj.discovery;
+    if (!d || typeof d !== 'object' || Array.isArray(d)) {
+      errors.push('plugin_loader.discovery must be an object');
+    } else {
+      if ('enabled' in d && typeof d.enabled !== 'boolean') {
+        errors.push('plugin_loader.discovery.enabled must be a boolean — got ' + JSON.stringify(d.enabled));
+      }
+      if ('scan_paths' in d && d.scan_paths !== null) {
+        if (!Array.isArray(d.scan_paths) || !d.scan_paths.every(p => typeof p === 'string')) {
+          errors.push('plugin_loader.discovery.scan_paths must be an array of strings or null — got ' + JSON.stringify(d.scan_paths));
+        }
+      }
+    }
+  }
+
+  // consent sub-section
+  if ('consent' in obj) {
+    const c = obj.consent;
+    if (!c || typeof c !== 'object' || Array.isArray(c)) {
+      errors.push('plugin_loader.consent must be an object');
+    } else {
+      if ('require_explicit_grant' in c && typeof c.require_explicit_grant !== 'boolean') {
+        errors.push('plugin_loader.consent.require_explicit_grant must be a boolean — got ' + JSON.stringify(c.require_explicit_grant));
+      }
+      if ('auto_approve_unsigned' in c && typeof c.auto_approve_unsigned !== 'boolean') {
+        errors.push('plugin_loader.consent.auto_approve_unsigned must be a boolean — got ' + JSON.stringify(c.auto_approve_unsigned));
+      }
+    }
+  }
+
+  // lifecycle sub-section
+  if ('lifecycle' in obj) {
+    const lc = obj.lifecycle;
+    if (!lc || typeof lc !== 'object' || Array.isArray(lc)) {
+      errors.push('plugin_loader.lifecycle must be an object');
+    } else {
+      if ('max_restart_attempts' in lc) {
+        const v = lc.max_restart_attempts;
+        if (!Number.isInteger(v) || v < 0) {
+          errors.push('plugin_loader.lifecycle.max_restart_attempts must be a non-negative integer — got ' + JSON.stringify(v));
+        }
+      }
+      if ('restart_backoff_ms' in lc) {
+        const v = lc.restart_backoff_ms;
+        if (!Array.isArray(v) || v.length === 0 || !v.every(n => typeof n === 'number' && n > 0)) {
+          errors.push('plugin_loader.lifecycle.restart_backoff_ms must be a non-empty array of positive numbers — got ' + JSON.stringify(v));
+        }
+      }
+      if ('restart_reset_window_ms' in lc) {
+        const v = lc.restart_reset_window_ms;
+        if (typeof v !== 'number' || v <= 0) {
+          errors.push('plugin_loader.lifecycle.restart_reset_window_ms must be a positive number — got ' + JSON.stringify(v));
+        }
+      }
+      if ('tool_call_timeout_ms' in lc) {
+        const v = lc.tool_call_timeout_ms;
+        if (typeof v !== 'number' || v <= 0) {
+          errors.push('plugin_loader.lifecycle.tool_call_timeout_ms must be a positive number — got ' + JSON.stringify(v));
+        }
+      }
+      if ('spawn_timeout_ms' in lc) {
+        const v = lc.spawn_timeout_ms;
+        if (typeof v !== 'number' || v <= 0) {
+          errors.push('plugin_loader.lifecycle.spawn_timeout_ms must be a positive number — got ' + JSON.stringify(v));
+        }
+      }
+      if ('tools_response_max_bytes' in lc) {
+        const v = lc.tools_response_max_bytes;
+        if (!Number.isInteger(v) || v <= 0) {
+          errors.push('plugin_loader.lifecycle.tools_response_max_bytes must be a positive integer — got ' + JSON.stringify(v));
+        }
+      }
+    }
+  }
+
+  // telemetry sub-section
+  if ('telemetry' in obj) {
+    const t = obj.telemetry;
+    if (!t || typeof t !== 'object' || Array.isArray(t)) {
+      errors.push('plugin_loader.telemetry must be an object');
+    } else {
+      if ('emit_tool_invocation_events' in t && typeof t.emit_tool_invocation_events !== 'boolean') {
+        errors.push('plugin_loader.telemetry.emit_tool_invocation_events must be a boolean — got ' + JSON.stringify(t.emit_tool_invocation_events));
+      }
+      if ('redact_args' in t && typeof t.redact_args !== 'boolean') {
+        errors.push('plugin_loader.telemetry.redact_args must be a boolean — got ' + JSON.stringify(t.redact_args));
+      }
+    }
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
 module.exports = {
   DEFAULT_MCP_ENFORCEMENT,
   loadMcpEnforcement,
@@ -4322,4 +4645,8 @@ module.exports = {
   DEFAULT_DUAL_INSTALL,
   loadDualInstallConfig,
   validateDualInstallConfig,
+  // W-CFG-1 (Wave 4): plugin_loader lifecycle config
+  DEFAULT_PLUGIN_LOADER,
+  loadPluginLoaderConfig,
+  validatePluginLoaderConfig,
 };

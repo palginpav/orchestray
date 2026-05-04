@@ -36,6 +36,11 @@ phase_slice_fallback — phase-slice hook degraded path (no orchestration / unkn
 phase_slice_injected — phase-slice hook positive path (slice pointer staged into PM additionalContext) (hook, v2.1.16 W9 R-PHASE-INJ)
 repo_map_built / repo_map_parse_failed / repo_map_grammar_load_failed / repo_map_cache_unavailable — Aider-style repo map events (v2.1.17 W8 R-AIDER-FULL)
 repo_map_sentinel_wait — cross-process cold-init sentinel coordination (v2.2.20 T7)
+plugin_discovered / plugin_consent_granted / plugin_loaded / plugin_dead / plugin_restart_attempted / plugin_unloaded — plugin FSM lifecycle (v2.3.0 W-EVT-1)
+plugin_tool_invoked / plugin_tool_failure — plugin tool-call dispatch (v2.3.0 W-EVT-1)
+plugin_install_rejected / plugin_manifest_divergence — plugin rejection events (v2.3.0 W-EVT-1)
+plugin_sensitive_arg_detected / plugin_capability_inconsistency / plugin_dangerous_name / plugin_response_injection_suspected — plugin defense-in-depth observations (v2.3.0 W-EVT-1)
+plugin_tools_truncated / plugin_dry_run / plugin_consent_revoked — reserved for Wave 4 (v2.3.0 W-EVT-1)
 
 END CONDITIONAL-LOAD NOTICE -->
 
@@ -10632,3 +10637,562 @@ Emitted from: `bin/_lib/audit-event-writer.js` `writeEvent()` unknown-type branc
 
 Kill switch: none — this is a diagnostic-only advisory. Suppress by declaring the
 event type in `event-schemas.md` so the unknown-type branch no longer fires.
+
+---
+
+## Plugin Lifecycle Events (v2.3.0 W-EVT-1)
+
+The following 17 events are emitted by `bin/_lib/plugin-loader.js` — the Wave 2/3
+MCP-broker plugin lifecycle module. All events carry `type` and are written via
+`writeEvent()` (the same audit-event writer as all other events in this file).
+
+---
+
+### `plugin_discovered` event (v2.3.0 W-EVT-1)
+
+Emitted when a plugin manifest is validated and the plugin transitions from
+`unknown` to `discovered` state during a scan pass. Only emitted on first discovery
+of a given plugin name; re-scans that find the same plugin in the same scan_path do
+not re-emit.
+
+```json
+{
+  "type": "plugin_discovered",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "plugin_name": "my-plugin",
+  "scan_path": "/home/user/.orchestray/plugins",
+  "fingerprint": "a1b2c3d4e5f60123",
+  "plugin_version": null
+}
+```
+
+Field notes:
+- `plugin_name`: Validated plugin name from the manifest (kebab-case, 2–48 chars).
+- `plugin_version`: Version string from the manifest. Optional; absent if the
+  manifest omits `version`.
+- `scan_path`: The filesystem scan path where the plugin was found.
+- `fingerprint`: Truncated SHA-256 of the manifest+entrypoint (first 16 hex chars).
+  Full fingerprint is retained in the in-process FSM record for spawn-time
+  re-verification.
+
+Emitted from: `bin/_lib/plugin-loader.js` `scan()` — `discovered` transition block.
+
+Kill switch: none.
+
+---
+
+### `plugin_consent_granted` event (v2.3.0 W-EVT-1)
+
+Emitted when the consent gate is cleared — either because `requireConsent` is
+disabled, or because a valid consent-file record with a matching fingerprint was
+found. Covers both first-load and post-dead-restart consent re-validation.
+
+```json
+{
+  "type": "plugin_consent_granted",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "plugin_name": "my-plugin",
+  "granted_via": "consent_file",
+  "fingerprint": null
+}
+```
+
+Field notes:
+- `granted_via`: How consent was established. Enum:
+  - `consent_file` — consent record found in `plugin-consents.json` with
+    a matching fingerprint; standard load path.
+  - `consent_file_after_dead` — consent record found valid during a
+    post-dead restart re-check; indicates the user approved the plugin
+    between a failure and its auto-restart.
+  - `require_consent_disabled` — `opts.requireConsent` was explicitly
+    set to `false` (test / dev override). The bypass is always audited
+    so it is observable in the trail.
+- `fingerprint`: *(optional)* Truncated SHA-256 (first 16 hex chars). Present
+  when `granted_via` is `consent_file` or `consent_file_after_dead`. Absent
+  when `granted_via` is `require_consent_disabled`.
+
+Emitted from: `bin/_lib/plugin-loader.js` `load()` consent gate.
+
+Kill switch: none.
+
+---
+
+### `plugin_loaded` event (v2.3.0 W-EVT-1)
+
+Emitted when a plugin completes the full load sequence: consent granted, process
+spawned, MCP handshake succeeded, tools registered in the overlay. The plugin
+is in `ready` state when this event fires.
+
+```json
+{
+  "type": "plugin_loaded",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "plugin_name": "my-plugin",
+  "pid": 12345,
+  "tool_count": 3,
+  "plugin_version": null
+}
+```
+
+Field notes:
+- `plugin_version`: Version string from the manifest.
+- `pid`: OS PID of the spawned plugin process. `null` if the process exited
+  between handshake and audit-emit (extremely rare race).
+- `tool_count`: Number of namespaced tools registered in the layered overlay.
+  Equals `manifest.tools.length` after successful manifest reconciliation.
+
+Emitted from: `bin/_lib/plugin-loader.js` `load()` — success branch after
+`spawnAndHandshake()`.
+
+Kill switch: none.
+
+---
+
+### `plugin_dead` event (v2.3.0 W-EVT-1)
+
+Emitted whenever a plugin transitions to the `dead` state regardless of cause.
+Dead is a restartable non-terminal state; `plugin_unloaded` is the terminal state.
+
+```json
+{
+  "type": "plugin_dead",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "plugin_name": "my-plugin",
+  "reason": "process_exit",
+  "detail": "exit code=1, signal=null"
+}
+```
+
+Field notes:
+- `reason`: Enum of transition-dead reasons:
+  - `load_failed` — unclassified error from `load()`.
+  - `spawn_error` — `child_process.spawn` emitted an `error` event.
+  - `manifest_divergence` — runtime tools/list did not match manifest.
+  - `invalid_input_schema` — tool `inputSchema` failed compilation.
+  - `entrypoint_mismatch` — fingerprint drifted between consent and spawn.
+  - `entrypoint_missing` — entrypoint file not found at spawn time.
+  - `protocol_dos` — stdout cap exceeded (W-SEC-23).
+  - `process_exit` — child process exited unexpectedly.
+  - `handshake_initialize_failed` — MCP `initialize` RPC failed.
+  - `handshake_tools_list_failed` — MCP `tools/list` RPC failed.
+  - `symlink_at_spawn` — entrypoint resolved as a symlink at spawn time.
+  - `consent_required` — no consent record found.
+  - `consent_lock_error` — consent file lock acquisition failed.
+  - `fingerprint_mismatch_consent` — consent-file fingerprint did not
+    match current manifest+entrypoint fingerprint.
+  - `entrypoint_unreadable` — entrypoint file could not be read for
+    fingerprint recomputation.
+- `detail`: Human-readable detail string. Clamped to 256 chars. Empty string
+  when no additional detail is available.
+
+Emitted from: `bin/_lib/plugin-loader.js` `transitionDead()`.
+
+Kill switch: none.
+
+---
+
+### `plugin_restart_attempted` event (v2.3.0 W-EVT-1)
+
+Emitted immediately after `plugin_dead` when the restart budget has not been
+exhausted. Indicates that a backoff-timer restart has been scheduled.
+
+```json
+{
+  "type": "plugin_restart_attempted",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "plugin_name": "my-plugin",
+  "attempt_number": 1,
+  "backoff_ms": 1000
+}
+```
+
+Field notes:
+- `attempt_number`: 1-based restart attempt counter. Incremented before this
+  event fires. Maximum is `opts.maxRestartAttempts` (default 3).
+- `backoff_ms`: Milliseconds until the restart will be triggered. Backoff
+  schedule: attempt 1 → 1 000 ms, attempt 2 → 5 000 ms, attempt 3 → 30 000 ms.
+
+Emitted from: `bin/_lib/plugin-loader.js` `transitionDead()` — restart-schedule
+block, after budget check.
+
+Kill switch: none.
+
+---
+
+### `plugin_unloaded` event (v2.3.0 W-EVT-1)
+
+Emitted when a plugin is gracefully shut down and transitions to the terminal
+`unloaded` state. Overlay tools are removed before this event fires.
+
+```json
+{
+  "type": "plugin_unloaded",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "plugin_name": "my-plugin"
+}
+```
+
+Field notes:
+- No additional fields beyond `type`, `version`, `timestamp`, and `plugin_name`.
+  The `unloaded` state is terminal — no further events will be emitted for this
+  plugin instance.
+
+Emitted from: `bin/_lib/plugin-loader.js` `unload()`.
+
+Kill switch: none.
+
+---
+
+### `plugin_tool_invoked` event (v2.3.0 W-EVT-1)
+
+Emitted at the start of every brokered tool call, before the JSON-RPC forward.
+Args are redacted before logging (W-SEC-19 pre-condition).
+
+```json
+{
+  "type": "plugin_tool_invoked",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "plugin_name": "my-plugin",
+  "tool_name": "do-something",
+  "args_redacted": {"param": "[REDACTED]"}
+}
+```
+
+Field notes:
+- `tool_name`: Unnamespaced tool name as declared in the manifest (the local
+  name, not the `plugin:tool` namespaced form).
+- `args_redacted`: Tool arguments after `redactArgs()` processing (W-REDACT-1).
+  Sensitive-named keys are replaced with `"[REDACTED]"`. Never contains raw
+  user credentials.
+
+Emitted from: `bin/_lib/plugin-loader.js` `callTool()` — pre-dispatch.
+
+Kill switch: none.
+
+---
+
+### `plugin_tool_failure` event (v2.3.0 W-EVT-1)
+
+Emitted when a brokered tool call fails — either from an RPC timeout, a JSON-RPC
+error response from the plugin, or a process-exit mid-call. The plugin transitions
+to `degraded` (not `dead`) when this fires; the dead transition is owned by the
+process-exit handler.
+
+```json
+{
+  "type": "plugin_tool_failure",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "plugin_name": "my-plugin",
+  "tool_name": "do-something",
+  "error": "rpc timeout: method=tools/call",
+  "duration_ms": 60042
+}
+```
+
+Field notes:
+- `tool_name`: Unnamespaced tool name (same as `plugin_tool_invoked.tool_name`).
+- `error`: Error message clamped to 256 chars (W-SEC plugin-string max).
+- `duration_ms`: Wall-clock time from tool-call start to failure, in milliseconds.
+
+Emitted from: `bin/_lib/plugin-loader.js` `callTool()` — catch branch.
+
+Kill switch: none.
+
+---
+
+### `plugin_install_rejected` event (v2.3.0 W-EVT-1)
+
+Emitted when a plugin is rejected at any stage of scan or load. Multiple fields
+are reason-specific and only present on the relevant `reason` values.
+
+```json
+{
+  "type": "plugin_install_rejected",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "plugin_name": "my-plugin",
+  "reason": "consent_required",
+  "scan_path": null,
+  "error": null,
+  "first_seen_in": null,
+  "consent_fingerprint": null,
+  "current_fingerprint": null,
+  "discovered_fingerprint": null,
+  "live_fingerprint": null
+}
+```
+
+Field notes:
+- `reason`: Rejection reason enum:
+  - `symlink` — plugin directory entry is a symlink (W-SEC-1 directory-level).
+  - `manifest_symlink` — `orchestray-plugin.json` manifest is a symlink (W-SEC-1 manifest-level).
+  - `invalid_manifest` — manifest failed `parseManifest()` validation.
+  - `path_shadow` — plugin name already discovered in a higher-priority scan path (W-SEC-2).
+  - `entrypoint_unreadable` — entrypoint file could not be read at discovery time.
+  - `entrypoint_mismatch` — manifest or entrypoint changed between consent and spawn (W-SEC-7a).
+  - `consent_required` — no consent record in `plugin-consents.json`.
+  - `consent_lock_error` — consent-file lock acquisition failed.
+  - `fingerprint_mismatch_consent` — consent fingerprint does not match current manifest+entrypoint.
+- `scan_path`: *(optional)* Filesystem scan path where the rejection occurred.
+  Present for scan-time rejections; absent for load-time rejections.
+- `error`: *(optional)* Human-readable error message clamped to 256 chars.
+  Present for `invalid_manifest`, `entrypoint_unreadable`, `consent_lock_error`.
+- `first_seen_in`: *(optional)* The scan path where the plugin name was first seen.
+  Present only when `reason` is `path_shadow`.
+- `consent_fingerprint`: *(optional)* First 16 hex chars of the fingerprint stored
+  in the consent record. Present only when `reason` is `fingerprint_mismatch_consent`.
+- `current_fingerprint`: *(optional)* First 16 hex chars of the current
+  manifest+entrypoint fingerprint. Present only when `reason` is `fingerprint_mismatch_consent`.
+- `discovered_fingerprint`: *(optional)* First 16 hex chars of the fingerprint
+  captured at discovery time. Present only when `reason` is `entrypoint_mismatch`.
+- `live_fingerprint`: *(optional)* First 16 hex chars of the fingerprint recomputed
+  immediately before spawn. Present only when `reason` is `entrypoint_mismatch`.
+
+Emitted from: `bin/_lib/plugin-loader.js` — multiple sites in `scan()` and `load()`.
+
+Kill switch: none.
+
+---
+
+### `plugin_manifest_divergence` event (v2.3.0 W-EVT-1)
+
+Emitted when the runtime `tools/list` response from a plugin does not exactly
+match the tools declared in its manifest. The plugin transitions to `dead` with
+`reason=manifest_divergence` immediately after this event.
+
+```json
+{
+  "type": "plugin_manifest_divergence",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "plugin_name": "my-plugin",
+  "expected_tools": ["tool-a", "tool-b"],
+  "actual_tools": ["tool-a", "tool-c"]
+}
+```
+
+Field notes:
+- `expected_tools`: Array of tool names declared in `manifest.tools[*].name`.
+- `actual_tools`: Array of tool names returned by `tools/list` at runtime.
+  Each name is passed through `_safePluginName()` before logging so a malicious
+  plugin cannot inject arbitrary strings into the audit log.
+
+Emitted from: `bin/_lib/plugin-loader.js` `spawnAndHandshake()` — manifest
+reconciliation block.
+
+Kill switch: none.
+
+---
+
+### `plugin_sensitive_arg_detected` event (v2.3.0 W-EVT-1)
+
+Emitted when a brokered tool call's top-level argument keys match the
+sensitive-name pattern (W-SEC-DEF-2). This is a pure observation event —
+it never blocks the call. The redactor (W-REDACT-1) separately replaces
+sensitive arg values in `plugin_tool_invoked.args_redacted`.
+
+```json
+{
+  "type": "plugin_sensitive_arg_detected",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "plugin_name": "my-plugin",
+  "tool": "do-something",
+  "matched_keys": ["api_key", "token"]
+}
+```
+
+Field notes:
+- `tool`: Unnamespaced tool name.
+- `matched_keys`: Array of top-level argument key names that matched the
+  sensitive-name regex (`password|token|secret|api[_-]?key|auth`). Top-level
+  only — nested keys are not scanned. The keys themselves are safe to log;
+  only the values are sensitive.
+
+Emitted from: `bin/_lib/plugin-loader.js` `callTool()` — W-SEC-DEF-2 block,
+before JSON-RPC forward.
+
+Kill switch: none.
+
+---
+
+### `plugin_capability_inconsistency` event (v2.3.0 W-EVT-1)
+
+Emitted when the manifest declares `capabilities.network = false` but one or
+more tool descriptions contain network-access keywords. Pure observation — the
+plugin is not rejected. Severity is informational (warn-tier observability).
+
+```json
+{
+  "type": "plugin_capability_inconsistency",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "plugin_name": "my-plugin",
+  "tool": "fetch-data",
+  "hint": "http",
+  "manifest_capability": "network=false"
+}
+```
+
+Field notes:
+- `tool`: Name of the first tool whose description triggered the heuristic.
+  Passed through `_safePluginName()`.
+- `hint`: The matched keyword from the tool description (e.g., `"http"`,
+  `"fetch"`, `"url"`). Clamped to 64 chars.
+- `manifest_capability`: Always `"network=false"`. The specific manifest claim
+  that is inconsistent with the tool description.
+
+Emitted from: `bin/_lib/plugin-loader.js` `spawnAndHandshake()` — W-SEC-DEF-2
+`_findCapabilityInconsistency()` block.
+
+Kill switch: none.
+
+---
+
+### `plugin_dangerous_name` event (v2.3.0 W-EVT-1)
+
+Emitted when a manifest-declared tool name matches the dangerous-name pattern
+(`eval|exec|shell|system|spawn|kill`). Only the first matching tool is reported
+to keep the audit trail bounded. Pure observation — the plugin is not rejected.
+
+```json
+{
+  "type": "plugin_dangerous_name",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "plugin_name": "my-plugin",
+  "tool": "exec-command"
+}
+```
+
+Field notes:
+- `tool`: The dangerous tool name. Passed through `_safePluginName()` before
+  logging.
+
+Emitted from: `bin/_lib/plugin-loader.js` `spawnAndHandshake()` — W-SEC-DEF-2
+`_findDangerousToolName()` block.
+
+Kill switch: none.
+
+---
+
+### `plugin_response_injection_suspected` event (v2.3.0 W-EVT-1)
+
+Emitted when a plugin tool-call response contains text that matches
+prompt-injection heuristics (special-token prefixes or "ignore previous
+instructions"-style patterns). Pure observation — the response is returned to
+the caller unmodified.
+
+```json
+{
+  "type": "plugin_response_injection_suspected",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "plugin_name": "my-plugin",
+  "tool": "do-something",
+  "marker": "ignore previous"
+}
+```
+
+Field notes:
+- `tool`: Unnamespaced tool name.
+- `marker`: The matched injection marker string, clamped to 64 chars. Either
+  a matched prefix (e.g., `"<|"`, `"<|im_start"`) or the regex match text
+  from `/(ignore|disregard)[^.\n]{0,40}?(previous|prior|above|earlier)/i`.
+
+Emitted from: `bin/_lib/plugin-loader.js` `callTool()` — W-SEC-DEF-2
+`_scanResponseForInjection()` block, after successful tool-call return.
+
+Kill switch: none.
+
+---
+
+### `plugin_tools_truncated` event (v2.3.0 W-EVT-1, RESERVED)
+
+Reserved for Wave 4 W-LISTCH-3: tools/list response size cap. Schema is
+registered now so the shadow validator does not block emission when the cap
+is implemented.
+
+```json
+{
+  "type": "plugin_tools_truncated",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "removed_count": 5,
+  "max_bytes": 131072,
+  "plugin_name": null
+}
+```
+
+Field notes:
+- `plugin_name`: *(optional)* Plugin name. May be absent if the truncation
+  fires before the plugin name is resolved.
+- `removed_count`: Number of tool entries removed to bring the response under
+  the `max_bytes` cap.
+- `max_bytes`: The byte cap that triggered truncation. Set by W-LISTCH-3 config.
+
+Emitted from: `bin/_lib/plugin-loader.js` — Wave 4 W-LISTCH-3 (not yet
+implemented).
+
+Kill switch: none (reserved).
+
+---
+
+### `plugin_dry_run` event (v2.3.0 W-EVT-1, RESERVED)
+
+Reserved for Wave 4 `dry_run` mode. Schema is registered now so the shadow
+validator does not block emission when dry-run mode is implemented.
+
+```json
+{
+  "type": "plugin_dry_run",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "action": "discovered",
+  "plugin_name": null
+}
+```
+
+Field notes:
+- `plugin_name`: The plugin name. Present when `action` is `would_load`.
+- `action`: Enum: `discovered` | `would_load`. Indicates which loader action
+  was intercepted by dry-run mode.
+
+Emitted from: `bin/_lib/plugin-loader.js` — Wave 4 dry-run mode (not yet
+implemented).
+
+Kill switch: none (reserved).
+
+---
+
+### `plugin_consent_revoked` event (v2.3.0 W-EVT-1, RESERVED)
+
+Reserved for Wave 4 W-CLI-1 revoke command (`/orchestray:plugin disable`).
+Schema is registered now so the shadow validator does not block emission when
+the CLI lands.
+
+```json
+{
+  "type": "plugin_consent_revoked",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "plugin_name": "my-plugin"
+}
+```
+
+Field notes:
+- No additional fields beyond `type`, `version`, `timestamp`, and `plugin_name`.
+  The revoke action removes the consent record from `plugin-consents.json` and
+  transitions the plugin to `dead`.
+
+Emitted from: Wave 4 W-CLI-1 slash-command CLI (not yet implemented).
+
+Kill switch: none (reserved).

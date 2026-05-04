@@ -590,6 +590,15 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/check-plugin-tools-changed-flag.js",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SubagentStart": [

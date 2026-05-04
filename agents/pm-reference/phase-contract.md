@@ -385,6 +385,28 @@ downstream agent with upstream reasoning context, eliminating redundant explorat
 
 ---
 
+## Plugin Tools Changed — Restart Hint (W-LISTCH-2)
+
+When `bin/_lib/plugin-loader.js` mutates the plugin overlay mid-session (e.g., a new
+tool is installed or an existing tool is updated), it writes a sentinel file at
+`.orchestray/state/plugin-tools-changed.flag`. On the next `UserPromptSubmit`, the
+`bin/check-plugin-tools-changed-flag.js` hook detects this sentinel and emits an
+`additionalContext` advisory:
+
+> `[orchestray] Plugin tools changed mid-session. Restart Claude Code (or run /orchestray:plugin reload) to refresh the tool list.`
+
+The sentinel is deleted immediately after injection so the hint fires **exactly once
+per session**. If you see this message in your context, restart Claude Code before
+continuing orchestration — the tool registry may be stale and spawned agents may not
+have access to newly installed tools.
+
+Kill switch: set `plugin_loader.restart_flag_check: false` in `.orchestray/config.json`
+to disable the check entirely (default-on when key absent).
+
+The check-plugin-tools-changed-flag hook runs on every UserPromptSubmit by design — the flag file's existence is itself the matcher; the hook is a stat() no-op when the flag is absent.
+
+---
+
 ## Inter-phase pointers (canonical)
 
 These are the documented cross-phase pointers used by the v2.1.15 split.

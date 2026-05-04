@@ -870,6 +870,27 @@ function install(targetDir) {
     say('  \x1b[33m⚠\x1b[0m node_modules/zod not found in source; mcp-server boot will fail');
   }
 
+  // W-DEPS-1 (v2.3.0): plugin-loader.js transitively requires 'ajv' via
+  // plugin-input-schema-validator.js. Copy ajv alongside zod so --local
+  // install layouts have both available. ajv has no locales to omit; copy
+  // everything (filter: null equivalent via no filter option).
+  const ajvSrc = path.join(pkgRoot, 'node_modules', 'ajv');
+  if (fs.existsSync(ajvSrc) && fs.statSync(ajvSrc).isDirectory()) {
+    const ajvDst = path.join(targetDir, 'orchestray', 'node_modules', 'ajv');
+    fs.cpSync(ajvSrc, ajvDst, { recursive: true });
+    let ajvFileCount = 0;
+    const countAjv = (dir) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (e.isDirectory()) countAjv(path.join(dir, e.name));
+        else if (e.isFile()) { ajvFileCount++; track(path.relative(targetDir, path.join(dir, e.name))); }
+      }
+    };
+    countAjv(ajvDst);
+    say(`  \x1b[32m✓\x1b[0m Installed node_modules/ajv (${ajvFileCount} files)`);
+  } else {
+    say('  \x1b[33m⚠\x1b[0m node_modules/ajv not found in source; plugin schema validation will fail in --local install');
+  }
+
   // 3d post-install verification (FN-20 v2.2.15): fork validate-config.js
   // against a tmp fixture. The prior bare `require.resolve('../schemas')`
   // confirmed the path resolved but never exercised require()'d submodules
