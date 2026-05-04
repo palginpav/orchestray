@@ -87,12 +87,10 @@ const definition = deepFreeze({
 });
 
 // ---------------------------------------------------------------------------
-// Scorer variant selection (W8 v2.1.13 R-RET-PROMOTE)
+// Scorer variant selection
 // ---------------------------------------------------------------------------
 
-// Event windows used by the usage-aware variants — mirror the shadow scorers
-// shipped in v2.1.3 (skip-down: 180d, local-success: 90d) so the promoted
-// behaviour matches the telemetry operators have been observing.
+// Event windows used by the usage-aware variants (skip-down: 180d, local-success: 90d).
 const SKIP_DOWN_WINDOW_MS    = 180 * 24 * 60 * 60 * 1000;
 const LOCAL_SUCCESS_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
 
@@ -155,18 +153,12 @@ async function handle(input, context) {
     decayConfig = { default_half_life_days: 90, category_overrides: {} };
   }
 
-  // W8 (v2.1.13 R-RET-PROMOTE): one-time stderr announcement of the newly
-  // selectable scorer variants. Fires at most once per install (sentinel
-  // lives at .orchestray/state/.scorer-variants-announced-2113).
+  // One-time stderr announcement of scorer variants (fires at most once per install).
   try {
     maybeAnnounceScorerVariants(projectRoot);
-  } catch (_) {
-    // Announcer is self-silencing; belt-and-braces.
-  }
+  } catch (_) { /* self-silencing */ }
 
-  // W8: resolve active scorer from retrieval.scorer_variant. Default stays
-  // `baseline` — this release promotes the other variants from shadow-only to
-  // selectable, but does NOT flip the default.
+  // Resolve active scorer from retrieval.scorer_variant (default: baseline).
   let retrievalConfig;
   try {
     retrievalConfig = loadRetrievalConfig(projectRoot);
@@ -175,9 +167,8 @@ async function handle(input, context) {
   }
   const { variant: activeVariant, scoreFn: activeScoreFn } = _selectScorer(retrievalConfig);
 
-  // Event-count maps for the usage-aware variants. Only loaded when a non-
-  // baseline variant is active, so the default fast-path pays zero extra I/O.
-  // When loaded, the maps are reused for every pattern in the scoring loop.
+  // Event-count maps for usage-aware variants. Only loaded when non-baseline
+  // is active (default fast-path pays zero extra I/O).
   let skipCounts = null;
   let successCounts = null;
   if (activeVariant !== 'baseline') {
@@ -198,8 +189,7 @@ async function handle(input, context) {
         successCounts = scorerVariants.buildSuccessCounts(successEvents);
       }
     } catch (_) {
-      // Event-window read failure → variants fall back to empty maps, which
-      // makes scores collapse to baseline. Fail-open, do not surface.
+      // Fail-open: empty maps collapse scores to baseline.
       skipCounts    = skipCounts    || new Map();
       successCounts = successCounts || new Map();
     }
@@ -215,8 +205,7 @@ async function handle(input, context) {
     return toolError('pattern_find: ' + (err && err.message ? err.message : String(err)));
   }
 
-  // T3 C2: sort before the scoring loop so tied scores yield deterministic
-  // output regardless of filesystem readdir ordering.
+  // Sort before scoring for deterministic output on tied scores.
   const mdFiles = entries.filter((n) => n.endsWith('.md')).sort();
 
   // Build local index with _tier: 'local' on each entry.
@@ -257,9 +246,8 @@ async function handle(input, context) {
   // Set include_proposed: true to include them (e.g. for /orchestray:learn list --proposed).
   const includeProposed = input.include_proposed === true;
 
-  // W4: when include_proposed is true, also scan .orchestray/proposed-patterns/.
-  // These entries get _tier: 'local' so scoring works, but their filepath lets
-  // the filter loop identify and tag them as proposed.
+  // When include_proposed is true, also scan proposed-patterns/. Filepath lets
+  // the filter loop identify and tag these entries as proposed.
   if (includeProposed) {
     const proposedDir = path.join(projectRoot, '.orchestray', 'proposed-patterns');
     let proposedEntries;
@@ -293,10 +281,8 @@ async function handle(input, context) {
   }
 
   // ---------------------------------------------------------------------------
-  // FTS5 seam: adapter lives in bin/_lib/pattern-index-sqlite.js.
-  // No IndexBackend abstraction — see adversarial review W6 F08.
-  //
-  // Try FTS5 first. On UNAVAILABLE fall back to inline Jaccard scoring below.
+  // FTS5 seam (bin/_lib/pattern-index-sqlite.js). On UNAVAILABLE fall back
+  // to inline Jaccard scoring below.
   // ---------------------------------------------------------------------------
 
   /** @type {Map<string, number>|null} slug → normalized [0,1] relevance score */
@@ -316,8 +302,7 @@ async function handle(input, context) {
       fts5Available = false;
       fts5Results = null;
     } else {
-      // BM25 scores are negative (more negative = better). Normalize to [0,1]:
-      // find the most-negative score (best match) and map to 1.0.
+      // BM25 scores are negative (more negative = better). Normalize to [0,1].
       const scores = fts5Results.map((r) => r.bm25_score);
       const minBm25 = scores.length > 0 ? Math.min(...scores) : 0;
       const maxBm25 = scores.length > 0 ? Math.max(...scores) : 0;
@@ -354,10 +339,8 @@ async function handle(input, context) {
         dedup_key: 'fts5_fallback',
       },
     });
-    // Write a session flag to .orchestray/state/ to prevent warning spam across
-    // tool calls within the same MCP server process (the in-process boolean
-    // above already guards that; this file is belt-and-suspenders for
-    // multi-process scenarios such as running two MCP servers simultaneously).
+    // Write a session flag as belt-and-braces for multi-process scenarios
+    // (the in-process boolean above is the primary guard).
     try {
       const stateDir = path.join(projectRoot, '.orchestray', 'state');
       fs.mkdirSync(stateDir, { recursive: true });
@@ -366,30 +349,13 @@ async function handle(input, context) {
         new Date().toISOString(),
         { flag: 'wx' } // 'wx' = fail silently if file already exists
       );
-    } catch (_) {
-      // Non-fatal — the in-process boolean is the real guard.
-    }
+    } catch (_) { /* non-fatal */ }
   }
 
   // ---------------------------------------------------------------------------
-  // Two-tier lookup (B5)
-  //
-  // If federation is enabled (getSharedPatternsDir() returns non-null), scan
-  // the shared patterns directory and merge with the local index.
-  // Local wins on slug collision. Collision events are emitted per-collision.
-  //
-  // The shared tier uses Jaccard scoring (not FTS5). The shared dir layout is
-  // <sharedBase>/patterns — not <root>/.orchestray/patterns — so the FTS5
-  // backend's projectRoot convention does not apply. Jaccard is the correct
-  // fallback here; it is consistent with the existing fts5Available=false path.
-  // Local FTS5-scored entries and shared Jaccard-scored entries are merged
-  // before ranking — they all flow through the same final sort.
-  //
-  // B9 note: B9 adds curator-specific reads to pattern_find.js in Wave 3.
-  // B9's seam is the `include_deprecated` flag + the scoring/filter loop below.
-  // B9 should NOT modify the two-tier merge block (lines bounded by
-  // "Two-tier lookup (B5)" comments). The final `index` array handed to the
-  // scoring loop is the correct integration point for any per-entry B9 changes.
+  // Two-tier lookup: if federation is enabled, scan the shared patterns dir
+  // and merge with the local index. Local wins on slug collision. The shared
+  // tier always uses Jaccard (FTS5 index covers only the local projectRoot dir).
   // ---------------------------------------------------------------------------
 
   /** @type {Array<{slug, frontmatter, body, filepath, _tier}>} merged index */
@@ -423,12 +389,8 @@ async function handle(input, context) {
           logStderr('pattern_find(shared).parse_error: ' + name);
           continue;
         }
-        // R-FED-PRIVACY (v2.1.13 W6): sharing: local-only patterns must never
-        // surface on the federation READ side. The shared-tier scan is by
-        // definition a federation read context — any entry flagged local-only
-        // (e.g. a pattern that slipped into the shared dir but is tagged not
-        // to leave this machine) is skipped here. Absent `sharing` key is
-        // treated as `federated` (backward compat with pre-v2.1.13 patterns).
+        // R-FED-PRIVACY: local-only patterns must not surface on the shared-tier
+        // read side. Absent `sharing` is treated as `federated` for back compat.
         if (parsed.frontmatter.sharing === 'local-only') {
           continue;
         }
@@ -441,25 +403,19 @@ async function handle(input, context) {
         });
       }
 
-      // Merge: local wins on slug collision.
-      // Build a slug Set from local to detect collisions in O(1).
+      // Merge: local wins on slug collision. Build slug Set for O(1) lookup.
       const localSlugs = new Set(localIndex.map((e) => e.slug));
       const collidingSlugs = [];
 
       for (const sharedEntry of sharedIndex) {
         if (localSlugs.has(sharedEntry.slug)) {
           collidingSlugs.push(sharedEntry.slug);
-          // Local entry is already in localIndex — discard shared copy.
         } else {
-          // No local counterpart — include shared entry.
           index = index.concat([sharedEntry]);
         }
       }
 
-      // === v2.2.21 W4-T20: F-14 collision summary — replace per-slug events ===
-      // Emit ONE summary event instead of one per colliding slug (56 events → 1).
-      // Per-slug events were generating ~50 redundant audit entries per pattern_find
-      // call when federation is enabled and shared tier has many slugs matching local.
+      // Emit ONE collision summary event instead of one per slug.
       if (collidingSlugs.length > 0) {
         try {
           writeAuditEvent({
@@ -472,13 +428,10 @@ async function handle(input, context) {
             slugs: collidingSlugs.slice(0, 20), // cap for audit-log hygiene
             context: 'pattern_find',
           });
-        } catch (_err) {
-          // Non-fatal — audit failure must not block results.
-        }
+        } catch (_err) { /* non-fatal */ }
       }
     }
   }
-  // End Two-tier lookup (B5)
 
   const considered = index.length;
   const scored = [];
@@ -487,30 +440,19 @@ async function handle(input, context) {
   const nowMs = Date.now();
   const taskTokens = _tokenize(taskSummary); // Pre-compute once for Jaccard path.
 
-  // R-RET-EXPAND (v2.1.13): synonym expansion for the Jaccard path.
-  // Default ON; `retrieval.synonyms_enabled = false` disables expansion entirely.
-  // loadRetrievalConfig is fail-open — on any parse error it returns defaults,
-  // and the synonyms_enabled key is treated as default-true when undefined.
-  //
-  // Scope note: expansion is applied ONLY to the Jaccard path (shared tier,
-  // proposed entries, and FTS5-fallback). The FTS5 primary path is left
-  // untouched to guarantee zero regression on the FTS5-indexed local corpus.
-  // This is the XS-scope trade-off for v2.1.13 — FTS5 expansion can come later
-  // once shadow-telemetry proves recall gains outweigh precision loss.
+  // Synonym expansion for the Jaccard path (not applied to FTS5 local path).
+  // Default ON; `retrieval.synonyms_enabled = false` disables it.
   let synonymsEnabled = true;
   try {
     const retrievalCfg = loadRetrievalConfig(projectRoot);
     if (retrievalCfg && retrievalCfg.synonyms_enabled === false) {
       synonymsEnabled = false;
     }
-  } catch (_) {
-    // Fail-open: default-on.
-  }
+  } catch (_) { /* fail-open: default-on */ }
   const { tokens: expandedTaskTokens, expansions: synonymExpansions } =
     _expandSynonyms(taskTokens, { enabled: synonymsEnabled });
 
-  // Build a slug → match_terms lookup from fts5Results for O(1) access in the
-  // scoring loop (avoids O(N*M) Array.find per entry).
+  // Build slug → match_terms lookup from fts5Results for O(1) access per entry.
   /** @type {Map<string, import('../../_lib/pattern-index-sqlite').TermHit[]>} */
   const fts5TermsBySlug = new Map();
   if (fts5Results !== null) {
@@ -529,8 +471,7 @@ async function handle(input, context) {
     const timesApplied = _numericInt(fm.times_applied, 0);
     const description = typeof fm.description === 'string' ? fm.description : '';
 
-    // D1 (v2.0.16): skip deprecated patterns so they never surface in search results.
-    // include_deprecated opt-in override (B4 — for curator reads and debug).
+    // Skip deprecated patterns (include_deprecated opt-in overrides for curator reads).
     if ((fm.deprecated === true || fm.deprecated === 'true') && !includeDeprecated) {
       filteredOut++;
       continue;
@@ -573,9 +514,7 @@ async function handle(input, context) {
       overlapRatio = fts5ScoreBySlug.get(entry.slug) || 0;
       overlapTokens = new Set(); // no per-token breakdown available from FTS5
     } else {
-      // Jaccard fallback path (FTS5 unavailable, shared-tier entry, or proposed entry).
-      // R-RET-EXPAND: use synonym-expanded task tokens (may equal taskTokens if
-      // kill switch is off or query has no known synonyms).
+      // Jaccard fallback (FTS5 unavailable, shared-tier, or proposed entry).
       const bodyHead = entry.body.slice(0, 200);
       const hay = (description + ' ' + bodyHead).toLowerCase();
       const hayTokens = _tokenize(hay);
@@ -605,10 +544,7 @@ async function handle(input, context) {
       fileBonus = Math.min(0.4, 0.2 * overlapSeg);
     }
 
-    // W8 (v2.1.13 R-RET-PROMOTE): delegate final scoring to the selected
-    // variant. At default (baseline) this is identical to the legacy inline
-    // `confidence * (overlapRatio + roleBonus + fileBonus)` formula. Non-
-    // baseline variants layer a Laplace-smoothed penalty or boost on top.
+    // Delegate final scoring to the active variant function.
     const score = activeScoreFn({
       slug:         entry.slug,
       confidence,
@@ -623,14 +559,11 @@ async function handle(input, context) {
 
     const matchReasons = [];
     if (usesFts5) {
-      // Build per-term reasons from the FTS5 highlight() data attached by
-      // searchPatterns() (Idea 4 — v2.1.2). Each TermHit carries {term, section}.
-      // Group by term so we can emit "fts5:term=X (in context, approach)" when
-      // the same term hit multiple sections.
+      // Build per-term reasons from FTS5 highlight() data.
+      // Group by term to emit "fts5:term=X (in context, approach)".
       const termHits = fts5TermsBySlug.get(entry.slug) || [];
 
       if (termHits.length > 0) {
-        // Group hits by term, collect unique sections.
         const termSections = new Map();
         for (const { term, section } of termHits) {
           if (!termSections.has(term)) termSections.set(term, []);
@@ -641,16 +574,12 @@ async function handle(input, context) {
           matchReasons.push('fts5:term=' + term + ' (in ' + sections.join(', ') + ')');
         }
       } else {
-        // highlight() returned no hits (e.g., very old SQLite without highlight
-        // support, or the match was on a section not covered by highlight).
-        // Fall back to a generic fts5 reason so the caller still knows FTS5 ran.
+        // No highlight hits (old SQLite or uncovered section); emit generic signal.
         matchReasons.push('fts5');
       }
     }
     if (roleBonus > 0) matchReasons.push('role=' + agentRole);
     if (!usesFts5) {
-      // Jaccard / fallback path: emit "fallback: keyword" to signal that FTS5
-      // was unavailable or this is a shared-tier entry, plus the top overlap tokens.
       if (!fts5Available) {
         matchReasons.push('fallback: keyword');
       }
@@ -675,30 +604,17 @@ async function handle(input, context) {
     }
     if (fileBonus > 0) matchReasons.push('file-overlap');
 
-    // T3 S2: sanitize one_line to limit prompt-injection exposure.
-    // cap at 80 chars and strip markdown special sequences.
+    // Sanitize one_line: cap at 80 chars, strip markdown.
     const oneLine = sanitizeExcerpt(_firstLine(description || entry.body));
 
-    // W9 (v2.0.18): compute decayed_confidence using exponential decay.
-    // Reference timestamp: last_applied if set and parseable; otherwise file
-    // mtime. File mtime is the cheapest fallback — no history scanning needed,
-    // and it's a reasonable lower bound on "last touched" for new patterns.
+    // Exponential decay: reference timestamp = last_applied or file mtime.
     const { decayedConfidence, ageDays } = _computeDecay(
       confidence, fm, entry.filepath, category, decayConfig, nowMs
     );
 
-    // Populate provenance fields for shared-tier matches so the PM can render
-    // [shared] vs [shared, own] bracket labels without LLM string comparisons.
-    // promoted_from is copied verbatim from frontmatter (8-hex, already present
-    // on shared patterns promoted by shared-promote.js).
-    // promoted_is_own is true iff this project promoted the pattern.
-    //
-    // W4 (v2.1.6): proposed entries are marked with proposed: true in the result
-    // and their uri uses the proposed-pattern namespace so callers can distinguish
-    // them from active patterns.
-    // R-CAT (v2.1.14): read context_hook from frontmatter for catalog mode.
-    // Populated by bin/backfill-pattern-hooks.js. Stored with underscore prefix
-    // so it is NOT included in full-mode responses (stripped alongside _score).
+    // Populate provenance fields for shared-tier matches ([shared] vs [shared, own]).
+    // context_hook is stored with underscore prefix so it's stripped from full-mode
+    // responses (alongside _score).
     const _contextHook = (typeof fm.context_hook === 'string' && fm.context_hook.length >= 5)
       ? fm.context_hook
       : null;
@@ -726,7 +642,6 @@ async function handle(input, context) {
         matchEntry.promoted_is_own = promotedFrom === _projectHash(projectRoot);
       }
     }
-    // W4: tag proposed entries when include_proposed is true so callers know.
     if (isProposed) {
       matchEntry.proposed = true;
     }
@@ -748,40 +663,23 @@ async function handle(input, context) {
     return rest;
   });
 
-  // === RS v2.1.3: shadow scorer seam ===
-  // Fire-and-forget. No await. Any throw inside is caught by the harness.
-  // `top` is fully materialised before this call; the harness receives `scored`
-  // (pre-slice, includes _score) read-only. Baseline wins architecturally:
-  // the shadow call has no return value and cannot affect `top`.
-  // At config defaults (shadow_scorers: []) this is a no-op after one config read.
+  // Shadow scorer seam: fire-and-forget; harness fails open. No-op at defaults.
   try {
     const { maybeRunShadowScorers } = require('../../_lib/scorer-shadow');
     maybeRunShadowScorers({
-      query:        taskSummary,
-      baselineScored: scored,        // Full scored[] (not sliced). Harness reads slugs + _score.
-      candidates:   index,           // Same array baseline looped over.
-      inputContext: {
-        projectRoot,
-        agentRole,
-        fileGlobs,
-        nowMs,
-      },
-      maxResults,                    // For top-K window clamping.
+      query:          taskSummary,
+      baselineScored: scored,
+      candidates:     index,
+      inputContext:   { projectRoot, agentRole, fileGlobs, nowMs },
+      maxResults,
     });
-  } catch (_e) {
-    // Belt-and-braces: the harness itself fails open. This catch handles the
-    // (extremely unlikely) case of the module failing to load.
-  }
-  // === END shadow scorer seam ===
+  } catch (_e) { /* fail-open */ }
 
-  // R-CAT (v2.1.14): mode=catalog returns a TOON-formatted headline list.
-  // Precedence: mode wins over fields — when mode=catalog, `fields` is ignored.
-  // mode=full (default) preserves the full legacy behaviour including field projection.
+  // mode=catalog returns a TOON-formatted headline list (fields is ignored).
+  // mode=full (default) returns full match objects with optional field projection.
   const mode = (typeof input.mode === 'string' && input.mode === 'catalog') ? 'catalog' : 'full';
 
   if (mode === 'catalog') {
-    // Strip internal bookkeeping fields from the catalog slice.
-    // catalog shape: fixed TOON lines (no body, no match_reasons, no provenance).
     const catalogMatches = top.map((m) => ({
       slug: m.slug,
       confidence: m.confidence,
@@ -796,18 +694,17 @@ async function handle(input, context) {
     });
   }
 
-  // mode=full: existing behaviour — strip internal fields and apply field projection.
+  // mode=full: strip internal fields and apply optional field projection.
   const topClean = top.map((m) => {
     // eslint-disable-next-line no-unused-vars
     const { _score: _s, _context_hook: _ch, ...rest } = m;
     return rest;
   });
 
-  // R5 field projection (v2.1.11): apply `fields` parameter if provided.
-  // Backward compat: omitting `fields` returns the full legacy response unchanged.
-  // R-PFX (v2.1.14): agents should default to fields: ["slug","confidence","one_line"].
-  // The hook (bin/record-mcp-checkpoint.js) writes fields_used: <bool> to
-  // mcp-checkpoint.jsonl based on whether tool_input.fields was non-empty.
+  // The PreToolUse:mcp__orchestray__pattern_find checkpoint hook writes
+  // fields_used: <bool> to .orchestray/state/mcp-checkpoint.jsonl based on
+  // whether tool_input.fields was non-empty. The literal string fields_used
+  // is asserted by tests/regression/v2114-r-pfx.test.js — load-bearing.
   const fieldNames = parseFields(input.fields);
   if (fieldNames !== null) {
     if (fieldNames && typeof fieldNames === 'object' && 'error' in fieldNames) {
@@ -832,17 +729,11 @@ async function handle(input, context) {
 // ---------------------------------------------------------------------------
 
 /**
- * R-FED-PRIVACY (v2.1.13 W6): Federation-context detector.
+ * Federation-context detector.
  *
- * Returns true when the supplied index-entry (or tier string) represents a
- * cross-install federation read — i.e. a pattern loaded from the shared tier
- * directory (`~/.orchestray/shared/patterns/`) rather than the local project
- * directory. Patterns with `sharing: local-only` in frontmatter must be
- * excluded from federation-context reads regardless of any future consumer
- * that bypasses the in-scan filter.
- *
- * Local reads (tier === 'local') are not federation contexts — local-only
- * patterns are fully visible to the project that owns them.
+ * Returns true when the entry was loaded from the shared tier. Local-only
+ * patterns must never surface in federation contexts (shared tier is a
+ * cross-install read; local tier is fully visible to the owning project).
  *
  * Accepts either a full index entry `{_tier}` or a bare tier string.
  */
@@ -911,7 +802,7 @@ function _firstLine(s) {
 }
 
 // ---------------------------------------------------------------------------
-// Decay helpers (W9 v2.0.18)
+// Decay helpers
 // ---------------------------------------------------------------------------
 
 /**
@@ -920,11 +811,8 @@ function _firstLine(s) {
  * Formula: decayed_confidence = confidence * 0.5 ^ (age_days / half_life)
  *
  * Reference timestamp precedence:
- *   1. fm.last_applied — ISO 8601 string written by §22c when a pattern is applied.
+ *   1. fm.last_applied — ISO 8601 string written when a pattern is applied.
  *   2. file mtime — cheapest fallback; no history scanning required.
- *      (created_from contains an orch-id string like "orch-1744122000" whose
- *      embedded Unix timestamp could be parsed, but mtime is authoritative for
- *      file age and avoids parsing the orch-id format.)
  *
  * Half-life precedence (highest to lowest):
  *   1. fm.decay_half_life_days — per-pattern override in frontmatter.
@@ -940,29 +828,25 @@ function _firstLine(s) {
  * @returns {{ decayedConfidence: number, ageDays: number }}
  */
 function _computeDecay(confidence, fm, filepath, category, decayConfig, nowMs) {
-  // Resolve reference timestamp (ms since epoch).
   let refMs = null;
 
-  // Prefer last_applied ISO 8601 string from frontmatter.
   if (fm.last_applied && typeof fm.last_applied === 'string' && fm.last_applied !== 'null') {
     const parsed = Date.parse(fm.last_applied);
     if (!isNaN(parsed)) refMs = parsed;
   }
 
-  // Fall back to file mtime.
   if (refMs === null) {
     try {
       const stat = fs.statSync(filepath);
       refMs = stat.mtimeMs;
     } catch (_) {
-      // mtime unavailable — use nowMs (0 days old → no decay)
-      refMs = nowMs;
+      refMs = nowMs; // mtime unavailable — treat as 0 days old (no decay)
     }
   }
 
   const ageDays = Math.max(0, Math.floor((nowMs - refMs) / 86400000));
 
-  // Resolve half-life using fallback chain.
+  // Resolve half-life: default → category override → per-pattern frontmatter.
   let halfLife = decayConfig.default_half_life_days;
   if (
     decayConfig.category_overrides &&
@@ -972,7 +856,6 @@ function _computeDecay(confidence, fm, filepath, category, decayConfig, nowMs) {
     const cv = decayConfig.category_overrides[category];
     if (Number.isInteger(cv) && cv >= 1) halfLife = cv;
   }
-  // Per-pattern frontmatter override (highest priority).
   const perPattern = fm.decay_half_life_days;
   if (Number.isInteger(perPattern) && perPattern >= 1) halfLife = perPattern;
 
@@ -984,17 +867,12 @@ function _computeDecay(confidence, fm, filepath, category, decayConfig, nowMs) {
 }
 
 // ---------------------------------------------------------------------------
-// TOON renderer (R-CAT v2.1.14)
+// TOON renderer
 //
 // TOON = Tag-Oriented Object Notation — minimal column-oriented compact text.
-// One line per pattern:
-//   PATTERN slug=<slug> confidence=<0.00> one_line="<...>" hook="<...>"
-//
-// Rules:
-//   - Values without spaces are bare (no quotes).
-//   - Values containing spaces are double-quoted.
-//   - Embedded double-quotes in a value are escaped as \".
-//   - confidence is fixed to 2 decimal places.
+// One line per pattern:  PATTERN slug=<slug> confidence=<0.00> one_line="<...>" hook="<...>"
+// Values with spaces are double-quoted; embedded quotes escaped as \".
+// confidence is fixed to 2 decimal places.
 // ---------------------------------------------------------------------------
 
 /**

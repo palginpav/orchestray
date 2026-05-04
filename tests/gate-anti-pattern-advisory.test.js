@@ -442,9 +442,9 @@ describe('kill flag', () => {
     assert.ok(!advisory, 'kill flag must prevent advisory event emission');
   });
 
-  // Updated for 2.1.11 (R-DX1): missing model now auto-resolves to sonnet (exit 0)
-  // instead of hard-blocking (exit 2). The anti_pattern_gate kill flag only disables
-  // advisory logic — the rest of the gate still runs, including auto-resolve.
+  // Missing model auto-resolves to sonnet (exit 0) instead of hard-blocking (exit 2).
+  // The anti_pattern_gate kill flag only disables advisory logic — the rest of
+  // the gate still runs, including auto-resolve.
   test('kill flag does not affect other gate logic (model auto-resolves via R-DX1)', () => {
     const { dir } = makeProject({
       config: {
@@ -467,10 +467,10 @@ describe('kill flag', () => {
       input: JSON.stringify(payload),
       encoding: 'utf8',
       timeout: 10000,
-      // v2.2.9 B-7.4: opt out of strict-model hard-block to exercise R-DX1 auto-resolve path.
+      // Opt out of strict-model hard-block to exercise R-DX1 auto-resolve path.
       env: Object.assign({}, process.env, { ORCHESTRAY_STRICT_MODEL_REQUIRED: '0' }),
     });
-    // R-DX1: auto-resolve to global_default_sonnet → exit 0.
+    // Auto-resolve to global_default_sonnet → exit 0.
     // Kill flag only disables advisory logic — gate still processes the spawn.
     assert.equal(result.status, 0, 'R-DX1 auto-resolve must still run when anti-pattern kill flag is set');
     assert.match(result.stderr, /defaulting to "sonnet"/, 'Expected auto-resolve warning in stderr');

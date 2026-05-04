@@ -768,7 +768,7 @@ describe('fresh-install config seeds v2.0.18 blocks (INC-2018-02)', () => {
       // anti_pattern_gate (W12)
       assert.ok(cfg.anti_pattern_gate, 'config.json must contain anti_pattern_gate block');
       assert.equal(cfg.anti_pattern_gate.enabled, true);
-      // v2.2.17 W3: lowered default from 0.65 → 0.55 per P1-03 LOWER-THRESHOLD
+      // Threshold was lowered from 0.65 → 0.55 per P1-03 LOWER-THRESHOLD
       // (2 releases of telemetry on the 0.65 gate satisfied the
       // default-flip-without-telemetry trigger).
       assert.equal(cfg.anti_pattern_gate.min_decayed_confidence, 0.55);

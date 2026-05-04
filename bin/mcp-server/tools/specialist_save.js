@@ -219,7 +219,6 @@ async function handle(input, context) {
 
   // Everything inside here executes while the lock is held.
   try {
-    // ----------------------------------------------------------------
     // 4. Read + parse current registry.json (or initialize skeleton).
     // ----------------------------------------------------------------
     let registry;
@@ -246,7 +245,6 @@ async function handle(input, context) {
       registry.specialists = [];
     }
 
-    // ----------------------------------------------------------------
     // 5. Check for existing entry (upsert vs. create).
     // ----------------------------------------------------------------
     const existingIdx = registry.specialists.findIndex(
@@ -257,9 +255,8 @@ async function handle(input, context) {
 
     // ----------------------------------------------------------------
     // 5b. Case-rename scan: before writing <name>.md, remove any existing
-    //     .md file whose name matches <name> case-insensitively but differs
-    //     in case (e.g. "Foo.md" when writing "foo.md"). This prevents stale
-    //     case-variant files from accumulating on case-sensitive filesystems.
+    //     file whose name matches <name> case-insensitively (prevents stale
+    //     case-variant files on case-sensitive filesystems).
     //
     //     macOS APFS inode check (R2-B-2): on case-insensitive filesystems
     //     (APFS, HFS+), a rename() of "Foo.md" -> "foo.md" results in both
@@ -301,7 +298,6 @@ async function handle(input, context) {
       // Case-rename scan is best-effort; never block the save.
     }
 
-    // ----------------------------------------------------------------
     // 6. Snapshot prior agent file for rollback on index-write failure.
     // ----------------------------------------------------------------
     const agentFileExists = fs.existsSync(agentFilePath);
@@ -310,12 +306,10 @@ async function handle(input, context) {
       try {
         priorAgentSnapshot = fs.readFileSync(agentFilePath);
       } catch (_e) {
-        // Snapshot failed — rollback degrades to best-effort unlink.
         priorAgentSnapshot = null;
       }
     }
 
-    // ----------------------------------------------------------------
     // 7. Write the agent .md file atomically (tmp + rename).
     // ----------------------------------------------------------------
     const tmpAgentFile = agentFilePath + '.specialist_save_tmp';
@@ -327,7 +321,6 @@ async function handle(input, context) {
       return toolError('specialist_save: agent file write failed: ' + (err && err.message));
     }
 
-    // ----------------------------------------------------------------
     // 8. Build the registry entry (create or upsert).
     // ----------------------------------------------------------------
     let newEntry;
@@ -359,7 +352,6 @@ async function handle(input, context) {
 
     const registrySize = registry.specialists.length;
 
-    // ----------------------------------------------------------------
     // 9. Write the updated registry.json atomically (tmp + rename).
     // ----------------------------------------------------------------
     const tmpRegistry = registryPath + '.specialist_save_tmp';
@@ -392,7 +384,6 @@ async function handle(input, context) {
       );
     }
 
-    // ----------------------------------------------------------------
     // 10. Return success.
     // ----------------------------------------------------------------
     return toolSuccess({

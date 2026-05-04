@@ -129,7 +129,6 @@ describe('SubagentStop event handling', () => {
       run(input);
 
       const events = readEventsJsonl(auditDir);
-      // Variant C (routing_outcome source:subagent_stop) + agent_stop
       assert.equal(events.length, 2, 'should write routing_outcome supplement then agent_stop');
       const ev = events[1];
       assert.equal(events[0].type, 'routing_outcome');
@@ -161,7 +160,6 @@ describe('SubagentStop event handling', () => {
       run(input);
 
       const events = readEventsJsonl(auditDir);
-      // events[0] is Variant C routing_outcome; events[1] is agent_stop
       assert.equal(events[1].last_message_preview.length, 200,
         'last_message_preview should be truncated to 200 chars');
     } finally {

@@ -98,16 +98,16 @@ describe('R-ARCHETYPE-EVENT — event-schemas.md archetype_cache_miss entry', ()
   });
 
   test('event-schemas.md contains the archetype_cache_miss section header', () => {
-    // v2.1.17 W9-fix F-006: header is wrapped in backticks so
-    // bin/regen-schema-shadow.js HEADER_RE picks it up. Accept either form
-    // defensively in case future edits flip the styling.
+    // Header may be wrapped in backticks so bin/regen-schema-shadow.js
+    // HEADER_RE picks it up. Accept either form defensively in case future
+    // edits flip the styling.
     assert.match(body, /^### `?archetype_cache_miss`?\s*$/m,
       'event-schemas.md must have a "### archetype_cache_miss" header (backticked or bare)');
   });
 
   test('archetype_cache_miss schema lists the three required fields', () => {
     // Locate the section body (between the miss header and the next ###).
-    // v2.1.17 W9-fix F-006: match either the backticked or bare header form.
+    // Match either the backticked or bare header form.
     let start = body.indexOf('### `archetype_cache_miss`');
     if (start === -1) start = body.indexOf('### archetype_cache_miss');
     assert.notEqual(start, -1, 'archetype_cache_miss section must exist');

@@ -51,16 +51,15 @@ const { recordDegradation } = require('../_lib/degraded-journal');
 const { verifyManifestOnBoot } = require('../_lib/install-manifest');
 const toolRegistry = require('./lib/tool-registry');
 
-// W-LISTCH-1 (Wave 4): plugin-loader instantiation + dual-path notify wire-in.
+// Plugin-loader instantiation + dual-path notify wire-in.
 // createPluginLoader wires the MCP tool overlay at runtime. When the loader
 // instantiates successfully, tools/list merges core + plugin tools automatically
 // and tools/list_changed notifications flow to MCP stdout via opts.notifySink.
 // Kill switches: config.plugin_loader.enabled (master), .notify_list_changed,
 // .restart_flag_check, .dry_run. All default true/false per config-defaults.js.
 //
-// ajv is now copied by install.js alongside zod (W-DEPS-1 follow-up); the
-// deferred require remains here as a defense-in-depth guard for future install
-// regressions, not as a hard requirement.
+// ajv is deferred-required here as a defense-in-depth guard for future install
+// regressions (install.js copies ajv alongside zod).
 const { writeEvent: writePluginAuditEvent } = require('../_lib/audit-event-writer');
 
 // Stage 2 tool handlers
@@ -91,12 +90,9 @@ const orchestrationResource = require('./resources/orchestration_resource');
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'orchestray';
 
-// W-LISTCH-1: module-scope plugin-loader instance. Declared here so rl.on('close')
-// and SIGINT/SIGTERM handlers can call pluginLoader?.shutdown() without closures
-// over main()'s local scope. null = loader disabled or bringup failed.
+// Module-scope loader instance; null = disabled or bringup failed.
 let pluginLoader = null;
-// Idempotency guard: first signal/close wins; prevents double-shutdown on SIGINT
-// (which triggers rl.close(), which would fire rl.on('close') a second time).
+// Idempotency guard: first signal/close wins; prevents double-shutdown on SIGINT.
 let shutdownStarted = false;
 
 /**
@@ -261,9 +257,7 @@ const TOOL_TABLE = Object.freeze({
   },
 });
 
-// Activate the layered tool registry with the canonical TOOL_TABLE.
-// After this call, toolRegistry.listTools() and toolRegistry.resolveTool()
-// reflect the full core set. The overlay is empty until Wave 2+ plugins load.
+// Activate the layered tool registry.
 toolRegistry.initCoreTools(TOOL_TABLE);
 
 const RESOURCE_HANDLERS = Object.freeze({
@@ -384,17 +378,10 @@ const {
 async function dispatchRequest(config, msg) {
   const { id, method, params } = msg;
 
-  // JSON-RPC 2.0 §4.1: a message without an id is a notification. The server
-  // must never send a response to a notification, even an error. Route the
-  // known `notifications/*` namespace silently, ignore everything else. This
-  // guard sits at the top so it fires for any method (tools/call,
-  // resources/read, typo-variants) rather than only the method-not-found
-  // fallthrough. B10 cleanup from the full-codebase audit.
+  // JSON-RPC 2.0 §4.1: notifications have no id; server must never respond to them.
+  // Guard fires for any method so notifications/initialized and typo-variants are
+  // all handled uniformly before reaching method-specific branches.
   if (id === undefined || id === null) {
-    // The only notification we care about today is `notifications/initialized`,
-    // which is already a no-op — so there is nothing to do here beyond the
-    // silent return. New notification handlers can branch on `method` above
-    // this return when needed.
     return;
   }
 
@@ -402,9 +389,7 @@ async function dispatchRequest(config, msg) {
     const capabilities = { tools: { listChanged: true } };
     if (isServerEnabled(config)) {
       capabilities.elicitation = {};
-      // Stage 2: advertise resources capability when the server is enabled.
-      // listChanged/subscribe are both false — resources are stateless reads
-      // of filesystem artifacts; the server does not push change notices.
+      // Resources are stateless reads; no push-change support.
       capabilities.resources = { listChanged: false, subscribe: false };
     }
     sendResult(id, {
@@ -418,10 +403,6 @@ async function dispatchRequest(config, msg) {
   if (method === 'tools/list') {
     const tools = [];
     if (isServerEnabled(config)) {
-      // Route through the layered registry so plugin overlays (Wave 2+) are
-      // included automatically. listTools() returns core-first, overlay-second
-      // in insertion order — identical to the old Object.entries(TOOL_TABLE)
-      // loop when the overlay is empty (v2.3.0 GA).
       for (const definition of toolRegistry.listTools({
         pluginStateAccessor: pluginLoader ? (n) => pluginLoader.getState(n) : undefined,
         maxBytes: config.plugin_loader?.lifecycle?.tools_response_max_bytes ?? 1048576,
@@ -473,15 +454,9 @@ async function dispatchRequest(config, msg) {
       outcome = 'error';
     }
 
-    // Central audit for non-ask_user tools. The ask_user handler emits its
-    // own richer audit events (with form_fields_count, timeout/cancelled
-    // outcomes) via context.auditSink, so skip the generic emission for it
-    // to avoid double-logging. B4 cleanup: route through buildAuditEvent so
-    // event shape + outcome validation stay in a single place.
-    //
-    // T2 F4: prefer orchestration_id from tool input (when supplied) over
-    // readOrchestrationId() — important during recovery or cross-orchestration
-    // scenarios where the filesystem marker may differ from the PM's intent.
+    // Central audit for non-ask_user tools (ask_user emits its own richer events).
+    // T2 F4: prefer orchestration_id from tool input over readOrchestrationId()
+    // — important during recovery where the filesystem marker may differ.
     if (name !== 'ask_user') {
       try {
         const orchIdOverride =
@@ -509,20 +484,10 @@ async function dispatchRequest(config, msg) {
     }
     const ctx = buildResourceContext(config);
     const aggregated = [];
-    // Aggregate per-scheme truncation meta so the client can tell when a
-    // handler capped its results. Any scheme reporting truncation flips the
-    // top-level `_truncated` flag, and `_totalCount` sums across handlers
-    // that reported one. Handlers that don't report meta contribute nothing
-    // to `_totalCount` (no false "0" rows). MCP permits extra fields on
-    // resources/list responses; clients that ignore them see the old shape.
-    //
-    // As of 2.0.11 only `history_resource` reports `_totalCount` (the 20-item
-    // archive cap), so `_totalCount` is currently history-specific. If other
-    // handlers grow similar caps and start reporting, this loop's summing
-    // behavior will combine them — clients should NOT interpret `_totalCount`
-    // as "total resources across schemes" until all three handlers adopt it.
-    // The field name is accurate for history alone; it's advisory, not a
-    // content-length guarantee.
+    // Aggregate per-scheme truncation meta. Any scheme reporting truncation
+    // flips `_truncated`; `_totalCount` sums counts from handlers that report
+    // one. Currently only history_resource reports `_totalCount` (20-item cap).
+    // Clients should NOT interpret it as "total resources across schemes".
     let anyTruncated = false;
     let haveTotalCount = false;
     let totalCount = 0;
@@ -572,10 +537,6 @@ async function dispatchRequest(config, msg) {
 
   if (method === 'resources/read') {
     if (!isServerEnabled(config)) {
-      // Consistent with resources/list + templates/list empty-array behavior
-      // when disabled: advertise the endpoint as absent rather than exposing
-      // an internal-error surface. Clients see the same "feature not present"
-      // signal across all three resources/* methods.
       sendError(id, JSONRPC_METHOD_NOT_FOUND, 'resources/read unavailable (server disabled)');
       return;
     }
@@ -585,11 +546,9 @@ async function dispatchRequest(config, msg) {
       return;
     }
 
-    // Parse the URI scheme to route to the right handler. paths.parseResourceUri
-    // throws on malformed input or unsafe segments — treat those as JSON-RPC
-    // errors (they indicate a malformed client request, not a tool-call failure).
-    // B6: parse the URI once and forward the result to the resource handler
-    // so downstream doesn't re-run parseResourceUri() + assertSafeSegment.
+    // parseResourceUri throws on malformed input or unsafe segments — treat
+    // those as JSON-RPC errors. Parse once and forward so downstream doesn't
+    // re-run the same check.
     let parsedUri;
     try {
       parsedUri = paths.parseResourceUri(uri);
@@ -626,8 +585,6 @@ async function dispatchRequest(config, msg) {
         code === 'INVALID_SEGMENT' ||
         code === 'INVALID_URI'
       ) {
-        // m2 taxonomy split: all three codes surface at the wire as
-        // JSON-RPC invalid-params. Only the audit-log semantics differ.
         sendError(id, JSONRPC_INVALID_PARAMS, 'invalid resource uri', {
           uri,
           message: err && err.message,
@@ -643,9 +600,7 @@ async function dispatchRequest(config, msg) {
     return;
   }
 
-  // Unsupported request method — id is guaranteed non-null because the
-  // notification guard at the top of this function already returned for
-  // notification-shape messages.
+  // Unsupported request method (id non-null; notification guard handled null ids above).
   sendError(id, JSONRPC_METHOD_NOT_FOUND, 'Method not found', { method });
 }
 
@@ -718,12 +673,8 @@ function main() {
       .filter(Boolean);
   }
 
-  // W-LISTCH-1: instantiate plugin loader iff enabled (default: true).
-  // Fail-open: any exception during bringup is logged and pluginLoader stays
-  // null. The server continues to serve core tools in that degraded state.
-  // Require is deferred here (not at module top) because plugin-loader.js
-  // transitively requires 'ajv', which install.js does not copy. See comment
-  // above near writePluginAuditEvent for rationale.
+  // Instantiate plugin loader iff enabled (default: true). Fail-open: bringup
+  // exceptions are logged; pluginLoader stays null and server serves core tools.
   if (config.plugin_loader?.enabled !== false) {
     const pl = config.plugin_loader || {};
     const lc = pl.lifecycle || {};
@@ -736,23 +687,16 @@ function main() {
         audit:              writePluginAuditEvent,
         projectRoot:        process.cwd(),
         registry:           toolRegistry,
-        // Path A wire-in: thread writeFrame so notifications/tools/list_changed
-        // reaches MCP stdout on every successful overlay mutation.
         notifySink:         writeFrame,
         notify_list_changed: pl.notify_list_changed !== false,
         restart_flag_check:  pl.restart_flag_check  !== false,
         dry_run:             !!pl.dry_run,
-        // F-4: env-disabled plugin list.
         ...(pl._disabledPlugins && pl._disabledPlugins.length > 0 && { disabledPlugins: pl._disabledPlugins }),
-        // F-22: discovery.enabled → discoveryEnabled.
         discoveryEnabled: discovery.enabled !== false,
-        // F-22: discovery.scan_paths → discoveryPaths (merged on top of defaults when set).
         ...(discovery.scan_paths != null && { discoveryPaths: discovery.scan_paths }),
-        // F-22: consent.require_explicit_grant → requireConsent.
         ...(consent.require_explicit_grant != null && { requireConsent: consent.require_explicit_grant }),
-        // F-22: telemetry flags.
         emitToolInvocationEvents: telemetry.emit_tool_invocation_events !== false,
-        redactArgs:               telemetry.redact_args !== false, // never default false
+        redactArgs:               telemetry.redact_args !== false,
         // Lifecycle tuning from config (mirrors DEFAULT_OPTS keys).
         ...(lc.max_restart_attempts  != null && { maxRestartAttempts:    lc.max_restart_attempts }),
         ...(lc.restart_backoff_ms    != null && { restartBackoffMs:      lc.restart_backoff_ms }),
@@ -762,15 +706,11 @@ function main() {
       });
     } catch (err) {
       logStderr('plugin-loader bringup failed: ' + (err && err.message));
-      // pluginLoader remains null; server serves core tools only.
     }
   }
 
-  // Fail-open install-integrity verify (non-fatal; runs inline before the
-  // ready banner). Drift (if any) is journaled to .orchestray/state/degraded.jsonl
-  // and surfaced via /orchestray:doctor --deep. The outer try/catch is
-  // belt-and-suspenders: verifyManifestOnBoot itself must never throw, but a
-  // bug in it must not kill the MCP server.
+  // Fail-open install-integrity verify (non-fatal). Drift is journaled to
+  // .orchestray/state/degraded.jsonl and surfaced via /orchestray:doctor --deep.
   try {
     const pluginRoot = paths.getPluginRoot();
     verifyManifestOnBoot({
@@ -778,7 +718,6 @@ function main() {
       fileRootDir: path.dirname(pluginRoot),
       projectRoot: process.cwd(),
     });
-    // Return value intentionally ignored — journal has the record.
   } catch (_e) {
     // MUST NEVER THROW. Defensive swallow.
   }
@@ -799,11 +738,10 @@ function main() {
 
   rl.on('close', async () => {
     rejectAllPendingElicitations('stdin closed');
-    // W-LISTCH-1: shut down loader before exit. shutdownStarted guards against
-    // double-invocation when SIGINT triggers both onSignal and rl.on('close').
+    // Shut down loader; shutdownStarted guards against double-invocation.
     if (!shutdownStarted && pluginLoader) {
       shutdownStarted = true;
-      // Race against 5 s — a hung plugin must not block MCP server exit forever.
+      // Race against 5s — a hung plugin must not block MCP server exit forever.
       await Promise.race([
         pluginLoader.shutdown(),
         new Promise((resolve) => setTimeout(() => {
@@ -818,7 +756,6 @@ function main() {
   const onSignal = async (sig) => {
     logStderr('received ' + sig + ', shutting down');
     rejectAllPendingElicitations(sig);
-    // W-LISTCH-1: shut down loader; first caller wins via shutdownStarted flag.
     if (!shutdownStarted && pluginLoader) {
       shutdownStarted = true;
       await Promise.race([
@@ -837,9 +774,8 @@ function main() {
 
   logStderr('orchestray-mcp server ready (protocol ' + PROTOCOL_VERSION + ')');
 
-  // W-LISTCH-1: fire-and-forget discovery scan on startup (default-on per
-  // feedback_default_on_shipping). NEVER auto-load — loading requires explicit
-  // user consent via the slash-command CLI. Skip if discovery is disabled.
+  // Fire-and-forget discovery scan on startup. NEVER auto-load — loading
+  // requires explicit user consent via the slash-command CLI.
   if (pluginLoader && config.plugin_loader?.discovery?.enabled !== false) {
     pluginLoader.scan().catch((err) => logStderr('plugin scan failed: ' + (err && err.message)));
   }

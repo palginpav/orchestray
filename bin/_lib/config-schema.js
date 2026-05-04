@@ -74,46 +74,39 @@ const DEFAULT_MCP_ENFORCEMENT = Object.freeze({
   pattern_find: 'hook',
   kb_search: 'hook',
   history_find_similar_tasks: 'hook',
-  // D2 v2.0.16 Stage C: default flipped from 'hook-warn' to 'hook-strict' (blocking).
-  // User explicitly approved this flip (2026-04-15) with zero field data — see D2 risk note in
-  // v2016-devb-report.md. Mitigation: post-upgrade-sweep seeds 'hook-warn' on existing installs
-  // so the strict default only hits fresh installs. Set pattern_record_application:'hook-warn'
-  // in .orchestray/config.json to opt back to advisory mode.
-  pattern_record_application: 'hook-strict', // Second-spawn post-decomposition gate: 'hook-warn' = warn+allow; 'hook-strict' = block. Set by the gate in gate-agent-spawn.js. Advisory-only for first spawn.
-  // T3 A1: Add 2.0.14 tools to the enforcement model. Default 'allow' because
-  // neither tool is gated (pattern_record_skip_reason is advisory-only;
-  // cost_budget_check is advisory-only in 2.0.14/2.0.15). Absent keys cause
+  // Default flipped to 'hook-strict' (blocking). Post-upgrade-sweep seeds 'hook-warn' on
+  // existing installs so the strict default only hits fresh installs. Set
+  // pattern_record_application:'hook-warn' in .orchestray/config.json to opt back to advisory mode.
+  pattern_record_application: 'hook-strict', // 'hook-warn' = warn+allow; 'hook-strict' = block. Advisory-only for first spawn.
+  // Default 'allow' because these tools are not spawn-gate tools. Absent keys cause
   // unknown_tool_policy to evaluate them, which can produce unexpected block/warn
   // signals if an operator sets unknown_tool_policy:'block'.
   pattern_record_skip_reason: 'allow',
   cost_budget_check: 'allow',
-  // W6: kb_write is advisory/write-scoped (not a spawn-gate tool) — 'allow' is
+  // kb_write is advisory/write-scoped (not a spawn-gate tool) — 'allow' is
   // appropriate so unknown_tool_policy:'block' installations don't block it.
   kb_write: 'allow',
-  // v2.0.16 new tools: routing_lookup and cost_budget_reserve are advisory-only
-  // (no spawn-gate role) — 'allow' prevents unknown_tool_policy:'block' from
-  // blocking them on fresh and upgraded installs.
+  // routing_lookup and cost_budget_reserve are advisory-only (no spawn-gate role) —
+  // 'allow' prevents unknown_tool_policy:'block' from blocking them.
   routing_lookup: 'allow',
   cost_budget_reserve: 'allow',
-  // v2.0.16 D1: pattern_deprecate is a write tool (not spawn-gate) — 'allow' is safe.
+  // pattern_deprecate is a write tool (not spawn-gate) — 'allow' is safe.
   pattern_deprecate: 'allow',
-  // v2.0.17 T5: metrics_query is read-only telemetry — 'allow' prevents
-  // unknown_tool_policy:'block' from blocking it on fresh and upgraded installs.
+  // metrics_query is read-only telemetry — 'allow' prevents
+  // unknown_tool_policy:'block' from blocking it.
   metrics_query: 'allow',
   unknown_tool_policy: 'block',
   global_kill_switch: false,
 });
 
-// W5 (v2.0.15): add `hook-warn` (unconditional warn-mode advisory) and
-// `hook-strict` (opt-in blocking) to the §22c escalation ladder.
-// Stage C shipped in the 2.0.16 amendment: default is now `hook-strict` (blocking).
+// `hook-warn` = unconditional warn-mode advisory; `hook-strict` = blocking (default).
 // Operators can revert to advisory mode via mcp_enforcement.pattern_record_application: 'hook-warn'
 // (or 'hook') in .orchestray/config.json.
 const VALID_PER_TOOL_VALUES = ['hook', 'hook-warn', 'hook-strict', 'prompt', 'allow'];
 const VALID_UNKNOWN_TOOL_POLICY = ['block', 'warn', 'allow'];
 
 // ---------------------------------------------------------------------------
-// zod schema for mcp_enforcement (migrated from hand-rolled validator in v2.2.15 P1-11).
+// zod schema for mcp_enforcement.
 // All keys are optional — the validator accepts partial objects (merged from defaults).
 // Error messages intentionally mirror the hand-rolled style for backward compat.
 // ---------------------------------------------------------------------------
@@ -240,7 +233,7 @@ function validateMcpEnforcement(obj) {
   const result = schema.safeParse(obj);
   const errors = result.success ? [] : _zodIssuesToMcpErrors(result.error.issues, obj);
 
-  // T1 H5 (v2.0.15): kill_switch_reason required when global_kill_switch is true.
+  // kill_switch_reason required when global_kill_switch is true.
   // Cross-field rule — applied after structural parse to get clean error isolation.
   if (result.success || !result.error.issues.some((i) => i.path[0] === 'global_kill_switch')) {
     const typed = /** @type {any} */ (obj);
@@ -575,7 +568,7 @@ function loadCostBudgetCheckConfig(cwd) {
       ? fromFile.last_verified
       : DEFAULT_COST_BUDGET_CHECK.last_verified;
 
-  // W15 (v2.0.16): load optional effort_multipliers sub-block.
+  // Load optional effort_multipliers sub-block.
   // null/absent → callers fall back to DEFAULT_EFFORT_MULTIPLIERS.
   const emFromFile = fromFile.effort_multipliers;
   const effortMultipliers =
@@ -1772,16 +1765,13 @@ function validateAdaptiveVerbosityConfig(obj) {
 }
 
 // ---------------------------------------------------------------------------
-// v2017_experiments section defaults and loader (T4 v2.0.17)
+// v2017_experiments section defaults and loader
 //
 // v2017_experiments.__schema_version — literal 1; bumped when new keys are added.
 // v2017_experiments.global_kill_switch — boolean, default false.
 //   One-flip disables all v2017 experiments simultaneously (safety escape hatch).
 // v2017_experiments.prompt_caching — "off"|"on", default "on".
-//   S1: Block A/B/C cache-hygiene layout in agents/pm.md.
 // v2017_experiments.adaptive_verbosity — "off"|"on", default "off".
-//   S4: Adaptive response-length budgets in delegation templates.
-// (pm_prose_strip removed in v2.0.18 — FC3b cleanup)
 // ---------------------------------------------------------------------------
 
 const DEFAULT_V2017_EXPERIMENTS = Object.freeze({
@@ -2545,7 +2535,7 @@ const DEFAULT_RETRIEVAL = Object.freeze({
 
 const _VALID_SHADOW_SCORER_NAMES = ['skip-down', 'local-success'];
 
-// W8 (v2.1.13 R-RET-PROMOTE): scorer_variant is now a selectable enum.
+// scorer_variant is a selectable enum.
 const _VALID_SCORER_VARIANTS = ['baseline', 'skip-down', 'local-success', 'composite'];
 
 /**
@@ -2765,8 +2755,7 @@ const DEFAULT_AUTO_LEARNING = Object.freeze({
     shadow_mode: false,
     proposals_per_orchestration: 3,
     proposals_per_24h: 10,
-    // v2.1.7 Bundle A: live Haiku backend config
-    backend:          'haiku-cli', // 'haiku-cli' | 'stub' (haiku-sdk removed in v2.1.7 zero-deferral per K3)
+    backend:          'haiku-cli', // 'haiku-cli' | 'stub'
     // Empirically, 60s was too tight for Haiku on archives with 30+ quarantined
     // events — the CLI routinely hit SIGTERM mid-reasoning (observed 2026-04-20
     // on a 40-event v2.1.9-design archive). Default raised to 180s; clamp
@@ -2961,11 +2950,8 @@ function _parseAutoLearningBlock(fromFile, cwd) {
     shadowMode = eocSrc.shadow;
   }
 
-  // v2.1.7 Bundle A: backend field ('haiku-cli' | 'stub').
-  // F4 (zero-deferral): 'haiku-sdk' removed from VALID_BACKENDS per K3 arbitration.
-  // The SDK transport path is explicitly not implemented in v2.1.x; if a user sets
-  // backend: 'haiku-sdk', we journal a warning and fall back to 'haiku-cli' rather
-  // than silently aliasing. This gives operators a clear diagnostic signal.
+  // backend field ('haiku-cli' | 'stub'). 'haiku-sdk' is not a valid value;
+  // if set, we journal a warning and fall back to 'haiku-cli'.
   const VALID_BACKENDS = new Set(['haiku-cli', 'stub']);
   let backend = DEFAULT_AUTO_LEARNING.extract_on_complete.backend;
   if ('backend' in eocSrc) {
@@ -2997,7 +2983,6 @@ function _parseAutoLearningBlock(fromFile, cwd) {
     shadow_mode:                shadowMode,
     proposals_per_orchestration: _clampInt(eocSrc.proposals_per_orchestration, 1, 10, DEFAULT_AUTO_LEARNING.extract_on_complete.proposals_per_orchestration),
     proposals_per_24h:           _clampInt(eocSrc.proposals_per_24h,           1, 50, DEFAULT_AUTO_LEARNING.extract_on_complete.proposals_per_24h),
-    // v2.1.7 Bundle A fields
     backend,
     timeout_ms:       _clampInt(eocSrc.timeout_ms,       5_000, 300_000, DEFAULT_AUTO_LEARNING.extract_on_complete.timeout_ms),
     max_output_bytes: _clampInt(eocSrc.max_output_bytes, 1024,  1_048_576, DEFAULT_AUTO_LEARNING.extract_on_complete.max_output_bytes),
@@ -3132,7 +3117,7 @@ const DEFAULT_RESILIENCE = Object.freeze({
   enabled: true,            // K1: LIVE by default
   shadow_mode: false,       // K1: NOT shadow by default
   inject_max_bytes: 12288,  // 12 KB hard cap on additionalContext payload (W3 §B2)
-  max_inject_turns: 3,      // W3 §A3: post-compact turns that receive dossier
+  max_inject_turns: 3,      // post-compact turns that receive dossier
   kill_switch: false,       // config hard-off, independent of enabled
 });
 
@@ -3820,7 +3805,7 @@ const DEFAULT_FEATURE_DEMAND_GATE = Object.freeze({
   enabled:                  true,
   observation_window_days:  14,
   quarantine_candidates:    Object.freeze([]),
-  shadow_mode:              false, // v2.1.15 R-GATE-AUTO flip — was implicit-true (advisory) under v2.1.14.
+  shadow_mode:              false,
 });
 
 /**
@@ -4545,107 +4530,107 @@ module.exports = {
   validateCostBudgetEnforcementConfig,
   DEFAULT_EFFORT_MULTIPLIERS,
   DEFAULT_MAX_PER_TASK,
-  // C (v2.1.7): max_per_task schema loader + validator
+  // max_per_task schema loader + validator
   loadMcpServerConfig,
   validateMcpServerConfig,
-  // D7 (v2.0.16): routing_gate auto-seed on miss
+  // routing_gate auto-seed on miss
   DEFAULT_ROUTING_GATE,
   loadRoutingGateConfig,
-  // D5 (v2.0.16): cost_budget_reserve TTL config
+  // cost_budget_reserve TTL config
   DEFAULT_COST_BUDGET_RESERVE,
   loadCostBudgetReserveConfig,
-  // T4 (v2.0.17): v2017 experiment flags
+  // v2017 experiment flags
   DEFAULT_V2017_EXPERIMENTS,
   loadV2017ExperimentsConfig,
   validateV2017ExperimentsConfig,
   isExperimentActive,
-  // T12 (v2.0.17): cache_choreography config block
+  // cache_choreography config block
   DEFAULT_CACHE_CHOREOGRAPHY,
   loadCacheChoreographyConfig,
   validateCacheChoreographyConfig,
-  // T22 (v2.0.17): adaptive_verbosity config block
+  // adaptive_verbosity config block
   DEFAULT_ADAPTIVE_VERBOSITY,
   loadAdaptiveVerbosityConfig,
   validateAdaptiveVerbosityConfig,
-  // W9 (v2.0.18): pattern confidence decay
+  // pattern confidence decay
   DEFAULT_PATTERN_DECAY,
   loadPatternDecayConfig,
   validatePatternDecayConfig,
-  // W12 (v2.0.18): anti-pattern pre-spawn advisory gate
+  // anti-pattern pre-spawn advisory gate
   DEFAULT_ANTI_PATTERN_GATE,
   loadAntiPatternGateConfig,
   validateAntiPatternGateConfig,
-  // W7 (v2.0.18): pause/cancel sentinel config
+  // pause/cancel sentinel config
   DEFAULT_STATE_SENTINEL,
   loadStateSentinelConfig,
   validateStateSentinelConfig,
-  // W8 (v2.0.18): redo_flow config
+  // redo_flow config
   DEFAULT_REDO_FLOW,
   loadRedoFlowConfig,
   validateRedoFlowConfig,
-  // W3 (v2.0.19): context statusbar config
+  // context statusbar config
   DEFAULT_CONTEXT_STATUSBAR,
   loadContextStatusbarConfig,
   validateContextStatusbarConfig,
-  // B1 (v2.1.0): federation shared-dir config
+  // federation shared-dir config
   DEFAULT_FEDERATION,
   loadFederationConfig,
   validateFederationConfig,
-  // B8 (v2.1.0): curator config
+  // curator config
   DEFAULT_CURATOR,
   loadCuratorConfig,
   validateCuratorConfig,
-  // RS (v2.1.3): retrieval shadow scorer config
+  // retrieval shadow scorer config
   DEFAULT_RETRIEVAL,
   loadRetrievalConfig,
   validateRetrievalConfig,
   logStderr,
   // Exposed for test teardown only — clear between test runs to reset per-process guard.
   _flatDeprecationWarned,
-  // W7 (v2.1.6): auto_learning config block
+  // auto_learning config block
   DEFAULT_AUTO_LEARNING,
   loadAutoLearningConfig,
-  // D (v2.1.7): resilience config block
+  // resilience config block
   DEFAULT_RESILIENCE,
   loadResilienceConfig,
   validateResilienceConfig,
-  // R-TGATE (v2.1.14): telemetry config block
+  // telemetry config block
   DEFAULT_TELEMETRY,
   loadTelemetryConfig,
   validateTelemetryConfig,
-  // R-HCAP (v2.1.14): handoff body cap config
+  // handoff body cap config
   DEFAULT_HANDOFF_BODY_CAP,
   loadHandoffBodyCapConfig,
   validateHandoffBodyCapConfig,
-  // R-SHDW (v2.1.14): event schema shadow config
+  // event schema shadow config
   DEFAULT_EVENT_SCHEMA_SHADOW,
   loadEventSchemaShadowConfig,
   validateEventSchemaShadowConfig,
-  // R-PIN (v2.1.14): block_a_zone_caching config
+  // block_a_zone_caching config
   DEFAULT_BLOCK_A_ZONE_CACHING,
   loadBlockAZoneCachingConfig,
   validateBlockAZoneCachingConfig,
-  // R-GATE (v2.1.14): feature_demand_gate config
+  // feature_demand_gate config
   DEFAULT_FEATURE_DEMAND_GATE,
   loadFeatureDemandGateConfig,
   validateFeatureDemandGateConfig,
-  // G-05 (v2.2.14): dossier_orphan_threshold — top-level scalar; stops config-repair strip
+  // dossier_orphan_threshold — top-level scalar; stops config-repair strip
   DEFAULT_DOSSIER_ORPHAN_THRESHOLD,
   loadDossierOrphanConfig,
   validateDossierOrphanThreshold,
-  // W1 (v2.2.18): worktree_auto_commit config block
+  // worktree_auto_commit config block
   DEFAULT_WORKTREE_AUTO_COMMIT,
   loadWorktreeAutoCommitConfig,
   validateWorktreeAutoCommitConfig,
-  // W3 (v2.2.18): master_auto_commit config block
+  // master_auto_commit config block
   DEFAULT_MASTER_AUTO_COMMIT,
   loadMasterAutoCommitConfig,
   validateMasterAutoCommitConfig,
-  // W7 (v2.2.18): dual_install autoheal config
+  // dual_install autoheal config
   DEFAULT_DUAL_INSTALL,
   loadDualInstallConfig,
   validateDualInstallConfig,
-  // W-CFG-1 (Wave 4): plugin_loader lifecycle config
+  // plugin_loader lifecycle config
   DEFAULT_PLUGIN_LOADER,
   loadPluginLoaderConfig,
   validatePluginLoaderConfig,

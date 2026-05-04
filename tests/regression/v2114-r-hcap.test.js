@@ -89,8 +89,8 @@ function makePayload(opts) {
     issues: [],
     assumptions: [],
     design_artifact: relArtifact,
-    // v2.2.9 B-2.1: architect role now requires design_doc_path and
-    // acceptance_rubric in addition to the 5 base fields.
+    // architect role requires design_doc_path and acceptance_rubric
+    // in addition to the 5 base fields.
     design_doc_path: relArtifact,
     acceptance_rubric: 'Pass: all criteria met in design doc.',
   };

@@ -333,12 +333,7 @@ function recordSuccess(params, projectRoot, config) {
   appendRecord(ledgerPath, record);
 }
 
-// ---------------------------------------------------------------------------
-// FN-58 (v2.2.15) — `bumpAndCheck` removed. Single-call convenience API
-// retired after audit confirmed zero non-test callers; remaining callers use
-// `checkLimit` + `recordSuccess` explicitly to keep the bookkeeping atomic
-// only on successful outcomes.
-// ---------------------------------------------------------------------------
+// `bumpAndCheck` removed — callers use `checkLimit` + `recordSuccess` explicitly.
 
 module.exports = {
   checkLimit,

@@ -530,7 +530,7 @@ function runProbe(op, args, meta) {
 }
 
 // ---------------------------------------------------------------------------
-// Wave 3 static-analysis probe helpers
+// Static-analysis probe helpers
 // ---------------------------------------------------------------------------
 
 /**
@@ -656,7 +656,7 @@ function _extractFunctionBody(source, funcName) {
 }
 
 // ---------------------------------------------------------------------------
-// Wave 3 static-analysis probes
+// Static-analysis probes
 // ---------------------------------------------------------------------------
 
 /**
@@ -823,14 +823,10 @@ function assertPluginStdoutNeverReachesAuditWriter(loaderPath, auditWriterPath) 
     }
   }
 
-  // Wave 3 closeout: removed the belt-and-suspenders "raw plugin stdout"
-  // scan that previously fired on JSDoc comments and on legitimate stdout
-  // listener wiring like `proc.stdout.on('data', chunk => ...)`. Those are
-  // NOT W-SEC-19 violations — the invariant is "stdout content does not
-  // become an audit-event field VALUE", which the audit-call-window scan
-  // above enforces precisely. The belt-and-suspenders scan was a heuristic
-  // over-reach that produced false positives on lines 1062-1063 (the
-  // canonical stdout-stream subscription pattern).
+  // The "raw plugin stdout" scan was removed because it produced false positives
+  // on legitimate stdout listener wiring. The invariant is "stdout content does
+  // not become an audit-event field VALUE", which the audit-call-window scan
+  // above enforces precisely.
 
   if (violations.length > 0) {
     return { ok: false, violations };

@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * Unit tests for proposal-validator.js (v2.1.6 — W1 safety boundary).
+ * Unit tests for proposal-validator.js.
  *
  * Covers:
  *   - Happy-path accept

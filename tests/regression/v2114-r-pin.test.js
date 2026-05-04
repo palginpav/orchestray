@@ -259,7 +259,7 @@ describe('AC3 — Zone 1 hash changes on CLAUDE.md edit', () => {
 // ---------------------------------------------------------------------------
 
 describe('AC4 — Validator detects Zone 1 mutation', () => {
-  // v2.2.1 W2: editable Zone 1 sources (CLAUDE.md, handoff-contract.md,
+  // Editable Zone 1 sources (CLAUDE.md, handoff-contract.md,
   // phase-contract.md) auto-rebaseline on first mismatch instead of emitting
   // cache_invariant_broken. The legitimate developer workflow ("edit
   // CLAUDE.md → next prompt") is now a silent baseline refresh, not a
@@ -321,7 +321,7 @@ describe('AC5 — Validator is advisory only (exit 0)', () => {
 // ---------------------------------------------------------------------------
 
 describe('AC6 — Auto-disable sentinel after 5 violations', () => {
-  // v2.2.1 W2: CLAUDE.md mutations are in the auto-rebaseline allowlist and
+  // CLAUDE.md mutations are in the auto-rebaseline allowlist and
   // therefore do NOT count as invariant violations. Driving the sentinel now
   // requires drift in a non-allowlisted file (e.g. the schema shadow). This
   // test uses the schema-shadow path to legitimately exceed the threshold.
@@ -368,7 +368,7 @@ describe('AC6 — Auto-disable sentinel after 5 violations', () => {
     assert.ok(fs.existsSync(sentinelPath),
       'auto-disable sentinel must be written after threshold non-allowlisted violations');
 
-    // v2.2.1 W2 — sentinel body is now structured JSON (not bare-string).
+    // Sentinel body is structured JSON (not bare-string).
     // It carries written_at, expires_at, reason, recovery_hint, trip_count,
     // and quarantined fields so a later run can decide whether the sentinel
     // is still in force, has expired, or has been latched into quarantine.
@@ -385,13 +385,12 @@ describe('AC6 — Auto-disable sentinel after 5 violations', () => {
     assert.ok(parsed.reason, 'sentinel JSON must include a reason');
   });
 
-  // v2.2.1 W2: legacy bare-string sentinel bodies are intentionally treated
-  // as EXPIRED — that is how installed v2.2.0 users self-heal on the first
-  // prompt after upgrade, with no install-side action required. A test that
-  // writes a bare-string sentinel is therefore exercising the self-expiry
-  // path: compose must NOT short-circuit and the bare-string file must be
-  // unlinked. A truly-active sentinel (JSON body, future expires_at) still
-  // forces compose into no-op mode.
+  // Legacy bare-string sentinel bodies are intentionally treated as EXPIRED —
+  // installed users self-heal on the first prompt after upgrade, with no
+  // install-side action required. A test that writes a bare-string sentinel
+  // exercises the self-expiry path: compose must NOT short-circuit and the
+  // bare-string file must be unlinked. A truly-active sentinel (JSON body,
+  // future expires_at) still forces compose into no-op mode.
   test('compose hook self-heals legacy bare-string sentinel and remains no-op only for active JSON sentinel', () => {
     // Case A: legacy bare-string body → treated as expired → compose runs.
     const dirLegacy = makeDir();

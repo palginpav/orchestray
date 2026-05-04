@@ -15,9 +15,7 @@ const path = require('node:path');
 
 const WALK_CAP = 20;
 
-// W9 F-8 (v2.2.15): one-shot warn flag for an invalid ORCHESTRAY_PROJECT_ROOT
-// env var. Module-scope so each process emits at most one warn line, even if
-// `getProjectRoot()` is called many times.
+// One-shot warn flag for an invalid ORCHESTRAY_PROJECT_ROOT env var.
 let _warnedProjectRootEnvInvalid = false;
 
 /**
@@ -116,11 +114,7 @@ function getProjectRoot() {
     } catch (_e) {
       // Fall through to the warn-and-continue branch below.
     }
-    // W9 F-8 (v2.2.15): the env var is set but the path lacks `.orchestray/`.
-    // Previous v2.2.14 behaviour silent-trusted the bare path for backward
-    // compat — a footgun for stale operator overrides. Now we emit a one-shot
-    // stderr warn and fall through to the cwd walk-up (step 3), which is
-    // safer for the common misconfigured-env-var case.
+    // Env var set but path lacks `.orchestray/` — warn once and fall through.
     if (!_warnedProjectRootEnvInvalid) {
       _warnedProjectRootEnvInvalid = true;
       try {
@@ -263,8 +257,7 @@ function parseResourceUri(uri) {
 // The resource-dir helpers accept an optional `root` override so resource
 // handlers and tests can inject a fixture project root without each call site
 // re-implementing the path join + traversal defense. When `root` is omitted,
-// the usual getProjectRoot() walk-up is used. B3 cleanup from the v2.0.11
-// solidification pass.
+// the usual getProjectRoot() walk-up is used.
 function getPatternsDir(root) {
   return path.join(root || getProjectRoot(), '.orchestray', 'patterns');
 }
@@ -358,7 +351,7 @@ function resolveKbFile(section, slug, root) {
 }
 
 // ---------------------------------------------------------------------------
-// B1 (v2.1.0): Shared-tier path helpers for federation.
+// Shared-tier path helpers for federation.
 //
 // Both helpers return null (never throw) when:
 //   - federation.shared_dir_enabled is false (the default)
@@ -484,7 +477,7 @@ module.exports = {
   resolveHistoryArchive,
   resolveHistoryTaskFile,
   resolveKbFile,
-  // B1 (v2.1.0): federation shared-tier path helpers
+  // Federation shared-tier path helpers
   getSharedPatternsDir,
   getSharedKbDir,
 };

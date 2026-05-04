@@ -36,10 +36,7 @@ afterEach(() => {
  * Create a fresh isolated tmpdir.
  * Optionally write a current-orchestration.json inside it.
  */
-// v2.2.13 W4: gate-agent-spawn now emits orchestration_start via writeEvent,
-// which loads schemas from agents/pm-reference/event-schemas.md. Symlink both
-// the .md (validator source) and shadow.json (writer-side cache) into the
-// sandbox so validation succeeds cleanly (no stderr warnings).
+// Symlink event-schemas files into the sandbox so validation succeeds cleanly.
 function linkSchemas(dir) {
   const schemaDir = path.join(__dirname, '..', 'agents', 'pm-reference');
   const sandboxSchemaDir = path.join(dir, 'agents', 'pm-reference');
@@ -68,8 +65,8 @@ function makeDir({ withOrch = false } = {}) {
 }
 
 /** Run the hook script with the given event payload on stdin.
- *  Optional `env` overrides allow tests to opt into B-7.4 hard-block (default
- *  behavior in v2.2.9) or out of it via `ORCHESTRAY_STRICT_MODEL_REQUIRED=0`. */
+ *  Optional `env` overrides allow tests to opt into hard-block (default
+ *  behavior) or out of it via `ORCHESTRAY_STRICT_MODEL_REQUIRED=0`. */
 function run(payload, { env } = {}) {
   const result = spawnSync(process.execPath, [SCRIPT], {
     input: typeof payload === 'string' ? payload : JSON.stringify(payload),
@@ -84,8 +81,7 @@ function run(payload, { env } = {}) {
   };
 }
 
-/** v2.2.9 B-7.4: default is hard-block on missing model. R-DX1 auto-resolve
- *  tests must opt out via ORCHESTRAY_STRICT_MODEL_REQUIRED=0. */
+/** Auto-resolve tests must opt out via ORCHESTRAY_STRICT_MODEL_REQUIRED=0. */
 function runAutoResolve(payload) {
   return run(payload, { env: { ORCHESTRAY_STRICT_MODEL_REQUIRED: '0' } });
 }
@@ -118,8 +114,6 @@ describe('tool filtering', () => {
     assert.equal(stderr, '');
   });
 
-  // Updated for 2.1.11 (R-DX1): Task is in AGENT_DISPATCH_ALLOWLIST — it is gated.
-  // Missing model auto-resolves to sonnet (exit 0) instead of hard-blocking (exit 2).
   test('Task tool_name inside orchestration without model auto-resolves (R-DX1)', () => {
     const dir = makeDir({ withOrch: true });
     const { status, stderr } = runAutoResolve({ tool_name: 'Task', cwd: dir, tool_input: {} });
@@ -128,7 +122,6 @@ describe('tool filtering', () => {
   });
 
   test('Task tool_name inside orchestration with model="haiku" exits 0', () => {
-    // Task is in AGENT_DISPATCH_ALLOWLIST — with a valid model it is allowed.
     const dir = makeDir({ withOrch: true });
     const { status, stderr } = run({
       tool_name: 'Task',
@@ -139,38 +132,30 @@ describe('tool filtering', () => {
     assert.equal(stderr, '');
   });
 
-  // Updated for 2.0.12: empty string is not in either allowlist.
-  // unknown_tool_policy default is "block" → exit 2 naming the unknown tool.
   test('missing tool_name field exits 2 — unknown tool name blocked by default policy', () => {
-    // event.tool_name is undefined, tool_input.tool also absent → toolName=''
-    // '' is not in AGENT_DISPATCH_ALLOWLIST or SKIP_ALLOWLIST → unknown_tool_policy=block → exit 2
     const dir = makeDir({ withOrch: true });
     const { status, stderr } = run({ cwd: dir, tool_input: { model: 'sonnet' } });
     assert.equal(status, 2);
     assert.match(stderr, /unknown tool name ''/);
   });
 
-  // Updated for 2.0.12: empty string is not in either allowlist → exit 2.
   test('empty string tool_name exits 2 — unknown empty tool name blocked', () => {
-    // In 2.0.11, '' fell through via !== 'Agent'. In 2.0.12, '' is unknown → block.
     const dir = makeDir({ withOrch: true });
     const { status, stderr } = run({ tool_name: '', cwd: dir });
     assert.equal(status, 2);
     assert.match(stderr, /unknown tool name ''/);
   });
 
-  // Fallback branch — gate-agent-spawn.js:34 resolves toolName from
+  // Fallback branch — gate-agent-spawn.js resolves toolName from
   // `event.tool_name` OR `event.tool_input.tool` as a secondary source. The
   // primary tests above hit the `tool_name` path; these cover the fallback
   // explicitly so it doesn't silently bit-rot.
-  // Updated for 2.1.11 (R-DX1): missing model no longer hard-blocks; auto-resolve applies.
   test('missing tool_name but tool_input.tool="Agent" — auto-resolves model (R-DX1)', () => {
     const dir = makeDir({ withOrch: true });
     const { status, stderr } = runAutoResolve({
       cwd: dir,
-      tool_input: { tool: 'Agent' /* no model — auto-resolved via R-DX1 */ },
+      tool_input: { tool: 'Agent' },
     });
-    // R-DX1: auto-resolve to global_default_sonnet → exit 0.
     assert.equal(status, 0);
     assert.match(stderr, /defaulting to "sonnet"/);
   });

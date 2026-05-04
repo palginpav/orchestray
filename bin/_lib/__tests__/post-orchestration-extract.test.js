@@ -124,7 +124,6 @@ function runEnabled(overrides) {
     writeEvents(events);
   }
   writeOrch(orchId);
-  // W7: breaker params now under safety.circuit_breaker (design §4).
   // Use high max_extractions_per_24h so tests don't hit the breaker.
   writeConfig({
     global_kill_switch: false,
@@ -313,7 +312,6 @@ describe('feature disabled', () => {
 describe('circuit breaker tripped', () => {
   test('breaker tripped → no files, reason circuit_breaker_tripped', () => {
     const orchId = 'orch-test-001';
-    // W7: breaker config is now under safety.circuit_breaker in config-schema loader.
     // Set max_extractions_per_24h=1 and run twice: first run passes, second trips.
     const alCfg = {
       extract_on_complete: { enabled: true },
@@ -400,7 +398,6 @@ describe('shadow mode', () => {
 
   test('shadow mode still increments breaker counter', () => {
     // Run shadow mode 3 times with max=3; the 4th should be circuit_breaker_tripped.
-    // W7: breaker config now under safety.circuit_breaker.max_extractions_per_24h.
     const makeSetup = () => {
       writeOrch('orch-test-shadow');
       writeEvents(makeQuarantinedEvents('orch-test-shadow'));
@@ -817,7 +814,6 @@ describe('CHG-01 — shadow_mode legacy alias', () => {
     writeOrch(orchId);
     writeEvents(makeQuarantinedEvents(orchId));
     // Use legacy `shadow` key (not canonical `shadow_mode`) — must still activate shadow mode.
-    // W7: breaker params moved to safety.circuit_breaker; use high limit to avoid breaker trips.
     writeConfig({
       extract_on_complete: {
         enabled: true,

@@ -65,14 +65,14 @@ let _schemaWarnedThisProcess  = false;
 // Shape violations are high-frequency (321/24h baseline); without this they flood events.jsonl.
 const _shapeViolationWarnedTypes = new Map(); // event_type -> true
 
-// W2b (v2.2.12): rate-limited deprecation warn for pre-rename event types.
+// Rate-limited deprecation warn for pre-rename event types.
 const _deprecatedNamesWarnedThisProcess = new Set();
 
 const SHADOW_REL_CONFIG = path.join('.orchestray', 'config.json');
 
-// FN-37 (v2.2.15) — single-source-of-truth for the 24h miss threshold so
-// `loadShadowConfig` defaults and the recordMiss fallback at the unknown-type
-// emit branch can never drift. Mirrors the `loadShadowConfig` defaults block.
+// Single-source-of-truth for the 24h miss threshold so `loadShadowConfig`
+// defaults and the recordMiss fallback at the unknown-type emit branch can
+// never drift. Mirrors the `loadShadowConfig` defaults block.
 const DEFAULT_MISS_THRESHOLD_24H = 10;
 
 /**
@@ -215,13 +215,13 @@ function withAutofill(event, cwd) {
   const killSwitchOn = process.env.ORCHESTRAY_AUDIT_AUTOFILL_DISABLED === '1';
 
   if (killSwitchOn) {
-    // v2.2.8-equivalent fallback: only timestamp + orchestration_id.
+    // Kill-switch fallback: only timestamp + orchestration_id.
     if (!out.timestamp) out.timestamp = new Date().toISOString();
     if (!('orchestration_id' in out)) out.orchestration_id = resolveOrchestrationId(cwd);
     return { filled: out, autofilled: [] };
   }
 
-  // v2.2.9 F1: schema-aware allowlist autofill.
+  // Schema-aware allowlist autofill.
   //
   // Look up the schema for this event-type so we can (a) source `version`
   // from the schema's declared default and (b) only autofill fields that
@@ -356,7 +356,7 @@ function emitAutofillTelemetry(eventType, fields, cwd, eventsPath, schemaState) 
       event_type:        eventType || 'unknown',
       fields_autofilled: fields.slice(),
     };
-    // P1-13: include schema_state tag when provided (schema-unreadable branch).
+    // Include schema_state tag when provided (schema-unreadable branch).
     if (schemaState !== undefined && schemaState !== null) {
       telemetry.schema_state = schemaState;
     }
@@ -497,12 +497,9 @@ function writeEvent(eventPayload, opts) {
     }
     try {
       atomicAppendJsonl(eventsPath, filledPayload);
-      // P1-13 (v2.2.15 W2-07): emit autofill telemetry on schema-unreadable branch
-      // with schema_state:'unreadable' tag. Previously suppressed (F1 rationale was
-      // "spurious CI signal"), but this silences F1 threshold-monitoring on the
-      // exact path that needs diagnosing. The schema_state field lets analytics
-      // pipelines filter these out of production noise while still surfacing
-      // them in diagnostic queries.
+      // Emit autofill telemetry on schema-unreadable branch with
+      // schema_state:'unreadable' tag so analytics pipelines can distinguish
+      // these from production noise.
       emitAutofillTelemetry(
         validation.event_type,
         autofilledFields,

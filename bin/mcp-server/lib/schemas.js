@@ -294,8 +294,7 @@ const ASK_USER_TOOL_DEFINITION = deepFreeze({
         },
       },
       timeout_seconds: { type: 'integer', minimum: 10, maximum: 600 },
-      // W6 (v2.0.16): optional rate-limit context. When both are supplied,
-      // the server enforces max_per_task before sending the elicitation.
+      // Optional rate-limit context. When both are supplied, server enforces max_per_task.
       orchestration_id: { type: 'string', minLength: 1, maxLength: 64 },
       task_id: { type: 'string', minLength: 1, maxLength: 64 },
     },
@@ -324,11 +323,8 @@ const ASK_USER_TOOL_DEFINITION = deepFreeze({
  * See CHANGELOG.md §2.0.11 (Stage 2 MCP tools & resources) for design context.
  */
 
-// Keywords we deliberately do NOT validate. `additionalProperties` is
-// excluded because Orchestray's own tool schemas don't use it, and the
-// validator is for tool INPUTS (not schemas). If a tool schema specifies
-// `additionalProperties: false`, we silently allow extras — callers should
-// avoid relying on this keyword for input validation. Per T12 audit I6.
+// Unsupported keywords: `additionalProperties` is excluded (Orchestray tool schemas
+// don't use it; tool INPUT validators should not rely on it).
 const UNSUPPORTED_KEYWORDS = [
   'oneOf',
   'anyOf',
@@ -358,9 +354,7 @@ function _pathLabel(pathStr) {
 }
 
 function _validate(value, schema, pathStr, errors) {
-  // W1 fix: capture the error count on entry so the unsupported-keyword bail
-  // below only fires on errors added during THIS call, not accumulated errors
-  // from prior sibling properties in the shared array.
+  // Capture error count on entry so bail below fires only on errors from THIS call.
   const startLen = errors.length;
 
   if (!isPlainObject(schema)) {
@@ -448,11 +442,7 @@ function _validate(value, schema, pathStr, errors) {
         );
       }
     }
-    // W7 fix-pass M-001 (security): honour `pattern` so MCP tool input
-    // schemas that declare `pattern: '...'` actually enforce it. Previously
-    // the keyword was silently dropped, leaving deeper regex checks (e.g.
-    // schema_get's getChunk slug guard) as the only barrier — fine for the
-    // current tool but cosmetic for any future tool that adds a pattern.
+    // Honour `pattern` so schemas that declare it actually enforce it.
     if (typeof schema.pattern === 'string') {
       let re;
       try { re = new RegExp(schema.pattern); } catch (_e) { re = null; }

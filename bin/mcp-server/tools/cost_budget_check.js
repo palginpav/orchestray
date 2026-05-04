@@ -195,7 +195,7 @@ function computeCost(inputTokens, outputTokens, rates) {
 }
 
 // ---------------------------------------------------------------------------
-// Effort multiplier (W15 v2.0.16)
+// Effort multiplier
 // ---------------------------------------------------------------------------
 
 /**
@@ -381,19 +381,15 @@ async function handle(input, context) {
   const effortMultiplier = resolveEffortMultiplier(input.effort, effortMultipliersConfig);
   const projectedCostUsd = baseCostUsd * effortMultiplier;
 
-  // W1: Read accumulated running cost from events.jsonl for this orchestration.
-  // Fail-open: if unavailable, project-only comparison still runs; warnings are appended.
+    // Read accumulated running cost (fail-open: warnings appended if unavailable).
   const today = new Date().toISOString().slice(0, 10); // 'YYYY-MM-DD'
   const [accTotal, accDaily] = await Promise.all([
     readAccumulatedCost(input.orchestration_id, projectRoot, null),
     readAccumulatedCost(input.orchestration_id, projectRoot, today),
   ]);
 
-  // F01 (v2.0.16): Add unexpired reservations to accumulated spend so that
-  // parallel-spawn pre-checks account for in-flight cost commitments.
+  // Add unexpired reservations to accumulated spend for parallel-spawn pre-checks.
   // readActiveReservations is synchronous and fail-open (returns 0 on error).
-  // A2-S2 fix: use reserved_daily_usd (filtered to today) for the daily accumulator
-  // so that reservations created yesterday don't inflate the daily-cap total.
   const todayStartMs = new Date(today + 'T00:00:00.000Z').getTime();
   const activeRes = readActiveReservations(
     input.orchestration_id, projectRoot, { sinceTimestamp: todayStartMs }
@@ -436,9 +432,7 @@ async function handle(input, context) {
   }
 
   // Propagate running_cost_unavailable warnings from both accumulators.
-  // B2 (v2.0.15 preflight): merge accDaily.warnings too — the daily scan
-  // can diverge from the total scan on partial reads and its warnings were
-  // previously swallowed.
+  // Merge accDaily.warnings (daily scan can diverge from total on partial reads).
   for (const w of accTotal.warnings) {
     if (!warnings.includes(w)) warnings.push(w);
   }
@@ -446,7 +440,7 @@ async function handle(input, context) {
     if (!warnings.includes(w)) warnings.push(w);
   }
 
-  // W1: Cap comparisons include accumulated spend + projected cost.
+  // Cap comparisons include accumulated spend + projected cost.
   const totalForMaxCap = accumulatedUsd + projectedCostUsd;
   const totalForDailyCap = accumulatedDailyUsd + projectedCostUsd;
   const totalForWeeklyCap = accumulatedWeeklyUsd + projectedCostUsd;

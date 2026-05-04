@@ -136,28 +136,6 @@ describe('agents/pm.md Block A hash stability', () => {
     }
 
     // Normal mode: compare against the inline pinned value.
-    // v2.2.0 P1.4 §3.S sentinel-preference instruction insertion (orch-20260426T172424Z).
-    // Re-pinned during the same orchestration's W7 fix-pass: §3.S body
-    // gained exit-2 documentation (F-007) and apostrophe-quoting guidance
-    // (F-009).
-    // v2.2.0 P3.2 R-DELEG-DELTA insertion (orch-20260426T193005Z)
-    // v2.2.0 P1.2 step 9.7 output-shape inject (orch-20260427T041926Z)
-    // v2.2.2 Bucket C hook-enforcement markers added to §9.7, §12.a, and
-    // Delegation Delta Pre-Render heading (orch-1777291253) — prose retained
-    // as the behavior contract; the hooks now do the runtime enforcement.
-    // v2.2.7 W4 PM-prompt edits (orch-20260428T115457Z-w226-fix-all):
-    //   - delegation-delta markers directive: corrected comment, added mandatory
-    //     marker structure template so PM actually emits static/per-spawn markers
-    //   - MCP chunked-load directive: added IMPORTANT note to Tier-2 table row
-    //     directing PM (and downstream agents) to use mcp__orchestray__schema_get
-    //   - housekeeper delegation: Section 23f rewritten with explicit Agent() call
-    //     syntax, trigger conditions table, and routing.jsonl requirement
-    // v2.2.9 B-1/B-4/B-7.4: prose deletions in pm.md shifted Block A hash.
-    // v2.2.19 wip (curate-runner-D1): added curate-runner to PM tools allowlist
-    //   in agents/pm.md frontmatter to enable /orchestray:learn curate dispatch.
-    // v2.2.21 G3-W3-T9 (cross-ref rot bundle): §17→§22a rename + cross-ref fixes.
-    // v2.2.21 G3-W5-T27 (W-SE-1): §3.RV path-list replaced with canonical source reference.
-    // Re-pinned by PM at end of v2.2.21 W5 merge (both changes incorporated).
     const PINNED_BLOCK_A_HASH = '47f186e788366e33';
 
     assert.equal(

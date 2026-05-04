@@ -38,24 +38,6 @@
  *   W-SEC-23  Stdout cap (1 MB per-line, 16 MB total backlog) with kill on
  *             overflow.
  *
- * Wave-3+ deferrals explicitly acknowledged here (per
- * feedback_no_close_out_deferral — every deferred item carries its W-id
- * for grep-ability):
- *
- *   Implemented: Wave 3  W-SEC-4   Consent-file lock (plugin-consents.lock via
- *                                   fs.openSync('wx')). Full Wave 3 implementation
- *                                   with stale-lock recovery and fsync.
- *   Implemented: Wave 3  W-SEC-7   Manifest+entrypoint fingerprint hashing.
- *                                   SHA-256 over canonical JSON + entrypoint bytes.
- *   Implemented: Wave 3  W-SEC-13  Sentinel probe assertNoShellInBrokerForwardPath.
- *                                   Probe pre-satisfied (JSON.stringify + stdin.write
- *                                   only, no shell). AST enforcement in Wave 3.
- *   Implemented: Wave 3  W-SEC-19  Sentinel probe assertPluginStdoutNeverReachesAuditWriter.
- *                                   Probe pre-satisfied (redactArgs() on all audit fields).
- *                                   AST enforcement in Wave 3.
- *   Implemented: Wave 4  W-CLI-1   Slash-command CLI (orchestray-plugin-cli.js).
- *   Implemented: Wave 4  W-CFG-1   .orchestray/config.json wired via server.js
- *                                   createPluginLoader call.
  */
 
 const { spawn } = require('child_process');
@@ -72,9 +54,8 @@ const { redactArgs }                          = require('./plugin-redact');
 const { writeEvent }                          = require('./audit-event-writer');
 const { isInsideAllowed, safeRealpath }       = require('./path-containment');
 
-// Wave 2 closeout (reviewer F-01, F-02): the same kebab-case regex used by
-// plugin-manifest-schema. Used here to filter plugin-controlled tool names
-// before they reach audit fields, and to bound plugin-derived error strings
+// Same kebab-case regex used by plugin-manifest-schema. Filters plugin-controlled
+// tool names before they reach audit fields, and bounds plugin-derived error strings
 // before they flow into mcpError / audit log.
 const _PLUGIN_NAME_RE = /^[a-z][a-z0-9-]{1,47}$/;
 const _PLUGIN_STRING_MAX = 256;
@@ -88,7 +69,7 @@ function _clampPluginString(s, maxLen = _PLUGIN_STRING_MAX) {
 }
 
 // ---------------------------------------------------------------------------
-// W-SEC-7: manifest+entrypoint fingerprint (Wave 3)
+// W-SEC-7: manifest+entrypoint fingerprint
 // ---------------------------------------------------------------------------
 
 /**
@@ -137,10 +118,10 @@ function computeFingerprint(manifest, entrypointAbs) {
 }
 
 // ---------------------------------------------------------------------------
-// W-SEC-DEF-2: defense-in-depth observation helpers (Wave 3)
+// W-SEC-DEF-2: defense-in-depth observation helpers
 //
 // Pure observers — none of these reject or mutate. Each maps to a single audit
-// event type. Wave 5 W-DOC-* will document the user-facing patterns.
+// event type.
 // ---------------------------------------------------------------------------
 
 const _SENSITIVE_ARG_KEY_RE = /password|token|secret|api[_-]?key|auth/i;
@@ -160,7 +141,7 @@ function _scanSensitiveArgKeys(args) {
   if (!args || typeof args !== 'object') return [];
   const matched = [];
   for (const k of Object.keys(args)) {
-    // Skip __proto__ / prototype / constructor (Wave 1 redactor convention).
+    // Skip __proto__ / prototype / constructor.
     if (k === '__proto__' || k === 'prototype' || k === 'constructor') continue;
     if (_SENSITIVE_ARG_KEY_RE.test(k)) matched.push(k);
   }
@@ -310,16 +291,12 @@ const DEFAULT_OPTS = Object.freeze({
    * manifest+entrypoint fingerprint. Per feedback_default_on_shipping the
    * default is now true; legacy tests opt out by passing `requireConsent: false`.
    *
-   * Implemented: Wave 4 W-CFG-1: wired via server.js createPluginLoader using
-   * config.plugin_loader.consent.require_explicit_grant.
    */
   requireConsent: true,
   /**
-   * W-SEC-4 (Wave 3): explicit consent-file path override. When unset, falls
+   * W-SEC-4: explicit consent-file path override. When unset, falls
    * back to ~/.orchestray/state/plugin-consents.json (or cwd-local if HOME
    * is unset, preserving worktree isolation in CI).
-   *
-   * Implemented: Wave 4 W-CFG-1: wired via opts.consentFile in server.js when configured.
    */
   consentFile: null,
   /** Override hook for tests: replaces the writeEvent dependency. */
@@ -483,7 +460,7 @@ function createLoader(userOpts) {
   const state = new Map();
 
   // -------------------------------------------------------------------------
-  // W-LISTCH-1 (Wave 4): tools/list_changed dual-path emission
+  // W-LISTCH-1: tools/list_changed dual-path emission
   //
   //   Path A: notifications/tools/list_changed JSON-RPC notification via
   //           opts.notifySink — Claude Code may pick this up and re-fetch
@@ -495,11 +472,11 @@ function createLoader(userOpts) {
   //           reliably re-fetch on the notification.
   //
   // Both paths fire after every successful overlay mutation (post-load
-  // handshake, post-unload). Kill switches mirror W-CFG-1:
+  // handshake, post-unload).
   //   opts.notify_list_changed === false → skip Path A
   //   opts.restart_flag_check  === false → skip Path B
   //
-  // W-LISTCH-1 satisfied: _postOverlayMutation() is invoked after each
+  // _postOverlayMutation() is invoked after each
   // registry._register/registry._unregister callsite (post-handshake load,
   // unload, dead-state cleanup); notifySink is wired via server.js.
   // -------------------------------------------------------------------------
@@ -557,14 +534,13 @@ function createLoader(userOpts) {
   //   degraded → unloaded
   // -------------------------------------------------------------------------
 
-  // Wave 2 closeout (reviewer F-03): user-initiated unload() may force any
-  // non-terminal state straight to 'unloaded' — including 'unknown' and
-  // 'loading' which previously required the unload() bypass at the call site.
-  // Listing those edges here keeps every state mutation grep-able through
-  // transition() instead of hidden direct ps.state= assignments.
+  // user-initiated unload() may force any non-terminal state straight to
+  // 'unloaded' — including 'unknown' and 'loading'. Listing those edges here
+  // keeps every state mutation grep-able through transition() instead of
+  // hidden direct ps.state= assignments.
   const ALLOWED_TRANSITIONS = Object.freeze({
     unknown:    new Set(['discovered', 'unloaded']),
-    // Wave 3 W-SEC-4: consent-required / fingerprint-mismatch-consent /
+    // W-SEC-4: consent-required / fingerprint-mismatch-consent /
     // consent-lock-error all transition discovered → dead before any spawn.
     discovered: new Set(['consented', 'dead', 'unloaded']),
     consented:  new Set(['loading', 'unloaded']),
@@ -608,20 +584,12 @@ function createLoader(userOpts) {
   }
 
   // -------------------------------------------------------------------------
-  // W-SEC-4 (Wave 3): consent file read/write under O_EXCL advisory lock,
-  // W-SEC-6 (Wave 3): atomic write via temp+rename.
+  // W-SEC-4: consent file read/write under O_EXCL advisory lock.
+  // W-SEC-6: atomic write via temp+rename.
   //
   // Lock semantics: <consentFile>.lock created via fs.openSync('wx'); held
   // only across read+parse+close (NOT across plugin spawn). Failing to acquire
-  // the lock fails closed (throws lock_contention) — Wave 4 W-CLI-1 may add a
-  // bounded retry, but Wave 3 prefers explicit failure over silent races.
-  //
-  // Implemented: Wave 4 W-CFG-1: consentFile path configurable via opts.consentFile.
-  // Implemented: Wave 4 W-CLI-1: /orchestray:plugin approve calls _writeConsent.
-  // Implemented: Wave 4 W-EVT-1: event types registered in event-schemas.md:
-  //   entrypoint_mismatch, plugin_sensitive_arg_detected,
-  //   plugin_capability_inconsistency, plugin_dangerous_name,
-  //   plugin_response_injection_suspected.
+  // the lock fails closed (throws lock_contention).
   // -------------------------------------------------------------------------
 
   function _consentFilePath() {
@@ -663,8 +631,6 @@ function createLoader(userOpts) {
     // file at least had a successful realpath, so it is not an arbitrary
     // attacker-supplied symlink target.
     //
-    // Implemented: Wave 4 W-CFG-1: opts.consentFile is the config-driven
-    // override. Operators pin it via createLoader({ consentFile: ... }).
     if (opts.consentFile) {
       // Caller-supplied path: accept after realpath success. The caller owns
       // the trust boundary in this branch.
@@ -704,11 +670,11 @@ function createLoader(userOpts) {
       return fs.openSync(lockPath, 'wx');
     } catch (err) {
       if (err && err.code === 'EEXIST') {
-        // v3-002 FIX (Wave 3 closeout): stale-lock recovery. Hold time is
-        // microseconds (read+parse+close); a lock older than 10s implies a
-        // crashed prior holder. Mirrors the bin/_lib/atomic-append.js pattern.
-        // Without this, a single Node crash mid-lock breaks ALL subsequent
-        // plugin loads until manual `rm <consentPath>.lock`.
+        // Stale-lock recovery. Hold time is microseconds (read+parse+close);
+        // a lock older than 10s implies a crashed prior holder. Mirrors
+        // the bin/_lib/atomic-append.js pattern. Without this, a single Node
+        // crash mid-lock breaks ALL subsequent plugin loads until manual
+        // `rm <consentPath>.lock`.
         try {
           const st = fs.statSync(lockPath);
           if (Date.now() - st.mtimeMs > 10_000) {
@@ -814,12 +780,10 @@ function createLoader(userOpts) {
       );
       current[pluginName] = record;
       const tmpPath = consentPath + '.tmp.' + process.pid + '.' + Date.now() + '.' + Math.floor(Math.random() * 1e9);
-      // v3-003 FIX (Wave 3 closeout): fsync the temp file BEFORE rename so a
-      // system crash between write and rename cannot leave a renamed-but-zero-
-      // byte consent file. POSIX rename is atomic for the directory entry,
-      // but the temp file's data may still be in page cache. fsync forces a
-      // page-cache flush. Cost is one disk-sync per consent grant —
-      // infrequent operation. Mirrors git's commit-graph writer.
+      // fsync the temp file BEFORE rename so a system crash between write and
+      // rename cannot leave a renamed-but-zero-byte consent file. POSIX rename
+      // is atomic for the directory entry, but the temp file's data may still
+      // be in page cache. Cost is one disk-sync per consent grant — infrequent.
       const tmpFd = fs.openSync(tmpPath, 'w');
       try {
         fs.writeSync(tmpFd, JSON.stringify(current, null, 2));
@@ -1028,7 +992,7 @@ function createLoader(userOpts) {
     const ps = state.get(pluginName);
     if (!ps) throw new Error(`plugin-loader.load: unknown plugin "${pluginName}"`);
 
-    // F-4: env-disabled list check. Reject before any spawn.
+    // Env-disabled list check: reject before any spawn.
     if (opts.disabledPlugins && opts.disabledPlugins.includes(pluginName)) {
       audit({ type: 'plugin_install_rejected', plugin_name: pluginName, reason: 'env_disabled' });
       if (ps.state !== 'dead' && ps.state !== 'unloaded') {
@@ -1037,14 +1001,14 @@ function createLoader(userOpts) {
       return { state: ps.state, plugin_name: pluginName };
     }
 
-    // W-SEC-4 + W-SEC-7 (Wave 3): consent gate. When opts.requireConsent
-    // (default true), read plugin-consents.json under the O_EXCL advisory
-    // lock and require the consent record's fingerprint to match the
-    // currently-discovered manifest+entrypoint fingerprint.
+    // W-SEC-4 + W-SEC-7: consent gate. When opts.requireConsent (default true),
+    // read plugin-consents.json under the O_EXCL advisory lock and require the
+    // consent record's fingerprint to match the currently-discovered
+    // manifest+entrypoint fingerprint.
     if (ps.state === 'discovered') {
       if (!opts.requireConsent) {
-        // Wave 2 / explicit-opt-out path (tests, dev). Still emit an audit
-        // event so the bypass is observable in the trail.
+        // Explicit-opt-out path (tests, dev). Still emit an audit event
+        // so the bypass is observable in the trail.
         transition(ps, 'consented');
         audit({
           type: 'plugin_consent_granted',
@@ -1104,15 +1068,12 @@ function createLoader(userOpts) {
       return { state: ps.state, plugin_name: pluginName };
     }
 
-    // v3-001 FIX (Wave 3 closeout): when state=dead from a prior consent
-    // failure, the restart timer in transitionDead can re-enter load() with
-    // state=dead. The discovered-only consent gate above (line 889) doesn't
-    // re-fire, which previously let the dead→loading→spawn path proceed
-    // WITHOUT consent. Per `feedback_no_close_out_deferral` we re-validate
-    // consent here. If still invalid, we exhaust the restart budget so the
-    // loader does not keep retrying. If consent was granted between fail and
-    // restart (user ran /orchestray:plugin approve in another shell), the
-    // plugin proceeds normally and we audit the recovery.
+    // When state=dead from a prior consent failure, the restart timer in
+    // transitionDead can re-enter load() with state=dead. The discovered-only
+    // consent gate above doesn't re-fire, which would let the dead→loading→spawn
+    // path proceed WITHOUT consent. Re-validate consent here. If still invalid,
+    // exhaust the restart budget so the loader does not keep retrying. If consent
+    // was granted between fail and restart, the plugin proceeds normally.
     if (ps.state === 'dead' && opts.requireConsent) {
       let record;
       try {
@@ -1157,7 +1118,7 @@ function createLoader(userOpts) {
       });
     }
 
-    // F-3: dry_run gate — discover/validate but do not spawn.
+    // dry_run gate — discover/validate but do not spawn.
     if (opts.dry_run) {
       audit({ type: 'plugin_dry_run', plugin_name: pluginName, action: 'would_load' });
       return { state: 'discovered', plugin_name: pluginName };
@@ -1198,7 +1159,7 @@ function createLoader(userOpts) {
    * @param {PluginState} ps
    */
   async function spawnAndHandshake(ps) {
-    // F-26: clear dead-proc reference before spawning so stale listeners
+    // Clear dead-proc reference before spawning so stale listeners
     // cannot double-fire if this is a restart attempt.
     if (ps.proc) {
       try { ps.proc.removeAllListeners(); } catch (_e) { /* ignore */ }
@@ -1224,10 +1185,10 @@ function createLoader(userOpts) {
       throw e;
     }
 
-    // W-SEC-7a (Wave 3): re-compute the manifest+entrypoint fingerprint right
-    // before spawn and compare against the value captured at discovery time.
-    // Any drift means the manifest or entrypoint was modified between consent
-    // and spawn — refuse to spawn and transition dead with a discrete reason.
+    // W-SEC-7a: re-compute the manifest+entrypoint fingerprint right before
+    // spawn and compare against the value captured at discovery time. Any drift
+    // means the manifest or entrypoint was modified between consent and spawn —
+    // refuse to spawn and transition dead with a discrete reason.
     if (ps.fingerprint) {
       let liveFingerprint;
       try {
@@ -1255,12 +1216,8 @@ function createLoader(userOpts) {
     // detached:true creates a new process group whose negative-pid receives
     // SIGTERM en masse on shutdown (W-SEC-17), killing grandchildren too.
     const spawnArgs = (() => {
-      // For runtime=node we use the entrypoint script directly under the
-      // current node process (interpreter required); for python we rely on
-      // the entrypoint being executable; for `any` we trust the entrypoint
-      // shebang. This Wave 2 keeps it simple: use process.execPath for node,
-      // and the entrypoint itself otherwise. The fixture runtime is "node"
-      // throughout the smoke tests.
+      // Use process.execPath for node runtime; for python, rely on python3;
+      // for `any`, trust the entrypoint shebang.
       if (ps.manifest.runtime === 'node') {
         return { command: process.execPath, args: [entrypointAbs] };
       }
@@ -1281,10 +1238,8 @@ function createLoader(userOpts) {
 
     ps.proc = proc;
 
-    // Wire stderr to the void for now (Wave 2 has no per-plugin stderr log;
-    // Wave 5 docs/jsonl-rotate will wire it). Drain it so the OS pipe buffer
-    // does not fill and stall the plugin.
-    proc.stderr.on('data', () => { /* drained — plugin stderr is unused in Wave 2 */ });
+    // Drain stderr so the OS pipe buffer does not fill and stall the plugin.
+    proc.stderr.on('data', () => { /* drained — plugin stderr is not logged */ });
 
     // Stdout line parser with caps (W-LOAD-5 / W-SEC-23).
     proc.stdout.setEncoding('utf8');
@@ -1358,9 +1313,9 @@ function createLoader(userOpts) {
     );
 
     if (divergent) {
-      // Wave 2 closeout F-01: plugin-controlled `actual_tools` names go
-      // through _safePluginName so a malicious plugin can't inject 64KB or
-      // bidi codepoints into the audit log.
+      // Plugin-controlled `actual_tools` names go through _safePluginName
+      // so a malicious plugin can't inject oversized or bidi codepoints
+      // into the audit log.
       audit({
         type: 'plugin_manifest_divergence',
         plugin_name: ps.plugin_name,
@@ -1372,9 +1327,7 @@ function createLoader(userOpts) {
       throw e;
     }
 
-    // W-SEC-DEF-2 (Wave 3): defense-in-depth observation. Pure observers,
-    // never reject — Wave 5 W-DOC-* will document the patterns to operators.
-    // Implemented: Wave 4 W-EVT-1: event types registered in event-schemas.md.
+    // W-SEC-DEF-2: defense-in-depth observation. Pure observers, never reject.
     const dangerous = _findDangerousToolName(ps.manifest.tools);
     if (dangerous) {
       audit({
@@ -1415,12 +1368,9 @@ function createLoader(userOpts) {
       const handler = async (args) => callTool(namespacedName, args || {});
       registry._register({
         name: namespacedName,
-        // v2.3.0 Wave 5 (W-DEG-1 wire-fix): pass plugin_name through so
-        // listTools() can call pluginStateAccessor(plugin_name) to annotate
-        // degraded plugins with '[DEGRADED] ' and suppress dead/unloaded
-        // plugins from tools/list. Without this, every overlay entry has
-        // plugin_name=undefined, stateOf(undefined) returns 'ready', and the
-        // W-DEG-1/W-SEC-25 filtering never fires.
+        // Pass plugin_name through so listTools() can call
+        // pluginStateAccessor(plugin_name) to annotate degraded plugins with
+        // '[DEGRADED] ' and suppress dead/unloaded plugins from tools/list.
         plugin_name: ps.plugin_name,
         definition: {
           name: namespacedName,
@@ -1431,7 +1381,7 @@ function createLoader(userOpts) {
       });
       ps.registeredToolNames.add(namespacedName);
     }
-    // F-1: emit tools/list_changed ONCE per plugin load, not once per tool.
+    // Emit tools/list_changed ONCE per plugin load, not once per tool.
     _postOverlayMutation();
 
     transition(ps, 'ready');
@@ -1525,7 +1475,6 @@ function createLoader(userOpts) {
       // call (G2 §10).
       if (ps.state === 'ready') {
         transition(ps, 'degraded');
-        // F-5: emit plugin_degraded at the ready→degraded transition site.
         audit({ type: 'plugin_degraded', plugin_name: ps.plugin_name, reason: 'protocol_violation', error_count_in_window: 1 });
       }
       return;
@@ -1539,9 +1488,8 @@ function createLoader(userOpts) {
       ps.pendingCalls.delete(frame.id);
       try { clearTimeout(pending.timer); } catch (_e) { /* ignore */ }
       if (frame.error) {
-        // Wave 2 closeout F-02: clamp plugin-controlled error messages before
-        // they can flow into our audit log via plugin_tool_failure or escape
-        // into mcpError responses returned to Claude Code.
+        // Clamp plugin-controlled error messages before they can flow into our
+        // audit log via plugin_tool_failure or escape into mcpError responses.
         pending.reject(new Error(
           frame.error.message
             ? `${frame.error.code || ''} ${_clampPluginString(frame.error.message)}`.trim()
@@ -1553,8 +1501,8 @@ function createLoader(userOpts) {
       return;
     }
 
-    // Notifications (no id) — Wave 2 logs and drops them. Wave 4+ may handle
-    // notifications/tools/list_changed pushed by the plugin.
+    // Notifications (no id) — logged and dropped; list_changed notifications
+    // from plugins are not handled.
   }
 
   /**
@@ -1626,10 +1574,9 @@ function createLoader(userOpts) {
       return mcpError(`input validation failed: ${JSON.stringify(validator.errors || [])}`);
     }
 
-    // W-SEC-DEF-2 (Wave 3): observe sensitive-arg names BEFORE we forward.
-    // The redactor (W-REDACT-1) already scrubs values from the audit log;
-    // this signal records the FACT that a sensitive-named arg was passed.
-    // Implemented: Wave 4 W-EVT-1: plugin_sensitive_arg_detected registered.
+    // W-SEC-DEF-2: observe sensitive-arg names BEFORE forwarding.
+    // The redactor already scrubs values; this signal records the FACT that a
+    // sensitive-named arg was passed.
     const sensitiveKeys = _scanSensitiveArgKeys(args);
     if (sensitiveKeys.length > 0) {
       audit({
@@ -1640,13 +1587,13 @@ function createLoader(userOpts) {
       });
     }
 
-    // F-22: gate tool-invocation events on emitToolInvocationEvents opt.
+    // Gate tool-invocation events on emitToolInvocationEvents opt.
     if (opts.emitToolInvocationEvents !== false) {
       audit({
         type: 'plugin_tool_invoked',
         plugin_name: parsed.pluginName,
         tool_name: parsed.toolName,
-        // F-22: gate redactArgs on opts.redactArgs (default true; never false per threat model).
+        // redactArgs defaults true; must never be false per threat model.
         args_redacted: opts.redactArgs !== false ? redactArgs(args) : {},
       });
     }
@@ -1682,7 +1629,6 @@ function createLoader(userOpts) {
       // owns the dead transition.
       if (ps.state === 'ready') {
         transition(ps, 'degraded');
-        // F-5: emit plugin_degraded at the ready→degraded transition site.
         audit({ type: 'plugin_degraded', plugin_name: parsed.pluginName, reason: 'tool_failure', error_count_in_window: 1 });
       }
       audit({

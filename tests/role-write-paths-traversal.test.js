@@ -91,9 +91,9 @@ describe('v2.2.21 T8 — compiled allowlists are root-anchored', () => {
 describe('v2.2.21 T8 — validatePathPreAllowlist', () => {
   const { validatePathPreAllowlist } = gate;
 
-  // v2.3.0 Wave 5: absolute paths are no longer rejected outright. The relPath
-  // dotdot check is the load-bearing traversal protection — an absolute path
-  // outside cwd resolves to a `..`-prefixed relPath, which is caught.
+  // Absolute paths are no longer rejected outright. The relPath dotdot check
+  // is the load-bearing traversal protection — an absolute path outside cwd
+  // resolves to a `..`-prefixed relPath, which is caught.
   // See bin/gate-role-write-paths.js validatePathPreAllowlist comment block.
   test('rejects absolute path forges via the relPath dotdot check', () => {
     // path.relative(/tmp/cwd, /etc/foo.md) → ../../etc/foo.md → trips dotdot.

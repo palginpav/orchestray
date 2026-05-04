@@ -463,7 +463,7 @@ contracts:
         timeout: 10_000,
         env: { ...process.env },
       });
-      // v2.2.11: MUST exit 0 (soft-warn only)
+      // MUST exit 0 (soft-warn only)
       assert.equal(res.status, 0, 'should exit 0 in soft-warn mode (v2.2.11)');
       const events = readEvents(tmp);
       const checks = events.filter(e => e.type === 'contract_check');

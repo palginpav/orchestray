@@ -600,8 +600,8 @@ describe('shield-session-cache MAX_CACHE_ENTRIES pruning (T3 T4)', () => {
 
 describe('Shield R14 — W2 path normalization (relative vs absolute)', () => {
   test('relative and absolute path variants deduplicate identically', () => {
-    // W2 (T2 F2): context-shield normalizes file_path via path.resolve(cwd, rawFilePath)
-    // before building the cache key. A relative path and its absolute equivalent must
+    // context-shield normalizes file_path via path.resolve(cwd, rawFilePath) before
+    // building the cache key. A relative path and its absolute equivalent must
     // deduplicate against each other — otherwise two cache entries exist for the same file.
     const dir = makeDir();
     const filePath = makeFile(dir, 'dedup-norm.md', '# Normalization test\n');
@@ -630,9 +630,9 @@ describe('Shield R14 — W2 path normalization (relative vs absolute)', () => {
 
 describe('Shield R14 — W3 non-existent path returns allow', () => {
   test('second read of non-existent path returns allow (no mtime to deduplicate on)', () => {
-    // W3 (T2 F3): if the file does not exist, fileStat is null → allow unconditionally.
-    // A non-existent file has no mtime, so caching an empty mtime for it would cause
-    // a false-deny on the second probe of the same nonexistent path.
+    // If the file does not exist, fileStat is null → allow unconditionally.
+    // A non-existent file has no mtime, so caching an empty mtime for it would
+    // cause a false-deny on the second probe of the same nonexistent path.
     const dir = makeDir();
     const nonExistentPath = path.join(dir, 'does-not-exist.md');
     const sessionId = 'test-session-nonexist';

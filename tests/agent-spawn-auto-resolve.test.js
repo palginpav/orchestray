@@ -149,12 +149,9 @@ function agentPayload(dir, overrides = {}) {
 
 describe('Test 1: routing_lookup resolves to sonnet', () => {
   test('missing model + matching routing.jsonl row → auto-resolved, warning emitted', () => {
-    // v2.2.9 B-7.4: default is hard-block on missing model.
-    // Pass ORCHESTRAY_STRICT_MODEL_REQUIRED=0 to restore legacy auto-resolve cascade.
     const dir = makeDir();
     writeRoutingEntry(dir, { model: 'sonnet', task_id: 'DEV-1', agent_type: 'developer' });
     const { status, stderr } = runAutoResolve(agentPayload(dir));
-    // Should exit 0 — auto-resolved to sonnet, routing mismatch passes (sonnet===sonnet).
     assert.equal(status, 0, 'Expected exit 0 but got ' + status + '. stderr: ' + stderr);
     assert.match(stderr, /auto-resolved from routing\.jsonl/, 'Expected routing_lookup warning');
     assert.match(stderr, /"sonnet"/, 'Expected resolved model sonnet in warning');
@@ -167,18 +164,10 @@ describe('Test 1: routing_lookup resolves to sonnet', () => {
 
 describe('Test 2: routing row with model=inherit falls through Stage 1', () => {
   test('routing entry model=inherit is rejected by Stage 1; global_default_sonnet warning emitted', () => {
-    // When a routing entry has model=inherit, Stage 1 discards it (S02).
-    // Stage 3 resolves to sonnet. The routing mismatch check then fires because
-    // the routing entry's recorded model (inherit) differs from sonnet — this is
-    // correct behavior: a poisoned inherit entry in routing.jsonl is still a mismatch.
-    // The test verifies: (a) inherit was not accepted as-is, (b) global_default_sonnet warning fired.
-    // v2.2.9 B-7.4: use ORCHESTRAY_STRICT_MODEL_REQUIRED=0 to exercise auto-resolve.
     const dir = makeDir();
     writeRoutingEntry(dir, { model: 'inherit', task_id: 'DEV-1', agent_type: 'developer' });
     const { stderr } = runAutoResolve(agentPayload(dir));
-    // Must not accept 'inherit' from routing (S02 closure).
     assert.doesNotMatch(stderr, /auto-resolved from routing\.jsonl.*"inherit"/, 'Must not accept inherit from routing');
-    // Must emit Stage 3 global default warning (Stage 1 rejected inherit).
     assert.match(stderr, /defaulting to "sonnet"/, 'Expected global_default_sonnet warning after inherit rejection');
   });
 });
@@ -189,16 +178,10 @@ describe('Test 2: routing row with model=inherit falls through Stage 1', () => {
 
 describe('Test 3: routing row with invalid model falls through Stage 1', () => {
   test('routing entry model=gpt-4 is rejected by Stage 1; global_default_sonnet warning emitted', () => {
-    // Stage 1 rejects gpt-4 (fails isValidModel). Stage 3 resolves to sonnet.
-    // The routing mismatch check sees the entry (gpt-4) vs sonnet → blocks.
-    // Test verifies: gpt-4 was not accepted via routing_lookup.
-    // v2.2.9 B-7.4: use ORCHESTRAY_STRICT_MODEL_REQUIRED=0 to exercise auto-resolve.
     const dir = makeDir();
     writeRoutingEntry(dir, { model: 'gpt-4', task_id: 'DEV-1', agent_type: 'developer' });
     const { stderr } = runAutoResolve(agentPayload(dir));
-    // Must not accept 'gpt-4' from routing (isValidModel rejects it).
     assert.doesNotMatch(stderr, /auto-resolved from routing\.jsonl.*"gpt-4"/, 'Must not accept gpt-4 from routing');
-    // Must emit Stage 3 global default warning.
     assert.match(stderr, /defaulting to "sonnet"/, 'Expected global_default_sonnet warning after invalid routing model');
   });
 });
@@ -209,9 +192,6 @@ describe('Test 3: routing row with invalid model falls through Stage 1', () => {
 
 describe('Test 4: frontmatter_default path', () => {
   test('no routing + agents/developer.md has model: sonnet → frontmatter resolved', () => {
-    // v2.2.2 Fix A2: Stage 2 reads `model:` (was `default_model:` which never
-    // appeared in any agent file). Frontmatter resolves now.
-    // v2.2.9 B-7.4: use ORCHESTRAY_STRICT_MODEL_REQUIRED=0 to exercise auto-resolve.
     const dir = makeDir();
     writeAgentFile(dir, 'developer', 'model: sonnet\n');
     const { status, stderr } = runAutoResolve(agentPayload(dir));
@@ -227,9 +207,7 @@ describe('Test 4: frontmatter_default path', () => {
 
 describe('Test 5: global_default_sonnet fallback', () => {
   test('no routing, no frontmatter default → global sonnet applied', () => {
-    // v2.2.9 B-7.4: use ORCHESTRAY_STRICT_MODEL_REQUIRED=0 to exercise auto-resolve.
     const dir = makeDir();
-    // No routing.jsonl, no agents/ directory.
     const { status, stderr } = runAutoResolve(agentPayload(dir));
     assert.equal(status, 0, 'Expected exit 0 but got ' + status + '. stderr: ' + stderr);
     assert.match(stderr, /defaulting to "sonnet"/, 'Expected global_default_sonnet warning');
@@ -242,14 +220,10 @@ describe('Test 5: global_default_sonnet fallback', () => {
 
 describe('Test 6: path-traversal subagent_type rejected (S01)', () => {
   test('subagent_type=../../etc/passwd → CANONICAL_AGENTS rejects, falls to default', () => {
-    // v2.2.9 B-7.4: use ORCHESTRAY_STRICT_MODEL_REQUIRED=0 to exercise auto-resolve.
     const dir = makeDir();
     const { status, stderr } = runAutoResolve(agentPayload(dir, { subagent_type: '../../etc/passwd' }));
-    // Should NOT block spawn (fail-open) — the path traversal is rejected but default applies.
     assert.equal(status, 0, 'Expected exit 0 (fail-open path). stderr: ' + stderr);
-    // Must not read /etc/passwd — the path-escape type is not in CANONICAL_AGENTS.
     assert.doesNotMatch(stderr, /Stage 2.*etc\/passwd/, 'Must not attempt to read /etc/passwd');
-    // Must resolve to global default (canonical check prevents frontmatter read).
     assert.match(stderr, /defaulting to "sonnet"/, 'Expected global_default_sonnet for non-canonical type');
   });
 });
@@ -260,11 +234,9 @@ describe('Test 6: path-traversal subagent_type rejected (S01)', () => {
 
 describe('Test 7: non-canonical subagent_type falls to default', () => {
   test('subagent_type=nonexistent_agent → not in CANONICAL_AGENTS, global default applied', () => {
-    // v2.2.9 B-7.4: use ORCHESTRAY_STRICT_MODEL_REQUIRED=0 to exercise auto-resolve.
     const dir = makeDir();
     const { status, stderr } = runAutoResolve(agentPayload(dir, { subagent_type: 'nonexistent_agent' }));
     assert.equal(status, 0, 'Expected exit 0 (fail-open). stderr: ' + stderr);
-    // The non-canonical type skips Stage 2 and goes to Stage 3.
     assert.match(stderr, /defaulting to "sonnet"/, 'Expected global_default_sonnet for non-canonical type');
   });
 });
@@ -296,11 +268,8 @@ describe('Test 9: explicit model=inherit hard-blocks', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Test 10: v2.2.9 B-7.4 — default is hard-block; =0 opt-out restores auto-resolve
+// Test 10: default is hard-block; =0 opt-out restores auto-resolve
 // ---------------------------------------------------------------------------
-// v2.2.9 B-7.4: semantics flipped. Default (no env var) = hard-block.
-// ORCHESTRAY_STRICT_MODEL_REQUIRED=0 is the ONLY opt-out (restores auto-resolve).
-// ORCHESTRAY_STRICT_MODEL_REQUIRED=1 has no special meaning (same as default).
 describe('Test 10: ORCHESTRAY_STRICT_MODEL_REQUIRED=0 restores auto-resolve (B-7.4)', () => {
   test('default (no env var) + missing model → exit 2 (hard-block is now the default)', () => {
     const dir = makeDir();
@@ -378,7 +347,6 @@ describe('Test 12: warning stderr format matches character-exact templates', () 
   });
 
   test('frontmatter_default warning starts with [orchestray] gate-agent-spawn: prefix', () => {
-    // v2.2.2 Fix A2: Stage 2 reads `model:` (was `default_model:`).
     const dir = makeDir();
     writeAgentFile(dir, 'developer', 'model: sonnet\n');
     const { stderr } = runAutoResolve(agentPayload(dir));
@@ -401,18 +369,13 @@ describe('Test 12: warning stderr format matches character-exact templates', () 
 
 describe('AC-11 (S02 closure): routing inherit-bypass prevented', () => {
   test('routing row model=inherit is discarded at Stage 1 (not accepted as-is)', () => {
-    // v2.2.2 Fix A2: Stage 2 reads `model:` (was `default_model:`).
     const dir = makeDir();
     writeRoutingEntry(dir, { model: 'inherit', task_id: 'DEV-1', agent_type: 'developer' });
     writeAgentFile(dir, 'developer', 'model: haiku\n');
     const { stderr } = runAutoResolve(agentPayload(dir));
-    // Stage 1 rejects inherit (S02); Stage 2 resolves to haiku from frontmatter.
-    // The critical assertion: Stage 1 did NOT accept inherit from routing.jsonl.
     assert.doesNotMatch(stderr, /auto-resolved from routing\.jsonl.*"inherit"/, 'Must not accept inherit from routing');
-    // Stage 2 warning should appear — inherit was discarded, frontmatter was used.
     assert.match(stderr, /auto-resolved from agents\/developer\.md frontmatter: "haiku"/,
       'Expected frontmatter_default after inherit routing bypass rejected');
-    // The inherit hard-block at lines 196+ must NOT fire — we did not pass inherit through.
     assert.doesNotMatch(stderr, /model="inherit" is forbidden/, 'Must not hard-block on inherit — it was discarded before the explicit-model path');
   });
 });

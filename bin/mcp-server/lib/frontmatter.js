@@ -119,19 +119,15 @@ function _parseValue(raw) {
   // Booleans (case-sensitive — matches Stage 2 plan §6)
   if (raw === 'true') return true;
   if (raw === 'false') return false;
-  // Inline array: [item1, item2, ...] — used by layer_b_markers (v2.1.6 W4)
-  // Tolerant: elements may be quoted or unquoted scalars. Nested arrays are
-  // not supported — they are preserved as strings.
+  // Inline array: [item1, item2, ...]
+  // Tolerant: elements may be quoted/unquoted scalars; nested arrays not supported.
   if (raw.startsWith('[') && raw.endsWith(']')) {
     return _parseInlineArray(raw);
   }
   // Quoted strings — strip the matching pair.
   if (raw.length >= 2) {
     if (raw.startsWith('"') && raw.endsWith('"')) {
-      // B4-05: decode all JSON string escape sequences so that values written
-      // via JSON.stringify (e.g. multi-line approach/description fields) round-
-      // trip correctly. The inner slice is a valid JSON string literal so
-      // JSON.parse is the authoritative decoder.
+      // Decode JSON string escapes so values written via JSON.stringify round-trip.
       try {
         return JSON.parse(raw);
       } catch (_) {
@@ -260,9 +256,7 @@ function _serializeValue(v) {
     if (v !== v.trim()) return JSON.stringify(v);
     if (v === 'true' || v === 'false' || v === 'null' || v === '~') return JSON.stringify(v);
     if (/^-?\d+(\.\d+)?$/.test(v)) return JSON.stringify(v);
-    // B4-05: strings containing newlines, carriage returns, tabs, or backslashes
-    // must be JSON-quoted so they occupy exactly one YAML line and round-trip
-    // correctly through _parseValue's JSON.parse branch.
+    // JSON-quote strings with newlines/CR/tabs/backslashes for round-trip correctness.
     if (/[\n\r\t\\]/.test(v)) return JSON.stringify(v);
     return v;
   }
@@ -355,7 +349,7 @@ function rewriteField(filepath, fieldName, newValue) {
 }
 
 // ---------------------------------------------------------------------------
-// writeFrontmatter (B1 v2.1.0)
+// writeFrontmatter
 // ---------------------------------------------------------------------------
 
 /**
@@ -453,6 +447,6 @@ module.exports = {
   parse,
   stringify,
   rewriteField,
-  // B1 (v2.1.0): full frontmatter+body write for the promote pipeline
+  // Full frontmatter+body write for the promote pipeline.
   writeFrontmatter,
 };

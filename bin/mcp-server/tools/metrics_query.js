@@ -298,7 +298,7 @@ async function handle(input, context) {
 
   const { window: win, group_by: groupByField, metric } = input;
 
-  // Kill-switch: ORCHESTRAY_METRICS_DISABLED=1
+  // Kill-switch env var check.
   if (process.env.ORCHESTRAY_METRICS_DISABLED === '1') {
     return toolSuccess({
       groups: [],
@@ -357,8 +357,7 @@ async function handle(input, context) {
   // Aggregate
   const groups = aggregate(filtered, groupByField, metric);
 
-  // R-FPX (v2.1.12): apply field projection when `fields` is requested.
-  // Omitting `fields` returns the full legacy response (backward compat).
+  // Apply field projection when `fields` is requested; omit for full response.
   const fieldSpec = parseFields(input && input.fields);
   if (fieldSpec && fieldSpec.error) {
     return toolError('metrics_query: ' + fieldSpec.error);
@@ -427,7 +426,7 @@ if (require.main === module && process.argv.includes('--self-test')) {
     },
   ];
 
-  // Test count metric grouped by agent_kind
+  // count grouped by agent_kind
   const countGroups = aggregate(syntheticRows, 'agent_kind', 'count');
   assert.strictEqual(countGroups.length, 3, 'Expected 3 groups (developer, pm, reviewer)');
   const pmGroup = countGroups.find(g => g.key === 'pm');
@@ -435,23 +434,21 @@ if (require.main === module && process.argv.includes('--self-test')) {
   assert.strictEqual(pmGroup.n, 1);
   assert.strictEqual(pmGroup.mean, 1);
 
-  // Test cost_usd grouped by none
+  // cost_usd grouped by none
   const costGroups = aggregate(syntheticRows, 'none', 'cost_usd');
   assert.strictEqual(costGroups.length, 1, 'Expected single group for none');
   assert.strictEqual(costGroups[0].key, '__all__');
   assert.strictEqual(costGroups[0].n, 3);
-  // mean of [0.005, 0.002, 0.015] = 0.022 / 3
   const expectedMean = (0.005 + 0.002 + 0.015) / 3;
   assert.ok(Math.abs(costGroups[0].mean - expectedMean) < 1e-9, 'Mean cost mismatch');
 
-  // Test cache_hit_ratio — null row should be excluded from mean/p50 but counted in n
+  // cache_hit_ratio — null row excluded from mean/p50 but counted in n
   const cacheGroups = aggregate(syntheticRows, 'none', 'cache_hit_ratio');
   assert.strictEqual(cacheGroups[0].n, 3, 'n should count all rows');
-  // mean of [0.3, 0.5] (pm row dropped — null cache_hit_ratio)
   const expectedCacheMean = (0.3 + 0.5) / 2;
   assert.ok(Math.abs(cacheGroups[0].mean - expectedCacheMean) < 1e-9, 'Cache hit ratio mean mismatch');
 
-  // Test window cutoff filter — old row should be excluded
+  // window cutoff filter — old row excluded
   const oldRow = Object.assign({}, syntheticRows[0], {
     timestamp: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(), // 10 days ago
   });
@@ -464,12 +461,10 @@ if (require.main === module && process.argv.includes('--self-test')) {
   });
   assert.strictEqual(filtered7d.length, 2, 'Old row should be filtered out in 7d window');
 
-  // Test kill-switch (no-op path — handled by env var in handle())
+  // kill-switch path (env var in handle())
   const disabledResult = (() => {
     const orig = process.env.ORCHESTRAY_METRICS_DISABLED;
     process.env.ORCHESTRAY_METRICS_DISABLED = '1';
-    // We can't easily call the async handle() synchronously, so we test the
-    // env-var branch by checking the condition directly.
     const disabled = process.env.ORCHESTRAY_METRICS_DISABLED === '1';
     if (orig === undefined) delete process.env.ORCHESTRAY_METRICS_DISABLED;
     else process.env.ORCHESTRAY_METRICS_DISABLED = orig;

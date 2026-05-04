@@ -256,7 +256,6 @@ async function handle(input, context) {
 
   // Everything inside here executes while the lock is held.
   try {
-    // ----------------------------------------------------------------
     // 4. Check artifact file existence (overwrite guard).
     // ----------------------------------------------------------------
     const fileExists = fs.existsSync(artifactAbsPath);
@@ -266,7 +265,6 @@ async function handle(input, context) {
       );
     }
 
-    // ----------------------------------------------------------------
     // 5. Read + parse current index.json.
     // ----------------------------------------------------------------
     let indexObj;
@@ -295,7 +293,6 @@ async function handle(input, context) {
       indexObj[bucket] = [];
     }
 
-    // ----------------------------------------------------------------
     // 6. ID collision check.
     // ----------------------------------------------------------------
     const bucketArr = indexObj[bucket];
@@ -307,19 +304,13 @@ async function handle(input, context) {
       );
     }
 
-    // ----------------------------------------------------------------
     // 7. Write the artifact file (tmp + rename = atomic).
-    //    B1 (v2.0.15 preflight): snapshot prior content when overwriting so
-    //    step-10 index-write failure can roll back to the prior file state
-    //    instead of leaving the caller with a half-committed overwrite.
     // ----------------------------------------------------------------
     let priorArtifactSnapshot = null;
     if (fileExists) {
       try {
         priorArtifactSnapshot = fs.readFileSync(artifactAbsPath);
       } catch (_e) {
-        // If we cannot snapshot, roll back on index failure degrades to
-        // best-effort unlink (better than orphan but loses prior content).
         priorArtifactSnapshot = null;
       }
     }
@@ -335,14 +326,10 @@ async function handle(input, context) {
 
     const bytesWritten = Buffer.byteLength(input.content, 'utf8');
 
-    // ----------------------------------------------------------------
     // 8. Build the new index entry.
-    //    Canonical path is stored relative to the project root.
     // ----------------------------------------------------------------
     let canonicalPath;
     {
-      // Compute project root: if context.projectRoot is set, use it;
-      // otherwise the kbDir is <projectRoot>/.orchestray/kb.
       const projectRoot = (context && context.projectRoot)
         ? context.projectRoot
         : path.resolve(kbDir, '..', '..');
@@ -358,7 +345,6 @@ async function handle(input, context) {
     if (input.task) newEntry.task = input.task;
     if (input.orchestration_id) newEntry.orchestration_id = input.orchestration_id;
 
-    // ----------------------------------------------------------------
     // 9. Update the bucket array in-place (replace or append).
     // ----------------------------------------------------------------
     if (existingIdx !== -1) {
@@ -372,7 +358,6 @@ async function handle(input, context) {
       (Array.isArray(indexObj.entries) ? indexObj.entries.length : 0) +
       KB_BUCKETS.reduce((sum, b) => sum + (Array.isArray(indexObj[b]) ? indexObj[b].length : 0), 0);
 
-    // ----------------------------------------------------------------
     // 10. Write the updated index.json atomically.
     // ----------------------------------------------------------------
     const tmpIndex = indexPath + '.kb_write_tmp';
@@ -405,10 +390,9 @@ async function handle(input, context) {
       );
     }
 
-    // ----------------------------------------------------------------
     // 11. Return success.
     // ----------------------------------------------------------------
-    // W6 (F06): record successful call only after artifact+index write succeeds.
+    // Record successful call only after artifact+index write succeeds.
     if (orchId && taskId && _projectRoot) {
       recordSuccess(
         { orchestration_id: orchId, task_id: taskId, tool_name: 'kb_write' },

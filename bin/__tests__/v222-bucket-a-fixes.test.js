@@ -72,8 +72,8 @@ describe('v2.2.2 A2 — gate-agent-spawn frontmatter `model:` resolver', () => {
   });
 
   test('legacy `default_model: opus` → null (rename is exclusive, NOT additive)', () => {
-    // v2.2.2 Fix A2: the regex now reads `model:` only, so legacy `default_model:`
-    // values are NOT picked up. Confirms the rename is a hard switch.
+    // The regex reads `model:` only, so legacy `default_model:` values are NOT
+    // picked up. Confirms the rename is a hard switch.
     const content = '---\nname: foo\ndefault_model: opus\n---\nbody';
     assert.equal(regexCheck(content), null);
   });
@@ -83,9 +83,9 @@ describe('v2.2.2 A2 — gate-agent-spawn frontmatter `model:` resolver', () => {
     if (!fs.existsSync(reviewerPath)) return; // skip if file moved
     const content = fs.readFileSync(reviewerPath, 'utf8');
     const value = regexCheck(content);
-    // Note: at v2.2.2 the reviewer agent declares `model: inherit`. Future
-    // releases may flip this to opus or sonnet; the regression here is only
-    // that the regex MUST find SOME value (not null).
+    // The reviewer agent currently declares `model: inherit`. Future releases
+    // may flip this; the regression here is only that the regex MUST find
+    // SOME value (not null).
     assert.ok(value !== null, 'reviewer.md must have a `model:` line that the regex finds');
   });
 });

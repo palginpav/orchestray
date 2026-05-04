@@ -245,11 +245,9 @@ function resolveActualTokens(event, cwd) {
     // --- Primary: first user message in transcript JSONL (aligned with estimate scope) ---
     const transcriptPath = event.agent_transcript_path || null;
     if (typeof transcriptPath === 'string' && transcriptPath) {
-      // S2 fix (v2.2.19): when a transcript path IS provided, never fall through to
-      // event.usage.input_tokens — that field is session-cumulative and produces large
-      // negatives for multi-turn agents (e.g. researcher). If the transcript fails the
-      // containment check or is unreadable we return unknown rather than a misleading value.
-      // The secondary/tertiary fallbacks only apply when NO transcript path was provided.
+      // When a transcript path is provided, never fall through to event.usage.input_tokens
+      // (session-cumulative; produces large negatives for multi-turn agents).
+      // Return unknown instead of a misleading value if the transcript is unreadable.
       let resolvedPath;
       try { resolvedPath = safeRealpath(transcriptPath); } catch (_e) { resolvedPath = null; }
 

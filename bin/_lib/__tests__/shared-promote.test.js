@@ -419,10 +419,8 @@ describe('4. AWS access key (AKIA...)', () => {
 describe('5. Path/identity strip', () => {
 
   test('/home/<user>/ path is stripped from sanitized output', async () => {
-    // B1's path strip is two-pass: first /home/<user>/ → <home>/, then any
-    // remaining absolute path (e.g., /orchestray/bin/something.js) → <path>.
-    // Final result: "<home><path>" — the intermediate <home>/ is consumed by
-    // the second pass when the residual path is also absolute.
+    // Path strip is two-pass: first /home/<user>/ → <home>/, then any
+    // remaining absolute path → <path>. Final: "<home><path>".
     const { projectDir, sharedDir } = makeTmpProject();
     try {
       const body = '## Context\nSource: /home/palgin/orchestray/bin/something.js\n';
@@ -519,9 +517,7 @@ describe('5. Path/identity strip', () => {
       writePattern(projectDir, 'path-opt', { body });
       const result = await runPromote('path-opt', projectDir, sharedDir, { dryRun: true });
       assert.equal(result.ok, true);
-      // B1's regex catches all absolute paths including /opt/...
-      // It may or may not strip this — test what B1 actually does.
-      // The regex: /(?<!\w)(\/[a-zA-Z0-9_.~-]+(?:\/[a-zA-Z0-9_.~-]+)+)/g
+          // The regex: /(?<!\w)(\/[a-zA-Z0-9_.~-]+(?:\/[a-zA-Z0-9_.~-]+)+)/g
       // /opt/shared/something matches this pattern.
       assert.ok(
         !result.sanitizedBody.includes('/opt/shared/something'),
@@ -730,7 +726,7 @@ describe('7. Size cap', () => {
   });
 
   test('pattern body that makes parsed body exactly 8192 bytes is PROMOTED (at the boundary, <= check)', async () => {
-    // B1 uses: sizeBytes <= SIZE_CAP_BYTES — at the boundary is allowed.
+    // At the boundary (sizeBytes <= SIZE_CAP_BYTES) is allowed.
     //
     // IMPORTANT: writePattern creates a file whose parsed body is:
     //   "\n\n" + body_text + "\n"  (3 extra bytes from the frontmatter closing newline + trailing newline)

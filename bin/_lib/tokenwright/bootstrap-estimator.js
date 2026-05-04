@@ -242,7 +242,7 @@ function bootstrapEstimate(agentType, opts) {
       agent_type: agentType,
       reason:     error,
     }, cwd);
-    // W#9: use bytes/4 when inBytes is available, otherwise STATIC_FALLBACK.
+    // bytes/4 when inBytes available, otherwise STATIC_FALLBACK.
     return (opts && typeof opts.inBytes === 'number' && opts.inBytes > 0)
       ? Math.round(opts.inBytes / 4)
       : STATIC_FALLBACK;
@@ -254,9 +254,7 @@ function bootstrapEstimate(agentType, opts) {
       reason:      'insufficient_samples',
       sample_size: samples.length,
     }, cwd);
-    // W#9: bytes/4 is a better cold-start estimate than STATIC_FALLBACK=500
-    // for prompts larger than ~2000 bytes. Rolling median takes over once
-    // MIN_SAMPLES (3) historical actuals are available.
+    // bytes/4 is a better cold-start estimate; rolling median takes over after MIN_SAMPLES.
     return (opts && typeof opts.inBytes === 'number' && opts.inBytes > 0)
       ? Math.round(opts.inBytes / 4)
       : STATIC_FALLBACK;

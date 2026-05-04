@@ -205,7 +205,7 @@ function readRoutingEventsFromAudit(eventsPath) {
   return { decisions, hookRows, stopRows };
 }
 
-// Per-model output token caps (mirrors emit-routing-outcome.js MODEL_OUTPUT_CAPS).
+// Per-model output token caps.
 const MODEL_OUTPUT_CAPS = {
   haiku:  32768,
   sonnet: 32768,
@@ -348,11 +348,7 @@ async function handle(input, context) {
   const taskId = (input && typeof input.task_id === 'string') ? input.task_id : null;
   const agentType = (input && typeof input.agent_type === 'string') ? input.agent_type : null;
 
-  // -----------------------------------------------------------------------
-  // Step 1: collect routing_decision events from events.jsonl (emitted or
-  // synthesised from historical Variant A + Variant C pairs).
-  // routing_decision rows are preferred over the split routing_outcome pair.
-  // -----------------------------------------------------------------------
+  // Step 1: collect routing_decision events (preferred over routing_outcome pairs).
   const eventsPath = path.join(projectRoot, '.orchestray', 'audit', 'events.jsonl');
   const { decisions: emittedDecisions, hookRows, stopRows } = readRoutingEventsFromAudit(eventsPath);
   const synthesised = synthesiseDecisions(hookRows, stopRows);
@@ -373,17 +369,11 @@ async function handle(input, context) {
     return tb - ta; // newest first
   });
 
-  // -----------------------------------------------------------------------
-  // Step 2: also read routing.jsonl (PM-written decomposition decisions).
-  // These are a separate source and are NOT merged with routing_decision rows.
-  // -----------------------------------------------------------------------
+  // Step 2: read routing.jsonl (PM-written decomposition decisions; separate source).
   const routingPath = path.join(projectRoot, '.orchestray', 'state', 'routing.jsonl');
   const allRoutingEntries = readAllRoutingEntries(routingPath);
 
-  // -----------------------------------------------------------------------
-  // Step 3: apply filters and build combined matches list.
-  // routing_decision rows appear first (preferred); routing.jsonl rows follow.
-  // -----------------------------------------------------------------------
+  // Step 3: apply filters; routing_decision rows first, routing.jsonl rows follow.
   const matches = [];
 
   // Filter and normalise routing_decision rows
@@ -405,7 +395,7 @@ async function handle(input, context) {
     matches.push(normalized);
   }
 
-  // F10: cap result at 500 entries to match the documented limit.
+  // Cap result at 500 entries.
   const capped = matches.slice(0, 500);
   const result = {
     matches: capped,
@@ -413,13 +403,12 @@ async function handle(input, context) {
     truncated: matches.length > 500,
   };
 
-  // F22: warn when no filters were supplied — result spans all orchestrations.
+  // Warn when no filters were supplied (result spans all orchestrations).
   if (orchId === null && taskId === null && agentType === null) {
     result._note = 'no filter supplied — result is bounded but may span multiple orchestrations';
   }
 
-  // R-FPX (v2.1.12): apply field projection when `fields` is requested.
-  // Omitting `fields` returns the full legacy response (backward compat).
+  // Apply field projection when `fields` is requested; omit for full response.
   const fieldSpec = parseFields(input && input.fields);
   if (fieldSpec && fieldSpec.error) {
     return toolError('routing_lookup: ' + fieldSpec.error);

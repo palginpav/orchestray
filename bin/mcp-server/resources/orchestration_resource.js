@@ -90,7 +90,7 @@ function readCurrentOrchestrationState(root) {
   }
 
   // 3. Tail events.jsonl for recent events (last 50).
-  // F12: cap read at 128 KB via stat+open+read to avoid blocking on huge files.
+  // Cap read at 128 KB to avoid blocking on huge files.
   try {
     const eventsPath = path.join(base || paths.getProjectRoot(), '.orchestray', 'audit', 'events.jsonl');
     const MAX_EVENTS_TAIL = 128 * 1024; // 128 KB tail window
@@ -282,8 +282,7 @@ async function list(context) {
     },
   ];
 
-  // D6: include a small inventory of the last 5 archived orchestrations by mtime.
-  // Don't list all (could be hundreds) — last 5 is a useful resume-context window.
+  // Include last 5 archived orchestrations by mtime (hundreds could exist).
   try {
     const projectBase = base || paths.getProjectRoot();
     const recent = listRecentHistoryOrchestrations(projectBase, 5);
@@ -438,8 +437,7 @@ async function read(uri, context, parsed) {
     };
   }
 
-  // D6: orchestray:orchestration://{orch-id} — historical archived orchestration.
-  // orch-id must match ^orch-[A-Za-z0-9-]{1,80}$ (path-traversal guard).
+  // orchestray:orchestration://{orch-id} — historical archived orchestration.
   if (segments.length === 1) {
     const orchId = segments[0];
 
@@ -455,7 +453,6 @@ async function read(uri, context, parsed) {
     const historyDirAbs = path.resolve(historyBase);
     const orchDir = path.resolve(path.join(historyBase, orchId));
 
-    // Belt-and-braces containment check (defense in depth beyond regex).
     if (orchDir !== historyDirAbs && !orchDir.startsWith(historyDirAbs + path.sep)) {
       const e = new Error('orch-id escapes history root');
       e.code = 'RESOURCE_NOT_FOUND';
