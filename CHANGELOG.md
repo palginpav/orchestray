@@ -13,14 +13,14 @@ Orchestray can now load third-party MCP servers as plugins at session start. Eac
 
 - **`/orchestray:plugin` command.** List discovered plugins, approve or disable one, reload all, or check loader status. Run `/orchestray:plugin status` to see what is loaded and what is degraded.
 - **Consent gate with capability disclosure.** On first load, each plugin shows its declared tools and a manifest fingerprint. Approval is stored; the fingerprint is re-checked on every subsequent reload. A changed fingerprint triggers a fresh consent prompt.
-- **Automatic discovery from three locations.** The loader scans `~/.claude/orchestray-plugins/`, `~/.orchestray/plugins/`, and any paths you add under `plugin_loader.discovery.scan_paths` in your config.
+- **Automatic discovery from three locations.** The loader scans `~/.orchestray/plugins/`, `<project>/.orchestray/plugins/` (and `$ORCHESTRAY_PLUGIN_DATA/plugins` when set), plus any paths you add under `plugin_loader.discovery.scan_paths` in your config.
 - **Mid-session tools refresh.** When a plugin is installed or uninstalled, `tools/list` updates automatically. No session restart needed in most cases. If Claude Code does not pick up the change, a restart hint surfaces.
 - **`[DEGRADED]` marker in tools/list.** Tools from a plugin that failed to start or crashed are listed with a `[DEGRADED]` prefix so you can see what is broken without leaving Claude Code.
 - **1 MiB cap on tools/list response.** Runaway plugin tool descriptions cannot blow up the tools listing. Plugins whose combined tool definitions exceed the cap are flagged rather than silently truncated.
 
 ### What changed under the hood
 
-Plugin lifecycle is managed by a finite-state machine (stopped → starting → running → degraded → stopped) with automatic restart on crash (up to 3 attempts, exponential backoff). Consent is tied to a manifest fingerprint, not just plugin identity, so a plugin update cannot silently gain new capabilities. Plugin tool invocations are audit-logged with arguments redacted by default; redaction is permanent and cannot be disabled via env var.
+Plugin lifecycle is managed by a finite-state machine (unknown → discovered → consented → loading → ready ↔ degraded → dead → unloaded) with automatic restart on crash (up to 3 attempts; backoff schedule 1 s → 5 s → 30 s). Consent is tied to a manifest fingerprint, not just plugin identity, so a plugin update cannot silently gain new capabilities. Plugin tool invocations are audit-logged with arguments redacted by default; redaction is permanent and cannot be disabled via env var.
 
 ### Kill switches
 

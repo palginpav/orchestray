@@ -39,7 +39,7 @@ Cross-references:
 | `dead` | Unrecoverable termination | Manifest divergence, repeated crash, stdout cap |
 | `unloaded` | Cleanly removed | `/orchestray:plugin disable <name>` |
 
-From `dead`: no auto-revive. Manual re-attempt: `/orchestray:plugin reload <name>`.
+After `dead`, the loader auto-restarts up to 3 times with backoff (1 s → 5 s → 30 s). After the budget is exhausted, run `/orchestray:plugin reload <name>` to retry manually.
 
 Manifest divergence: declared tools in `orchestray-plugin.json` must exactly match `tools/list` response. Any mismatch → `dead` (reason: `manifest_divergence`).
 
@@ -49,9 +49,9 @@ Manifest divergence: declared tools in `orchestray-plugin.json` must exactly mat
 
 Plugin state changes emit audit events via two paths:
 
-**Path A — synchronous inline:** `writeEvent()` called directly in the loader synchronously within the FSM transition. Used for: `plugin_discovered`, `plugin_consented`, `plugin_dead`, `plugin_unloaded`.
+**Path A — synchronous inline:** `writeEvent()` called directly in the loader synchronously within the FSM transition. Used for: `plugin_discovered`, `plugin_consent_granted`, `plugin_dead`, `plugin_unloaded`.
 
-**Path B — async post-handshake:** `writeEvent()` called after awaiting the MCP handshake promise. Used for: `plugin_ready`, `plugin_degraded`. The PM must not assume these events arrive before the next turn's input.
+**Path B — async post-handshake:** `writeEvent()` called after awaiting the MCP handshake promise. Used for: `plugin_loaded` (state transition to ready). The `plugin_degraded` event also writes when the FSM transitions to degraded state. The PM must not assume these events arrive before the next turn's input.
 
 ---
 

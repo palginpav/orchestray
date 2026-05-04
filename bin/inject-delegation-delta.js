@@ -86,7 +86,19 @@ const CONFIG_REL           = path.join('.orchestray', 'config.json');
 // Returns { markedPrompt: string } on success, null on failure.
 // ---------------------------------------------------------------------------
 
+// v2.3.0 D-DELTA fix (audit RCA): the heading list governs where heuristic
+// injection splits a marker-less prompt into static (cacheable) vs per-spawn
+// (changing-each-call) portions. Reviewer / audit-mode prompts use ## Dimensions
+// to Apply, ## Git Diff, etc. that were missing — without a match, the entire
+// prompt was treated as static and the SHA-256 changed every spawn (hash_mismatch
+// 100%). The 3 highlighted patterns below were added 2026-05-04 after telemetry
+// showed 0/87 deltas across the prior 100 events; expected post-fix delta rate
+// is ~72% per spawn-prefix-cache analysis. ## Repo Map is critical because it
+// appears BEFORE ## Task in developer prompts and its content is task-specific.
 const PER_SPAWN_BOUNDARY_HEADINGS = [
+  /^## Repo Map/im,           // v2.3.0 D-DELTA: per-spawn (file list varies per task)
+  /^## Dimensions to Apply/im, // v2.3.0 D-DELTA: reviewer/audit per-spawn block
+  /^## Git Diff/im,            // v2.3.0 D-DELTA: reviewer per-spawn diff scope
   /^## Task(\b|:|\s)/im,
   /^## Files to/im,
   /^## Context from/im,
@@ -142,6 +154,20 @@ function injectMarkersHeuristically(prompt) {
     // Trim trailing newline from static to avoid double-newline in the
     // assembled prompt (the marker template adds its own newlines).
     staticPortion = staticPortion.replace(/\n+$/, '');
+  }
+
+  // v2.3.0 D-DELTA fix (audit RCA): context_size_hint is per-spawn (encodes
+  // actual prompt token counts which differ per task) but appears as line 1 of
+  // every prompt — before any ## heading. The split above leaves it in the
+  // static portion, making the SHA-256 change every spawn. Strip it here and
+  // prepend to per-spawn so the model still receives it but the static hash
+  // stays stable across spawns of the same (orch, role) pair.
+  // Also strip leading blank lines created by the strip.
+  const ctxHintRe = /^context_size_hint:.*$/im;
+  const ctxHintMatch = staticPortion.match(ctxHintRe);
+  if (ctxHintMatch) {
+    staticPortion = staticPortion.replace(ctxHintRe, '').replace(/^\n+/, '').replace(/\n+$/, '');
+    perSpawnPortion = ctxHintMatch[0] + '\n' + perSpawnPortion;
   }
 
   return (
@@ -576,13 +602,17 @@ process.stdin.on('end', () => {
           retryResult = null;
         }
         if (retryResult && retryResult.reason !== 'markers_missing' && retryResult.reason !== 'disabled') {
-          // computeDelta processed the marked prompt successfully.
-          // Override reason to signal the injection path for telemetry.
+          // v2.3.0 D-DELTA fix (audit RCA): the prior unconditional type='full'
+          // override discarded valid delta results from computeDelta on N≥2
+          // spawns. The original justification ("always pass original prompt to
+          // the model") only applies to N=1 cache priming; for N≥2 with a hash
+          // hit, retryResult.delta_text is the correct payload. We now preserve
+          // retryResult.type but tag the telemetry reason as 'markers_injected'
+          // so the injection path is still observable.
           result = Object.assign({}, retryResult, {
-            type: 'full',  // Always pass original prompt to the model (not delta_text).
             reason: 'markers_injected',
           });
-          // Fall through to the standard type='full' dispatch below.
+          // Fall through to the type-specific dispatch below (delta or full).
         } else {
           // Retry still failed (should be rare — e.g., injection produced
           // malformed markers). Fall back to skip.

@@ -40,6 +40,7 @@ plugin_discovered / plugin_consent_granted / plugin_loaded / plugin_dead / plugi
 plugin_tool_invoked / plugin_tool_failure — plugin tool-call dispatch (v2.3.0 W-EVT-1)
 plugin_install_rejected / plugin_manifest_divergence — plugin rejection events (v2.3.0 W-EVT-1)
 plugin_sensitive_arg_detected / plugin_capability_inconsistency / plugin_dangerous_name / plugin_response_injection_suspected — plugin defense-in-depth observations (v2.3.0 W-EVT-1)
+plugin_notify_failed / plugin_flag_write_failed — plugin list-changed notification failures (v2.3.0 W-EVT-1)
 plugin_tools_truncated / plugin_dry_run / plugin_consent_revoked — reserved for Wave 4 (v2.3.0 W-EVT-1)
 
 END CONDITIONAL-LOAD NOTICE -->
@@ -10795,6 +10796,41 @@ Kill switch: none.
 
 ---
 
+### `plugin_degraded` event (v2.3.0 W-EVT-1)
+
+Emitted whenever a plugin transitions from `ready` to `degraded`. The plugin
+is still loaded and the FSM allows it to recover (`degraded → ready`) or
+deteriorate (`degraded → dead`). Tools from a degraded plugin appear in
+`tools/list` with a `[DEGRADED]` description prefix (W-DEG-1) so callers can
+see something is wrong without leaving Claude Code.
+
+```json
+{
+  "type": "plugin_degraded",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "plugin_name": "my-plugin",
+  "reason": "tool_failure",
+  "error_count_in_window": 1
+}
+```
+
+Field notes:
+- `reason`: Enum of transition-degraded reasons:
+  - `tool_failure` — `callTool()` returned an error response.
+  - `tool_timeout` — `callTool()` exceeded `tool_call_timeout_ms`.
+  - `protocol_violation` — plugin sent malformed JSON-RPC.
+  - `runtime_error` — uncategorized runtime exception during dispatch.
+- `error_count_in_window`: Number of errors observed in the configured
+  recovery window (`restart_reset_window_ms`). Always ≥ 1 at emit time.
+
+Emitted from: `bin/_lib/plugin-loader.js` `onPluginLine()` and `callTool()`
+ready→degraded transition sites.
+
+Kill switch: none (the FSM transition is unconditional).
+
+---
+
 ### `plugin_restart_attempted` event (v2.3.0 W-EVT-1)
 
 Emitted immediately after `plugin_dead` when the restart budget has not been
@@ -11143,6 +11179,57 @@ Emitted from: `bin/_lib/plugin-loader.js` — Wave 4 W-LISTCH-3 (not yet
 implemented).
 
 Kill switch: none (reserved).
+
+---
+
+### `plugin_notify_failed` event (v2.3.0 W-EVT-1)
+
+Emitted when the `notifySink` callback throws during `_emitListChanged()`. Indicates
+that the `notifications/tools/list_changed` signal could not be forwarded to the broker.
+This is non-fatal — the flag-file path may still succeed.
+
+```json
+{
+  "type": "plugin_notify_failed",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "error": "TypeError: notifySink is not a function"
+}
+```
+
+Field notes:
+- `plugin_name`: Not present. The sink call is not scoped to a single plugin; it signals
+  that the overall tool list changed.
+- `error`: Error message string, clamped to 256 characters by `_clampPluginString()`.
+
+Emitted from: `bin/_lib/plugin-loader.js` `_emitListChanged()` — catch block.
+
+Kill switch: none.
+
+---
+
+### `plugin_flag_write_failed` event (v2.3.0 W-EVT-1)
+
+Emitted when `fs.writeFileSync` throws inside `_writeListChangedFlag()`. The flag file
+at `.orchestray/state/plugin-tools-changed.flag` could not be written. This is
+non-fatal — the `notifySink` Path A notification may still have succeeded.
+
+```json
+{
+  "type": "plugin_flag_write_failed",
+  "version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "error": "EACCES: permission denied, open '.orchestray/state/plugin-tools-changed.flag'"
+}
+```
+
+Field notes:
+- No `plugin_name` field. The flag write is not scoped to a single plugin.
+- `error`: Error message string, clamped to 256 characters by `_clampPluginString()`.
+
+Emitted from: `bin/_lib/plugin-loader.js` `_writeListChangedFlag()` — catch block.
+
+Kill switch: none.
 
 ---
 

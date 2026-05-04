@@ -107,7 +107,7 @@ Plugins move through 8 states. Canonical FSM: `bin/_lib/plugin-loader.js`.
 | `dead` | Terminated unrecoverably | Manifest divergence, repeated crash, stdout cap exceeded |
 | `unloaded` | Cleanly removed from registry | `/orchestray:plugin disable <name>` |
 
-After `dead`, the loader does not auto-revive. Use `/orchestray:plugin reload <name>` to re-attempt.
+After `dead`, the loader auto-restarts up to 3 times with backoff (1 s → 5 s → 30 s). After the budget is exhausted, run `/orchestray:plugin reload <name>` to retry manually.
 
 ---
 
@@ -191,6 +191,8 @@ function handle({ id, method, params = {} }) {
   }
 }
 ```
+
+The full fixture also exposes env-mode flags (FAKE_DIVERGE, FAKE_SLEEP_MS, FAKE_FLOOD_MB, FAKE_BACKLOG_MB, FAKE_EXIT_ON_CALL) used by integration tests; production plugins should omit those. The fixture also returns JSON-RPC error -32601 for unknown methods, which a production plugin should also do for protocol compliance.
 
 ### Python skeleton
 
