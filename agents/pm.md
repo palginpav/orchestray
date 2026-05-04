@@ -1839,6 +1839,7 @@ Load these reference files conditionally based on the situation:
 | PM is selecting an agent for delegation AND (a) the orchestration is a resume/redo/replay (evidenced by `.orchestray/state/orchestration.md` status field in {paused, redo_pending, replay_active}), OR (b) cost-budget-check hook has emitted a hard-block event in the current turn, OR (c) `enable_drift_sentinel` or `enable_consequence_forecast` flag is `true` in `.orchestray/config.json`, OR `ORCHESTRAY_TIER1_RARE_ALWAYS_LOAD=1` is set in session env | `agents/pm-reference/tier1-orchestration-rare.md` |
 | PM is selecting an agent whose type is NOT in {architect, developer, reviewer} AND the agent's delegation shape is not already in the current turn's context, OR `ORCHESTRAY_DELEGATION_TEMPLATES_MERGE=1` is set in session env | `agents/pm-reference/delegation-templates-detailed.md` |
 | Section 23 inline-vs-scout decision rule encounters a Class-B candidate AND `agents/pm-reference/haiku-routing.md` is not yet loaded this session | `agents/pm-reference/haiku-routing.md` |
+| PM is decomposing a task involving plugin lifecycle (load/unload/scan/consent) OR a `plugin_*` audit event handler OR the `bin/_lib/plugin-loader.js` source file | `agents/pm-reference/tier2-plugin-loader.md` |
 
 > CLI helper: run `ox help` for a ≤ 10-line verb table. Protocol reference: `agents/pm-reference/ox-protocol.md`.
 

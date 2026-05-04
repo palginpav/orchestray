@@ -1339,6 +1339,13 @@ function createLoader(userOpts) {
       const handler = async (args) => callTool(namespacedName, args || {});
       registry._register({
         name: namespacedName,
+        // v2.3.0 Wave 5 (W-DEG-1 wire-fix): pass plugin_name through so
+        // listTools() can call pluginStateAccessor(plugin_name) to annotate
+        // degraded plugins with '[DEGRADED] ' and suppress dead/unloaded
+        // plugins from tools/list. Without this, every overlay entry has
+        // plugin_name=undefined, stateOf(undefined) returns 'ready', and the
+        // W-DEG-1/W-SEC-25 filtering never fires.
+        plugin_name: ps.plugin_name,
         definition: {
           name: namespacedName,
           description: decl.description,

@@ -291,6 +291,16 @@ function _register(entry) {
   if (_coreMap.has(name)) {
     throw new Error('tool-registry._register: cannot shadow core tool "' + name + '"');
   }
+  // v2.3.0 Wave 5 (W-TEST-2 finding): reject duplicate overlay registrations.
+  // Without this, a second plugin's load could silently overwrite a tool that
+  // a prior plugin's load had registered (Map.set replaces silently). The
+  // fake registry used in plugin-loader integration tests already throws on
+  // duplicates; this brings the real registry into alignment. Callers that
+  // legitimately want to update a tool MUST _unregister(name) first, then
+  // re-register — making the replacement explicit and audit-traceable.
+  if (_overlayMap.has(name)) {
+    throw new Error('tool-registry._register: overlay tool "' + name + '" already registered (call _unregister first)');
+  }
   _overlayMap.set(name, {
     definition,
     handler,

@@ -20,6 +20,7 @@ Within each category, entries are sorted case-insensitive alphabetically by feat
 - [5. Dossier & resilience](#5-dossier--resilience)
 - [6. Telemetry & audit](#6-telemetry--audit)
 - [7. MCP](#7-mcp)
+- [7a. MCP Plugin Loader (v2.3.0)](#7a-mcp-plugin-loader-v230)
 - [8. Install & upgrade](#8-install--upgrade)
 - [9. Lints & static checks](#9-lints--static-checks)
 - [10. Worktree, spawning & primitives](#10-worktree-spawning--primitives)
@@ -168,3 +169,29 @@ Within each category, entries are sorted case-insensitive alphabetically by feat
 | Spawn-approved drainer (housekeeper E2E) | — | `ORCHESTRAY_SPAWN_DRAINER_DISABLED=1` | default-on |
 | Workspace snapshots | — | `ORCHESTRAY_DISABLE_SNAPSHOTS=1` | default-on |
 | Worktree auto-commit on SubagentStop (v2.2.18) | `worktree_auto_commit.enabled: false` | `ORCHESTRAY_WORKTREE_AUTO_COMMIT_DISABLED=1` | default-on |
+
+## 7a. MCP Plugin Loader (v2.3.0)
+
+Cross-reference: `bin/_lib/config-defaults.js#plugin_loader`
+
+All plugin-loader features ship default-on and have a kill switch. Setting the master switch (`plugin_loader.enabled: false`) disables the entire subsystem; finer-grained switches let you keep plugins on while disabling individual capabilities.
+
+| Feature | Config key | Env var | Default |
+|---------|-----------|---------|---------|
+| Plugin loader subsystem (master switch) | `plugin_loader.enabled: false` | `ORCHESTRAY_PLUGIN_LOADER_DISABLED=1` | default-on |
+| Plugin discovery (filesystem scan) | `plugin_loader.discovery.enabled: false` | `ORCHESTRAY_PLUGIN_DISCOVERY_DISABLED=1` | default-on |
+| Discovery scan paths override (default `null` = built-in paths) | `plugin_loader.discovery.scan_paths: ["/custom/path"]` | (config only) | default-on |
+| Consent enforcement (permanent — no env bypass; test harnesses pass `requireConsent: false` in loader opts) | `plugin_loader.consent.require_explicit_grant` | (none — never bypass via env) | default-on |
+| Auto-approve unsigned plugins | `plugin_loader.consent.auto_approve_unsigned: true` | (config only — **do not enable in production**) | default-off |
+| Auto-restart max attempts (default `3`; set to `0` for manual-only) | `plugin_loader.lifecycle.max_restart_attempts: 0` | (config only) | default-on |
+| Restart backoff delays (default `[1000, 5000, 30000]` ms) | `plugin_loader.lifecycle.restart_backoff_ms: [...]` | (config only) | default-on |
+| Restart counter reset window (default `300000` ms = 5 min) | `plugin_loader.lifecycle.restart_reset_window_ms: N` | (config only) | default-on |
+| Per-tool-call timeout (default `60000` ms = 60 s) | `plugin_loader.lifecycle.tool_call_timeout_ms: N` | (config only) | default-on |
+| Plugin spawn/handshake timeout (default `10000` ms = 10 s) | `plugin_loader.lifecycle.spawn_timeout_ms: N` | (config only) | default-on |
+| tools/list response size cap (default `1048576` bytes = 1 MiB) | `plugin_loader.lifecycle.tools_response_max_bytes: N` | (config only) | default-on |
+| Tool-invocation audit events | `plugin_loader.telemetry.emit_tool_invocation_events: false` | (config only) | default-on |
+| Argument redaction in audit log (permanent — **never default false**; secret-leak guard) | `plugin_loader.telemetry.redact_args` | (none — never bypass) | default-on |
+| `notifications/tools/list_changed` push (Path A) | `plugin_loader.notify_list_changed: false` | (config only) | default-on |
+| Restart-flag file fallback (Path B) | `plugin_loader.restart_flag_check: false` | (config only) | default-on |
+| Dry-run mode (discover + validate, no spawn) | `plugin_loader.dry_run: true` | `ORCHESTRAY_PLUGIN_LOADER_DRY_RUN=1` | default-off |
+| Per-plugin disable by name (default disabled list is `[]`) | (per-entry in `plugin-consents.json#revoked`) | `ORCHESTRAY_PLUGIN_DISABLE=name1,name2` | default-on |

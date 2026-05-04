@@ -66,6 +66,70 @@ That's it. Orchestray scores complexity, decomposes the task, routes agents, run
 | `/orchestray:watch` | Live-tail a running orchestration |
 | `/orchestray:state` | Inspect (`peek`), pause, cancel, or gc orchestration state |
 
+## Plugins
+
+Plugins are optional MCP servers that extend Orchestray's tool surface with
+domain-specific tools. Each plugin runs as a child process; tools are namespaced
+under `mcp__orchestray__plugin_<plugin-name>_<tool-name>` and routed through the
+broker. Manage plugins with the `/orchestray:plugin` slash command:
+
+- `/orchestray:plugin list` — show discovered plugins and consent state
+- `/orchestray:plugin approve <name>` — review capabilities + fingerprint and grant consent
+- `/orchestray:plugin disable <name>` — revoke consent
+- `/orchestray:plugin reload <name>` — re-fetch and re-verify the plugin manifest
+- `/orchestray:plugin status [<name>]` — show lifecycle state for one or all plugins
+
+For plugin authoring instructions, see [docs/plugin-authoring-guide.md](./docs/plugin-authoring-guide.md).
+
+## No sandbox security model
+
+Orchestray's plugin loader (introduced in v2.3.0) lets you install third-party
+plugins that extend Orchestray's tool surface. **These plugins run with the
+same filesystem and network access as Orchestray itself.** Specifically:
+
+> 1. **No sandbox.** Claude Code does not sandbox plugins, and Orchestray does
+>    not add one. A plugin you grant consent to can read any file your user
+>    account can read, write any file your user account can write, and make
+>    any network request your user account can make.
+>
+> 2. **Capability flags are advisory, not enforced.** A plugin's manifest
+>    declares `capabilities.network`, `capabilities.filesystem_write`, and
+>    `capabilities.spawn_subprocess`. These are the plugin author's stated
+>    intent, **shown to you during consent**. Orchestray does not enforce them
+>    at runtime in v2.3.0. A plugin that declares `network: false` and then
+>    makes outbound HTTP calls is misbehaving but not blocked.
+>
+> 3. **No signature verification.** Orchestray does not verify plugin signatures
+>    or provenance in v2.3.0. **You are responsible for trusting the source of
+>    every plugin you grant consent to.** Treat plugin consent the same way you
+>    treat installing arbitrary npm packages: only consent to plugins from
+>    sources you trust.
+>
+> 4. **Re-consent on changes.** Orchestray re-prompts for consent when a plugin's
+>    manifest OR entrypoint file changes. This protects you from a compromised
+>    plugin pushing a malicious update silently. **It does not protect you from
+>    the plugin's transitive dependencies changing** (e.g., `npm update` inside
+>    the plugin directory).
+>
+> 5. **Plugin tools are not in `disallowedTools` defaults.** If you have
+>    `disallowedTools: ["bash"]` configured in Claude Code to prevent shell
+>    execution, be aware that a plugin tool with an internal name like
+>    `execute_shell` is namespaced as
+>    `mcp__orchestray__plugin_<name>_execute_shell` and is **not** automatically
+>    included in `disallowedTools: ["bash"]`. Add specific plugin tool names to
+>    `disallowedTools` if you want to block them.
+>
+> 6. **Plugin tool RESPONSES are untrusted text.** A malicious plugin can return
+>    a response containing prompt-injection payloads aimed at the model. The
+>    same caution that applies to web search results, scraped pages, and
+>    upstream tool output applies to plugin responses.
+>
+> 7. **Kill switches.** You can disable the entire plugin loader with the env
+>    var `ORCHESTRAY_PLUGIN_LOADER_DISABLED=1` or by setting
+>    `plugin_loader.enabled: false` in `.orchestray/config.json`. You can
+>    disable individual plugins with `/orchestray:plugin disable <name>` or
+>    by setting `ORCHESTRAY_PLUGIN_DISABLE=name1,name2`.
+
 ## Agent roles
 
 | Agent | Role |

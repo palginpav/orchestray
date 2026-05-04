@@ -2,11 +2,17 @@
 'use strict';
 
 /**
- * tests/role-write-paths-traversal.test.js — v2.2.21 T8 (G3-W1-T3).
+ * tests/role-write-paths-traversal.test.js — v2.2.21 T8 (G3-W1-T3),
+ * updated for v2.3.0 Wave 5 (absolute_path block removal).
  *
  * Hardens `bin/gate-role-write-paths.js` against CWE-22 path traversal:
  *   - Forge with `../../../etc/foo.md`     → reason=traversal_segment_present
- *   - Forge with absolute `/etc/foo.md`    → reason=absolute_path
+ *   - Forge with absolute `/etc/foo.md`    → relPath = `../../etc/foo.md` →
+ *                                            reason=traversal_segment_present
+ *                                            (via the relPath dotdot check —
+ *                                            the load-bearing protection)
+ *   - In-tree absolute path                → passes pre-allowlist; role
+ *                                            allowlist check decides
  *   - Legitimate in-tree write             → still permitted
  *   - Kill switch ORCHESTRAY_ROLE_WRITE_TRAVERSAL_DISABLED=1 reverts ONLY the
  *     new pre-allowlist block; the existing allowlist enforcement continues.
@@ -18,7 +24,9 @@
  *   4. Kill-switch integration.
  *
  * The hook's emitted event must carry `reason` ∈
- * {traversal_segment_present, absolute_path, invalid_chars}.
+ * {traversal_segment_present, invalid_chars}.
+ * (v2.3.0 Wave 5 removed reason=absolute_path; the relPath dotdot check
+ * subsumes that vector. See bin/gate-role-write-paths.js comment block.)
  */
 
 const { test, describe } = require('node:test');
@@ -83,10 +91,24 @@ describe('v2.2.21 T8 — compiled allowlists are root-anchored', () => {
 describe('v2.2.21 T8 — validatePathPreAllowlist', () => {
   const { validatePathPreAllowlist } = gate;
 
-  test('rejects absolute target paths', () => {
+  // v2.3.0 Wave 5: absolute paths are no longer rejected outright. The relPath
+  // dotdot check is the load-bearing traversal protection — an absolute path
+  // outside cwd resolves to a `..`-prefixed relPath, which is caught.
+  // See bin/gate-role-write-paths.js validatePathPreAllowlist comment block.
+  test('rejects absolute path forges via the relPath dotdot check', () => {
+    // path.relative(/tmp/cwd, /etc/foo.md) → ../../etc/foo.md → trips dotdot.
     const r = validatePathPreAllowlist('/etc/foo.md', '../../etc/foo.md');
     assert.equal(r.ok, false);
-    assert.equal(r.reason, 'absolute_path');
+    assert.equal(r.reason, 'traversal_segment_present');
+  });
+
+  test('accepts an in-tree absolute path (relPath has no dotdot)', () => {
+    // Documenter writes /home/palgin/orchestray/README.md from cwd
+    // /home/palgin/orchestray → relPath = README.md → passes pre-allowlist.
+    // (The role allowlist check then runs as the second gate.)
+    const r = validatePathPreAllowlist('/home/palgin/orchestray/README.md', 'README.md');
+    assert.equal(r.ok, true);
+    assert.equal(r.reason, null);
   });
 
   test('rejects relPath containing a `..` segment', () => {
@@ -195,9 +217,14 @@ describe('v2.2.21 T8 — hook hard-blocks `..` traversal forges (per restricted 
   }
 });
 
-describe('v2.2.21 T8 — hook hard-blocks absolute-path forges (per restricted role)', () => {
+// v2.3.0 Wave 5: absolute paths to out-of-tree locations (e.g. `/etc/foo.md`)
+// resolve via path.relative(cwd, abs) to a `..`-prefixed relPath that trips
+// the dotdot check. The block is still hard (exit 2, audit event emitted) —
+// only the reason code changed from `absolute_path` (removed) to
+// `traversal_segment_present` (the load-bearing check).
+describe('v2.2.21 T8 — hook hard-blocks out-of-tree absolute-path forges (per restricted role)', () => {
   for (const [role] of LEGITIMATE_WRITES) {
-    test(role + ' attempting "/etc/foo.md" is hard-blocked with reason=absolute_path', () => {
+    test(role + ' attempting "/etc/foo.md" is hard-blocked with reason=traversal_segment_present', () => {
       const r = runHook({
         tool_name: 'Write',
         agent_role: role,
@@ -209,8 +236,8 @@ describe('v2.2.21 T8 — hook hard-blocks absolute-path forges (per restricted r
       const blocked = events.find(e => e.type === 'role_write_path_blocked');
       assert.ok(blocked, role + ': role_write_path_blocked event must be emitted');
       assert.equal(blocked.agent_role, role);
-      assert.equal(blocked.reason, 'absolute_path',
-        role + ': reason must be absolute_path, got ' + blocked.reason);
+      assert.equal(blocked.reason, 'traversal_segment_present',
+        role + ': reason must be traversal_segment_present (path.relative resolves /etc/foo.md to ../../etc/foo.md from any tmp cwd), got ' + blocked.reason);
       cleanup(r.tmp);
     });
   }

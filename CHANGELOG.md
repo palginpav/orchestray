@@ -3,6 +3,39 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.0] - 2026-05-XX
+
+**Plugin loader: third-party MCP servers as opt-in extensions.**
+
+Orchestray can now load third-party MCP servers as plugins at session start. Each plugin goes through a consent gate before its tools become available — no plugin runs silently. Plugins you already approved are fingerprint-verified on every reload; a mismatch re-triggers consent.
+
+### What's new for users
+
+- **`/orchestray:plugin` command.** List discovered plugins, approve or disable one, reload all, or check loader status. Run `/orchestray:plugin status` to see what is loaded and what is degraded.
+- **Consent gate with capability disclosure.** On first load, each plugin shows its declared tools and a manifest fingerprint. Approval is stored; the fingerprint is re-checked on every subsequent reload. A changed fingerprint triggers a fresh consent prompt.
+- **Automatic discovery from three locations.** The loader scans `~/.claude/orchestray-plugins/`, `~/.orchestray/plugins/`, and any paths you add under `plugin_loader.discovery.scan_paths` in your config.
+- **Mid-session tools refresh.** When a plugin is installed or uninstalled, `tools/list` updates automatically. No session restart needed in most cases. If Claude Code does not pick up the change, a restart hint surfaces.
+- **`[DEGRADED]` marker in tools/list.** Tools from a plugin that failed to start or crashed are listed with a `[DEGRADED]` prefix so you can see what is broken without leaving Claude Code.
+- **1 MiB cap on tools/list response.** Runaway plugin tool descriptions cannot blow up the tools listing. Plugins whose combined tool definitions exceed the cap are flagged rather than silently truncated.
+
+### What changed under the hood
+
+Plugin lifecycle is managed by a finite-state machine (stopped → starting → running → degraded → stopped) with automatic restart on crash (up to 3 attempts, exponential backoff). Consent is tied to a manifest fingerprint, not just plugin identity, so a plugin update cannot silently gain new capabilities. Plugin tool invocations are audit-logged with arguments redacted by default; redaction is permanent and cannot be disabled via env var.
+
+### Kill switches
+
+All plugin-loader features ship default-on. See [KILL_SWITCHES.md §7a](./KILL_SWITCHES.md#7a-mcp-plugin-loader-v230) for the full table of per-capability switches.
+
+### Migration notes
+
+No breaking changes. With `plugin_loader.enabled: false` in config (or `ORCHESTRAY_PLUGIN_LOADER_DISABLED=1`), v2.2.21 behavior is byte-equivalent — `tools/list` returns only core tools, no plugin events fire, overlay stays empty. Regression test W-TEST-4 confirms this. No config changes needed to upgrade; plugins are opt-in by design.
+
+### Compatibility
+
+Claude Code v2.0.0+, Node 20 LTS — unchanged from v2.2.21.
+
+---
+
 ## [2.2.21] - 2026-05-01
 
 v2.2.21 is the final polish release in the v2.2.x family before v2.3.0. It closes 109 quality findings surfaced by a five-dossier audit (PM self-review, reviewer, debugger, ux-critic, security-engineer) and a follow-up final review — every finding fixed in this release, none deferred.

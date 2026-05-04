@@ -65,13 +65,31 @@ const _DOTDOT_SEGMENT_RE = /(^|\/)\.\.(\/|$)/;
 /**
  * Pre-allowlist path validation. Returns a {ok, reason} envelope.
  *
- * Three rejections, all hard-block:
- *   - `invalid_chars`            — relPath contains chars outside [A-Za-z0-9_./-]
- *   - `traversal_segment_present`— relPath contains a `..` path segment
- *   - `absolute_path`            — original write target was an absolute path
+ * Two rejections, both hard-block — both operate on relPath, the cwd-relative
+ * form produced by `path.relative(cwd, path.resolve(cwd, originalTarget))`:
+ *   - `invalid_chars`             — relPath contains chars outside [A-Za-z0-9_./-]
+ *   - `traversal_segment_present` — relPath contains a `..` path segment
+ *
+ * Absolute-path inputs are NOT rejected as such — Claude Code's Edit/Write/
+ * MultiEdit tools always pass absolute paths in `tool_input.file_path`, so a
+ * blanket absolute-path block would make the gate unusable for documenter,
+ * tester, reviewer, release-manager, and debugger (the gated roles). What we
+ * actually need to catch is traversal — and that is fully covered by the
+ * relPath dotdot check: an absolute path inside cwd produces a clean relPath;
+ * an absolute path outside cwd (e.g. `/etc/passwd`) produces a relPath that
+ * starts with `..` segments and trips `_DOTDOT_SEGMENT_RE`. The role allowlist
+ * check then runs as the second gate.
  *
  * Skipped entirely when `ORCHESTRAY_ROLE_WRITE_TRAVERSAL_DISABLED=1` is set;
  * the rest of the gate (allowlist enforcement) continues regardless.
+ *
+ * History: the original v2.2.21 T8 implementation also rejected absolute
+ * paths outright as belt-and-suspenders defense-in-depth. v2.3.0 Wave 5
+ * removed that block after observing it made all gated roles unable to use
+ * Edit/Write (issue surfaced in W-DOC-1, W-DOC-4 documenter spawns). The
+ * relPath dotdot check is the load-bearing traversal protection; the
+ * absolute-path block was redundant and security-equivalent to its absence
+ * given the pre-existing relPath check.
  *
  * @param {string} originalTarget - The raw `tool_input.file_path` value (pre-resolve).
  * @param {string} relPath        - The cwd-relative form derived from originalTarget.
@@ -80,9 +98,6 @@ const _DOTDOT_SEGMENT_RE = /(^|\/)\.\.(\/|$)/;
 function validatePathPreAllowlist(originalTarget, relPath) {
   if (process.env.ORCHESTRAY_ROLE_WRITE_TRAVERSAL_DISABLED === '1') {
     return { ok: true, reason: null };
-  }
-  if (typeof originalTarget === 'string' && path.isAbsolute(originalTarget)) {
-    return { ok: false, reason: 'absolute_path' };
   }
   if (typeof relPath !== 'string' || relPath.length === 0) {
     return { ok: false, reason: 'invalid_chars' };
