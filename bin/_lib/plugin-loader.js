@@ -1526,7 +1526,7 @@ function createLoader(userOpts) {
       if (ps.state === 'ready') {
         transition(ps, 'degraded');
         // F-5: emit plugin_degraded at the ready→degraded transition site.
-        audit({ type: 'plugin_degraded', plugin_name: ps.plugin_name, reason: 'malformed_json_line', error_count_in_window: 1 });
+        audit({ type: 'plugin_degraded', plugin_name: ps.plugin_name, reason: 'protocol_violation', error_count_in_window: 1 });
       }
       return;
     }
@@ -1683,7 +1683,7 @@ function createLoader(userOpts) {
       if (ps.state === 'ready') {
         transition(ps, 'degraded');
         // F-5: emit plugin_degraded at the ready→degraded transition site.
-        audit({ type: 'plugin_degraded', plugin_name: parsed.pluginName, reason: 'tool_call_failure', error_count_in_window: 1 });
+        audit({ type: 'plugin_degraded', plugin_name: parsed.pluginName, reason: 'tool_failure', error_count_in_window: 1 });
       }
       audit({
         type: 'plugin_tool_failure',

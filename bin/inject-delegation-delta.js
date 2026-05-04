@@ -162,12 +162,16 @@ function injectMarkersHeuristically(prompt) {
   // static portion, making the SHA-256 change every spawn. Strip it here and
   // prepend to per-spawn so the model still receives it but the static hash
   // stays stable across spawns of the same (orch, role) pair.
-  // Also strip leading blank lines created by the strip.
-  const ctxHintRe = /^context_size_hint:.*$/im;
+  //
+  // R2 audit fix (NI-2): anchor at true start-of-string, not start-of-line, to
+  // avoid stripping mid-body occurrences (e.g. context_size_hint embedded in a
+  // code example). PM convention places the hint as line 1 of the prompt, so
+  // start-of-string is the only place it should be matched.
+  const ctxHintRe = /^context_size_hint:[^\n]*\n?/;
   const ctxHintMatch = staticPortion.match(ctxHintRe);
   if (ctxHintMatch) {
     staticPortion = staticPortion.replace(ctxHintRe, '').replace(/^\n+/, '').replace(/\n+$/, '');
-    perSpawnPortion = ctxHintMatch[0] + '\n' + perSpawnPortion;
+    perSpawnPortion = ctxHintMatch[0].replace(/\n$/, '') + '\n' + perSpawnPortion;
   }
 
   return (

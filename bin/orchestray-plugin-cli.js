@@ -420,10 +420,14 @@ async function cmdDisable(pluginName) {
 
   // Find current manifest to pass rootDir through.
   const plugin = await findPlugin(pluginName);
+  // R2 audit fix (NI-3): include revoked_at timestamp in extraFields so
+  // the consent record actually carries the revocation time. Without this,
+  // /orchestray:plugin status always displays revokedAt = "-".
   const disableOpts = {
-    revoked : true,
-    manifest: plugin?.manifest,
-    rootDir : plugin?.rootDir || consents[pluginName].rootDir,
+    revoked   : true,
+    revoked_at: new Date().toISOString(),
+    manifest  : plugin?.manifest,
+    rootDir   : plugin?.rootDir || consents[pluginName].rootDir,
   };
   const fp = consents[pluginName].fingerprint || '';
   loader._internals._writeConsent(pluginName, fp, disableOpts);
@@ -524,7 +528,7 @@ function printPluginStatus(name, plugins, consents) {
       (discovered && discovered.fingerprint !== consent.fingerprint ? 'STALE (fp mismatch)' : 'APPROVED');
     console.log(`  consent    : ${state}`);
     console.log(`  approvedAt : ${consent.approved_at || '-'}`);
-    if (consent.revoked) console.log(`  revokedAt  : ${consent.revokedAt || '-'}`);
+    if (consent.revoked) console.log(`  revokedAt  : ${consent.revoked_at || '-'}`);
   } else {
     console.log('  consent    : NONE');
   }
