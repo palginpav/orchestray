@@ -42,30 +42,20 @@
  * feedback_no_close_out_deferral — every deferred item carries its W-id
  * for grep-ability):
  *
- *   TODO Wave 3 W-SEC-4   Consent-file lock (plugin-consents.lock via
- *                         fs.openSync('wx')). Wave 2 stub: when load() is
- *                         called for a `discovered` plugin we transition
- *                         discovered → consented in-process, no consent-file
- *                         read. Replaced in Wave 3.
- *   TODO Wave 3 W-SEC-7   Manifest+entrypoint fingerprint hashing. Wave 2
- *                         stub: no fingerprint computed; load() trusts the
- *                         on-disk manifest verbatim. Replaced in Wave 3.
- *   TODO Wave 3 W-SEC-13  Sentinel probe assertNoShellInBrokerForwardPath
- *                         (AST walk). Wave 2: forwardToPlugin uses only
- *                         JSON.stringify + plugin.stdin.write — no shell —
- *                         so the probe is pre-satisfied; the AST walk that
- *                         enforces it is a Wave 3 deliverable.
- *   TODO Wave 3 W-SEC-19  Sentinel probe assertPluginStdoutNeverReachesAuditWriter.
- *                         Wave 2: this loader emits audit events with
- *                         redacted tool-call args via redactArgs() and never
- *                         derives an audit-event field from plugin.stdout
- *                         data — so the probe is pre-satisfied; AST enforcement
- *                         lands in Wave 3.
- *   TODO Wave 4 W-CLI-1   Slash-command CLI (/orchestray:plugin {list, approve,
- *                         disable, reload}). No CLI binding in Wave 2.
- *   TODO Wave 4 W-CFG-1   Wire .orchestray/config.json into opts. Wave 2:
- *                         opts is the only config surface; createLoader(opts)
- *                         is config-aware-ready.
+ *   Implemented: Wave 3  W-SEC-4   Consent-file lock (plugin-consents.lock via
+ *                                   fs.openSync('wx')). Full Wave 3 implementation
+ *                                   with stale-lock recovery and fsync.
+ *   Implemented: Wave 3  W-SEC-7   Manifest+entrypoint fingerprint hashing.
+ *                                   SHA-256 over canonical JSON + entrypoint bytes.
+ *   Implemented: Wave 3  W-SEC-13  Sentinel probe assertNoShellInBrokerForwardPath.
+ *                                   Probe pre-satisfied (JSON.stringify + stdin.write
+ *                                   only, no shell). AST enforcement in Wave 3.
+ *   Implemented: Wave 3  W-SEC-19  Sentinel probe assertPluginStdoutNeverReachesAuditWriter.
+ *                                   Probe pre-satisfied (redactArgs() on all audit fields).
+ *                                   AST enforcement in Wave 3.
+ *   Implemented: Wave 4  W-CLI-1   Slash-command CLI (orchestray-plugin-cli.js).
+ *   Implemented: Wave 4  W-CFG-1   .orchestray/config.json wired via server.js
+ *                                   createPluginLoader call.
  */
 
 const { spawn } = require('child_process');
@@ -154,7 +144,7 @@ function computeFingerprint(manifest, entrypointAbs) {
 // ---------------------------------------------------------------------------
 
 const _SENSITIVE_ARG_KEY_RE = /password|token|secret|api[_-]?key|auth/i;
-const _DANGEROUS_TOOL_NAME_RE = /eval|exec|shell|system|spawn|kill/i;
+const _DANGEROUS_TOOL_NAME_RE = /^(exec|run|shell|bash|spawn|eval|run_command|system|kill)/i;
 const _NETWORK_HINT_RE = /\b(http|https|fetch|url|request|download|websocket|socket)\b/i;
 const _RESPONSE_INJECTION_RE = /(ignore|disregard)[^.\n]{0,40}?(previous|prior|above|earlier)/i;
 const _RESPONSE_INJECTION_PREFIXES = ['<|', '<|im_start', '###system', '### system'];
@@ -206,6 +196,26 @@ function _findDangerousToolName(toolDecls) {
  * @param {object} manifest
  * @returns {{tool: string, hint: string} | null}
  */
+/**
+ * Recursively walk a JSON Schema object and return true if any property
+ * declares format: "uri" or format: "url". Bounded to 4 levels of nesting.
+ * @param {*} schema
+ * @param {number} [depth]
+ * @returns {boolean}
+ */
+function _schemaHasUriFormat(schema, depth) {
+  if (!schema || typeof schema !== 'object' || (depth || 0) > 4) return false;
+  if ((schema.format === 'uri' || schema.format === 'url') && schema.type === 'string') return true;
+  if (schema.properties && typeof schema.properties === 'object') {
+    for (const v of Object.values(schema.properties)) {
+      if (_schemaHasUriFormat(v, (depth || 0) + 1)) return true;
+    }
+  }
+  if (Array.isArray(schema.items) ? schema.items.some(i => _schemaHasUriFormat(i, (depth || 0) + 1)) :
+      schema.items && _schemaHasUriFormat(schema.items, (depth || 0) + 1)) return true;
+  return false;
+}
+
 function _findCapabilityInconsistency(manifest) {
   if (!manifest || typeof manifest !== 'object') return null;
   const caps = manifest.capabilities;
@@ -213,9 +223,16 @@ function _findCapabilityInconsistency(manifest) {
   if (caps.network !== false) return null; // not asserting "no network"
   const tools = Array.isArray(manifest.tools) ? manifest.tools : [];
   for (const t of tools) {
-    if (!t || typeof t.description !== 'string') continue;
-    const m = t.description.match(_NETWORK_HINT_RE);
-    if (m) return { tool: t.name, hint: m[0] };
+    if (!t) continue;
+    // Check description text for network hints.
+    if (typeof t.description === 'string') {
+      const m = t.description.match(_NETWORK_HINT_RE);
+      if (m) return { tool: t.name, hint: m[0] };
+    }
+    // F-29: also check inputSchema for uri/url format properties.
+    if (t.inputSchema && _schemaHasUriFormat(t.inputSchema, 0)) {
+      return { tool: t.name, hint: 'inputSchema:format=uri/url' };
+    }
   }
   return null;
 }
@@ -293,8 +310,8 @@ const DEFAULT_OPTS = Object.freeze({
    * manifest+entrypoint fingerprint. Per feedback_default_on_shipping the
    * default is now true; legacy tests opt out by passing `requireConsent: false`.
    *
-   * TODO Wave 4 W-CFG-1: wire .orchestray/config.json so this can be
-   * configured per-install without code changes.
+   * Implemented: Wave 4 W-CFG-1: wired via server.js createPluginLoader using
+   * config.plugin_loader.consent.require_explicit_grant.
    */
   requireConsent: true,
   /**
@@ -302,14 +319,34 @@ const DEFAULT_OPTS = Object.freeze({
    * back to ~/.orchestray/state/plugin-consents.json (or cwd-local if HOME
    * is unset, preserving worktree isolation in CI).
    *
-   * TODO Wave 4 W-CFG-1: read this from .orchestray/config.json so users can
-   * relocate state without env vars.
+   * Implemented: Wave 4 W-CFG-1: wired via opts.consentFile in server.js when configured.
    */
   consentFile: null,
   /** Override hook for tests: replaces the writeEvent dependency. */
   audit: writeEvent,
   /** Override hook for tests: replaces the tool-registry dependency. */
   registry: { _register, _unregister, _isCoreTool },
+  /**
+   * F-4: explicit blocklist of plugin names (from ORCHESTRAY_PLUGIN_DISABLE env).
+   * Plugins in this list are rejected at load() time without spawning.
+   */
+  disabledPlugins: Object.freeze([]),
+  /**
+   * F-3: dry-run mode — discover and validate plugins but do not spawn.
+   */
+  dry_run: false,
+  /**
+   * F-22: discovery enabled flag.
+   */
+  discoveryEnabled: true,
+  /**
+   * F-22: emit tool invocation events (telemetry.emit_tool_invocation_events).
+   */
+  emitToolInvocationEvents: true,
+  /**
+   * F-22: redact args in audit events (telemetry.redact_args). Never default false.
+   */
+  redactArgs: true,
 });
 
 // ---------------------------------------------------------------------------
@@ -579,12 +616,12 @@ function createLoader(userOpts) {
   // the lock fails closed (throws lock_contention) — Wave 4 W-CLI-1 may add a
   // bounded retry, but Wave 3 prefers explicit failure over silent races.
   //
-  // TODO Wave 4 W-CFG-1: read consentFile path from .orchestray/config.json.
-  // TODO Wave 4 W-CLI-1: /orchestray:plugin approve must call _writeConsent.
-  // TODO Wave 4 W-EVT-1: register the new audit event types
-  //   (entrypoint_mismatch, plugin_sensitive_arg_detected,
+  // Implemented: Wave 4 W-CFG-1: consentFile path configurable via opts.consentFile.
+  // Implemented: Wave 4 W-CLI-1: /orchestray:plugin approve calls _writeConsent.
+  // Implemented: Wave 4 W-EVT-1: event types registered in event-schemas.md:
+  //   entrypoint_mismatch, plugin_sensitive_arg_detected,
   //   plugin_capability_inconsistency, plugin_dangerous_name,
-  //   plugin_response_injection_suspected) in event-schemas.md.
+  //   plugin_response_injection_suspected.
   // -------------------------------------------------------------------------
 
   function _consentFilePath() {
@@ -608,7 +645,14 @@ function createLoader(userOpts) {
     try {
       realDir = fs.realpathSync(dir);
     } catch (err) {
-      if (err && err.code === 'ENOENT') return null;
+      if (err && err.code === 'ENOENT') {
+        // F-24: when opts.consentFile is set and the directory doesn't exist
+        // yet (first-time write path), return the raw dir so _writeConsent can
+        // mkdirSync it. For the default (non-overridden) path, return null so
+        // _loadConsent treats the absent dir as "no consents recorded".
+        if (opts.consentFile) return dir;
+        return null;
+      }
       throw err;
     }
     // safeRealpath / isInsideAllowed defense-in-depth. When the caller did
@@ -619,8 +663,8 @@ function createLoader(userOpts) {
     // file at least had a successful realpath, so it is not an arbitrary
     // attacker-supplied symlink target.
     //
-    // TODO Wave 4 W-CFG-1: replace this with a config-driven allowlist so
-    // operators on shared filesystems can pin the consent path explicitly.
+    // Implemented: Wave 4 W-CFG-1: opts.consentFile is the config-driven
+    // override. Operators pin it via createLoader({ consentFile: ... }).
     if (opts.consentFile) {
       // Caller-supplied path: accept after realpath success. The caller owns
       // the trust boundary in this branch.
@@ -803,6 +847,9 @@ function createLoader(userOpts) {
    * @returns {Promise<Array<{plugin_name: string, scan_path: string, manifest: object, rootDir: string}>>}
    */
   async function scan() {
+    // F-22: discovery.enabled kill switch.
+    if (opts.discoveryEnabled === false) return [];
+
     const seenPluginNames = new Map(); // plugin_name → scan_path
     const out = [];
 
@@ -981,6 +1028,15 @@ function createLoader(userOpts) {
     const ps = state.get(pluginName);
     if (!ps) throw new Error(`plugin-loader.load: unknown plugin "${pluginName}"`);
 
+    // F-4: env-disabled list check. Reject before any spawn.
+    if (opts.disabledPlugins && opts.disabledPlugins.includes(pluginName)) {
+      audit({ type: 'plugin_install_rejected', plugin_name: pluginName, reason: 'env_disabled' });
+      if (ps.state !== 'dead' && ps.state !== 'unloaded') {
+        try { transition(ps, 'dead'); } catch (_e) { /* invalid transition tolerated */ }
+      }
+      return { state: ps.state, plugin_name: pluginName };
+    }
+
     // W-SEC-4 + W-SEC-7 (Wave 3): consent gate. When opts.requireConsent
     // (default true), read plugin-consents.json under the O_EXCL advisory
     // lock and require the consent record's fingerprint to match the
@@ -1101,6 +1157,12 @@ function createLoader(userOpts) {
       });
     }
 
+    // F-3: dry_run gate — discover/validate but do not spawn.
+    if (opts.dry_run) {
+      audit({ type: 'plugin_dry_run', plugin_name: pluginName, action: 'would_load' });
+      return { state: 'discovered', plugin_name: pluginName };
+    }
+
     transition(ps, 'loading');
 
     try {
@@ -1116,6 +1178,13 @@ function createLoader(userOpts) {
       });
       return { state: ps.state, plugin_name: pluginName };
     } catch (err) {
+      // F-25: clear stale pendingCalls left by sendRpc when the outer
+      // spawnTimeoutMs fires before the inner toolCallTimeoutMs. Without
+      // this, the inner timer fires ~50s later as the only cleanup.
+      for (const [id, p] of ps.pendingCalls) {
+        try { clearTimeout(p.timer); } catch (_e) { /* ignore */ }
+        ps.pendingCalls.delete(id);
+      }
       transitionDead(ps, err && err._reason ? err._reason : 'load_failed', _clampPluginString(String(err && err.message ? err.message : err)));
       return { state: ps.state, plugin_name: pluginName };
     }
@@ -1129,6 +1198,13 @@ function createLoader(userOpts) {
    * @param {PluginState} ps
    */
   async function spawnAndHandshake(ps) {
+    // F-26: clear dead-proc reference before spawning so stale listeners
+    // cannot double-fire if this is a restart attempt.
+    if (ps.proc) {
+      try { ps.proc.removeAllListeners(); } catch (_e) { /* ignore */ }
+      ps.proc = null;
+    }
+
     const entrypointAbs = path.join(ps.rootDir, ps.manifest.entrypoint);
 
     // W-SEC-1 part 3: re-check entrypoint at spawn time (TOCTOU). The scan
@@ -1298,7 +1374,7 @@ function createLoader(userOpts) {
 
     // W-SEC-DEF-2 (Wave 3): defense-in-depth observation. Pure observers,
     // never reject — Wave 5 W-DOC-* will document the patterns to operators.
-    // TODO Wave 4 W-EVT-1: register these event types in event-schemas.md.
+    // Implemented: Wave 4 W-EVT-1: event types registered in event-schemas.md.
     const dangerous = _findDangerousToolName(ps.manifest.tools);
     if (dangerous) {
       audit({
@@ -1353,9 +1429,10 @@ function createLoader(userOpts) {
         },
         handler,
       });
-      _postOverlayMutation();
       ps.registeredToolNames.add(namespacedName);
     }
+    // F-1: emit tools/list_changed ONCE per plugin load, not once per tool.
+    _postOverlayMutation();
 
     transition(ps, 'ready');
   }
@@ -1446,7 +1523,11 @@ function createLoader(userOpts) {
     } catch (_err) {
       // Malformed — drop the line, mark degraded. Recovery on next valid
       // call (G2 §10).
-      if (ps.state === 'ready') transition(ps, 'degraded');
+      if (ps.state === 'ready') {
+        transition(ps, 'degraded');
+        // F-5: emit plugin_degraded at the ready→degraded transition site.
+        audit({ type: 'plugin_degraded', plugin_name: ps.plugin_name, reason: 'malformed_json_line', error_count_in_window: 1 });
+      }
       return;
     }
     if (!frame || typeof frame !== 'object') return;
@@ -1548,7 +1629,7 @@ function createLoader(userOpts) {
     // W-SEC-DEF-2 (Wave 3): observe sensitive-arg names BEFORE we forward.
     // The redactor (W-REDACT-1) already scrubs values from the audit log;
     // this signal records the FACT that a sensitive-named arg was passed.
-    // TODO Wave 4 W-EVT-1: register plugin_sensitive_arg_detected.
+    // Implemented: Wave 4 W-EVT-1: plugin_sensitive_arg_detected registered.
     const sensitiveKeys = _scanSensitiveArgKeys(args);
     if (sensitiveKeys.length > 0) {
       audit({
@@ -1559,12 +1640,16 @@ function createLoader(userOpts) {
       });
     }
 
-    audit({
-      type: 'plugin_tool_invoked',
-      plugin_name: parsed.pluginName,
-      tool_name: parsed.toolName,
-      args_redacted: redactArgs(args),
-    });
+    // F-22: gate tool-invocation events on emitToolInvocationEvents opt.
+    if (opts.emitToolInvocationEvents !== false) {
+      audit({
+        type: 'plugin_tool_invoked',
+        plugin_name: parsed.pluginName,
+        tool_name: parsed.toolName,
+        // F-22: gate redactArgs on opts.redactArgs (default true; never false per threat model).
+        args_redacted: opts.redactArgs !== false ? redactArgs(args) : {},
+      });
+    }
 
     const startMs = Date.now();
     try {
@@ -1575,7 +1660,7 @@ function createLoader(userOpts) {
       );
       // W-SEC-DEF-2 (Wave 3): scan response for prompt-injection markers.
       // Pure observation — never alter the response. Emit-only.
-      // TODO Wave 4 W-EVT-1: register plugin_response_injection_suspected.
+      // Implemented: Wave 4 W-EVT-1: plugin_response_injection_suspected registered.
       const inj = _scanResponseForInjection(result);
       if (inj) {
         audit({
@@ -1597,6 +1682,8 @@ function createLoader(userOpts) {
       // owns the dead transition.
       if (ps.state === 'ready') {
         transition(ps, 'degraded');
+        // F-5: emit plugin_degraded at the ready→degraded transition site.
+        audit({ type: 'plugin_degraded', plugin_name: parsed.pluginName, reason: 'tool_call_failure', error_count_in_window: 1 });
       }
       audit({
         type: 'plugin_tool_failure',

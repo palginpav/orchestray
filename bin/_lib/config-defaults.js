@@ -17,6 +17,8 @@ const defaults = Object.freeze({
     // Audit v2.2.20 found 0/477 production prompts matched any dedup-eligible heading.
     // See .orchestray/kb/artifacts/v2220-l1-revival-design.md §Executive Verdict.
     l1_compression_enabled: false,
+    // F-23: consumed by bootstrap-estimator.js to enable token-count bootstrapping.
+    bootstrap_enabled: true,
   }),
 
   /**
@@ -48,6 +50,7 @@ const defaults = Object.freeze({
       // Require explicit user grant before activating a plugin.
       require_explicit_grant: true,
       // Auto-approve plugins that lack a signature (unsigned). Keep false in prod.
+      // v2.3.0: future flag, not consumed by plugin-loader.js yet.
       auto_approve_unsigned: false,
     }),
 

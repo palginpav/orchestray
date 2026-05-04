@@ -696,6 +696,28 @@ function main() {
 
   const config = loadConfig();
 
+  // F-6: apply env variable overrides that were previously dead code.
+  // Option A: splice env flags directly onto the loaded config so all
+  // downstream consumers (plugin-loader, discovery gate) see them.
+  if (!config.plugin_loader) config.plugin_loader = {};
+  if (process.env.ORCHESTRAY_PLUGIN_LOADER_DISABLED === '1') {
+    config.plugin_loader.enabled = false;
+  }
+  if (process.env.ORCHESTRAY_PLUGIN_DISCOVERY_DISABLED === '1') {
+    if (!config.plugin_loader.discovery) config.plugin_loader.discovery = {};
+    config.plugin_loader.discovery.enabled = false;
+  }
+  if (process.env.ORCHESTRAY_PLUGIN_LOADER_DRY_RUN === '1') {
+    config.plugin_loader.dry_run = true;
+  }
+  // ORCHESTRAY_PLUGIN_DISABLE is a CSV list; store parsed array for createPluginLoader.
+  if (process.env.ORCHESTRAY_PLUGIN_DISABLE) {
+    config.plugin_loader._disabledPlugins = process.env.ORCHESTRAY_PLUGIN_DISABLE
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+  }
+
   // W-LISTCH-1: instantiate plugin loader iff enabled (default: true).
   // Fail-open: any exception during bringup is logged and pluginLoader stays
   // null. The server continues to serve core tools in that degraded state.
@@ -707,6 +729,9 @@ function main() {
     const lc = pl.lifecycle || {};
     try {
       const { createLoader: createPluginLoader } = require('../_lib/plugin-loader');
+      const discovery = pl.discovery || {};
+      const consent   = pl.consent   || {};
+      const telemetry = pl.telemetry || {};
       pluginLoader = createPluginLoader({
         audit:              writePluginAuditEvent,
         projectRoot:        process.cwd(),
@@ -717,6 +742,17 @@ function main() {
         notify_list_changed: pl.notify_list_changed !== false,
         restart_flag_check:  pl.restart_flag_check  !== false,
         dry_run:             !!pl.dry_run,
+        // F-4: env-disabled plugin list.
+        ...(pl._disabledPlugins && pl._disabledPlugins.length > 0 && { disabledPlugins: pl._disabledPlugins }),
+        // F-22: discovery.enabled → discoveryEnabled.
+        discoveryEnabled: discovery.enabled !== false,
+        // F-22: discovery.scan_paths → discoveryPaths (merged on top of defaults when set).
+        ...(discovery.scan_paths != null && { discoveryPaths: discovery.scan_paths }),
+        // F-22: consent.require_explicit_grant → requireConsent.
+        ...(consent.require_explicit_grant != null && { requireConsent: consent.require_explicit_grant }),
+        // F-22: telemetry flags.
+        emitToolInvocationEvents: telemetry.emit_tool_invocation_events !== false,
+        redactArgs:               telemetry.redact_args !== false, // never default false
         // Lifecycle tuning from config (mirrors DEFAULT_OPTS keys).
         ...(lc.max_restart_attempts  != null && { maxRestartAttempts:    lc.max_restart_attempts }),
         ...(lc.restart_backoff_ms    != null && { restartBackoffMs:      lc.restart_backoff_ms }),

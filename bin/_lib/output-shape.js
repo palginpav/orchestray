@@ -23,8 +23,9 @@
  * is recorded in the `reason` field for telemetry diagnostics.
  *
  * Caveman applies ONLY to the prose body. The Structured Result JSON
- * block, code fences, and tool-call payloads are exempt — see
- * `bin/_lib/proposal-validator.js` for the runtime contract.
+ * block, code fences, and tool-call payloads are exempt.
+ * Structured-only roles enforce via outputConfig.format schema (Anthropic-side);
+ * hybrid/prose-heavy roles are prompt-only with no post-generation enforcement.
  *
  * Structured-output enforcement (`output_config.format`) is gated to
  * the `staged_flip_allowlist` config field. v2.2.0 ships with

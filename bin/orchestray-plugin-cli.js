@@ -33,6 +33,7 @@ const path     = require('node:path');
 const readline = require('node:readline');
 
 const { createLoader, _computeFingerprint: computeFingerprint } = require('./_lib/plugin-loader');
+const { writeEvent: writePluginAuditEvent } = require('./_lib/audit-event-writer');
 
 // ---------------------------------------------------------------------------
 // Project root resolution
@@ -300,7 +301,7 @@ function readPluginAuditEvents(pluginName) {
       .split('\n')
       .filter(l => l.trim())
       .map(l => { try { return JSON.parse(l); } catch (_) { return null; } })
-      .filter(e => e && e.plugin === pluginName);
+      .filter(e => e && e.plugin_name === pluginName);
   } catch (_) {
     return [];
   }
@@ -318,10 +319,15 @@ async function cmdList() {
     console.log('No plugins discovered.');
     console.log('');
     console.log('Plugin search paths:');
+    // F-28: mirror DEFAULT_OPTS.discoveryPaths from plugin-loader.js.
+    const home = process.env.HOME || os.homedir() || '~';
     const scanPaths = [
-      path.join(process.env.HOME || '~', '.claude', 'orchestray-plugins'),
-      path.join(process.env.HOME || '~', '.orchestray', 'plugins'),
-    ];
+      process.env.ORCHESTRAY_PLUGIN_DATA
+        ? path.join(process.env.ORCHESTRAY_PLUGIN_DATA, 'plugins')
+        : null,
+      path.join(home, '.orchestray', 'plugins'),
+      path.join(PROJECT_ROOT, '.orchestray', 'plugins'),
+    ].filter(Boolean);
     for (const p of scanPaths) console.log(`  ${p}`);
     return;
   }
@@ -421,6 +427,8 @@ async function cmdDisable(pluginName) {
   };
   const fp = consents[pluginName].fingerprint || '';
   loader._internals._writeConsent(pluginName, fp, disableOpts);
+  // F-15: emit plugin_consent_revoked after successful revoke write.
+  writePluginAuditEvent({ type: 'plugin_consent_revoked', plugin_name: pluginName });
   console.log(`Plugin "${pluginName}" disabled (consent revoked).`);
 }
 
@@ -515,7 +523,7 @@ function printPluginStatus(name, plugins, consents) {
     const state = consent.revoked ? 'REVOKED' :
       (discovered && discovered.fingerprint !== consent.fingerprint ? 'STALE (fp mismatch)' : 'APPROVED');
     console.log(`  consent    : ${state}`);
-    console.log(`  approvedAt : ${consent.approvedAt || '-'}`);
+    console.log(`  approvedAt : ${consent.approved_at || '-'}`);
     if (consent.revoked) console.log(`  revokedAt  : ${consent.revokedAt || '-'}`);
   } else {
     console.log('  consent    : NONE');

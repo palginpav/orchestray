@@ -124,9 +124,10 @@ function isPluginToolName(name) {
  *
  * W-SCHEMA-1 RESERVED_PREFIXES already prevents plugins from registering
  * names that would produce a broker-emitted name colliding with the
- * `plugin_` prefix. This function is a residual safety net called by the
- * tool registry during registration to catch any remaining overlap with
- * core tool names.
+ * `plugin_` prefix. The tool-registry's `_register` function checks
+ * `_coreMap.has(name)` and throws — that is the production check.
+ * This export is test-only and provides an additional assertion surface;
+ * it is not called in the production plugin-loader path.
  *
  * @param {string}          namespacedName - Broker-emitted name to check.
  * @param {Set<string>|string[]} coreToolsList - Known core tool names.
