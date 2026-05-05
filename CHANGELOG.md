@@ -3,7 +3,7 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [2.3.0] - 2026-05-XX
+## [2.3.0] - 2026-05-05
 
 **Plugin loader: third-party MCP servers as opt-in extensions.**
 

@@ -56,6 +56,7 @@ That's it. Orchestray scores complexity, decomposes the task, routes agents, run
 | `/orchestray:report` | Full audit report with cost breakdown |
 | `/orchestray:issue [#/url]` | Orchestrate from a GitHub issue |
 | `/orchestray:feature` | Inspect or wake quarantined feature gates |
+| `/orchestray:plugin [status\|list\|approve\|disable\|reload]` | Manage MCP plugins: list discovered plugins, approve/disable one, check lifecycle state |
 | `/orchestray:doctor` | Health probes; `--deep` for install-integrity check |
 
 ### Recovery / debugging
