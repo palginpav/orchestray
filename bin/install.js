@@ -888,9 +888,14 @@ function install(targetDir) {
   }
 
   // plugin-loader.js transitively requires 'ajv' via
-  // plugin-input-schema-validator.js. Copy ajv alongside zod so --local
-  // install layouts have both available. ajv has no locales to omit; copy
-  // everything (filter: null equivalent via no filter option).
+  // plugin-input-schema-validator.js. Copy ajv AND its runtime dependencies
+  // so --local install layouts can both `require('ajv')` AND `new Ajv()`
+  // without MODULE_NOT_FOUND. v2.3.0 originally copied only ajv/ itself —
+  // ajv's first internal require of 'fast-deep-equal' then crashed at
+  // instantiation time, breaking every plugin-input-schema validation.
+  // Walk ajv/package.json#dependencies and copy each (single-level walk is
+  // sufficient: all four current deps are leaf nodes; the post-install probe
+  // below will catch any future drift loudly).
   const ajvSrc = path.join(pkgRoot, 'node_modules', 'ajv');
   if (fs.existsSync(ajvSrc) && fs.statSync(ajvSrc).isDirectory()) {
     const ajvDst = path.join(targetDir, 'orchestray', 'node_modules', 'ajv');
@@ -904,6 +909,47 @@ function install(targetDir) {
     };
     countAjv(ajvDst);
     say(`  \x1b[32m✓\x1b[0m Installed node_modules/ajv (${ajvFileCount} files)`);
+
+    // Copy ajv's runtime deps (fast-deep-equal, fast-uri,
+    // json-schema-traverse, require-from-string at v8.20.0). Driven from
+    // ajv/package.json so a future ajv bump that adds/removes deps stays in
+    // sync without code changes.
+    let ajvDeps = {};
+    try {
+      const ajvPkgJson = path.join(ajvSrc, 'package.json');
+      ajvDeps = JSON.parse(fs.readFileSync(ajvPkgJson, 'utf8')).dependencies || {};
+    } catch (e) {
+      say(`  \x1b[33m⚠\x1b[0m Could not read ajv/package.json (${e.message}); skipping transitive deps`);
+    }
+    const copiedDeps = [];
+    const missingDeps = [];
+    for (const depName of Object.keys(ajvDeps)) {
+      const depSrc = path.join(pkgRoot, 'node_modules', depName);
+      if (!fs.existsSync(depSrc) || !fs.statSync(depSrc).isDirectory()) {
+        missingDeps.push(depName);
+        continue;
+      }
+      const depDst = path.join(targetDir, 'orchestray', 'node_modules', depName);
+      fs.cpSync(depSrc, depDst, { recursive: true });
+      let depFileCount = 0;
+      const countDep = (dir) => {
+        for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (e.isDirectory()) countDep(path.join(dir, e.name));
+          else if (e.isFile()) {
+            depFileCount++;
+            track(path.relative(targetDir, path.join(dir, e.name)));
+          }
+        }
+      };
+      countDep(depDst);
+      copiedDeps.push(`${depName} (${depFileCount} files)`);
+    }
+    if (copiedDeps.length > 0) {
+      say(`  \x1b[32m✓\x1b[0m Installed ajv runtime deps: ${copiedDeps.join(', ')}`);
+    }
+    if (missingDeps.length > 0) {
+      say(`  \x1b[33m⚠\x1b[0m ajv runtime deps missing in source: ${missingDeps.join(', ')}; new Ajv() will throw MODULE_NOT_FOUND`);
+    }
   } else {
     say('  \x1b[33m⚠\x1b[0m node_modules/ajv not found in source; plugin schema validation will fail in --local install');
   }
@@ -952,6 +998,37 @@ function install(targetDir) {
   } catch (resolveErr) {
     console.error(
       `  \x1b[31m✗\x1b[0m Post-install verification failed: ${resolveErr.message}`
+    );
+  }
+
+  // 3e post-install verification (v2.3.2): exercise the plugin-input-schema
+  // validator end-to-end. The v2.2.15 probe (above) only forks
+  // validate-config.js, which never requires ajv. v2.3.0 added ajv but
+  // forgot ajv's transitive deps, so `new Ajv()` exploded at runtime even
+  // though `require('ajv')` succeeded. This second probe loads
+  // plugin-input-schema-validator.js and instantiates Ajv to catch the same
+  // class of bug for ajv. Best-effort: warn-only — never abort the install.
+  try {
+    const installedValidator = path.join(targetDir, 'orchestray', 'bin', '_lib', 'plugin-input-schema-validator.js');
+    if (fs.existsSync(installedValidator)) {
+      const { spawnSync } = require('node:child_process');
+      const probe = spawnSync(
+        process.execPath,
+        ['-e', `const v = require(${JSON.stringify(installedValidator)}); v.compileToolInputSchema({type:'object',properties:{}});`],
+        { encoding: 'utf8', timeout: 10_000 }
+      );
+      if (probe.status !== 0) {
+        console.error(
+          `  \x1b[31m✗\x1b[0m Post-install verification failed: plugin-input-schema-validator.js exited ` +
+          `${probe.status}. Plugin-input validation will throw at first use ` +
+          `(likely missing ajv transitive dep).\n` +
+          `    stderr: ${(probe.stderr || '').slice(0, 300)}`
+        );
+      }
+    }
+  } catch (probeErr) {
+    console.error(
+      `  \x1b[31m✗\x1b[0m Post-install verification failed (plugin-input probe): ${probeErr.message}`
     );
   }
 

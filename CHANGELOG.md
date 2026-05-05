@@ -3,6 +3,23 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.2] - 2026-05-05
+
+**Bug fix: third-party plugin schema validation now actually works.**
+
+If you tried to install a third-party MCP plugin under v2.3.0 or v2.3.1, the loader could fail with `Cannot find module 'fast-deep-equal'` the moment it tried to validate the plugin's input schemas. v2.3.2 fixes this.
+
+### What's new for users
+
+- **Plugin input-schema validation no longer crashes.** The installer now ships ajv's runtime dependencies (fast-deep-equal, fast-uri, json-schema-traverse, require-from-string) alongside ajv itself. Without them, every `new Ajv()` call exploded the moment a plugin tried to declare an input schema.
+- **Post-install probe catches future drift.** After install, Orchestray now runs `plugin-input-schema-validator.js` end-to-end against a tiny fixture. If a future ajv bump adds a transitive dep the installer doesn't know about, you see a clear error at install time instead of a confusing crash later.
+
+### Migration notes
+
+No config changes. Existing installs that hit the bug can be repaired by reinstalling Orchestray (`npx orchestray install --global` or `--local`). v2.3.0 / v2.3.1 installs of Orchestray itself were unaffected — only the v2.3.0 plugin loader's input-schema validation hit the bug.
+
+---
+
 ## [2.3.1] - 2026-05-05
 
 **Custom agents: bring your own agent roles.**
