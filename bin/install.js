@@ -541,6 +541,22 @@ function install(targetDir) {
   const refCount = agentSubdirs.reduce((n, dir) => n + fs.readdirSync(path.join(agentsDir, dir)).length, 0);
   say(`  \x1b[32m✓\x1b[0m Installed ${agentFiles.length} agents + ${refCount} reference files`);
 
+  // Inject consented plugin tools into the installed PM allowlist (wildcards
+  // are not honored by Claude Code's tools: parser; each name must be explicit).
+  // Best-effort — failure does not break the rest of the install.
+  try {
+    const { injectIntoPmFile } = require('./_lib/inject-plugin-tools-into-pm');
+    const installedPm = path.join(targetDir, 'agents', 'pm.md');
+    const r = injectIntoPmFile(installedPm);
+    if (r.changed) {
+      say(`  \x1b[32m✓\x1b[0m Wired ${r.toolCount} plugin tool(s) into PM allowlist`);
+    } else if (r.toolCount > 0) {
+      say(`  \x1b[32m✓\x1b[0m PM allowlist already current (${r.toolCount} plugin tool(s))`);
+    }
+  } catch (err) {
+    say(`  \x1b[33m⚠\x1b[0m Plugin tools NOT wired into PM allowlist: ${err.message}`);
+  }
+
   // 1b. v2.1.9 I-13: install specialists and symlink into agents/ so
   // Claude Code's Agent() tool can resolve `subagent_type: <name>` for
   // shipped specialists.
