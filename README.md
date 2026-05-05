@@ -82,6 +82,13 @@ broker. Manage plugins with the `/orchestray:plugin` slash command:
 
 For plugin authoring instructions, see [docs/plugin-authoring-guide.md](./docs/plugin-authoring-guide.md).
 
+> **After approving a plugin** (or after each Orchestray upgrade), re-run the installer so the PM agent picks up the plugin's tool names:
+> ```bash
+> npx orchestray --global   # global install
+> npx orchestray --local    # project-local install (if applicable)
+> ```
+> Then restart Claude Code.
+
 ## No sandbox security model
 
 Orchestray's plugin loader (introduced in v2.3.0) lets you install third-party

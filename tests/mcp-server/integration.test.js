@@ -125,7 +125,7 @@ function spawnServer(tmp) {
   const child = spawn(process.execPath, [SERVER_PATH], {
     cwd: tmp,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, ORCHESTRAY_PLUGIN_ROOT: PLUGIN_ROOT },
+    env: { ...process.env, ORCHESTRAY_PLUGIN_ROOT: PLUGIN_ROOT, ORCHESTRAY_PLUGIN_LOADER_DISABLED: '1' },
   });
 
   const stderrChunks = [];

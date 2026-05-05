@@ -3,6 +3,31 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.3] - 2026-05-05
+
+**Plugin loading now works end-to-end — plugins reach ready state on boot and the PM agent can use their tools.**
+
+v2.3.0 introduced the plugin loader but shipped with two gaps that left every plugin silently broken: the MCP server never called `load()` on startup (plugins were discovered but stayed parked forever), and the PM agent's tool allowlist used a wildcard that Claude Code does not honor (so even a loaded plugin's tools were invisible to the PM). This release closes both gaps.
+
+### Fixed
+
+- **Plugins now load automatically when Claude Code starts.** After the MCP server discovers consented plugins on boot, it now advances each through the full `load()` lifecycle — spawning the plugin process, verifying the fingerprint, and registering its tools. In v2.3.0–v2.3.2, the scan step ran but nothing called `load()`, so plugins stayed in `discovered` state and their tools never appeared. The consent gate, env-disable list, and fingerprint check all still apply — security model unchanged.
+- **PM agent now sees plugin tools after install.** The installer now writes the exact `mcp__orchestray__plugin_<name>_<tool>` tool names from your consented plugins into the installed `agents/pm.md`. The previous `mcp__orchestray__plugin_*` wildcard in the PM's tool allowlist did not work — Claude Code's frontmatter parser treats wildcards as a literal name string, not a glob pattern. If you have no consented plugins, the allowlist is unchanged.
+- **Integration test isolation fixed.** The MCP server integration tests now run with the plugin loader disabled so plugin events from your own installed plugins (e.g. Arena) no longer pollute the test's audit event counts.
+
+### Action required after upgrading
+
+Re-run the installer after updating — this regenerates the PM allowlist with your currently-consented plugins:
+
+```bash
+npx orchestray --global   # global install
+npx orchestray --local    # project-local install (if applicable)
+```
+
+Restart Claude Code after the installer completes. After approving any new plugin in the future, re-run the installer and restart Claude Code so the PM agent picks up the new plugin's tools.
+
+---
+
 ## [2.3.2] - 2026-05-05
 
 **Bug fix: third-party plugin schema validation now actually works.**
