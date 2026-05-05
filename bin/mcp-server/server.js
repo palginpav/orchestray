@@ -774,10 +774,18 @@ function main() {
 
   logStderr('orchestray-mcp server ready (protocol ' + PROTOCOL_VERSION + ')');
 
-  // Fire-and-forget discovery scan on startup. NEVER auto-load — loading
-  // requires explicit user consent via the slash-command CLI.
+  // Fire-and-forget discovery scan on startup, then auto-load each discovered
+  // plugin. load() gates internally on consent (W-SEC-4/7), env-disabled, and
+  // fingerprint match — unconsented plugins are rejected, not spawned. Without
+  // this chain the FSM stalls at `discovered` and tools never register.
   if (pluginLoader && config.plugin_loader?.discovery?.enabled !== false) {
-    pluginLoader.scan().catch((err) => logStderr('plugin scan failed: ' + (err && err.message)));
+    pluginLoader.scan()
+      .then(async (results) => {
+        for (const r of results) {
+          await pluginLoader.load(r.plugin_name).catch(() => { /* audited inside load() */ });
+        }
+      })
+      .catch((err) => logStderr('plugin scan failed: ' + (err && err.message)));
   }
 }
 
