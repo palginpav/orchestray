@@ -40,6 +40,8 @@ const {
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
 const { writeEvent }        = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
+const { readCache: readCustomAgentsCache } = require('./_lib/custom-agents');
+const { CANONICAL_AGENTS } = require('./_lib/canonical-agents');
 
 const VALID_TIERS = ['haiku', 'sonnet', 'opus'];
 
@@ -154,6 +156,83 @@ if (require.main === module) {
     // or kill-switch mode is active. Proceed with 2.0.11 routing.jsonl validation.
 
     const orchFile = getCurrentOrchestrationFile(cwd);
+
+    // -----------------------------------------------------------------------
+    // v2.3.1 §6.2: Custom-agents spawn gate — fail-closed for unknown types.
+    //
+    // For Agent() calls only (not Explore/Task which carry no subagent_type):
+    // if the requested subagent_type is not a shipped canonical agent AND not in
+    // the custom-agents cache written by bin/discover-custom-agents.js, reject.
+    //
+    // This is the sole authority on which agent types are allowed — the PM
+    // frontmatter no longer carries a parenthetical allowlist.
+    //
+    // Fail-open: any error in the cache-read path allows the spawn.
+    // Kill switches: ORCHESTRAY_DISABLE_CUSTOM_AGENTS (env) or
+    //   custom_agents.enabled: false (config) — per design §17.1/§17.2.
+    //   No emergency fail-open override exists by design (fail-closed is the
+    //   security requirement; master switch is the only opt-out).
+    // -----------------------------------------------------------------------
+    if (toolName === 'Agent') {
+      try {
+        const gateToolInput = event.tool_input || {};
+        const gateSubagentType = gateToolInput.subagent_type || '';
+        if (gateSubagentType && !CANONICAL_AGENTS.has(gateSubagentType)) {
+          // Not a shipped canonical agent — check custom-agents cache.
+          // readCustomAgentsCache never throws and never returns null; it returns
+          // a safe empty struct {agents: []} on any read/parse failure.
+          let isAllowed = false;
+          try {
+            const cache = readCustomAgentsCache(cwd);
+            if (Array.isArray(cache.agents)) {
+              isAllowed = cache.agents.some(a => a && a.name === gateSubagentType);
+            }
+            // §3.3: stderr hint when cache is >7 days old (does not invalidate).
+            if (cache.discovered_at) {
+              const ageMs = Date.now() - new Date(cache.discovered_at).getTime();
+              if (Number.isFinite(ageMs) && ageMs > 7 * 24 * 60 * 60 * 1000) {
+                process.stderr.write(
+                  '[orchestray] custom-agents: cache is >7 days old; ' +
+                  'restart Claude Code to refresh discovered agents\n'
+                );
+              }
+            }
+          } catch (_cacheErr) {
+            // Cache read failed — fail-closed: treat as unknown.
+          }
+          if (!isAllowed) {
+            const rejectMsg =
+              '[orchestray] gate-agent-spawn: unknown subagent_type "' + gateSubagentType + '" — ' +
+              'not a shipped agent role and not found in the custom-agents cache. ' +
+              'To add a custom agent, create: ' +
+              '~/.claude/orchestray/custom-agents/' + gateSubagentType + '.md ' +
+              'then restart the Claude Code session. ' +
+              'To disable custom-agent gating entirely, set ORCHESTRAY_DISABLE_CUSTOM_AGENTS=1.';
+            process.stderr.write(rejectMsg + '\n');
+            try {
+              writeEvent({
+                type:            'custom_agents_spawn_rejected',
+                version:         1,
+                schema_version:  1,
+                timestamp:       new Date().toISOString(),
+                subagent_type:   gateSubagentType,
+                source:          'gate-agent-spawn',
+              }, { cwd });
+            } catch (_evErr) { /* fail-open on emit */ }
+            process.stdout.write(JSON.stringify({
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'deny',
+                permissionDecisionReason: rejectMsg,
+              },
+            }));
+            process.exit(2);
+          }
+        }
+      } catch (_customGateErr) {
+        // Fail-open: any unexpected error allows the spawn.
+      }
+    }
 
     // P3.3 (v2.2.0): orchestray-housekeeper spawn gate — Clause 3 + Clause 5.
     // Refuse if quarantine sentinel exists (drift detector controlled),
@@ -511,12 +590,9 @@ if (require.main === module) {
       // S02: routing-resolved model MUST re-run isValidModel() AND != 'inherit'.
       // After resolution, execution falls through to the inherit/invalid hard-blocks
       // and the routing-mismatch check — they still fire on the resolved value.
-      const CANONICAL_AGENTS_ALLOWLIST = new Set([
-        'pm', 'architect', 'developer', 'refactorer', 'inventor', 'researcher', 'reviewer',
-        'debugger', 'tester', 'documenter', 'security-engineer',
-        'release-manager', 'ux-critic', 'platform-oracle',
-        'Explore', 'Plan', 'general-purpose', 'Task',
-      ]);
+      // v2.3.1: CANONICAL_AGENTS_ALLOWLIST is now imported from _lib/canonical-agents
+      // (replaces the literal inline set that required manual sync on every role addition).
+      const CANONICAL_AGENTS_ALLOWLIST = CANONICAL_AGENTS;
 
       let resolvedModel = null;
       let resolveSource = null;
@@ -599,9 +675,34 @@ if (require.main === module) {
         try {
           // S01: validate subagent_type against CANONICAL_AGENTS allowlist before
           // constructing ANY file path — rejects path-traversal attempts.
-          if (!CANONICAL_AGENTS_ALLOWLIST.has(agentTypeForResolve)) {
-            // Not in allowlist — skip to Stage 3 (default_sonnet).
-            // A non-canonical type (custom/dynamic) simply has no frontmatter to read.
+          // v2.3.1 §6.3: custom agents (not in CANONICAL_AGENTS) that passed the
+          // §6.2 gate above are legitimate — read their frontmatter from the
+          // custom-agents drop-in base: ~/.claude/orchestray/custom-agents/.
+          const { homedir } = require('os');
+          const isCanonical = CANONICAL_AGENTS_ALLOWLIST.has(agentTypeForResolve);
+          if (!isCanonical) {
+            // Custom agent — try reading frontmatter from the drop-in directory.
+            const customBase = path.join(homedir(), '.claude', 'orchestray', 'custom-agents');
+            const customPath = path.join(customBase, agentTypeForResolve + '.md');
+            const customRel = path.relative(customBase, customPath);
+            if (!customRel.startsWith('..') && fs.existsSync(customPath)) {
+              try {
+                const customContent = fs.readFileSync(customPath, 'utf8');
+                const fmMatch = customContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+                if (fmMatch) {
+                  const fmBlock = fmMatch[1];
+                  const modelMatch = fmBlock.match(/^model:\s*(.+)$/m);
+                  if (modelMatch) {
+                    const fmModel = modelMatch[1].trim();
+                    if (fmModel && isValidModel(fmModel) && fmModel !== 'inherit') {
+                      resolvedModel = fmModel;
+                      resolveSource = 'frontmatter_default';
+                    }
+                  }
+                }
+              } catch (_customReadErr) { /* fail-open — fall through to Stage 3 */ }
+            }
+            // If no model resolved from custom frontmatter, fall through to Stage 3.
           } else {
             // Construct path and assert it stays inside <cwd>/agents/ (S01 path-relative check).
             const candidatePath = path.join(cwd, 'agents', agentTypeForResolve + '.md');

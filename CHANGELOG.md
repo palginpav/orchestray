@@ -3,6 +3,29 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.1] - 2026-05-05
+
+**Custom agents: bring your own agent roles.**
+
+You can now add custom agent roles to Orchestray without modifying its source. Drop a `.md` file into `~/.claude/orchestray/custom-agents/`, restart Claude Code, and the PM can spawn your agent just like any built-in role.
+
+### What's new for users
+
+- **Drop-in custom agents.** Create `~/.claude/orchestray/custom-agents/<name>.md` with standard agent frontmatter (`name`, `description`, `tools`, `model`) and Orchestray picks it up at session start. No installation step, no code changes.
+- **Spawn gate enforced.** Only agents you have explicitly defined (or shipped canonical roles) can be invoked. An attempt to spawn an undeclared agent type is blocked with a message telling you exactly which file to create. This closes a class of silent failure where a typo in an agent name would produce a confusing error.
+- **Custom names cannot shadow built-in roles.** A file named `developer.md` in your custom-agents directory is rejected with a warning — it cannot replace or intercept the shipped Developer agent.
+
+### Kill switches
+
+- `ORCHESTRAY_DISABLE_CUSTOM_AGENTS=1` — skip discovery; no custom agents are loaded.
+- `custom_agents.enabled: false` in `.orchestray/config.json` — same effect, persistent across sessions.
+
+### Migration notes
+
+No breaking changes for existing setups. The PM frontmatter no longer lists a fixed agent allowlist — that constraint moved into the spawn gate, which is the authoritative source. All 14 shipped roles continue to work without any configuration change. Restart Claude Code after upgrading.
+
+---
+
 ## [2.3.0] - 2026-05-05
 
 **Plugin loader: third-party MCP servers as opt-in extensions.**

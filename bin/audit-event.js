@@ -23,15 +23,10 @@ const writeAuditEvent = require('./_lib/audit-event-writer');
 const { readCache }   = require('./_lib/context-telemetry-cache');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 
-// v2.0.21: canonical agent set for dynamic-agent detection.
-// Includes the 13 Orchestray cores plus Claude Code built-in agent types we do
-// NOT consider "dynamic" (they are platform primitives, not user inventions).
-const CANONICAL_AGENTS = new Set([
-  'pm', 'architect', 'developer', 'refactorer', 'inventor', 'researcher', 'reviewer',
-  'debugger', 'tester', 'documenter', 'security-engineer',
-  'release-manager', 'ux-critic', 'platform-oracle',
-  'Explore', 'Plan', 'general-purpose', 'Task',
-]);
+// v2.3.1: canonical agent set imported from single source of truth.
+// Previously a literal Set duplicated in three files; consolidated to prevent
+// privilege-escalation drift (audit-event vs gate disagreeing on membership).
+const { CANONICAL_AGENTS } = require('./_lib/canonical-agents');
 
 /**
  * R-RV-DIMS-CAPTURE (v2.1.17): peek at a `_spawn_staging` entry to recover

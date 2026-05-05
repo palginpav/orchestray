@@ -64,6 +64,8 @@ const WATCHED_EVENT_TYPES = [
   // for the watcher (it fires on developer-side logic, not PM state writes),
   // so coverage-script rot-detection is the mechanical backstop.
   'delta_handoff_fallback',
+  // v2.3.1: emitted by bin/discover-custom-agents.js per invalid file at SessionStart.
+  'custom_agents_skipped',
 ];
 
 const FLOOR_TOTAL_EVENTS = 2;     // require at least 2 emits before alarming

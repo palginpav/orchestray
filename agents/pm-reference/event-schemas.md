@@ -11283,3 +11283,98 @@ Field notes:
 Emitted from: Wave 4 W-CLI-1 slash-command CLI (not yet implemented).
 
 Kill switch: none (reserved).
+
+---
+
+## v2.3.1 Custom Agents Events
+
+Four new event types introduced in v2.3.1 to instrument custom agent discovery and spawn gating.
+
+### `custom_agents_discovered`
+
+Emitted by `bin/discover-custom-agents.js` (v2.3.1 §5) on every successful SessionStart scan
+when at least one valid custom agent definition was found in `~/.claude/orchestray/custom-agents/`.
+
+```json
+{
+  "type": "custom_agents_discovered",
+  "version": 1,
+  "schema_version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "source": "discover-custom-agents",
+  "count": 2,
+  "names": ["my-agent", "another-agent"]
+}
+```
+
+Field notes:
+- `count`: number of valid custom agent definitions found.
+- `names`: array of agent name strings (filename stems, without `.md` extension).
+- Only emitted when `count > 0`. When the directory is absent or empty, no event is emitted.
+- Kill switch: `ORCHESTRAY_CUSTOM_AGENTS_DISABLED=1` — discovery is skipped entirely.
+
+### `custom_agents_skipped`
+
+Emitted by `bin/discover-custom-agents.js` when discovery is explicitly skipped due to a kill
+switch (`ORCHESTRAY_CUSTOM_AGENTS_DISABLED=1` or `custom_agents.enabled: false` in config).
+
+```json
+{
+  "type": "custom_agents_skipped",
+  "version": 1,
+  "schema_version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "source": "discover-custom-agents",
+  "reason": "env_kill_switch"
+}
+```
+
+Field notes:
+- `reason`: one of `"env_kill_switch"` (env var set) or `"config_disabled"` (config flag false).
+- Analytics consumers can use this to detect sessions where custom agents are intentionally off.
+
+### `custom_agents_collision`
+
+Emitted by `bin/discover-custom-agents.js` when a custom agent name collides with a shipped
+canonical agent name. The custom definition is rejected; the canonical agent is unaffected.
+
+```json
+{
+  "type": "custom_agents_collision",
+  "version": 1,
+  "schema_version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "source": "discover-custom-agents",
+  "name": "developer",
+  "path": "/home/user/.claude/orchestray/custom-agents/developer.md"
+}
+```
+
+Field notes:
+- `name`: the agent name that collided with a canonical role.
+- `path`: the full path to the rejected custom definition file.
+- The collision warning is also emitted to stderr so the user sees it at session start.
+- Hard rule: custom agents may never shadow canonical agent roles.
+
+### `custom_agents_spawn_rejected`
+
+Emitted by `bin/gate-agent-spawn.js` (v2.3.1 §6.2) when an `Agent()` call names a
+`subagent_type` that is neither a shipped canonical agent nor in the custom-agents cache.
+
+```json
+{
+  "type": "custom_agents_spawn_rejected",
+  "version": 1,
+  "schema_version": 1,
+  "timestamp": "2026-05-01T00:00:00.000Z",
+  "source": "gate-agent-spawn",
+  "subagent_type": "unknown-agent"
+}
+```
+
+Field notes:
+- Hard-block: exit 2, `permissionDecision: "deny"`.
+- Stderr message includes the exact path the user must create to register the agent:
+  `~/.claude/orchestray/custom-agents/<name>.md`.
+- Kill switch: `ORCHESTRAY_CUSTOM_AGENTS_GATE_DISABLED=1` — degrades to fail-open (unknown types allowed).
+- The event is emitted BEFORE the stdout deny envelope is written.

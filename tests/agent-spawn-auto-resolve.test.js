@@ -16,8 +16,8 @@
  *  3. routing.jsonl row has invalid model → rejected, falls to global_default_sonnet
  *  4. No routing, developer.md has default_model:sonnet → frontmatter_default path
  *  5. No routing, no frontmatter default → global_default_sonnet applied
- *  6. subagent_type='../../etc/passwd' → CANONICAL_AGENTS rejects, spawn proceeds via default
- *  7. subagent_type='nonexistent_agent' → not in allowlist, default applied
+ *  6. subagent_type='../../etc/passwd' → v2.3.1 fail-closed gate rejects, exit 2
+ *  7. subagent_type='nonexistent_agent' → v2.3.1 fail-closed gate rejects, exit 2
  *  8. model='invalid-foo' → existing hard-block fires (unchanged behavior)
  *  9. model='inherit' inside orchestration → existing hard-block fires
  * 10. ORCHESTRAY_STRICT_MODEL_REQUIRED=1 + missing model → legacy hard-block
@@ -215,29 +215,33 @@ describe('Test 5: global_default_sonnet fallback', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Test 6: subagent_type='../../etc/passwd' → CANONICAL_AGENTS rejects
+// Test 6: subagent_type='../../etc/passwd' → v2.3.1 fail-closed gate rejects
 // ---------------------------------------------------------------------------
 
 describe('Test 6: path-traversal subagent_type rejected (S01)', () => {
-  test('subagent_type=../../etc/passwd → CANONICAL_AGENTS rejects, falls to default', () => {
+  test('subagent_type=../../etc/passwd → v2.3.1 fail-closed gate rejects, exit 2', () => {
     const dir = makeDir();
-    const { status, stderr } = runAutoResolve(agentPayload(dir, { subagent_type: '../../etc/passwd' }));
-    assert.equal(status, 0, 'Expected exit 0 (fail-open path). stderr: ' + stderr);
+    // v2.3.1: gate is fail-closed; unknown types (including path-traversal) are
+    // rejected before auto-resolve runs. The gate exits 2 unconditionally.
+    const { status, stderr } = run(agentPayload(dir, { subagent_type: '../../etc/passwd' }));
+    assert.equal(status, 2, 'Expected exit 2 (fail-closed gate). stderr: ' + stderr);
     assert.doesNotMatch(stderr, /Stage 2.*etc\/passwd/, 'Must not attempt to read /etc/passwd');
-    assert.match(stderr, /defaulting to "sonnet"/, 'Expected global_default_sonnet for non-canonical type');
+    assert.match(stderr, /unknown subagent_type/, 'Expected gate rejection message');
   });
 });
 
 // ---------------------------------------------------------------------------
-// Test 7: subagent_type='nonexistent_agent' → not in allowlist, default applied
+// Test 7: subagent_type='nonexistent_agent' → v2.3.1 fail-closed gate rejects
 // ---------------------------------------------------------------------------
 
 describe('Test 7: non-canonical subagent_type falls to default', () => {
-  test('subagent_type=nonexistent_agent → not in CANONICAL_AGENTS, global default applied', () => {
+  test('subagent_type=nonexistent_agent → v2.3.1 fail-closed gate rejects, exit 2', () => {
     const dir = makeDir();
-    const { status, stderr } = runAutoResolve(agentPayload(dir, { subagent_type: 'nonexistent_agent' }));
-    assert.equal(status, 0, 'Expected exit 0 (fail-open). stderr: ' + stderr);
-    assert.match(stderr, /defaulting to "sonnet"/, 'Expected global_default_sonnet for non-canonical type');
+    // v2.3.1: gate is fail-closed; unknown types are rejected before auto-resolve.
+    // Pre-v2.3.1 this fell through to global_default_sonnet. No longer.
+    const { status, stderr } = run(agentPayload(dir, { subagent_type: 'nonexistent_agent' }));
+    assert.equal(status, 2, 'Expected exit 2 (fail-closed gate). stderr: ' + stderr);
+    assert.match(stderr, /unknown subagent_type/, 'Expected gate rejection message');
   });
 });
 

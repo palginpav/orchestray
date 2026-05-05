@@ -152,6 +152,32 @@ same filesystem and network access as Orchestray itself.** Specifically:
 
 Five specialist templates also ship: translator, ui-ux-designer, database-migration, api-contract-designer, error-message-writer. The PM activates them automatically on matching keywords; project-local overrides go in `.orchestray/specialists/`.
 
+## Custom agents (drop-in)
+
+You can add your own agent roles without modifying Orchestray. Drop a `.md` file into `~/.claude/orchestray/custom-agents/` and restart Claude Code:
+
+```
+~/.claude/orchestray/custom-agents/
+  my-agent.md
+```
+
+Each file uses the same frontmatter format as shipped agents:
+
+```markdown
+---
+name: my-agent
+description: Does something specific
+tools: Read, Glob, Grep, Bash
+model: sonnet
+---
+
+You are a specialist agent that ...
+```
+
+Orchestray discovers custom agents at session start. The spawn gate enforces that only discovered agents (or shipped canonical roles) can be invoked — unknown agent types are blocked with an explanatory message. Custom agent names must not collide with any shipped role name.
+
+To disable custom agents entirely: set `ORCHESTRAY_DISABLE_CUSTOM_AGENTS=1` or add `"custom_agents": {"enabled": false}` to `.orchestray/config.json`.
+
 ## How it works
 
 - PM scores every prompt (0–12). Score below threshold → normal Claude Code. Score at or above threshold → orchestration.

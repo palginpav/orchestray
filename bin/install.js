@@ -77,6 +77,13 @@ const FRESH_INSTALL_PATTERN_DECAY = {
   category_overrides: {},
 };
 
+// Default custom_agents block for fresh installs.
+// Ships default-on per "default-on" project policy (feedback_default_on_shipping).
+const FRESH_INSTALL_CUSTOM_AGENTS = {
+  enabled:   true,
+  max_files: 100,
+};
+
 // Default anti_pattern_gate block for fresh installs.
 // Uses canonical defaults from DEFAULT_ANTI_PATTERN_GATE in config-schema.js.
 // Per v2018 W12: enabled by default, threshold 0.55 (lowered from 0.65 in v2.2.17), max 1 advisory per spawn.
@@ -671,6 +678,21 @@ function install(targetDir) {
     }
   }
 
+  // 1c. v2.3.1: ensure the global custom-agents drop-in directory exists.
+  // User-scope (not project-scope); mode 0o700 — user-private.
+  // Idempotent: fs.mkdirSync with recursive:true is a no-op if it already exists.
+  const customAgentsDir = path.join(os.homedir(), '.claude', 'orchestray', 'custom-agents');
+  try {
+    fs.mkdirSync(customAgentsDir, { recursive: true, mode: 0o700 });
+    say('  \x1b[32m✓\x1b[0m Custom-agents drop-in directory: ' + customAgentsDir);
+  } catch (caErr) {
+    say(
+      '  \x1b[33m⚠\x1b[0m Could not create ' + customAgentsDir + ': ' + caErr.message +
+      ' (custom-agents feature will be disabled until directory exists)'
+    );
+    // Non-fatal; install continues.
+  }
+
   // 2. Copy skills (each is a directory with SKILL.md)
   const skillsDir = path.join(pkgRoot, 'skills');
   const skillDirs = fs.readdirSync(skillsDir).filter(f => {
@@ -1056,6 +1078,8 @@ function install(targetDir) {
       // Aider-style repo-map seed. See
       // FRESH_INSTALL_REPO_MAP comment above.
       repo_map: FRESH_INSTALL_REPO_MAP,
+      // v2.3.1: custom-agents drop-in directory feature (default on).
+      custom_agents: FRESH_INSTALL_CUSTOM_AGENTS,
     };
     try {
       fs.mkdirSync(orchStateDir, { recursive: true });

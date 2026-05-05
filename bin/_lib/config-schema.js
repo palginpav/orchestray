@@ -4515,6 +4515,94 @@ function validatePluginLoaderConfig(obj) {
   return errors.length === 0 ? { valid: true } : { valid: false, errors };
 }
 
+// ---------------------------------------------------------------------------
+// custom_agents config block (v2.3.1)
+//
+// custom_agents.enabled — boolean, default true (ships default-on per project policy).
+// custom_agents.max_files — positive integer ≤ 1000, default 100.
+//   Soft cap on the number of .md files scanned in the custom-agents source dir.
+//
+// Existing installs without this key keep working: loadCustomAgents returns DEFAULT
+// (enabled:true) when the key is absent. No migration step required.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_CUSTOM_AGENTS = Object.freeze({
+  enabled:   true,
+  max_files: 100,
+});
+
+const _CustomAgentsShape = {
+  enabled:   z.boolean().optional(),
+  max_files: z.number().int().positive().max(1000).optional(),
+};
+
+/**
+ * Load and merge custom_agents config from <cwd>/.orchestray/config.json.
+ *
+ * Fail-open: returns DEFAULT_CUSTOM_AGENTS on any error.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ enabled: boolean, max_files: number }}
+ */
+function loadCustomAgents(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_CUSTOM_AGENTS);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_CUSTOM_AGENTS);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_CUSTOM_AGENTS);
+  }
+
+  const fromFile = parsed.custom_agents;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_CUSTOM_AGENTS);
+  }
+
+  const merged = Object.assign({}, DEFAULT_CUSTOM_AGENTS, sanitizeConfig(fromFile));
+
+  try {
+    const result = validateCustomAgents(merged);
+    if (!result.valid) {
+      logStderr('custom_agents config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) { /* validation must never throw */ }
+
+  return merged;
+}
+
+/**
+ * Validate a custom_agents config object.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateCustomAgents(obj) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['custom_agents must be an object'] };
+  }
+
+  const schema = z.object(_CustomAgentsShape).strict();
+  const result = schema.safeParse(obj);
+  if (result.success) return { valid: true };
+
+  const errors = result.error.issues.map((issue) => {
+    const key = issue.path.join('.');
+    return 'custom_agents.' + key + ': ' + issue.message;
+  });
+  return { valid: false, errors };
+}
+
 module.exports = {
   DEFAULT_MCP_ENFORCEMENT,
   loadMcpEnforcement,
@@ -4634,4 +4722,8 @@ module.exports = {
   DEFAULT_PLUGIN_LOADER,
   loadPluginLoaderConfig,
   validatePluginLoaderConfig,
+  // custom_agents discovery config (v2.3.1)
+  DEFAULT_CUSTOM_AGENTS,
+  loadCustomAgents,
+  validateCustomAgents,
 };

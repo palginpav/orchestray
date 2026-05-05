@@ -50,13 +50,10 @@ const MAX_EXTRA_LEN = 2048;
 /** Reserved top-level keys that --extra must NOT contain (S03). */
 const EXTRA_RESERVED_KEYS = new Set(['orchestration_id', 'event', 'ts', 'type']);
 
-/** Canonical agent types (mirrors audit-event.js CANONICAL_AGENTS). */
-const CANONICAL_AGENTS = new Set([
-  'pm', 'architect', 'developer', 'refactorer', 'inventor', 'researcher', 'reviewer',
-  'debugger', 'tester', 'documenter', 'security-engineer',
-  'release-manager', 'ux-critic', 'platform-oracle',
-  'Explore', 'Plan', 'general-purpose', 'Task',
-]);
+// v2.3.1: canonical agent types imported from single source of truth.
+// Previously a literal Set duplicated in three files; consolidated to prevent
+// privilege-escalation drift (audit-event vs gate disagreeing on membership).
+const { CANONICAL_AGENTS } = require('./_lib/canonical-agents');
 
 /** Valid model short-names and full IDs. */
 const VALID_MODELS = new Set([

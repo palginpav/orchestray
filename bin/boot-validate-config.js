@@ -164,7 +164,56 @@ function runDriftDetection(cwd) {
   return { unknownCount: unknown.length, renamedCount: renamed.length };
 }
 
+/**
+ * §16.3 boot-validate probe: verify that the custom-agents and canonical-agents
+ * library modules load without error. A require() failure at boot is much more
+ * informative than a cryptic TypeError inside gate-agent-spawn mid-session.
+ *
+ * On failure: emits stderr error AND records kill_switch_reason so the operator
+ * knows exactly which module caused the boot failure.
+ *
+ * Fail pattern: if either module throws, we set a module-level flag and the
+ * runCli() function emits the error. We do NOT exit here — the zod validation
+ * exit code takes precedence; the module error is an additional stderr warning.
+ */
+let _customAgentsLibError = null;
+let _canonicalAgentsLibError = null;
+try {
+  require('./_lib/custom-agents');
+} catch (e) {
+  _customAgentsLibError = e;
+}
+try {
+  require('./_lib/canonical-agents');
+} catch (e) {
+  _canonicalAgentsLibError = e;
+}
+
 function runCli() {
+  // §16.3: emit errors for library load failures (custom-agents gate deps).
+  if (_customAgentsLibError) {
+    const msg = _customAgentsLibError && _customAgentsLibError.stack
+      ? _customAgentsLibError.stack
+      : String(_customAgentsLibError);
+    process.stderr.write(
+      '[orchestray] boot-validate-config: CRITICAL — _lib/custom-agents failed to load.\n' +
+      '  The custom-agents gate (gate-agent-spawn.js) will be broken this session.\n' +
+      '  Error: ' + msg + '\n' +
+      '  Run `npm install` in the plugin directory to fix missing dependencies.\n'
+    );
+  }
+  if (_canonicalAgentsLibError) {
+    const msg = _canonicalAgentsLibError && _canonicalAgentsLibError.stack
+      ? _canonicalAgentsLibError.stack
+      : String(_canonicalAgentsLibError);
+    process.stderr.write(
+      '[orchestray] boot-validate-config: CRITICAL — _lib/canonical-agents failed to load.\n' +
+      '  The custom-agents gate (gate-agent-spawn.js) will be broken this session.\n' +
+      '  Error: ' + msg + '\n' +
+      '  Run `npm install` in the plugin directory to fix missing dependencies.\n'
+    );
+  }
+
   try {
     const { run } = require('./validate-config.js');
     // Human-readable output in SessionStart context; use --json if the user

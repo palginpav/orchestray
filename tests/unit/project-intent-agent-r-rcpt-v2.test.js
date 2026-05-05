@@ -343,15 +343,13 @@ describe('E — install.js sentinel advertises restart_gated_features', () => {
 describe('F — pm.md frontmatter exposes project-intent as spawnable', () => {
 
   test('pm.md Agent(...) tool list contains project-intent', () => {
-    const pmSrc = fs.readFileSync(path.join(ROOT, 'agents', 'pm.md'), 'utf8');
-    const toolsLine = pmSrc.match(/^tools:\s*(.+)$/m);
-    assert.ok(toolsLine, 'pm.md must have a tools: line');
-    const agentParen = toolsLine[1].match(/Agent\(([^)]+)\)/);
-    assert.ok(agentParen, 'pm.md tools: must declare an Agent(...) list');
-    const agents = agentParen[1].split(',').map(s => s.trim());
+    // v2.3.1: pm.md no longer carries a parenthetical Agent(...) allowlist.
+    // The canonical set moved to bin/_lib/canonical-agents.js (single source of truth).
+    // This test now asserts project-intent is in CANONICAL_AGENTS.
+    const { CANONICAL_AGENTS } = require(path.join(ROOT, 'bin', '_lib', 'canonical-agents.js'));
     assert.ok(
-      agents.includes('project-intent'),
-      `Agent(...) list must include "project-intent" (got: ${agents.join(', ')})`
+      CANONICAL_AGENTS.has('project-intent'),
+      'project-intent must be in CANONICAL_AGENTS (bin/_lib/canonical-agents.js)'
     );
   });
 

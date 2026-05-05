@@ -408,10 +408,12 @@ may be saved for future reuse instead of being discarded.
    (Only executed if no matching specialist was found in step 0.)
 
 2. **PM spawns the agent** using `Agent("{name}")`. Claude Code resolves the name to
-   the file in `agents/`. The PM frontmatter lists `tools: Agent(architect, developer,
-   reviewer)` which documents the core agents, but Claude Code's Agent() tool resolves
-   any agent name to a matching `.md` file in the `agents/` directory. The PM is NOT
-   restricted to only the listed names.
+   the file in `agents/`. In v2.3.1+, the PM frontmatter uses `tools: Agent` (no
+   parenthetical allowlist) — the gate (`bin/gate-agent-spawn.js`) is the sole
+   authority on which agent types may be spawned. Shipped roles are always allowed;
+   custom drop-in agents discovered by `bin/discover-custom-agents.js` are allowed
+   when `custom_agents.enabled` is not false. Unknown agent types are rejected by
+   the gate with exit 2 and a `custom_agents_spawn_rejected` audit event.
 
 3. **Agent executes** and returns a structured result per pm.md §6.
 
