@@ -138,7 +138,7 @@ function emitUpgradePendingWarning(sessionId, cwd) {
     // Per-session marker present means we already warned this session.
     if (fs.existsSync(sessionMarkerPath)) return;
 
-    // v2.1.9 I-10: write sentinel BEFORE emitting to eliminate the
+    // I-10: write sentinel BEFORE emitting to eliminate the
     // race-storm where rapid UserPromptSubmit turns in a single session
     // could each enter this block between emit and the old trailing write.
     // A stderr write + recordDegradation is slow enough (hundreds of µs)
@@ -161,7 +161,7 @@ function emitUpgradePendingWarning(sessionId, cwd) {
     const versionSuffix = data.version
       ? ' to v' + data.version + (data.previous_version ? ' (was v' + data.previous_version + ')' : '')
       : '';
-    // v2.1.13 R-RCPT-V2: name specific features waiting on the restart so users
+    // R-RCPT-V2: name specific features waiting on the restart so users
     // know WHAT is dormant until they reload the session.
     const gatedList = Array.isArray(data.restart_gated_features)
       ? data.restart_gated_features.filter((s) => typeof s === 'string' && s.length > 0)
@@ -174,7 +174,7 @@ function emitUpgradePendingWarning(sessionId, cwd) {
       'one-time reminder. RESTART to load new agents (this message won\'t repeat).' +
       gatedSuffix + '\n'
     );
-    // v2.2.21 W2-T8 (F-02 fix): replace the 13 unconditional migration banners
+    // W2-T8 (F-02 fix): replace the 13 unconditional migration banners
     // with a version-keyed ledger dispatch. Banners only fire when prevVersion
     // is older than each banner's introducedIn; >2 banners collapse into a
     // single summary line pointing at /orchestray:doctor migrations.
@@ -209,7 +209,7 @@ function emitUpgradePendingWarning(sessionId, cwd) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// v2.2.21 W2-T8 NOTE: the v2.1.7 resilience-live banner formerly lived here as
+// W2-T8 NOTE: the v2.1.7 resilience-live banner formerly lived here as
 // a stand-alone helper (`emitResilienceLiveNotice`) with its own
 // `.resilience-live-noticed-2017` sentinel. It is now an entry in the
 // migration-banner ledger (bin/_lib/migration-banner-ledger.js), gated by
@@ -2191,7 +2191,7 @@ function runT22AdaptiveVerbositySeed(cwd, stateDir, sentinelPath) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// v2.1.16 R-AT-FLAG: enable_agent_teams → agent_teams.enabled migration
+// R-AT-FLAG: enable_agent_teams → agent_teams.enabled migration
 // ──────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -2296,7 +2296,7 @@ function touchSilent(sentinelPath, stateDir) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// v2.2.6: tokenwright self-probe trigger
+// tokenwright self-probe trigger
 // ──────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -2417,7 +2417,7 @@ function main() {
       // per-session marker handles in-session deduplication).
       emitUpgradePendingWarning(sessionId, cwd);
 
-      // v2.2.21 W2-T8: the v2.1.7 resilience-live banner is now part of the
+      // W2-T8: the v2.1.7 resilience-live banner is now part of the
       // migration-banner-ledger dispatch invoked from emitUpgradePendingWarning
       // (above). The previous emitResilienceLiveNotice helper has been removed.
 
@@ -2476,7 +2476,7 @@ function main() {
       const stateSentinelSeedSentinel = path.join(stateDir, '.state-sentinel-seeded-2018');
       // W8 (v2.0.18): redo_flow config block seed.
       const redoFlowSeedSentinel = path.join(stateDir, '.redo-flow-seeded-2018');
-      // v2.1.16 R-AT-FLAG: enable_agent_teams → agent_teams.enabled migration sentinel.
+      // R-AT-FLAG: enable_agent_teams → agent_teams.enabled migration sentinel.
       const rAtFlagSentinel = path.join(stateDir, '.agent-teams-namespace-migrated-2116');
 
       // ── W8: config migration ────────────────────────────────────────────────

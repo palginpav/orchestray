@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 // NOT_A_HOOK
-// FN-59 (v2.2.15): CLI-only tool. install.js is the npm install entry point —
-// invoked by `npx orchestray --global|--local`, never by Claude Code as a hook.
+// CLI-only install entry point. Invoked by `npx orchestray --global|--local`, never by Claude Code as a hook.
 'use strict';
 
 const fs = require('fs');
@@ -14,11 +13,7 @@ const { computeManifest }  = require('./_lib/install-manifest');
 const VERSION = require('../package.json').version;
 const REPO = 'https://github.com/palginpav/orchestray';
 
-// FN-23 (v2.2.15): tiny stderr-writer for advisory output. Per G-02 sibling
-// discipline, all install advisories ("✓ Installed N agents", "✓ Configured
-// hooks", etc.) write to stderr — leaving stdout reserved for the final
-// "Done!" ceremony and the help/usage text. This prevents install.js stdout
-// from polluting any pipe consumer that expects machine-readable output.
+// Install advisories write to stderr; stdout reserved for final ceremony and --help output.
 function say(msg) {
   process.stderr.write(String(msg) + '\n');
 }
@@ -45,7 +40,7 @@ const FRESH_INSTALL_MCP_TOOLS_ENABLED = {
   cost_budget_reserve: true,
   // v2.0.17 T5: metrics_query telemetry tool
   metrics_query: true,
-  // v2.1.14 R-CAT: pattern_read JIT tool (catalog companion to pattern_find)
+  // R-CAT: pattern_read JIT tool (catalog companion to pattern_find)
   pattern_read: true,
 };
 
@@ -107,7 +102,7 @@ const FRESH_INSTALL_REDO_FLOW = {
   commit_prefix: 'redo',
 };
 
-// R-AIDER-FULL (v2.1.17): Aider-style tree-sitter + PageRank repo-map seed.
+// Aider-style tree-sitter + PageRank repo-map seed.
 // `enabled: true` ships the feature on by default for fresh installs because
 // the PM agent's delegation pipeline (agents/pm.md Section 3) prepends a
 // repo map block to code-touching spawns when this flag is true. To soft-
@@ -229,7 +224,7 @@ say('');
 install(configDir);
 
 // =============================================================================
-// v2.1.0 UPGRADE NOTES (v2.0.x → v2.1.0 migration)
+// UPGRADE NOTES (v2.0.x → v2.1.0 migration)
 // =============================================================================
 //
 // These notes apply to any install that is upgrading FROM a v2.0.x release.
@@ -333,7 +328,7 @@ function _maybeCreateSharedFederationDirs(projectRoot) {
       : '~/.orchestray/shared';
 
     // Tilde + $HOME expansion (FN-22 v2.2.15: accept $HOME alongside ~/).
-    // FN-21: collapsed dead `slice(...?2:2)` ternary to `slice(2)` — both
+    // collapsed dead `slice(...?2:2)` ternary to `slice(2)` — both
     // branches yielded the same offset for `~/` and `~\` prefixes.
     if (sharedDirPath === '~' || sharedDirPath.startsWith('~/') || sharedDirPath.startsWith('~\\')) {
       sharedDirPath = path.join(os.homedir(), sharedDirPath.slice(2));
@@ -420,7 +415,7 @@ function _mergeCompactInstructionsIntoCLAUDEmd(pkgClaudeMdPath, projectRoot) {
     if (!exists) {
       // Case (a): create a minimal CLAUDE.md with just this section.
       fs.writeFileSync(userClaudeMdPath, sectionText + '\n', { encoding: 'utf8' });
-      // FN-23: this function is eval-extracted by tests/install/claude-md-merge
+      // this function is eval-extracted by tests/install/claude-md-merge
       // and runs in a Function-eval scope without `say` in scope. Use raw
       // process.stderr.write here instead of the say() helper.
       process.stderr.write('  \x1b[32m✓\x1b[0m Created CLAUDE.md with ## Compact Instructions section\n');
@@ -870,7 +865,7 @@ function install(targetDir) {
     say('  \x1b[33m⚠\x1b[0m node_modules/zod not found in source; mcp-server boot will fail');
   }
 
-  // W-DEPS-1 (v2.3.0): plugin-loader.js transitively requires 'ajv' via
+  // plugin-loader.js transitively requires 'ajv' via
   // plugin-input-schema-validator.js. Copy ajv alongside zod so --local
   // install layouts have both available. ajv has no locales to omit; copy
   // everything (filter: null equivalent via no filter option).
@@ -928,7 +923,7 @@ function install(targetDir) {
         try { fs.rmSync(probeDir, { recursive: true, force: true }); } catch (_e) {}
       }
     } else {
-      // FN-20: fall back to bare resolve check when the validator isn't
+      // fall back to bare resolve check when the validator isn't
       // installed (test fixtures, partial copies). Parity with prior check.
       require.resolve('../schemas', { paths: [path.join(targetDir, 'orchestray', 'bin')] });
     }
@@ -1054,11 +1049,11 @@ function install(targetDir) {
       state_sentinel: FRESH_INSTALL_STATE_SENTINEL,
       // W8 (v2.0.18): redo_flow — cascade depth + commit prefix config
       redo_flow: FRESH_INSTALL_REDO_FLOW,
-      // R-FLAGS (v2.1.14): drift sentinel off by default for new installs.
+      // drift sentinel off by default for new installs.
       // Seldom produces actionable output on typical workloads; users who rely
       // on it set `enable_drift_sentinel: true` in .orchestray/config.json.
       enable_drift_sentinel: false,
-      // R-AIDER-FULL (v2.1.17): Aider-style repo-map seed. See
+      // Aider-style repo-map seed. See
       // FRESH_INSTALL_REPO_MAP comment above.
       repo_map: FRESH_INSTALL_REPO_MAP,
     };
@@ -1149,7 +1144,7 @@ function install(targetDir) {
       installed_at: new Date(now).toISOString(),
       installed_at_ms: now,
       version: VERSION,
-      // R-RCPT-V2 (v2.1.13): advertise features whose code path requires a
+      // advertise features whose code path requires a
       // Claude Code restart to take effect (because agent registry is cached
       // at session start). Operators / downstream tools can read this list to
       // explain *what* specifically the restart unlocks instead of a generic
@@ -1196,7 +1191,7 @@ function install(targetDir) {
   } catch (_e) { /* fail-open per install posture */ }
   // === end v2.2.21 W1-T2 ===
 
-  // v2.2.6: write a sentinel so the first UserPromptSubmit after this install
+  // write a sentinel so the first UserPromptSubmit after this install
   // triggers the tokenwright self-probe (post-upgrade-sweep.js picks this up).
   // The sentinel lives in .orchestray/state/ which is project-local; stateDir
   // was already created above by the config seed step (mkdirSync recursive).
@@ -1222,7 +1217,7 @@ function install(targetDir) {
   // === end v2.2.21 W2-T8 ===
 
   // U-2 fix: RESTART reminder appears BEFORE "Done!" so it is not missed.
-  // FN-23: final-ceremony block stays on stdout — this is the user-visible
+  // final-ceremony block stays on stdout — this is the user-visible
   // success summary, not advisory chatter.
   console.log('');
   console.log('  \x1b[33m!\x1b[0m  RESTART required — Claude Code caches agent definitions at session');
@@ -1268,7 +1263,7 @@ function _prependOxBinToPath(targetDir, oxBinDir) {
     const parts = current.split(separator);
     if (parts.includes(oxBinDir)) return;  // Already present — idempotent no-op.
     settings.env.PATH = [oxBinDir, current].join(separator);
-    // FN-18 (v2.2.15): use the writeJsonAtomic helper for parity with every
+    // use the writeJsonAtomic helper for parity with every
     // other settings.json write site. Helper writes via openSync+fsyncSync+
     // rename and is the canonical durability path.
     writeJsonAtomic(settingsFile, settings);
@@ -1304,7 +1299,7 @@ function mergeHooks(targetDir) {
   }
   if (!settings.hooks) settings.hooks = {};
 
-  // FN-19 (v2.2.15): canonical-source parse hoisted ABOVE the prune sweep so
+  // canonical-source parse hoisted ABOVE the prune sweep so
   // FN-16's stale-hook prune can consult the canonical-basename allowlist when
   // deciding whether to drop a hook entry from settings.json. Prior order parsed
   // canonical AFTER prune, which prevented "drop entries no longer in canonical"
@@ -1362,7 +1357,7 @@ function mergeHooks(targetDir) {
   // any other path (other plugins, other orchestray installs on the same
   // machine, fictitious test paths) are left untouched.
   //
-  // FN-16 (v2.2.15): also prune entries whose basename is not in the
+  // also prune entries whose basename is not in the
   // canonical-allowlist, AND delete the stale script file from the install dir.
   // This catches the W2-08 case where 3 deleted hook scripts (`observe-output-shape`,
   // `track-scout-decision`, `inject-context-size-hint`) were emitting 176
@@ -1409,7 +1404,7 @@ function mergeHooks(targetDir) {
             // dir so future SessionStart fires don't trip schema-shadow miss
             // counters via undeclared writeEvent calls.
             //
-            // v2.2.16 hotfix: ONLY delete the install-target file when the
+            // hotfix: ONLY delete the install-target file when the
             // source `bin/` does NOT also ship the script. Some scripts
             // (archive-orch-events, audit-housekeeper-orphan, audit-pm-emit-coverage,
             // audit-promised-events, audit-round-archive-hook, scan-cite-labels)
@@ -1525,7 +1520,7 @@ function mergeHooks(targetDir) {
         return m ? path.basename(m[1]) : null;
       };
 
-      // FN-14 (v2.2.15): arg-update pass. Walk every existing Orchestray hook
+      // arg-update pass. Walk every existing Orchestray hook
       // in settings.hooks[event]; for any whose basename matches a new entry's
       // canonical hook AND whose command differs (different args, different
       // timeout), REPLACE the command field with the canonical shape. This
@@ -1623,7 +1618,7 @@ function mergeHooks(targetDir) {
         // Orchestray install — another plugin's hook in the same matcher is
         // a peer, not a duplicate.
         //
-        // v2.2.17 W7c (cross-install dedup): when a dual-install operator
+        // W7c (cross-install dedup): when a dual-install operator
         // upgrades both global and project-local installs, each install's
         // mergeHooks adds entries with its OWN absolute path, but the older
         // install's entries (with a DIFFERENT absolute path) remain in
@@ -1746,7 +1741,7 @@ function mergeHooks(targetDir) {
     }
   }
 
-  // v2.2.13 W3 (G-04): deterministic hook-chain reordering per (event, matcher).
+  // (G-04): deterministic hook-chain reordering per (event, matcher).
   // Append-only behaviour above this line preserved for backward compat; this
   // step runs AFTER append-and-dedup completes.
   {
@@ -1870,7 +1865,7 @@ function mergeHooks(targetDir) {
     }
   }
 
-  // FN-18 (v2.2.15): atomic write — Ctrl-C mid-write previously corrupted
+  // atomic write — Ctrl-C mid-write previously corrupted
   // settings.json. tmp+fsync+rename on the same FS. Inlined (rather than
   // calling the writeJsonAtomic helper below) so test harnesses that
   // eval-extract only the mergeHooks function body still work.
@@ -1978,7 +1973,7 @@ function mergeTopLevelSettings(targetDir) {
 // entry name that directory is not descended into and not copied.
 function copyJsTree(src, dst, skipDir = () => false) {
   const copied = [];
-  // v2.1.17 W8 R-AIDER-FULL: also copy .scm tree-sitter queries and
+  // R-AIDER-FULL: also copy .scm tree-sitter queries and
   // manifest.json under bin/_lib/repo-map-grammars/. Limit non-.js extensions
   // to the explicit allow-list so we don't accidentally bundle test fixtures
   // or build artifacts that happen to live under bin/_lib/.
@@ -2151,7 +2146,7 @@ function uninstall(targetDir) {
   // from a prior version are not stranded.
   if (Array.isArray(manifest.files)) {
     // 1. Remove every tracked file individually.
-    //    v2.1.9: use lstatSync before unlink so symlinks (specialist entries
+    //    use lstatSync before unlink so symlinks (specialist entries
     //    in agents/) are removed without following to the target.
     //    fs.unlinkSync on a symlink already removes the link itself, but
     //    lstatSync-gated fs.existsSync gives us clear "this was a symlink"
@@ -2256,14 +2251,14 @@ function uninstall(targetDir) {
           if (settings.hooks[event].length === 0) delete settings.hooks[event];
         }
         if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
-        // FN-18 (v2.2.15): atomic write via the writeJsonAtomic helper.
+        // atomic write via the writeJsonAtomic helper.
         writeJsonAtomic(settingsFile, settings);
       }
     } catch {}
   }
   say(`  \x1b[32m✓\x1b[0m Cleaned hooks`);
 
-  // FN-23: final uninstall ceremony stays on stdout (user-visible summary).
+  // final uninstall ceremony stays on stdout (user-visible summary).
   console.log('');
   console.log('  \x1b[32mOrchestray uninstalled.\x1b[0m');
   console.log('');

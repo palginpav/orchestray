@@ -36,24 +36,24 @@
 const fs = require('fs');
 const path = require('path');
 const { writeEvent } = require('./_lib/audit-event-writer');
-// v2.2.9 B-2.1: per-role schema map (16/38 W2 findings collapse here).
+// B-2.1: per-role schema map (16/38 W2 findings collapse here).
 const { validateRoleSchema, isRoleHardDisabled } = require('./_lib/role-schemas');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { recordDegradation } = require('./_lib/degraded-journal');
 const { loadHandoffBodyCapConfig } = require('./_lib/config-schema');
-// v2.2.11 W2-4: cross-field invariant checker (R1/R2/R3 per handoff-contract.md §2).
+// W2-4: cross-field invariant checker (R1/R2/R3 per handoff-contract.md §2).
 const { validateCrossField } = require('./_lib/t15-cross-field');
-// v2.2.2 Fix #7: REQUIRED_SECTIONS shares its source with the C2 hook's
+// Fix #7: REQUIRED_SECTIONS shares its source with the C2 hook's
 // HANDOFF_CONTRACT_SUFFIX so the agent-side prompt and the hook-side
 // enforcement can never drift apart.
 const { HANDOFF_REQUIRED_SECTIONS } = require('./_lib/handoff-contract-text');
-// v2.2.21 T4 F7: shared path-containment guard for artifact-body reads.
+// shared path-containment guard for artifact-body reads.
 const { validateTranscriptPath } = require('./_lib/path-containment');
 
 // ---------------------------------------------------------------------------
-// R-DX2 (v2.1.11): Artifact-path fields and placeholder rejection
+// Artifact-path fields and placeholder rejection
 // ---------------------------------------------------------------------------
 
 // Top-level fields in Structured Result that must point to real files on disk.
@@ -259,7 +259,7 @@ const KNOWN_EVENT_TYPES = new Set([
   'pattern_index_rebuilt',
   'pattern_index_build_failed',
   'scorer_structural_result',
-  // R-HCAP (v2.1.14): handoff body cap events
+  // handoff body cap events
   'handoff_body_warn',
   'handoff_body_block',
   // P2.2 (v2.2.0): Haiku scout audit events
@@ -291,16 +291,16 @@ const KNOWN_EVENT_TYPES = new Set([
   'researcher_citations_gate_blocked',
   // P1-10 (v2.2.15): platform-oracle grounding gate
   'platform_oracle_grounding_gate_blocked',
-  // v2.2.21 T7 (PM-4): reviewer git-diff audit-mode acceptance
+  // (PM-4): reviewer git-diff audit-mode acceptance
   'reviewer_git_diff_audit_mode_accepted',
-  // v2.2.21 T9 (T4 F3/F4/F7): shared transcript-path containment guard
+  // (T4 F3/F4/F7): shared transcript-path containment guard
   'transcript_path_containment_failed',
   // F-14 (v2.2.21 W4-T20): collision summary replaces per-slug events
   'pattern_find_collisions_summary',
-  // v2.2.21 W4-T20: contracts runpost silent skip (existing) + no_deferral_block (additive)
+  // W4-T20: contracts runpost silent skip (existing) + no_deferral_block (additive)
   'contracts_runpost_silent_skip',
   'no_deferral_block',
-  // v2.2.21 W4-T20: task subject missing (additive field reason_code)
+  // W4-T20: task subject missing (additive field reason_code)
   'task_subject_missing',
 ]);
 
@@ -331,10 +331,10 @@ function validateAuditEventType(event) {
 }
 
 // ---------------------------------------------------------------------------
-// v2.1.9 I-12 agent tiers (§5 I-12 tier table).
+// I-12 agent tiers (§5 I-12 tier table).
 // ---------------------------------------------------------------------------
 
-// v2.2.9 B-2.1: 6 prior warn-tier roles (researcher, debugger, inventor,
+// B-2.1: 6 prior warn-tier roles (researcher, debugger, inventor,
 // security-engineer, ux-critic, platform-oracle) promoted to hard-tier.
 // Per-role kill switches (`ORCHESTRAY_T15_<ROLE>_HARD_DISABLED=1`) demote a
 // single role back to warn behavior for emergency pinning. No grace flag.
@@ -360,7 +360,7 @@ const WARN_TIER = new Set([]);
 // empty — the section must appear in every Structured Result so downstream
 // consumers can distinguish "no assumptions made" from "assumptions omitted".
 //
-// v2.2.2 Fix #7: sourced from bin/_lib/handoff-contract-text.js so the
+// Fix #7: sourced from bin/_lib/handoff-contract-text.js so the
 // agent-prompt suffix (HANDOFF_CONTRACT_SUFFIX) and this hook-side enforcement
 // list cannot drift apart. Edit there, not here.
 const REQUIRED_SECTIONS = HANDOFF_REQUIRED_SECTIONS;
@@ -622,7 +622,7 @@ function findForbiddenToolCalls(transcriptToolCalls, forbiddenSet) {
 }
 
 // ---------------------------------------------------------------------------
-// R-HCAP (v2.1.14): Artifact body-size cap validation
+// Artifact body-size cap validation
 // ---------------------------------------------------------------------------
 
 /**
@@ -678,7 +678,7 @@ function checkArtifactBodySizes(structuredResult, projectRoot, capConfig) {
       if (!looksLikePath(v.trim())) continue;
 
       // Try to read the file — wrap in try/catch (non-fatal per contract).
-      // v2.2.21 T4 F7: belt-and-braces containment check (defense-in-depth;
+      // belt-and-braces containment check (defense-in-depth;
       // primary gate runs earlier in the pipeline before this function is reached).
       let content;
       try {
@@ -790,7 +790,7 @@ function main() {
 
     // Accepted wiring: TaskCompleted (Agent Teams) and SubagentStop (normal
     // single-subagent orchestrations). Any other event name is a pass-through.
-    // v2.1.9 design-spec §5 I-12 requires the T15 gate on SubagentStop so
+    // design-spec §5 I-12 requires the T15 gate on SubagentStop so
     // normal orchestrations (not just Agent Teams) are covered.
     const hookEvent = event.hook_event_name || null;
     if (hookEvent && hookEvent !== 'TaskCompleted' && hookEvent !== 'SubagentStop') {
@@ -808,7 +808,7 @@ function main() {
     // Historical behavior: TaskCompleted events that look like Agent-Teams
     // events but lack `task_id` or `task_subject` are rejected with exit 2
     // because those fields are mandatory for team-mode task accounting. The
-    // v2.1.9 T15 checklist is additive, not replacement.
+    // checklist is additive, not replacement.
     //
     // An event is classified as an Agent-Teams event when ANY of these
     // signals fire:
@@ -816,7 +816,7 @@ function main() {
     //     teammate_name, team_name, task_description)
     //   - the payload explicitly sets hook_event_name to TaskCompleted AND
     //     does NOT carry a subagent_type/output that identifies it as a
-    //     v2.1.9 T15 single-agent completion event (the new path).
+    //     single-agent completion event (the new path).
     //
     // Non-team payloads (subagent_type + output, typical of direct
     // SubagentStop replays used in T15 tests) fall through to the T15 block.
@@ -1088,7 +1088,7 @@ function main() {
       }
       // === end v2.2.21 W2-T7 ===
 
-      // v2.2.9 B-2.1: per-role schema validation (16/38 W2 findings collapse here).
+      // B-2.1: per-role schema validation (16/38 W2 findings collapse here).
       // Runs AFTER the generic-section check above so missing-section rejections take
       // precedence. Applies role-specific required fields, enums, regex, sections,
       // and `files_changed_implies` cross-checks from `bin/_lib/role-schemas.js`.
@@ -1122,7 +1122,7 @@ function main() {
         }
       }
 
-      // v2.2.11 W2-4: cross-field invariant checks (R1/R2/R3).
+      // W2-4: cross-field invariant checks (R1/R2/R3).
       // Runs after per-role schema check so field-level failures take precedence.
       // Non-blocking observability: emits t15_role_schema_violation with
       // violation_kind:"cross_field" but does NOT exit 2 (fail-open per contract).
@@ -1156,7 +1156,7 @@ function main() {
         } catch (_cfErr) { /* fail-open — cross-field check must never block */ }
       }
 
-      // R-DX2 (v2.1.11): Validate artifact-path fields to catch placeholder values.
+      // Validate artifact-path fields to catch placeholder values.
       // This check runs after the structured-result section check so missing-section
       // rejections take precedence. Only validates when structured result is present.
       if (structuredResult) {
@@ -1180,7 +1180,7 @@ function main() {
       }
     }
 
-    // R-HCAP (v2.1.14): Artifact body-size cap validation.
+    // Artifact body-size cap validation.
     // Runs after artifact-path validation so missing-file blocks take precedence.
     if (structuredResult) {
       try {
@@ -1293,14 +1293,14 @@ module.exports = {
   READ_ONLY_AGENTS,
   READ_ONLY_AGENT_FORBIDDEN_TOOLS,
   SCOUT_FORBIDDEN_TOOLS,
-  // R-HCAP (v2.1.14): body-size cap exports
+  // body-size cap exports
   estimateTokens,
   checkArtifactBodySizes,
   BODY_SIZE_FIELDS,
-  // v2.2.9 B-5.1: escalation-hint detector
+  // B-5.1: escalation-hint detector
   detectEscalationHint,
   ESCALATION_AGENT_ROLES,
-  // v2.2.11 W2-4: cross-field invariant checker
+  // W2-4: cross-field invariant checker
   validateCrossField,
   // P1-05 (v2.2.15): multiple Structured Result block detector
   detectMultipleStructuredResultBlocks,
