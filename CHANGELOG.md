@@ -3,6 +3,29 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.4] - 2026-05-06
+
+**Custom agents you train in Arena now appear in Claude Code's spawn registry automatically, and the README ships package badges for at-a-glance install status.**
+
+Before this release, Orchestray validated and cached custom-agent drop-ins correctly but never exposed them to Claude Code's agent discovery path. Users had to hand-inject the agent prompt into a `general-purpose` spawn as a workaround. This release wires the last mile: validated agents are symlinked into `~/.claude/agents/` so a normal `Agent(subagent_type=<name>)` call works. Arena v0 draft stubs are also hidden by default now that versioned siblings exist, removing ambiguity from the spawn registry.
+
+### Added
+
+- **Custom-agent drop-ins are now automatically exposed to Claude Code's spawn registry.** After upgrading, validated `.md` files under `~/.claude/orchestray/custom-agents/` are mirrored into `~/.claude/agents/` as symlinks on every SessionStart. Before this fix, the validator and discovery cache ran correctly but Claude Code never saw the agents — they lived outside its discovery path. Now a plain `Agent(subagent_type=<your-agent-name>)` spawn works after one session restart. Subsequent drop-ins are picked up automatically.
+- **Existing drop-ins backfilled on first session start after upgrade.** The SessionStart discover hook sweeps stale v0 symlinks and creates missing v1 symlinks, so agents you already trained are ready without any manual action.
+- **README package badges.** The project page now shows npm install version, weekly download count, Socket security score, license, and supported Node version at a glance.
+
+### Fixed
+
+- **Arena v0 draft stubs no longer clutter the spawn registry.** When a versioned sibling (`<slug>-arena-v<N>.md`) exists, the corresponding bare-slug v0 file is hidden from the registry automatically. Before this change, both the draft and the final appeared as distinct `subagent_type` options, making selection ambiguous. Opt back in to showing v0 stubs via `custom_agents.show_arena_v0_stubs: true` in `.orchestray/config.json` or the env var `ORCHESTRAY_SHOW_ARENA_V0_STUBS=1`.
+
+### Migration notes
+
+- **Restart Claude Code once after upgrading.** The SessionStart hook that creates the `~/.claude/agents/` symlinks runs at session start. Your existing custom agents become available at that point.
+- **Arena v0 stubs hidden by default.** If you were relying on a bare-slug v0 spawn (e.g. `my-agent` when `my-agent-arena-v1.md` also exists), switch to the versioned name or enable `custom_agents.show_arena_v0_stubs: true`.
+
+---
+
 ## [2.3.3] - 2026-05-05
 
 **Plugin loading now works end-to-end — plugins reach ready state on boot and the PM agent can use their tools.**

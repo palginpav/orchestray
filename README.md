@@ -1,5 +1,11 @@
 # Orchestray
 
+[![npm version](https://img.shields.io/npm/v/orchestray.svg)](https://www.npmjs.com/package/orchestray)
+[![npm downloads](https://img.shields.io/npm/dw/orchestray.svg)](https://www.npmjs.com/package/orchestray)
+[![Socket Badge](https://badge.socket.dev/npm/package/orchestray/2.3.4)](https://socket.dev/npm/package/orchestray)
+[![License](https://img.shields.io/npm/l/orchestray.svg)](https://github.com/palginpav/orchestray/blob/master/LICENSE)
+[![Node](https://img.shields.io/node/v/orchestray.svg)](https://nodejs.org)
+
 Multi-agent orchestration plugin for [Claude Code](https://claude.ai/code). Detects complex tasks automatically, decomposes them across specialized AI agents, and delivers fully audited results — no manual configuration needed.
 
 Simple prompts pass straight through to normal Claude Code. Complex ones get decomposed, routed to the right agents, and reassembled with a full audit trail.
@@ -181,7 +187,7 @@ model: sonnet
 You are a specialist agent that ...
 ```
 
-Orchestray discovers custom agents at session start. The spawn gate enforces that only discovered agents (or shipped canonical roles) can be invoked — unknown agent types are blocked with an explanatory message. Custom agent names must not collide with any shipped role name.
+Orchestray discovers custom agents at session start and automatically symlinks each validated file into `~/.claude/agents/` so Claude Code can spawn them with a plain `Agent(subagent_type=<name>)` call. Restart Claude Code once after dropping in a new agent; subsequent additions are picked up automatically. The spawn gate enforces that only discovered agents (or shipped canonical roles) can be invoked — unknown agent types are blocked with an explanatory message. Custom agent names must not collide with any shipped role name.
 
 To disable custom agents entirely: set `ORCHESTRAY_DISABLE_CUSTOM_AGENTS=1` or add `"custom_agents": {"enabled": false}` to `.orchestray/config.json`.
 

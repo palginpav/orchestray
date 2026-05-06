@@ -11303,13 +11303,32 @@ when at least one valid custom agent definition was found in `~/.claude/orchestr
   "timestamp": "2026-05-01T00:00:00.000Z",
   "source": "discover-custom-agents",
   "count": 2,
-  "names": ["my-agent", "another-agent"]
+  "names": ["my-agent", "another-agent"],
+  "shadowed_count": 1,
+  "shadowed_names": ["my-agent-arena-v0"],
+  "symlinks_created": 2,
+  "symlinks_kept": 0,
+  "symlinks_retargeted": 0,
+  "symlinks_copied": 0,
+  "symlinks_skipped": 0,
+  "symlinks_swept": 1,
+  "symlinks_errors": 0
 }
 ```
 
 Field notes:
 - `count`: number of valid custom agent definitions found.
 - `names`: array of agent name strings (filename stems, without `.md` extension).
+- `shadowed_count` (optional): number of v0 arena stub files hidden from the spawn registry because a versioned sibling (`<slug>-arena-v<N>.md`) exists.
+- `shadowed_names` (optional): string array of the hidden v0 stub name strings.
+- `symlinks_created` (optional): number of new symlinks written into `~/.claude/agents/` this session.
+- `symlinks_kept` (optional): number of existing symlinks that were already correct and left unchanged.
+- `symlinks_retargeted` (optional): number of existing symlinks whose target was updated (e.g. after agent file move).
+- `symlinks_copied` (optional): number of agent files copied instead of symlinked (fallback path on filesystems that do not support symlinks).
+- `symlinks_skipped` (optional): number of agent files skipped during symlink sync (e.g. collision with a canonical agent name).
+- `symlinks_swept` (optional): number of stale symlinks removed from `~/.claude/agents/` (pointing to files that no longer exist).
+- `symlinks_errors` (optional): number of symlink operations that failed; individual errors are logged to stderr.
+- All symlink fields are emitted via `safeEmit(skipValidation:true)` and are optional — consumers should treat absence as zero.
 - Only emitted when `count > 0`. When the directory is absent or empty, no event is emitted.
 - Kill switch: `ORCHESTRAY_CUSTOM_AGENTS_DISABLED=1` — discovery is skipped entirely.
 
