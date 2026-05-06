@@ -36,6 +36,14 @@ const {
   MAX_DIR_FILES,
 } = require('./_lib/custom-agents');
 const { CANONICAL_AGENTS } = require('./_lib/canonical-agents');
+const { syncCustomAgentSymlinks }    = require('./_lib/agent-symlinks');
+const { filterShadowedArenaV0s }     = require('./_lib/custom-agents-shadow');
+
+/** Claude Code user-scope agent registry dir; honour env override for tests. */
+function _agentsDir() {
+  if (process.env.ORCHESTRAY_AGENTS_DIR) return process.env.ORCHESTRAY_AGENTS_DIR;
+  return path.join(os.homedir(), '.claude', 'agents');
+}
 
 /** Plugin root: two levels up from this script (bin/ → plugin root). */
 const PLUGIN_ROOT = path.dirname(__dirname);
@@ -62,7 +70,7 @@ function warn(msg) {
  * @returns {{ enabled: boolean }}
  */
 function loadCustomAgentsConfig(cwd) {
-  const defaults = { enabled: true };
+  const defaults = { enabled: true, show_arena_v0_stubs: false };
   try {
     const raw    = fs.readFileSync(path.join(cwd, '.orchestray', 'config.json'), 'utf8');
     const parsed = JSON.parse(raw);
@@ -103,7 +111,7 @@ function safeEmit(payload, cwd) {
   const sourceDir = resolveCustomAgentsDir();
   const now = new Date().toISOString();
 
-  // Helper: write empty cache and exit 0.
+  // Helper: write empty cache, sweep stale symlinks, exit 0.
   function exitEmpty(reason) {
     const r = writeCache(cwd, {
       version:       1,
@@ -114,6 +122,16 @@ function safeEmit(payload, cwd) {
     if (!r.ok) {
       warn('cache write failed (' + r.reason + '); custom agents disabled this session');
     }
+    // Sweep stale symlinks even when no agents present (drop-ins removed,
+    // dir missing, kill switch flipped, etc.). Forward pass is a no-op when
+    // validAgents is empty; reverse pass cleans up `<agentsDir>/*.md` symlinks
+    // pointing into sourceDir.
+    const sweep = syncCustomAgentSymlinks({
+      validAgents: [],
+      sourceDir,
+      agentsDir:   _agentsDir(),
+      warn,
+    });
     safeEmit({
       type:             'custom_agents_discovered',
       orchestration_id: 'none',
@@ -123,6 +141,9 @@ function safeEmit(payload, cwd) {
       skipped_count:    0,
       names:            [],
       source_dir:       sourceDir,
+      symlinks_created: sweep.created,
+      symlinks_kept:    sweep.kept,
+      symlinks_swept:   sweep.swept,
     }, cwd);
     if (reason) warn(reason);
     process.exit(0);
@@ -241,17 +262,47 @@ function safeEmit(payload, cwd) {
     }
   }
 
+  // 7b. Filter out Arena v0 stubs whose versioned sibling exists. Default
+  // behaviour: hide v0. Operator can opt in via config.custom_agents.
+  // show_arena_v0_stubs=true or env ORCHESTRAY_SHOW_ARENA_V0_STUBS=1.
+  const showV0 =
+    process.env.ORCHESTRAY_SHOW_ARENA_V0_STUBS === '1' ||
+    config.show_arena_v0_stubs === true;
+  let exposedAgents = validAgents;
+  let shadowedCount = 0;
+  let shadowedNames = [];
+  if (!showV0) {
+    const { visible, hidden } = filterShadowedArenaV0s(validAgents);
+    exposedAgents = visible;
+    shadowedCount = hidden.length;
+    shadowedNames = hidden.map(h => h.name);
+  }
+
   // 8. Write cache.
   const cachePayload = {
     version:       1,
     discovered_at: now,
     source_dir:    sourceDir,
-    agents:        validAgents,
+    agents:        exposedAgents,
   };
   const writeResult = writeCache(cwd, cachePayload);
   if (!writeResult.ok) {
     warn('cache write failed (' + writeResult.reason + '); custom agents disabled this session');
   }
+
+  // 8b. Symlink lifecycle: expose validated, non-shadowed agents to
+  // Claude Code's spawn registry by mirroring each <name>.md into
+  // ~/.claude/agents/. Restart required: Claude Code only scans that
+  // dir at session start, so newly created symlinks become spawnable
+  // on the NEXT session. Shadowed v0 stubs are NOT in exposedAgents,
+  // so the reverse-sweep pass will unlink any stale v0 symlinks
+  // created by older versions of this hook.
+  const symlinkResult = syncCustomAgentSymlinks({
+    validAgents: exposedAgents,
+    sourceDir,
+    agentsDir: _agentsDir(),
+    warn,
+  });
 
   // Emit summary discovered event.
   const level = skippedCount > 0 ? 'warn' : 'info';
@@ -260,16 +311,37 @@ function safeEmit(payload, cwd) {
     orchestration_id: 'none',
     timestamp:        new Date().toISOString(),
     level,
-    discovered_count: validAgents.length,
+    discovered_count: exposedAgents.length,
     skipped_count:    skippedCount,
-    names:            validAgents.map(a => a.name),
+    shadowed_count:   shadowedCount,
+    shadowed_names:   shadowedNames,
+    names:            exposedAgents.map(a => a.name),
     source_dir:       sourceDir,
+    symlinks_created: symlinkResult.created,
+    symlinks_kept:    symlinkResult.kept,
+    symlinks_retargeted: symlinkResult.retargeted,
+    symlinks_copied:  symlinkResult.copied,
+    symlinks_skipped: symlinkResult.skipped,
+    symlinks_swept:   symlinkResult.swept,
+    symlinks_errors:  symlinkResult.errors,
   }, cwd);
 
   // Stderr summary.
+  const linkBits = [];
+  if (symlinkResult.created)    linkBits.push(symlinkResult.created    + ' new');
+  if (symlinkResult.retargeted) linkBits.push(symlinkResult.retargeted + ' retargeted');
+  if (symlinkResult.swept)      linkBits.push(symlinkResult.swept      + ' swept');
+  const linkSuffix = linkBits.length
+    ? '; symlinks: ' + linkBits.join(', ') + ' (restart required to pick up new entries)'
+    : '';
+  const shadowSuffix = shadowedCount > 0
+    ? '; hidden ' + shadowedCount + ' v0 stub(s) shadowed by versioned siblings'
+    : '';
   warn(
-    'discovered ' + validAgents.length + ' agent(s)' +
-    (skippedCount > 0 ? '; skipped ' + skippedCount + ' (run /orchestray:doctor for details)' : '')
+    'discovered ' + exposedAgents.length + ' agent(s)' +
+    (skippedCount > 0 ? '; skipped ' + skippedCount + ' (run /orchestray:doctor for details)' : '') +
+    shadowSuffix +
+    linkSuffix
   );
 
   process.exit(0);
