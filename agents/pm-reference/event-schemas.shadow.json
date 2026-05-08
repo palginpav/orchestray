@@ -1,9 +1,9 @@
 {
   "_meta": {
     "version": 1,
-    "source_hash": "e0d613eb6e5ba5134482291ac6553bc0b0ca13d8eb3cc69397f6cd01e5c6ce56",
-    "shadow_size_bytes": 15044,
-    "event_count": 309
+    "source_hash": "2e475fc0a69ce6d278357b8b93ac9061ba64e0bda986f63776be77e48a33bb40",
+    "shadow_size_bytes": 23176,
+    "event_count": 310
   },
   "routing_outcome": {
     "v": 1,
@@ -1282,6 +1282,11 @@
     "r": 6,
     "o": 0
   },
+  "calibrate_skipped_no_events": {
+    "v": 1,
+    "r": 4,
+    "o": 0
+  },
   "install_stale_hook_pruned": {
     "v": 1,
     "r": 6,
@@ -1580,9 +1585,9 @@
   },
   "custom_agents_discovered": {
     "v": 1,
-    "r": 6,
+    "r": 15,
     "o": 0,
-    "h": "fa2da197"
+    "h": "9679990c"
   },
   "custom_agents_skipped": {
     "v": 1,

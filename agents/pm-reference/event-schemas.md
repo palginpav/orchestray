@@ -9440,6 +9440,35 @@ Kill switch: none — observability.
 
 ---
 
+### `calibrate_skipped_no_events` event
+
+Emitted by `bin/calibrate-role-budgets.js` when invoked with `--if-stale` or
+`--quiet` (the SessionStart hook context) on a project with no
+`.orchestray/audit/events.jsonl` file. Mirrors `calibrate_skipped_fresh_cache`
+for the no-events branch so fresh-project session starts produce silent
+telemetry instead of stderr noise.
+
+```json
+{
+  "type": "calibrate_skipped_no_events",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "orch-xxx | unknown",
+  "mode": "if_stale | emit_cache"
+}
+```
+
+Field notes:
+- `mode`: Which invocation flag triggered the silent skip. `if_stale` is the
+  SessionStart hook's normal path; `emit_cache` covers manual `--quiet`
+  invocations on a fresh project.
+
+Emitted from: `bin/calibrate-role-budgets.js` (no-events branch).
+
+Kill switch: none — observability.
+
+---
+
 ### `install_stale_hook_pruned` event
 
 > Coordinated declare with W8b FN-16. The emitter lives in `bin/install.js`

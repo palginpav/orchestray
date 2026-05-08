@@ -206,6 +206,24 @@ function main() {
   const eventsPath = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
 
   if (!fs.existsSync(eventsPath)) {
+    // Fresh project / no audit history yet — not an error.
+    // SessionStart hook context (--if-stale or --quiet): silent exit 0
+    // with telemetry, mirroring the FN-27 cache-fresh branch above.
+    // Manual CLI invocation (no flags): keep the explicit error.
+    if (ifStale || quiet) {
+      try {
+        const writeAuditEvent = require('./_lib/audit-event-writer');
+        const writeEvent      = writeAuditEvent.writeEvent;
+        if (typeof writeEvent === 'function') {
+          writeEvent({
+            type:           'calibrate_skipped_no_events',
+            schema_version: 1,
+            mode:           ifStale ? 'if_stale' : 'emit_cache',
+          }, { cwd, skipValidation: true });
+        }
+      } catch (_e) { /* fail-open — never block session start on telemetry */ }
+      process.exit(0);
+    }
     process.stderr.write(
       `[calibrate-role-budgets] ERROR: events.jsonl not found at ${eventsPath}\n` +
       `Ensure Orchestray has been running and audit events are being recorded.\n`
