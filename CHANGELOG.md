@@ -3,6 +3,18 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.5] - 2026-05-16
+
+**Write-capable agents now spawn with proper workspace isolation, and fresh project boot no longer logs a spurious error.**
+
+### Fixed
+
+- **Agent workspace isolation now actually takes effect.** When Orchestray spawns a write-capable agent (developer, refactorer, etc.), it is supposed to give that agent its own isolated git worktree so its in-progress changes cannot collide with other agents or the main session. In v2.3.4 and earlier, the WorktreeCreate and WorktreeRemove lifecycle hooks were registered in the orchestration plan but the actual handler scripts were missing — Claude Code silently skipped isolation, and an `isolation_omitted_warn` event appeared in the audit trail on every multi-agent run. Both handler scripts now exist and the isolation path is fully exercised. If you saw `isolation_omitted_warn` events in your `.orchestray/audit/events.jsonl`, they will stop appearing after upgrading.
+
+- **No more "events.jsonl not found" error on fresh projects.** On the very first session start in a project that has never run an orchestration, the role-budget calibration hook tried to read `.orchestray/audit/events.jsonl`, found nothing, and printed an error to stderr — even though that's a perfectly normal state for a new project. The hook now recognizes a missing events file as "nothing to calibrate yet" and exits silently. An audit event (`calibrate_skipped_no_events`) is recorded internally so the calibration history stays clean. Manual invocation (running the script directly on the command line with no flags) still prints the explicit message.
+
+---
+
 ## [2.3.4] - 2026-05-06
 
 **Custom agents you train in Arena now appear in Claude Code's spawn registry automatically, and the README ships package badges for at-a-glance install status.**
