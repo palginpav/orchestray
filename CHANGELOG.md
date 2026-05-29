@@ -3,6 +3,22 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.6] - 2026-05-29
+
+**Orchestray now recognizes Claude Opus 4.8 as a fully supported model — cost estimates, status display, and model validation all work correctly out of the box.**
+
+Claude Opus 4.8 is Anthropic's new flagship model. This release wires it into every layer of Orchestray so you can start using it without surprises: cost rollups in `/orchestray:analytics` show accurate figures (Opus 4.8 shares Opus 4.7's tokenizer, so the same ~35% token-count adjustment applies; pricing is unchanged at $5 input / $25 output per MTok), the status line and orchestration reports display the model name correctly, and the spawn gate accepts `claude-opus-4-8` wherever a model ID is validated. The docs now treat Opus 4.8 as the recommended flagship; Opus 4.7 is documented as legacy-but-supported.
+
+### Added
+
+- **Claude Opus 4.8 recognized everywhere a model ID is used.** The model resolver, cost-coefficient registry, and sister-model lists all include Opus 4.8. If you name it on an `Agent()` call or set it as the PM's model, Orchestray handles it identically to Opus 4.7 — same tokenizer adjustment, same $5/$25 pricing tier. No config changes required.
+
+### Changed
+
+- **Docs updated to reflect Opus 4.8 as the current recommended flagship.** Tables, "recommended default" callouts, and inline model references in the CLAUDE.md tech-stack section now list Opus 4.8 as the current choice and Opus 4.7 as legacy-but-supported.
+
+---
+
 ## [2.3.5] - 2026-05-16
 
 **Write-capable agents now spawn with proper workspace isolation, and fresh project boot no longer logs a spurious error.**
