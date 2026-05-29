@@ -1205,7 +1205,7 @@ Field notes:
 - `block_z_hash`: full hex of the assembled Block-Z body (excluding the
   fingerprint comment, which is derived from this hash). `null` on error.
 - `prefix_token_estimate`: chars/4 rough estimate; reviewer should multiply by
-  ~1.35 to get the Opus 4.7 tokenizer count.
+  ~1.35 to get the Opus 4.7/4.8 tokenizer count.
 - `byte_length`: utf-8 byte length of the assembled Block-Z body.
 - `error`: `null` on happy path; `"missing_input"` if any of the four component
   files was missing; `"component_oversize"` if any file exceeded 1 MB; or
@@ -6412,7 +6412,7 @@ Emitted by `bin/capture-tokenwright-realized.js` when `|estimation_error_pct|` e
 
 Field notes:
 - `direction` ∈ `{underestimate, overestimate}`. `underestimate` means actual > estimated; `overestimate` means estimated > actual.
-- `drift_budget_pct`: echoes config `compression.estimation_drift_budget_pct` (default 15). Why 15%: Opus 4.7 tokenizer can consume up to 35% more tokens than the 4-bytes-per-token approximation; 15% allows normal variance while catching actionable drift.
+- `drift_budget_pct`: echoes config `compression.estimation_drift_budget_pct` (default 15). Why 15%: Opus 4.7/4.8 tokenizer can consume up to 35% more tokens than the 4-bytes-per-token approximation; 15% allows normal variance while catching actionable drift.
 - `estimation_error_pct`: `|actual - estimated| / actual * 100`.
 
 ### `tokenwright_spawn_coverage` event

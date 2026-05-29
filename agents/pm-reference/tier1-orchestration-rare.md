@@ -169,7 +169,7 @@ When the invocation prompt contains the text "PREVIEW MODE", the PM MUST:
      cache-create 1.25×). When Anthropic changes per-token pricing, update
      `cost-helpers.js`; this preview table is downstream and self-contained.
    - **Tokenizer caveat:** the opus multiplier was recalibrated from 2.2 to 2.97
-     (2.2 × 1.35) in v2.1.8 to account for Opus 4.7's new tokenizer, which
+     (2.2 × 1.35) in v2.1.8 to account for the Opus 4.7-era tokenizer (carried over by Opus 4.8), which
      consumes up to 35% more tokens than 4.6 for the same text. Per-token
      pricing in `cost-helpers.js` is UNCHANGED; only the effective token count
      for preview-display purposes increases.
