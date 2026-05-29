@@ -82,4 +82,36 @@ describe('getPricing — Opus 4.7 tokenizer multiplier', () => {
     assert.strictEqual(rates.input_per_1m, BUILTIN_PRICING_TABLE.sonnet.input_per_1m);
     assert.strictEqual(rates.output_per_1m, BUILTIN_PRICING_TABLE.sonnet.output_per_1m);
   });
+
+  test('getPricing("claude-opus-4-8") applies 1.35× to input rate', () => {
+    const rates = getPricing('claude-opus-4-8');
+    const expected = OPUS_46_BASE.input_per_1m * 1.35;
+    assert.ok(
+      Math.abs(rates.input_per_1m - expected) < 1e-9,
+      `Expected input_per_1m=${expected}, got ${rates.input_per_1m}`
+    );
+  });
+
+  test('getPricing("claude-opus-4-8") applies 1.35× to output rate', () => {
+    const rates = getPricing('claude-opus-4-8');
+    const expected = OPUS_46_BASE.output_per_1m * 1.35;
+    assert.ok(
+      Math.abs(rates.output_per_1m - expected) < 1e-9,
+      `Expected output_per_1m=${expected}, got ${rates.output_per_1m}`
+    );
+  });
+
+  test('getPricing("claude-opus-4.8") (dot variant) also applies 1.35×', () => {
+    const rates = getPricing('claude-opus-4.8');
+    const expectedInput = OPUS_46_BASE.input_per_1m * 1.35;
+    const expectedOutput = OPUS_46_BASE.output_per_1m * 1.35;
+    assert.ok(Math.abs(rates.input_per_1m - expectedInput) < 1e-9);
+    assert.ok(Math.abs(rates.output_per_1m - expectedOutput) < 1e-9);
+  });
+
+  test('getPricing("claude-opus-4-8") deep-equals getPricing("claude-opus-4-7")', () => {
+    const rates48 = getPricing('claude-opus-4-8');
+    const rates47 = getPricing('claude-opus-4-7');
+    assert.deepStrictEqual(rates48, rates47);
+  });
 });

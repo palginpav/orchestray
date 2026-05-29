@@ -46,7 +46,7 @@ const ALLOWED_MODEL_SHORT = new Set(['haiku', 'sonnet', 'opus', 'inherit']);
  * @type {Set<string>}
  */
 const ALLOWED_MODEL_FULL = new Set([
-  'claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-opus-4-6', 'claude-opus-4-7',
+  'claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8',
   'claude-haiku-4-5-20251001', 'claude-sonnet-4-6-20250922',
 ]);
 

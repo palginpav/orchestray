@@ -867,7 +867,7 @@ function loadCostBudgetReserveConfig(cwd) {
 //   low:    0.7 (below-average compute/token usage)
 //   medium: 1.0 (baseline — no adjustment)
 //   high:   1.4 (above-average compute/token usage)
-//   max:    1.8 (maximum reasoning depth — Opus 4.6 only)
+//   max:    1.8 (maximum reasoning depth — Opus 4.6/4.7/4.8)
 // ---------------------------------------------------------------------------
 
 const DEFAULT_EFFORT_MULTIPLIERS = Object.freeze({

@@ -100,11 +100,11 @@ function loadReservationTTLMs(cwd) {
 // ---------------------------------------------------------------------------
 
 /**
- * Opus 4.7 tokenizer multiplier.
+ * Opus 4.7-and-later tokenizer multiplier.
  *
- * Anthropic's Opus 4.7 uses a new tokenizer that consumes ~35% more tokens
- * than Opus 4.6 for the same text. Per-token pricing is unchanged ($5/$25 per 1M),
- * but effective cost is ~35% higher for the same prompt.
+ * Opus 4.7 introduced a new tokenizer (carried over unchanged by Opus 4.8) that
+ * consumes ~35% more tokens than Opus 4.6 for the same text. Per-token pricing
+ * is unchanged ($5/$25 per 1M), but effective cost is ~35% higher for the same prompt.
  *
  * Source: platform-oracle Opus 4.7 research — see
  *   .orchestray/kb/artifacts/v218-claude-design-research.md §"Risks and Gotchas" item 5.
@@ -115,18 +115,18 @@ const OPUS_47_TOKENIZER_MULTIPLIER = 1.35;
  * Return per-1M-token rates for a model ID string.
  *
  * Recognises full model IDs (e.g. `claude-opus-4-7`, `claude-opus-4.7`,
- * `claude-sonnet-4-6`, `claude-haiku-4-5`) and short aliases (`opus`, `sonnet`,
- * `haiku`). Falls back to sonnet rates for unknown strings.
+ * `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`) and short aliases
+ * (`opus`, `sonnet`, `haiku`). Falls back to sonnet rates for unknown strings.
  *
- * Opus 4.7 applies a 1.35× tokenizer multiplier to both input and output rates.
+ * Opus 4.7 and 4.8 apply a 1.35× tokenizer multiplier to both input and output rates.
  *
  * @param {string} modelId - Model ID or alias string.
  * @returns {{ input_per_1m: number, output_per_1m: number }}
  */
 function getPricing(modelId) {
   const m = (modelId || '').toLowerCase();
-  // Check for Opus 4.7 specifically — must come before the generic opus check.
-  if (m.includes('opus-4-7') || m.includes('opus-4.7')) {
+  // Check for Opus 4.7 / 4.8 (shared tokenizer) — must come before the generic opus check.
+  if (m.includes('opus-4-7') || m.includes('opus-4.7') || m.includes('opus-4-8') || m.includes('opus-4.8')) {
     const base = BUILTIN_PRICING_TABLE.opus;
     return {
       input_per_1m: base.input_per_1m * OPUS_47_TOKENIZER_MULTIPLIER,

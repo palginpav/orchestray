@@ -121,7 +121,7 @@ function buildPricingMap(configPricingTable) {
  * Detect pricing tier from resolved model or agent_type string.
  * Explicit model assignment from routing takes priority over agent_type inference.
  * Delegates to cost-helpers.js getPricing for model-id resolution (including the
- * Opus 4.7 tokenizer multiplier), then converts { input_per_1m, output_per_1m }
+ * Opus 4.7/4.8 tokenizer multiplier), then converts { input_per_1m, output_per_1m }
  * to the local { input, output } shape expected by estimateCost().
  *
  * @param {string} agentType
@@ -130,7 +130,7 @@ function buildPricingMap(configPricingTable) {
  */
 function getPricing(agentType, modelUsed, pricingMap) {
   // Prefer explicit model ID if available — delegates to cost-helpers.js which
-  // applies the Opus 4.7 tokenizer multiplier and is the single source of truth.
+  // applies the Opus 4.7/4.8 tokenizer multiplier and is the single source of truth.
   if (modelUsed) {
     const rates = _getCostHelpersPricing(modelUsed);
     return { input: rates.input_per_1m, output: rates.output_per_1m };
