@@ -56,7 +56,7 @@ rows, the rollup's `pm_total_*_tokens` fields (see
 | `timestamp` | ISO-8601 string | Wall-clock time of the assistant turn |
 | `orchestration_id` | string \| null | Active orchestration ID, or `null` outside an orchestration |
 | `session_id` | string \| null | Claude Code session ID |
-| `model_used` | string \| null | Resolved model (e.g. `"claude-opus-4-8"`) |
+| `model_used` | string \| null | Resolved model (e.g. `"claude-opus-4-8"`, `"claude-fable-5"`) |
 | `usage` | object | Same shape as `agent_spawn.usage` |
 | `routing_class` | `"A_pm_only"` \| `"B_scout"` \| `"C_deterministic"` \| `"D_subagent"` \| `null` | Reserved for P2.2 (Haiku scout); `null` in v2.2.0 |
 | `inline_or_scout` | `"inline"` \| `"scout"` \| `null` | Reserved for P2.2; `null` in v2.2.0 |

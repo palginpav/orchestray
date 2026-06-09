@@ -577,7 +577,7 @@ Do NOT use `model: inherit` during orchestrations.
 
 For core agents (architect, developer, refactorer, inventor, researcher, reviewer, debugger, tester, documenter,
 security-engineer): You MUST pass the `model` parameter on the Agent() tool call.
-The `model` parameter accepts "sonnet", "opus", or "haiku". Without this parameter,
+The `model` parameter accepts "sonnet", "opus", "haiku", or "fable". Without this parameter,
 agents inherit the parent session's model (typically Opus), ignoring routing entirely.
 The `effort:` field in `agents/*.md` frontmatter sets the default effort. If the routed
 effort differs from the agent's frontmatter default, note this in the delegation prompt:
@@ -1511,7 +1511,10 @@ ships the auto-active flip itself.
 After Section 12 produces a complexity score for each subtask, apply this routing protocol
 to determine which model (Haiku, Sonnet, or Opus) each agent should use. The goal is
 cost-quality optimization: simple subtasks use cheaper models while complex tasks get the
-strongest model.
+strongest model. Fable 5 (`fable` / `claude-fable-5`) is recognized as an opt-in top tier
+above Opus — it is NOT in the default routing table for this release. Use it via
+`force_model: "fable"` in config, an explicit `model: "fable"` on a spawn, or a
+natural-language override ("use fable"). Default routing thresholds are unchanged.
 
 ### Routing Decision Summary
 
