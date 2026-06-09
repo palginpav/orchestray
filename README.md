@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/orchestray.svg)](https://www.npmjs.com/package/orchestray)
 [![npm downloads](https://img.shields.io/npm/dw/orchestray.svg)](https://www.npmjs.com/package/orchestray)
-[![Socket Badge](https://badge.socket.dev/npm/package/orchestray/2.3.6)](https://socket.dev/npm/package/orchestray)
+[![Socket Badge](https://badge.socket.dev/npm/package/orchestray/2.3.7)](https://socket.dev/npm/package/orchestray)
 [![License](https://img.shields.io/npm/l/orchestray.svg)](https://github.com/palginpav/orchestray/blob/master/LICENSE)
 [![Node](https://img.shields.io/node/v/orchestray.svg)](https://nodejs.org)
 
@@ -194,7 +194,7 @@ To disable custom agents entirely: set `ORCHESTRAY_DISABLE_CUSTOM_AGENTS=1` or a
 ## How it works
 
 - PM scores every prompt (0–12). Score below threshold → normal Claude Code. Score at or above threshold → orchestration.
-- PM decomposes the task into tasks, routes each to the right agent (Haiku / Sonnet / Opus by complexity), and runs independent tasks in parallel.
+- PM decomposes the task into tasks, routes each to the right agent (Haiku / Sonnet / Opus / Fable by complexity), and runs independent tasks in parallel.
 - Each agent delivers a structured result. Reviewer failures route back to Developer with specific feedback (verify-fix loop).
 - On close, Orchestray archives per-orchestration events, extracts patterns, and emits a cost rollup visible in `/orchestray:analytics`.
 - Session resilience: if context compacts mid-orchestration, Orchestray writes a dossier before compaction and re-injects it on the next message.
@@ -207,7 +207,7 @@ Run `/orchestray:config` to view all settings. Most-used knobs:
 |-----|---------|-------------|
 | `complexity_threshold` | `4` | Score threshold for auto-orchestration |
 | `auto_review` | `true` | Auto-spawn reviewer after developer |
-| `model_floor` | `sonnet` | Minimum model tier: haiku / sonnet / opus |
+| `model_floor` | `sonnet` | Minimum model tier: haiku / sonnet / opus / fable |
 | `confirm_before_execute` | `false` | Show preview before execution |
 | `daily_cost_limit_usd` | `null` | Daily spending cap |
 

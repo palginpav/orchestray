@@ -3,6 +3,26 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.7] - 2026-06-09
+
+**Orchestray now recognizes Claude Fable 5 — cost tracking, status display, and model aliases all work correctly out of the box.**
+
+Claude Fable 5 (`claude-fable-5`) is Anthropic's new top-tier model, priced at $10 input / $50 output per MTok with a 1.35× tokenizer adjustment (same as Opus 4.7/4.8) applied to cost estimates. This release wires Fable 5 into every layer of Orchestray: the pricing resolver and cost-coefficient registry carry the correct rates so `/orchestray:analytics` rollups are accurate; the status line and orchestration reports display the model name correctly; and the short alias `fable` is accepted everywhere a model is named — in `.orchestray/config.json` (`force_model`, `model_floor`), on `Agent()` spawn calls (`model: "fable"`), in specialist and custom-agent frontmatter, in the `ox` CLI, and in the cost-budget MCP tool. Fable 5 is an opt-in tier above Opus; default routing (Haiku → Sonnet → Opus by task complexity) is unchanged. Opus 4.8 remains the Opus-tier flagship.
+
+### Added
+
+- **Claude Fable 5 recognized everywhere a model ID is used.** The model resolver, cost-coefficient registry, and sister-model lists all include Fable 5. Cost estimates apply the same 1.35× tokenizer adjustment as Opus 4.7/4.8, so rollups in `/orchestray:analytics` reflect actual token spend rather than raw character count. No config changes required to start using it.
+
+- **`fable` accepted as a short alias.** Anywhere you can specify a model — config keys, spawn parameters, specialist frontmatter, the `ox` CLI, or the cost-budget MCP tool — writing `fable` resolves to `claude-fable-5`. No need to type the full model ID.
+
+- **Fable 5 in the effort-level table.** All five effort levels (`low`, `medium`, `high`, `xhigh`, `max`) are documented for Fable 5, with `high` as the recommended default for agentic tasks. The routing guidance notes Fable 5 as the opt-in tier above Opus for demanding tasks.
+
+### Not in this release
+
+- **Default routing unchanged.** Automatic model selection still tops out at Opus for complexity-triggered tasks. Fable 5 routing requires explicit configuration (`force_model: fable` or per-agent `model: fable`). This is intentional — Fable 5 carries a 2× cost premium over Opus; opt-in routing prevents unexpected budget impact for users who have not evaluated it.
+
+---
+
 ## [2.3.6] - 2026-05-29
 
 **Orchestray now recognizes Claude Opus 4.8 as a fully supported model — cost estimates, status display, and model validation all work correctly out of the box.**
