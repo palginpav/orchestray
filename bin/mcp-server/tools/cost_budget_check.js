@@ -33,8 +33,8 @@ const {
 } = require('../../_lib/cost-helpers');
 
 // Supported model aliases. We accept full model IDs and normalize them to
-// tier keys (haiku | sonnet | opus). Unknown values default to sonnet.
-const MODEL_TIERS = ['haiku', 'sonnet', 'opus'];
+// tier keys (fable | haiku | sonnet | opus). Unknown values default to sonnet.
+const MODEL_TIERS = ['fable', 'haiku', 'sonnet', 'opus'];
 
 const EFFORT_VALUES = ['low', 'medium', 'high', 'max'];
 
@@ -46,7 +46,7 @@ const INPUT_SCHEMA = {
       type: 'string',
       minLength: 1,
       maxLength: 128,
-      description: 'Model name or tier (haiku, sonnet, opus, or full model ID).',
+      description: 'Model name or tier (fable, haiku, sonnet, opus, or full model ID).',
     },
     effort: {
       type: 'string',
@@ -101,15 +101,16 @@ const definition = deepFreeze({
 // ---------------------------------------------------------------------------
 
 /**
- * Normalize a model string to one of the three tier keys.
+ * Normalize a model string to one of the tier keys.
  * Checks for substring containment (case-insensitive).
  * Defaults to 'sonnet' for unknown models.
  *
  * @param {string} model
- * @returns {'haiku' | 'sonnet' | 'opus'}
+ * @returns {'fable' | 'haiku' | 'sonnet' | 'opus'}
  */
 function resolveModelTier(model) {
   const lower = (model || '').toLowerCase();
+  if (lower.includes('fable')) return 'fable';
   if (lower.includes('haiku')) return 'haiku';
   if (lower.includes('opus')) return 'opus';
   if (lower.includes('sonnet')) return 'sonnet';

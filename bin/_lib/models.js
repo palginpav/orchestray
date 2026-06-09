@@ -8,6 +8,7 @@
  */
 
 const MODELS = {
+  'claude-fable-5':    { short: 'fab-5',   display: 'Fable 5',    window_default: 1000000 },
   'claude-opus-4-8':   { short: 'opu-4-8', display: 'Opus 4.8',   window_default: 200000, window_1m: 1000000 },
   'claude-opus-4-7':   { short: 'opu-4-7', display: 'Opus 4.7',   window_default: 200000, window_1m: 1000000 },
   'claude-opus-4-6':   { short: 'opu-4-6', display: 'Opus 4.6',   window_default: 200000, window_1m: 1000000 },

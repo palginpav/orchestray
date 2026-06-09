@@ -570,7 +570,7 @@ const COST_BUDGET_CHECK_EFFORT_VALUES = deepFreeze(
  * Per 2014-scope-proposal.md §W3.
  */
 const COST_BUDGET_CHECK_MODEL_TIERS = deepFreeze(
-  ['haiku', 'sonnet', 'opus']
+  ['fable', 'haiku', 'sonnet', 'opus']
 );
 
 // ---------------------------------------------------------------------------

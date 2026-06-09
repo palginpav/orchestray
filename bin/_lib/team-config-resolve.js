@@ -91,6 +91,7 @@ function resolveTeammateModel(agentType, cwd) {
   _scanAgentsDir(cwd);
   if (_cache.has(agentType)) {
     const m = (_cache.get(agentType) || '').toLowerCase();
+    if (m.includes('fable'))  return 'fable';
     if (m.includes('opus'))   return 'opus';
     if (m.includes('haiku'))  return 'haiku';
     if (m.includes('sonnet')) return 'sonnet';

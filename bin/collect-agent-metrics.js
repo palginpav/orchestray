@@ -110,8 +110,8 @@ function buildPricingMap(configPricingTable) {
       result[tier] = { input: entry.input_per_1m, output: entry.output_per_1m };
     }
   }
-  // Ensure all three tiers are populated; fall back to BUILTIN_PRICING_TABLE for any missing tier.
-  for (const tier of ['opus', 'sonnet', 'haiku']) {
+  // Ensure all tiers are populated; fall back to BUILTIN_PRICING_TABLE for any missing tier.
+  for (const tier of ['fable', 'opus', 'sonnet', 'haiku']) {
     if (!result[tier]) result[tier] = fallback[tier];
   }
   return result;
@@ -138,6 +138,7 @@ function getPricing(agentType, modelUsed, pricingMap) {
   // Fallback: agent_type detection using pricingMap (pre-routing compatibility).
   const p = pricingMap || buildPricingMap(null);
   const t = (agentType || '').toLowerCase();
+  if (t.includes('fable')) return p.fable;
   if (t.includes('opus')) return p.opus;
   if (t.includes('haiku')) return p.haiku;
   // architect, developer, reviewer, and any unknown types use sonnet rates

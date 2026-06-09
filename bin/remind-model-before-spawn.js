@@ -130,7 +130,7 @@ function handleUserPromptSubmit(event) {
     // Fix 4.1: orchestrationId already carries the "orch-" prefix from disk — do not re-prepend it.
     const additionalContext =
       '[orchestray] First spawn of ' + orchestrationId + ' is pending. ' +
-      'Every Agent() call MUST pass model="haiku"|"sonnet"|"opus" — see routing.jsonl ' +
+      'Every Agent() call MUST pass model="fable"|"haiku"|"sonnet"|"opus" — see routing.jsonl ' +
       'for the assigned model per task. Example for the next spawn: ' +
       'Agent(subagent_type="' + agentType + '", model="' + model + '", maxTurns=' + maxTurns + ', ' +
       'description="' + taskId + ' ...", prompt="...")';

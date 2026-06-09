@@ -43,7 +43,7 @@ const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { readCache: readCustomAgentsCache } = require('./_lib/custom-agents');
 const { CANONICAL_AGENTS } = require('./_lib/canonical-agents');
 
-const VALID_TIERS = ['haiku', 'sonnet', 'opus'];
+const VALID_TIERS = ['fable', 'haiku', 'sonnet', 'opus'];
 
 function isValidModel(model) {
   const m = model.toLowerCase();
@@ -566,7 +566,7 @@ if (require.main === module) {
         } catch (_evErr) { /* fail-open on emit */ }
         const strictMsg =
           "[orchestray] Missing required `model` parameter on Agent() call.\n" +
-          "Fix: pass model=<haiku|sonnet|opus>. Example:\n" +
+          "Fix: pass model=<fable|haiku|sonnet|opus>. Example:\n" +
           "  Agent(subagent_type: \"developer\", model: \"sonnet\", description: \"...\", prompt: \"...\")\n" +
           "See agents/pm.md §19 (Model Routing Protocol) for routing rules.\n" +
           "Kill switch (NOT recommended in production): ORCHESTRAY_STRICT_MODEL_REQUIRED=0";
@@ -815,7 +815,7 @@ if (require.main === module) {
     if (effectiveModel === 'inherit') {
       const inheritMsg =
         "[orchestray] Agent() model=\"inherit\" is forbidden during orchestrations. " +
-        "Route to haiku/sonnet/opus per Section 19.";
+        "Route to fable/haiku/sonnet/opus per Section 19.";
       process.stderr.write(inheritMsg + '\n');
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
@@ -830,8 +830,8 @@ if (require.main === module) {
     if (!isValidModel(effectiveModel)) {
       const invalidModelMsg =
         "[orchestray] Agent() model=\"" + effectiveModel + "\" is not a recognized routing tier. " +
-        "Must contain haiku, sonnet, or opus (full model IDs accepted, e.g. claude-sonnet-4-6). " +
-        "Route to haiku/sonnet/opus per Section 19.";
+        "Must contain fable, haiku, sonnet, or opus (full model IDs accepted, e.g. claude-sonnet-4-6). " +
+        "Route to fable/haiku/sonnet/opus per Section 19.";
       process.stderr.write(invalidModelMsg + '\n');
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {

@@ -34,6 +34,7 @@ const { requireGuard } = require('./_lib/double-fire-guard');
 // API limit. Label it a volume signal, not a quality score (LL6 design note).
 // ---------------------------------------------------------------------------
 const MODEL_OUTPUT_CAPS = {
+  fable:  32768,
   haiku:  32768,
   sonnet: 32768,
   opus:   32768,
@@ -44,7 +45,7 @@ const MODEL_OUTPUT_CAPS = {
  * Returns null if the model is unrecognized or output_tokens is not a positive number.
  *
  * @param {number} outputTokens
- * @param {string|null} model  Normalized model tier string ('haiku'|'sonnet'|'opus')
+ * @param {string|null} model  Normalized model tier string ('fable'|'haiku'|'sonnet'|'opus')
  * @returns {number|null}
  */
 function completionVolumeRatio(outputTokens, model) {
@@ -125,7 +126,7 @@ function popPendingEntry(pendingPath, orchestrationId, agentType) {
   }
 }
 
-const VALID_TIERS = ['haiku', 'sonnet', 'opus'];
+const VALID_TIERS = ['fable', 'haiku', 'sonnet', 'opus'];
 
 function normalizeModel(model) {
   if (!model) return null;

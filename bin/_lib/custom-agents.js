@@ -38,7 +38,7 @@ const ALLOWED_EFFORT = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 const ALLOWED_MEMORY = new Set(['user', 'project', 'local']);
 
 /** @type {Set<string>} */
-const ALLOWED_MODEL_SHORT = new Set(['haiku', 'sonnet', 'opus', 'inherit']);
+const ALLOWED_MODEL_SHORT = new Set(['fable', 'haiku', 'sonnet', 'opus', 'inherit']);
 
 /**
  * Full model IDs from ox.js VALID_MODELS (mirrored here — do not import ox.js
@@ -46,6 +46,7 @@ const ALLOWED_MODEL_SHORT = new Set(['haiku', 'sonnet', 'opus', 'inherit']);
  * @type {Set<string>}
  */
 const ALLOWED_MODEL_FULL = new Set([
+  'claude-fable-5',
   'claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8',
   'claude-haiku-4-5-20251001', 'claude-sonnet-4-6-20250922',
 ]);

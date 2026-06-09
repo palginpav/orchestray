@@ -34,10 +34,10 @@ const path = require('path');
 
 const { parseFrontmatter } = require('./_lib/frontmatter-parse');
 
-const VALID_MODELS = new Set(['haiku', 'sonnet', 'opus', 'inherit']);
+const VALID_MODELS = new Set(['fable', 'haiku', 'sonnet', 'opus', 'inherit']);
 // Accept common model-id prefixes too so future model slugs don't break
-// the validator (e.g. 'claude-opus-4-7', 'claude-sonnet-4-6').
-const MODEL_ID_PREFIXES = ['claude-haiku', 'claude-sonnet', 'claude-opus'];
+// the validator (e.g. 'claude-fable-5', 'claude-opus-4-7', 'claude-sonnet-4-6').
+const MODEL_ID_PREFIXES = ['claude-fable', 'claude-haiku', 'claude-sonnet', 'claude-opus'];
 const VALID_MEMORY = new Set(['user', 'project', 'local']);
 const VALID_EFFORT = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 // The v2.1.9 design spec (§B3) says "≤300 chars" but the two v2.1.8-shipped

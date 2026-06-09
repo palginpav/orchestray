@@ -470,8 +470,8 @@ function validateShieldConfig(obj) {
 // mcp_server.cost_budget_check.pricing_table — model pricing table used by the
 //   cost_budget_check MCP tool to project spawn costs before calling Agent().
 //   Structure: { <tier>: { input_per_1m: number, output_per_1m: number } }
-//   Supported tiers: haiku, sonnet, opus.
-//   Current Anthropic rates (2026): haiku $1/$5, sonnet $3/$15, opus $5/$25.
+//   Supported tiers: fable, haiku, sonnet, opus.
+//   Current Anthropic rates (2026): haiku $1/$5, sonnet $3/$15, opus $5/$25, fable $10/$50.
 //
 // mcp_server.cost_budget_check.last_verified — ISO date string ('YYYY-MM-DD')
 //   recording when the pricing table was last verified against Anthropic's
@@ -867,7 +867,7 @@ function loadCostBudgetReserveConfig(cwd) {
 //   low:    0.7 (below-average compute/token usage)
 //   medium: 1.0 (baseline — no adjustment)
 //   high:   1.4 (above-average compute/token usage)
-//   max:    1.8 (maximum reasoning depth — Opus 4.6/4.7/4.8)
+//   max:    1.8 (maximum reasoning depth — Opus 4.6/4.7/4.8 and Fable 5)
 // ---------------------------------------------------------------------------
 
 const DEFAULT_EFFORT_MULTIPLIERS = Object.freeze({

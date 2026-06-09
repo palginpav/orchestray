@@ -26,11 +26,13 @@ const { deepFreeze } = require('../mcp-server/lib/schemas');
 
 /**
  * Built-in pricing table (fall-back when config is missing or malformed).
- *   haiku:  input $1.00/1M, output $5.00/1M
- *   sonnet: input $3.00/1M, output $15.00/1M
- *   opus:   input $5.00/1M, output $25.00/1M
+ *   fable:  input $10.00/1M, output $50.00/1M  (Claude Fable 5 — GA 2026-06-09)
+ *   haiku:  input $1.00/1M,  output $5.00/1M
+ *   sonnet: input $3.00/1M,  output $15.00/1M
+ *   opus:   input $5.00/1M,  output $25.00/1M
  */
 const BUILTIN_PRICING_TABLE = deepFreeze({
+  fable:  { input_per_1m: 10.00, output_per_1m: 50.00 },
   haiku:  { input_per_1m: 1.00,  output_per_1m: 5.00  },
   sonnet: { input_per_1m: 3.00,  output_per_1m: 15.00 },
   opus:   { input_per_1m: 5.00,  output_per_1m: 25.00 },
@@ -45,6 +47,7 @@ const BUILTIN_PRICING_TABLE = deepFreeze({
  * Over-estimates rather than under-estimates to be safe for cap comparisons.
  */
 const DEFAULT_TOKEN_ESTIMATES = deepFreeze({
+  fable:  { input: 100_000, output: 15_000 },
   haiku:  { input: 50_000,  output: 8_000  },
   sonnet: { input: 80_000,  output: 12_000 },
   opus:   { input: 100_000, output: 15_000 },
@@ -100,31 +103,43 @@ function loadReservationTTLMs(cwd) {
 // ---------------------------------------------------------------------------
 
 /**
- * Opus 4.7-and-later tokenizer multiplier.
+ * Opus 4.7-and-later tokenizer multiplier (also applies to Fable 5).
  *
- * Opus 4.7 introduced a new tokenizer (carried over unchanged by Opus 4.8) that
- * consumes ~35% more tokens than Opus 4.6 for the same text. Per-token pricing
- * is unchanged ($5/$25 per 1M), but effective cost is ~35% higher for the same prompt.
+ * Opus 4.7 introduced a new tokenizer (carried over unchanged by Opus 4.8 and
+ * Fable 5) that consumes ~35% more tokens than Opus 4.6 for the same text.
+ * Per-token pricing is unchanged for each model, but effective cost is ~35%
+ * higher for the same prompt vs. the Opus 4.6 baseline.
  *
  * Source: platform-oracle Opus 4.7 research — see
  *   .orchestray/kb/artifacts/v218-claude-design-research.md §"Risks and Gotchas" item 5.
+ *   Fable 5 confirmation: .orchestray/kb/facts/2026-06-fable-5-rollout.md §5.
  */
 const OPUS_47_TOKENIZER_MULTIPLIER = 1.35;
 
 /**
  * Return per-1M-token rates for a model ID string.
  *
- * Recognises full model IDs (e.g. `claude-opus-4-7`, `claude-opus-4.7`,
- * `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`) and short aliases
- * (`opus`, `sonnet`, `haiku`). Falls back to sonnet rates for unknown strings.
+ * Recognises full model IDs (e.g. `claude-fable-5`, `claude-opus-4-7`,
+ * `claude-opus-4.7`, `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`)
+ * and short aliases (`fable`, `opus`, `sonnet`, `haiku`). Falls back to sonnet
+ * rates for unknown strings.
  *
- * Opus 4.7 and 4.8 apply a 1.35× tokenizer multiplier to both input and output rates.
+ * Fable 5, Opus 4.7, and Opus 4.8 apply a 1.35× tokenizer multiplier to both
+ * input and output rates (all three use the same Opus 4.7-era tokenizer).
  *
  * @param {string} modelId - Model ID or alias string.
  * @returns {{ input_per_1m: number, output_per_1m: number }}
  */
 function getPricing(modelId) {
   const m = (modelId || '').toLowerCase();
+  // Fable 5 uses the Opus 4.7-era tokenizer — apply the same 1.35× multiplier.
+  if (m.includes('fable')) {
+    const base = BUILTIN_PRICING_TABLE.fable;
+    return {
+      input_per_1m: base.input_per_1m * OPUS_47_TOKENIZER_MULTIPLIER,
+      output_per_1m: base.output_per_1m * OPUS_47_TOKENIZER_MULTIPLIER,
+    };
+  }
   // Check for Opus 4.7 / 4.8 (shared tokenizer) — must come before the generic opus check.
   if (m.includes('opus-4-7') || m.includes('opus-4.7') || m.includes('opus-4-8') || m.includes('opus-4.8')) {
     const base = BUILTIN_PRICING_TABLE.opus;
@@ -145,7 +160,7 @@ function getPricing(modelId) {
  * Falls back to BUILTIN_PRICING_TABLE when the config table is missing the tier.
  *
  * @param {object|null} table - Pricing table (from config or builtin)
- * @param {string} tier - One of 'haiku' | 'sonnet' | 'opus'
+ * @param {string} tier - One of 'haiku' | 'sonnet' | 'opus' | 'fable'
  * @returns {{ input_per_1m: number, output_per_1m: number }}
  */
 function getRatesForTier(table, tier) {
