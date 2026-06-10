@@ -130,11 +130,18 @@ const FORBIDDEN_PATTERNS = [
   // read-only roles: blocked always (roles[] used for role-based check).
   // alsoBlockWhenMainCheckout: true — extends block to ALL roles when target is
   // the shared main checkout (not a linked worktree).
+  //
+  // v2.3.9 F2: detection uses a tokenizer (extractGitSubcommand) rather than a
+  // single regex with an option prefix. The old regex only handled a single `-C`
+  // before the subcommand; `git -c k=v stash`, `git --git-dir=X stash`, etc.
+  // bypassed it entirely. Now all global options are stripped first so any
+  // injection of options before the subcommand is covered.
   {
     id: 'wt_destructive_git',
-    // stash (except list/show), clean, checkout with pathspec/-- , restore, reset (except --soft).
-    // The optional (?:-C\s+\S+\s+)? prefix handles `git -C <path> <subcommand>` evasion.
-    regex: /\bgit\s+(?:-C\s+\S+\s+)?(?:stash(?!\s+(?:list|show)\b)|clean\b|checkout\s+(?:--|HEAD\s+--|[0-9a-f]{7,}\s+--|\S.*--\s)|restore\b|reset\s+(?!--soft\b))/,
+    // regex field retained for non-wt_destructive_git patterns and as a
+    // fallback stub; the actual check uses extractGitSubcommand() — see
+    // findForbiddenPattern() which special-cases this id.
+    regex: /\bgit\b/,
     description: 'read-only agents must not mutate git state; use `git stash list` / `git show <sha>:<path>` for clean-baseline comparisons (v2.3.7 silent-revert incident)',
     roles: ['reviewer', 'debugger', 'researcher', 'ux-critic', 'platform-oracle', 'project-intent'],
     alsoBlockWhenMainCheckout: true,
@@ -167,13 +174,173 @@ function isMainCheckout(dir) {
  * Extract the explicit `git -C <dir>` path from a command string, if present.
  * Returns null when not found.
  *
+ * v2.3.9 F2: also honors `--git-dir=<x>` / `--git-dir <x>` and `GIT_DIR=<x>` env prefix.
+ * When multiple target-redirectors are present, -C takes precedence (it overrides
+ * --git-dir for working-tree resolution and is the more common explicit form).
+ *
  * @param {string} command
  * @returns {string|null}
  */
 function extractGitCDir(command) {
-  // Match `git -C <path>` — path may be quoted or unquoted
-  const m = command.match(/\bgit\s+-C\s+(['"]?)([^\s'";&|]+)\1/);
-  return m ? m[2] : null;
+  // -C <path> (quoted or unquoted)
+  const mC = command.match(/\bgit(?:\s+(?:-c\s+\S+|-c\S+|--no-pager|-p|--paginate|--namespace(?:=\S+|\s+\S+)|--work-tree(?:=\S+|\s+\S+)|--git-dir(?:=\S+|\s+\S+)))*\s+-C\s+(['"]?)([^\s'";&|]+)\1/);
+  if (mC) return mC[2];
+  // --git-dir=<path> or --git-dir <path>
+  const mGD = command.match(/\bgit\b[^|;&\n]*?--git-dir[= ](['"]?)([^\s'";&|]+)\1/);
+  if (mGD) return null; // --git-dir sets .git path, not work-tree; return null (fail-closed handled separately)
+  // GIT_DIR=<path> env prefix
+  const mEnv = command.match(/(?:^|\s)GIT_DIR=(['"]?)([^\s'";&|]+)\1\s+git\b/);
+  if (mEnv) return null; // same: not a work-tree path
+  return null;
+}
+
+/**
+ * v2.3.9 F2: tokenize a git command segment to extract the subcommand verb.
+ * Strips all leading global options before the first non-option token.
+ *
+ * Global options consumed (per `git help`):
+ *   -c <name>=<value>  or  -c<name>=<value>  (config override)
+ *   -C <path>          (change directory)
+ *   --git-dir[=]<path>
+ *   --work-tree[=]<path>
+ *   --namespace[=]<ns>
+ *   -p / --paginate / --no-pager
+ *   --no-replace-objects
+ *   --bare / --literal-pathspecs / --glob-pathspecs / --noglob-pathspecs / --icase-pathspecs
+ *   GIT_DIR=xxx / GIT_WORK_TREE=xxx env-var prefix tokens
+ *
+ * Also strips a leading env-var assignment block (VAR=val format).
+ *
+ * Returns { subcommand: string|null, gitDirRedirected: boolean }
+ *   subcommand         — first non-option token after `git`, or null if unparseable
+ *   gitDirRedirected   — true when --git-dir/GIT_DIR/GIT_WORK_TREE found (ambiguous target)
+ *
+ * @param {string} seg — a single (non-chained) command segment
+ * @returns {{ subcommand: string|null, gitDirRedirected: boolean }}
+ */
+function extractGitSubcommand(seg) {
+  if (typeof seg !== 'string') return { subcommand: null, gitDirRedirected: false };
+
+  // Tokenise by whitespace, respecting simple quoting (no nested quotes).
+  // We parse the token stream manually rather than splitting on /\s+/ so we
+  // can handle `--git-dir=/path` (no space) alongside `--git-dir /path`.
+  const tokens = [];
+  let i = 0;
+  while (i < seg.length) {
+    // Skip whitespace
+    while (i < seg.length && /\s/.test(seg[i])) i++;
+    if (i >= seg.length) break;
+
+    // Read one token (simple quote handling: single or double quote wraps content)
+    let tok = '';
+    const q = seg[i];
+    if (q === '"' || q === "'") {
+      i++;
+      while (i < seg.length && seg[i] !== q) { tok += seg[i++]; }
+      if (i < seg.length) i++; // skip closing quote
+    } else {
+      while (i < seg.length && !/[\s|&;]/.test(seg[i])) { tok += seg[i++]; }
+    }
+    if (tok) tokens.push(tok);
+    // Stop at shell operators
+    if (i < seg.length && /[|&;]/.test(seg[i])) break;
+  }
+
+  // Strip leading env-var assignments (VAR=val before the git token)
+  let ti = 0;
+  while (ti < tokens.length && /^\w+=/.test(tokens[ti])) ti++;
+
+  // Find 'git' token
+  const gitIdx = tokens.indexOf('git', ti);
+  if (gitIdx === -1) return { subcommand: null, gitDirRedirected: false };
+
+  let gitDirRedirected = false;
+  // Check env-var prefix tokens for GIT_DIR / GIT_WORK_TREE
+  for (let j = ti; j < gitIdx; j++) {
+    if (/^GIT_DIR=|^GIT_WORK_TREE=/.test(tokens[j])) gitDirRedirected = true;
+  }
+
+  // Consume global options after 'git'
+  let j = gitIdx + 1;
+  while (j < tokens.length) {
+    const t = tokens[j];
+    // -c key=val or -ckey=val
+    if (t === '-c') { j += 2; continue; }
+    if (/^-c\S/.test(t)) { j++; continue; }
+    // -C <path>
+    if (t === '-C') { j += 2; continue; }
+    if (/^-C\S/.test(t)) { j++; continue; }
+    // --git-dir[=]path
+    if (t === '--git-dir') { j += 2; gitDirRedirected = true; continue; }
+    if (/^--git-dir=/.test(t)) { j++; gitDirRedirected = true; continue; }
+    // --work-tree[=]path
+    if (t === '--work-tree') { j += 2; gitDirRedirected = true; continue; }
+    if (/^--work-tree=/.test(t)) { j++; gitDirRedirected = true; continue; }
+    // --namespace[=]ns
+    if (t === '--namespace') { j += 2; continue; }
+    if (/^--namespace=/.test(t)) { j++; continue; }
+    // -p / --paginate / --no-pager
+    if (t === '-p' || t === '--paginate' || t === '--no-pager') { j++; continue; }
+    // --bare, --no-replace-objects, --literal-pathspecs, etc.
+    if (/^--(bare|no-replace-objects|literal-pathspecs|glob-pathspecs|noglob-pathspecs|icase-pathspecs)$/.test(t)) { j++; continue; }
+    // Unknown option — stop; treat next token as subcommand
+    break;
+  }
+
+  const subcommand = j < tokens.length ? tokens[j] : null;
+  return { subcommand, gitDirRedirected };
+}
+
+// Forbidden verb set for wt_destructive_git (mirrors original regex intent).
+// stash: blocked except `list` and `show` subcommands.
+// clean, restore: always blocked.
+// checkout: blocked only with pathspec/-- (file-restore form).
+// reset: blocked except --soft.
+const WTD_FORBIDDEN_VERBS = new Set(['stash', 'clean', 'restore', 'checkout', 'reset']);
+
+/**
+ * Check whether a single (non-chained) git segment triggers wt_destructive_git.
+ * Uses the tokenizer for robustness against option-evasion.
+ *
+ * @param {string} seg
+ * @returns {boolean}
+ */
+function isWtDestructiveGit(seg) {
+  // Fast-path: no 'git' word → skip
+  if (!/\bgit\b/.test(seg)) return false;
+
+  const { subcommand } = extractGitSubcommand(seg);
+  if (!subcommand) return false; // unparseable — fail-open for non-read-only roles;
+                                  // read-only fail-close is handled at call site
+
+  if (!WTD_FORBIDDEN_VERBS.has(subcommand)) return false;
+
+  // stash: allow 'list' and 'show' subforms
+  if (subcommand === 'stash') {
+    // Look for the first non-option token after 'stash'
+    const afterStash = seg.match(/\bstash\s+(\S+)/);
+    if (afterStash && (afterStash[1] === 'list' || afterStash[1] === 'show')) return false;
+    return true;
+  }
+
+  // checkout: only block when used as file-restore (with pathspec or --)
+  if (subcommand === 'checkout') {
+    // Allow plain branch-switch forms; block `checkout -- <file>`, `checkout HEAD -- <file>`, etc.
+    if (/\bcheckout\s+(?:--|HEAD\s+--|[0-9a-f]{7,}\s+--|\S.*--[\s$])/.test(seg)) return true;
+    // checkout with pathspec but no branch: `git checkout <file>` (ambiguous — block to be safe
+    // for read-only, and the original regex did too via the catch-all \S.*--\s form).
+    // For non-read-only, only block when a `--` separator is present.
+    return /\bcheckout\b.*--/.test(seg);
+  }
+
+  // reset: allow --soft
+  if (subcommand === 'reset') {
+    if (/\breset\s+--soft\b/.test(seg)) return false;
+    return true;
+  }
+
+  // clean, restore: always blocked
+  return true;
 }
 
 /**
@@ -211,11 +378,26 @@ function findForbiddenPattern(command, role, ctx) {
 
     if (!roleMatch && !mainMatch) continue;
 
-    // For wt_destructive_git, split chains and check each segment.
+    // For wt_destructive_git, split chains and use the tokenizer (F2: option-evasion fix).
     if (pattern.id === 'wt_destructive_git') {
       const segments = splitChained(command);
       for (const seg of segments) {
-        if (pattern.regex.test(seg)) return { id: pattern.id, description: pattern.description };
+        // Read-only roles: fail-closed on unparseable input (no 'git' or no subcommand after options).
+        if (!/\bgit\b/.test(seg)) continue; // segment has no git at all
+        const { subcommand, gitDirRedirected } = extractGitSubcommand(seg);
+        if (!subcommand) {
+          // Unparseable git invocation (e.g. stdin-piped subcommand).
+          // Read-only roles fail closed; others fail open.
+          const isRO = READ_ONLY_ROLES.has(targetRole);
+          if (isRO || context.isMain) return { id: pattern.id, description: pattern.description };
+          continue;
+        }
+        // When --git-dir/GIT_DIR redirect is present, target is ambiguous → fail-closed
+        // for read-only roles (same as unparseable).
+        if (gitDirRedirected && READ_ONLY_ROLES.has(targetRole)) {
+          return { id: pattern.id, description: pattern.description };
+        }
+        if (isWtDestructiveGit(seg)) return { id: pattern.id, description: pattern.description };
       }
     } else if (pattern.regex.test(command)) {
       return { id: pattern.id, description: pattern.description };
@@ -406,6 +588,8 @@ module.exports = {
   isMainCheckout,
   extractGitCDir,
   splitChained,
+  extractGitSubcommand,
+  isWtDestructiveGit,
 };
 
 if (require.main === module) {

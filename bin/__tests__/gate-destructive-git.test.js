@@ -415,4 +415,141 @@ describe('v238 worktree-create twin-idempotency', () => {
       cleanup(tmpDir);
     }
   });
+
+  // F1 (v2.3.9): fresh worktree dir (mtime = now) must NOT be removed by twin B.
+  // Simulates: twin A creates worktree, twin B runs and sees the fresh dir.
+  // Twin B's first worktreeAlreadyValid() passes (already valid) → reuse, no removal.
+  test('F1: twin B exits 0 and does not destroy A fresh worktree (post-exists re-check)', () => {
+    const mainRepo = createGitRepo('f1toctou');
+    try {
+      const agentName = 'agent-f1-toctou';
+      const payload = { name: agentName, cwd: mainRepo };
+
+      // Twin A creates the worktree
+      const r1 = runWorktreeCreate(payload, mainRepo);
+      assert.equal(r1.status, 0, 'twin A must succeed. stderr=' + r1.stderr.slice(0, 300));
+
+      const wtPath = path.join(mainRepo, '.claude', 'worktrees', agentName);
+      assert.ok(fs.existsSync(wtPath), 'worktree dir must exist after twin A');
+
+      // Twin B runs immediately after (fresh dir, mtime now) — must reuse, not destroy.
+      const r2 = runWorktreeCreate(payload, mainRepo);
+      assert.equal(r2.status, 0, 'twin B must exit 0 (reuse). stderr=' + r2.stderr.slice(0, 300));
+      assert.ok(fs.existsSync(wtPath), 'twin B must NOT have destroyed twin A worktree');
+
+      // Verify still registered
+      const listRes = spawnSync('git', ['-C', mainRepo, 'worktree', 'list', '--porcelain'], { encoding: 'utf8' });
+      assert.ok(listRes.stdout.includes(agentName), 'worktree still registered after twin B');
+    } finally {
+      cleanup(mainRepo);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F2 (v2.3.9): tokenizer option-evasion tests
+// ---------------------------------------------------------------------------
+
+describe('v239 F2 — option-evasion tokenizer: extractGitSubcommand', () => {
+  const { extractGitSubcommand } = mod;
+
+  test('git stash → subcommand = stash', () => {
+    const r = extractGitSubcommand('git stash');
+    assert.equal(r.subcommand, 'stash');
+    assert.equal(r.gitDirRedirected, false);
+  });
+
+  test('git -c k=v stash → subcommand = stash (option stripped)', () => {
+    const r = extractGitSubcommand('git -c core.pager=cat stash');
+    assert.equal(r.subcommand, 'stash');
+  });
+
+  test('git -c x=y -C /path stash → subcommand = stash', () => {
+    const r = extractGitSubcommand('git -c x=y -C /tmp stash');
+    assert.equal(r.subcommand, 'stash');
+  });
+
+  test('git --git-dir=/p/.git stash → gitDirRedirected=true', () => {
+    const r = extractGitSubcommand('git --git-dir=/p/.git stash');
+    assert.equal(r.subcommand, 'stash');
+    assert.equal(r.gitDirRedirected, true);
+  });
+
+  test('git --no-pager -c k=v clean -fd → subcommand = clean', () => {
+    const r = extractGitSubcommand('git --no-pager -c k=v clean -fd');
+    assert.equal(r.subcommand, 'clean');
+  });
+
+  test('git status → subcommand = status (read-only, not blocked)', () => {
+    const r = extractGitSubcommand('git status');
+    assert.equal(r.subcommand, 'status');
+  });
+});
+
+describe('v239 F2 — option-evasion: findForbiddenPattern blocks evasions', () => {
+  const { findForbiddenPattern } = mod;
+
+  test('reviewer + git -c k=v stash → blocked (evasion via -c)', () => {
+    const r = findForbiddenPattern('git -c core.pager=cat stash', 'reviewer');
+    assert.ok(r, 'reviewer -c evasion must be blocked');
+    assert.equal(r.id, 'wt_destructive_git');
+  });
+
+  test('reviewer + git -c x=y -C /path stash → blocked', () => {
+    const r = findForbiddenPattern('git -c x=y -C /tmp stash', 'reviewer');
+    assert.ok(r);
+    assert.equal(r.id, 'wt_destructive_git');
+  });
+
+  test('reviewer + git --git-dir=/p/.git stash → blocked (fail-closed on redirect)', () => {
+    const r = findForbiddenPattern('git --git-dir=/p/.git stash', 'reviewer');
+    assert.ok(r, 'reviewer --git-dir redirect must fail-closed');
+    assert.equal(r.id, 'wt_destructive_git');
+  });
+
+  test('reviewer + git --no-pager -c k=v clean -fd → blocked', () => {
+    const r = findForbiddenPattern('git --no-pager -c k=v clean -fd', 'reviewer');
+    assert.ok(r);
+    assert.equal(r.id, 'wt_destructive_git');
+  });
+
+  test('reviewer + git -c k=v stash list → allowed (stash list is read-only)', () => {
+    const r = findForbiddenPattern('git -c k=v stash list', 'reviewer');
+    assert.equal(r, null, 'stash list with -c must still be allowed');
+  });
+
+  test('reviewer + git -c k=v reset --soft HEAD~1 → allowed', () => {
+    const r = findForbiddenPattern('git -c k=v reset --soft HEAD~1', 'reviewer');
+    assert.equal(r, null, 'reset --soft with -c must still be allowed');
+  });
+
+  test('developer in main checkout + git -c k=v stash → blocked', () => {
+    const r = findForbiddenPattern('git -c k=v stash', 'developer', { isMain: true, isReadOnly: false });
+    assert.ok(r);
+    assert.equal(r.id, 'wt_destructive_git');
+  });
+});
+
+describe('v239 F2 — option-evasion: isWtDestructiveGit', () => {
+  const { isWtDestructiveGit } = mod;
+
+  test('git -c k=v stash → true', () => {
+    assert.equal(isWtDestructiveGit('git -c k=v stash'), true);
+  });
+
+  test('git -c k=v stash list → false', () => {
+    assert.equal(isWtDestructiveGit('git -c k=v stash list'), false);
+  });
+
+  test('git --no-pager clean -fd → true', () => {
+    assert.equal(isWtDestructiveGit('git --no-pager clean -fd'), true);
+  });
+
+  test('git status → false (non-destructive)', () => {
+    assert.equal(isWtDestructiveGit('git status'), false);
+  });
+
+  test('no git token → false', () => {
+    assert.equal(isWtDestructiveGit('ls -la'), false);
+  });
 });

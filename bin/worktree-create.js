@@ -108,14 +108,57 @@ if (worktreeAlreadyValid()) {
   process.exit(0);
 }
 
-// If the path exists but is NOT a registered worktree (stale dir), clean it up.
+// F1 (v2.3.9): stale-cleanup TOCTOU guard.
+// The original code checked existsSync ONCE then immediately called
+// `git worktree remove --force`. In a twin-hook race (global + local install
+// both fire), twin B could see the dir created by twin A mid-checkout and
+// force-remove it — destroying A's in-flight work (root cause of the
+// `.claude-plugin: No such file or directory` failures and the live sibling
+// clobber incident).
+//
+// Safe cleanup rule:
+//   (1) Re-check worktreeAlreadyValid() inside the exists branch. If the twin
+//       completed between our initial check and now, reuse — do NOT remove.
+//   (2) Only remove a dir that is BOTH unregistered AND old enough that no
+//       concurrent worktree add could have created it (mtime > 2h). A freshly
+//       created worktree dir will have mtime < seconds; 2h is a conservative
+//       threshold that excludes any in-flight checkout.
+//
+// Minimum age for a dir to be considered stale: 2 hours.
+const STALE_WORKTREE_MIN_AGE_MS = 2 * 60 * 60 * 1000;
+
 if (fs.existsSync(worktreePath)) {
-  logStderr(`Stale worktree dir at ${worktreePath} — removing`);
-  spawnSync('git', ['-C', projectRoot, 'worktree', 'remove', '--force', worktreePath], {
-    encoding: 'utf8',
-  });
-  // Best-effort prune in case worktree dir was deleted but git still tracks it
-  spawnSync('git', ['-C', projectRoot, 'worktree', 'prune'], { encoding: 'utf8' });
+  // Re-validate under the exists branch — the twin may have completed since
+  // we ran the first worktreeAlreadyValid() above.
+  if (worktreeAlreadyValid()) {
+    logStderr(`Worktree registered by twin (post-exists check) at ${worktreePath} — reusing`);
+    process.stdout.write(worktreePath + '\n');
+    process.exit(0);
+  }
+
+  // Only remove if provably stale (unregistered AND old mtime).
+  let dirMtimeMs = Infinity;
+  try {
+    dirMtimeMs = fs.statSync(worktreePath).mtimeMs;
+  } catch (_e) { /* stat failed — dir may have just been removed; fall through */ }
+
+  const ageMs = Date.now() - dirMtimeMs;
+  if (ageMs < STALE_WORKTREE_MIN_AGE_MS) {
+    // Dir is fresh — a concurrent worktree add may be in progress. Skip cleanup;
+    // let the worktree add below fail naturally (it will hit index.lock contention
+    // or succeed if the twin vacated). The retry loop handles lock contention.
+    logStderr(
+      `Worktree dir at ${worktreePath} exists but is fresh (${Math.round(ageMs / 1000)}s old) ` +
+      `and unregistered — skipping force-remove to avoid TOCTOU clobber; retrying add`
+    );
+  } else {
+    logStderr(`Stale worktree dir at ${worktreePath} (${Math.round(ageMs / 3600000)}h old, unregistered) — removing`);
+    spawnSync('git', ['-C', projectRoot, 'worktree', 'remove', '--force', worktreePath], {
+      encoding: 'utf8',
+    });
+    // Best-effort prune in case worktree dir was deleted but git still tracks it
+    spawnSync('git', ['-C', projectRoot, 'worktree', 'prune'], { encoding: 'utf8' });
+  }
 }
 
 // Create worktree on current HEAD (detached — agent works on detached HEAD).
