@@ -1,9 +1,9 @@
 'use strict';
 
 /**
- * plugin-input-schema-validator.js — Strict Ajv inputSchema validator for plugin tools.
+ * plugin-input-schema-validator.js — Strict inputSchema validator for plugin tools.
  *
- * Security hardening: W-SEC-9 (v2.3.0).
+ * Security hardening: W-SEC-9 (v2.3.0). ajv removed in v2.3.8 (socket.dev flags).
  *
  * Purpose: Sub-plugins declare an `inputSchema` (JSON Schema document) per tool in their
  * manifest. Before tool-call arguments are validated against the schema, this module
@@ -24,30 +24,7 @@
  *   const { ok, errors } = validateInput(jsonSchema, input);  // compile + validate in one shot
  */
 
-const Ajv = require('ajv');
-
-// ---------------------------------------------------------------------------
-// Static Ajv configuration — locked at module load. No network. No remote $ref.
-// ---------------------------------------------------------------------------
-
-/**
- * SAFE_AJV_CONFIG — immutable options object passed to every Ajv instance.
- * CRITICAL: do NOT add loadSchema; without it, any $ref pointing to a URL fails
- * synchronously (ajv cannot resolve it) rather than making a network call.
- * @type {Readonly<object>}
- */
-const SAFE_AJV_CONFIG = Object.freeze({
-  strict: true,               // unknown keywords → reject
-  strictSchema: true,
-  strictNumbers: true,
-  strictTypes: true,
-  strictTuples: true,
-  strictRequired: true,
-  allErrors: false,           // first error is enough; avoids error-amplification DoS
-  validateFormats: true,
-  allowUnionTypes: false,
-  // loadSchema intentionally absent — no network capability
-});
+const { compile: _subsetCompile } = require('./json-schema-subset');
 
 // ---------------------------------------------------------------------------
 // $ref scheme blocklist — anything starting with these schemes is remote/unsafe.
@@ -79,48 +56,7 @@ const ALLOWED_FORMATS = new Set([
 ]);
 
 // ---------------------------------------------------------------------------
-// Safe format definitions — lightweight regex-based validators for ALLOWED_FORMATS.
-// These are registered on every Ajv instance so that schemas using these formats
-// compile cleanly under validateFormats:true. Only formats in ALLOWED_FORMATS are
-// registered; any other format is already blocked by the pre-checker.
-// ---------------------------------------------------------------------------
-
-/**
- * Minimal regex validators for each format in ALLOWED_FORMATS.
- * Purpose: satisfy Ajv's validateFormats:true requirement without external libraries.
- * These patterns are intentionally non-exhaustive — correctness of format checking
- * is secondary to security (unknown formats are blocked, not loosely matched).
- * @type {Map<string, RegExp>}
- */
-const _FORMAT_VALIDATORS = new Map([
-  ['date',                   /^\d{4}-\d{2}-\d{2}$/],
-  ['time',                   /^\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?$/],
-  ['date-time',              /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/],
-  ['duration',               /^P(\d+Y)?(\d+M)?(\d+W)?(\d+D)?(T(\d+H)?(\d+M)?(\d+(\.\d+)?S)?)?$/],
-  ['email',                  /^[^\s@]+@[^\s@]+\.[^\s@]+$/],
-  ['hostname',               /^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$/],
-  ['ipv4',                   /^(\d{1,3}\.){3}\d{1,3}$/],
-  ['ipv6',                   /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}(:\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})?$/],
-  ['uri',                    /^\w[\w+\-.]*:/],
-  ['uri-reference',          /^(\w[\w+\-.]*:)?[^\s]*$/],
-  ['uri-template',           /^[^\s]*$/],
-  ['uuid',                   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i],
-  ['json-pointer',           /^(\/[^/~]*(~[01][^/~]*)*)*$/],
-  ['relative-json-pointer',  /^\d+(\/[^/~]*(~[01][^/~]*)*)*$/],
-]);
-
-/**
- * Register all safe format validators on an Ajv instance.
- * @param {import('ajv').default} ajvInstance
- */
-function _registerSafeFormats(ajvInstance) {
-  for (const [name, pattern] of _FORMAT_VALIDATORS) {
-    ajvInstance.addFormat(name, pattern);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// AST pre-checker — inspects the schema object tree before handing it to ajv.
+// AST pre-checker — inspects the schema object tree for security threats.
 // ---------------------------------------------------------------------------
 
 /**
@@ -129,8 +65,7 @@ function _registerSafeFormats(ajvInstance) {
  *   - Formats outside ALLOWED_FORMATS (ReDoS / registry-lookup vector)
  *   - Schema depth exceeding MAX_DEPTH (CPU/stack DoS vector)
  *
- * This defense runs BEFORE ajv ever touches the schema, so ajv cannot be tricked
- * into resolving a remote reference during its own schema-walk.
+ * This defense runs BEFORE the subset compiler touches the schema.
  *
  * @param {unknown} schema  The schema value to inspect (any node in the AST).
  * @param {number}  depth   Current recursion depth (default 0).
@@ -174,32 +109,39 @@ function _rejectUnsafeSchemaConstructs(schema, depth = 0, path = '#') {
 // ---------------------------------------------------------------------------
 
 /**
- * Compile a JSON Schema into an Ajv validator function.
+ * Compile a JSON Schema into a validator function.
  *
  * Performs two layers of safety checks before returning:
  *   1. Pre-check: _rejectUnsafeSchemaConstructs scans the AST for unsafe constructs.
- *   2. Compile: Ajv compiles under SAFE_AJV_CONFIG; unknown keywords → throws.
+ *   2. Compile: json-schema-subset rejects unknown keywords (strict mode parity).
  *
  * The returned validator function is safe to call repeatedly:
  *   `const ok = validator(input); if (!ok) console.log(validator.errors);`
  *
  * @param {object} jsonSchema  The JSON Schema document to compile.
- * @returns {Function}  Ajv validator; call as validator(input) → boolean.
- * @throws {Error}  If the schema contains unsafe constructs or fails ajv compilation.
+ * @returns {Function}  Validator; call as validator(input) → boolean. Has .errors property.
+ * @throws {Error}  If the schema contains unsafe constructs or unknown keywords.
  */
 function compileToolInputSchema(jsonSchema) {
-  // Layer 1: pre-check the schema AST before ajv can touch it.
+  // Layer 1: reject remote $ref, disallowed formats, excessive depth.
   _rejectUnsafeSchemaConstructs(jsonSchema);
 
-  // Layer 2: compile with strict ajv (unknown keywords → StrictMode error → caught + rethrown).
-  const ajv = new Ajv(SAFE_AJV_CONFIG);
-  _registerSafeFormats(ajv);
-  let validator;
+  // Layer 2: compile with subset validator (unknown keywords → throws).
+  let subsetValidator;
   try {
-    validator = ajv.compile(jsonSchema);
+    subsetValidator = _subsetCompile(jsonSchema);
   } catch (err) {
+    // "ajv compile failed:" prefix preserves observable error contract for callers.
     throw new Error(`ajv compile failed: ${err.message}`);
   }
+
+  // Wrap to match the ajv call-signature: validator(input) → boolean, with .errors.
+  function validator(input) {
+    const result = subsetValidator(input);
+    validator.errors = result.valid ? null : result.errors;
+    return result.valid;
+  }
+  validator.errors = null;
   return validator;
 }
 
@@ -209,8 +151,8 @@ function compileToolInputSchema(jsonSchema) {
  * @param {object}  jsonSchema  The JSON Schema to validate against.
  * @param {unknown} input       The value to validate.
  * @returns {{ ok: boolean, errors: Array|null }}
- *   `ok` is true if the input is valid; `errors` is null on success or the Ajv error
- *   array on failure.
+ *   `ok` is true if the input is valid; `errors` is null on success or an error
+ *   array on failure. Each error has { instancePath, message }.
  * @throws {Error}  If the schema itself is unsafe or fails compilation.
  */
 function validateInput(jsonSchema, input) {
@@ -229,5 +171,4 @@ module.exports = {
   ALLOWED_FORMATS,
   REMOTE_REF_PATTERN,
   _rejectUnsafeSchemaConstructs,
-  SAFE_AJV_CONFIG,
 };

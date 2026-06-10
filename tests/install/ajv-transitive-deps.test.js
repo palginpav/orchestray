@@ -2,16 +2,12 @@
 'use strict';
 
 /**
- * v2.3.2 regression: install.js must copy ajv's runtime dependencies, not
- * just ajv itself. v2.3.0 shipped the ajv copy block but forgot the four
- * transitive deps (fast-deep-equal, fast-uri, json-schema-traverse,
- * require-from-string), so `require('ajv')` succeeded but `new Ajv()`
- * crashed at first use of plugin-input-schema-validator.js.
+ * v2.3.8: ajv removed; plugin-input-schema-validator.js now uses in-house
+ * json-schema-subset.js (no eval, no external deps).
  *
- * This test runs `node bin/install.js --global` against a throwaway HOME
- * and asserts the four leaf deps are present alongside ajv, then exercises
- * the validator end-to-end so any future drift (ajv adds a dep, walker
- * misses it) fails the suite loudly.
+ * This test verifies the install end-to-end: the validator installs correctly
+ * and the json-schema-subset.js companion module is present alongside it.
+ * The old ajv-copy assertions are gone — replaced with subset-validator checks.
  */
 
 const { test, describe } = require('node:test');
@@ -24,44 +20,35 @@ const { spawnSync } = require('node:child_process');
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const INSTALL_SCRIPT = path.join(REPO_ROOT, 'bin', 'install.js');
 
-describe('install.js — ajv transitive deps (v2.3.2)', () => {
-  test('copies ajv plus all package.json#dependencies leaf packages', () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-ajv-deps-'));
+describe('install.js — plugin-input-schema-validator (v2.3.8, no ajv)', () => {
+  test('installs validator + json-schema-subset and validates correctly', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-subset-deps-'));
     const env = Object.assign({}, process.env, { HOME: tmp });
     const res = spawnSync('node', [INSTALL_SCRIPT, '--global'], {
       env, cwd: tmp, encoding: 'utf8', timeout: 60_000,
     });
     assert.equal(res.status, 0, 'install failed: ' + res.stderr + '\n' + res.stdout);
 
-    const nm = path.join(tmp, '.claude', 'orchestray', 'node_modules');
-    assert.ok(fs.existsSync(path.join(nm, 'ajv')), 'ajv missing');
+    const libDir = path.join(tmp, '.claude', 'orchestray', 'bin', '_lib');
+    const validator = path.join(libDir, 'plugin-input-schema-validator.js');
+    const subset = path.join(libDir, 'json-schema-subset.js');
 
-    // Drive the expected list from ajv's own package.json — same source the
-    // installer uses, so the test stays in sync if ajv changes deps.
-    const ajvPkg = JSON.parse(fs.readFileSync(
-      path.join(REPO_ROOT, 'node_modules', 'ajv', 'package.json'), 'utf8'));
-    const expectedDeps = Object.keys(ajvPkg.dependencies || {});
-    assert.ok(expectedDeps.length > 0, 'ajv should declare runtime deps');
+    assert.ok(fs.existsSync(validator), 'plugin-input-schema-validator.js not installed');
+    assert.ok(fs.existsSync(subset), 'json-schema-subset.js not installed');
 
-    for (const dep of expectedDeps) {
-      const depDir = path.join(nm, dep);
-      assert.ok(fs.existsSync(depDir),
-        `ajv runtime dep ${dep} missing from install — new Ajv() will throw`);
-      assert.ok(fs.existsSync(path.join(depDir, 'package.json')),
-        `${dep} package.json missing — copy was incomplete`);
-    }
+    // ajv must NOT be present — it was removed.
+    const ajvDir = path.join(tmp, '.claude', 'orchestray', 'node_modules', 'ajv');
+    assert.ok(!fs.existsSync(ajvDir), 'ajv should not be installed (dependency removed)');
 
-    // End-to-end: instantiating Ajv via the installed validator must work.
-    // This is the exact code path the v2.3.0 plugin-loader hits.
-    const validator = path.join(tmp, '.claude', 'orchestray', 'bin',
-      '_lib', 'plugin-input-schema-validator.js');
-    assert.ok(fs.existsSync(validator), 'validator not installed');
+    // End-to-end: validate + validateInput must work without ajv.
     const probe = spawnSync(process.execPath, [
       '-e',
       `const v = require(${JSON.stringify(validator)});` +
       `v.compileToolInputSchema({type:'object',properties:{}});` +
       `const r = v.validateInput({type:'object',properties:{n:{type:'string'}}},{n:'x'});` +
       `if (!r.ok) { console.error('validateInput failed', r.errors); process.exit(1); }` +
+      `const r2 = v.validateInput({type:'integer'}, '42');` +
+      `if (r2.ok) { console.error('integer check should reject string'); process.exit(1); }` +
       `console.log('OK');`,
     ], { encoding: 'utf8', timeout: 10_000 });
     assert.equal(probe.status, 0,

@@ -20,9 +20,6 @@
     ".claude-plugin/"
   ],
   "dependencies": {
-    "ajv": "^8.20.0",
-    "graphology": "0.26.0",
-    "graphology-metrics": "^2.4.0",
     "web-tree-sitter": "0.26.8",
     "zod": "^4.4.1"
   },
