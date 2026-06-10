@@ -213,6 +213,25 @@ To disable custom agents entirely: set `ORCHESTRAY_DISABLE_CUSTOM_AGENTS=1` or a
 - On close, Orchestray archives per-orchestration events, extracts patterns, and emits a cost rollup visible in `/orchestray:analytics`.
 - Session resilience: if context compacts mid-orchestration, Orchestray writes a dossier before compaction and re-injects it on the next message.
 
+## Measured efficiency
+
+Numbers from Orchestray's own development telemetry — 429,402 audit events across ~200
+orchestrations (methodology, formulas, and the full measured/derived breakdown live in
+the repo's affordability analysis):
+
+| Mechanism | Measured result |
+|---|---|
+| Prompt caching (stable prompt zones + cache breakpoints) | **99.94% of PM-side input tokens were cache reads** (6.86B cached tokens; cache reads are billed at 10% of fresh input — ≈ $18,500 saved at list prices over the measured period) |
+| Smart model routing (Haiku/Sonnet/Opus by subtask complexity) | **34.1% lower model cost vs. running every agent on Opus** ($2,564 saved across 8,896 spawns; the median orchestration saves 40%) |
+| Event-schema gating (15 KB shadow + per-event lookups instead of the 434 KB schema file) | **99.6% fewer tokens per schema access** (~110k → ~400 tokens); 400 full-file loads blocked in the measured period |
+| Haiku scout gate (large-file reads routed off the expensive model) | **86.6% of large-file read decisions** (3,881 of 4,484, avg 115 KB files) handled by the scout path at ~80% lower cost than inline Opus |
+
+Two honesty notes: dollar figures are derived from measured token counts at list prices,
+not invoiced amounts; and per-feature savings overlap (a cached token can also be a routed
+token), so the rows do not sum. No Orchestray feature adds net token overhead — the two
+candidates that once looked negative in telemetry turned out to be accounting artifacts,
+fixed in v2.3.9.
+
 ## Configuration
 
 Run `/orchestray:config` to view all settings. Most-used knobs:

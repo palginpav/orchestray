@@ -53,26 +53,53 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Graceful no-op gates (v2.3.9 — the v2.3.8 version of this workflow
+      # failed with ENEEDAUTH on every tag push when NPM_TOKEN was absent,
+      # and would have failed with EPUBLISHCONFLICT after a local publish):
+      #   gate 1 — skip everything when the NPM_TOKEN secret is not configured;
+      #   gate 2 — skip the publish when this version is already on the registry
+      #            (local `npm publish` ran first, the normal release flow today).
+      - name: Check publish preconditions
+        id: gate
+        env:
+          HAS_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
+        run: |
+          if [ "$HAS_TOKEN" != "true" ]; then
+            echo "publish=skip" >> "$GITHUB_OUTPUT"
+            echo "::notice::NPM_TOKEN secret not configured — provenance publish skipped (local publish flow is authoritative). Add the secret to enable CI publishing."
+            exit 0
+          fi
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "orchestray@$VERSION" version >/dev/null 2>&1; then
+            echo "publish=skip" >> "$GITHUB_OUTPUT"
+            echo "::notice::orchestray@$VERSION is already on the registry — provenance publish skipped."
+            exit 0
+          fi
+          echo "publish=go" >> "$GITHUB_OUTPUT"
+
       - name: Set up Node.js 20
+        if: ${{ steps.gate.outputs.publish == 'go' }}
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
+        if: ${{ steps.gate.outputs.publish == 'go' }}
         run: npm ci
 
       - name: Verify package
+        if: ${{ steps.gate.outputs.publish == 'go' }}
         run: npm pack --dry-run
 
       - name: Publish (dry run)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true' }}
+        if: ${{ steps.gate.outputs.publish == 'go' && github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true' }}
         run: npm publish --dry-run --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish
-        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run != 'true') }}
+        if: ${{ steps.gate.outputs.publish == 'go' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run != 'true')) }}
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
