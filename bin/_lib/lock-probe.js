@@ -9,6 +9,8 @@
  * Returns a boolean: true if a lock file can be acquired, false if contention persists.
  *
  * v2.1.6 — W1c hardening (Risk 2 closure: _lockedRun stderr monkey-patch replacement).
+ * BUG-8 parity: stale-lock reclaim now verifies the recorded PID is dead (ESRCH) before
+ * unlinking. Falls back to mtime-only reclaim when the lock content is unreadable.
  *
  * Design: Option B from W2-03 reviewer finding — clean probe primitive that matches
  * _withAdvisoryLock's retry/stale-recovery semantics without touching atomic-append.js.
@@ -32,11 +34,49 @@ function _sleepMs(ms) {
 }
 
 /**
+ * BUG-8 parity: check whether a probe lock file is stale. Reads the PID from
+ * the lock content and verifies it is dead via process.kill(pid, 0). Falls back
+ * to mtime-only threshold when the content is unreadable.
+ *
+ * @param {string} lp - Lock file path.
+ * @returns {boolean} true if the lock is stale and safe to reclaim.
+ */
+function _isStale(lp) {
+  try {
+    const st = fs.statSync(lp);
+    let holderPid = null;
+    try {
+      const content = fs.readFileSync(lp, 'utf8').trim();
+      if (/^\d+$/.test(content)) holderPid = parseInt(content, 10);
+    } catch (_e) { /* unreadable — fall back to mtime */ }
+
+    if (holderPid !== null && holderPid !== process.pid) {
+      try {
+        process.kill(holderPid, 0);
+        // PID alive → holder is live-but-slow → not stale.
+        return false;
+      } catch (killErr) {
+        if (killErr && killErr.code === 'ESRCH') return true; // dead → stale
+        // EPERM: exists but no permission to signal → treat as alive.
+        return false;
+      }
+    }
+
+    // Fallback: no readable PID — use mtime threshold.
+    return Date.now() - st.mtimeMs > STALE_THRESHOLD_MS;
+  } catch (_e) {
+    // statSync failed (lock was just deleted) — treat as not stale.
+    return false;
+  }
+}
+
+/**
  * Check whether an advisory lock file can be acquired, then immediately release it.
  *
- * Uses the same stale-lock detection as _withAdvisoryLock: if the lock file exists
- * and its mtime is older than STALE_THRESHOLD_MS (10s), the stale lock is removed
- * and the probe retries. This matches the stale-recovery semantics in atomic-append.js.
+ * Uses the same stale-lock detection as _withAdvisoryLock (BUG-8 parity): if the
+ * lock file exists, the holder PID is read from its content and verified dead via
+ * process.kill(pid, 0) / ESRCH before reclaiming. Falls back to mtime-only check
+ * (> STALE_THRESHOLD_MS) when the content is unreadable.
  *
  * Calling this function has a very brief side effect: it creates and immediately
  * deletes the lock file on success. Two concurrent probes on the same path may
@@ -71,17 +111,9 @@ function isLockAvailable(lockPath, { maxWaitMs = 500, pollMs = LOCK_BACKOFF_MS }
       fd = fs.openSync(lockPath, 'wx');
     } catch (err) {
       if (err && err.code === 'EEXIST') {
-        // Lock file exists — check if it is stale.
-        try {
-          const st = fs.statSync(lockPath);
-          if (Date.now() - st.mtimeMs > STALE_THRESHOLD_MS) {
-            // Stale lock — remove it and retry immediately.
-            try { fs.unlinkSync(lockPath); } catch (_e) {}
-            continue;
-          }
-        } catch (_e) {
-          // stat failed (race — file removed between openSync and statSync).
-          // Treat as gone and retry immediately.
+        // BUG-8 parity: verify PID liveness before falling back to mtime reclaim.
+        if (_isStale(lockPath)) {
+          try { fs.unlinkSync(lockPath); } catch (_e) {}
           continue;
         }
 
@@ -97,13 +129,11 @@ function isLockAvailable(lockPath, { maxWaitMs = 500, pollMs = LOCK_BACKOFF_MS }
       return false;
     }
 
-    // Successfully acquired — release immediately (this is a probe, not a payload lock).
-    try {
-      fs.closeSync(fd);
-    } catch (_e) {}
-    try {
-      fs.unlinkSync(lockPath);
-    } catch (_e) {}
+    // Successfully acquired — write PID (matches atomic-append.js convention) then
+    // release immediately (this is a probe, not a payload lock).
+    try { fs.writeFileSync(lockPath, String(process.pid), 'utf8'); } catch (_e) {}
+    try { fs.closeSync(fd); } catch (_e) {}
+    try { fs.unlinkSync(lockPath); } catch (_e) {}
 
     return true;
   }

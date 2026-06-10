@@ -83,18 +83,47 @@ if (fs.existsSync(worktreePath)) {
   spawnSync('git', ['-C', projectRoot, 'worktree', 'prune'], { encoding: 'utf8' });
 }
 
-// Create worktree on current HEAD (detached — agent works on detached HEAD)
-const result = spawnSync('git', [
-  '-C', projectRoot,
-  'worktree', 'add',
-  '--detach',
-  '--quiet',
-  worktreePath,
-  'HEAD',
-], { encoding: 'utf8' });
+// Create worktree on current HEAD (detached — agent works on detached HEAD).
+// B6: retry on git index.lock contention. Parallel Agent() spawns all invoke
+// `git worktree add` concurrently → two processes compete for .git/index.lock.
+// Retry up to 5× with jittered back-off (100–200 ms per attempt); fail with
+// the original error on non-lock errors or after retries exhausted.
+const INDEX_LOCK_RE = /index\.lock|Unable to create.*\.lock|cannot lock ref/i;
+const WORKTREE_ADD_MAX_ATTEMPTS = 5;
+const WORKTREE_ADD_BASE_JITTER_MS = 100;
 
-if (result.status !== 0) {
-  logStderr(`FAIL: git worktree add exited ${result.status}: ${result.stderr || result.stdout}`);
+let result;
+for (let attempt = 0; attempt < WORKTREE_ADD_MAX_ATTEMPTS; attempt++) {
+  result = spawnSync('git', [
+    '-C', projectRoot,
+    'worktree', 'add',
+    '--detach',
+    '--quiet',
+    worktreePath,
+    'HEAD',
+  ], { encoding: 'utf8' });
+
+  if (result.status === 0) break;
+
+  const errText = (result.stderr || '') + (result.stdout || '');
+  const isLockContention = INDEX_LOCK_RE.test(errText);
+  if (!isLockContention || attempt === WORKTREE_ADD_MAX_ATTEMPTS - 1) {
+    logStderr(`FAIL: git worktree add exited ${result.status} (attempt ${attempt + 1}/${WORKTREE_ADD_MAX_ATTEMPTS}): ${errText}`);
+    process.exit(1);
+  }
+
+  const sleepMs = WORKTREE_ADD_BASE_JITTER_MS + Math.floor(Math.random() * WORKTREE_ADD_BASE_JITTER_MS);
+  logStderr(`git worktree add: index.lock contention (attempt ${attempt + 1}), retrying in ${sleepMs}ms`);
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, sleepMs);
+  } catch (_e) {
+    const deadline = Date.now() + sleepMs;
+    while (Date.now() < deadline) { /* spin */ }
+  }
+}
+
+if (!result || result.status !== 0) {
+  logStderr(`FAIL: git worktree add failed after ${WORKTREE_ADD_MAX_ATTEMPTS} attempts`);
   process.exit(1);
 }
 

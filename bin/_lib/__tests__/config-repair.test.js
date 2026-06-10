@@ -239,4 +239,33 @@ describe('config-repair', () => {
     const created = readConfig(tmpDir);
     assert.deepStrictEqual(created.auto_learning, EXPECTED_AUTO_LEARNING);
   });
+
+  test('advisory lock: no stale .lock file left behind after successful repair', () => {
+    // Verifies that the advisory lock acquired during config write is released.
+    writeConfig(tmpDir, { other: 'value' });
+
+    repairAutoLearning(tmpDir);
+
+    const lockFile = configPath() + '.lock';
+    assert.equal(fs.existsSync(lockFile), false,
+      'advisory lock file must be released (removed) after repair completes');
+    // Config was actually written.
+    assert.ok(fs.existsSync(configPath()), 'config.json must exist after repair');
+    const updated = readConfig(tmpDir);
+    assert.ok(updated.auto_learning, 'auto_learning must be present after repair');
+  });
+
+  test('advisory lock: repair output is valid JSON (tmp+rename atomic write)', () => {
+    // Verifies that the written config is valid JSON — not a partial write.
+    writeConfig(tmpDir, { auto_learning: null });
+
+    repairAutoLearning(tmpDir);
+
+    // Must be parseable.
+    let parsed;
+    assert.doesNotThrow(() => {
+      parsed = JSON.parse(fs.readFileSync(configPath(), 'utf8'));
+    }, 'repaired config.json must be valid JSON');
+    assert.ok(parsed.auto_learning, 'auto_learning must be present');
+  });
 });

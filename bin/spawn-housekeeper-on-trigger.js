@@ -55,6 +55,9 @@ const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { writeEvent }                  = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES }             = require('./_lib/constants');
 const { signRow }                     = require('./_lib/spawn-hmac');
+// B4: advisory lock shared with process-spawn-requests.js drain (same file).
+// atomicAppendJsonl replaces naked appendFileSync for >PIPE_BUF prompt payloads.
+const { _withAdvisoryLock, atomicAppendJsonl } = require('./_lib/atomic-append');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -141,11 +144,15 @@ function readPendingHousekeeperRequests(cwd, orchId) {
 
 // ---------------------------------------------------------------------------
 // Append a synthetic spawn request row.
+// B4: use atomicAppendJsonl instead of naked appendFileSync — the housekeeper
+// prompt can exceed PIPE_BUF (4096 bytes), making concurrent appends unsafe.
+// The debounce-check and this append are also wrapped together in the shared
+// advisory lock (see call site) to prevent TOCTOU duplication.
 // ---------------------------------------------------------------------------
 function appendSpawnRequest(cwd, request) {
   const filePath = path.join(cwd, REQUESTS_REL);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.appendFileSync(filePath, JSON.stringify(request) + '\n', 'utf8');
+  atomicAppendJsonl(filePath, request);
 }
 
 function newRequestId() {
@@ -203,11 +210,50 @@ process.stdout.write(JSON.stringify({ continue: true }));  // always emit early
     const orchId = resolveOrchestrationId(cwd);
     if (!orchId) return; // no active orchestration → no queue context
 
-    // Debounce: one pending system-housekeeper request per orchestration.
-    const pending = readPendingHousekeeperRequests(cwd, orchId);
-    if (pending.length >= 1) {
-      // Emit collapse-observability event.
+    // B4: wrap the debounce-check → append in the shared advisory lock.
+    // Without the lock, two concurrent PostToolUse firings (parallel subagents
+    // editing schema files) both see pending.length===0 (TOCTOU) and both
+    // enqueue a row, defeating the "one pending per orchestration" invariant.
+    // This lock is keyed to REQUESTS_REL and shared with process-spawn-requests
+    // (the drainer), so all readers/writers of spawn-requests.jsonl serialize.
+    const requestsLockPath = path.join(cwd, REQUESTS_REL + '.lock');
+    let requestId, request;
+    let debounced = false;
+
+    _withAdvisoryLock(requestsLockPath, () => {
+      // Re-read inside the lock to get the definitive pending count.
+      const pending = readPendingHousekeeperRequests(cwd, orchId);
+      if (pending.length >= 1) {
+        debounced = true;
+        return;
+      }
+
+      // Build and append the synthetic spawn request.
+      // v2.2.21 W1-T2: HMAC-sign the row so the drainer can prove the writer
+      // had read access to ~/.claude/orchestray/.spawn-hmac-key. Without the
+      // signature the drainer denies with auto_approve_origin_unverified.
+      requestId = newRequestId();
+      const requestUnsigned = {
+        request_id:       requestId,
+        orchestration_id: orchId,
+        requester_agent:  REQUESTER_SYSTEM,
+        requested_agent:  HOUSEKEEPER_AGENT,
+        justification:    triggerReason,
+        prompt:           buildHousekeeperPrompt(triggerReason, sourceFile),
+        max_cost_usd:     HOUSEKEEPER_MAX_COST_USD,
+        auto_approve:     true,
+        spawn_depth:      0,
+        status:           'pending',
+        ts:               new Date().toISOString(),
+      };
+      request = signRow(requestUnsigned);
+      appendSpawnRequest(cwd, request);
+    });
+
+    if (debounced) {
+      // Emit collapse-observability event (outside lock — event emit is fast).
       try {
+        const pending = readPendingHousekeeperRequests(cwd, orchId);
         writeEvent({
           type:             'housekeeper_trigger_debounced',
           version:          1,
@@ -219,26 +265,7 @@ process.stdout.write(JSON.stringify({ continue: true }));  // always emit early
       return;
     }
 
-    // Build and append the synthetic spawn request.
-    // v2.2.21 W1-T2: HMAC-sign the row so the drainer can prove the writer
-    // had read access to ~/.claude/orchestray/.spawn-hmac-key. Without the
-    // signature the drainer denies with auto_approve_origin_unverified.
-    const requestId = newRequestId();
-    const requestUnsigned = {
-      request_id:       requestId,
-      orchestration_id: orchId,
-      requester_agent:  REQUESTER_SYSTEM,
-      requested_agent:  HOUSEKEEPER_AGENT,
-      justification:    triggerReason,
-      prompt:           buildHousekeeperPrompt(triggerReason, sourceFile),
-      max_cost_usd:     HOUSEKEEPER_MAX_COST_USD,
-      auto_approve:     true,
-      spawn_depth:      0,
-      status:           'pending',
-      ts:               new Date().toISOString(),
-    };
-    const request = signRow(requestUnsigned);
-    appendSpawnRequest(cwd, request);
+    if (!request) return; // lock was skipped (contention) — fail-open
 
     // Emit `spawn_requested` so downstream observers (and the
     // process-spawn-requests hook on the next PreToolUse:Agent) can correlate.

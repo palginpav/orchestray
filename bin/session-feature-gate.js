@@ -39,6 +39,8 @@ const path = require('path');
 
 const { resolveSafeCwd }       = require('./_lib/resolve-project-cwd');
 const { writeEvent }           = require('./_lib/audit-event-writer');
+// B3: atomicWriteFile + _withAdvisoryLock for tear-free atomic config writes.
+const { atomicWriteFile, _withAdvisoryLock } = require('./_lib/atomic-append');
 const {
   computeDemandReport,
   getEligibleGateSlugs,
@@ -104,9 +106,20 @@ function readConfig(cwd) {
 }
 
 function writeConfig(cwd, config) {
+  // B3: config.json is the most-read file in the system (virtually every hook
+  // reads it). fs.writeFileSync truncates-then-writes, creating a window where
+  // a concurrent reader sees a partially-written file and gets a JSON parse error.
+  // Fix: tmp+rename (atomic on same FS) + advisory lock for cross-process
+  // serialization so this writer and config-repair can't race.
+  const cfgPath = path.join(cwd, '.orchestray', 'config.json');
+  const cfgLockPath = cfgPath + '.lock';
   try {
-    const cfgPath = path.join(cwd, '.orchestray', 'config.json');
-    fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
+    const outcome = _withAdvisoryLock(cfgLockPath, () => {
+      atomicWriteFile(cfgPath, JSON.stringify(config, null, 2) + '\n');
+    });
+    // Lock contention skip means fn never ran — config was NOT persisted.
+    // Reporting success here would be skip-as-success; the caller must know.
+    if (outcome && outcome.skipped) return false;
     return true;
   } catch (_e) {
     return false;

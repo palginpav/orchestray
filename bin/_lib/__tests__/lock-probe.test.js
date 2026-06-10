@@ -112,6 +112,48 @@ describe('isLockAvailable — stale lock', () => {
     assert.equal(fs.existsSync(lp), false, 'stale lock file should be gone after probe');
   });
 
+  test('BUG-8 parity: lock with dead PID (ESRCH) is reclaimed regardless of mtime', () => {
+    // Write a lock file containing a PID that is guaranteed to be dead.
+    // PID 1 is init/systemd and is alive, so we use a known-unused PID instead.
+    // The safest dead PID is one we pick from a very large space unlikely to be
+    // in use and not owned by this process. We use the trick of spawning a
+    // process, waiting for it to exit, then using its pid.
+    const { spawnSync } = require('node:child_process');
+    const child = spawnSync(process.execPath, ['-e', ''], { encoding: 'utf8' });
+    // child.pid is now dead. Use it as the fake holder.
+    const deadPid = child.pid;
+
+    const lp = lockPath('pid-dead');
+    fs.mkdirSync(path.dirname(lp), { recursive: true });
+    // Write the dead PID into the lock file with a FRESH mtime (< 10s).
+    fs.writeFileSync(lp, String(deadPid), 'utf8');
+    // Explicitly set mtime to now so mtime-only check would NOT reclaim it.
+    const now = Date.now() / 1000;
+    fs.utimesSync(lp, now, now);
+
+    const result = isLockAvailable(lp, { maxWaitMs: 200 });
+    assert.equal(result, true, 'lock with dead PID should be reclaimed (ESRCH path)');
+    assert.equal(fs.existsSync(lp), false, 'stale lock file should be removed after reclaim');
+  });
+
+  test('BUG-8 parity: lock with live PID (current process) is NOT reclaimed', () => {
+    // Write a lock file containing our own PID — we are definitely alive.
+    const lp = lockPath('pid-alive');
+    fs.mkdirSync(path.dirname(lp), { recursive: true });
+    fs.writeFileSync(lp, String(process.pid), 'utf8');
+    const now = Date.now() / 1000;
+    fs.utimesSync(lp, now, now);
+
+    // isLockAvailable treats same-pid locks as "alive" (process.pid guard in _isStale).
+    // With maxWaitMs=0 it should return false without reclaiming.
+    const result = isLockAvailable(lp, { maxWaitMs: 0 });
+    assert.equal(result, false, 'lock held by current (live) process should not be reclaimed');
+    // Lock file should still exist.
+    assert.equal(fs.existsSync(lp), true, 'lock file should remain when holder is alive');
+
+    try { fs.unlinkSync(lp); } catch (_e) {}
+  });
+
   test('exactly at stale boundary (mtime = 10s ago) is NOT treated as stale', () => {
     const lp = lockPath('boundary');
     fs.mkdirSync(path.dirname(lp), { recursive: true });

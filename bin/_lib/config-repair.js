@@ -33,6 +33,7 @@ const path = require('node:path');
 
 const { loadAutoLearningConfig, DEFAULT_AUTO_LEARNING } = require('./config-schema');
 const { writeEvent } = require('./audit-event-writer');
+const { atomicWriteFile, _withAdvisoryLock } = require('./atomic-append');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -286,15 +287,25 @@ function repairAutoLearning(projectRoot, options) {
     throw new Error('config-repair: could not create backup ' + backupPath + ': ' + String(err.message || err));
   }
 
-  // Atomic rewrite (tmp + rename).
-  const tmp = configPath + '.tmp.' + process.pid;
+  // Atomic rewrite (tmp + rename) under advisory lock so concurrent config
+  // writers (session-feature-gate, future callers) don't race on the same file.
+  const cfgLockPath = configPath + '.lock';
+  let writeErr = null;
   try {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(tmp, newContent, 'utf8');
-    fs.renameSync(tmp, configPath);
-  } catch (err) {
-    try { fs.unlinkSync(tmp); } catch (_e) { /* swallow */ }
-    throw new Error('config-repair: could not write config ' + configPath + ': ' + String(err.message || err));
+  } catch (_e) { /* swallow — atomicWriteFile will surface real permission issues */ }
+  const lockResult = _withAdvisoryLock(cfgLockPath, () => {
+    try {
+      atomicWriteFile(configPath, newContent);
+    } catch (err) {
+      writeErr = err;
+    }
+  });
+  if (lockResult && lockResult.skipped) {
+    throw new Error('config-repair: could not acquire advisory lock for ' + configPath + ' — try again');
+  }
+  if (writeErr) {
+    throw new Error('config-repair: could not write config ' + configPath + ': ' + String(writeErr.message || writeErr));
   }
 
   _emitAuditEvent(projectRoot, {

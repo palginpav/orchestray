@@ -52,9 +52,10 @@ const {
   loadReservationTTLMs,
 } = require('../../_lib/cost-helpers');
 
-// Atomic append primitive — ensures concurrent writers don't interleave lines
-// (F05: replaces the non-atomic fs.appendFileSync used previously).
-const { atomicAppendJsonl } = require('../../_lib/atomic-append');
+// Atomic append + advisory lock primitives.
+// F05: atomicAppendJsonl replaces non-atomic fs.appendFileSync.
+// B1: _withAdvisoryLock wraps the idempotency find→append critical section.
+const { atomicAppendJsonl, _withAdvisoryLock } = require('../../_lib/atomic-append');
 const { emitHandlerEntry } = require('../../_lib/mcp-handler-entry');
 
 // File that holds reservation records (append-only JSONL)
@@ -222,29 +223,8 @@ async function handle(input, context) {
     }
   } catch (_e) { /* File absent or stat error — skip GC. */ }
 
-  // F04: idempotency — if the caller supplied a reservation_id and a matching
-  // record already exists in the ledger, return it unchanged (no duplicate write).
-  if (input.reservation_id) {
-    const existing = findReservationById(reservationsPath, input.reservation_id);
-    if (existing) {
-      return toolSuccess({
-        reservation_id: existing.reservation_id,
-        orchestration_id: existing.orchestration_id,
-        task_id: existing.task_id,
-        agent_type: existing.agent_type,
-        model: existing.model,
-        model_tier: existing.model_tier,
-        effort: existing.effort || null,
-        projected_cost_usd: existing.projected_cost_usd,
-        pricing_source: existing.pricing_source,
-        token_estimates_from_defaults: existing.token_estimates_from_defaults,
-        created_at: existing.created_at,
-        expires_at: existing.expires_at,
-      });
-    }
-  }
+  // --- Resolve pricing / token estimates outside the lock (pure computation) ---
 
-  // Resolve pricing table (same path as cost_budget_check)
   let table, pricingSource, effortMultipliersConfig;
   try {
     const { loadCostBudgetCheckConfig } = require('../../_lib/config-schema');
@@ -287,7 +267,7 @@ async function handle(input, context) {
   const effortMultiplier = resolveEffortMultiplier(input.effort || null, effortMultipliersConfig);
   const projectedCostUsd = baseCost * effortMultiplier;
 
-  // Build reservation record
+  // Build reservation record (before lock — IDs and timestamps are fine outside).
   const now = Date.now();
   const createdAt = new Date(now).toISOString();
   // D5: use loadReservationTTLMs(projectRoot) to read configurable TTL from config.
@@ -316,13 +296,63 @@ async function handle(input, context) {
     expires_at: expiresAt,
   };
 
-  // Append to reservations file (F05: atomicAppendJsonl via appendReservation).
-  try {
-    appendReservation(reservationsPath, record);
-  } catch (err) {
+  // B1: acquire advisory lock for the full idempotency find→append critical section.
+  // Without this lock, two concurrent calls with the same reservation_id can both
+  // see null from findReservationById (TOCTOU) and both append, violating uniqueness.
+  // The lock is keyed to the reservations file so all writers share the same mutex.
+  const reservationsLockPath = reservationsPath + '.lock';
+  let writeErr = null;
+  let existingRecord = null;
+  const lockOutcome = _withAdvisoryLock(reservationsLockPath, () => {
+    // Re-check idempotency inside the lock (F04 + B1).
+    if (input.reservation_id) {
+      const existing = findReservationById(reservationsPath, input.reservation_id);
+      if (existing) {
+        existingRecord = existing;
+        return 'found';
+      }
+    }
+    // Append to reservations file (F05: atomicAppendJsonl via appendReservation).
+    try {
+      appendReservation(reservationsPath, record);
+    } catch (err) {
+      writeErr = err;
+    }
+    return 'appended';
+  });
+
+  if (lockOutcome && lockOutcome.skipped) {
+    // Lock contention — do NOT append outside the lock: an unlocked append here
+    // would reintroduce the B1 reservation_id TOCTOU (two concurrent same-id
+    // calls could both skip and both append, violating uniqueness). Surface
+    // contention to the caller instead; the reservation is safely retryable.
+    return toolError(
+      'cost_budget_reserve: reservation lock contention — another orchestray ' +
+      'process is writing cost-reservations.jsonl; retry the reservation'
+    );
+  }
+
+  if (existingRecord) {
+    return toolSuccess({
+      reservation_id: existingRecord.reservation_id,
+      orchestration_id: existingRecord.orchestration_id,
+      task_id: existingRecord.task_id,
+      agent_type: existingRecord.agent_type,
+      model: existingRecord.model,
+      model_tier: existingRecord.model_tier,
+      effort: existingRecord.effort || null,
+      projected_cost_usd: existingRecord.projected_cost_usd,
+      pricing_source: existingRecord.pricing_source,
+      token_estimates_from_defaults: existingRecord.token_estimates_from_defaults,
+      created_at: existingRecord.created_at,
+      expires_at: existingRecord.expires_at,
+    });
+  }
+
+  if (writeErr) {
     return toolError(
       'cost_budget_reserve: failed to write reservation: ' +
-      (err && err.message ? err.message : String(err))
+      (writeErr && writeErr.message ? writeErr.message : String(writeErr))
     );
   }
 

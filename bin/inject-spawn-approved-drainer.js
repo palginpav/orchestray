@@ -32,6 +32,8 @@ const path = require('path');
 const { MAX_INPUT_BYTES }   = require('./_lib/constants');
 const { resolveSafeCwd }    = require('./_lib/resolve-project-cwd');
 const { writeEvent }        = require('./_lib/audit-event-writer');
+// B5: advisory lock serializes drainer rewrite vs appender append on spawn-approved.jsonl.
+const { _withAdvisoryLock } = require('./_lib/atomic-append');
 
 const HOUSEKEEPER_AGENT = 'orchestray-housekeeper';
 const APPROVED_REL      = path.join('.orchestray', 'state', 'spawn-approved.jsonl');
@@ -142,41 +144,56 @@ function handleUserPromptSubmit(event) {
   }
 
   const cwd = resolveSafeCwd(event && event.cwd);
+  const approvedPath = path.join(cwd, APPROVED_REL);
+  const approvedLockPath = approvedPath + '.lock';
 
-  // Read all approved rows.
-  const entries = readApproved(cwd);
+  // B5: wrap the read→filter→rewrite in an advisory lock shared with the
+  // appender (process-spawn-requests.js appendApproved). Without this, the
+  // drainer can read a snapshot, the appender adds a new row, and the
+  // drainer's rewrite overwrites that new row (lost-update / lost spawn).
+  // Re-read inside the lock to capture any rows appended since we started.
+  let result = { injected: false, reason: 'no_pending' };
 
-  // Filter: housekeeper-only, not yet drained.
-  const pending = entries.filter(
-    e => e &&
-         !e.drained_at &&
-         e.requested_agent === HOUSEKEEPER_AGENT
-  );
+  _withAdvisoryLock(approvedLockPath, () => {
+    // Re-read inside the lock — definitive state.
+    const entries = readApproved(cwd);
 
-  if (pending.length === 0) {
-    return { injected: false, reason: 'no_pending' };
-  }
+    // Filter: housekeeper-only, not yet drained.
+    const pending = entries.filter(
+      e => e &&
+           !e.drained_at &&
+           e.requested_agent === HOUSEKEEPER_AGENT
+    );
 
-  // Build prompt block.
-  const block = buildPromptBlock(pending);
-
-  // Mark rows drained (atomic write).
-  const drainedAt = new Date().toISOString();
-  const pendingIds = new Set(pending.map(r => r.request_id));
-  const updated = entries.map(e => {
-    if (e && !e.drained_at && pendingIds.has(e.request_id)) {
-      return Object.assign({}, e, { drained_at: drainedAt });
+    if (pending.length === 0) {
+      result = { injected: false, reason: 'no_pending' };
+      return;
     }
-    return e;
+
+    // Build prompt block.
+    const block = buildPromptBlock(pending);
+
+    // Mark rows drained (atomic write — inside lock for cross-process safety).
+    const drainedAt = new Date().toISOString();
+    const pendingIds = new Set(pending.map(r => r.request_id));
+    const updated = entries.map(e => {
+      if (e && !e.drained_at && pendingIds.has(e.request_id)) {
+        return Object.assign({}, e, { drained_at: drainedAt });
+      }
+      return e;
+    });
+    writeApproved(cwd, updated);
+
+    // Emit one event per drained row (outside lock on retry; emit here while
+    // holding lock is fine — event writes are short and use their own lock).
+    for (const row of pending) {
+      emitDrainerInjected(cwd, row);
+    }
+
+    result = { injected: true, block, count: pending.length };
   });
-  writeApproved(cwd, updated);
 
-  // Emit one event per drained row.
-  for (const row of pending) {
-    emitDrainerInjected(cwd, row);
-  }
-
-  return { injected: true, block, count: pending.length };
+  return result;
 }
 
 // ---------------------------------------------------------------------------
