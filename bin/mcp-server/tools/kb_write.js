@@ -33,25 +33,19 @@ const MAX_LOCK_ATTEMPTS = 10;
 const LOCK_BACKOFF_MS = 50;
 const LOCK_STALE_MS = 10_000;
 
-function _sleepMs(ms) {
-  try {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-  } catch (_e) {
-    const deadline = Date.now() + ms;
-    while (Date.now() < deadline) { /* spin */ }
-  }
-}
+// B5 fix: async lock backoff so the event loop stays live during contention.
+// Previously used Atomics.wait (blocking up to 500ms); now yields with setTimeout.
 
 /**
  * Acquire an advisory lock on `lockPath` using O_EXCL.
  * Returns the open fd on success, or null on exhausted retries.
  * Caller must close + unlink in a finally block.
+ * @returns {Promise<number|null>}
  */
-function _acquireLock(lockPath) {
-  let fd = null;
+async function _acquireLock(lockPath) {
   for (let attempt = 0; attempt < MAX_LOCK_ATTEMPTS; attempt++) {
     try {
-      fd = fs.openSync(lockPath, 'wx');
+      const fd = fs.openSync(lockPath, 'wx');
       return fd;
     } catch (err) {
       if (err && err.code === 'EEXIST') {
@@ -67,7 +61,8 @@ function _acquireLock(lockPath) {
           continue;
         }
         if (attempt < MAX_LOCK_ATTEMPTS - 1) {
-          _sleepMs(LOCK_BACKOFF_MS);
+          // Yield to the event loop — other in-flight calls proceed during backoff.
+          await new Promise((r) => setTimeout(r, LOCK_BACKOFF_MS));
         }
       } else {
         // Non-EEXIST error (e.g. EACCES) — give up.
@@ -92,6 +87,7 @@ const KB_BUCKETS = ['artifacts', 'facts', 'decisions'];
 const INPUT_SCHEMA = deepFreeze({
   type: 'object',
   required: ['id', 'bucket', 'path', 'author', 'topic', 'content'],
+  additionalProperties: false,
   properties: {
     id: { type: 'string', minLength: 1, maxLength: 200 },
     bucket: { type: 'string', enum: KB_BUCKETS },
@@ -126,12 +122,13 @@ async function handle(input, context) {
     return toolError('kb_write: ' + validation.errors.join('; '));
   }
 
-  // W6 (v2.0.16): per-(orchestration_id, task_id) rate-limit pre-check.
+  // W6 (v2.0.16): per-(orchestration_id, task) rate-limit pre-check.
   // checkLimit is read-only — does NOT increment the counter.
   // recordSuccess is called only on successful write (step 11).
   // Only enforced when both ids are present in the call; advisory-only otherwise.
+  // B2 fix: schema declares `task` (not `task_id`) — read the correct field.
   const orchId = (input && typeof input.orchestration_id === 'string') ? input.orchestration_id : null;
-  const taskId = (input && typeof input.task_id === 'string') ? input.task_id : null;
+  const taskId = (input && typeof input.task === 'string') ? input.task : null;
   const _projectRoot = (context && context.projectRoot) || null;
   const _config = (context && context.config) || null;
   if (orchId && taskId && _projectRoot) {
@@ -246,7 +243,7 @@ async function handle(input, context) {
     return toolError('kb_write: mkdir failed: ' + (err && err.message));
   }
 
-  const lockFd = _acquireLock(lockPath);
+  const lockFd = await _acquireLock(lockPath);
   if (lockFd === null) {
     return toolError(
       'kb_write: lock acquisition timeout after ' +

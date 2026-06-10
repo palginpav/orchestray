@@ -66,6 +66,7 @@ const EFFORT_VALUES = ['low', 'medium', 'high', 'max'];
 const INPUT_SCHEMA = deepFreeze({
   type: 'object',
   required: ['orchestration_id', 'task_id', 'agent_type', 'model'],
+  additionalProperties: false,
   properties: {
     orchestration_id: {
       type: 'string',

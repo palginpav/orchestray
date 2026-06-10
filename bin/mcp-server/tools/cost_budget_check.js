@@ -41,6 +41,7 @@ const EFFORT_VALUES = ['low', 'medium', 'high', 'max'];
 const INPUT_SCHEMA = {
   type: 'object',
   required: ['model', 'orchestration_id'],
+  additionalProperties: false,
   properties: {
     model: {
       type: 'string',

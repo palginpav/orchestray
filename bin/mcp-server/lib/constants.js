@@ -15,6 +15,10 @@
  * Must match the `agent_role` values emitted in audit events and the
  * frontmatter `agent_role` fields in pattern files.
  *
+ * Superset of all roles known to the system; history_query_events and
+ * cost_budget_check use this enum for filtering. Keep in sync with the
+ * agent file list in agents/ and CLAUDE.md §Agent Roles.
+ *
  * @type {string[]}
  */
 const AGENT_ROLES = [
@@ -29,6 +33,21 @@ const AGENT_ROLES = [
   'inventor',
   'researcher',
   'security-engineer',
+  'release-manager',
+  'ux-critic',
+  'platform-oracle',
+  'project-intent',
 ];
 
-module.exports = { AGENT_ROLES };
+/**
+ * Maximum allowed size for a single JSON-RPC input frame (line), in bytes.
+ * Lines exceeding this are rejected with JSONRPC_INVALID_REQUEST before
+ * JSON.parse — preventing OOM from newline-starved or oversized frames.
+ *
+ * Chosen to comfortably cover the largest legitimate payload:
+ *   kb_write content maxLength 1 MiB + specialist 512 KiB + framing ≈ 2 MiB.
+ * 8 MiB gives 4× headroom while keeping the guard meaningful.
+ */
+const MAX_INPUT_BYTES = 8 * 1024 * 1024; // 8 MiB
+
+module.exports = { AGENT_ROLES, MAX_INPUT_BYTES };

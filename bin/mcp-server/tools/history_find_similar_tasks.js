@@ -23,6 +23,7 @@ const { emitHandlerEntry } = require('../../_lib/mcp-handler-entry');
 const INPUT_SCHEMA = {
   type: 'object',
   required: ['task_summary'],
+  additionalProperties: false,
   properties: {
     task_summary: { type: 'string', minLength: 3, maxLength: 1000 },
     limit: { type: 'integer', minimum: 1, maximum: 10 },

@@ -307,7 +307,7 @@ const ASK_USER_TOOL_DEFINITION = deepFreeze({
 
 /**
  * Supported constructs:
- *   type: object      + properties, required (additionalProperties ignored)
+ *   type: object      + properties, required, additionalProperties: false
  *   type: string      + minLength, maxLength, enum
  *   type: integer     + minimum, maximum  (Number.isInteger required)
  *   type: number      + minimum, maximum  (finite)
@@ -318,13 +318,17 @@ const ASK_USER_TOOL_DEFINITION = deepFreeze({
  * const/format/patternProperties/propertyNames/additionalItems) with an
  * "unsupported schema keyword" error.
  *
+ * additionalProperties: false is supported — when set, any key in the value
+ * that is not listed in `properties` produces a validation error. Use on all
+ * tool INPUT_SCHEMAs to catch typo'd or smuggled fields early (B3 fix).
+ * additionalProperties: true (or omitted) retains the prior permissive behavior.
+ *
  * Returns { ok: true } | { ok: false, errors: string[] }. Pure; never throws.
  *
  * See CHANGELOG.md §2.0.11 (Stage 2 MCP tools & resources) for design context.
  */
 
-// Unsupported keywords: `additionalProperties` is excluded (Orchestray tool schemas
-// don't use it; tool INPUT validators should not rely on it).
+// Unsupported keywords: `additionalProperties` is now supported (false only).
 const UNSUPPORTED_KEYWORDS = [
   'oneOf',
   'anyOf',
@@ -408,6 +412,17 @@ function _validate(value, schema, pathStr, errors) {
           if (propName in value) {
             const childPath = (pathStr.length > 0 ? pathStr + '.' : '') + propName;
             _validate(value[propName], propSchema, childPath, errors);
+          }
+        }
+        // B3: reject unknown top-level keys when additionalProperties: false.
+        if (schema.additionalProperties === false) {
+          for (const key of Object.keys(value)) {
+            if (!(key in schema.properties)) {
+              errors.push(
+                (pathStr.length > 0 ? pathStr + '.' : '') + key +
+                ': unknown property (additionalProperties: false)'
+              );
+            }
           }
         }
       }

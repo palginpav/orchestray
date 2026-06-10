@@ -32,6 +32,7 @@ const METRIC_VALUES = ['cache_hit_ratio', 'input_tokens', 'output_tokens', 'cost
 const INPUT_SCHEMA = {
   type: 'object',
   required: ['window', 'group_by', 'metric'],
+  additionalProperties: false,
   properties: {
     window: {
       type: 'string',
@@ -89,9 +90,13 @@ function windowCutoffMs(window) {
 // JSONL reading helpers
 // ---------------------------------------------------------------------------
 
+// B6: cap file reads — same bounded tail-read pattern as routing_lookup.js.
+const MAX_METRICS_READ = 4 * 1024 * 1024; // 4 MB
+
 /**
  * Read and parse a JSONL file. Returns an array of parsed rows.
  * Returns [] if the file does not exist or cannot be read. Fail-open.
+ * Capped at MAX_METRICS_READ bytes (tail) to prevent OOM on large files.
  *
  * @param {string} filePath
  * @returns {object[]}
@@ -99,10 +104,24 @@ function windowCutoffMs(window) {
 function readJsonl(filePath) {
   let raw;
   try {
-    raw = fs.readFileSync(filePath, 'utf8');
+    const stat = fs.statSync(filePath);
+    if (stat.size > MAX_METRICS_READ) {
+      // Read last MAX_METRICS_READ bytes; skip potentially truncated first line.
+      const fd = fs.openSync(filePath, 'r');
+      try {
+        const buf = Buffer.alloc(MAX_METRICS_READ);
+        const bytesRead = fs.readSync(fd, buf, 0, MAX_METRICS_READ, stat.size - MAX_METRICS_READ);
+        raw = buf.slice(0, bytesRead).toString('utf8');
+        const firstNl = raw.indexOf('\n');
+        if (firstNl !== -1) raw = raw.slice(firstNl + 1);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } else {
+      raw = fs.readFileSync(filePath, 'utf8');
+    }
   } catch (err) {
     if (err && err.code === 'ENOENT') return [];
-    // Other I/O errors — fail open, return empty
     return [];
   }
   const rows = [];

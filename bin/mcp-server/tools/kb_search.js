@@ -28,6 +28,7 @@ const SECTIONS = ['artifacts', 'facts', 'decisions'];
 const INPUT_SCHEMA = {
   type: 'object',
   required: ['query'],
+  additionalProperties: false,
   properties: {
     query: { type: 'string', minLength: 2, maxLength: 500 },
     kb_sections: {

@@ -40,6 +40,7 @@ const MAX_EVENTS_READ = 4 * 1024 * 1024; // 4 MB
 const INPUT_SCHEMA = deepFreeze({
   type: 'object',
   required: [],
+  additionalProperties: false,
   properties: {
     orchestration_id: {
       type: 'string',

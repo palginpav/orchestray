@@ -22,6 +22,7 @@ const OUTCOMES = ['applied', 'applied-success', 'applied-failure'];
 const INPUT_SCHEMA = {
   type: 'object',
   required: ['slug', 'orchestration_id', 'outcome'],
+  additionalProperties: false,
   properties: {
     slug: { type: 'string', minLength: 1, maxLength: 200 },
     orchestration_id: { type: 'string', minLength: 1, maxLength: 64 },

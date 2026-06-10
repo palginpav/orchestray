@@ -42,6 +42,7 @@ const fs = require('node:fs');
 const INPUT_SCHEMA = {
   type: 'object',
   required: ['event_type'],
+  additionalProperties: false,
   properties: {
     event_type: {
       type: 'string',

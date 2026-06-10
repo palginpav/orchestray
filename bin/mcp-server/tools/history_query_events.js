@@ -37,6 +37,7 @@ const EVENT_TYPES = [
 
 const INPUT_SCHEMA = {
   type: 'object',
+  additionalProperties: false,
   properties: {
     since: {
       type: 'string',

@@ -30,6 +30,7 @@ const crypto = require('node:crypto');
 
 const paths = require('./lib/paths');
 const { ASK_USER_TOOL_DEFINITION } = require('./lib/schemas');
+const { MAX_INPUT_BYTES } = require('./lib/constants');
 const {
   writeAuditEvent,
   buildAuditEvent,
@@ -708,6 +709,8 @@ function main() {
         ...(consent.require_explicit_grant != null && { requireConsent: consent.require_explicit_grant }),
         emitToolInvocationEvents: telemetry.emit_tool_invocation_events !== false,
         redactArgs:               telemetry.redact_args !== false,
+        // D3: strict capabilities mode (default false).
+        strictCapabilities: !!pl.strict_capabilities,
         // Lifecycle tuning from config (mirrors DEFAULT_OPTS keys).
         ...(lc.max_restart_attempts  != null && { maxRestartAttempts:    lc.max_restart_attempts }),
         ...(lc.restart_backoff_ms    != null && { restartBackoffMs:      lc.restart_backoff_ms }),
@@ -741,6 +744,13 @@ function main() {
   });
 
   rl.on('line', (line) => {
+    // B1: Guard against oversized frames before JSON.parse — prevents OOM.
+    // readline buffers the full line in memory; rejecting here keeps heap bounded.
+    if (Buffer.byteLength(line, 'utf8') > MAX_INPUT_BYTES) {
+      logStderr('frame too large (' + Buffer.byteLength(line, 'utf8') + ' bytes), rejecting');
+      sendError(null, CODES.JSONRPC_INVALID_REQUEST, 'frame too large');
+      return;
+    }
     // Fire-and-forget; dispatch handles its own errors.
     handleLine(config, line).catch((err) => {
       logStderr('unexpected handleLine error: ' + (err && err.message));

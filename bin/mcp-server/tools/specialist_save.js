@@ -33,25 +33,19 @@ const MAX_LOCK_ATTEMPTS = 10;
 const LOCK_BACKOFF_MS = 50;
 const LOCK_STALE_MS = 10_000;
 
-function _sleepMs(ms) {
-  try {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-  } catch (_e) {
-    const deadline = Date.now() + ms;
-    while (Date.now() < deadline) { /* spin */ }
-  }
-}
+// B5 fix: async lock backoff so the event loop stays live during contention.
+// Previously used Atomics.wait (blocking up to 500ms); now yields with setTimeout.
 
 /**
  * Acquire an advisory lock on `lockPath` using O_EXCL.
  * Returns the open fd on success, or null on exhausted retries.
  * Caller must close + unlink in a finally block.
+ * @returns {Promise<number|null>}
  */
-function _acquireLock(lockPath) {
-  let fd = null;
+async function _acquireLock(lockPath) {
   for (let attempt = 0; attempt < MAX_LOCK_ATTEMPTS; attempt++) {
     try {
-      fd = fs.openSync(lockPath, 'wx');
+      const fd = fs.openSync(lockPath, 'wx');
       return fd;
     } catch (err) {
       if (err && err.code === 'EEXIST') {
@@ -67,7 +61,8 @@ function _acquireLock(lockPath) {
           continue;
         }
         if (attempt < MAX_LOCK_ATTEMPTS - 1) {
-          _sleepMs(LOCK_BACKOFF_MS);
+          // Yield to the event loop — other in-flight calls proceed during backoff.
+          await new Promise((r) => setTimeout(r, LOCK_BACKOFF_MS));
         }
       } else {
         // Non-EEXIST error (e.g. EACCES) — give up.
@@ -131,6 +126,7 @@ const NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 const INPUT_SCHEMA = deepFreeze({
   type: 'object',
   required: ['name', 'description', 'agent_md_content', 'source'],
+  additionalProperties: false,
   properties: {
     name: { type: 'string', minLength: 1, maxLength: 100 },
     description: { type: 'string', minLength: 1, maxLength: 500 },
@@ -209,7 +205,7 @@ async function handle(input, context) {
   // ------------------------------------------------------------------
   // 3. Acquire the exclusive lock on registry.json.
   // ------------------------------------------------------------------
-  const lockFd = _acquireLock(lockPath);
+  const lockFd = await _acquireLock(lockPath);
   if (lockFd === null) {
     return toolError(
       'specialist_save: lock acquisition timeout after ' +

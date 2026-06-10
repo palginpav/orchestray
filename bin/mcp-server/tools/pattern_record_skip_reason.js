@@ -48,6 +48,7 @@ const FORGOTTEN_RATE_THRESHOLD = 0.30;
 const INPUT_SCHEMA = {
   type: 'object',
   required: ['orchestration_id', 'reason'],
+  additionalProperties: false,
   properties: {
     orchestration_id: { type: 'string', minLength: 1, maxLength: 64 },
     // Legacy prose reason field — kept for backward compatibility.

@@ -41,25 +41,43 @@ const { emitHandlerEntry } = require('../../_lib/mcp-handler-entry');
 // Constants
 // ---------------------------------------------------------------------------
 
-const SPAWN_AGENT_ROLES = [
-  'architect',
-  'developer',
-  'reviewer',
-  'debugger',
-  'tester',
-  'documenter',
-  'security-engineer',
-  'researcher',
-  'inventor',
-  'release-manager',
-  'ux-critic',
-  'platform-oracle',
-  'refactorer',
-];
+// Spawnable roles: all known AGENT_ROLES except those that cannot be spawned
+// reactively (pm orchestrates; project-intent is read-only bootstrap).
+// Derived from the canonical AGENT_ROLES superset so the two never drift.
+const NON_SPAWNABLE = new Set(['pm', 'project-intent']);
+const SPAWN_AGENT_ROLES = AGENT_ROLES.filter((r) => !NON_SPAWNABLE.has(r));
 
 const DEFAULT_QUOTA = 5;
 const DEFAULT_AUTO_APPROVE_THRESHOLD_PCT = 0.20;
 const DEFAULT_MAX_DEPTH = 2;
+
+// B6: cap events.jsonl reads — same bounded tail-read pattern as routing_lookup.js.
+const MAX_EVENTS_READ = 4 * 1024 * 1024; // 4 MB
+
+/**
+ * Read events.jsonl with a size cap, returning raw UTF-8 text.
+ * Returns '' on any error. Fail-open.
+ */
+function _readEventsTailCapped(eventsPath) {
+  try {
+    const stat = fs.statSync(eventsPath);
+    if (stat.size > MAX_EVENTS_READ) {
+      const fd = fs.openSync(eventsPath, 'r');
+      try {
+        const buf = Buffer.alloc(MAX_EVENTS_READ);
+        const bytesRead = fs.readSync(fd, buf, 0, MAX_EVENTS_READ, stat.size - MAX_EVENTS_READ);
+        let raw = buf.slice(0, bytesRead).toString('utf8');
+        const firstNl = raw.indexOf('\n');
+        return firstNl !== -1 ? raw.slice(firstNl + 1) : raw;
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+    return fs.readFileSync(eventsPath, 'utf8');
+  } catch (_e) {
+    return '';
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Input schema
@@ -68,6 +86,7 @@ const DEFAULT_MAX_DEPTH = 2;
 const INPUT_SCHEMA = {
   type: 'object',
   required: ['agent_type', 'prompt', 'justification'],
+  additionalProperties: false,
   properties: {
     agent_type: {
       type: 'string',
@@ -195,11 +214,11 @@ function readBudgetState(projectRoot, orchId) {
     // no budget configured — fine
   }
 
-  // Sum agent_stop events for this orchestration.
+  // Sum agent_stop events for this orchestration (tail-capped read).
   let accumulatedUsd = 0;
   try {
     const eventsPath = path.join(projectRoot, '.orchestray', 'audit', 'events.jsonl');
-    const raw = fs.readFileSync(eventsPath, 'utf8');
+    const raw = _readEventsTailCapped(eventsPath);
     for (const rawLine of raw.split('\n')) {
       const line = rawLine.trim();
       if (!line) continue;
@@ -221,12 +240,15 @@ function readBudgetState(projectRoot, orchId) {
 
 /**
  * Count how many spawn_requested events already exist for this orchestration.
- * Reads events.jsonl. Fail-open: returns 0 on any error.
+ * Reads events.jsonl (tail-capped). Fail-open: returns 0 on any error.
+ * NOTE (B6 TOCTOU): there is a read-then-write race between countSpawnRequests
+ * and appendSpawnRequest; quota enforcement is advisory. A PM-side hook
+ * serialises spawn decisions and re-validates depth as the authoritative gate.
  */
 function countSpawnRequests(projectRoot, orchId) {
   try {
     const eventsPath = path.join(projectRoot, '.orchestray', 'audit', 'events.jsonl');
-    const raw = fs.readFileSync(eventsPath, 'utf8');
+    const raw = _readEventsTailCapped(eventsPath);
     let count = 0;
     for (const rawLine of raw.split('\n')) {
       const line = rawLine.trim();

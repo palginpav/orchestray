@@ -49,6 +49,7 @@ const CATEGORIES = [
 const INPUT_SCHEMA = {
   type: 'object',
   required: ['task_summary'],
+  additionalProperties: false,
   properties: {
     task_summary: { type: 'string', minLength: 3, maxLength: 500 },
     agent_role: { type: 'string', enum: AGENT_ROLES },

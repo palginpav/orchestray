@@ -73,6 +73,7 @@ const LOCK_STALE_MS = 10 * 60 * 1000;
 const INPUT_SCHEMA = deepFreeze({
   type: 'object',
   required: ['action'],
+  additionalProperties: false,
   properties: {
     action: {
       type: 'string',

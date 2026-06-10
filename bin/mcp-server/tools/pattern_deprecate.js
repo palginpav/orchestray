@@ -46,6 +46,7 @@ const DEPRECATION_BY_ENUM = ['user', 'curator'];
 const INPUT_SCHEMA = deepFreeze({
   type: 'object',
   required: ['pattern_name', 'reason'],
+  additionalProperties: false,
   properties: {
     pattern_name: {
       type: 'string',

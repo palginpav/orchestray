@@ -33,6 +33,7 @@ const { emitHandlerEntry } = require('../../_lib/mcp-handler-entry');
 const INPUT_SCHEMA = {
   type: 'object',
   required: ['slug'],
+  additionalProperties: false,
   properties: {
     slug: { type: 'string', minLength: 1, maxLength: 200 },
   },
