@@ -1,0 +1,50 @@
+# socket.yml — Socket.dev PR integration configuration
+#
+# This file configures Socket.dev's GitHub PR integration alert behavior.
+# It acknowledges capabilities that are INTENTIONAL for this package and
+# should not block PRs or trigger false-positive alerts.
+#
+# Note: socket.yml primarily affects Socket's GitHub PR integration (blocking
+# behavior). Its effect on the public socket.dev package page score may vary.
+#
+# Intentional capabilities documented below:
+#
+#   shellAccess / child_process:
+#     Orchestray is a multi-agent orchestration plugin for Claude Code. Its
+#     hook scripts legitimately spawn `claude`, `git`, and `node` subprocesses
+#     to coordinate agents and manage orchestration state. Shell access is a
+#     core design requirement, not a supply-chain risk.
+#
+#   envVarsAccess:
+#     Hook scripts read environment variables (ORCHESTRAY_*, NODE_ENV, etc.)
+#     for configuration and feature-flag control. This is expected and safe.
+#
+#   filesystemAccess:
+#     The plugin uses file-based state storage in `.orchestray/` for all
+#     orchestration state, audit logs, config, and knowledge base. Pervasive
+#     fs.* usage is intentional and documented in the architecture.
+#
+#   dynamicRequire (partial):
+#     Some hook dispatch scripts use require(computedPath) to load registered
+#     hook handlers. All computed paths are rooted at __dirname and constrained
+#     to known subdirectories — no user-controlled input reaches require().
+#
+#   Obfuscated code — WASM binaries:
+#     bin/_lib/repo-map-grammars/*.wasm are tree-sitter grammar binaries
+#     (JavaScript, TypeScript, Python, Go, Rust, Bash) bundled from the
+#     official tree-sitter project (web-tree-sitter v0.26.8). They are
+#     legitimate compiled language parsers, not obfuscated user code.
+#     Manifest at bin/_lib/repo-map-grammars/manifest.json documents
+#     SHA256 hashes and language mappings for transparency.
+
+issueRules:
+  shellAccess: ignore
+  envVarsAccess: ignore
+  filesystemAccess: ignore
+  obfuscatedCode:
+    - bin/_lib/repo-map-grammars/tree-sitter-javascript.wasm
+    - bin/_lib/repo-map-grammars/tree-sitter-typescript.wasm
+    - bin/_lib/repo-map-grammars/tree-sitter-python.wasm
+    - bin/_lib/repo-map-grammars/tree-sitter-go.wasm
+    - bin/_lib/repo-map-grammars/tree-sitter-rust.wasm
+    - bin/_lib/repo-map-grammars/tree-sitter-bash.wasm

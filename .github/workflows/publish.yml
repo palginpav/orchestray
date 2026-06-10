@@ -1,0 +1,78 @@
+# npm provenance publish workflow
+#
+# INERT BY DEFAULT: this workflow only runs when triggered explicitly via
+# workflow_dispatch OR when a version tag (v*) is pushed. Local publishing
+# (npm publish from the CLI) is unchanged and continues to work as before.
+#
+# PURPOSE: attaches an npm provenance attestation (SLSA level 2) to published
+# packages, satisfying Socket.dev's "no provenance" Supply Chain signal (A8).
+#
+# SETUP REQUIRED BEFORE FIRST USE:
+#   1. Add NPM_TOKEN to GitHub repository secrets (Settings → Secrets →
+#      Actions). Generate it at https://www.npmjs.com/settings/<user>/tokens
+#      with "Automation" type.
+#   2. The `id-token: write` permission enables GitHub OIDC trusted publishing,
+#      which is what npm uses to sign the provenance attestation — no additional
+#      secrets are needed for the attestation itself, only for the publish auth.
+#
+# HOW IT WORKS:
+#   - On version tag push (v*) or manual workflow_dispatch, this workflow:
+#     1. Checks out the repository at the tagged commit.
+#     2. Sets up Node.js 20 with the npm registry configured.
+#     3. Installs dependencies via `npm install` (no lockfile assumed for
+#        optional deps with native addons — see note below).
+#     4. Publishes with `--provenance --access public`.
+#
+# LOCKFILE NOTE: package-lock.json exists in this repo. `npm ci` is preferred
+# for reproducibility and is used here. If the lockfile ever diverges from
+# package.json (e.g. after adding/removing deps without updating the lock),
+# the CI step will fail — run `npm install` locally and commit the updated lock.
+
+name: Publish to npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (pack only, no publish)'
+        required: false
+        default: 'false'
+        type: boolean
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # required for npm provenance OIDC attestation
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify package
+        run: npm pack --dry-run
+
+      - name: Publish (dry run)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true' }}
+        run: npm publish --dry-run --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run != 'true') }}
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

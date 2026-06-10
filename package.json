@@ -21,7 +21,6 @@
   ],
   "dependencies": {
     "ajv": "^8.20.0",
-    "better-sqlite3": "^11",
     "graphology": "0.26.0",
     "graphology-metrics": "^2.4.0",
     "web-tree-sitter": "0.26.8",
@@ -31,9 +30,11 @@
     "test": "ORCHESTRAY_PARALLEL_TESTS=1 node --require ./tests/helpers/setup.js --test tests/*.test.js tests/helpers/*.test.js tests/hooks/*.test.js tests/install/*.test.js tests/kb-refs-sweep/*.test.js tests/mcp-server/*.test.js tests/mcp-server/lib/*.test.js tests/mcp-server/tools/*.test.js tests/mcp-server/resources/*.test.js tests/mcp-server/elicit/*.test.js tests/post-orchestration-extract/*.test.js tests/tokenwright/*.test.js tests/regression/*.test.js tests/resilience/*.test.js tests/schemas/*.test.js tests/telemetry/*.test.js tests/unit/*.test.js tests/instrumentation/**/*.test.js bin/_lib/__tests__/*.test.js bin/__tests__/*.test.js bin/mcp-server/tools/__tests__/*.test.js",
     "lint:specialists": "node bin/validate-specialist.js",
     "lint:config": "node bin/validate-config.js",
-    "postinstall": "node -e \"try { require('better-sqlite3') } catch (e) { console.warn('better-sqlite3 not available; FTS5 will be unavailable. Ensure build tools are present or use Node 22.5+'); }\"",
     "test:release-shape": "ORCHESTRAY_RELEASE_SHAPE_TEST_ENABLED=1 node --test tests/release-only/release-manager-commit-shape.test.js",
     "test:tombstone-probe": "node bin/audit-housekeeper-orphan.js --self-check --force-self-check"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   },
   "keywords": [
     "claude-code",
@@ -48,5 +49,8 @@
     "type": "git",
     "url": "git+https://github.com/palginpav/orchestray.git"
   },
-  "homepage": "https://github.com/palginpav/orchestray"
+  "homepage": "https://github.com/palginpav/orchestray",
+  "bugs": {
+    "url": "https://github.com/palginpav/orchestray/issues"
+  }
 }
