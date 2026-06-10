@@ -120,12 +120,15 @@ same filesystem and network access as Orchestray itself.** Specifically:
 >    account can read, write any file your user account can write, and make
 >    any network request your user account can make.
 >
-> 2. **Capability flags are advisory, not enforced.** A plugin's manifest
+> 2. **Capability flags are advisory by default.** A plugin's manifest
 >    declares `capabilities.network`, `capabilities.filesystem_write`, and
 >    `capabilities.spawn_subprocess`. These are the plugin author's stated
->    intent, **shown to you during consent**. Orchestray does not enforce them
->    at runtime in v2.3.0. A plugin that declares `network: false` and then
->    makes outbound HTTP calls is misbehaving but not blocked.
+>    intent, **shown to you during consent**. By default Orchestray does not
+>    enforce them at runtime — a plugin that declares `network: false` and then
+>    makes outbound HTTP calls is misbehaving but not blocked. **As of v2.3.10**,
+>    an opt-in strict mode (`plugin_loader.strict_capabilities: true`, default
+>    `false`) kills a plugin on a confirmed capability violation and wraps
+>    injection-suspected responses with a `[SECURITY]` marker.
 >
 > 3. **No signature verification.** Orchestray does not verify plugin signatures
 >    or provenance in v2.3.0. **You are responsible for trusting the source of
