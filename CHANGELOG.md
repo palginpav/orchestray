@@ -3,6 +3,50 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.10] - 2026-06-10
+
+**Orchestray 2.3.10 is a full-plugin audit hardening wave: the MCP server and permission gates are hardened against oversized inputs, a new CONFIG.md browsable reference ships, reliability fixes eliminate phantom pending-task state after restarts and cap unbounded event-log growth, and several previously-dead features are wired up for real.**
+
+### Security
+
+- **The MCP server can no longer be crashed by an oversized request.** A frame-size guard now enforces `MAX_INPUT_BYTES` at the transport layer; requests that exceed it are rejected with a clear error before the body is parsed. Permission gates that previously failed open on enormous inputs now fail closed (block) instead.
+
+- **The multi-file edit gate now checks every file in the batch.** Previously the gate inspected only the first path in a `MultiEdit` call; subsequent paths were unchecked. All paths are now validated.
+
+- **Plugins can no longer escape their directory or inject environment variables.** Symlinked entrypoints that resolve outside the plugin directory are blocked at consent time. `NODE_OPTIONS` passthrough is removed — a plugin could previously use it to inject arbitrary code into the Node process. A new opt-in strict-capability mode kills misbehaving plugins that exceed their declared capabilities.
+
+### Fixed
+
+- **Stale task state from a prior run is no longer mis-reported as pending work after a restart.** State left over from a previous orchestration now clears on init and on completion, so `/orchestray:status` shows only the current run's tasks.
+
+- **Cost telemetry now recovers the real model per agent, or honestly marks the estimate.** When the model used by an agent is not recorded, the rollup now marks the cost as an estimate rather than silently assuming Sonnet. Entries are never invented.
+
+- **The event log now rotates instead of growing without bound.** A per-orchestration event log that previously accumulated indefinitely is now rotated, capping disk use.
+
+### Changed
+
+- **Feature-gate auto-quarantine and dual-install version-skew detection are now actually wired.** Both existed in prior releases but were never registered as hooks; they are now connected and run as expected.
+
+- **`xhigh` effort level now displays correctly in the status line.** Previously rendered as a placeholder; now shows the correct label.
+
+- **Gate messages and cost displays polished.** Multi-edit gate messages are clearer about which path failed; cost figures now use 2 decimal places. The dead `/orchestray:diagnose` reference in error output now correctly points to `/orchestray:doctor`.
+
+### Added
+
+- **Browsable configuration reference in `CONFIG.md`.** All ~80 config keys are grouped by category with defaults and descriptions, making it easier to find the right knob without reading the full source. The README `/orchestray:config` section links to it. `CONFIG.md` ships in the npm tarball.
+
+- **README shows measured efficiency numbers from Orchestray's own telemetry.** Cache-read ratio (99.94%), model-routing savings (34.1% vs all-Opus), schema-gating reduction (99.6% tokens per access), and Haiku-scout gate coverage (86.6%) are now in the README with methodology notes.
+
+### Quality
+
+- MCP server test files are no longer installed; npm tarball trimmed ~37%. Doc consistency and internal command references corrected.
+
+### Not in this release
+
+- Capability-flag enforcement and plugin signature verification remain advisory (no plugin sandbox API in current Claude Code surface).
+
+---
+
 ## [2.3.9] - 2026-06-10
 
 **Orchestray 2.3.9 fixes a persistent restart banner, eliminates two hook validation errors on every message, closes a live-agent work-loss bug, and corrects cost telemetry that was reporting phantom million-token expansions.**
