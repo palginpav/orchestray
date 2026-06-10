@@ -39,7 +39,11 @@ const { MAX_INPUT_BYTES }        = require('./_lib/constants');
 // the always-loaded Tier-1 directive.
 // ---------------------------------------------------------------------------
 const ALWAYS_LOADED = new Set([
-  'tier1-orchestration.md',
+  // Branch (a) phase-slice mode: phase-contract.md is read every orchestration;
+  // the active phase slice arrives via hook injection (not Read). Branch (b)
+  // kill-switch mode reads the legacy monolith instead.
+  'phase-contract.md',
+  'tier1-orchestration.md.legacy',
   'scoring-rubrics.md',
   'specialist-protocol.md',
   'delegation-templates.md',

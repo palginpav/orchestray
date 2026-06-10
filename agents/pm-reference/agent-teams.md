@@ -27,7 +27,7 @@ anti-conditions and rationale live in `agent-teams-decision.md`):
 1. **Dual feature gate:** `agent_teams.enabled === true` in
    `.orchestray/config.json` AND `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`
    in environment.
-2. **Parallel threshold:** Task decomposition (Section 13, in tier1-orchestration.md) produced 3+ parallel subtasks
+2. **Parallel threshold:** Task decomposition (Section 13, in phase-decomp.md) produced 3+ parallel subtasks
    in at least one parallel group
 3. **Inter-agent communication need:** Subtasks require coordination beyond independent
    execution. At least one of:
@@ -38,7 +38,7 @@ anti-conditions and rationale live in `agent-teams-decision.md`):
    - Cross-layer changes where agents need to coordinate (e.g., frontend + backend +
      tests each owned by a different teammate, requiring interface alignment)
 
-If ANY criterion is not met, use subagents (Sections 3, 14, in tier1-orchestration.md).
+If ANY criterion is not met, use subagents (Section 3 in pm.md; Section 14 in phase-execute.md).
 
 ### Silent Fallback (D-07)
 
@@ -97,7 +97,7 @@ Steps:
 ## Task Assignment
 
 The lead (PM) assigns tasks explicitly based on the decomposition plan from Section 13
-(in tier1-orchestration.md).
+(in phase-decomp.md).
 Teammates do not self-claim tasks. This gives the PM control over task-agent mapping and
 ensures model routing preferences from Section 19 are respected for the team lead.
 
@@ -123,7 +123,7 @@ If a teammate fails mid-team:
 
 ## Verify-Fix Loop Interaction
 
-Verify-fix loops (Section 18, in tier1-orchestration.md) operate at the task level, not the team level:
+Verify-fix loops (Section 18, in phase-verify.md) operate at the task level, not the team level:
 - When a teammate completes a task, the `TaskCompleted` hook validates output format
   (D-03).
 - If the team includes a reviewer teammate, the lead can assign review tasks that create

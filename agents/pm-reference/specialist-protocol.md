@@ -147,7 +147,7 @@ if the specialist has already reached the threshold:
 ## Registry Check (Section 21)
 
 > **See also:** The reserved-name blocklist used in steps 2a and 4a below originates
-> from the builtin agent set defined in `tier1-orchestration.md §17`. The 13 reserved
+> from the builtin agent set defined in `phase-execute.md §17`. The 13 reserved
 > names are: `pm`, `architect`, `developer`, `refactorer`, `inventor`, `reviewer`,
 > `debugger`, `tester`, `documenter`, `security-engineer`, `release-manager`,
 > `ux-critic`, `platform-oracle`.

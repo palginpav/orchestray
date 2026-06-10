@@ -13,7 +13,7 @@ Read `auto_document` from `.orchestray/config.json`. Default: `false`.
 
 After delivering the orchestration completion summary to the user, evaluate whether documentation should be generated. Trigger auto-documenter when ANY of the following are true:
 
-- Archetype is **"New Feature"** (from Section 13 archetype classification, in tier1-orchestration.md)
+- Archetype is **"New Feature"** (from Section 13 archetype classification, in phase-decomp.md)
 - Developer agent created new files (check task results for `files_changed` entries with previously non-existent paths)
 - New exports or public endpoints were added (grep task result summaries for keywords: "export", "endpoint", "route", "API", "interface", "function", "class")
 

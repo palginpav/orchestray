@@ -30,6 +30,18 @@ Uninstall:
 npx orchestray --global --uninstall
 ```
 
+### FTS5 full-text search (optional)
+
+Orchestray's pattern index uses full-text search (FTS5) to rank semantic matches. On **Node 22.5+**, FTS5 is automatically enabled via Node's built-in `node:sqlite` module (zero additional dependencies).
+
+On **Node < 22.5**, FTS5 is disabled by default. To enable it, optionally install the native SQLite module:
+
+```bash
+npm install better-sqlite3
+```
+
+Without better-sqlite3 on older Node versions, pattern matching still works but without full-text ranking — all matches are equally relevant. The pattern index degrades gracefully and emits a warning (not an error).
+
 ## Quick start
 
 ```
@@ -210,6 +222,9 @@ Run `/orchestray:config` to view all settings. Most-used knobs:
 | `model_floor` | `sonnet` | Minimum model tier: haiku / sonnet / opus / fable |
 | `confirm_before_execute` | `false` | Show preview before execution |
 | `daily_cost_limit_usd` | `null` | Daily spending cap |
+| `force_model` | `null` | Pin all agents to a specific tier (e.g., `"fable"`) |
+
+**Model tiers** (cost per million tokens, input / output): Haiku $1 / $5 · Sonnet $3 / $15 · Opus $5 / $25 · Fable $10 / $50. Fable 5 (`alias: fable`) is an opt-in top tier above Opus — use `force_model: "fable"` in config or pass `model: "fable"` on individual agent spawns. Default routing uses Haiku through Opus; Fable must be explicitly requested.
 
 ## Kill switches
 

@@ -130,6 +130,6 @@ updated_at: <ISO 8601>
   as `deprecated: true` -- it will be excluded from future injection but preserved for
   audit history.
 - **Application:** When a design-preference pattern matches the current task context
-  (per Section 22.D in tier1-orchestration.md), inject it into the developer's
+  (per Section 22.D in phase-close.md), inject it into the developer's
   delegation prompt so the developer follows the preference proactively, avoiding
   the disagreement entirely.

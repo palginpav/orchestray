@@ -100,4 +100,4 @@ Note: The "Current (Detailed)" and "Agent Runs" sections are only shown when the
    If N > 0 proposals staged, the block also shows:
    `Review N staged proposal(s): /orchestray:learn list --proposed`
 
-   If the helper script is unavailable (e.g., on an older install), skip this step silently.
+   If the command fails with MODULE_NOT_FOUND, skip this block and continue. If the helper script is unavailable (e.g., on an older install), skip this step silently.

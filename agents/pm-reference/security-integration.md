@@ -48,7 +48,7 @@ Report findings with severity and remediation."
 
 If security-engineer reports Critical or High findings (mapped to error-severity for
 verify-fix loop purposes):
-1. Route findings to developer via Section 18 verify-fix loop (in tier1-orchestration.md)
+1. Route findings to developer via Section 18 verify-fix loop (in phase-verify.md)
 2. After developer fixes, re-run security-engineer on the fixed files only
 3. Cap security fix rounds at the configured `verify_fix_max_rounds` value (default 3)
 

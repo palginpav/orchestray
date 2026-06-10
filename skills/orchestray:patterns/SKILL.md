@@ -394,7 +394,7 @@ The user wants to see the pattern learning dashboard showing what the system has
     ---
     ```
 
-    If the helper script is unavailable (e.g., on an older install), skip this step silently.
+    If the command fails with MODULE_NOT_FOUND, skip this block and continue. If the helper script is unavailable (e.g., on an older install), skip this step silently.
 
 16. **Section 10 — Archetype cache (advisory)**: Display archetype cache statistics.
 

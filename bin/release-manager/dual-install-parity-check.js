@@ -94,7 +94,6 @@ const SOURCE_ONLY_ALLOWLIST = new Set([
 const SOURCE_ONLY_DIR_PREFIXES = [
   '__tests__/',
   '_tools/',
-  'learn-commands/',
   '_lib/__tests__/',
   'release-manager/',  // this gate itself + future release-manager helpers
 ];

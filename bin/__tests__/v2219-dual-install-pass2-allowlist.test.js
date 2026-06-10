@@ -166,10 +166,11 @@ describe('v2.2.19 T8 Fix 2 — Case 3: SOURCE_ONLY_ALLOWLIST applied identically
   });
 
   test('isSourceOnlyAllowed returns true for files under SOURCE_ONLY_DIR_PREFIXES', () => {
+    // learn-commands/ was removed from SOURCE_ONLY_DIR_PREFIXES in v2.3.8 so that
+    // BIN_SUBDIRS installs it to the target dir — it is no longer source-only.
     const allowlistedDirFiles = [
       '__tests__/my.test.js',
       '_tools/helper.js',
-      'learn-commands/cmd.js',
       '_lib/__tests__/lib.test.js',
       'release-manager/dual-install-parity-check.js',
     ];

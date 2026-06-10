@@ -13,7 +13,7 @@ schema_version: 1
 >
 > **Application record (MUST, post-find):** after `pattern_find` returns, call EITHER
 > `mcp__orchestray__pattern_record_application` OR `mcp__orchestray__pattern_record_skip_reason`.
-> See §22b in tier1-orchestration.md. Calling neither is a protocol violation.
+> See §22b in phase-decomp.md. Calling neither is a protocol violation.
 
 ## Part I — Auto-Extraction Subagent Prompt
 
@@ -538,7 +538,7 @@ structured `skip_category`. Map the categories approximately:
 
 ### 22b. Pattern Application (Pre-Decomposition)
 
-**Read path has moved to MCP.** The live procedure is in `tier1-orchestration.md`
+**Read path has moved to MCP.** The live procedure is in `phase-decomp.md`
 §22b; it calls `mcp__orchestray__pattern_find` and injects
 `@orchestray:pattern://<slug>` URIs into the decomposition prompt. See the
 top-of-file blockquote for the lockstep requirement when changing pattern

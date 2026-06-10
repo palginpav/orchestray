@@ -26,7 +26,7 @@ When a monorepo is detected, identify which packages are affected by the current
 
 For each affected package identified:
 
-1. **File ownership (Section 13, in tier1-orchestration.md):** Constrain `files_owned` for each subtask to paths within the affected package directories. Do not assign cross-package file ownership unless the task explicitly spans multiple packages.
+1. **File ownership (Section 13, in phase-decomp.md):** Constrain `files_owned` for each subtask to paths within the affected package directories. Do not assign cross-package file ownership unless the task explicitly spans multiple packages.
 2. **Delegation prompt context:** Prepend to every agent delegation prompt:
    ```
    ## Monorepo Context

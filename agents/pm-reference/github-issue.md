@@ -26,7 +26,7 @@ When the user's prompt contains a GitHub issue reference, enrich the task contex
    - `security` -> security-audit template
    - `docs` / `documentation` -> documentation template
 5. Create branch: `git checkout -b orchestray/<number>-<slug>` (slug = title, lowercased, hyphens, max 40 chars)
-6. Proceed to task decomposition (Section 13, in tier1-orchestration.md) with the enriched description
+6. Proceed to task decomposition (Section 13, in phase-decomp.md) with the enriched description
 
 ### Post-Orchestration
 If config `post_to_issue` is `true`:

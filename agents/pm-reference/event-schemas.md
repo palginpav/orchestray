@@ -538,7 +538,7 @@ Appended when low-value patterns are removed during pruning (step 7 of the learn
 ## Contract Check Event
 
 Appended when pre-condition or post-condition contracts are validated (Section 4.X in
-pm.md and Section 14.X in tier1-orchestration.md):
+pm.md and Section 14.X in phase-execute.md):
 
 ```json
 {
@@ -4295,7 +4295,7 @@ needed to verify R1/R2/R3 cost-saving effectiveness by counting how often each
 conditional file is actually loaded.
 
 **Tier-2 allowlist:** all files under `agents/pm-reference/` EXCLUDING the always-loaded
-set: `tier1-orchestration.md`, `scoring-rubrics.md`, `specialist-protocol.md`,
+set: `phase-contract.md` (or `tier1-orchestration.md.legacy` in kill-switch mode), `scoring-rubrics.md`, `specialist-protocol.md`,
 `delegation-templates.md`.
 
 Emitted to `.orchestray/audit/events.jsonl`. Fail-open: any write failure is silently
@@ -7169,7 +7169,7 @@ Field notes:
 - `inject_count`: number of `dossier_injected` rows for this `orchestration_id`.
 - A row with `write_count > 0` AND `inject_count == 0` AND no `dossier_injection_skipped(skip_reason ≠ kill_switch_set)` means the inject side is dark — operator must investigate.
 - Skips with `skip_reason == kill_switch_set` are NOT counted as orphans because the operator deliberately suppressed inject.
-- `inject_skip_reason` *(optional)*: the dominant `skip_reason` from paired `dossier_injection_skipped` events for this orchestration. Populated by `bin/_lib/dossier-orphan-escalator.js` when the skip reason is attributable.
+- `inject_skip_reason` *(optional)*: the dominant `skip_reason` from paired `dossier_injection_skipped` events for this orchestration. Populated by `bin/audit-dossier-orphan.js` when the skip reason is attributable.
 - `archive_age_seconds` *(optional)*: seconds elapsed between the dossier write timestamp and this event emission. Useful for diagnosing time-lag between write and inject path.
 - Optional fields: `skip_count` (count of paired `dossier_injection_skipped` rows), `kill_switch_skip_count`, `archive_source` (`per_orch_archive | live_events_filter`).
 - **`feature_optional: false`** — required for the v2.2.9 anti-regression invariant.
@@ -8819,7 +8819,7 @@ Kill switch: `ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED=1` makes the pr
 **RETIRED v2.2.14 — superseded by `context_size_hint_parsed_inline` (W1, v2.2.13). The producer script `inject-context-size-hint.js` was deleted in v2.2.13 W1; the env-var read sites that gated it were deleted in v2.2.14 G-04. Declare retained only for audit-replay validity of pre-v2.2.13 `events.jsonl`.**
 
 **BACKFILL declare — v2.2.13.** Previously emitted by the now-deleted
-`bin/inject-context-size-hint.js` stager hook (v2.2.12 W1a). The script was
+`bin/inject-context-size-hint.js` (DELETED in v2.2.13) stager hook (v2.2.12 W1a). The script was
 deleted in v2.2.13 W1 because `updatedInput` does not propagate between sibling
 `PreToolUse:Agent` hooks. This declare is backfilled for backward compatibility
 with v2.2.12 audit replay (`events.jsonl` rows of this type must validate). The
@@ -10472,7 +10472,7 @@ Field notes:
 - `commit_sha`: Short SHA of the auto-commit (7–12 hex chars). Truncated from the
   full SHA for readability; not a stability guarantee.
 
-Emitted from: `bin/pm-stop-auto-commit.js` (W3 PM Stop hook).
+Emitted from: `bin/auto-commit-master-on-pm-stop.js` (W3 PM Stop hook).
 
 Kill switch: `ORCHESTRAY_MASTER_AUTO_COMMIT_DISABLED=1`.
 
@@ -10502,7 +10502,7 @@ Field notes:
 - `stderr_excerpt`: First 200 characters of git stderr. Truncated with `...` appended
   if longer. Empty string when stderr was unavailable.
 
-Emitted from: `bin/pm-stop-auto-commit.js` (W3 PM Stop hook).
+Emitted from: `bin/auto-commit-master-on-pm-stop.js` (W3 PM Stop hook).
 
 Kill switch: `ORCHESTRAY_MASTER_AUTO_COMMIT_DISABLED=1`.
 

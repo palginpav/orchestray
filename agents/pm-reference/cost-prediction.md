@@ -11,7 +11,7 @@ Estimate orchestration cost before execution using historical data.
 ### Prediction Method
 1. **Count planned agents and models**: From the task graph, tally agents by model tier (Haiku/Sonnet/Opus). If `adversarial_review` is true and complexity >= 8, double the architect agent count (two competing designs will be spawned per Section 38, in adversarial-review.md).
 2. **Historical lookup**: Search `.orchestray/history/*/events.jsonl` for past orchestrations with:
-   - Same archetype (from Section 13 classification, in tier1-orchestration.md)
+   - Same archetype (from Section 13 classification, in phase-decomp.md)
    - Similar agent count (+/-1)
    - Completed successfully
 3. **Calculate estimate**:

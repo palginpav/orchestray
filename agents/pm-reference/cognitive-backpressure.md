@@ -12,7 +12,7 @@ gap: agents no longer run to completion when they know they are stuck.
 ## Confidence Checkpoint Protocol
 
 The following instructions are injected into every agent's delegation prompt when
-`enable_backpressure` is true (see Section 3.Z in tier1-orchestration.md for injection
+`enable_backpressure` is true (see Section 3.Z in tier1-orchestration-rare.md for injection
 mechanics and delegation-templates.md for the exact template block).
 
 ### Checkpoint Triggers

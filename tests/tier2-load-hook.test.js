@@ -88,9 +88,9 @@ describe('isTier2File helper', () => {
     );
   });
 
-  test('returns false for tier1-orchestration.md (always-loaded)', () => {
+  test('returns false for phase-contract.md (always-loaded)', () => {
     assert.equal(
-      isTier2File('agents/pm-reference/tier1-orchestration.md'),
+      isTier2File('agents/pm-reference/phase-contract.md'),
       false
     );
   });
@@ -135,12 +135,13 @@ describe('isTier2File helper', () => {
     assert.equal(isTier2File(''), false);
   });
 
-  test('ALWAYS_LOADED set contains exactly the four always-loaded files', () => {
-    assert.ok(ALWAYS_LOADED.has('tier1-orchestration.md'));
+  test('ALWAYS_LOADED set contains exactly the five always-loaded files', () => {
+    assert.ok(ALWAYS_LOADED.has('phase-contract.md'));
+    assert.ok(ALWAYS_LOADED.has('tier1-orchestration.md.legacy'));
     assert.ok(ALWAYS_LOADED.has('scoring-rubrics.md'));
     assert.ok(ALWAYS_LOADED.has('specialist-protocol.md'));
     assert.ok(ALWAYS_LOADED.has('delegation-templates.md'));
-    assert.equal(ALWAYS_LOADED.size, 4);
+    assert.equal(ALWAYS_LOADED.size, 5);
   });
 });
 
@@ -203,11 +204,11 @@ describe('emit-tier2-load.js integration (AC-05 R-TEL)', () => {
     assert.equal(events.length, 0, 'must emit NO event for non-tier-2 reads');
   });
 
-  test('is silent when Read targets an always-loaded file (tier1-orchestration.md)', () => {
+  test('is silent when Read targets an always-loaded file (phase-contract.md)', () => {
     const dir = makeDir({ orchId: 'orch-tel-integration-4' });
 
     const result = run(dir, {
-      file_path: 'agents/pm-reference/tier1-orchestration.md',
+      file_path: 'agents/pm-reference/phase-contract.md',
     });
 
     assert.equal(result.status, 0);

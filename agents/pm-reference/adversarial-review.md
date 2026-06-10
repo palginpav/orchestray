@@ -11,7 +11,7 @@ Both conditions must be true:
 1. **Complexity score >= 8** (from Section 12 complexity scoring)
 2. **Config `adversarial_review` is `true`** (default: `false` -- this is a premium opt-in feature)
 
-If either condition is false, skip this section. The normal single-architect flow (Section 13, in tier1-orchestration.md) applies.
+If either condition is false, skip this section. The normal single-architect flow (Section 13, in phase-decomp.md) applies.
 
 ### Protocol
 

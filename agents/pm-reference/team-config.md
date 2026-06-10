@@ -53,13 +53,13 @@ If you want to promote a pattern to the git-tracked team tier, open a PR against
 repo and add the pattern file to `.orchestray/team-patterns/` manually. There is no CLI
 shortcut for Tier 2 promotion in v2.1.0 — this is intentional (team patterns require review).
 
-**Pattern Loading (extends Section 22 and Section 30, in tier1-orchestration.md):**
+**Pattern Loading (extends Section 22 and Section 30, in phase-close.md):**
 When loading patterns for application during orchestration:
 1. Glob `.orchestray/patterns/*.md` -- Tier 1: project-local patterns (personal)
 2. Glob `.orchestray/team-patterns/*.md` -- Tier 2: team patterns (git-tracked)
 3. Glob `~/.orchestray/shared/patterns/*.md` -- Tier 3: user-global patterns (advisory only, when `federation.shared_dir_enabled: true`)
 4. Merge all tiers. On slug collision: Tier 1 wins over Tier 2; Tier 2 wins over Tier 3.
-5. Apply matching/prioritization as normal (Section 22b, Section 30, in tier1-orchestration.md).
+5. Apply matching/prioritization as normal (Section 22b in phase-decomp.md; Section 30 in phase-close.md).
    Tier 3 patterns carry `source: "shared"` — treat as advisory per §22b-federation.
 
 **Pattern Promotion to team-patterns/ (Tier 2, unchanged):**
@@ -77,7 +77,7 @@ Prevent runaway spending with daily and weekly cost limits.
 - `daily_cost_limit_usd`: Maximum daily spend (null = unlimited)
 - `weekly_cost_limit_usd`: Maximum weekly spend (null = unlimited)
 
-**Budget Check Protocol (at orchestration start, before Section 13 decomposition, in tier1-orchestration.md):**
+**Budget Check Protocol (at orchestration start, before Section 13 decomposition, in phase-decomp.md):**
 1. Read `.orchestray/history/*/events.jsonl` for `orchestration_complete` events
 2. Sum `total_cost_usd` for:
    - Today's date -> daily cumulative cost

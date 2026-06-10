@@ -87,7 +87,7 @@ Each section uses bullet points. If a section has no content, write "None identi
 
 ## Injection Rules
 
-When delegating to a downstream agent (Section 11.Y in tier1-orchestration.md):
+When delegating to a downstream agent (Section 11.Y in phase-contract.md):
 
 1. **Max 3 traces** per downstream delegation to avoid context bloat.
 2. **Filter by relevance** — include a trace only if:

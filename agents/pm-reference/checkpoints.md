@@ -38,7 +38,7 @@ After completing a parallel group and before starting the next group:
    - **Any other input**: echo it back and ask "Did you mean to modify the plan with this request, or did you mean continue/review/abort?"
 
 ### Checkpoint at Final Group
-After the LAST group completes, show results but do NOT present checkpoint options -- proceed directly to orchestration completion (Section 7 archival, in tier1-orchestration.md).
+After the LAST group completes, show results but do NOT present checkpoint options -- proceed directly to orchestration completion (Section 7 archival, in phase-contract.md).
 
 ---
 
@@ -76,7 +76,7 @@ Commands: remove <n>, model <n> <opus|sonnet|haiku>, add <agent> after <n>, swap
 - Continue accepting commands until user types `yes` or `abort`
 
 ### Constraints
-- Cannot add more than 6 total tasks (Section 13 limit, in tier1-orchestration.md)
+- Cannot add more than 6 total tasks (Section 13 limit, in phase-decomp.md)
 - Cannot remove all tasks
 - Agent types must be valid: pm, architect, developer, refactorer, inventor, reviewer, debugger, tester, documenter, security-engineer, release-manager, ux-critic, platform-oracle, or a registered specialist name
 
@@ -112,13 +112,13 @@ After EACH agent completes successfully during orchestration:
    - `running` -- agent currently executing (written at spawn time)
    - `failed` -- agent failed and retry exhausted
 
-### Resume Protocol (extends Section 7 Auto-Detect Resume, in tier1-orchestration.md)
+### Resume Protocol (extends Section 7 Auto-Detect Resume, in phase-contract.md)
 Agent checkpointing is always active during orchestration (no config guard needed -- it is
 distinct from Section 27's user-facing interactive checkpoints which are controlled by
 `enable_checkpoints`, see above).
 
 When resuming an interrupted orchestration:
-1. Read `.orchestray/state/checkpoints.json`. If the file exists but cannot be parsed (corrupted JSON from interrupted write), fall back to Section 7's task-file-based resume (in tier1-orchestration.md) and log the corruption.
+1. Read `.orchestray/state/checkpoints.json`. If the file exists but cannot be parsed (corrupted JSON from interrupted write), fall back to Section 7's task-file-based resume (in phase-contract.md) and log the corruption.
 2. For each checkpoint:
    - `completed`: Skip this task -- its work is already in the codebase
    - `running`: Treat as interrupted -- re-run this task from scratch
@@ -129,13 +129,13 @@ When resuming an interrupted orchestration:
 4. Resume execution from the first non-completed group
 5. Log `orchestration_resumed` event with `skipped_tasks` count
 
-### Integration with Section 14 (in tier1-orchestration.md)
+### Integration with Section 14 (in phase-execute.md)
 At the START of each agent spawn in the parallel execution protocol (Section 14):
 - Write a `running` checkpoint for that task
 At the END of each agent (after result processing in Section 4):
 - Update checkpoint to `completed` with files_changed and result_summary
 
 ### Cleanup
-On orchestration completion (Section 7, step 6 archive, in tier1-orchestration.md):
+On orchestration completion (Section 7, step 6 archive, in phase-contract.md):
 - Include `checkpoints.json` in the history archive
 - Delete `.orchestray/state/checkpoints.json`

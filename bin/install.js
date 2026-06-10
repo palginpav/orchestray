@@ -767,7 +767,7 @@ function install(targetDir) {
   // installed as hook registrations but the scripts themselves are never copied —
   // causing the pruning pass on the next install to remove those entries (because
   // the scripts don't exist), then re-add them merged into the wrong entry.
-  const BIN_SUBDIRS = ['release-manager'];
+  const BIN_SUBDIRS = ['release-manager', 'learn-commands'];
   for (const subName of BIN_SUBDIRS) {
     const subSrc = path.join(binDir, subName);
     if (fs.existsSync(subSrc) && fs.statSync(subSrc).isDirectory()) {

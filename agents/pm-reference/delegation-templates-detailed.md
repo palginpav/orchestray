@@ -115,7 +115,7 @@ zero tool calls, zero extra cost. Items that cannot be addressed should be noted
 ## Trace Injection Format
 
 When `enable_introspection` is true and relevant reasoning traces exist (per Section 11.Y
-filtering rules in tier1-orchestration.md), include this section in the delegation prompt.
+filtering rules in phase-contract.md), include this section in the delegation prompt.
 Place it AFTER `## Context from Previous Agent` and BEFORE any playbook or correction
 pattern injections.
 
@@ -157,7 +157,7 @@ Use them to avoid re-exploring rejected approaches and to build on discovered in
 ## Design-Preference Context
 
 When `surface_disagreements` is true and matching design-preference patterns exist for
-the current task context (per Section 22.D in tier1-orchestration.md), inject this
+the current task context (per Section 22.D in phase-close.md), inject this
 section into the delegation prompt. Place it AFTER playbook and correction pattern
 injections and BEFORE confidence checkpoints.
 
@@ -193,7 +193,7 @@ result but still follow the preference unless doing so would introduce a bug.
 ## Architectural Invariant Constraints
 
 When `enable_drift_sentinel` is true and enforced invariants overlap with a subtask's
-`files_write` (per Section 39.D Phase A in tier1-orchestration.md), inject this section
+`files_write` (per Section 39.D Phase A in tier1-orchestration-rare.md), inject this section
 into the delegation prompt. Place it AFTER design preferences and BEFORE confidence
 checkpoints.
 
@@ -397,7 +397,7 @@ diff to identify any discrepancies between intent and rendered result.
 ## Response-Length Budget Line (§3.Y Adaptive Verbosity)
 
 When `adaptive_verbosity.enabled === true` AND `v2017_experiments.adaptive_verbosity === 'on'`
-(see §3.Y in tier1-orchestration.md), append this line to the delegation prompt for every
+(see §3.Y in pm.md), append this line to the delegation prompt for every
 agent type. Compute `{N}` per the §3.Y formula before injecting.
 
 Place this line AFTER all other content sections (task description, context, playbooks,
@@ -485,7 +485,7 @@ Follow this 5-step pattern for every sequential agent handoff:
 When `enable_backpressure` is true, append this block to every agent delegation prompt
 (architect, developer, reviewer, refactorer, inventor, debugger, tester, documenter,
 security-engineer, and dynamic agents). This is the exact template used by Section 3.Z
-in tier1-orchestration.md. Replace `{TASK_ID}` with the subtask's actual ID before
+in tier1-orchestration-rare.md. Replace `{TASK_ID}` with the subtask's actual ID before
 injection.
 
 ### Template Block
