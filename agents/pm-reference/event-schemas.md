@@ -5280,6 +5280,33 @@ Schema stability: additive-only.
 
 ---
 
+### `curator_stage_injected` event (v2.3.9)
+
+Emitted by `bin/inject-active-curator-stage.js` (UserPromptSubmit hook) when a curator
+run is active and the stage file has been staged for the Curator Section Loading
+Protocol. Replaces the pre-v2.3.9 behavior of riding this metadata inside
+`hookSpecificOutput` (rejected by Claude Code's hook-output validation — no
+`hookEventName`). Best-effort via the audit gateway; fail-open.
+
+```json
+{
+  "version": 1,
+  "type": "curator_stage_injected",
+  "stage": "discover",
+  "stage_file": "phase-decomp.md",
+  "staged_path": ".orchestray/state/active-curator-stage.md",
+  "contract_path": "agents/curator-stages/phase-contract.md",
+  "timestamp": "2026-06-10T09:00:00.000Z",
+  "orchestration_id": "orch-..."
+}
+```
+
+Required: `version`, `type`, `stage`, `stage_file`, `staged_path`, `contract_path`,
+`timestamp`, `orchestration_id` (autofilled by the gateway when absent).
+Optional: none. Schema stability: additive-only.
+
+---
+
 ### `phase_slice_injected` event (v2.1.16 W9 R-PHASE-INJ)
 
 Emitted by `bin/inject-active-phase-slice.js` on the **positive path** —

@@ -26,6 +26,8 @@
 
 const fs = require('fs');
 const path = require('path');
+// NEW-01 (v2.3.9): canonical loader for curator_slice_loading config.
+const { loadCuratorSliceLoadingConfig } = require('./_lib/config-schema');
 
 const CONTINUE_RESPONSE = JSON.stringify({ continue: true });
 
@@ -141,12 +143,9 @@ function handle(_input) {
     return;
   }
 
-  // Kill switch: config
-  const config = loadConfig(cwd);
-  if (
-    config.curator_slice_loading &&
-    config.curator_slice_loading.enabled === false
-  ) {
+  // Kill switch: config. NEW-01 (v2.3.9): use canonical loader for validation.
+  const curatorCfg = loadCuratorSliceLoadingConfig(cwd);
+  if (curatorCfg.enabled === false) {
     process.stdout.write(CONTINUE_RESPONSE + '\n');
     return;
   }
@@ -174,18 +173,29 @@ function handle(_input) {
   // Intentionally omits additionalContext — curator is manually-invoked, not a
   // session-level user prompt. The PM loads stages via the Curator Section
   // Loading Protocol (agents/pm.md §"Curator Section Loading Protocol") at
-  // curator spawn time. This output records the stage selection in the audit
-  // trail without injecting context into Claude's prompt (per W12 R-ORACLE-3).
-  process.stdout.write(JSON.stringify({
-    continue: true,
-    hookSpecificOutput: {
-      type: 'curator_stage_injected',
-      stage: rawStage,
-      stage_file: stageFileName,
-      staged_path: stagedPath,
-      contract_path: contractPath,
-    },
-  }) + '\n');
+  // curator spawn time (per W12 R-ORACLE-3).
+  //
+  // v2.3.9 fix: the stage-selection metadata used to ride inside
+  // hookSpecificOutput, which Claude Code REJECTS without a hookEventName
+  // field ("Hook JSON output validation failed" on every user prompt, twice
+  // under dual installs). Metadata now goes to events.jsonl via the audit
+  // gateway (best-effort, fail-open) and stdout carries only a valid envelope.
+  try {
+    const writerPath = path.join(cwd, 'bin', '_lib', 'audit-event-writer.js');
+    if (fs.existsSync(writerPath)) {
+      // eslint-disable-next-line global-require
+      const { writeEvent } = require(writerPath);
+      writeEvent({
+        version: 1,
+        type: 'curator_stage_injected',
+        stage: rawStage,
+        stage_file: stageFileName,
+        staged_path: stagedPath,
+        contract_path: contractPath,
+      }, { cwd });
+    }
+  } catch (_e) { /* fail-open */ }
+  process.stdout.write(JSON.stringify({ continue: true }) + '\n');
 }
 
 module.exports = {
