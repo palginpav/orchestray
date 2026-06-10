@@ -25,20 +25,42 @@
  * Per the release-manager invariant: never push, never tag (the operator
  * authorises those steps explicitly per `feedback_release_actions_explicit_permission.md`).
  *
+ * v2.3.8 wt_destructive_git: blocks git stash/clean/checkout-files/restore/reset
+ * (except --soft) that could silently revert uncommitted work in the shared main
+ * checkout (v2.3.7 silent-revert incident).
+ *   - Read-only roles (reviewer, debugger, researcher, ux-critic, platform-oracle,
+ *     project-intent): blocked ALWAYS regardless of cwd.
+ *   - All other roles: blocked when the effective target repo is the shared main
+ *     checkout (detected via git-common-dir == git-dir).
+ *   - Evasion via `git -C <path>` is covered by resolving the explicit path arg.
+ *   - `git stash list` and `git stash show` remain allowed (non-destructive).
+ *   - `git reset --soft` remains allowed.
+ *   - Read-only roles fail CLOSED (exit 2) on parse uncertainty.
+ *
  * Kill switch: ORCHESTRAY_GIT_GATE_DISABLED=1 — disables all checks (subsumes
  * FN-46 and FN-48).
  *
  * Contract:
- *   - exit 2 + emit developer_git_violation when a forbidden pattern is matched
+ *   - exit 2 + emit git_destructive_blocked or developer_git_violation when a
+ *     forbidden pattern is matched
  *   - exit 0 always otherwise (fail-open on unexpected errors)
  */
 
-const fs   = require('fs');
-const path = require('path');
+const fs            = require('fs');
+const path          = require('path');
+const { spawnSync } = require('child_process');
 const { resolveSafeCwd }   = require('./_lib/resolve-project-cwd');
 const { writeEvent }        = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES }   = require('./_lib/constants');
 const { recordDegradation } = require('./_lib/degraded-journal');
+
+// ---------------------------------------------------------------------------
+// Read-only roles: always block destructive git regardless of cwd.
+// ---------------------------------------------------------------------------
+
+const READ_ONLY_ROLES = new Set([
+  'reviewer', 'debugger', 'researcher', 'ux-critic', 'platform-oracle', 'project-intent',
+]);
 
 // ---------------------------------------------------------------------------
 // Forbidden git command patterns (developer role only).
@@ -104,22 +126,98 @@ const FORBIDDEN_PATTERNS = [
     description: 'release-manager must never write annotated/signed tags — operator authorises tags explicitly',
     roles: ['release-manager'],
   },
+  // v2.3.8 wt_destructive_git: destructive working-tree ops.
+  // read-only roles: blocked always (roles[] used for role-based check).
+  // alsoBlockWhenMainCheckout: true — extends block to ALL roles when target is
+  // the shared main checkout (not a linked worktree).
+  {
+    id: 'wt_destructive_git',
+    // stash (except list/show), clean, checkout with pathspec/-- , restore, reset (except --soft).
+    // The optional (?:-C\s+\S+\s+)? prefix handles `git -C <path> <subcommand>` evasion.
+    regex: /\bgit\s+(?:-C\s+\S+\s+)?(?:stash(?!\s+(?:list|show)\b)|clean\b|checkout\s+(?:--|HEAD\s+--|[0-9a-f]{7,}\s+--|\S.*--\s)|restore\b|reset\s+(?!--soft\b))/,
+    description: 'read-only agents must not mutate git state; use `git stash list` / `git show <sha>:<path>` for clean-baseline comparisons (v2.3.7 silent-revert incident)',
+    roles: ['reviewer', 'debugger', 'researcher', 'ux-critic', 'platform-oracle', 'project-intent'],
+    alsoBlockWhenMainCheckout: true,
+  },
 ];
 
+// ---------------------------------------------------------------------------
+// Main-checkout detection via git-common-dir == git-dir.
+// Returns true when `dir` is the main (non-linked) worktree.
+// ---------------------------------------------------------------------------
+
 /**
- * Find any forbidden pattern in a bash command string for the given role.
+ * @param {string} dir - directory to test
+ * @returns {boolean}
+ */
+function isMainCheckout(dir) {
+  try {
+    const gitDir = spawnSync('git', ['-C', dir, 'rev-parse', '--git-dir'], { encoding: 'utf8' });
+    const commonDir = spawnSync('git', ['-C', dir, 'rev-parse', '--git-common-dir'], { encoding: 'utf8' });
+    if (gitDir.status !== 0 || commonDir.status !== 0) return false;
+    const absGit = path.resolve(dir, gitDir.stdout.trim());
+    const absCommon = path.resolve(dir, commonDir.stdout.trim());
+    return absGit === absCommon;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * Extract the explicit `git -C <dir>` path from a command string, if present.
+ * Returns null when not found.
+ *
+ * @param {string} command
+ * @returns {string|null}
+ */
+function extractGitCDir(command) {
+  // Match `git -C <path>` — path may be quoted or unquoted
+  const m = command.match(/\bgit\s+-C\s+(['"]?)([^\s'";&|]+)\1/);
+  return m ? m[2] : null;
+}
+
+/**
+ * Split a command string on shell chain operators (&&, ;, |) and return
+ * individual segments. This allows checking each git sub-command independently.
+ *
+ * @param {string} command
+ * @returns {string[]}
+ */
+function splitChained(command) {
+  return command.split(/&&|;(?!;)|\|(?!\|)/).map(s => s.trim()).filter(Boolean);
+}
+
+/**
+ * Find any forbidden pattern in a bash command string for the given role,
+ * with optional main-checkout context for `alsoBlockWhenMainCheckout` rules.
  *
  * @param {string} command
  * @param {string} role - resolved agent role (lower-case)
+ * @param {{ isMain: boolean, isReadOnly: boolean }} [ctx]
  * @returns {{id: string, description: string}|null}
  */
-function findForbiddenPattern(command, role) {
+function findForbiddenPattern(command, role, ctx) {
   if (typeof command !== 'string') return null;
   const targetRole = (typeof role === 'string' ? role.toLowerCase() : '') || 'developer';
+  const context = ctx || { isMain: false, isReadOnly: false };
+
   for (const pattern of FORBIDDEN_PATTERNS) {
+    // Role-based check: pattern applies to this role.
     const allowedRoles = Array.isArray(pattern.roles) ? pattern.roles : ['developer'];
-    if (!allowedRoles.includes(targetRole)) continue;
-    if (pattern.regex.test(command)) {
+    const roleMatch = allowedRoles.includes(targetRole);
+
+    // Context-based check: pattern fires for ALL roles when in main checkout.
+    const mainMatch = pattern.alsoBlockWhenMainCheckout && context.isMain;
+
+    if (!roleMatch && !mainMatch) continue;
+
+    // For wt_destructive_git, split chains and check each segment.
+    if (pattern.id === 'wt_destructive_git') {
+      const segments = splitChained(command);
+      for (const seg of segments) {
+        if (pattern.regex.test(seg)) return { id: pattern.id, description: pattern.description };
+      }
+    } else if (pattern.regex.test(command)) {
       return { id: pattern.id, description: pattern.description };
     }
   }
@@ -201,11 +299,18 @@ function main() {
       process.exit(0);
     }
 
-    // FN-48 (v2.2.15): also gate the release-manager role.
     const role = resolveRole(event);
-    if (role !== 'developer' && role !== 'release-manager') {
-      process.stdout.write(JSON.stringify({ continue: true }));
-      process.exit(0);
+    const isReadOnly = READ_ONLY_ROLES.has(role);
+
+    // For non-read-only roles that aren't developer/release-manager, we still
+    // need to run the wt_destructive_git check (alsoBlockWhenMainCheckout).
+    // For the existing role-specific checks (force_push etc.), we skip early
+    // only if role is not developer/release-manager AND not read-only.
+    const isRoleGated = role === 'developer' || role === 'release-manager';
+    if (!isRoleGated && !isReadOnly) {
+      // Not a role-gated role, not read-only — only check alsoBlockWhenMainCheckout.
+      // We still need to check wt_destructive_git for any role in main checkout.
+      // Fall through to the main check below; findForbiddenPattern handles it.
     }
 
     const command = (event.tool_input && typeof event.tool_input.command === 'string')
@@ -216,7 +321,31 @@ function main() {
       process.exit(0);
     }
 
-    const violation = findForbiddenPattern(command, role);
+    let cwd;
+    try { cwd = resolveSafeCwd(event.cwd); } catch (_) { cwd = process.cwd(); }
+
+    // Determine the effective target directory for git operations.
+    // Priority: explicit `git -C <dir>` arg > event.cwd.
+    const explicitCDir = extractGitCDir(command);
+    const targetDir = (explicitCDir && path.isAbsolute(explicitCDir))
+      ? explicitCDir
+      : explicitCDir
+        ? path.resolve(cwd, explicitCDir)
+        : cwd;
+
+    // Determine context for pattern matching.
+    const mainCheckout = isMainCheckout(targetDir);
+
+    // Read-only roles with wt_destructive_git match: fail CLOSED on uncertainty.
+    // For read-only roles we don't need main-checkout check — they're always blocked.
+    // We pass isMain=true for read-only roles so the alsoBlockWhenMainCheckout logic
+    // doesn't interfere with the role-based block.
+    const ctx = {
+      isMain: mainCheckout || isReadOnly,
+      isReadOnly,
+    };
+
+    const violation = findForbiddenPattern(command, role, ctx);
     if (!violation) {
       // FN-46 follow-up (W9 F-3): emit a hint-only WARN when a developer/
       // release-manager pipes a commit message from a file (`git commit -F
@@ -224,7 +353,7 @@ function main() {
       // on the same trailer rules; the advisory reminds the agent that
       // inline `-m` is preferred per feedback_commit_style.md, but the spawn
       // is allowed to proceed.
-      if (/\bgit\s+commit\b[^|;&\n]*?-F\b/.test(command)) {
+      if ((isRoleGated) && /\bgit\s+commit\b[^|;&\n]*?-F\b/.test(command)) {
         process.stderr.write(
           '[orchestray] gate-developer-git: HINT — `git commit -F <file>` cannot be ' +
           'content-checked for Co-Authored-By / "Generated with Claude" trailers. ' +
@@ -236,29 +365,34 @@ function main() {
       process.exit(0);
     }
 
-    let cwd;
-    try { cwd = resolveSafeCwd(event.cwd); } catch (_) { cwd = process.cwd(); }
+    // Use git_destructive_blocked event type for wt_destructive_git violations;
+    // existing event type for other violations.
+    const eventType = violation.id === 'wt_destructive_git'
+      ? 'git_destructive_blocked'
+      : 'developer_git_violation';
 
     emitAuditEvent(cwd, {
       timestamp: new Date().toISOString(),
-      type: 'developer_git_violation',
+      type: eventType,
       hook: 'gate-developer-git',
       agent_role: role,
       command: command.slice(0, 200),
       violation_type: violation.id,
       description: violation.description,
       session_id: event.session_id || null,
+      target_repo: targetDir,
+      is_main_checkout: mainCheckout,
     });
 
     process.stderr.write(
-      '[orchestray] gate-developer-git: BLOCKED — ' + role + ' attempted forbidden git command: ' +
-      violation.id + ': ' + violation.description + '.\n' +
+      '[orchestray] gate-developer-git: BLOCKED — ' + (role || 'unknown') +
+      ' attempted forbidden git command: ' + violation.id + ': ' + violation.description + '.\n' +
       'Command: ' + command.slice(0, 120) + '\n' +
       'Kill switch: ORCHESTRAY_GIT_GATE_DISABLED=1\n'
     );
     process.stdout.write(JSON.stringify({
       continue: false,
-      reason: 'developer_git_violation:' + violation.id,
+      reason: eventType + ':' + violation.id,
     }));
     process.exit(2);
   });
@@ -268,6 +402,10 @@ module.exports = {
   findForbiddenPattern,
   resolveRole,
   FORBIDDEN_PATTERNS,
+  READ_ONLY_ROLES,
+  isMainCheckout,
+  extractGitCDir,
+  splitChained,
 };
 
 if (require.main === module) {

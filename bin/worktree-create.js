@@ -11,6 +11,14 @@
  *   - On success: print { "worktree_path": "<absolute_path>" } to stdout and exit 0.
  *   - On failure: print error to stderr and exit non-zero.
  *
+ * Twin-idempotency (v2.3.8): every Agent spawn fires this hook TWICE — once from
+ * the global install and once from the local install — racing on .git/index.lock.
+ *   (a) If the target worktree path already exists and is a valid registered worktree
+ *       for this project, exit 0 (twin already did the work).
+ *   (b) index.lock contention is retried via B6 jittered backoff (already present).
+ *       After retries exhausted on a lock error, re-check (a) before failing — the
+ *       twin may have completed successfully during the retry window.
+ *
  * Companion: worktree-remove.js for cleanup on agent shutdown.
  */
 
@@ -73,9 +81,36 @@ try {
   process.exit(1);
 }
 
-// If worktree already exists for this agent name — remove it first (idempotency)
+/**
+ * Check if the worktree path already exists and is registered with git as a
+ * valid worktree for this project. Used to detect twin-invocation idempotency.
+ *
+ * @returns {boolean}
+ */
+function worktreeAlreadyValid() {
+  if (!fs.existsSync(worktreePath)) return false;
+  // `git worktree list --porcelain` lists all worktrees; look for our path.
+  const listResult = spawnSync('git', ['-C', projectRoot, 'worktree', 'list', '--porcelain'], {
+    encoding: 'utf8',
+  });
+  if (listResult.status !== 0) return false;
+  // Each worktree block starts with `worktree <absolute-path>`
+  const lines = (listResult.stdout || '').split('\n');
+  const normalized = path.resolve(worktreePath);
+  return lines.some(l => l.startsWith('worktree ') && path.resolve(l.slice(9).trim()) === normalized);
+}
+
+// Twin-idempotency check (a): if the worktree already exists and is valid, the
+// twin already completed — exit 0 immediately without touching git state.
+if (worktreeAlreadyValid()) {
+  logStderr(`Worktree already registered at ${worktreePath} (twin-idempotent) — reusing`);
+  process.stdout.write(worktreePath + '\n');
+  process.exit(0);
+}
+
+// If the path exists but is NOT a registered worktree (stale dir), clean it up.
 if (fs.existsSync(worktreePath)) {
-  logStderr(`Worktree already exists at ${worktreePath} — removing first for idempotency`);
+  logStderr(`Stale worktree dir at ${worktreePath} — removing`);
   spawnSync('git', ['-C', projectRoot, 'worktree', 'remove', '--force', worktreePath], {
     encoding: 'utf8',
   });
@@ -93,6 +128,7 @@ const WORKTREE_ADD_MAX_ATTEMPTS = 5;
 const WORKTREE_ADD_BASE_JITTER_MS = 100;
 
 let result;
+let lastErrWasLock = false;
 for (let attempt = 0; attempt < WORKTREE_ADD_MAX_ATTEMPTS; attempt++) {
   result = spawnSync('git', [
     '-C', projectRoot,
@@ -107,7 +143,16 @@ for (let attempt = 0; attempt < WORKTREE_ADD_MAX_ATTEMPTS; attempt++) {
 
   const errText = (result.stderr || '') + (result.stdout || '');
   const isLockContention = INDEX_LOCK_RE.test(errText);
+  lastErrWasLock = isLockContention;
+
   if (!isLockContention || attempt === WORKTREE_ADD_MAX_ATTEMPTS - 1) {
+    // Twin-idempotency check (b): after retries exhausted on lock contention,
+    // re-check whether the twin completed successfully during the retry window.
+    if (isLockContention && worktreeAlreadyValid()) {
+      logStderr(`Worktree registered by twin after lock contention at ${worktreePath} — reusing`);
+      process.stdout.write(worktreePath + '\n');
+      process.exit(0);
+    }
     logStderr(`FAIL: git worktree add exited ${result.status} (attempt ${attempt + 1}/${WORKTREE_ADD_MAX_ATTEMPTS}): ${errText}`);
     process.exit(1);
   }
@@ -123,6 +168,12 @@ for (let attempt = 0; attempt < WORKTREE_ADD_MAX_ATTEMPTS; attempt++) {
 }
 
 if (!result || result.status !== 0) {
+  // Final twin-idempotency check before hard fail.
+  if (lastErrWasLock && worktreeAlreadyValid()) {
+    logStderr(`Worktree registered by twin (final check) at ${worktreePath} — reusing`);
+    process.stdout.write(worktreePath + '\n');
+    process.exit(0);
+  }
   logStderr(`FAIL: git worktree add failed after ${WORKTREE_ADD_MAX_ATTEMPTS} attempts`);
   process.exit(1);
 }

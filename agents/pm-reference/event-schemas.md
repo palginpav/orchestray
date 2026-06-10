@@ -7654,6 +7654,37 @@ Kill switch: `ORCHESTRAY_GIT_GATE_DISABLED=1`.
 Field notes:
 - `violation_type` ∈ `{force_push, hard_reset_origin, release_commit}`.
 
+---
+
+### `git_destructive_blocked` event
+
+Emitted by `bin/gate-developer-git.js` (PreToolUse:Bash) when a destructive
+working-tree git command is blocked (v2.3.8 wt_destructive_git).
+Fires for: read-only roles (reviewer, debugger, researcher, ux-critic, platform-oracle,
+project-intent) always; all roles when the target repo is the shared main checkout.
+Kill switch: `ORCHESTRAY_GIT_GATE_DISABLED=1`.
+
+```json
+{
+  "version": 1,
+  "type": "git_destructive_blocked",
+  "timestamp": "<ISO-8601>",
+  "hook": "gate-developer-git",
+  "agent_role": "<role|null>",
+  "command": "<first 200 chars of the bash command>",
+  "violation_type": "wt_destructive_git",
+  "description": "<human-readable explanation>",
+  "session_id": "<session-id|null>",
+  "target_repo": "<resolved target directory>",
+  "is_main_checkout": true
+}
+```
+
+Field notes:
+- `violation_type` is always `wt_destructive_git` for this event.
+- `is_main_checkout`: `true` when blocked because target is the shared main checkout; `true` also for read-only roles (always blocked regardless of checkout).
+- `target_repo`: the resolved effective directory for the git command (`git -C <dir>` or `event.cwd`).
+
 ### `spawn_approved_drainer_injected` event
 
 Emitted by `bin/inject-spawn-approved-drainer.js` (UserPromptSubmit hook) when an approved housekeeper spawn row is found in `spawn-approved.jsonl` and a hard-block prompt injection is prepended to the PM turn.
