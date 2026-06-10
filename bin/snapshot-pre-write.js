@@ -77,6 +77,21 @@ function sanitizePath(absPath) {
 }
 
 /**
+ * A4 (v2.3.10): sanitize a single path component (orchestration_id / spawn_id)
+ * before it is interpolated into a directory path. These values can originate
+ * from the hook payload (session_id) or orchestration state; an unsanitized
+ * `../` or absolute value would escape the snapshots dir. Collapse every
+ * char outside [a-zA-Z0-9_-] to `_`, and never return an empty string.
+ *
+ * @param {string} v
+ * @returns {string}
+ */
+function sanitizeComponent(v) {
+  const s = String(v == null ? '' : v).replace(/[^a-zA-Z0-9_-]/g, '_');
+  return s.length > 0 ? s.slice(0, MAX_SANITIZED_PATH_CHARS) : 'unknown';
+}
+
+/**
  * Load snapshot config from .orchestray/config.json.
  * Returns { enabled: true } by default (fail-open default-on).
  *
@@ -196,10 +211,37 @@ function snapshotFile(projectRoot, orchId, spawnId, agentType, filePath) {
   // Only snapshot existing files
   if (!fs.existsSync(filePath)) return;
 
+  // A4 (v2.3.10) (b): source-path containment. A PreToolUse write that targets
+  // an out-of-tree path (e.g. ~/.ssh/id_rsa) would be blocked by the role-write
+  // gate, but this snapshot hook fires FIRST and would still READ and copy the
+  // file into .orchestray/snapshots — an exfiltration path. Only snapshot files
+  // that resolve inside the project root OR the .claude home dir. Anything else
+  // is skipped (fail-closed for the read; the write itself is the write-gate's job).
+  let realSource;
+  try {
+    realSource = fs.realpathSync(filePath);
+  } catch (_e) {
+    realSource = path.resolve(filePath); // file may not exist on disk yet — use resolved form
+  }
+  const realProjectRoot = (() => { try { return fs.realpathSync(projectRoot); } catch (_e) { return path.resolve(projectRoot); } })();
+  const claudeHome = path.join(os.homedir(), '.claude');
+  const realClaudeHome = (() => { try { return fs.realpathSync(claudeHome); } catch (_e) { return path.resolve(claudeHome); } })();
+  const inProject = realSource === realProjectRoot || realSource.startsWith(realProjectRoot + path.sep);
+  const inClaudeHome = realSource === realClaudeHome || realSource.startsWith(realClaudeHome + path.sep);
+  if (!inProject && !inClaudeHome) {
+    process.stderr.write('[snapshot-pre-write] skip: source outside project/.claude — ' + path.basename(filePath) + '\n');
+    return;
+  }
+
+  // A4 (v2.3.10) (a): sanitize orchId/spawnId before path.join — they can carry
+  // hostile path segments from the hook payload (session_id) or orch state.
+  const safeOrchId = sanitizeComponent(orchId);
+  const safeSpawnId = sanitizeComponent(spawnId);
+
   const orchSnapshotsDir = path.join(
-    projectRoot, '.orchestray', 'snapshots', orchId
+    projectRoot, '.orchestray', 'snapshots', safeOrchId
   );
-  const spawnDir = path.join(orchSnapshotsDir, spawnId);
+  const spawnDir = path.join(orchSnapshotsDir, safeSpawnId);
 
   try {
     fs.mkdirSync(spawnDir, { recursive: true });
@@ -334,7 +376,7 @@ function handle(hookPayload) {
   process.exit(0);
 }
 
-module.exports = { sanitizePath, snapshotFile, evictOldestSnapshots, loadSnapshotConfig };
+module.exports = { sanitizePath, sanitizeComponent, snapshotFile, evictOldestSnapshots, loadSnapshotConfig };
 
 // ---------------------------------------------------------------------------
 // Entrypoint — only when invoked as a CLI script, not when imported by tests.

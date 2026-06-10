@@ -55,6 +55,15 @@ if (!agentName) {
   process.exit(1);
 }
 
+// A3 (v2.3.10): agentName flows from stdin straight into path.join — an
+// unsanitized value like `../../../tmp/evil` or one with separators escapes
+// the worktrees parent. Validate against a strict portable-name allowlist
+// (the value is used as a single directory component, so no `/`, no `..`).
+if (typeof agentName !== 'string' || !/^[a-zA-Z0-9_.-]+$/.test(agentName) || agentName === '.' || agentName === '..') {
+  logStderr(`FAIL: invalid agent name ${JSON.stringify(String(agentName).slice(0, 80))} — must match /^[a-zA-Z0-9_.-]+$/ and not be '.'/'..'`);
+  process.exit(1);
+}
+
 if (!projectRoot) {
   logStderr('FAIL: no project root (no cwd field or CLAUDE_PROJECT_DIR env)');
   process.exit(1);
@@ -72,6 +81,18 @@ if (checkRepo.status !== 0 || (checkRepo.stdout || '').trim() !== 'true') {
 // Construct worktree path: <projectRoot>/.claude/worktrees/<agentName>
 const worktreesParent = path.join(projectRoot, '.claude', 'worktrees');
 const worktreePath = path.join(worktreesParent, agentName);
+
+// A3 (v2.3.10): defense-in-depth — assert the resolved worktree path is a
+// direct child of the worktrees parent. Even with the name allowlist above,
+// a belt-and-suspenders containment check guarantees no path-join surprise
+// escapes the sandbox root.
+const resolvedParent = path.resolve(worktreesParent);
+const resolvedWorktree = path.resolve(worktreePath);
+if (resolvedWorktree !== path.join(resolvedParent, agentName) ||
+    !resolvedWorktree.startsWith(resolvedParent + path.sep)) {
+  logStderr(`FAIL: resolved worktree path ${resolvedWorktree} escapes ${resolvedParent}${path.sep}`);
+  process.exit(1);
+}
 
 // Ensure parent dir exists
 try {

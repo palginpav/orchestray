@@ -134,19 +134,42 @@ function isPathAllowed(role, candidatePath) {
  * @returns {string|null}
  */
 function extractTargetPath(toolInput) {
-  if (!toolInput || typeof toolInput !== 'object') return null;
+  const all = extractTargetPaths(toolInput);
+  return all.length > 0 ? all[0] : null;
+}
 
-  // Write: {file_path: string}
-  // Edit:  {file_path: string}
-  if (typeof toolInput.file_path === 'string') return toolInput.file_path;
+/**
+ * Extract ALL write target paths from the hook event's tool_input.
+ * Handles Write, Edit, and MultiEdit shapes.
+ *
+ * A2 (v2.3.10): MultiEdit carries an `edits[]` array — the gate must check
+ * EVERY edit's file_path, not just edits[0]. A MultiEdit whose first edit
+ * targets an allowed path but whose later edits target out-of-scope paths
+ * previously slipped through. Returns the de-duplicated list of all targets.
+ *
+ * @param {object} toolInput
+ * @returns {string[]}
+ */
+function extractTargetPaths(toolInput) {
+  if (!toolInput || typeof toolInput !== 'object') return [];
+  const out = [];
 
-  // MultiEdit: {edits: [{file_path, ...}]}
-  if (Array.isArray(toolInput.edits) && toolInput.edits.length > 0) {
-    const first = toolInput.edits[0];
-    if (first && typeof first.file_path === 'string') return first.file_path;
+  // Write / Edit: {file_path: string}
+  if (typeof toolInput.file_path === 'string' && toolInput.file_path) {
+    out.push(toolInput.file_path);
   }
 
-  return null;
+  // MultiEdit: {edits: [{file_path, ...}]} — check ALL edits.
+  if (Array.isArray(toolInput.edits)) {
+    for (const edit of toolInput.edits) {
+      if (edit && typeof edit.file_path === 'string' && edit.file_path) {
+        out.push(edit.file_path);
+      }
+    }
+  }
+
+  // De-dupe while preserving order.
+  return Array.from(new Set(out));
 }
 
 /**
@@ -203,8 +226,19 @@ function main() {
   process.stdin.on('data', (chunk) => {
     input += chunk;
     if (input.length > MAX_INPUT_BYTES) {
-      process.stdout.write(JSON.stringify({ continue: true }) + '\n');
-      process.exit(0);
+      // A1 (v2.3.10): a security gate MUST fail CLOSED on stdin overflow. An
+      // oversized payload could bury an out-of-scope write target past the
+      // parse window; block rather than pass.
+      process.stderr.write(
+        '[orchestray] gate-role-write-paths: BLOCKED — stdin exceeded ' +
+        MAX_INPUT_BYTES + ' bytes; failing closed (security gate).\n' +
+        'Kill switch: ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1\n'
+      );
+      process.stdout.write(JSON.stringify({
+        continue: false,
+        reason: 'role_write_gate_input_overflow',
+      }));
+      process.exit(2);
     }
   });
   process.stdin.on('end', () => {
@@ -229,8 +263,10 @@ function main() {
       process.exit(0);
     }
 
-    const targetPath = extractTargetPath(event.tool_input);
-    if (!targetPath) {
+    // A2 (v2.3.10): check ALL target paths (MultiEdit has many). Block if ANY
+    // fails — pre-allowlist traversal hardening OR the role allowlist.
+    const targetPaths = extractTargetPaths(event.tool_input);
+    if (targetPaths.length === 0) {
       // Can't determine target — fail-open.
       process.stdout.write(JSON.stringify({ continue: true }));
       process.exit(0);
@@ -239,21 +275,48 @@ function main() {
     let cwd;
     try { cwd = resolveSafeCwd(event.cwd); } catch (_) { cwd = process.cwd(); }
 
-    // Normalize path: make relative to project root.
-    let relPath;
-    try {
-      const abs = path.isAbsolute(targetPath) ? targetPath : path.resolve(cwd, targetPath);
-      relPath = path.relative(cwd, abs);
-    } catch (_) {
-      relPath = targetPath;
-    }
+    for (const targetPath of targetPaths) {
+      // Normalize path: make relative to project root.
+      let relPath;
+      try {
+        const abs = path.isAbsolute(targetPath) ? targetPath : path.resolve(cwd, targetPath);
+        relPath = path.relative(cwd, abs);
+      } catch (_) {
+        relPath = targetPath;
+      }
 
-    // v2.2.21 T8 — Pre-allowlist hardening (CWE-22). MUST run BEFORE the
-    // allowlist regex check: the allowlist patterns are compiled with `**`
-    // expansions that can match `../../../etc/foo.md` if reached. Reject any
-    // `..` segment, absolute path, or non-portable character now.
-    const pre = validatePathPreAllowlist(targetPath, relPath);
-    if (!pre.ok) {
+      // v2.2.21 T8 — Pre-allowlist hardening (CWE-22). MUST run BEFORE the
+      // allowlist regex check.
+      const pre = validatePathPreAllowlist(targetPath, relPath);
+      if (!pre.ok) {
+        emitAuditEvent(cwd, {
+          timestamp: new Date().toISOString(),
+          type: 'role_write_path_blocked',
+          hook: 'gate-role-write-paths',
+          agent_role: role,
+          attempted_path: relPath,
+          allowlist_matched: false,
+          allowlist: ROLE_WRITE_ALLOWLISTS[role] || [],
+          reason: pre.reason,
+          session_id: event.session_id || null,
+        });
+        process.stderr.write(
+          '[orchestray] gate-role-write-paths: BLOCKED — ' + role + ' attempted to write "' +
+          String(targetPath).slice(0, 200) + '" (relPath="' + relPath + '"); reason=' + pre.reason + '.\n' +
+          'Path-traversal hardening: hardcoded reject before allowlist check.\n' +
+          'Kill switch (this check only): ORCHESTRAY_ROLE_WRITE_TRAVERSAL_DISABLED=1\n' +
+          'Kill switch (entire gate):     ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1\n'
+        );
+        process.stdout.write(JSON.stringify({
+          continue: false,
+          reason: 'role_write_path_blocked:' + role + ':' + pre.reason,
+        }));
+        process.exit(2);
+      }
+
+      if (isPathAllowed(role, relPath)) continue; // this target ok — check next
+
+      // Out-of-scope write — block (ANY failing target blocks the whole call).
       emitAuditEvent(cwd, {
         timestamp: new Date().toISOString(),
         type: 'role_write_path_blocked',
@@ -262,53 +325,28 @@ function main() {
         attempted_path: relPath,
         allowlist_matched: false,
         allowlist: ROLE_WRITE_ALLOWLISTS[role] || [],
-        reason: pre.reason,
         session_id: event.session_id || null,
       });
+
       process.stderr.write(
-        '[orchestray] gate-role-write-paths: BLOCKED — ' + role + ' attempted to write "' +
-        String(targetPath).slice(0, 200) + '" (relPath="' + relPath + '"); reason=' + pre.reason + '.\n' +
-        'Path-traversal hardening: hardcoded reject before allowlist check.\n' +
-        'Kill switch (this check only): ORCHESTRAY_ROLE_WRITE_TRAVERSAL_DISABLED=1\n' +
-        'Kill switch (entire gate):     ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1\n'
+        '[orchestray] gate-role-write-paths: BLOCKED — ' + role + ' attempted to write "' + relPath + '" ' +
+        'which is outside its allowed paths ' + JSON.stringify(ROLE_WRITE_ALLOWLISTS[role] || []) + '.\n' +
+        'Kill switch: ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1\n'
       );
-      process.stdout.write(JSON.stringify({
-        continue: false,
-        reason: 'role_write_path_blocked:' + role + ':' + pre.reason,
-      }));
+      process.stdout.write(JSON.stringify({ continue: false, reason: 'role_write_path_blocked:' + role }));
       process.exit(2);
     }
 
-    if (isPathAllowed(role, relPath)) {
-      process.stdout.write(JSON.stringify({ continue: true }));
-      process.exit(0);
-    }
-
-    // Out-of-scope write — block.
-    emitAuditEvent(cwd, {
-      timestamp: new Date().toISOString(),
-      type: 'role_write_path_blocked',
-      hook: 'gate-role-write-paths',
-      agent_role: role,
-      attempted_path: relPath,
-      allowlist_matched: false,
-      allowlist: ROLE_WRITE_ALLOWLISTS[role] || [],
-      session_id: event.session_id || null,
-    });
-
-    process.stderr.write(
-      '[orchestray] gate-role-write-paths: BLOCKED — ' + role + ' attempted to write "' + relPath + '" ' +
-      'which is outside its allowed paths ' + JSON.stringify(ROLE_WRITE_ALLOWLISTS[role] || []) + '.\n' +
-      'Kill switch: ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1\n'
-    );
-    process.stdout.write(JSON.stringify({ continue: false, reason: 'role_write_path_blocked:' + role }));
-    process.exit(2);
+    // All targets passed.
+    process.stdout.write(JSON.stringify({ continue: true }));
+    process.exit(0);
   });
 }
 
 module.exports = {
   isPathAllowed,
   extractTargetPath,
+  extractTargetPaths,
   resolveRole,
   globToRegex,
   validatePathPreAllowlist,

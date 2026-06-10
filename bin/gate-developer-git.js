@@ -63,6 +63,96 @@ const READ_ONLY_ROLES = new Set([
 ]);
 
 // ---------------------------------------------------------------------------
+// A0 (v2.3.10): non-destructive git verbs are ALWAYS allowed for ALL roles
+// (including the PM and read-only roles). The v2.3.9 regression treated the
+// PM as gated and could trip on read-only verbs because every segment fell
+// through to findForbiddenPattern. We now short-circuit: if EVERY git segment
+// in the command resolves to a known read-only verb, the command is allowed
+// before any role/main-checkout logic runs.
+//
+// `branch` is read-only only with --list / -l / no positional arg (a bare
+// `git branch` lists; `git branch <name>` creates). `worktree list` and
+// `remote -v` / `remote` (no write subverb) are read-only. `stash list` /
+// `stash show` are read-only but handled inside the destructive logic too.
+// ---------------------------------------------------------------------------
+
+const READ_ONLY_VERBS = new Set([
+  'status', 'log', 'diff', 'show', 'rev-parse', 'rev-list', 'ls-files',
+  'ls-tree', 'cat-file', 'describe', 'shortlog', 'blame', 'grep',
+  'reflog', 'whatchanged', 'config', 'help', 'version', 'name-rev',
+  'merge-base', 'symbolic-ref', 'for-each-ref', 'show-ref', 'count-objects',
+]);
+
+/**
+ * Decide whether a single git segment is unambiguously read-only.
+ * Returns true ONLY when the subcommand is known read-only for the args given.
+ *
+ * @param {string} seg
+ * @returns {boolean}
+ */
+function isReadOnlyGitSegment(seg) {
+  if (typeof seg !== 'string' || !/\bgit\b/.test(seg)) return false;
+  const { subcommand, gitDirRedirected } = extractGitSubcommand(seg);
+  if (!subcommand) return false; // unparseable — not provably read-only
+  if (gitDirRedirected) return false; // ambiguous target — be conservative
+
+  if (READ_ONLY_VERBS.has(subcommand)) return true;
+
+  // branch: read-only only when listing (no positional create/delete args).
+  if (subcommand === 'branch') {
+    // Block-flag forms that mutate.
+    if (/\bbranch\b[^|;&\n]*?(?:-d\b|-D\b|-m\b|-M\b|-c\b|-C\b|--delete\b|--move\b|--copy\b|--edit-description\b|--set-upstream(?:-to)?\b|-u\b|--unset-upstream\b|--force\b|-f\b)/.test(seg)) {
+      return false;
+    }
+    // A positional (non-option) token after `branch` creates a branch → not read-only.
+    const m = seg.match(/\bbranch\b\s+(.*)$/);
+    if (m) {
+      const rest = m[1].trim();
+      const tokens = rest.split(/[\s|;&]+/).filter(Boolean);
+      for (const t of tokens) {
+        if (t.startsWith('-')) continue; // option — fine
+        return false; // a bare positional → create form
+      }
+    }
+    return true; // bare `git branch` or list-only flags
+  }
+
+  // remote: read-only for bare `remote`, `remote -v`, `remote show`, `remote get-url`.
+  if (subcommand === 'remote') {
+    if (/\bremote\b[^|;&\n]*?\b(add|remove|rm|rename|set-url|set-head|set-branches|prune|update)\b/.test(seg)) {
+      return false;
+    }
+    return true;
+  }
+
+  // worktree: read-only only for `worktree list`.
+  if (subcommand === 'worktree') {
+    return /\bworktree\s+list\b/.test(seg);
+  }
+
+  // stash: read-only for `stash list` / `stash show`.
+  if (subcommand === 'stash') {
+    return /\bstash\s+(?:list|show)\b/.test(seg);
+  }
+
+  return false;
+}
+
+/**
+ * True when EVERY git-bearing segment of the command is read-only.
+ *
+ * @param {string} command
+ * @returns {boolean}
+ */
+function isAllReadOnlyGit(command) {
+  if (typeof command !== 'string') return false;
+  const segments = splitChained(command);
+  const gitSegments = segments.filter(s => /\bgit\b/.test(s));
+  if (gitSegments.length === 0) return false; // no git at all — let normal path handle
+  return gitSegments.every(isReadOnlyGitSegment);
+}
+
+// ---------------------------------------------------------------------------
 // Forbidden git command patterns (developer role only).
 // ---------------------------------------------------------------------------
 
@@ -296,7 +386,7 @@ function extractGitSubcommand(seg) {
 // clean, restore: always blocked.
 // checkout: blocked only with pathspec/-- (file-restore form).
 // reset: blocked except --soft.
-const WTD_FORBIDDEN_VERBS = new Set(['stash', 'clean', 'restore', 'checkout', 'reset']);
+const WTD_FORBIDDEN_VERBS = new Set(['stash', 'clean', 'restore', 'checkout', 'reset', 'worktree']);
 
 /**
  * Check whether a single (non-chained) git segment triggers wt_destructive_git.
@@ -337,6 +427,15 @@ function isWtDestructiveGit(seg) {
   if (subcommand === 'reset') {
     if (/\breset\s+--soft\b/.test(seg)) return false;
     return true;
+  }
+
+  // worktree: only `worktree remove --force` / `-f` is destructive (silently
+  // discards a linked worktree's uncommitted work). `worktree list` is handled
+  // by the read-only short-circuit; `worktree add`/`prune`/`move`/non-force
+  // remove are not silent-revert vectors → allow.
+  if (subcommand === 'worktree') {
+    if (/\bworktree\s+remove\b[^|;&\n]*?(?:--force|-f)\b/.test(seg)) return true;
+    return false;
   }
 
   // clean, restore: always blocked
@@ -455,8 +554,19 @@ function main() {
   process.stdin.on('data', (chunk) => {
     input += chunk;
     if (input.length > MAX_INPUT_BYTES) {
-      process.stdout.write(JSON.stringify({ continue: true }) + '\n');
-      process.exit(0);
+      // A1 (v2.3.10): a security gate MUST fail CLOSED on stdin overflow.
+      // An oversized payload is either an attack (trying to bury a forbidden
+      // command past the parse window) or corruption; either way we block.
+      process.stderr.write(
+        '[orchestray] gate-developer-git: BLOCKED — stdin exceeded ' +
+        MAX_INPUT_BYTES + ' bytes; failing closed (security gate).\n' +
+        'Kill switch: ORCHESTRAY_GIT_GATE_DISABLED=1\n'
+      );
+      process.stdout.write(JSON.stringify({
+        continue: false,
+        reason: 'git_gate_input_overflow',
+      }));
+      process.exit(2);
     }
   });
   process.stdin.on('end', () => {
@@ -483,6 +593,32 @@ function main() {
 
     const role = resolveRole(event);
     const isReadOnly = READ_ONLY_ROLES.has(role);
+
+    // A0 (v2.3.10): the PM orchestrator is NEVER gated for non-destructive git.
+    // It is also never one of the destructive-by-role read-only roles, and it
+    // legitimately runs `git status`/`git commit` as part of orchestration.
+    // Resolve the command early so we can apply the read-only short-circuit and
+    // the PM exemption before any role/main-checkout logic.
+    const earlyCommand = (event.tool_input && typeof event.tool_input.command === 'string')
+      ? event.tool_input.command
+      : '';
+
+    // A0: non-destructive git verbs are ALWAYS allowed for ALL roles. If every
+    // git segment is provably read-only, allow immediately.
+    if (earlyCommand && isAllReadOnlyGit(earlyCommand)) {
+      process.stdout.write(JSON.stringify({ continue: true }));
+      process.exit(0);
+    }
+
+    // A0: the PM is exempt from all role-based git gating (it is the orchestrator,
+    // not a sandboxed worker). Destructive working-tree protection in the shared
+    // main checkout still applies to the PM via alsoBlockWhenMainCheckout below —
+    // but role-specific rules (developer/release-manager/read-only) never fire for it.
+    if (role === 'pm') {
+      // PM only subject to wt_destructive_git in the shared main checkout. Fall
+      // through to the main check with role='pm' (which matches no role list);
+      // findForbiddenPattern will only fire wt_destructive_git via main-checkout.
+    }
 
     // For non-read-only roles that aren't developer/release-manager, we still
     // need to run the wt_destructive_git check (alsoBlockWhenMainCheckout).
@@ -527,22 +663,41 @@ function main() {
       isReadOnly,
     };
 
+    // A5 (v2.3.10): `git commit -F <file>` previously emitted a hint only — the
+    // regex cannot read file contents, so a developer/release-manager could
+    // bury Co-Authored-By / "Generated with Claude" trailers in a file and
+    // bypass the inline-message trailer gate entirely. Block it outright for
+    // gated roles. They must use inline `-m` so the trailer gate can verify.
+    // `-F -` (stdin) and `--file=` are also covered.
+    if (isRoleGated &&
+        /\bgit\s+commit\b[^|;&\n]*?(?:-F\b|--file\b|--file=)/.test(command)) {
+      let cwdF;
+      try { cwdF = resolveSafeCwd(event.cwd); } catch (_) { cwdF = process.cwd(); }
+      emitAuditEvent(cwdF, {
+        timestamp: new Date().toISOString(),
+        type: 'developer_git_violation',
+        hook: 'gate-developer-git',
+        agent_role: role,
+        command: command.slice(0, 200),
+        violation_type: 'commit_from_file_uncheckable',
+        description: 'git commit -F/--file bypasses the inline trailer gate; use -m',
+        session_id: event.session_id || null,
+      });
+      process.stderr.write(
+        '[orchestray] gate-developer-git: BLOCKED — `git commit -F/--file` cannot be ' +
+        'content-checked for Co-Authored-By / "Generated with Claude" trailers ' +
+        '(feedback_commit_style.md). Use inline `git commit -m "<msg>"` instead.\n' +
+        'Kill switch: ORCHESTRAY_GIT_GATE_DISABLED=1\n'
+      );
+      process.stdout.write(JSON.stringify({
+        continue: false,
+        reason: 'developer_git_violation:commit_from_file_uncheckable',
+      }));
+      process.exit(2);
+    }
+
     const violation = findForbiddenPattern(command, role, ctx);
     if (!violation) {
-      // FN-46 follow-up (W9 F-3): emit a hint-only WARN when a developer/
-      // release-manager pipes a commit message from a file (`git commit -F
-      // <path>`). The regex cannot inspect file contents, so we cannot block
-      // on the same trailer rules; the advisory reminds the agent that
-      // inline `-m` is preferred per feedback_commit_style.md, but the spawn
-      // is allowed to proceed.
-      if ((isRoleGated) && /\bgit\s+commit\b[^|;&\n]*?-F\b/.test(command)) {
-        process.stderr.write(
-          '[orchestray] gate-developer-git: HINT — `git commit -F <file>` cannot be ' +
-          'content-checked for Co-Authored-By / "Generated with Claude" trailers. ' +
-          'Prefer inline `git commit -m "<msg>"` so the trailer gate can verify ' +
-          'commit-style discipline (feedback_commit_style.md).\n'
-        );
-      }
       process.stdout.write(JSON.stringify({ continue: true }));
       process.exit(0);
     }
@@ -562,7 +717,9 @@ function main() {
       violation_type: violation.id,
       description: violation.description,
       session_id: event.session_id || null,
-      target_repo: targetDir,
+      // A5 (v2.3.10): log only the basename of the target repo, not the full
+      // path (which leaks the OS username via the home-dir prefix).
+      target_repo: path.basename(targetDir),
       is_main_checkout: mainCheckout,
     });
 
@@ -590,6 +747,9 @@ module.exports = {
   splitChained,
   extractGitSubcommand,
   isWtDestructiveGit,
+  isReadOnlyGitSegment,
+  isAllReadOnlyGit,
+  READ_ONLY_VERBS,
 };
 
 if (require.main === module) {
