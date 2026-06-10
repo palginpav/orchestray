@@ -28,6 +28,43 @@ const { resolveSafeCwd }   = require('./_lib/resolve-project-cwd');
 
 const FLAG_REL_PATH = path.join('.orchestray', 'state', 'plugin-tools-changed.flag');
 
+/**
+ * Resolve the canonical project root for flag lookup (v2.3.7 path-unification,
+ * BUG-1 secondary fix). The MCP server writes the flag under
+ * paths.getProjectRoot() (CLAUDE_PROJECT_DIR → `.orchestray` walk-up). This
+ * hook MUST read from the SAME directory or the banner never fires (or fires on
+ * a stale file). We mirror that precedence here:
+ *   1. CLAUDE_PROJECT_DIR, if it contains a `.orchestray/` dir.
+ *   2. Walk up from the hook's resolved cwd looking for `.orchestray/`.
+ *   3. Fall back to resolveSafeCwd(event.cwd) (legacy behavior, fail-open).
+ * @param {string|undefined|null} eventCwd
+ * @returns {string}
+ */
+function resolveFlagRoot(eventCwd) {
+  // Step 1: CLAUDE_PROJECT_DIR (same hint Claude Code feeds the server).
+  const fromClaude = process.env.CLAUDE_PROJECT_DIR;
+  if (fromClaude && fromClaude.length > 0) {
+    try {
+      const resolved = path.resolve(fromClaude);
+      if (fs.existsSync(path.join(resolved, '.orchestray'))) return resolved;
+    } catch (_e) { /* fall through */ }
+  }
+  // Step 2: walk up from the resolved cwd for a `.orchestray/` marker.
+  const base = resolveSafeCwd(eventCwd);
+  try {
+    let dir = path.resolve(base);
+    // Bounded walk (depth cap mirrors the server's walkUpFor safety).
+    for (let i = 0; i < 64; i++) {
+      if (fs.existsSync(path.join(dir, '.orchestray'))) return dir;
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch (_e) { /* fall through */ }
+  // Step 3: fail-open to the resolved cwd.
+  return base;
+}
+
 // ─── Stdin reader ─────────────────────────────────────────────────────────────
 
 let input = '';
@@ -52,7 +89,9 @@ process.stdin.on('end', () => {
 
 function handleUserPromptSubmit(event) {
   try {
-    const cwd      = resolveSafeCwd(event && event.cwd);
+    // Resolve the SAME root the MCP server writes the flag under (v2.3.7
+    // path-unification). The kill-switch config is read from the same root.
+    const cwd      = resolveFlagRoot(event && event.cwd);
     const flagPath = path.join(cwd, FLAG_REL_PATH);
 
     // Kill switch: plugin_loader.restart_flag_check === false → no-op

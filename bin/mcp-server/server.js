@@ -683,9 +683,20 @@ function main() {
       const discovery = pl.discovery || {};
       const consent   = pl.consent   || {};
       const telemetry = pl.telemetry || {};
+      // BUG-1 path-unification (v2.3.7): resolve the flag-write root through the
+      // canonical project-root resolver (CLAUDE_PROJECT_DIR → .orchestray
+      // walk-up) so the MCP server writes plugin-tools-changed.flag to the SAME
+      // directory the UserPromptSubmit hook reads it from. Previously the writer
+      // keyed off process.cwd() while the hook keys off the canonical root, so a
+      // server launched with a cwd != session project root could write the flag
+      // where the hook never looks. Fail-open: if the root cannot be resolved,
+      // fall back to process.cwd() (unchanged legacy behavior).
+      let pluginFlagRoot;
+      try { pluginFlagRoot = paths.getProjectRoot(); }
+      catch (_e) { pluginFlagRoot = process.cwd(); }
       pluginLoader = createPluginLoader({
         audit:              writePluginAuditEvent,
-        projectRoot:        process.cwd(),
+        projectRoot:        pluginFlagRoot,
         registry:           toolRegistry,
         notifySink:         writeFrame,
         notify_list_changed: pl.notify_list_changed !== false,
@@ -778,14 +789,26 @@ function main() {
   // plugin. load() gates internally on consent (W-SEC-4/7), env-disabled, and
   // fingerprint match — unconsented plugins are rejected, not spawned. Without
   // this chain the FSM stalls at `discovered` and tools never register.
+  //
+  // BUG-1 (v2.3.7): bracket the boot scan→load chain in beginBootPhase()/
+  // endBootPhase(). Boot-time auto-loads of already-consented plugins are the
+  // INITIAL tool list the client sees — NOT a mid-session change — so they must
+  // not arm plugin-tools-changed.flag (which would otherwise fire a spurious
+  // "Plugin tools changed mid-session. Restart Claude Code…" banner on the
+  // first prompt of every fresh session). endBootPhase() baselines the BUG-2
+  // toolset diff so a later flap restoring the boot toolset is a no-op too.
   if (pluginLoader && config.plugin_loader?.discovery?.enabled !== false) {
+    if (typeof pluginLoader.beginBootPhase === 'function') pluginLoader.beginBootPhase();
     pluginLoader.scan()
       .then(async (results) => {
         for (const r of results) {
           await pluginLoader.load(r.plugin_name).catch(() => { /* audited inside load() */ });
         }
       })
-      .catch((err) => logStderr('plugin scan failed: ' + (err && err.message)));
+      .catch((err) => logStderr('plugin scan failed: ' + (err && err.message)))
+      .finally(() => {
+        if (typeof pluginLoader.endBootPhase === 'function') pluginLoader.endBootPhase();
+      });
   }
 }
 

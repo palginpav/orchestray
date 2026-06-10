@@ -460,6 +460,51 @@ function createLoader(userOpts) {
   const state = new Map();
 
   // -------------------------------------------------------------------------
+  // BUG-1 (v2.3.7): boot-phase suppression of the changed-flag.
+  //
+  // The MCP server boots once per Claude Code session and auto-loads every
+  // already-consented plugin. Those boot-time registrations are the INITIAL
+  // tool list the client will see — they are NOT a mid-session change, so they
+  // must NOT write plugin-tools-changed.flag (which exists only to advise a
+  // restart when the tool list changes AFTER the client saw it; see
+  // phase-contract.md:390). The server wraps its scan→load chain in
+  // beginBootPhase()/endBootPhase(); while bootPhase is true, Path B
+  // (_writeListChangedFlag) no-ops. Path A (notifications/tools/list_changed)
+  // still fires at boot — it is harmless and lets a live client refresh.
+  //
+  // Default is FALSE (not in boot) so a direct load()/unload() call — the test
+  // and /orchestray:plugin reload paths — arms the flag exactly as before.
+  // -------------------------------------------------------------------------
+  let bootPhase = false;
+
+  // -------------------------------------------------------------------------
+  // BUG-2 (v2.3.7): only arm the flag when the registered tool-name SET
+  // actually changes vs. the last state we armed for. A crash-looping plugin
+  // that unloads and reloads the IDENTICAL toolset must not re-arm the banner
+  // on every flap (that condition is surfaced via plugin_dead /
+  // plugin_restart_attempted audit events instead). lastArmedToolNames holds a
+  // sorted snapshot of the overlay's tool names at the moment we last armed the
+  // flag; null means "never armed this session".
+  // -------------------------------------------------------------------------
+  /** @type {string[] | null} */
+  let lastArmedToolNames = null;
+
+  /**
+   * Snapshot the CURRENT overlay tool set across all live plugins as a sorted
+   * array. Used to diff against lastArmedToolNames so identical-toolset flaps
+   * do not re-arm the flag.
+   * @returns {string[]}
+   */
+  function _currentOverlayToolNames() {
+    const names = [];
+    for (const ps of state.values()) {
+      for (const n of ps.registeredToolNames) names.push(n);
+    }
+    names.sort();
+    return names;
+  }
+
+  // -------------------------------------------------------------------------
   // W-LISTCH-1: tools/list_changed dual-path emission
   //
   //   Path A: notifications/tools/list_changed JSON-RPC notification via
@@ -496,6 +541,9 @@ function createLoader(userOpts) {
 
   function _writeListChangedFlag() {
     if (opts.restart_flag_check === false) return;
+    // BUG-1: boot-time auto-loads are the INITIAL tool list, not a mid-session
+    // change — never arm the flag while the server's boot scan→load chain runs.
+    if (bootPhase) return;
     try {
       const root = opts.projectRoot || process.cwd();
       const flagDir = path.join(root, '.orchestray', 'state');
@@ -511,7 +559,24 @@ function createLoader(userOpts) {
   }
 
   function _postOverlayMutation() {
+    // Path A: always fire the live notification (cheap; a connected client can
+    // re-fetch tools/list). Suppressing it during boot would deny a live client
+    // its initial refresh, and it is harmless at boot.
     _emitListChanged();
+
+    // Path B (flag) is gated. During the server's boot phase we never arm
+    // (BUG-1). Post-boot, we only arm when the overlay's tool-name SET actually
+    // differs from the last set we armed for (BUG-2), so an identical-toolset
+    // crash/reload flap does not re-arm the banner every cycle.
+    if (opts.restart_flag_check === false || bootPhase) return;
+    const current = _currentOverlayToolNames();
+    if (lastArmedToolNames !== null
+        && current.length === lastArmedToolNames.length
+        && current.every((n, i) => n === lastArmedToolNames[i])) {
+      // Identical toolset vs. last arm — do not re-arm (BUG-2).
+      return;
+    }
+    lastArmedToolNames = current;
     _writeListChangedFlag();
   }
 
@@ -671,14 +736,40 @@ function createLoader(userOpts) {
     } catch (err) {
       if (err && err.code === 'EEXIST') {
         // Stale-lock recovery. Hold time is microseconds (read+parse+close);
-        // a lock older than 10s implies a crashed prior holder. Mirrors
-        // the bin/_lib/atomic-append.js pattern. Without this, a single Node
-        // crash mid-lock breaks ALL subsequent plugin loads until manual
-        // `rm <consentPath>.lock`.
+        // a lock older than 10s implies a crashed prior holder. Without this, a
+        // single Node crash mid-lock breaks ALL subsequent plugin loads until
+        // a manual `rm <consentPath>.lock`.
+        //
+        // BUG-3 (v2.3.7): the old recovery did `unlinkSync(lockPath)` then
+        // `openSync('wx')`. That is NOT atomic across processes — two recoverers
+        // could each unlink the OTHER's freshly-created lock and both end up
+        // "holding" the lock (double-hold → lost-update on plugin-consents.json,
+        // reproduced in the audit). Fix: reclaim the stale lock with an ATOMIC
+        // rename to a unique per-process name. Only one renamer can move a given
+        // inode; the loser sees ENOENT (someone else already reclaimed). After a
+        // successful (or losing) reclaim, the FINAL arbiter is a single
+        // openSync(lockPath, 'wx') — O_EXCL guarantees exactly one creator wins.
+        // We never delete a file we did not ourselves create, so a competitor's
+        // fresh lock is never destroyed.
         try {
           const st = fs.statSync(lockPath);
           if (Date.now() - st.mtimeMs > 10_000) {
-            try { fs.unlinkSync(lockPath); } catch (_e) { /* ignore */ }
+            // Atomic reclaim: move the stale inode aside. Unique name per
+            // attempt so concurrent reclaimers never collide on the target.
+            const reclaimPath = lockPath + '.stale.' + process.pid + '.'
+              + Date.now().toString(36) + '.'
+              + Math.floor(Math.random() * 1e9).toString(36);
+            try {
+              fs.renameSync(lockPath, reclaimPath);
+            } catch (_renameErr) {
+              // Reclaim lost (ENOENT = another recoverer already moved the inode)
+              // or otherwise failed — either way fall through to the single
+              // O_EXCL create below, which is the authoritative arbiter.
+            }
+            // Best-effort: remove the reclaimed stale lock (only OUR inode).
+            try { fs.unlinkSync(reclaimPath); } catch (_e) { /* not ours / gone */ }
+            // Authoritative acquisition: O_EXCL create. Exactly one process can
+            // succeed here; everyone else gets EEXIST → fail-closed contention.
             try { return fs.openSync(lockPath, 'wx'); }
             catch (retryErr) {
               if (retryErr && retryErr.code === 'EEXIST') {
@@ -696,6 +787,11 @@ function createLoader(userOpts) {
             // Lock disappeared between EEXIST and statSync — race resolved itself; retry.
             try { return fs.openSync(lockPath, 'wx'); }
             catch (_e) { /* fall through to throw below */ }
+          } else if (statErr && statErr.message
+              && statErr.message.startsWith('plugin-consents.json lock contention')) {
+            // Re-throw the contention error raised inside the recovery block
+            // above (do not mask it as a generic stat failure).
+            throw statErr;
           }
         }
         throw new Error(
@@ -1658,15 +1754,36 @@ function createLoader(userOpts) {
    * @param {string} [detail]
    */
   function transitionDead(ps, reason, detail) {
-    // Unregister overlay tools so callers see them disappear.
+    // Unregister overlay tools so callers (listTools / live clients) see them
+    // disappear immediately. registeredToolNames is cleared BEFORE any
+    // _postOverlayMutation() so the BUG-2 toolset diff reads the post-mutation
+    // overlay (the dead plugin's tools are already gone from the snapshot).
     for (const name of ps.registeredToolNames) {
       try { registry._unregister(name); } catch (_e) { /* ignore */ }
     }
-    _postOverlayMutation();
     ps.registeredToolNames.clear();
     ps.compiledValidators.clear();
 
-    if (ps.state === 'unloaded') return; // sticky terminal
+    // BUG-2: decide whether this death will trigger an auto-restart. A restart
+    // that reloads the IDENTICAL toolset is a transient flap, not a real
+    // tool-list change — so we suppress the changed-flag on the death edge and
+    // let the settling reload's _postOverlayMutation() apply the diff (which
+    // will be a no-op when the toolset is restored). Path A (live notification)
+    // still fires so a connected client can re-fetch and see the tools vanish.
+    // The crash-loop itself is surfaced via plugin_dead / plugin_restart_attempted
+    // audit events, which is the correct operational surface (restarting Claude
+    // Code does not fix a crash-looping plugin).
+    const sticky      = ps.state === 'unloaded';
+    const willRestart = !sticky
+      && ps.restartAttempts < opts.maxRestartAttempts;
+
+    if (willRestart) {
+      _emitListChanged(); // Path A only — transient flap, do not arm Path B flag.
+    } else {
+      _postOverlayMutation(); // permanent removal — arm flag if toolset changed.
+    }
+
+    if (sticky) return; // sticky terminal
 
     if (ps.state !== 'dead') {
       try { transition(ps, 'dead'); }
@@ -1719,13 +1836,16 @@ function createLoader(userOpts) {
     const ps = state.get(pluginName);
     if (!ps) return;
 
-    // Unregister overlay tools first so concurrent callers fail fast.
+    // Unregister overlay tools first so concurrent callers fail fast. Clear
+    // registeredToolNames BEFORE _postOverlayMutation so the BUG-2 toolset diff
+    // reads the post-unload overlay (the unloaded plugin's tools are gone).
+    // unload() is a deliberate, permanent removal — always evaluate the flag.
     for (const name of ps.registeredToolNames) {
       try { registry._unregister(name); } catch (_e) { /* ignore */ }
     }
-    _postOverlayMutation();
     ps.registeredToolNames.clear();
     ps.compiledValidators.clear();
+    _postOverlayMutation();
 
     // Reject all in-flight calls.
     for (const [, pending] of ps.pendingCalls) {
@@ -1786,6 +1906,24 @@ function createLoader(userOpts) {
   }
 
   // -------------------------------------------------------------------------
+  // BUG-1: boot-phase control. The MCP server wraps its startup
+  // scan→load chain in beginBootPhase()/endBootPhase() so the initial
+  // auto-load of already-consented plugins does NOT arm the restart-changed
+  // flag. endBootPhase() captures the boot toolset as the BUG-2 diff baseline,
+  // so a subsequent flap that restores the same toolset is recognised as
+  // "no change" and never re-arms.
+  // -------------------------------------------------------------------------
+  function beginBootPhase() {
+    bootPhase = true;
+  }
+
+  function endBootPhase() {
+    bootPhase = false;
+    // Baseline the diff at the toolset the client will first observe.
+    lastArmedToolNames = _currentOverlayToolNames();
+  }
+
+  // -------------------------------------------------------------------------
   // Introspection
   // -------------------------------------------------------------------------
 
@@ -1812,6 +1950,10 @@ function createLoader(userOpts) {
     shutdown,
     getState,
     listLoaded,
+    // BUG-1: server brackets its boot scan→load chain with these so boot-time
+    // registrations do not arm the plugin-tools-changed flag.
+    beginBootPhase,
+    endBootPhase,
     _internals: {
       // Test-only access to internals. Do NOT use in production code.
       state,
@@ -1819,6 +1961,7 @@ function createLoader(userOpts) {
       transitionDead,
       buildSpawnEnv,
       ALLOWED_TRANSITIONS,
+      _currentOverlayToolNames,
       // Wave 3 W-SEC-4 / W-SEC-6 / W-SEC-7 surface for tests.
       _loadConsent,
       _writeConsent,
