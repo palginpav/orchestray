@@ -3,6 +3,32 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.8] - 2026-06-10
+
+**Orchestray 2.3.8 hardens concurrency, protects your uncommitted work from subagents, stops a persistent restart nag banner, and replaces heavy supply-chain dependencies with built-in Node.js equivalents.**
+
+### Fixed
+
+- **"Plugin tools changed — please restart" banner no longer fires after every boot.** The warning existed to tell you when a plugin's tool list changed mid-session. But the arming logic ran on every MCP-server start, so crash-looping plugins and normal reboots both triggered it continuously. The nag now fires only when the actual tool set differs from the previous session's snapshot — exactly what the message says.
+
+- **Subagents can no longer destroy your uncommitted work.** Destructive git commands — `stash`, `clean`, `checkout --`, `reset --hard` — are now blocked for read-only agents in all contexts and for all subagents acting on the shared project checkout. An audit event is recorded every time a block fires. This closed a real data-loss bug found during the pre-ship audit: a reviewer agent could silently discard in-progress changes in the main worktree.
+
+- **Concurrent agent activity no longer produces duplicate cost reservations, double-consumed spawn requests, or torn config reads.** All runtime state writers now acquire advisory locks with PID-verified stale lock recovery before touching shared state files. Worktree creation retries automatically on `git lock` contention and tolerates the dual-install double-fire without producing duplicate worktrees.
+
+- **Previously-dead features now work:** curator stage loading (unwired since v2.1.15) now runs correctly; the `ORCHESTRAY_DISABLE_CATALOG_DEFAULT` env kill switch now actually disables catalog default behavior (it was documented but never connected); `/orchestray:status` and `/orchestray:patterns` render correctly on global installs (they were broken for users who installed globally only). Ten config sections now have validated fail-open loaders instead of silent no-ops on bad input.
+
+### Changed
+
+- **Supply-chain cleanup — zod is now the only runtime dependency for most users.** `better-sqlite3`, `ajv`, and `graphology` have been removed from the dependency tree. JSON Schema subset validation is now handled by a compact in-house validator; PageRank is computed inline. On Node 22.5+, full-text pattern search uses Node's built-in `node:sqlite` (zero extra installs). On older Node, pattern search degrades gracefully as before. The `postinstall` script has been removed; `better-sqlite3` can still be installed manually on older Node for FTS5 if desired.
+
+- **Bundled tree-sitter WASM grammars are documented as official builds in `socket.yml`**, removing them from Socket.dev's supply-chain alert surface. A GitHub Actions provenance-publish workflow is included for future signed-provenance releases; it is inert until activated.
+
+### Not in this release
+
+- **Capability-flag enforcement and plugin signature verification** remain advisory (documented in the security model section). These require a plugin sandbox API that is not available in the current Claude Code extension surface.
+
+---
+
 ## [2.3.7] - 2026-06-09
 
 **Orchestray now recognizes Claude Fable 5 — cost tracking, status display, and model aliases all work correctly out of the box.**
