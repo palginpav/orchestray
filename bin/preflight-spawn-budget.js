@@ -32,6 +32,8 @@ const path = require('path');
 const { resolveSafeCwd }       = require('./_lib/resolve-project-cwd');
 const { MAX_INPUT_BYTES }      = require('./_lib/constants');
 const { writeEvent }           = require('./_lib/audit-event-writer');
+// NEW-01 (v2.3.9): use canonical loaders so malformed config values are caught.
+const { loadRoleBudgetsConfig, loadBudgetEnforcementConfig } = require('./_lib/config-schema');
 
 // ---------------------------------------------------------------------------
 // loadLiveRoleBudgets — try `.orchestray/state/role-budgets.json` first, fall
@@ -202,6 +204,16 @@ process.stdin.on('end', () => {
       process.stderr.write('[orchestray] preflight-spawn-budget: failed to load config; failing open\n');
       process.exit(0);
     }
+
+    // NEW-01 (v2.3.9): wire canonical loaders so malformed config values
+    // (e.g. non-boolean budget_enforcement.enabled) are caught and replaced
+    // with safe defaults rather than silently mis-evaluating. The loaders are
+    // fail-open and preserve EXACT current behavioral defaults.
+    config = {
+      ...config,
+      budget_enforcement: loadBudgetEnforcementConfig(cwd),
+      role_budgets: loadRoleBudgetsConfig(cwd),
+    };
 
     // R-BUDGET-WIRE (v2.1.16): overlay live calibrated budgets if present.
     // The live file lives at `.orchestray/state/role-budgets.json` and is

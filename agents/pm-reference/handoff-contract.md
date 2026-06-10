@@ -360,11 +360,11 @@ patterns, the full-body fetch is `pattern_read(slug)`. For KB, use a direct file
 
 ### Kill switch (R-CAT-DEFAULT)
 
-- `.orchestray/config.json` → `"catalog_mode_default": false` flips the prompt-level
-  default back to `mode: "full"` (the v2.1.15 shape).
-- Env var `ORCHESTRAY_DISABLE_CATALOG_DEFAULT=1` matches the v2.1.14 kill-switch
-  convention and overrides the config flag.
-- Agents can always pass `mode: "full"` per call without a config change.
+- `.orchestray/config.json` → `"catalog_mode_default": false` **coerces all calls**
+  (including explicit `mode: "catalog"`) back to the full-shape response. Env var
+  `ORCHESTRAY_DISABLE_CATALOG_DEFAULT=1` overrides the config flag with the same effect.
+- Note: the kill switch overrides even explicit per-call `mode: "catalog"` — it is a
+  session-wide coercion, not merely a default change.
 
 ### Default `fields` shapes (R-PFX, v2.1.14 — applies under `mode: "full"`)
 

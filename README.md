@@ -40,6 +40,8 @@ On **Node < 22.5**, FTS5 is disabled by default. To enable it, optionally instal
 npm install better-sqlite3
 ```
 
+(Node 22.5+ users: not needed — `node:sqlite` is used automatically)
+
 Without better-sqlite3 on older Node versions, pattern matching still works but without full-text ranking — all matches are equally relevant. The pattern index degrades gracefully and emits a warning (not an error).
 
 ## Quick start

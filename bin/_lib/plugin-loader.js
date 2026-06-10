@@ -569,6 +569,30 @@ function createLoader(userOpts) {
     // differs from the last set we armed for (BUG-2), so an identical-toolset
     // crash/reload flap does not re-arm the banner every cycle.
     if (opts.restart_flag_check === false || bootPhase) return;
+
+    // F5 (v2.3.9): suppress arming within the boot-grace window (60 s after
+    // endBootPhase). A plugin that failed its boot handshake and then recovers
+    // during this window is still in boot context — its tools appear as a NEW
+    // addition vs the endBootPhase baseline, but they were always consented.
+    // We must not fire a spurious "restart needed" banner for this case.
+    // Path A (live notification) still fires (caller above already called
+    // _emitListChanged via willRestart path, or it fires in the full mutation).
+    if (bootCompletedAt !== null && Date.now() - bootCompletedAt < BOOT_GRACE_MS) {
+      // Grace window applies ONLY to a recovery back to the exact boot
+      // baseline (late boot handshake settling). Any change AWAY from the
+      // baseline — new tools, deliberate unload — is a genuine mid-session
+      // mutation and falls through to normal diff-arming below.
+      const cur = _currentOverlayToolNames();
+      const isBaselineRecovery = bootBaselineToolNames !== null
+        && cur.length === bootBaselineToolNames.length
+        && cur.every((n, i) => n === bootBaselineToolNames[i]);
+      if (isBaselineRecovery) {
+        lastArmedToolNames = cur;
+        return;
+      }
+      // fall through: genuine change during grace window arms normally
+    }
+
     const current = _currentOverlayToolNames();
     if (lastArmedToolNames !== null
         && current.length === lastArmedToolNames.length
@@ -732,7 +756,10 @@ function createLoader(userOpts) {
       fs.mkdirSync(path.dirname(consentPath), { recursive: true });
     } catch (_e) { /* swallow */ }
     try {
-      return fs.openSync(lockPath, 'wx');
+      const fd = fs.openSync(lockPath, 'wx');
+      // F4 (v2.3.9): write PID so _releaseConsentLock can verify ownership.
+      try { fs.writeFileSync(lockPath, String(process.pid), 'utf8'); } catch (_e) {}
+      return fd;
     } catch (err) {
       if (err && err.code === 'EEXIST') {
         // Stale-lock recovery. Hold time is microseconds (read+parse+close);
@@ -770,7 +797,12 @@ function createLoader(userOpts) {
             try { fs.unlinkSync(reclaimPath); } catch (_e) { /* not ours / gone */ }
             // Authoritative acquisition: O_EXCL create. Exactly one process can
             // succeed here; everyone else gets EEXIST → fail-closed contention.
-            try { return fs.openSync(lockPath, 'wx'); }
+            try {
+              const recoverFd = fs.openSync(lockPath, 'wx');
+              // F4: write PID for release-time ownership verification.
+              try { fs.writeFileSync(lockPath, String(process.pid), 'utf8'); } catch (_e) {}
+              return recoverFd;
+            }
             catch (retryErr) {
               if (retryErr && retryErr.code === 'EEXIST') {
                 throw new Error(
@@ -785,7 +817,11 @@ function createLoader(userOpts) {
         } catch (statErr) {
           if (statErr && statErr.code === 'ENOENT') {
             // Lock disappeared between EEXIST and statSync — race resolved itself; retry.
-            try { return fs.openSync(lockPath, 'wx'); }
+            try {
+              const enoentFd = fs.openSync(lockPath, 'wx');
+              try { fs.writeFileSync(lockPath, String(process.pid), 'utf8'); } catch (_e) {}
+              return enoentFd;
+            }
             catch (_e) { /* fall through to throw below */ }
           } else if (statErr && statErr.message
               && statErr.message.startsWith('plugin-consents.json lock contention')) {
@@ -806,7 +842,21 @@ function createLoader(userOpts) {
 
   function _releaseConsentLock(consentPath, fd) {
     try { fs.closeSync(fd); } catch (_e) { /* ignore */ }
-    try { fs.unlinkSync(consentPath + '.lock'); } catch (_e) { /* ignore */ }
+    // F4 (v2.3.9): verify we still own the lock before unlinking.
+    // If the critical section took > 10s, the stale-recovery path in
+    // _acquireConsentLock may have already moved our lock aside and created
+    // a new one for another holder (B). Unlinking lockPath without checking
+    // would delete B's fresh lock, enabling a double-hold. We only unlink
+    // if the lock content still carries our PID.
+    const lockPath = consentPath + '.lock';
+    try {
+      const content = fs.readFileSync(lockPath, 'utf8').trim();
+      if (content === String(process.pid)) {
+        fs.unlinkSync(lockPath);
+      }
+      // If content differs, another holder already reclaimed and owns the lock —
+      // leave it alone.
+    } catch (_e) { /* lock already gone or unreadable — ignore */ }
   }
 
   /**
@@ -1912,15 +1962,40 @@ function createLoader(userOpts) {
   // flag. endBootPhase() captures the boot toolset as the BUG-2 diff baseline,
   // so a subsequent flap that restores the same toolset is recognised as
   // "no change" and never re-arms.
+  //
+  // F5 (v2.3.9): boot-grace window for slow-first-handshake plugins.
+  // A plugin that fails its boot handshake (timeout during boot) is absent
+  // from the endBootPhase() baseline. When it later recovers (backoff restart
+  // succeeds), _postOverlayMutation() diffs vs baseline and ARMS the flag —
+  // producing a spurious "plugin tools changed" banner for a plugin that was
+  // always consented and just needed extra time. Fix: stamp bootCompletedAt in
+  // endBootPhase(), and in _postOverlayMutation() suppress flag arming for any
+  // addition that occurs within BOOT_GRACE_MS of bootCompletedAt. 60 s is the
+  // restart backoff sum (1s + 5s + 30s + ...) — a plugin that recovers within
+  // this window is still in boot context; one that takes longer is a genuine
+  // mid-session change. Suppression applies to flag ONLY (Path A still fires).
   // -------------------------------------------------------------------------
+  // Milliseconds after endBootPhase during which a recovering-from-boot plugin
+  // is treated as boot-time (no flag arm).
+  const BOOT_GRACE_MS = 60_000;
+
+  /** Timestamp (Date.now()) when endBootPhase() was called. null until then. */
+  let bootCompletedAt = null;
+  let bootBaselineToolNames = null;
+
   function beginBootPhase() {
     bootPhase = true;
   }
 
   function endBootPhase() {
     bootPhase = false;
+    bootCompletedAt = Date.now();
     // Baseline the diff at the toolset the client will first observe.
     lastArmedToolNames = _currentOverlayToolNames();
+    // F5: snapshot the boot baseline separately — the grace-window suppression
+    // applies ONLY to a recovery back to this exact set (late boot handshake),
+    // never to genuine early mid-session changes away from it.
+    bootBaselineToolNames = lastArmedToolNames.slice();
   }
 
   // -------------------------------------------------------------------------

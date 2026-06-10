@@ -105,15 +105,24 @@ function _isLockStale(lockPath) {
       // Verify the recorded PID is dead.
       try {
         process.kill(holderPid, 0);
-        // PID is alive → not stale (holder is live-but-slow).
-        return false;
+        // PID appears alive. F6 (v2.3.9): guard against PID recycling.
+        // A reused PID belonging to an unrelated process makes kill(pid,0)
+        // succeed even though the original lock holder is long dead. If the
+        // lock is MUCH older than the stale threshold (5× = 50 s), the
+        // holder is pathologically slow or the PID was recycled — reclaim.
+        const ageMs = Date.now() - st.mtimeMs;
+        if (ageMs > STALE_LOCK_MS * 5) {
+          return true; // PID-recycled or hung: force reclaim
+        }
+        return false; // live-but-slow: not stale
       } catch (killErr) {
         if (killErr && killErr.code === 'ESRCH') {
           // PID not found → holder is dead → stale, safe to reclaim.
           return true;
         }
         // EPERM: PID exists but we lack permissions to signal it → treat as alive.
-        return false;
+        // Apply mtime fallback so an EPERM lock can still be reclaimed on age.
+        return Date.now() - st.mtimeMs > STALE_LOCK_MS;
       }
     }
 

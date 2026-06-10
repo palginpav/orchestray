@@ -200,9 +200,9 @@ When the score meets or exceeds the threshold, enter orchestration mode:
      direct file Read via the URI for KB) ONLY when a headline meets ALL of:
      `confidence >= 0.6`, `times_applied >= 1`, AND the `one_line`/`excerpt` plainly
      matches the task. Skip headlines below that bar — do not pull the body to check.
-     Kill switch: `.orchestray/config.json` → `"catalog_mode_default": false` reverts
-     to the legacy `mode: "full"` shape; env `ORCHESTRAY_DISABLE_CATALOG_DEFAULT=1`
-     also reverts.
+     Kill switch: `.orchestray/config.json` → `"catalog_mode_default": false` coerces ALL
+     `pattern_find` calls (including explicit `mode: "catalog"`) to return full-shape
+     responses. Env `ORCHESTRAY_DISABLE_CATALOG_DEFAULT=1` has the same effect.
    - When only specific fields are needed (legacy `mode: "full"` path), use the optional `fields` parameter to reduce output token cost: `{"query": "...", "fields": ["slug", "excerpt"]}`. Works the same way for `mcp__orchestray__pattern_find`: `{"task_summary": "...", "fields": ["slug", "confidence"]}`, `mcp__orchestray__routing_lookup`: `{"orchestration_id": "...", "fields": ["ts", "agent_type", "model"]}`, and `mcp__orchestray__metrics_query`: `{"window": "7d", "group_by": "model", "metric": "cost_usd", "fields": ["key", "mean"]}`. Omit `fields` for the full response (backward compatible).
    - Read the top ≤3 matches via `@orchestray:kb://<section>/<slug>` attachments in the
      delegation prompt, only for the specialists that will directly use them. Do not

@@ -48,6 +48,8 @@ const { buildBlockZ }    = require('./_lib/block-z');
 const { buildManifest }  = require('./_lib/cache-breakpoint-manifest');
 // v2.2.8: generalized double-fire guard (Item 4).
 const { requireGuard }   = require('./_lib/double-fire-guard');
+// NEW-01 (v2.3.9): canonical loader for caching config section.
+const { loadCachingConfig } = require('./_lib/config-schema');
 
 const CONTINUE_RESPONSE = JSON.stringify({ continue: true });
 
@@ -138,6 +140,11 @@ function loadBlockAConfig(cwd) {
     }
 
     // P2.1 caching block (new in v2.2.0).
+    // NEW-01 (v2.3.9): run canonical loader for top-level caching validation.
+    // The loader validates `enabled`/`zone1_ttl_ms` and logs any bad values.
+    // block-a doesn't use those fields directly (it reads sub-keys below),
+    // but invoking the loader activates the schema validation path for this section.
+    loadCachingConfig(cwd);
     const caching = parsed.caching;
     if (caching && typeof caching === 'object' && !Array.isArray(caching)) {
       if (caching.block_z && typeof caching.block_z === 'object') {

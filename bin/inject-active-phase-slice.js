@@ -25,6 +25,8 @@
 
 const fs = require('fs');
 const path = require('path');
+// NEW-01 (v2.3.9): canonical loader for phase_slice_loading config.
+const { loadPhaseSliceLoadingConfig } = require('./_lib/config-schema');
 
 const CONTINUE_RESPONSE = JSON.stringify({ continue: true });
 
@@ -269,10 +271,10 @@ function handle(_payload) {
     return;
   }
 
-  // Kill switch (config)
-  const cfg = loadConfig(cwd);
-  const block = cfg.phase_slice_loading;
-  if (block && typeof block === 'object' && block.enabled === false) {
+  // Kill switch (config). NEW-01 (v2.3.9): use canonical loader for validation.
+  const phaseCfg = loadPhaseSliceLoadingConfig(cwd);
+  const cfg = loadConfig(cwd); // still needed for telemetry sub-key access below
+  if (phaseCfg.enabled === false) {
     process.stdout.write(CONTINUE_RESPONSE + '\n');
     return;
   }
@@ -315,7 +317,9 @@ function handle(_payload) {
   // v2.1.16 R-PHASE-INJ: positive-path telemetry. Emit AFTER staging succeeded
   // and BEFORE writing stdout so emission failures (which never throw) cannot
   // bend the hook's response contract.
-  emitInjectedEvent(cwd, cfg, phase, slice, pointer);
+  // Pass the validated phaseCfg so the telemetry kill switch reads
+  // phaseCfg.telemetry_enabled from the loader (same semantic, validated type).
+  emitInjectedEvent(cwd, { phase_slice_loading: phaseCfg }, phase, slice, pointer);
 
   process.stdout.write(JSON.stringify(response) + '\n');
 }

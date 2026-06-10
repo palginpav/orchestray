@@ -1,6 +1,8 @@
 'use strict';
 
 const path = require('path');
+// NEW-01 (v2.3.9): canonical loader for haiku_routing config section.
+const { loadHaikuRoutingConfig } = require('./config-schema');
 
 /**
  * _haiku-routing-rule.js — Pure decision helper for the PM Section 23
@@ -91,10 +93,23 @@ function _globMatch(pathStr, pattern) {
 
 /**
  * Resolve effective config: caller's haiku_routing block overlaid on defaults.
+ *
+ * NEW-01 (v2.3.9): when `cwd` is supplied, delegates to `loadHaikuRoutingConfig`
+ * so the canonical loader's validation runs. Falls back to raw `config` object
+ * access for callers that pre-load config themselves (backward compatible).
+ *
  * @param {object|undefined} config - { haiku_routing: {...} } or {} or undefined.
+ * @param {string} [cwd] - project root; when present, loader is used directly.
  * @returns {{enabled: boolean, scout_min_bytes: number, scout_blocked_ops: string[], scout_blocked_paths: string[]}}
  */
-function _resolveConfig(config) {
+function _resolveConfig(config, cwd) {
+  // Prefer canonical loader when cwd is available — gives us validated defaults
+  // and catches malformed values (e.g. non-boolean `enabled`).
+  if (typeof cwd === 'string' && cwd.length > 0) {
+    try {
+      return loadHaikuRoutingConfig(cwd);
+    } catch (_e) { /* loader failed; fall through to raw config */ }
+  }
   const c = (config && config.haiku_routing) || {};
   return {
     enabled: c.enabled !== false ? (c.enabled !== undefined ? !!c.enabled : DEFAULTS.enabled) : false,

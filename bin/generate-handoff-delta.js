@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // NOT_A_HOOK (v2.2.15 FN-59): CLI-only utility, not wired as a hook handler.
 'use strict';
+// NEW-01 (v2.3.9): canonical loader for delta_handoff config section.
+const { loadDeltaHandoffConfig } = require('./_lib/config-schema');
 
 /**
  * generate-handoff-delta.js — Delta-only re-delegation payload generator.
@@ -95,11 +97,23 @@ function shouldFetchFull(ctx) {
     summary = '',
     plannedFiles = [],
     config = {},
+    cwd = null,
     fileLastCommitDates = {},
     orchestrationStartedAt = null,
   } = ctx;
 
-  const deltaCfg = (config && config.delta_handoff) || {};
+  // NEW-01 (v2.3.9): use canonical loader when cwd is available, falling back
+  // to raw config access (backward compatible with callers that pre-parse config).
+  let deltaCfg;
+  if (typeof cwd === 'string' && cwd.length > 0) {
+    try {
+      deltaCfg = loadDeltaHandoffConfig(cwd);
+    } catch (_e) {
+      deltaCfg = (config && config.delta_handoff) || {};
+    }
+  } else {
+    deltaCfg = (config && config.delta_handoff) || {};
+  }
 
   // Kill switch — force full fetch regardless of rules.
   if (deltaCfg.force_full === true) {

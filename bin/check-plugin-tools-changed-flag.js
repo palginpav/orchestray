@@ -50,12 +50,24 @@ function resolveFlagRoot(eventCwd) {
     } catch (_e) { /* fall through */ }
   }
   // Step 2: walk up from the resolved cwd for a `.orchestray/` marker.
+  // F3 (v2.3.9): exclude $HOME from the walk-up hit. `~/.orchestray/` is the
+  // GLOBAL Orchestray state dir, not a project root. Accepting $HOME as a
+  // project root causes every CLAUDE_PROJECT_DIR-unset session in an
+  // unrelated cwd to read/write $HOME/.orchestray/ — which contains the
+  // pre-fix orphan flag (and, more broadly, misroutes all state writes to
+  // the global dir instead of the project dir). A project's `.orchestray`
+  // is always inside the project tree, never literally at `$HOME`.
+  const homeDir = (() => {
+    try { return path.resolve(process.env.HOME || require('os').homedir()); } catch (_e) { return null; }
+  })();
   const base = resolveSafeCwd(eventCwd);
   try {
     let dir = path.resolve(base);
     // Bounded walk (depth cap mirrors the server's walkUpFor safety).
     for (let i = 0; i < 64; i++) {
-      if (fs.existsSync(path.join(dir, '.orchestray'))) return dir;
+      // Skip $HOME itself — its .orchestray is the global state dir, not a project.
+      const isHome = homeDir !== null && dir === homeDir;
+      if (!isHome && fs.existsSync(path.join(dir, '.orchestray'))) return dir;
       const parent = path.dirname(dir);
       if (parent === dir) break;
       dir = parent;
@@ -105,6 +117,22 @@ function handleUserPromptSubmit(event) {
       process.exit(0);
       return;
     }
+
+    // F3 (v2.3.9): self-heal for orphan flags.
+    // A pre-fix (< v2.3.8) boot wrote this flag even for non-mutation events;
+    // such flags can survive for weeks if no session reads them. A flag older
+    // than 7 days is definitionally stale (v2.3.8 servers do not re-write it
+    // on boot, so no legitimate flag should ever be that old). Delete silently
+    // without emitting the banner — the user's session is not affected.
+    const FLAG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+    try {
+      const st = fs.statSync(flagPath);
+      if (Date.now() - st.mtimeMs > FLAG_MAX_AGE_MS) {
+        try { fs.unlinkSync(flagPath); } catch (_e) { /* ignore */ }
+        process.exit(0);
+        return;
+      }
+    } catch (_statErr) { /* flag may have just been removed; fall through */ }
 
     // Delete flag first so we don't re-fire if emission fails mid-way.
     // Ignore unlink errors — flag may have been removed by a concurrent process.
