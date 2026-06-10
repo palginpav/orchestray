@@ -21,7 +21,7 @@ const { toolSuccess, toolError } = require('../lib/tool-result');
 const { sanitizeExcerpt } = require('../lib/excerpt');
 const { logStderr } = require('../lib/rpc');
 const { AGENT_ROLES } = require('../lib/constants');
-const { loadPatternDecayConfig, loadRetrievalConfig } = require('../../_lib/config-schema');
+const { loadPatternDecayConfig, loadRetrievalConfig, loadCatalogModeDefaultConfig } = require('../../_lib/config-schema');
 const { searchPatterns, UNAVAILABLE: FTS5_UNAVAILABLE } = require('../../_lib/pattern-index-sqlite');
 const { _expandSynonyms } = require('./_synonyms');
 const { getSharedPatternsDir } = require('../lib/paths');
@@ -677,7 +677,24 @@ async function handle(input, context) {
 
   // mode=catalog returns a TOON-formatted headline list (fields is ignored).
   // mode=full (default) returns full match objects with optional field projection.
-  const mode = (typeof input.mode === 'string' && input.mode === 'catalog') ? 'catalog' : 'full';
+  //
+  // R-CAT-DEFAULT: when no explicit mode is provided, use catalog as the default
+  // unless ORCHESTRAY_DISABLE_CATALOG_DEFAULT=1 or config catalog_mode_default.catalog_default=false.
+  // Explicit input.mode always takes precedence (callers who pass mode:'full' always get full).
+  let mode;
+  if (typeof input.mode === 'string' && (input.mode === 'catalog' || input.mode === 'full')) {
+    // Explicit caller override — honour unconditionally.
+    mode = input.mode;
+  } else {
+    // No explicit mode: apply R-CAT-DEFAULT rule (catalog default, unless kill-switched).
+    let catalogModeConfig;
+    try {
+      catalogModeConfig = loadCatalogModeDefaultConfig(projectRoot);
+    } catch (_) {
+      catalogModeConfig = { catalog_default: true };
+    }
+    mode = catalogModeConfig.catalog_default ? 'catalog' : 'full';
+  }
 
   if (mode === 'catalog') {
     const catalogMatches = top.map((m) => ({

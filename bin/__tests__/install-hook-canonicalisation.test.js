@@ -139,9 +139,8 @@ describe('FN-13 install-hook-canonicalisation', () => {
     'validate-reviewer-dimensions.js',
     // W8d FN-44 — appended by PM after W8b/d finish per §5 protocol.
     'validate-context-size-hint.js',
-    // v2.1.15 latent: docstring says UserPromptSubmit hook but never wired.
-    // Out of W8b scope; track in v2.2.15 PLAN.
-    'inject-active-curator-stage.js',
+    // inject-active-curator-stage.js was pending-wiring since v2.1.15;
+    // wired as UserPromptSubmit hook in v2.3.8 (C3-01 fix).
     // v2.2.10 F1: the following 6 scripts WERE Stop/SubagentStop hooks in
     // v2.2.9 and earlier, and still read stdin like hook handlers, but the
     // F1 boundary-trigger migration retired their Stop entries. They now

@@ -76,6 +76,7 @@ function writePattern(tmp, slug, frontmatter, body) {
 function validInput(overrides = {}) {
   return {
     task_summary: 'Refactor reviewer to scan only changed files',
+    mode: 'full', // tests assert full-mode shape (matches array); explicit to survive R-CAT-DEFAULT
     ...overrides,
   };
 }

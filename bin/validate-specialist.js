@@ -37,6 +37,10 @@ const { parseFrontmatter } = require('./_lib/frontmatter-parse');
 const VALID_MODELS = new Set(['fable', 'haiku', 'sonnet', 'opus', 'inherit']);
 // Accept common model-id prefixes too so future model slugs don't break
 // the validator (e.g. 'claude-fable-5', 'claude-opus-4-7', 'claude-sonnet-4-6').
+// Intentional divergence from custom-agents.js ALLOWED_MODEL_FULL (explicit set):
+// specialists use prefix matching for forward-compat — new model point-releases
+// (e.g. claude-opus-4-9) are auto-accepted here without a code change, whereas
+// custom-agents.js uses an explicit set for tighter control over user-defined agents.
 const MODEL_ID_PREFIXES = ['claude-fable', 'claude-haiku', 'claude-sonnet', 'claude-opus'];
 const VALID_MEMORY = new Set(['user', 'project', 'local']);
 const VALID_EFFORT = new Set(['low', 'medium', 'high', 'xhigh', 'max']);

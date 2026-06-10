@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * audit-round-archive-hook.js — SubagentStop hook (P3.1, v2.2.0).
+ * audit-round-archive-hook.js — subprocess called by audit-on-orch-complete.js (PostToolUse:Bash) (P3.1, v2.2.0).
  *
  * Detects audit-round closure by tailing `.orchestray/audit/events.jsonl`
  * for `verify_fix_pass | verify_fix_fail | verify_fix_oscillation` rows

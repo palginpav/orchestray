@@ -192,7 +192,22 @@ corrected before accumulating session cost from stale cache reads.
 
 ---
 
-## 9. Adding Future Tier-2 Features
+## 9. Block Sentinels in pm.md
+
+`agents/pm.md` uses two HTML comment markers to delimit the prefix-cacheable
+Block A zone from the rest of the prompt:
+
+- `<!-- ORCHESTRAY_BLOCK_A_END -->` — end of Block A (Zone 1+2 frozen content)
+- `<!-- ORCHESTRAY_BLOCK_B_END -->` — end of Block B (orchestration body)
+
+These are **plain string markers** read by `compose-block-a.js` and the prefix
+cache system. They are NOT environment variable gates. `process.env.ORCHESTRAY_BLOCK_B_END`
+is NOT_YET_IMPLEMENTED — the sentinel is only recognized as an HTML comment
+in the text of `pm.md`, not as an env-var kill switch.
+
+---
+
+## 10. Adding Future Tier-2 Features
 
 When adding a new Tier-2 feature that introduces PM context content:
 

@@ -103,7 +103,7 @@ describe('v2.1.2 Idea 4 (a): per-term match_reasons on FTS5 path', () => {
       ].join('\n'));
 
       const result = await handle(
-        { task_summary: 'blargment disjoint scopes' },
+        { task_summary: 'blargment disjoint scopes', mode: 'full' },
         makeContext(tmp)
       );
 
@@ -176,7 +176,7 @@ describe('v2.1.2 Idea 4 (a): per-term match_reasons on FTS5 path', () => {
       ].join('\n'));
 
       const r1 = await handle(
-        { task_summary: 'blargful verification' },
+        { task_summary: 'blargful verification', mode: 'full' },
         makeContext(tmp1)
       );
       assert.equal(r1.isError, false);
@@ -216,7 +216,7 @@ describe('v2.1.2 Idea 4 (a): per-term match_reasons on FTS5 path', () => {
       ].join('\n'));
 
       const r2 = await handle(
-        { task_summary: 'grumpling procedure' },
+        { task_summary: 'grumpling procedure', mode: 'full' },
         makeContext(tmp2)
       );
       assert.equal(r2.isError, false);
@@ -261,7 +261,7 @@ describe('v2.1.2 Idea 4 (a): per-term match_reasons on FTS5 path', () => {
       }, '## Context\nGrumbleon should scan only changed files for efficiency.\n\n## Evidence\nGrumbleon scan confirmed.\n');
 
       const result = await handle(
-        { task_summary: 'grumbleon scan changed files' },
+        { task_summary: 'grumbleon scan changed files', mode: 'full' },
         makeContext(tmp)
       );
       assert.equal(result.isError, false);
@@ -313,7 +313,7 @@ describe('v2.1.2 Idea 4 (b): role/category reasons preserved alongside per-term 
       }, '## Context\nReviewer subagents should only scan changed files.\n\n## Approach\nScope the reviewer to the diff.\n');
 
       const result = await handle(
-        { task_summary: 'reviewer scope changed files scan', agent_role: 'reviewer' },
+        { task_summary: 'reviewer scope changed files scan', agent_role: 'reviewer', mode: 'full' },
         makeContext(tmp)
       );
 
@@ -342,7 +342,7 @@ describe('v2.1.2 Idea 4 (b): role/category reasons preserved alongside per-term 
       }, '## Context\nPM should decompose orchestration tasks into subtasks.\n\n## Approach\nBreak down complex PM orchestration work.\n');
 
       const result = await handle(
-        { task_summary: 'PM orchestration decomposition subtasks', agent_role: 'pm' },
+        { task_summary: 'PM orchestration decomposition subtasks', agent_role: 'pm', mode: 'full' },
         makeContext(tmp)
       );
 
@@ -383,7 +383,7 @@ describe('v2.1.2 Idea 4 (b): role/category reasons preserved alongside per-term 
       }, '## Context\nAgents files need routing configuration.\n## Approach\nRoute agents based on agents directory structure.\n');
 
       const result = await handle(
-        { task_summary: 'agent routing configuration', file_globs: ['agents/developer.md', 'agents/reviewer.md'] },
+        { task_summary: 'agent routing configuration', file_globs: ['agents/developer.md', 'agents/reviewer.md'], mode: 'full' },
         makeContext(tmp)
       );
 
@@ -473,7 +473,7 @@ describe('v2.1.2 Idea 4 (c): fallback path produces "fallback: keyword" signal',
 
     try {
       const result = await handleFallback(
-        { task_summary: 'reviewer scan keyword test' },
+        { task_summary: 'reviewer scan keyword test', mode: 'full' },
         makeContext(tmp)
       );
 
@@ -513,7 +513,7 @@ describe('v2.1.2 Idea 4 (c): fallback path produces "fallback: keyword" signal',
 
     try {
       const result = await handleFallback(
-        { task_summary: 'reviewer scan decomposition' },
+        { task_summary: 'reviewer scan decomposition', mode: 'full' },
         makeContext(tmp)
       );
 

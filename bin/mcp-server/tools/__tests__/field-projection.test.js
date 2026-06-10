@@ -107,7 +107,7 @@ describe('R5 field projection — pattern_find', () => {
     writePattern(patternsDir, 'pf-t1-slug', token);
 
     const result = await patternFindHandle(
-      { task_summary: token + ' field projection', max_results: 5 },
+      { task_summary: token + ' field projection', max_results: 5, mode: 'full' },
       { projectRoot }
     );
 
@@ -135,7 +135,7 @@ describe('R5 field projection — pattern_find', () => {
     writePattern(patternsDir, 'pf-t2-slug', token);
 
     const result = await patternFindHandle(
-      { task_summary: token + ' field projection', max_results: 5, fields: 'slug,confidence' },
+      { task_summary: token + ' field projection', max_results: 5, fields: 'slug,confidence', mode: 'full' },
       { projectRoot }
     );
 
@@ -150,7 +150,7 @@ describe('R5 field projection — pattern_find', () => {
 
     // AC-02: byte reduction ≥ 50% compared to full response
     const fullResult = await patternFindHandle(
-      { task_summary: token + ' field projection', max_results: 5 },
+      { task_summary: token + ' field projection', max_results: 5, mode: 'full' },
       { projectRoot }
     );
     const fullMatch = fullResult.structuredContent.matches.find((x) => x.slug === 'pf-t2-slug');
@@ -173,7 +173,7 @@ describe('R5 field projection — pattern_find', () => {
     writePattern(patternsDir, 'pf-t3-slug', token);
 
     const result = await patternFindHandle(
-      { task_summary: token + ' field projection', max_results: 5, fields: 'nonexistent' },
+      { task_summary: token + ' field projection', max_results: 5, fields: 'nonexistent', mode: 'full' },
       { projectRoot }
     );
 
@@ -190,7 +190,7 @@ describe('R5 field projection — pattern_find', () => {
     t.after(() => cleanup(projectRoot));
 
     const result = await patternFindHandle(
-      { task_summary: 'test', fields: 'title.body' },
+      { task_summary: 'test', fields: 'title.body', mode: 'full' },
       { projectRoot }
     );
 
@@ -206,7 +206,7 @@ describe('R5 field projection — pattern_find', () => {
     t.after(() => cleanup(projectRoot));
 
     const result = await patternFindHandle(
-      { task_summary: 'test', fields: '$..title' },
+      { task_summary: 'test', fields: '$..title', mode: 'full' },
       { projectRoot }
     );
 
@@ -229,11 +229,11 @@ describe('R5 field projection — pattern_find', () => {
     }
 
     const fullResult = await patternFindHandle(
-      { task_summary: token + ' field projection', max_results: 5 },
+      { task_summary: token + ' field projection', max_results: 5, mode: 'full' },
       { projectRoot }
     );
     const projResult = await patternFindHandle(
-      { task_summary: token + ' field projection', max_results: 5, fields: ['slug', 'confidence'] },
+      { task_summary: token + ' field projection', max_results: 5, fields: ['slug', 'confidence'], mode: 'full' },
       { projectRoot }
     );
 

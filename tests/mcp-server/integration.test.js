@@ -470,6 +470,7 @@ describe('C. tools/call pattern_find', () => {
               arguments: {
                 task_summary: 'Refactor reviewer to scan only changed files',
                 agent_role: 'reviewer',
+                mode: 'full',
               },
             },
           });
@@ -495,7 +496,7 @@ describe('C. tools/call pattern_find', () => {
           method: 'tools/call',
           params: {
             name: 'pattern_find',
-            arguments: { task_summary: 'anything at all' },
+            arguments: { task_summary: 'anything at all', mode: 'full' },
           },
         });
         assert.equal(resp.result.isError, false);

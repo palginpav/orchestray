@@ -90,7 +90,7 @@ function backdateMtime(filepath, daysAgo) {
  */
 async function findFirst(tmp, ctx) {
   const result = await handle(
-    { task_summary: 'test pattern decay orchestration', max_results: 10, min_confidence: 0 },
+    { task_summary: 'test pattern decay orchestration', max_results: 10, min_confidence: 0, mode: 'full' },
     ctx
   );
   assert.ok(!result.isError, 'expected no error, got: ' + JSON.stringify(result));

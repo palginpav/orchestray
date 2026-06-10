@@ -487,6 +487,7 @@ const DEFAULT_COST_BUDGET_CHECK = Object.freeze({
     haiku:  Object.freeze({ input_per_1m: 1.00,  output_per_1m: 5.00  }),
     sonnet: Object.freeze({ input_per_1m: 3.00,  output_per_1m: 15.00 }),
     opus:   Object.freeze({ input_per_1m: 5.00,  output_per_1m: 25.00 }),
+    fable:  Object.freeze({ input_per_1m: 10.00, output_per_1m: 50.00 }),
   }),
   last_verified: '2026-04-11',
 });
@@ -4603,6 +4604,346 @@ function validateCustomAgents(obj) {
   return { valid: false, errors };
 }
 
+// ---------------------------------------------------------------------------
+// C1-01 — Minimal fail-open loaders for config sections that previously had
+// no loader/validator in config-schema.js (they were read directly from raw
+// JSON in hook scripts, bypassing sanitizeConfig). Each loader follows the
+// same fail-open contract: malformed input → frozen default + optional stderr
+// warn; never throws.
+//
+// Disposition per key (C1-01 fix):
+//   caching              → loadCachingConfig (loader below)
+//                          Consumed by: compose-block-a.js, validate-cache-invariant.js
+//   role_budgets         → loadRoleBudgetsConfig (loader below)
+//                          Consumed by: preflight-spawn-budget.js
+//   repo_map             → comment-mapped — bin/_lib/repo-map.js:264 has its own
+//                          inline guard (returns {} on any error) with adequate
+//                          protection. No standalone loader needed.
+//   haiku_routing        → loadHaikuRoutingConfig (loader below)
+//                          Consumed by: bin/_lib/_haiku-routing-rule.js:98
+//   curator_slice_loading → loadCuratorSliceLoadingConfig (loader below)
+//                          Consumed by: inject-active-curator-stage.js:147
+//   phase_slice_loading  → loadPhaseSliceLoadingConfig (loader below)
+//                          Consumed by: inject-active-phase-slice.js:17
+//   delta_handoff        → loadDeltaHandoffConfig (loader below)
+//                          Consumed by: generate-handoff-delta.js:102
+//   budget_enforcement   → loadBudgetEnforcementConfig (loader below)
+//                          Consumed by: preflight-spawn-budget.js:83
+//   catalog_mode_default → loadCatalogModeDefaultConfig (loader below)
+//                          Consumed by: bin/mcp-server/tools/pattern_find.js (mode selection)
+//   review_dimension_scoping → comment-mapped — inject-review-dimensions.js:234
+//                          has its own inline loadScopingConfig() with adequate
+//                          try/catch fail-open guards. No standalone loader needed.
+// ---------------------------------------------------------------------------
+
+// -- caching ------------------------------------------------------------------
+
+const DEFAULT_CACHING = Object.freeze({
+  enabled: true,
+  zone1_ttl_ms: 3600000,
+});
+
+/**
+ * Load the `caching` top-level config section.
+ * Fail-open: returns DEFAULT_CACHING on missing/malformed input.
+ * @param {string} cwd
+ * @returns {{ enabled: boolean, zone1_ttl_ms: number }}
+ */
+function loadCachingConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (_) {
+    return Object.assign({}, DEFAULT_CACHING);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_CACHING);
+  }
+  const section = parsed.caching;
+  if (!section || typeof section !== 'object' || Array.isArray(section)) {
+    return Object.assign({}, DEFAULT_CACHING);
+  }
+  const merged = Object.assign({}, DEFAULT_CACHING, sanitizeConfig(section));
+  if (typeof merged.enabled !== 'boolean') {
+    logStderr('caching.enabled must be boolean — using default');
+    merged.enabled = DEFAULT_CACHING.enabled;
+  }
+  if (typeof merged.zone1_ttl_ms !== 'number' || merged.zone1_ttl_ms <= 0) {
+    logStderr('caching.zone1_ttl_ms must be a positive number — using default');
+    merged.zone1_ttl_ms = DEFAULT_CACHING.zone1_ttl_ms;
+  }
+  return merged;
+}
+
+// -- role_budgets -------------------------------------------------------------
+
+const DEFAULT_ROLE_BUDGETS = Object.freeze({});
+
+/**
+ * Load the `role_budgets` top-level config section.
+ * Fail-open: returns DEFAULT_ROLE_BUDGETS on missing/malformed input.
+ * @param {string} cwd
+ * @returns {object} Map of role → budget object.
+ */
+function loadRoleBudgetsConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (_) {
+    return Object.assign({}, DEFAULT_ROLE_BUDGETS);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_ROLE_BUDGETS);
+  }
+  const section = parsed.role_budgets;
+  if (!section || typeof section !== 'object' || Array.isArray(section)) {
+    return Object.assign({}, DEFAULT_ROLE_BUDGETS);
+  }
+  return sanitizeConfig(section);
+}
+
+// -- haiku_routing ------------------------------------------------------------
+
+const DEFAULT_HAIKU_ROUTING = Object.freeze({
+  enabled: true,
+  scout_min_bytes: 12288,
+  scout_blocked_ops: ['Edit', 'Write', 'Bash'],
+  scout_blocked_paths: [],
+});
+
+/**
+ * Load the `haiku_routing` top-level config section.
+ * Fail-open: returns DEFAULT_HAIKU_ROUTING on missing/malformed input.
+ * @param {string} cwd
+ * @returns {{ enabled: boolean, scout_min_bytes: number, scout_blocked_ops: string[], scout_blocked_paths: string[] }}
+ */
+function loadHaikuRoutingConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (_) {
+    return Object.assign({}, DEFAULT_HAIKU_ROUTING);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_HAIKU_ROUTING);
+  }
+  const section = parsed.haiku_routing;
+  if (!section || typeof section !== 'object' || Array.isArray(section)) {
+    return Object.assign({}, DEFAULT_HAIKU_ROUTING);
+  }
+  const merged = Object.assign({}, DEFAULT_HAIKU_ROUTING, sanitizeConfig(section));
+  if (typeof merged.enabled !== 'boolean') {
+    logStderr('haiku_routing.enabled must be boolean — using default');
+    merged.enabled = DEFAULT_HAIKU_ROUTING.enabled;
+  }
+  if (typeof merged.scout_min_bytes !== 'number' || merged.scout_min_bytes < 0) {
+    logStderr('haiku_routing.scout_min_bytes must be a non-negative number — using default');
+    merged.scout_min_bytes = DEFAULT_HAIKU_ROUTING.scout_min_bytes;
+  }
+  if (!Array.isArray(merged.scout_blocked_ops)) {
+    logStderr('haiku_routing.scout_blocked_ops must be an array — using default');
+    merged.scout_blocked_ops = DEFAULT_HAIKU_ROUTING.scout_blocked_ops;
+  }
+  if (!Array.isArray(merged.scout_blocked_paths)) {
+    logStderr('haiku_routing.scout_blocked_paths must be an array — using default');
+    merged.scout_blocked_paths = DEFAULT_HAIKU_ROUTING.scout_blocked_paths;
+  }
+  return merged;
+}
+
+// -- curator_slice_loading ----------------------------------------------------
+
+const DEFAULT_CURATOR_SLICE_LOADING = Object.freeze({
+  enabled: true,
+});
+
+/**
+ * Load the `curator_slice_loading` top-level config section.
+ * Fail-open: returns DEFAULT_CURATOR_SLICE_LOADING on missing/malformed input.
+ * @param {string} cwd
+ * @returns {{ enabled: boolean }}
+ */
+function loadCuratorSliceLoadingConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (_) {
+    return Object.assign({}, DEFAULT_CURATOR_SLICE_LOADING);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_CURATOR_SLICE_LOADING);
+  }
+  const section = parsed.curator_slice_loading;
+  if (!section || typeof section !== 'object' || Array.isArray(section)) {
+    return Object.assign({}, DEFAULT_CURATOR_SLICE_LOADING);
+  }
+  const merged = Object.assign({}, DEFAULT_CURATOR_SLICE_LOADING, sanitizeConfig(section));
+  if (typeof merged.enabled !== 'boolean') {
+    logStderr('curator_slice_loading.enabled must be boolean — using default');
+    merged.enabled = DEFAULT_CURATOR_SLICE_LOADING.enabled;
+  }
+  return merged;
+}
+
+// -- phase_slice_loading ------------------------------------------------------
+
+const DEFAULT_PHASE_SLICE_LOADING = Object.freeze({
+  enabled: true,
+  telemetry_enabled: true,
+});
+
+/**
+ * Load the `phase_slice_loading` top-level config section.
+ * Fail-open: returns DEFAULT_PHASE_SLICE_LOADING on missing/malformed input.
+ * @param {string} cwd
+ * @returns {{ enabled: boolean, telemetry_enabled: boolean }}
+ */
+function loadPhaseSliceLoadingConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (_) {
+    return Object.assign({}, DEFAULT_PHASE_SLICE_LOADING);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_PHASE_SLICE_LOADING);
+  }
+  const section = parsed.phase_slice_loading;
+  if (!section || typeof section !== 'object' || Array.isArray(section)) {
+    return Object.assign({}, DEFAULT_PHASE_SLICE_LOADING);
+  }
+  const merged = Object.assign({}, DEFAULT_PHASE_SLICE_LOADING, sanitizeConfig(section));
+  if (typeof merged.enabled !== 'boolean') {
+    logStderr('phase_slice_loading.enabled must be boolean — using default');
+    merged.enabled = DEFAULT_PHASE_SLICE_LOADING.enabled;
+  }
+  if (typeof merged.telemetry_enabled !== 'boolean') {
+    logStderr('phase_slice_loading.telemetry_enabled must be boolean — using default');
+    merged.telemetry_enabled = DEFAULT_PHASE_SLICE_LOADING.telemetry_enabled;
+  }
+  return merged;
+}
+
+// -- delta_handoff ------------------------------------------------------------
+
+const DEFAULT_DELTA_HANDOFF = Object.freeze({
+  force_full: false,
+});
+
+/**
+ * Load the `delta_handoff` top-level config section.
+ * Fail-open: returns DEFAULT_DELTA_HANDOFF on missing/malformed input.
+ * @param {string} cwd
+ * @returns {{ force_full: boolean }}
+ */
+function loadDeltaHandoffConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (_) {
+    return Object.assign({}, DEFAULT_DELTA_HANDOFF);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_DELTA_HANDOFF);
+  }
+  const section = parsed.delta_handoff;
+  if (!section || typeof section !== 'object' || Array.isArray(section)) {
+    return Object.assign({}, DEFAULT_DELTA_HANDOFF);
+  }
+  const merged = Object.assign({}, DEFAULT_DELTA_HANDOFF, sanitizeConfig(section));
+  if (typeof merged.force_full !== 'boolean') {
+    logStderr('delta_handoff.force_full must be boolean — using default');
+    merged.force_full = DEFAULT_DELTA_HANDOFF.force_full;
+  }
+  return merged;
+}
+
+// -- budget_enforcement -------------------------------------------------------
+
+const DEFAULT_BUDGET_ENFORCEMENT = Object.freeze({
+  enabled: true,
+});
+
+/**
+ * Load the `budget_enforcement` top-level config section.
+ * Fail-open: returns DEFAULT_BUDGET_ENFORCEMENT on missing/malformed input.
+ * @param {string} cwd
+ * @returns {{ enabled: boolean }}
+ */
+function loadBudgetEnforcementConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (_) {
+    return Object.assign({}, DEFAULT_BUDGET_ENFORCEMENT);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_BUDGET_ENFORCEMENT);
+  }
+  const section = parsed.budget_enforcement;
+  if (!section || typeof section !== 'object' || Array.isArray(section)) {
+    return Object.assign({}, DEFAULT_BUDGET_ENFORCEMENT);
+  }
+  const merged = Object.assign({}, DEFAULT_BUDGET_ENFORCEMENT, sanitizeConfig(section));
+  if (typeof merged.enabled !== 'boolean') {
+    logStderr('budget_enforcement.enabled must be boolean — using default');
+    merged.enabled = DEFAULT_BUDGET_ENFORCEMENT.enabled;
+  }
+  return merged;
+}
+
+// -- catalog_mode_default -----------------------------------------------------
+
+const DEFAULT_CATALOG_MODE_DEFAULT = Object.freeze({
+  catalog_default: true,
+});
+
+/**
+ * Load the `catalog_mode_default` top-level config section.
+ * Controls whether pattern_find defaults to catalog mode (R-CAT-DEFAULT).
+ * Fail-open: returns DEFAULT_CATALOG_MODE_DEFAULT on missing/malformed input.
+ *
+ * Kill switch: ORCHESTRAY_DISABLE_CATALOG_DEFAULT=1 overrides config and forces
+ * catalog_default=false (full mode), regardless of config.json value.
+ *
+ * @param {string} cwd
+ * @returns {{ catalog_default: boolean }}
+ */
+function loadCatalogModeDefaultConfig(cwd) {
+  // Env-var kill switch takes precedence over config file.
+  if (process.env.ORCHESTRAY_DISABLE_CATALOG_DEFAULT === '1') {
+    return { catalog_default: false };
+  }
+
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (_) {
+    return Object.assign({}, DEFAULT_CATALOG_MODE_DEFAULT);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_CATALOG_MODE_DEFAULT);
+  }
+  const section = parsed.catalog_mode_default;
+  if (!section || typeof section !== 'object' || Array.isArray(section)) {
+    return Object.assign({}, DEFAULT_CATALOG_MODE_DEFAULT);
+  }
+  const merged = Object.assign({}, DEFAULT_CATALOG_MODE_DEFAULT, sanitizeConfig(section));
+  if (typeof merged.catalog_default !== 'boolean') {
+    logStderr('catalog_mode_default.catalog_default must be boolean — using default');
+    merged.catalog_default = DEFAULT_CATALOG_MODE_DEFAULT.catalog_default;
+  }
+  return merged;
+}
+
 module.exports = {
   DEFAULT_MCP_ENFORCEMENT,
   loadMcpEnforcement,
@@ -4726,4 +5067,21 @@ module.exports = {
   DEFAULT_CUSTOM_AGENTS,
   loadCustomAgents,
   validateCustomAgents,
+  // C1-01 minimal loaders for previously unvalidated config sections
+  DEFAULT_CACHING,
+  loadCachingConfig,
+  DEFAULT_ROLE_BUDGETS,
+  loadRoleBudgetsConfig,
+  DEFAULT_HAIKU_ROUTING,
+  loadHaikuRoutingConfig,
+  DEFAULT_CURATOR_SLICE_LOADING,
+  loadCuratorSliceLoadingConfig,
+  DEFAULT_PHASE_SLICE_LOADING,
+  loadPhaseSliceLoadingConfig,
+  DEFAULT_DELTA_HANDOFF,
+  loadDeltaHandoffConfig,
+  DEFAULT_BUDGET_ENFORCEMENT,
+  loadBudgetEnforcementConfig,
+  DEFAULT_CATALOG_MODE_DEFAULT,
+  loadCatalogModeDefaultConfig,
 };

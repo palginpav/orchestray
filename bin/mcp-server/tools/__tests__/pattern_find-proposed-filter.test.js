@@ -72,7 +72,8 @@ function uniqueToken() {
 }
 
 async function callHandle(projectRoot, extraInput = {}) {
-  const input = { task_summary: 'pattern retrieval test', max_results: 10, ...extraInput };
+  // mode:'full' ensures matches array in response (tests assert full-mode shape)
+  const input = { task_summary: 'pattern retrieval test', max_results: 10, mode: 'full', ...extraInput };
   return handle(input, { projectRoot });
 }
 
