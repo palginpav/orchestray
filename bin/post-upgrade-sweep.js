@@ -171,7 +171,9 @@ function emitUpgradePendingWarning(sessionId, cwd) {
       : '';
     process.stderr.write(
       '[orchestray] Upgraded' + versionSuffix + ' while this session was open — ' +
-      'one-time reminder. RESTART to load new agents (this message won\'t repeat).' +
+      'one-time reminder. To restart: close this Claude Code window and reopen it ' +
+      '(or run `claude --resume` to preserve conversation context). ' +
+      'New agents and hook changes are NOT active until restarted.' +
       gatedSuffix + '\n'
     );
     // W2-T8 (F-02 fix): replace the 13 unconditional migration banners
@@ -2374,7 +2376,7 @@ function runTokenwrightSelfProbeIfNeeded(cwd, stateDir) {
         : 'unknown';
       process.stderr.write(
         '[orchestray v2.2.6] tokenwright self-probe FAILED: ' + failList +
-        '. Run /orchestray:diagnose for details.\n'
+        '. Run /orchestray:doctor for details.\n'
       );
     }
   } catch (_e) {

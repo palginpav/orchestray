@@ -98,6 +98,7 @@ function effortCode(effort) {
     case 'low':    return 'lo';
     case 'medium': return 'md';
     case 'high':   return 'hi';
+    case 'xhigh':  return 'xh';
     case 'max':    return 'mx';
     default:       return '-';
   }

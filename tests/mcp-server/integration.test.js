@@ -1298,7 +1298,7 @@ describe('O. pattern_record_skip_reason audit event end-to-end', () => {
               arguments: {
                 orchestration_id: 'orch-skip-reason-integ-test',
                 reason: 'all-irrelevant',
-                notes: 'none of the patterns matched this task type',
+                note: 'none of the patterns matched this task type',
               },
             },
           });

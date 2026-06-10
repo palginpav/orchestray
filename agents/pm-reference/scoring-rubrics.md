@@ -35,7 +35,7 @@ Evaluate every task using these four signals, each scoring 0-3 points:
 
 ---
 
-## Section 19: Model Routing Decision Table
+## Section 19a: Model Routing Decision Table
 
 1. **Read config overrides** from `.orchestray/config.json`:
    - If `force_model` is set (not null): use that model for ALL agents. Skip all routing
@@ -71,7 +71,7 @@ Evaluate every task using these four signals, each scoring 0-3 points:
 
 ---
 
-## Section 19: Effort Level Assignment
+## Section 19b: Effort Level Assignment
 
 After model routing determines the model for each subtask, assign the effort level.
 
@@ -140,7 +140,7 @@ effort escalates with the model:
 
 ---
 
-## Section 19: Auto-Escalation Protocol
+## Section 19c: Auto-Escalation Protocol
 
 When an agent fails (status != success in Section 4 result parsing) or produces poor
 results (reviewer rejects in Section 18):

@@ -220,6 +220,8 @@ How an agent emits its Structured Result:
 
 ## 6. T15 hook enforcement (read-only; informational)
 
+> **[SUPERSEDED by §10 — all roles hard-tier since v2.2.9]** The tier split below was accurate in v2.1.9 but superseded in v2.2.9. WARN_TIER is now empty — all 14 roles are hard-tier. See §10 for the authoritative table. The text below is retained verbatim for archival context.
+
 The T15 pre-done checklist hook lives at `bin/validate-task-completion.js` and
 fires on both the `TaskCompleted` event (Agent Teams mode) and the
 `SubagentStop` event (normal subagent dispatch). The enforcement contract is:
@@ -232,7 +234,7 @@ fires on both the `TaskCompleted` event (Agent Teams mode) and the
   `security-engineer`, `ux-critic`, `platform-oracle`. Defined in
   `validate-task-completion.js:54-61`.
 - The exact required-section set enforced by the hook is declared at
-  `bin/validate-task-completion.js:63` —
+  `bin/_lib/handoff-contract-text.js:41` (re-exported by `validate-task-completion.js`) —
   `['status', 'summary', 'files_changed', 'files_read', 'issues', 'assumptions']`.
   This file's §2 is a strict superset of that set; any additional contract here
   is advisory unless a downstream agent or scorer enforces it.

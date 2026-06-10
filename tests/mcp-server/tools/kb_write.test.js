@@ -575,7 +575,7 @@ describe('L. W6 rate-limit behavior', () => {
 
       const ctx = makeContextWithLimit(tmp, { kb_write: 2 });
       const result = await handle(
-        baseInput({ id: 'rl-blocked', path: 'rl-blocked.md', orchestration_id: 'orch-rl', task_id: 'task-rl' }),
+        baseInput({ id: 'rl-blocked', path: 'rl-blocked.md', orchestration_id: 'orch-rl', task: 'task-rl' }),
         ctx
       );
       assert.equal(result.isError, true, 'should be blocked by rate limit');
@@ -596,7 +596,7 @@ describe('L. W6 rate-limit behavior', () => {
     const tmp = makeTmpProject();
     try {
       const ctx = makeContextWithLimit(tmp, { kb_write: 10 });
-      const input1 = baseInput({ id: 'rl-no-count', path: 'rl-no-count.md', orchestration_id: 'orch-nc', task_id: 'task-nc' });
+      const input1 = baseInput({ id: 'rl-no-count', path: 'rl-no-count.md', orchestration_id: 'orch-nc', task: 'task-nc' });
 
       // First write should succeed.
       const r1 = await handle(input1, ctx);
@@ -620,7 +620,7 @@ describe('L. W6 rate-limit behavior', () => {
     const tmp = makeTmpProject();
     try {
       const ctx = makeContextWithLimit(tmp, { kb_write: 10 });
-      const input = baseInput({ id: 'rl-once', path: 'rl-once.md', orchestration_id: 'orch-once', task_id: 'task-once' });
+      const input = baseInput({ id: 'rl-once', path: 'rl-once.md', orchestration_id: 'orch-once', task: 'task-once' });
 
       const result = await handle(input, ctx);
       assert.equal(result.isError, false);

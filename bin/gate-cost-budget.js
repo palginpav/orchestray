@@ -220,17 +220,17 @@ process.stdin.on('end', async () => {
     const breaches = [];
     if (caps.max_cost_usd !== null && totalForMaxCap > caps.max_cost_usd) {
       breaches.push(
-        `max_cost_usd $${caps.max_cost_usd} (accumulated+projected: $${totalForMaxCap.toFixed(4)})`
+        `max_cost_usd $${caps.max_cost_usd} (accumulated+projected: $${totalForMaxCap.toFixed(2)})`
       );
     }
     if (caps.daily_cost_limit_usd !== null && totalForDailyCap > caps.daily_cost_limit_usd) {
       breaches.push(
-        `daily_cost_limit_usd $${caps.daily_cost_limit_usd} (accumulated+projected today: $${totalForDailyCap.toFixed(4)})`
+        `daily_cost_limit_usd $${caps.daily_cost_limit_usd} (accumulated+projected today: $${totalForDailyCap.toFixed(2)})`
       );
     }
     if (caps.weekly_cost_limit_usd !== null && totalForWeeklyCap > caps.weekly_cost_limit_usd) {
       breaches.push(
-        `weekly_cost_limit_usd $${caps.weekly_cost_limit_usd} (accumulated+projected: $${totalForWeeklyCap.toFixed(4)})`
+        `weekly_cost_limit_usd $${caps.weekly_cost_limit_usd} (accumulated+projected: $${totalForWeeklyCap.toFixed(2)})`
       );
     }
 
@@ -242,10 +242,10 @@ process.stdin.on('end', async () => {
     // Breach detected.
     const breachMsg =
       '[orchestray] gate-cost-budget: cost-budget breach detected — ' +
-      'projected $' + projectedCostUsd.toFixed(4) +
+      'projected $' + projectedCostUsd.toFixed(2) +
       ' (model=' + tier + (effortRaw ? ', effort=' + effortRaw : '') + ')' +
       ' would exceed: ' + breaches.join('; ') + '. ' +
-      'Accumulated cost this orchestration: $' + accumulatedUsd.toFixed(4) + '.\n';
+      'Accumulated cost this orchestration: $' + accumulatedUsd.toFixed(2) + '.\n';
 
     if (enfConfig.hard_block) {
       // Hard block: deny spawn (exit 2).

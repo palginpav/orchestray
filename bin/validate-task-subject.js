@@ -235,9 +235,10 @@ function main() {
     emitAuditEvent(cwd, auditRecord);
 
     process.stderr.write(
-      'Agent spawn rejected: task_subject is required. Provide either:\n' +
+      '[orchestray] validate-task-subject: BLOCKED — agent spawn missing task_subject. ' +
+      'Provide either:\n' +
       '  - a `description` field (≥ ' + MIN_DESCRIPTION_LENGTH + ' chars) on the Agent() call, or\n' +
-      '  - a `task_subject:` line in the prompt body (see agents/pm.md §3.X).\n'
+      '  - a `task_subject:` line in the prompt body.\n'
     );
     // Exit 2 signals "block" to Claude Code's PreToolUse gate.
     process.stdout.write(JSON.stringify({ continue: false, reason: 'task_subject missing' }));
