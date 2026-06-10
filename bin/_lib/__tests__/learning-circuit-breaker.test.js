@@ -408,7 +408,8 @@ describe('checkAndIncrement — B4-04 dedicated breaker lock', () => {
 
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
     const fd = fs.openSync(lockPath, 'w');
-    fs.writeSync(fd, '12345'); // write a PID
+    // Use current process PID — guaranteed alive, so isLockAvailable will NOT reclaim.
+    fs.writeSync(fd, String(process.pid));
     fs.closeSync(fd);
     // Set mtime to now (fresh — not stale).
     const nowSec = Date.now() / 1000;

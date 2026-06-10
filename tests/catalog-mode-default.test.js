@@ -160,6 +160,16 @@ describe('loadCatalogModeDefaultConfig', () => {
 // Integration tests: pattern_find mode selection via handle()
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Integration tests: pattern_find mode selection
+//
+// PM design ruling (v2.3.x): R-CAT T3 backward-compat contract wins.
+//   (a) omitted mode → full shape (tool-level default is 'full')
+//   (b) explicit mode=catalog honored when kill switch inactive
+//   (c) kill switch coerces even explicit mode=catalog to full
+//   (d) config catalog_default=false is equivalent to env kill switch
+// ---------------------------------------------------------------------------
+
 describe('pattern_find mode selection — R-CAT-DEFAULT', () => {
   let savedEnv;
   beforeEach(() => { savedEnv = process.env.ORCHESTRAY_DISABLE_CATALOG_DEFAULT; });
@@ -168,7 +178,7 @@ describe('pattern_find mode selection — R-CAT-DEFAULT', () => {
     else process.env.ORCHESTRAY_DISABLE_CATALOG_DEFAULT = savedEnv;
   });
 
-  test('no explicit mode → catalog mode by default (R-CAT-DEFAULT)', async () => {
+  test('(a) no explicit mode → full shape (R-CAT T3 backward compat)', async () => {
     delete process.env.ORCHESTRAY_DISABLE_CATALOG_DEFAULT;
     const dir = makeTmpProject();
     try {
@@ -177,32 +187,31 @@ describe('pattern_find mode selection — R-CAT-DEFAULT', () => {
         makeContext(dir)
       );
       assert.ok(!result.isError, 'handle should not error');
-      assert.equal(result.content[0] && JSON.parse(result.content[0].text).mode, 'catalog',
-        'default mode should be catalog');
+      const body = JSON.parse(result.content[0].text);
+      assert.ok('matches' in body, 'omitted mode must return full shape (matches array)');
+      assert.ok(!('catalog' in body), 'omitted mode must NOT have catalog field');
     } finally {
       cleanup(dir);
     }
   });
 
-  test('ORCHESTRAY_DISABLE_CATALOG_DEFAULT=1 → full mode default', async () => {
-    process.env.ORCHESTRAY_DISABLE_CATALOG_DEFAULT = '1';
+  test('(b) explicit mode=catalog honored when kill switch inactive', async () => {
+    delete process.env.ORCHESTRAY_DISABLE_CATALOG_DEFAULT;
     const dir = makeTmpProject();
     try {
       const result = await handle(
-        { task_summary: 'test task', agent_role: 'developer' },
+        { task_summary: 'test task', agent_role: 'developer', mode: 'catalog' },
         makeContext(dir)
       );
       assert.ok(!result.isError, 'handle should not error');
       const body = JSON.parse(result.content[0].text);
-      // full mode returns 'matches' array, not 'catalog' string
-      assert.ok('matches' in body, 'full mode should return matches array');
-      assert.ok(!('catalog' in body), 'full mode should not return catalog string');
+      assert.equal(body.mode, 'catalog', 'explicit mode=catalog should be honoured when kill switch inactive');
     } finally {
       cleanup(dir);
     }
   });
 
-  test('explicit mode=catalog overrides env kill switch', async () => {
+  test('(c) ORCHESTRAY_DISABLE_CATALOG_DEFAULT=1 coerces explicit catalog → full', async () => {
     process.env.ORCHESTRAY_DISABLE_CATALOG_DEFAULT = '1';
     const dir = makeTmpProject();
     try {
@@ -212,7 +221,25 @@ describe('pattern_find mode selection — R-CAT-DEFAULT', () => {
       );
       assert.ok(!result.isError, 'handle should not error');
       const body = JSON.parse(result.content[0].text);
-      assert.equal(body.mode, 'catalog', 'explicit mode=catalog should be honoured');
+      assert.ok('matches' in body, 'kill switch must coerce catalog to full');
+      assert.ok(!('catalog' in body), 'kill switch must suppress catalog field');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('(c-omit) ORCHESTRAY_DISABLE_CATALOG_DEFAULT=1 with no explicit mode → full', async () => {
+    process.env.ORCHESTRAY_DISABLE_CATALOG_DEFAULT = '1';
+    const dir = makeTmpProject();
+    try {
+      const result = await handle(
+        { task_summary: 'test task', agent_role: 'developer' },
+        makeContext(dir)
+      );
+      assert.ok(!result.isError, 'handle should not error');
+      const body = JSON.parse(result.content[0].text);
+      assert.ok('matches' in body, 'full mode should return matches array');
+      assert.ok(!('catalog' in body), 'full mode should not return catalog string');
     } finally {
       cleanup(dir);
     }
@@ -234,18 +261,18 @@ describe('pattern_find mode selection — R-CAT-DEFAULT', () => {
     }
   });
 
-  test('config catalog_mode_default.catalog_default=false → full mode default', async () => {
+  test('(d) config catalog_default=false coerces explicit catalog → full', async () => {
     delete process.env.ORCHESTRAY_DISABLE_CATALOG_DEFAULT;
     const dir = makeTmpProject({ catalog_mode_default: { catalog_default: false } });
     try {
       const result = await handle(
-        { task_summary: 'test task', agent_role: 'developer' },
+        { task_summary: 'test task', agent_role: 'developer', mode: 'catalog' },
         makeContext(dir)
       );
       assert.ok(!result.isError, 'handle should not error');
       const body = JSON.parse(result.content[0].text);
-      assert.ok('matches' in body, 'config catalog_default=false should return full mode matches');
-      assert.ok(!('catalog' in body), 'should not have catalog field in full mode');
+      assert.ok('matches' in body, 'config catalog_default=false should coerce catalog to full');
+      assert.ok(!('catalog' in body), 'should not have catalog field when kill switch active');
     } finally {
       cleanup(dir);
     }

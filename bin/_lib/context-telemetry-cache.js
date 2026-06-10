@@ -180,7 +180,7 @@ function updateCache(projectDir, updaterFn) {
   }
 
   try {
-    _withAdvisoryLock(lockPath, () => {
+    const lockResult = _withAdvisoryLock(lockPath, () => {
       // Read current state (or skeleton).
       let current;
       try {
@@ -247,6 +247,16 @@ function updateCache(projectDir, updaterFn) {
         throw renameErr;
       }
     });
+    // BUG-7: _withAdvisoryLock returns { skipped: true } when lock cannot be acquired
+    // (fail-closed). Emit staging_write_failed so operators can see silent skips.
+    if (lockResult && lockResult.skipped === true) {
+      _emitStagingWriteFailed(
+        projectDir,
+        cachePath,
+        'write',
+        Object.assign(new Error('lock acquisition failed (skipped)'), { code: 'EACCES' })
+      );
+    }
   } catch (err) {
     const msg = '[orchestray] context-telemetry-cache: updateCache failed: ' + String(err);
     process.stderr.write(msg + '\n');

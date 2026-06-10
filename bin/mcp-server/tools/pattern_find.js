@@ -678,22 +678,36 @@ async function handle(input, context) {
   // mode=catalog returns a TOON-formatted headline list (fields is ignored).
   // mode=full (default) returns full match objects with optional field projection.
   //
-  // R-CAT-DEFAULT: when no explicit mode is provided, use catalog as the default
-  // unless ORCHESTRAY_DISABLE_CATALOG_DEFAULT=1 or config catalog_mode_default.catalog_default=false.
-  // Explicit input.mode always takes precedence (callers who pass mode:'full' always get full).
+  // R-CAT T3 (v2.1.16 shipped contract): omitted mode ALWAYS returns full shape.
+  // Backward-compat wins — the PM prompt layer passes mode:'catalog' explicitly
+  // when it wants catalog; tool-level default is 'full'.
+  //
+  // Kill-switch semantics (ORCHESTRAY_DISABLE_CATALOG_DEFAULT=1 or
+  // config catalog_mode_default.catalog_default=false): acts as a COERCION —
+  // even an explicit mode:'catalog' request is overridden to 'full'.
+  // This lets operators force full shape globally (e.g., for legacy integrations).
   let mode;
-  if (typeof input.mode === 'string' && (input.mode === 'catalog' || input.mode === 'full')) {
-    // Explicit caller override — honour unconditionally.
+  const hasExplicitMode = typeof input.mode === 'string' &&
+    (input.mode === 'catalog' || input.mode === 'full');
+
+  let catalogModeConfig;
+  try {
+    catalogModeConfig = loadCatalogModeDefaultConfig(projectRoot);
+  } catch (_) {
+    catalogModeConfig = { catalog_default: true };
+  }
+
+  const killSwitchActive = !catalogModeConfig.catalog_default;
+
+  if (killSwitchActive) {
+    // Kill switch coerces everything to full, including explicit catalog.
+    mode = 'full';
+  } else if (hasExplicitMode) {
+    // Explicit mode honored when kill switch is inactive.
     mode = input.mode;
   } else {
-    // No explicit mode: apply R-CAT-DEFAULT rule (catalog default, unless kill-switched).
-    let catalogModeConfig;
-    try {
-      catalogModeConfig = loadCatalogModeDefaultConfig(projectRoot);
-    } catch (_) {
-      catalogModeConfig = { catalog_default: true };
-    }
-    mode = catalogModeConfig.catalog_default ? 'catalog' : 'full';
+    // No explicit mode — R-CAT T3 backward-compat: return full shape.
+    mode = 'full';
   }
 
   if (mode === 'catalog') {
