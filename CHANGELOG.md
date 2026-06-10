@@ -3,6 +3,30 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.9] - 2026-06-10
+
+**Orchestray 2.3.9 fixes a persistent restart banner, eliminates two hook validation errors on every message, closes a live-agent work-loss bug, and corrects cost telemetry that was reporting phantom million-token expansions.**
+
+### Fixed
+
+- **"Plugin tools changed — restart" banner no longer reappears after you already restarted.** A leftover flag file from a previous session was retriggering the banner every time Orchestray booted. The flag now self-heals on startup, and the check no longer mistakes your global home directory for a project root — so the banner fires only when the tool set genuinely changed, not on every launch.
+
+- **Two "Hook JSON output validation failed" errors on every Claude message are gone.** A hook was emitting metadata in a shape Claude Code rejects. The hook now emits a valid envelope, and the metadata it was trying to surface is recorded in the audit log as a new `curator_stage_injected` event instead.
+
+- **Running agents can no longer lose their work to worktree cleanup.** The cleanup path that removes stale worktrees now checks whether a worktree is fresh or still in use, and spares it. The destructive-git guard also closes a bypass that allowed `git -c`/`--git-dir` option variations to slip through unblocked.
+
+- **Cost telemetry now tells the truth.** Two accounting bugs were comparing whole-session cumulative token counts against single-prompt estimates, producing phantom multi-million-token "expansion" figures in the analytics view. These comparisons are now skipped, and savings rows are only marked as "measured" when the figures being compared are genuinely comparable.
+
+### Quality
+
+- A rare test flake caused by YAML silently coercing numeric-looking hash strings is resolved. Seven configuration validators that existed but were never called are now wired into their consumers.
+
+### Not in this release
+
+- No user-visible feature additions or removals; this is a targeted fix release.
+
+---
+
 ## [2.3.8] - 2026-06-10
 
 **Orchestray 2.3.8 hardens concurrency, protects your uncommitted work from subagents, stops a persistent restart nag banner, and replaces heavy supply-chain dependencies with built-in Node.js equivalents.**
