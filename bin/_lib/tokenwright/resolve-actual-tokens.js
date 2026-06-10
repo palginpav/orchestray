@@ -266,12 +266,11 @@ function resolveActualTokens(event, cwd) {
     // These are only valid when no transcript is available at all.
 
     // --- Secondary: top-level hook payload usage ---
-    const hookTokens = event.usage && typeof event.usage.input_tokens === 'number'
-      ? event.usage.input_tokens
-      : 0;
-    if (hookTokens > 0) {
-      return { tokens: hookTokens, source: 'hook_event' };
-    }
+    // v2.3.9 (Cause B fix, v239-tokenwright-diagnosis.md): event.usage.input_tokens
+    // on SubagentStop is SESSION-CUMULATIVE, not single-prompt — using it produced
+    // 2,214 phantom-negative rows summing −8.2M tokens. The transcript-user-prompt
+    // primary covers the real case; without a transcript the honest answer is unknown.
+    // (Intentionally no fallback here.)
 
     // --- Tertiary: tool_response.usage.input_tokens ---
     const toolRespTokens =

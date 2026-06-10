@@ -38,16 +38,20 @@ function makeTmpDir(t) {
 // (hook_event, tool_response, transcript-containment) which remains valid.
 
 // ---------------------------------------------------------------------------
-// Secondary source: hook payload usage wins when transcript is absent
+// Secondary source REMOVED (v2.3.9 Cause-B fix, v239-tokenwright-diagnosis.md):
+// event.usage.input_tokens on SubagentStop is session-cumulative, not
+// single-prompt — the old hook_event fallback produced phantom-negative
+// realized-savings rows (−8.2M artifact). Without a transcript, hook usage
+// alone must now resolve to unknown.
 // ---------------------------------------------------------------------------
-test('resolveActualTokens: falls back to hook_event when transcript absent and hook usage present', (t) => {
+test('resolveActualTokens: hook usage alone (no transcript) resolves to unknown, not hook_event', (t) => {
   const tmpDir = makeTmpDir(t);
   const event = {
     usage: { input_tokens: 500, output_tokens: 100 },
   };
   const result = resolveActualTokens(event, tmpDir);
-  assert.equal(result.source, 'hook_event', 'source must be hook_event');
-  assert.equal(result.tokens, 500, 'tokens must be 500');
+  assert.notEqual(result.source, 'hook_event', 'cumulative hook_event fallback must not fire');
+  assert.notEqual(result.tokens, 500, 'cumulative token value must not be reported as actual');
 });
 
 // ---------------------------------------------------------------------------

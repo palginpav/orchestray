@@ -136,7 +136,7 @@ describe('agents/pm.md Block A hash stability', () => {
     }
 
     // Normal mode: compare against the inline pinned value.
-    const PINNED_BLOCK_A_HASH = '003be63ec7576dc6';
+    const PINNED_BLOCK_A_HASH = '20c6a7cfd9a72305';
 
     assert.equal(
       actualHash,

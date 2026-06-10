@@ -495,8 +495,14 @@ describe('promoted_from / promoted_is_own enrichment', () => {
   }
 
   function writeSharedPattern(sharedDir, slug, frontmatter, body) {
+    // Serialize values safely: quote strings that YAML would misread as numbers
+    // (e.g., all-digit hex hashes like "12345678" become integer 12345678 without quoting).
+    function serializeVal(v) {
+      if (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v)) return JSON.stringify(v);
+      return v;
+    }
     const fmLines = Object.entries(frontmatter)
-      .map(([k, v]) => `${k}: ${v}`)
+      .map(([k, v]) => `${k}: ${serializeVal(v)}`)
       .join('\n');
     const content = '---\n' + fmLines + '\n---\n\n' + (body || '## Context\nShared context.\n');
     fs.writeFileSync(path.join(sharedDir, 'patterns', slug + '.md'), content);

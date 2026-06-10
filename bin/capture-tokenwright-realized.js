@@ -48,7 +48,7 @@ const {
   emitCompressionDoubleFireDetected,
   emitTokenwrightJournalTruncated,
 } = require('./_lib/tokenwright/emit');
-const { resolveActualTokens }          = require('./_lib/tokenwright/resolve-actual-tokens');
+const { resolveActualTokens, readFirstUserMessageTokens } = require('./_lib/tokenwright/resolve-actual-tokens');
 const { sweepJournal }                 = require('./_lib/tokenwright/journal-sweep');
 const { checkDoubleFire }              = require('./_lib/tokenwright/double-fire-guard');
 
@@ -337,12 +337,25 @@ function handleTaskCompleted(event, cwd, cfg) {
       return;
     }
 
-    // Extract input_tokens from metrics — accept either sum_of_input_tokens or input_tokens
-    const rawTokens = (typeof metrics.input_tokens === 'number' && metrics.input_tokens > 0)
-      ? metrics.input_tokens
-      : (typeof metrics.sum_of_input_tokens === 'number' && metrics.sum_of_input_tokens > 0)
-        ? metrics.sum_of_input_tokens
-        : 0;
+    // v2.3.9 (Cause B fix, v239-tokenwright-diagnosis.md): metrics.input_tokens
+    // from task_completed_metrics / the agent_metrics ledger is SESSION-CUMULATIVE.
+    // Comparing it to the single-prompt estimate produced phantom negative savings
+    // (the −8.2M live artifact). Single-prompt alignment comes ONLY from the
+    // transcript first-user-message read; without a transcript we emit 'unknown'
+    // rather than a bogus 'measured' row.
+    const twTranscriptPath =
+      (typeof event.transcript_path === 'string' && event.transcript_path)
+        ? event.transcript_path
+        : (typeof event.agent_transcript_path === 'string' && event.agent_transcript_path)
+          ? event.agent_transcript_path
+          : null;
+    let rawTokens = 0;
+    if (twTranscriptPath) {
+      try {
+        const aligned = readFirstUserMessageTokens(twTranscriptPath);
+        if (typeof aligned === 'number' && aligned > 0) rawTokens = aligned;
+      } catch (_e) { /* fall through to unknown */ }
+    }
 
     if (rawTokens > 0) {
       const actualSavings    = estimatedPre - rawTokens;
@@ -363,7 +376,7 @@ function handleTaskCompleted(event, cwd, cfg) {
         estimation_error_pct:       estimationErrPct,
         technique_tag:              matched.technique_tag || 'safe-l1',
         realized_status:            'measured',
-        usage_source:               'task_completed_metrics',
+        usage_source:               'transcript-user-prompt',
         drift_exceeded:             driftExceeded,
         drift_budget_pct:           driftBudgetPct,
         removed_pending_entry:      removedPendingEntry,
@@ -403,8 +416,8 @@ function handleTaskCompleted(event, cwd, cfg) {
         agent_type:                 agentType,
         spawn_key:                  matched.spawn_key || '',
         estimated_input_tokens_pre: estimatedPre,
-        reason:                     'no_task_completed_metrics',
-        transcript_path_present:    false,
+        reason:                     'cumulative_metrics_not_comparable',
+        transcript_path_present:    !!twTranscriptPath,
         hook_usage_present:         false,
       });
     }

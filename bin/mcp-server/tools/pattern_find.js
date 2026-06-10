@@ -636,7 +636,10 @@ async function handle(input, context) {
       _context_hook: _contextHook,
     };
     if (entryTier === 'shared') {
-      const promotedFrom = typeof fm.promoted_from === 'string' ? fm.promoted_from : undefined;
+      // Accept string or number: YAML parsers coerce unquoted numeric values (e.g.
+      // an all-digit hex hash "12345678") to integers. Convert to string for comparison.
+      const promotedFrom = typeof fm.promoted_from === 'string' ? fm.promoted_from
+        : typeof fm.promoted_from === 'number' ? String(fm.promoted_from) : undefined;
       if (promotedFrom !== undefined) {
         matchEntry.promoted_from = promotedFrom;
         matchEntry.promoted_is_own = promotedFrom === _projectHash(projectRoot);
