@@ -4247,6 +4247,12 @@ function validateDualInstallConfig(obj) {
 //   Discover and validate plugins but do not activate them.
 //   Env override: ORCHESTRAY_PLUGIN_LOADER_DRY_RUN=1 → dry_run = true.
 //
+// plugin_loader.strict_capabilities — boolean, default false.
+//   When true: confirmed capability violations (manifest.capabilities vs tool descriptions)
+//   kill the plugin (transition to dead), and injection-suspected responses are wrapped
+//   with a [SECURITY] prefix. Default false to preserve existing observe-only behavior.
+//   Enable for higher-trust environments: { plugin_loader: { strict_capabilities: true } }.
+//
 // Env override ORCHESTRAY_PLUGIN_DISABLE=<csv> — comma-separated list of plugin ids
 //   to force-disable at runtime. Resolved by plugin-loader.js at init; not stored here.
 // ---------------------------------------------------------------------------
@@ -4276,6 +4282,7 @@ const DEFAULT_PLUGIN_LOADER = Object.freeze({
   notify_list_changed: true,
   restart_flag_check: true,
   dry_run: false,
+  strict_capabilities: false,
 });
 
 /**
@@ -4419,6 +4426,10 @@ function validatePluginLoaderConfig(obj) {
 
   if ('restart_flag_check' in obj && typeof obj.restart_flag_check !== 'boolean') {
     errors.push('plugin_loader.restart_flag_check must be a boolean — got ' + JSON.stringify(obj.restart_flag_check));
+  }
+
+  if ('strict_capabilities' in obj && typeof obj.strict_capabilities !== 'boolean') {
+    errors.push('plugin_loader.strict_capabilities must be a boolean — got ' + JSON.stringify(obj.strict_capabilities));
   }
 
   // discovery sub-section

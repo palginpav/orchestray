@@ -57,8 +57,13 @@ function loadKey() {
 
 /**
  * Build a stable canonical body for HMAC. Field order is fixed; the signature
- * field is excluded. New fields added later MUST NOT change the canonical
- * body shape — they are unauthenticated metadata.
+ * field is excluded.
+ *
+ * D5: auto_approve is included in the signed body so a forged row cannot
+ * flip auto_approve without invalidating the signature. Note: adding this
+ * field changes the canonical body — existing signatures minted before this
+ * version will fail verification (safe direction: they are re-minted on next
+ * spawn-housekeeper-on-trigger invocation).
  */
 function canonicalBody(row) {
   if (!row || typeof row !== 'object') return '';
@@ -68,6 +73,7 @@ function canonicalBody(row) {
     String(row.requester_agent || ''),
     String(row.requested_agent || ''),
     String(row.ts || ''),
+    String(row.auto_approve == null ? '' : row.auto_approve),
   ];
   return parts.join('|');
 }

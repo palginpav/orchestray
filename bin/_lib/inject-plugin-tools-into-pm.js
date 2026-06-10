@@ -21,26 +21,35 @@ const MCP_PREFIX = 'mcp__orchestray__';
 const MAX_TOOLS_LINE_BYTES = 16384;
 
 /**
- * Read the consent file. HOME-scoped wins (matching plugin-loader).
+ * Read the consent file. Only HOME-canonical path is consulted.
+ * cwd fallback is intentionally removed: an agent with Write-tool access
+ * could forge a consent file in the cwd and have it honored here.
  *
- * @param {{home?: string, cwd?: string}} [opts]
+ * For tests, pass opts.consentFile (absolute path) to redirect consent
+ * lookup — that is the only supported override.
+ *
+ * @param {{home?: string, consentFile?: string}} [opts]
  * @returns {Record<string, any>}
  */
 function readConsents(opts) {
   opts = opts || {};
-  const home = opts.home || process.env.HOME || os.homedir() || '';
-  const cwd  = opts.cwd  || process.cwd();
-  const candidates = [
-    home && path.join(home, '.orchestray', 'state', 'plugin-consents.json'),
-    path.join(cwd, '.orchestray', 'state', 'plugin-consents.json'),
-  ].filter(Boolean);
-  for (const p of candidates) {
+  // Test-only explicit override (absolute path required).
+  if (opts.consentFile && path.isAbsolute(opts.consentFile)) {
     try {
-      const raw = fs.readFileSync(p, 'utf8');
+      const raw = fs.readFileSync(opts.consentFile, 'utf8');
       const obj = JSON.parse(raw);
       if (obj && typeof obj === 'object') return obj;
-    } catch (_e) { /* try next */ }
+    } catch (_e) { /* absent or unreadable */ }
+    return {};
   }
+  const home = opts.home || process.env.HOME || os.homedir() || '';
+  if (!home) return {};
+  const canonical = path.join(home, '.orchestray', 'state', 'plugin-consents.json');
+  try {
+    const raw = fs.readFileSync(canonical, 'utf8');
+    const obj = JSON.parse(raw);
+    if (obj && typeof obj === 'object') return obj;
+  } catch (_e) { /* absent or unreadable */ }
   return {};
 }
 
@@ -125,12 +134,12 @@ function injectPluginTools(pmText, pluginToolNames) {
  * Read, inject, write atomically.
  *
  * @param {string} pmPath
- * @param {{consents?: Record<string, any>, home?: string, cwd?: string}} [opts]
+ * @param {{consents?: Record<string, any>, home?: string, consentFile?: string}} [opts]
  * @returns {{changed: boolean, toolCount: number, pluginToolNames: string[]}}
  */
 function injectIntoPmFile(pmPath, opts) {
   opts = opts || {};
-  const consents = opts.consents || readConsents({ home: opts.home, cwd: opts.cwd });
+  const consents = opts.consents || readConsents({ home: opts.home, consentFile: opts.consentFile });
   const pluginToolNames = buildPluginToolNames(consents);
   const before = fs.readFileSync(pmPath, 'utf8');
   const after  = injectPluginTools(before, pluginToolNames);

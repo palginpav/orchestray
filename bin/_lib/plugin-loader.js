@@ -40,7 +40,7 @@
  *
  */
 
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const crypto = require('crypto');
 const fs   = require('fs');
 const os   = require('os');
@@ -53,6 +53,29 @@ const { buildNamespacedName, parseNamespacedName } = require('./plugin-namespace
 const { redactArgs }                          = require('./plugin-redact');
 const { writeEvent }                          = require('./audit-event-writer');
 const { isInsideAllowed, safeRealpath }       = require('./path-containment');
+
+// D5: resolve python3 to an absolute path at loader load-time so PATH
+// manipulation by a plugin's environment cannot redirect execution.
+// Falls back in order: /usr/bin/python3 → /usr/local/bin/python3 → `which python3`.
+// Result is cached; loader never re-resolves after first call.
+const _PYTHON3_ALLOWLIST = ['/usr/bin/python3', '/usr/local/bin/python3'];
+let _python3AbsPath = null;
+function _resolvePython3() {
+  if (_python3AbsPath) return _python3AbsPath;
+  for (const p of _PYTHON3_ALLOWLIST) {
+    try {
+      if (fs.statSync(p).isFile()) { _python3AbsPath = p; return p; }
+    } catch (_e) { /* not present */ }
+  }
+  // Last resort: `which python3` captured at process start — PATH at this point
+  // is the host PATH, not the stripped plugin env.
+  try {
+    const r = spawnSync('which', ['python3'], { encoding: 'utf8', timeout: 2000 });
+    const resolved = (r.stdout || '').trim();
+    if (resolved && path.isAbsolute(resolved)) { _python3AbsPath = resolved; return resolved; }
+  } catch (_e) { /* ignore */ }
+  return 'python3'; // ultimate fallback; spawn will fail if not on PATH
+}
 
 // Same kebab-case regex used by plugin-manifest-schema. Filters plugin-controlled
 // tool names before they reach audit fields, and bounds plugin-derived error strings
@@ -276,8 +299,10 @@ const DEFAULT_OPTS = Object.freeze({
   perLineMaxBytes: 1_048_576,
   /** W-SEC-23: total backlog cap across emitted+pending stdout (bytes). */
   totalBacklogMaxBytes: 16 * 1_048_576,
-  /** W-SEC-16: env allowlist — exact key OR `PREFIX_*` wildcard. */
-  envAllowlist: Object.freeze(['PATH', 'HOME', 'USER', 'LANG', 'LC_*', 'NODE_OPTIONS', 'TZ']),
+  /** W-SEC-16: env allowlist — exact key OR `PREFIX_*` wildcard.
+   * NODE_OPTIONS is intentionally absent: it enables --require code injection
+   * and leaks Claude Code's internal options into untrusted plugin code. */
+  envAllowlist: Object.freeze(['PATH', 'HOME', 'USER', 'LANG', 'LC_*', 'TZ']),
   /** Spawn-handshake timeout (ms). */
   spawnTimeoutMs: 10_000,
   /** Discovery cap: max plugins per scan path. */
@@ -324,6 +349,14 @@ const DEFAULT_OPTS = Object.freeze({
    * F-22: redact args in audit events (telemetry.redact_args). Never default false.
    */
   redactArgs: true,
+  /**
+   * D3 (plugin trust boundary): when true, confirmed capability violations kill
+   * the plugin (transition to dead) and injection-suspected responses are wrapped
+   * with a [SECURITY] prefix. Default false — strict mode is opt-in because it
+   * can disrupt legitimate plugins that trigger false-positive heuristics.
+   * Enable via config: { plugin_loader: { strict_capabilities: true } }.
+   */
+  strictCapabilities: false,
 });
 
 // ---------------------------------------------------------------------------
@@ -1331,6 +1364,27 @@ function createLoader(userOpts) {
       throw e;
     }
 
+    // W-SEC-1 part 4: intermediate-dir symlink escape check. lstat only catches
+    // a symlink AT the final path component; an intermediate directory that is a
+    // symlink (e.g. plugin/subdir → /) lets an attacker place the entrypoint
+    // anywhere. Resolve both paths via realpathSync and verify containment.
+    try {
+      const realEntry  = fs.realpathSync(entrypointAbs);
+      const realRoot   = fs.realpathSync(ps.rootDir);
+      if (!realEntry.startsWith(realRoot + path.sep) && realEntry !== realRoot) {
+        const e = new Error(
+          `entrypoint real path escapes plugin root (W-SEC-1): ${realEntry} not under ${realRoot}`
+        );
+        e._reason = 'symlink_escape';
+        throw e;
+      }
+    } catch (err) {
+      if (err._reason) throw err;
+      const e = new Error(`entrypoint realpath resolution failed: ${err.message}`);
+      e._reason = 'entrypoint_unresolvable';
+      throw e;
+    }
+
     // W-SEC-7a: re-compute the manifest+entrypoint fingerprint right before
     // spawn and compare against the value captured at discovery time. Any drift
     // means the manifest or entrypoint was modified between consent and spawn —
@@ -1368,7 +1422,8 @@ function createLoader(userOpts) {
         return { command: process.execPath, args: [entrypointAbs] };
       }
       if (ps.manifest.runtime === 'python') {
-        return { command: 'python3', args: [entrypointAbs] };
+        // D5: use absolute python3 path resolved at load-time, not PATH-relative.
+        return { command: _resolvePython3(), args: [entrypointAbs] };
       }
       return { command: entrypointAbs, args: [] };
     })();
@@ -1491,6 +1546,14 @@ function createLoader(userOpts) {
         hint: _clampPluginString(capInconsistency.hint, 64),
         manifest_capability: 'network=false',
       });
+      // D3: strict mode — kill plugin on confirmed capability violation.
+      if (opts.strictCapabilities) {
+        const e = new Error(
+          `capability violation (strict mode): ${capInconsistency.tool} hints network use but manifest.capabilities.network=false`
+        );
+        e._reason = 'capability_violation';
+        throw e;
+      }
     }
 
     // Compile each declared input schema (W-SEC-9). Failure transitions dead.
@@ -1752,7 +1815,8 @@ function createLoader(userOpts) {
         `tool call timeout ${opts.toolCallTimeoutMs}ms`
       );
       // W-SEC-DEF-2 (Wave 3): scan response for prompt-injection markers.
-      // Pure observation — never alter the response. Emit-only.
+      // D3 strict mode: wrap suspected injection with [SECURITY] marker so
+      // the PM can identify tainted content. Observation-only in non-strict mode.
       // Implemented: Wave 4 W-EVT-1: plugin_response_injection_suspected registered.
       const inj = _scanResponseForInjection(result);
       if (inj) {
@@ -1762,6 +1826,15 @@ function createLoader(userOpts) {
           tool: parsed.toolName,
           marker: _clampPluginString(inj, 64),
         });
+        if (opts.strictCapabilities && result && Array.isArray(result.content)) {
+          // Prepend [SECURITY] marker to every text content item.
+          result.content = result.content.map(item => {
+            if (item && item.type === 'text' && typeof item.text === 'string') {
+              return Object.assign({}, item, { text: '[SECURITY] ' + item.text });
+            }
+            return item;
+          });
+        }
       }
       // Recovery: a degraded plugin that produces a successful call returns
       // to ready (G2 §10).
