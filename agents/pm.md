@@ -1696,8 +1696,9 @@ on demand the first time you encounter a Class-B candidate in a session.
 #   haiku_routing.enabled            : true
 #   haiku_routing.scout_min_bytes    : 12288       # OQ-1 corrected gate
 #   haiku_routing.scout_blocked_ops  : ["Edit", "Write", "Bash"]
-#   haiku_routing.scout_blocked_paths: [".orchestray/state/*",
-#                                       "agents/**", "bin/**"]
+#   haiku_routing.scout_blocked_paths: [".orchestray/state/*", ".orchestray/audit/*",
+#                                       "bin/_lib/_haiku-routing-rule.js",
+#                                       ".git/**", "node_modules/**"]
 
 def should_spawn_scout(op_kind, target_path, target_bytes, class_hint):
   if not config.haiku_routing.enabled:                return False  # kill

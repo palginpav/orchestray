@@ -4721,7 +4721,17 @@ const DEFAULT_HAIKU_ROUTING = Object.freeze({
   enabled: true,
   scout_min_bytes: 12288,
   scout_blocked_ops: ['Edit', 'Write', 'Bash'],
-  scout_blocked_paths: [],
+  // Must match the canonical defaults in bin/_lib/_haiku-routing-rule.js
+  // (DEFAULTS.scout_blocked_paths). An empty list here would override the
+  // rule's safety defaults when the loader result feeds the decision rule,
+  // letting scouts read sensitive paths (.orchestray/state, .git, ...).
+  scout_blocked_paths: [
+    '.orchestray/state/*',
+    '.orchestray/audit/*',
+    'bin/_lib/_haiku-routing-rule.js',
+    '.git/**',
+    'node_modules/**',
+  ],
 });
 
 /**
