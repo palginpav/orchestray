@@ -1,7 +1,7 @@
 ---
 name: pm
 description: Orchestrates complex tasks — scores complexity, decomposes work, and delegates to specialized agents.
-tools: Agent, Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__ask_user, mcp__orchestray__cost_budget_reserve, mcp__orchestray__history_find_similar_tasks, mcp__orchestray__history_query_events, mcp__orchestray__kb_search, mcp__orchestray__kb_write, mcp__orchestray__pattern_deprecate, mcp__orchestray__pattern_find, mcp__orchestray__pattern_record_application, mcp__orchestray__pattern_record_skip_reason, mcp__orchestray__routing_lookup, mcp__orchestray__specialist_save
+tools: Agent, Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__ask_user, mcp__orchestray__cost_budget_reserve, mcp__orchestray__history_find_similar_tasks, mcp__orchestray__history_query_events, mcp__orchestray__kb_search, mcp__orchestray__kb_write, mcp__orchestray__metrics_query, mcp__orchestray__pattern_deprecate, mcp__orchestray__pattern_find, mcp__orchestray__pattern_record_application, mcp__orchestray__pattern_record_skip_reason, mcp__orchestray__routing_lookup, mcp__orchestray__specialist_save
 model: inherit
 effort: high
 memory: project
@@ -32,7 +32,7 @@ If this is the FIRST user prompt in a session AND `.orchestray/` directory does 
 display a brief one-time orientation before proceeding:
 
 > Orchestray is active. For complex tasks (score 4+/12), I'll automatically orchestrate
-> across 13 specialist agents (architect, developer, refactorer, inventor, researcher, reviewer, debugger, tester, documenter, security-engineer, release-manager, ux-critic, platform-oracle), plus two internal utility agents (project-intent, curate-runner) used silently for repo-onboarding and KB curation.
+> across 13 specialist agents (architect, developer, refactorer, inventor, researcher, reviewer, debugger, tester, documenter, security-engineer, release-manager, ux-critic, platform-oracle), plus internal utility agents (project-intent, curate-runner, haiku-scout, orchestray-housekeeper, pattern-extractor, curator) used silently for repo-onboarding, KB curation, and pattern extraction.
 >
 > - Just type your task naturally — I'll decide whether to orchestrate
 > - `/orchestray:config` — view or adjust settings

@@ -1,0 +1,15 @@
+# Test files — not needed in production installs.
+# NOTE: The actual exclusions are enforced via negation patterns in package.json
+# "files" field (e.g. "!bin/__tests__/"), because npm 10+ treats explicit "files"
+# directory entries as overriding .npmignore. The patterns below document intent
+# and take effect if the "files" field is ever removed.
+bin/__tests__/
+bin/_lib/__tests__/
+bin/mcp-server/tools/__tests__/
+bin/mcp-server/lib/__tests__/
+
+# Dev-only tooling
+bin/_tools/
+
+# Top-level test suite
+tests/

@@ -78,7 +78,7 @@ Note: The "Current (Detailed)" and "Agent Runs" sections are only shown when the
 5. If `.orchestray/` directory does not exist at all, report: "Orchestray has not been used yet in this project. Use `/orchestray:run [task]` to start your first orchestration."
 
 6. **Auto-learning status block**: Append the auto-learning status block by running
-   `node bin/learn-commands/status-render.js` from the project root.
+   `node $CLAUDE_PLUGIN_ROOT/bin/learn-commands/status-render.js`.
 
    The block output looks like:
 

@@ -383,7 +383,7 @@ The user wants to see the pattern learning dashboard showing what the system has
     note "(insufficient data for reliable aggregation)".
 
 15. **Auto-learning banner**: After all sections above, append the auto-learning status
-    banner by running `node bin/learn-commands/patterns-render.js` from the project root.
+    banner by running `node $CLAUDE_PLUGIN_ROOT/bin/learn-commands/patterns-render.js`.
 
     The banner output is additive — it follows the existing dashboard without modifying
     any existing section. It looks like:

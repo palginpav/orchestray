@@ -823,7 +823,7 @@ function install(targetDir) {
   let mcpFileCount = 0;
   if (fs.existsSync(mcpSrcDir) && fs.statSync(mcpSrcDir).isDirectory()) {
     const mcpDstDir = path.join(targetDir, 'orchestray', 'bin', 'mcp-server');
-    const copied = copyJsTree(mcpSrcDir, mcpDstDir);
+    const copied = copyJsTree(mcpSrcDir, mcpDstDir, name => name === '__tests__');
     for (const rel of copied) {
       track(path.join('orchestray', 'bin', 'mcp-server', rel));
     }

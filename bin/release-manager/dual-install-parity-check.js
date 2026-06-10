@@ -95,7 +95,9 @@ const SOURCE_ONLY_DIR_PREFIXES = [
   '__tests__/',
   '_tools/',
   '_lib/__tests__/',
-  'release-manager/',  // this gate itself + future release-manager helpers
+  // release-manager/ intentionally NOT listed — it IS installed via BIN_SUBDIRS
+  // and the parity gate must verify it. Removing it from SOURCE_ONLY ensures
+  // any corruption of release-manager scripts is caught at SubagentStop.
 ];
 
 // ---------------------------------------------------------------------------

@@ -172,7 +172,6 @@ describe('v2.2.19 T8 Fix 2 — Case 3: SOURCE_ONLY_ALLOWLIST applied identically
       '__tests__/my.test.js',
       '_tools/helper.js',
       '_lib/__tests__/lib.test.js',
-      'release-manager/dual-install-parity-check.js',
     ];
     for (const f of allowlistedDirFiles) {
       assert.equal(isSourceOnlyAllowed(f), true,
