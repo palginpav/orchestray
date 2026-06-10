@@ -63,10 +63,78 @@ const path = require('node:path');
 
 const { resolveSafeCwd }              = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
+const { pruneOrphanedTaskState }      = require('./_lib/orchestration-state');
 const { writeEvent }                  = require('./_lib/audit-event-writer');
 
 /** Cap on live events.jsonl read size (defence against runaway growth). */
 const MAX_LIVE_EVENTS_BYTES = 256 * 1024 * 1024; // 256 MB hard cap
+
+// ---------------------------------------------------------------------------
+// C4 (v2.3.10): append-safe size-based rotation of the LIVE events.jsonl.
+//
+// Live events.jsonl grew unbounded (audit measured 22.9 MB / 81k rows) because
+// state-gc only touches history/. Past the metrics scan cap (32 MB), cost
+// attribution silently degrades — i.e. unbounded growth actively degrades C2's
+// resolver. We roll the live log when it crosses ROTATE_THRESHOLD_BYTES.
+//
+// APPEND-SAFETY: rotation is a single fs.renameSync(events.jsonl → .1). It
+// NEVER truncates. Concurrent appenders use O_APPEND (atomicAppendJsonl):
+//   - a writer that already holds an fd keeps writing to the same inode, which
+//     is now named events.jsonl.1 — its line lands intact (no partial line, no
+//     data loss);
+//   - the next writer opens events.jsonl by path and the OS creates a fresh
+//     file (append-create), so subsequent lines land in the new live log.
+// Either way every append is whole. This coordinates with archive-orch-events'
+// copy-only archival: archival reads a point-in-time snapshot, so a rotation
+// between two archive fires simply means the next fire re-reads the (smaller)
+// live log; the per-orch history slice is rebuilt idempotently from whatever
+// remains plus is preserved in the rolled .1 file.
+// ---------------------------------------------------------------------------
+
+/** Roll the live log once it crosses this size. ~16 MB keeps us well under the 32 MB metrics scan cap. */
+const ROTATE_THRESHOLD_BYTES = 16 * 1024 * 1024;
+
+/** Number of rolled generations to retain (events.jsonl.1 .. .N). */
+const ROTATE_KEEP = 3;
+
+/** Orphaned state/tasks/ files older than this are pruned (belt-and-suspenders for C1). */
+const TASK_STATE_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+
+/**
+ * Append-safe rotation. Returns { rotated, reason } and never throws.
+ * Reads the configured threshold from env ORCHESTRAY_EVENTS_ROTATE_BYTES when
+ * set (>0), else the built-in.
+ */
+function rotateLiveEvents(eventsPath) {
+  let threshold = ROTATE_THRESHOLD_BYTES;
+  const envVal = parseInt(process.env.ORCHESTRAY_EVENTS_ROTATE_BYTES, 10);
+  if (!Number.isNaN(envVal) && envVal > 0) threshold = envVal;
+
+  let st;
+  try {
+    st = fs.statSync(eventsPath);
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return { rotated: false, reason: 'no_live_log' };
+    return { rotated: false, reason: 'stat_failed' };
+  }
+  if (st.size < threshold) return { rotated: false, reason: 'below_threshold' };
+
+  // Shift older generations: .{N-1} → .N, … , .1 → .2. Best-effort.
+  try {
+    for (let i = ROTATE_KEEP - 1; i >= 1; i--) {
+      const from = eventsPath + '.' + i;
+      const to   = eventsPath + '.' + (i + 1);
+      if (fs.existsSync(from)) {
+        try { fs.renameSync(from, to); } catch (_e) { /* best-effort */ }
+      }
+    }
+    // Atomic single rename. No truncation — O_APPEND writers stay consistent.
+    fs.renameSync(eventsPath, eventsPath + '.1');
+    return { rotated: true, reason: 'rotated', size_bytes: st.size, threshold };
+  } catch (e) {
+    return { rotated: false, reason: 'rename_failed', err: e && e.message };
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -204,9 +272,11 @@ function main() {
   const eventsPath = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
 
   // No active orchestration AND no recently-closed unfinalized archive →
-  // nothing to do. The historical-finalization path below uses the most
-  // recent history dir so we don't lose the close-fire.
+  // nothing to archive. Still run C4 housekeeping: between orchestrations is the
+  // SAFEST time to roll the live log (no active orch's lines are at risk of
+  // being missed by an in-flight archive) and to prune orphaned task state.
   if (!orchId) {
+    runHousekeeping(cwd, null);
     return 0;
   }
 
@@ -266,7 +336,52 @@ function main() {
     process.stderr.write(`archive-orch-events: emit failed: ${e.message}\n`);
   }
 
+  // C4: housekeeping AFTER the archive copy committed for this fire, so the
+  // current orch's lines are safely in history before we may roll the live log.
+  runHousekeeping(cwd, orchId);
+
   return 0;
+}
+
+/**
+ * C4 (v2.3.10): rotate the oversized live events.jsonl (append-safe) and prune
+ * orphaned state/tasks/ leftovers. Best-effort; never throws. Emits a small
+ * `events_log_rotated` audit row when a roll happened (post-rotation, into the
+ * fresh live log) for observability.
+ *
+ * @param {string} cwd
+ * @param {string|null} orchId
+ */
+function runHousekeeping(cwd, orchId) {
+  if (process.env.ORCHESTRAY_EVENTS_ROTATE_DISABLED !== '1') {
+    try {
+      const eventsPath = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
+      const r = rotateLiveEvents(eventsPath);
+      if (r.rotated) {
+        // Emit into the now-fresh live log so the rotation itself is auditable.
+        try {
+          writeEvent({
+            type:             'events_log_rotated',
+            version:          1,
+            orchestration_id: orchId || 'unknown',
+            rolled_bytes:     r.size_bytes,
+            threshold_bytes:  r.threshold,
+            target:           eventsPath + '.1',
+          }, { cwd });
+        } catch (_e) { /* fail-open */ }
+      }
+    } catch (e) {
+      process.stderr.write(`archive-orch-events: rotation failed: ${e && e.message}\n`);
+    }
+  }
+
+  if (process.env.ORCHESTRAY_TASK_PRUNE_DISABLED !== '1') {
+    try {
+      pruneOrphanedTaskState(cwd, TASK_STATE_TTL_MS);
+    } catch (e) {
+      process.stderr.write(`archive-orch-events: task prune failed: ${e && e.message}\n`);
+    }
+  }
 }
 
 if (require.main === module) {
@@ -278,4 +393,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { main };
+module.exports = { main, rotateLiveEvents, runHousekeeping, ROTATE_THRESHOLD_BYTES };

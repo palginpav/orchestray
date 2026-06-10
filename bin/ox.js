@@ -35,7 +35,7 @@ const path = require('path');
 // events.jsonl emissions now route through the central audit-event gateway.
 const { atomicAppendJsonlIfAbsent } = require('./_lib/atomic-append');
 const { writeEvent }                = require('./_lib/audit-event-writer');
-const { getCurrentOrchestrationFile }                  = require('./_lib/orchestration-state');
+const { getCurrentOrchestrationFile, archiveAndClearLiveState } = require('./_lib/orchestration-state');
 
 // --------------------------------------------------------------------------
 // Constants
@@ -272,9 +272,29 @@ function cmdStateInit(positionals, flags, dryRun) {
     const mkrPath = getCurrentOrchestrationFile(cwd);
     process.stdout.write(
       `[dry-run] would write: ${mkrPath}\n` +
+      `[dry-run] would archive+clear stale state/tasks/, orchestration.md, resilience-dossier.json under history/${orchId}/state-snapshot/\n` +
       `[dry-run] would append orchestration_start to: ${eventsPath(cwd)}\n`
     );
     process.exit(0);
+  }
+
+  // C1 (v2.3.10): archive-then-clear any leftover live task ledger / orchestration.md /
+  // dossier BEFORE activating the new run. Without this, a prior (completed) run's task
+  // files survive in state/tasks/ and the dossier writer glues the NEW orch-id onto the
+  // OLD task files, reporting them as the current run's pending work (resilience F1).
+  // Stale state is filed under the NEW orch's history snapshot so the cause stays auditable.
+  const cleanup = archiveAndClearLiveState(cwd, orchId);
+  if (cleanup.cleared_tasks > 0 || cleanup.archived.length > 0) {
+    try {
+      writeEvent({
+        timestamp:        now,
+        type:             'stale_state_pruned',
+        orchestration_id: orchId,
+        cleared_tasks:    cleanup.cleared_tasks,
+        archived:         cleanup.archived,
+        trigger:          'state_init',
+      }, { cwd });
+    } catch (_e) { /* fail-open: hygiene telemetry must not block init */ }
   }
 
   const markerData = {
@@ -325,6 +345,7 @@ function cmdStateComplete(positionals, flags, dryRun) {
     const mkrPath = getCurrentOrchestrationFile(cwd);
     process.stdout.write(
       `[dry-run] would append orchestration_complete (status=${status}, orch=${orchId}) to events.jsonl\n` +
+      `[dry-run] would archive+clear state/tasks/, orchestration.md, resilience-dossier.json under history/${orchId}/state-snapshot/\n` +
       `[dry-run] would remove: ${mkrPath}\n`
     );
     process.exit(0);
@@ -346,6 +367,24 @@ function cmdStateComplete(positionals, flags, dryRun) {
     if (e && e.code !== 'ENOENT') {
       die('state complete', `failed to remove marker: ${e.message}`, 1);
     }
+  }
+
+  // C1 (v2.3.10): mirror the marker unlink — archive+clear the completed run's
+  // task ledger, orchestration.md, and dossier so the NEXT `state init` starts
+  // from a clean ledger and the resilience injector never re-hydrates a closed
+  // run's pending tasks (resilience F1). Best-effort; never blocks close.
+  const cleanup = archiveAndClearLiveState(cwd, orchId);
+  if (cleanup.cleared_tasks > 0 || cleanup.archived.length > 0) {
+    try {
+      writeEvent({
+        timestamp:        now,
+        type:             'stale_state_pruned',
+        orchestration_id: orchId,
+        cleared_tasks:    cleanup.cleared_tasks,
+        archived:         cleanup.archived,
+        trigger:          'state_complete',
+      }, { cwd });
+    } catch (_e) { /* fail-open */ }
   }
 }
 

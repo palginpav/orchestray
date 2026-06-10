@@ -27,7 +27,7 @@ const path = require('path');
 
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
-const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
+const { getCurrentOrchestrationFile, normalizeOrchStatus, normalizeOrchPhase } = require('./_lib/orchestration-state');
 const { writeEvent } = require('./_lib/audit-event-writer');
 const { recordDegradation } = require('./_lib/degraded-journal');
 const { loadResilienceConfig } = require('./_lib/config-schema');
@@ -83,10 +83,27 @@ function writeDossierSnapshot(cwd, opts) {
       return { written: false, reason: 'no_active_orchestration' };
     }
 
+    // --- Resolve the ACTIVE orchestration_id first (C1 defense-in-depth) ---
+    // orchestration.md frontmatter is preferred; fall back to the marker. We need
+    // the id BEFORE reading tasks so _readTaskIds can scope the glob to the active
+    // run and skip a prior run's leftover task files (resilience F1).
+    const orchestration = _readOrchestrationFrontmatter(orchPath);
+    let activeOrchId = orchestration.id || null;
+    if (!activeOrchId) {
+      try {
+        const MAX_MARKER_BYTES = 256 * 1024;
+        const mRes = readFileBounded(markerPath, MAX_MARKER_BYTES);
+        if (mRes.ok) {
+          const m = JSON.parse(mRes.content);
+          if (m && typeof m.orchestration_id === 'string') activeOrchId = m.orchestration_id;
+        }
+      } catch (_e) { /* swallow; activeOrchId stays null → unscoped (legacy) read */ }
+    }
+
     // --- Gather sources ---
     const sources = {
-      orchestration: _readOrchestrationFrontmatter(orchPath),
-      task_ids: _readTaskIds(path.join(stateDir, 'tasks')),
+      orchestration: orchestration,
+      task_ids: _readTaskIds(path.join(stateDir, 'tasks'), activeOrchId),
       cost: _readCost(markerPath, cwd),
       events_tail: _readEventsTail(path.join(auditDir, 'events.jsonl'), 50),
       mcp_checkpoints: _readMcpCheckpoints(path.join(stateDir, 'mcp-checkpoint.jsonl'), cwd),
@@ -98,24 +115,31 @@ function writeDossierSnapshot(cwd, opts) {
     };
 
     // Orchestration marker may carry orchestration_id when orchestration.md lacks it.
+    // activeOrchId was already resolved above (marker fallback) for task scoping;
+    // mirror it onto the dossier source so downstream serialization sees the id.
+    // We still emit the bounded-read degradation telemetry the prior code recorded.
     if (!sources.orchestration.id) {
-      try {
-        // SEC-04 / LOW-R2-01: belt-and-suspenders guard; use bounded fd-based read.
-        const MAX_MARKER_BYTES = 256 * 1024;
-        const mRes = readFileBounded(markerPath, MAX_MARKER_BYTES);
-        if (mRes.ok) {
-          const m = JSON.parse(mRes.content);
-          if (m && typeof m.orchestration_id === 'string') {
-            sources.orchestration.id = m.orchestration_id;
+      if (activeOrchId) {
+        sources.orchestration.id = activeOrchId;
+      } else {
+        try {
+          // SEC-04 / LOW-R2-01: belt-and-suspenders guard; use bounded fd-based read.
+          const MAX_MARKER_BYTES = 256 * 1024;
+          const mRes = readFileBounded(markerPath, MAX_MARKER_BYTES);
+          if (mRes.ok) {
+            const m = JSON.parse(mRes.content);
+            if (m && typeof m.orchestration_id === 'string') {
+              sources.orchestration.id = m.orchestration_id;
+            }
+          } else if (mRes.reason === 'file_too_large') {
+            recordDegradation({ kind: 'file_too_large', severity: 'warn', projectRoot: cwd,
+              detail: { file: markerPath, size_hint: mRes.size_hint, cap_bytes: MAX_MARKER_BYTES } });
+          } else {
+            recordDegradation({ kind: 'file_read_failed', severity: 'warn', projectRoot: cwd,
+              detail: { file: markerPath, err: mRes.err } });
           }
-        } else if (mRes.reason === 'file_too_large') {
-          recordDegradation({ kind: 'file_too_large', severity: 'warn', projectRoot: cwd,
-            detail: { file: markerPath, size_hint: mRes.size_hint, cap_bytes: MAX_MARKER_BYTES } });
-        } else {
-          recordDegradation({ kind: 'file_read_failed', severity: 'warn', projectRoot: cwd,
-            detail: { file: markerPath, err: mRes.err } });
-        }
-      } catch (_e) { /* swallow JSON.parse errors */ }
+        } catch (_e) { /* swallow JSON.parse errors */ }
+      }
     }
 
     // --- Build + serialize ---
@@ -224,10 +248,13 @@ function _readOrchestrationFrontmatter(orchPath) {
       }
       if (key === 'id') out.id = val || null;
       else if (key === 'current_phase' || key === 'phase') {
-        out.phase = val;
-        out.current_phase = val;
+        // C3 (v2.3.10): normalise free-form phase vocab (`closed`) → schema-canonical
+        // (`complete`) so buildDossier's _enumOr does not drop it to null.
+        const p = normalizeOrchPhase(val);
+        out.phase = p;
+        out.current_phase = p;
       }
-      else if (key === 'status') out.status = val;
+      else if (key === 'status') out.status = normalizeOrchStatus(val);
       else if (key === 'complexity_score') {
         const n = parseInt(val, 10);
         if (Number.isInteger(n)) out.complexity_score = n;
@@ -244,7 +271,22 @@ function _readOrchestrationFrontmatter(orchPath) {
   return out;
 }
 
-function _readTaskIds(tasksDir) {
+/**
+ * Read task ids bucketed by status from `tasksDir`.
+ *
+ * C1 defense-in-depth (v2.3.10): when `activeOrchId` is provided, a task file
+ * whose frontmatter carries an `orchestration_id`/`orch_id` that does NOT match
+ * the active run is SKIPPED. This stops a prior (completed) run's leftover task
+ * files — which the lifecycle cleanup in `ox state init/complete` is the primary
+ * defense against — from being re-hydrated as the current run's `pending` work
+ * (resilience F1). Task files that carry no orch-id at all are still included
+ * (legacy / hand-authored ledgers), since the primary cleanup now empties the
+ * dir on init; the scoping is the second line of defense, not the first.
+ *
+ * @param {string} tasksDir
+ * @param {string|null} [activeOrchId]
+ */
+function _readTaskIds(tasksDir, activeOrchId) {
   const out = { pending: [], completed: [], failed: [] };
   try {
     if (!_dirExists(tasksDir)) return out;
@@ -260,6 +302,7 @@ function _readTaskIds(tasksDir) {
       if (!fm) continue;
       let id = null;
       let status = null;
+      let taskOrchId = null;
       for (const line of fm[1].split(/\r?\n/)) {
         const mm = line.match(/^([a-z_]+):\s*(.*)$/i);
         if (!mm) continue;
@@ -270,7 +313,11 @@ function _readTaskIds(tasksDir) {
         }
         if (key === 'id' || key === 'task_id') id = val || null;
         if (key === 'status') status = val;
+        if (key === 'orchestration_id' || key === 'orch_id') taskOrchId = val || null;
       }
+      // Scope to the active run: a task that explicitly belongs to a DIFFERENT
+      // orchestration is stale → skip it (resilience F1 defense-in-depth).
+      if (activeOrchId && taskOrchId && taskOrchId !== activeOrchId) continue;
       if (!id) {
         // Derive id from filename: "01-slug.md" → "01"
         const m2 = entry.name.match(/^([^.]+)\.md$/);

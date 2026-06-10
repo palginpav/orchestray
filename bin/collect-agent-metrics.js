@@ -182,6 +182,41 @@ function resolveModelUsed(allEvents, orchestrationId, agentType) {
   return null; // Pre-routing orchestration or no match
 }
 
+// ---------------------------------------------------------------------------
+// C2 (v2.3.10): recover agent_type at SubagentStop when the hook payload omits it.
+//
+// The SubagentStop payload does not carry agent_type for ordinary subagents
+// (only last_assistant_message/usage/session_id), and routing_outcome rows are
+// keyed BY agent_type — so the resolver can't find the row that contains the
+// value (chicken-and-egg). The transcript, however, is readable at SubagentStop
+// and the spawn prompt names the role. We sniff it from the transcript text:
+//   1. an Agent()/Task() spawn tool-input echo: "subagent_type":"<role>"
+//   2. the per-spawn system prompt convention: "You are a <role> agent"
+// Matches are validated against CANONICAL_AGENTS so a stray substring can never
+// fabricate a role. Returns null when nothing trustworthy is found — the caller
+// then flips cost_confidence to 'estimated' (the floor) rather than lying.
+// ---------------------------------------------------------------------------
+const { CANONICAL_AGENTS } = require('./_lib/canonical-agents');
+
+function recoverAgentTypeFromTranscript(text) {
+  if (typeof text !== 'string' || text.length === 0) return null;
+  // Cap the scan to the head of the transcript — the spawn prompt / first
+  // tool-input lives there, and we must not pay O(n) on a huge transcript.
+  const head = text.length > 256 * 1024 ? text.slice(0, 256 * 1024) : text;
+
+  // Signal 1: explicit subagent_type / agent_type in a serialised tool input.
+  const m1 = head.match(/"(?:subagent_type|agent_type)"\s*:\s*"([a-zA-Z0-9_-]+)"/);
+  if (m1 && CANONICAL_AGENTS.has(m1[1])) return m1[1];
+
+  // Signal 2: the "You are a <role> agent" spawn-prompt convention.
+  const m2 = head.match(/You are (?:a|an|the)\s+([a-zA-Z-]+)\s+agent\b/i);
+  if (m2) {
+    const role = m2[1].toLowerCase();
+    if (CANONICAL_AGENTS.has(role)) return role;
+  }
+  return null;
+}
+
 /**
  * Estimate cost in USD from token usage and model pricing.
  */
@@ -363,11 +398,17 @@ process.stdin.on('end', () => {
     // extract the ## Structured Result JSON fence, parse files_changed array.
     // Falls back to [] on any error (fail-open per audit contract).
     let transcriptFilesChanged = [];
+    // C2 (v2.3.10): agent_type recovered from the transcript spawn prompt when
+    // the SubagentStop payload omits it. null when nothing trustworthy is found.
+    let recoveredAgentType = null;
 
     try {
       if (transcriptPath && fs.existsSync(transcriptPath)) {
         const content = fs.readFileSync(transcriptPath, 'utf8');
         const lines = content.split('\n').filter((l) => l.trim());
+
+        // C2: sniff the role from the transcript head (spawn prompt / first tool input).
+        recoveredAgentType = recoverAgentTypeFromTranscript(content);
 
         // Single-pass: collect usage + find last assistant message text.
         let lastAssistantText = null;
@@ -497,9 +538,20 @@ process.stdin.on('end', () => {
     // agents/<name>.md frontmatter resolver so teammates and unknown agent
     // types are LABELED ('unknown_team_member' for total miss) instead of
     // silently priced as Sonnet.
-    const agentType = isTeamEvent
+    // C2 (v2.3.10): the SubagentStop payload omits agent_type for ordinary
+    // subagents (~83% of stops), which left model_used null AND cost_confidence
+    // 'measured' — a silent Sonnet-priced lie. Recover the role from the
+    // transcript spawn prompt when the payload lacks it; the routing_outcome
+    // resolver (keyed by agent_type) can then find the real model.
+    const payloadAgentType = isTeamEvent
       ? (event.teammate_name || 'teammate')
       : (event.agent_type || null);
+    let agentTypeResolvedFrom = payloadAgentType ? 'payload' : null;
+    let agentType = payloadAgentType;
+    if (!agentType && !isTeamEvent && recoveredAgentType) {
+      agentType = recoveredAgentType;
+      agentTypeResolvedFrom = 'transcript';
+    }
     let resolvedModel = resolveModelUsed(routingOutcomes, orchestrationId, agentType);
     if (!resolvedModel && agentType) {
       resolvedModel = resolveTeammateModel(agentType, cwd);
@@ -550,6 +602,20 @@ process.stdin.on('end', () => {
     // The pricing path itself is unchanged (Sonnet rates), per W1 §M0.2.
     if (resolvedModel === 'unknown_team_member') {
       costConfidence = 'estimated';
+    }
+
+    // C2 (v2.3.10) FLOOR: when the model could NOT be resolved (null), the cost
+    // is the Sonnet heuristic fallback (getPricing(agentType, null, …)) — that is
+    // an ESTIMATE, not a measurement. Stop labelling these rows 'measured'. This
+    // is the affordability-critical fix: 83% of agent_stops resolved null model
+    // and were silently priced as Sonnet while tagged 'measured'.
+    if (!resolvedModel || resolvedModel === 'unknown_team_member') {
+      costConfidence = 'estimated';
+      if (!modelResolutionNote) {
+        modelResolutionNote = agentType
+          ? 'model unresolved (no routing_outcome match); cost is a Sonnet-heuristic estimate'
+          : 'agent_type unresolved from payload and transcript; cost is a Sonnet-heuristic estimate';
+      }
     }
 
     // Load pricing table from config (single source of truth per §W3).
