@@ -3,6 +3,20 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.11] - 2026-06-16
+
+**Orchestray 2.3.11 fixes an intermittent startup error when resuming a session, and corrects three quality-gate / cost-limit behaviors that were silently misbehaving.**
+
+### Fixed
+
+- **Resuming a session no longer randomly fails with a config-validation error.** When a session resumed while a just-finished orchestration was still rewriting its saved patterns, the startup validator could trip over a file mid-rewrite and abort with "one or more files failed zod validation." It now tolerates files that change during the scan, and only a genuinely broken config.json blocks startup — a malformed saved pattern is reported as a warning instead of stopping your session.
+
+- **Task quality-gate checks now actually run.** Three contract checks (diff_only_in, file_exports, command_exits_zero) were registered but silently passing without being evaluated, giving false confidence. They are now enforced; the command check runs only from a fixed, safe allow-list.
+
+- **The weekly cost limit now measures a real rolling 7-day window.** weekly_cost_limit_usd previously behaved the same as the overall cap; it now tracks the last 7 days as intended.
+
+- **Clearer reason when pattern extraction is turned off.** Selecting the "stub" extraction backend now reports backend_stub_mode instead of the misleading backend_not_configured.
+
 ## [2.3.10] - 2026-06-10
 
 **Orchestray 2.3.10 is a full-plugin audit hardening wave: the MCP server and permission gates are hardened against oversized inputs, a new CONFIG.md browsable reference ships, reliability fixes eliminate phantom pending-task state after restarts and cap unbounded event-log growth, and several previously-dead features are wired up for real.**
