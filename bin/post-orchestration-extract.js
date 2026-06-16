@@ -19,10 +19,11 @@
  * `.orchestray/config.json` here because W7 will wire them through config-schema.js.
  * Missing keys are treated as `false` / absent (default-off per design §4).
  *
- * Backend stub note: `spawnExtractor` below is a shim. In v2.1.6 it returns
- * `{ proposals: [], skipped: [{ reason: 'backend_not_configured' }] }` unless
- * ORCHESTRAY_AUTO_EXTRACT_BACKEND is set by tests. Group D / W7 replaces the stub
- * with an actual `execFileSync('claude', ['--agent', 'haiku', ...])` call.
+ * Backend note: The live Haiku CLI backend shipped in v2.1.7 (Bundle A).
+ * Operator opt-out: set `auto_learning.extract_on_complete.backend = "stub"` in
+ * config to skip extraction (yields `reason: 'backend_stub_mode'` in skipped[]).
+ * Env-var `ORCHESTRAY_AUTO_EXTRACT_BACKEND=stub` is a test/env-unconfigured path
+ * (yields `reason: 'backend_not_configured'`). `=test` activates the test backend.
  *
  * Fail-open discipline: every error path calls recordDegradation() and exits 0.
  * Never throws to the hook runner.
@@ -231,10 +232,17 @@ function spawnExtractor({ events, extractConfig, projectRoot }) {
     }
   }
 
-  // Stub short-circuit: env-var override (test regression path) or config says stub.
-  const isStub = backendEnvOverride === 'stub' || extractConfig.backend === 'stub';
+  // Operator-chosen stub: config explicitly sets backend === 'stub' to opt out.
+  if (extractConfig.backend === 'stub') {
+    return {
+      proposals:        [],
+      skipped:          [{ event_batch_id: 'unknown', reason: 'backend_stub_mode' }],
+      backendElapsedMs: 0,
+    };
+  }
 
-  if (isStub) {
+  // Env-var stub override: test regression path or genuinely unconfigured environment.
+  if (backendEnvOverride === 'stub') {
     return {
       proposals:        [],
       skipped:          [{ event_batch_id: 'unknown', reason: 'backend_not_configured' }],

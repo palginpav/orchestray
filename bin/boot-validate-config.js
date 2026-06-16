@@ -19,10 +19,17 @@
  * warns at most once per boot (in-process dedup Set). Users can silence
  * specific keys via `config.config_drift_silence: ["key1", ...]`.
  *
- * Exit codes mirror validate-config.js (drift does NOT change the exit code):
- *   0 — all checks passed (drift warnings may still have been emitted)
- *   1 — at least one artifact failed zod validation
+ * Exit codes (drift does NOT change the exit code):
+ *   0 — config.json passed (pattern/specialist artifact warnings may have been emitted)
+ *   1 — config.json failed zod validation (boot-blocking)
  *   2 — internal error (e.g., validator module missing, I/O, etc.)
+ *
+ * v2.3.11 resume-race fix: pattern/specialist failures are non-fatal at boot.
+ * Only config.json validation failure hard-blocks startup. This prevents an
+ * ENOENT race (concurrent rename during in-flight orchestration) or a
+ * schema-invalid pattern file from aborting a SessionStart:resume. The
+ * standalone `node bin/validate-config.js` CLI still exits non-zero on ANY
+ * failure for explicit validation runs.
  */
 
 const fs = require('fs');
@@ -215,19 +222,37 @@ function runCli() {
   }
 
   try {
-    const { run } = require('./validate-config.js');
+    const { run, validatePatternFiles, validateSpecialistFiles } = require('./validate-config.js');
     // Human-readable output in SessionStart context; use --json if the user
     // explicitly sets ORCHESTRAY_BOOT_VALIDATE_JSON=1.
     const json = process.env.ORCHESTRAY_BOOT_VALIDATE_JSON === '1';
     const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-    const code = run({ cwd, json });
+
+    // configOnlyExit: only hard-fail on config.json; artifact failures are warnings.
+    // This prevents an ENOENT race or a schema-invalid pattern during resume from
+    // aborting the session.
+    const code = run({ cwd, json, configOnlyExit: true });
+
     if (code !== 0) {
+      // config.json failed — this is the only boot-blocking artifact.
       process.stderr.write(
-        '\n[orchestray] boot-validate-config: one or more files failed zod validation.\n' +
+        '\n[orchestray] boot-validate-config: config.json failed zod validation.\n' +
         '  Re-run with: node bin/validate-config.js --cwd ' + cwd + '\n' +
-        '  See `.orchestray/config.json`, `.orchestray/patterns/*.md`,\n' +
-        '  and `specialists/*.md` for details.\n'
+        '  See `.orchestray/config.json` for details.\n'
       );
+    } else {
+      // Config is valid; check whether any pattern/specialist artifacts had findings
+      // (run() with configOnlyExit already printed them — just emit the summary warning).
+      const patFails = validatePatternFiles(cwd).filter(r => !r.ok && !r.skipped);
+      const spFails  = validateSpecialistFiles(cwd).filter(r => !r.ok && !r.skipped);
+      const artifactFailCount = patFails.length + spFails.length;
+      if (artifactFailCount > 0) {
+        process.stderr.write(
+          '\n[orchestray] boot-validate-config: ' + artifactFailCount +
+          ' pattern/specialist artifact(s) failed schema validation (non-fatal — see above).' +
+          ' Run `node bin/validate-config.js` to inspect.\n'
+        );
+      }
     }
 
     // Drift detection runs regardless of zod pass/fail — a drift warning

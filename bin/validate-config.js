@@ -22,6 +22,20 @@
  *   node bin/validate-config.js --cwd ROOT # scan a different root
  *
  * Missing files are treated as PASS (not every install has every artifact).
+ *
+ * ENOENT mid-scan (concurrent write): if a pattern or specialist file disappears
+ * between readdirSync and readFileSync (e.g., atomic rename during an in-flight
+ * orchestration), the file is recorded as skipped (ok: true) rather than a
+ * failure. Other I/O errors remain failures.
+ *
+ * opts.configOnlyExit (boolean, default false):
+ *   When true, run() returns non-zero ONLY when the config.json group fails.
+ *   Pattern/specialist artifact failures are still printed as loud stderr warnings
+ *   but do NOT influence the exit code. This is used by the SessionStart boot
+ *   wrapper (boot-validate-config.js) so that a race-induced ENOENT or a
+ *   schema-invalid pattern during an in-flight resume does not abort the session.
+ *   Leave unset (or false) for standalone `node bin/validate-config.js` runs,
+ *   which should exit non-zero on ANY failure for explicit validation invocations.
  */
 
 const fs = require('fs');
@@ -83,7 +97,13 @@ function validatePatternFiles(cwd) {
     try {
       raw = fs.readFileSync(fp, 'utf8');
     } catch (err) {
-      results.push({ ok: false, label: fp, message: 'read error: ' + err.message, issues: [] });
+      // ENOENT: file vanished between readdirSync and readFileSync — concurrent
+      // writer (atomic rename or unlink). Treat as skipped, not a failure.
+      if (err.code === 'ENOENT') {
+        results.push({ ok: true, label: fp, skipped: 'vanished during scan (concurrent write)' });
+      } else {
+        results.push({ ok: false, label: fp, message: 'read error: ' + err.message, issues: [] });
+      }
       continue;
     }
     const parsed = parseFrontmatter(raw);
@@ -123,7 +143,13 @@ function validateSpecialistFiles(cwd) {
     try {
       raw = fs.readFileSync(fp, 'utf8');
     } catch (err) {
-      results.push({ ok: false, label: fp, message: 'read error: ' + err.message, issues: [] });
+      // ENOENT: file vanished between readdirSync and readFileSync — concurrent
+      // writer (atomic rename or unlink). Treat as skipped, not a failure.
+      if (err.code === 'ENOENT') {
+        results.push({ ok: true, label: fp, skipped: 'vanished during scan (concurrent write)' });
+      } else {
+        results.push({ ok: false, label: fp, message: 'read error: ' + err.message, issues: [] });
+      }
       continue;
     }
     const parsed = parseFrontmatter(raw);
@@ -164,9 +190,25 @@ function validateSpecialistFiles(cwd) {
   return results;
 }
 
+/**
+ * Run all three validation groups and return an exit code.
+ *
+ * @param {object} [opts]
+ * @param {string}  [opts.cwd]            - Project root to scan (default: process.cwd())
+ * @param {boolean} [opts.json]           - Emit JSON instead of pretty output
+ * @param {boolean} [opts.configOnlyExit] - When true, return non-zero ONLY on config.json
+ *                                          failures; pattern/specialist failures are printed
+ *                                          as loud stderr warnings but don't affect the exit
+ *                                          code. Used by the SessionStart boot wrapper so that
+ *                                          race-induced ENOENT or schema-invalid patterns
+ *                                          during an in-flight resume do not abort the session.
+ *                                          Default (false): exit non-zero on ANY failure.
+ * @returns {number} exit code (0, 1, or 2)
+ */
 function run(opts) {
   const cwd = (opts && opts.cwd) || process.cwd();
   const json = !!(opts && opts.json);
+  const configOnlyExit = !!(opts && opts.configOnlyExit);
 
   const configResult = validateConfigFile(cwd);
   const patternResults = validatePatternFiles(cwd);
@@ -180,11 +222,16 @@ function run(opts) {
 
   let totalChecked = 0;
   let totalFail = 0;
-  for (const g of allResults) {
-    for (const r of g.results) {
-      totalChecked++;
-      if (!r.ok && !r.skipped) totalFail++;
-    }
+  let configFail = 0;
+  let artifactFail = 0;
+
+  for (const r of [configResult]) {
+    totalChecked++;
+    if (!r.ok && !r.skipped) { totalFail++; configFail++; }
+  }
+  for (const r of [...patternResults, ...specialistResults]) {
+    totalChecked++;
+    if (!r.ok && !r.skipped) { totalFail++; artifactFail++; }
   }
 
   if (json) {
@@ -192,8 +239,11 @@ function run(opts) {
       ok: totalFail === 0,
       checked: totalChecked,
       failed: totalFail,
+      config_failed: configFail,
+      artifact_failed: artifactFail,
       groups: allResults,
     }, null, 2) + '\n');
+    if (configOnlyExit) return configFail > 0 ? 1 : 0;
     return totalFail === 0 ? 0 : 1;
   }
 
@@ -220,6 +270,8 @@ function run(opts) {
     }
   }
   process.stdout.write('\n' + totalChecked + ' checked, ' + totalFail + ' with findings\n');
+
+  if (configOnlyExit) return configFail > 0 ? 1 : 0;
   return totalFail === 0 ? 0 : 1;
 }
 

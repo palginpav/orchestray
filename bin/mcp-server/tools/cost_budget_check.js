@@ -250,7 +250,7 @@ const MAX_EVENTS_READ = 2 * 1024 * 1024; // 2 MB
  * @param {string|null} dateFilter - ISO date string 'YYYY-MM-DD' for daily/weekly filter (or null for total)
  * @returns {Promise<{ accumulated_usd: number, warnings: string[] }>}
  */
-async function readAccumulatedCost(orchId, projectRoot, dateFilter) {
+async function readAccumulatedCost(orchId, projectRoot, dateFilter, { sinceMs = null } = {}) {
   const unavailable = { accumulated_usd: 0, warnings: ['running_cost_unavailable'] };
   if (!projectRoot || !orchId) return unavailable;
 
@@ -290,9 +290,20 @@ async function readAccumulatedCost(orchId, projectRoot, dateFilter) {
       if (ev.orchestration_id !== orchId) continue;
       if (ev.type !== 'agent_stop') continue;
 
-      // Apply date filter for daily/weekly accumulation.
+      // Apply date-prefix filter for daily accumulation (YYYY-MM-DD string match).
       if (dateFilter && typeof ev.timestamp === 'string') {
         if (!ev.timestamp.startsWith(dateFilter)) continue;
+      }
+
+      // Apply rolling-window filter for weekly accumulation (sinceMs timestamp).
+      // Events without a parseable timestamp are conservatively included (same
+      // approach as readActiveReservations for backward-compat records).
+      if (sinceMs !== null) {
+        if (typeof ev.timestamp === 'string') {
+          const evMs = new Date(ev.timestamp).getTime();
+          if (!Number.isNaN(evMs) && evMs < sinceMs) continue;
+        }
+        // No timestamp field — conservatively count toward window total.
       }
 
       // Sum cost — try cost_usd first, then nested cost.cost_usd.
@@ -385,9 +396,11 @@ async function handle(input, context) {
 
     // Read accumulated running cost (fail-open: warnings appended if unavailable).
   const today = new Date().toISOString().slice(0, 10); // 'YYYY-MM-DD'
-  const [accTotal, accDaily] = await Promise.all([
+  const weekStartMs = Date.now() - 7 * 24 * 60 * 60 * 1000; // rolling 7-day window
+  const [accTotal, accDaily, accWeekly] = await Promise.all([
     readAccumulatedCost(input.orchestration_id, projectRoot, null),
     readAccumulatedCost(input.orchestration_id, projectRoot, today),
+    readAccumulatedCost(input.orchestration_id, projectRoot, null, { sinceMs: weekStartMs }),
   ]);
 
   // Add unexpired reservations to accumulated spend for parallel-spawn pre-checks.
@@ -396,15 +409,19 @@ async function handle(input, context) {
   const activeRes = readActiveReservations(
     input.orchestration_id, projectRoot, { sinceTimestamp: todayStartMs }
   );
+  // Weekly reservations: re-use the same helper with the 7-day boundary.
+  // reserved_daily_usd from this call represents reservations within the weekly window.
+  const weeklyRes = readActiveReservations(
+    input.orchestration_id, projectRoot, { sinceTimestamp: weekStartMs }
+  );
   for (const w of activeRes.warnings) {
     if (!accTotal.warnings.includes(w)) accTotal.warnings.push(w);
   }
 
   const accumulatedUsd = accTotal.accumulated_usd + activeRes.reserved_usd;
   const accumulatedDailyUsd = accDaily.accumulated_usd + activeRes.reserved_daily_usd;
-  // Weekly accumulation: sum everything (no practical per-week filter without
-  // knowing the week boundary; use total accumulated as conservative estimate).
-  const accumulatedWeeklyUsd = accumulatedUsd;
+  // Weekly: rolling 7-day window — mirrors daily-cap approach with a 7-day sinceTimestamp.
+  const accumulatedWeeklyUsd = accWeekly.accumulated_usd + weeklyRes.reserved_daily_usd;
 
   // Read cost caps
   const caps = readCostCaps(config);
@@ -466,7 +483,7 @@ async function handle(input, context) {
   }
   if (wouldExceedWeeklyLimit) {
     warnings.push(
-      `accumulated+projected cost $${totalForWeeklyCap.toFixed(4)} exceeds weekly_cost_limit_usd $${caps.weekly_cost_limit_usd} (conservative estimate — true weekly filter not implemented)`
+      `accumulated+projected weekly cost $${totalForWeeklyCap.toFixed(4)} exceeds weekly_cost_limit_usd $${caps.weekly_cost_limit_usd}`
     );
   }
 

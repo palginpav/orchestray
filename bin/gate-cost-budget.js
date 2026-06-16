@@ -178,17 +178,21 @@ process.stdin.on('end', async () => {
 
     // Read accumulated cost — fail-open if unavailable.
     const today = new Date().toISOString().slice(0, 10);
+    const weekStartMs = Date.now() - 7 * 24 * 60 * 60 * 1000; // rolling 7-day window
     let accumulatedUsd = 0;
     let accumulatedDailyUsd = 0;
+    let accumulatedWeeklyUsd = 0;
 
     if (orchId) {
       try {
-        const [accTotal, accDaily] = await Promise.all([
+        const [accTotal, accDaily, accWeekly] = await Promise.all([
           readAccumulatedCost(orchId, cwd, null),
           readAccumulatedCost(orchId, cwd, today),
+          readAccumulatedCost(orchId, cwd, null, { sinceMs: weekStartMs }),
         ]);
         accumulatedUsd = accTotal.accumulated_usd;
         accumulatedDailyUsd = accDaily.accumulated_usd;
+        accumulatedWeeklyUsd = accWeekly.accumulated_usd;
       } catch (_accErr) {
         process.stderr.write(
           '[orchestray] gate-cost-budget: accumulated cost read failed; using $0 as accumulated\n'
@@ -204,6 +208,10 @@ process.stdin.on('end', async () => {
         const activeRes = readActiveReservations(orchId, cwd, { sinceTimestamp: todayStartMs });
         accumulatedUsd += activeRes.reserved_usd;
         accumulatedDailyUsd += activeRes.reserved_daily_usd;
+        // Weekly reservations: re-use helper with the 7-day boundary.
+        // reserved_daily_usd from this call represents reservations within the weekly window.
+        const weeklyRes = readActiveReservations(orchId, cwd, { sinceTimestamp: weekStartMs });
+        accumulatedWeeklyUsd += weeklyRes.reserved_daily_usd;
       } catch (_resErr) {
         process.stderr.write(
           '[orchestray] gate-cost-budget: reservation read failed; ignoring reservations\n'
@@ -214,8 +222,8 @@ process.stdin.on('end', async () => {
     // Cap comparisons.
     const totalForMaxCap   = accumulatedUsd + projectedCostUsd;
     const totalForDailyCap = accumulatedDailyUsd + projectedCostUsd;
-    // Weekly: use total accumulated as conservative estimate (same as cost_budget_check.js).
-    const totalForWeeklyCap = accumulatedUsd + projectedCostUsd;
+    // Weekly: rolling 7-day window — mirrors daily-cap approach with a 7-day sinceTimestamp.
+    const totalForWeeklyCap = accumulatedWeeklyUsd + projectedCostUsd;
 
     const breaches = [];
     if (caps.max_cost_usd !== null && totalForMaxCap > caps.max_cost_usd) {
@@ -230,7 +238,7 @@ process.stdin.on('end', async () => {
     }
     if (caps.weekly_cost_limit_usd !== null && totalForWeeklyCap > caps.weekly_cost_limit_usd) {
       breaches.push(
-        `weekly_cost_limit_usd $${caps.weekly_cost_limit_usd} (accumulated+projected: $${totalForWeeklyCap.toFixed(2)})`
+        `weekly_cost_limit_usd $${caps.weekly_cost_limit_usd} (accumulated+projected this week: $${totalForWeeklyCap.toFixed(2)})`
       );
     }
 

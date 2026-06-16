@@ -368,11 +368,92 @@ function runSingleCheck(cwd, condition) {
         const ok = stat.size <= max;
         return { ...base, result: ok ? 'pass' : 'fail', detail: 'size ' + stat.size + ' bytes' + (ok ? '' : ' (max: ' + max + ')') };
       }
-      case 'diff_only_in':
-      case 'file_exports':
-      case 'command_exits_zero':
-        // Not implemented in v2.2.11 — pass through (informative only)
-        return { ...base, result: 'pass', detail: 'check type ' + type + ' not implemented in v2.2.11 — skipped' };
+      case 'diff_only_in': {
+        // Run git diff --name-only against merge-base; verify all changed files
+        // are within the allowed set. Skips if git is unavailable.
+        const allowedFiles = Array.isArray(condition.files) ? condition.files : [];
+        let changedFiles;
+        try {
+          const { spawnSync } = require('child_process');
+          // Compute merge-base against origin/master (canonical per Q4 architect design)
+          const mbResult = spawnSync(
+            'git', ['merge-base', 'HEAD', 'origin/master'],
+            { cwd, encoding: 'utf8', timeout: 15000 }
+          );
+          let diffArgs;
+          if (mbResult.status === 0 && mbResult.stdout.trim()) {
+            diffArgs = ['diff', '--name-only', mbResult.stdout.trim(), 'HEAD'];
+          } else {
+            // Fallback: diff against HEAD (unstaged + staged)
+            diffArgs = ['diff', '--name-only', 'HEAD'];
+          }
+          const diffResult = spawnSync('git', diffArgs, { cwd, encoding: 'utf8', timeout: 15000 });
+          if (diffResult.status !== 0) {
+            return { ...base, result: 'skip', detail: 'git diff unavailable — merge_base_unavailable' };
+          }
+          changedFiles = diffResult.stdout.split('\n').map(f => f.trim()).filter(Boolean);
+        } catch (gitErr) {
+          return { ...base, result: 'skip', detail: 'git error — merge_base_unavailable: ' + String(gitErr.message || gitErr).slice(0, 80) };
+        }
+        const offenders = changedFiles.filter(f =>
+          !allowedFiles.some(allowed => allowed === f || matchGlob(allowed, f))
+        );
+        if (offenders.length === 0) {
+          return { ...base, result: 'pass', detail: 'all ' + changedFiles.length + ' changed file(s) within allowed set' };
+        }
+        return { ...base, result: 'fail', detail: 'files outside allowed set: ' + offenders.slice(0, 10).join(', ') };
+      }
+      case 'file_exports': {
+        // Grep target file for `export.*<name>`. PASS if matched.
+        const exportName = String(condition.name || '');
+        if (!exportName) {
+          return { ...base, result: 'fail', detail: 'file_exports: no name specified' };
+        }
+        const abs = path.resolve(cwd, target);
+        if (!fs.existsSync(abs)) {
+          return { ...base, result: 'fail', detail: 'file not found: ' + target };
+        }
+        let raw;
+        try { raw = fs.readFileSync(abs, 'utf8'); } catch (readErr) {
+          return { ...base, result: 'fail', detail: 'cannot read file: ' + String(readErr.message).slice(0, 80) };
+        }
+        const escapedName = exportName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const re = new RegExp('\\bexport\\b[^\\n]*\\b' + escapedName + '\\b', 'm');
+        const found = re.test(raw);
+        return { ...base, result: found ? 'pass' : 'fail', detail: found ? 'export "' + exportName + '" found' : 'export "' + exportName + '" not found in ' + target };
+      }
+      case 'command_exits_zero': {
+        // Fixed allow-list only — NEVER execute arbitrary strings.
+        const COMMAND_TABLE = {
+          1: ['npm', ['test']],
+          2: ['npm', ['run', 'build']],
+          3: ['npm', ['run', 'lint']],
+          4: ['npx', ['tsc', '--noEmit']],
+          5: ['go', ['build', './...']],
+          6: ['python', ['-m', 'py_compile']],
+        };
+        const idx = Number(condition.index);
+        if (!Number.isInteger(idx) || idx < 1 || idx > 6 || !(idx in COMMAND_TABLE)) {
+          process.stderr.write(
+            '[orchestray] validate-task-contracts: command_exits_zero index ' +
+            String(condition.index) + ' not in allow-list (1-6) — REJECTED, not executed.\n'
+          );
+          return { ...base, result: 'fail', detail: 'rejected: index ' + String(condition.index) + ' not in allow-list (1-6)' };
+        }
+        const [bin, args] = COMMAND_TABLE[idx];
+        const cmdStr = [bin].concat(args).join(' ');
+        try {
+          const { spawnSync } = require('child_process');
+          const result = spawnSync(bin, args, { cwd, encoding: 'utf8', timeout: 120000 });
+          if (result.status === 0) {
+            return { ...base, result: 'pass', detail: 'command "' + cmdStr + '" exited 0' };
+          }
+          const out = ((result.stdout || '') + (result.stderr || '')).slice(0, 200).replace(/\n/g, ' ');
+          return { ...base, result: 'fail', detail: 'command "' + cmdStr + '" exited ' + result.status + ': ' + out };
+        } catch (execErr) {
+          return { ...base, result: 'fail', detail: 'command "' + cmdStr + '" error: ' + String(execErr.message || execErr).slice(0, 120) };
+        }
+      }
       default:
         return { ...base, result: 'pass', detail: 'unknown check type — skipped' };
     }
