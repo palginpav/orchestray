@@ -91,7 +91,7 @@ const READ_ONLY_VERBS = new Set([
  * @returns {boolean}
  */
 function isReadOnlyGitSegment(seg) {
-  if (typeof seg !== 'string' || !/\bgit\b/.test(seg)) return false;
+  if (typeof seg !== 'string' || !hasGitCommandToken(seg)) return false;
   const { subcommand, gitDirRedirected } = extractGitSubcommand(seg);
   if (!subcommand) return false; // unparseable — not provably read-only
   if (gitDirRedirected) return false; // ambiguous target — be conservative
@@ -147,7 +147,7 @@ function isReadOnlyGitSegment(seg) {
 function isAllReadOnlyGit(command) {
   if (typeof command !== 'string') return false;
   const segments = splitChained(command);
-  const gitSegments = segments.filter(s => /\bgit\b/.test(s));
+  const gitSegments = segments.filter(hasGitCommandToken);
   if (gitSegments.length === 0) return false; // no git at all — let normal path handle
   return gitSegments.every(isReadOnlyGitSegment);
 }
@@ -248,15 +248,26 @@ const FORBIDDEN_PATTERNS = [
  * @returns {boolean}
  */
 function isMainCheckout(dir) {
+  // v2.3.12 W2 (M1): bound both git invocations with a timeout and fail CLOSED.
+  // A hung git previously left these spawnSync calls unbounded; if the 5s hook
+  // budget expired the gate would be skipped (fail-open), letting a destructive
+  // working-tree git command through in the shared main checkout. On timeout
+  // (status === null), non-zero exit, or throw we now return `true` — assume the
+  // target IS the main checkout so the alsoBlockWhenMainCheckout protection
+  // fires. Worst case this over-blocks a destructive op in a linked worktree
+  // (safe); it never under-blocks the shared main tree.
+  const SPAWN_OPTS = { encoding: 'utf8', timeout: 1500, killSignal: 'SIGKILL' };
   try {
-    const gitDir = spawnSync('git', ['-C', dir, 'rev-parse', '--git-dir'], { encoding: 'utf8' });
-    const commonDir = spawnSync('git', ['-C', dir, 'rev-parse', '--git-common-dir'], { encoding: 'utf8' });
+    const gitDir = spawnSync('git', ['-C', dir, 'rev-parse', '--git-dir'], SPAWN_OPTS);
+    const commonDir = spawnSync('git', ['-C', dir, 'rev-parse', '--git-common-dir'], SPAWN_OPTS);
+    // status === null indicates timeout/kill (no clean exit) → fail closed.
+    if (gitDir.status === null || commonDir.status === null) return true;
     if (gitDir.status !== 0 || commonDir.status !== 0) return false;
     const absGit = path.resolve(dir, gitDir.stdout.trim());
     const absCommon = path.resolve(dir, commonDir.stdout.trim());
     return absGit === absCommon;
   } catch (_) {
-    return false;
+    return true;
   }
 }
 
@@ -443,14 +454,111 @@ function isWtDestructiveGit(seg) {
 }
 
 /**
- * Split a command string on shell chain operators (&&, ;, |) and return
- * individual segments. This allows checking each git sub-command independently.
+ * Split a command string on shell chain operators and return individual
+ * segments, RESPECTING single/double quotes so separators inside a quoted
+ * argument (e.g. `echo "a; b"`) do not fracture the command.
+ *
+ * v2.3.12 W1 (A1): rewritten to be quote-aware and to additionally honor the
+ * `||`, `&` (background) and newline separators the prior regex was blind to
+ * (security audit under-block note). `$(...)` command substitution is still
+ * treated as opaque text (documented residual — exotic under-block only).
  *
  * @param {string} command
  * @returns {string[]}
  */
 function splitChained(command) {
-  return command.split(/&&|;(?!;)|\|(?!\|)/).map(s => s.trim()).filter(Boolean);
+  if (typeof command !== 'string') return [];
+  const segs = [];
+  let cur = '';
+  let quote = null; // active quote char: "'" or '"'
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    const n = i + 1 < command.length ? command[i + 1] : '';
+    if (quote) {
+      cur += c;
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === "'" || c === '"') { quote = c; cur += c; continue; }
+    if (c === '&' && n === '&') { segs.push(cur); cur = ''; i++; continue; }
+    if (c === '|' && n === '|') { segs.push(cur); cur = ''; i++; continue; }
+    if (c === '|' || c === '&' || c === ';' || c === '\n') { segs.push(cur); cur = ''; continue; }
+    cur += c;
+  }
+  segs.push(cur);
+  return segs.map(s => s.trim()).filter(Boolean);
+}
+
+// ---------------------------------------------------------------------------
+// v2.3.12 W1 (A1): command-token-aware git detection.
+//
+// The prior guards used `/\bgit\b/.test(seg)`, which matched the substring
+// "git" inside filenames/paths (`bin/gate-developer-git.js` — the `-` and `.`
+// are word boundaries — and `.gitignore`) and inside quoted arguments. Any
+// read-only role running `grep ... bin/gate-developer-git.js` or `cat
+// .gitignore` then fell into the fail-closed wt_destructive branch and was
+// blocked. We now only treat a segment as a git invocation when `git` appears
+// in COMMAND position — i.e. the first executable token after optional
+// environment assignments and known command wrappers, matching `git` exactly
+// or a path ending in `/git`.
+// ---------------------------------------------------------------------------
+
+const GIT_COMMAND_WRAPPERS = new Set([
+  'sudo', 'env', 'time', 'nice', 'ionice', 'nohup', 'xargs', 'command',
+  'builtin', 'exec', 'stdbuf',
+]);
+
+/**
+ * Tokenize a single (already chain-split) segment on unquoted whitespace,
+ * stripping surrounding quotes from each token.
+ *
+ * @param {string} seg
+ * @returns {string[]}
+ */
+function tokenizeRespectingQuotes(seg) {
+  if (typeof seg !== 'string') return [];
+  const tokens = [];
+  let cur = '';
+  let quote = null;
+  let started = false;
+  for (let i = 0; i < seg.length; i++) {
+    const c = seg[i];
+    if (quote) {
+      if (c === quote) { quote = null; } else { cur += c; }
+      started = true;
+      continue;
+    }
+    if (c === "'" || c === '"') { quote = c; started = true; continue; }
+    if (c === ' ' || c === '\t') {
+      if (started) { tokens.push(cur); cur = ''; started = false; }
+      continue;
+    }
+    cur += c;
+    started = true;
+  }
+  if (started) tokens.push(cur);
+  return tokens;
+}
+
+/**
+ * True when the segment invokes `git` as a command (not as a substring of a
+ * filename/path or inside a quoted argument).
+ *
+ * @param {string} seg
+ * @returns {boolean}
+ */
+function hasGitCommandToken(seg) {
+  const tokens = tokenizeRespectingQuotes(seg);
+  let i = 0;
+  while (i < tokens.length) {
+    const t = tokens[i];
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) { i++; continue; } // VAR=value env assignment
+    if (GIT_COMMAND_WRAPPERS.has(t)) { i++; continue; }        // sudo/env/xargs/... wrapper
+    break;
+  }
+  const cmd = tokens[i];
+  if (!cmd) return false;
+  return cmd === 'git' || /(?:^|\/)git$/.test(cmd);
 }
 
 /**
@@ -482,7 +590,7 @@ function findForbiddenPattern(command, role, ctx) {
       const segments = splitChained(command);
       for (const seg of segments) {
         // Read-only roles: fail-closed on unparseable input (no 'git' or no subcommand after options).
-        if (!/\bgit\b/.test(seg)) continue; // segment has no git at all
+        if (!hasGitCommandToken(seg)) continue; // segment does not invoke git as a command
         const { subcommand, gitDirRedirected } = extractGitSubcommand(seg);
         if (!subcommand) {
           // Unparseable git invocation (e.g. stdin-piped subcommand).
@@ -750,6 +858,8 @@ module.exports = {
   isReadOnlyGitSegment,
   isAllReadOnlyGit,
   READ_ONLY_VERBS,
+  hasGitCommandToken,
+  tokenizeRespectingQuotes,
 };
 
 if (require.main === module) {

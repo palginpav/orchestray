@@ -53,7 +53,7 @@ const { resolveEffortMultiplier } = require('./mcp-server/tools/cost_budget_chec
 // and reservation reader (F09: de-duplicated from three callers).
 const {
   DEFAULT_TOKEN_ESTIMATES,
-  getRatesForTier,
+  getEnforcementRates,
   readCostCaps,
   loadRawConfig,
   readActiveReservations,
@@ -165,8 +165,9 @@ process.stdin.on('end', async () => {
     const inputTokens = defaults.input;
     const outputTokens = defaults.output;
 
-    // Resolve rates.
-    const rates = getRatesForTier(pricingConfig.pricing_table, tier);
+    // Resolve rates. v2.3.12 W4 (A3): tokenizer-aware — applies the 1.35×
+    // Opus-4.7+/Fable multiplier to enforcement (was dropped by tier-collapse).
+    const rates = getEnforcementRates(pricingConfig.pricing_table, modelRaw);
 
     // Compute base projected cost.
     const baseCostUsd = computeCost(inputTokens, outputTokens, rates);

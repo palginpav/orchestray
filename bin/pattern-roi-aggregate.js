@@ -69,8 +69,51 @@ const DEFAULT_WINDOW_DAYS = 30;
 const MIN_DAYS_BETWEEN_RUNS = 1;      // throttle: skip if ran within N days
 const SNAPSHOT_SCHEMA_VERSION = 1;
 
-/** Per-file read cap for events.jsonl files (10 MiB). Files larger than this are skipped. */
+/** Per-file read cap for events.jsonl files (10 MiB). */
 const MAX_EVENTS_FILE_BYTES = 10 * 1024 * 1024;
+
+/**
+ * v2.3.12 W12 (B6): when an events.jsonl exceeds the cap, read this many bytes
+ * from the END rather than skipping the file wholesale. ROI aggregation is
+ * time-windowed, so the most-recent tail carries the relevant events; older
+ * events would be filtered out by the window anyway.
+ */
+const BOUNDED_TAIL_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Read the last `maxBytes` bytes of a file as UTF-8, discarding the first
+ * (likely partial) line when the read started mid-file. Never throws to the
+ * caller's loop on a clean path — callers wrap in try/catch.
+ *
+ * @param {string} fp
+ * @param {number} maxBytes
+ * @returns {string}
+ */
+function readBoundedTail(fp, maxBytes) {
+  const fd = fs.openSync(fp, 'r');
+  try {
+    const size = fs.fstatSync(fd).size;
+    const start = Math.max(0, size - maxBytes);
+    const len = size - start;
+    const buf = Buffer.allocUnsafe(len);
+    // Review F6: loop until the buffer is filled (a single readSync may return a
+    // short read on some platforms/filesystems).
+    let got = 0;
+    while (got < len) {
+      const n = fs.readSync(fd, buf, got, len - got, start + got);
+      if (n <= 0) break;
+      got += n;
+    }
+    let str = buf.slice(0, got).toString('utf8');
+    if (start > 0) {
+      const nl = str.indexOf('\n');
+      if (nl !== -1) str = str.slice(nl + 1); // drop partial leading line
+    }
+    return str;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers — pure
@@ -331,24 +374,35 @@ function loadEvents(projectRoot, windowStart) {
   const windowStartMs = windowStart.getTime();
 
   for (const fp of filePaths) {
-    // C3-03: Guard against oversized events.jsonl files.
+    // C3-03 / W12 (B6): oversized events.jsonl files are read via a bounded tail
+    // (most-recent BOUNDED_TAIL_BYTES) instead of being skipped wholesale, so ROI
+    // analytics survive a large tail. The degraded entry is now severity 'info'
+    // so W9's cross-process persistent dedup suppresses the per-run re-warn.
+    let oversize = false;
     try {
       const stat = fs.statSync(fp);
       if (stat.size > MAX_EVENTS_FILE_BYTES) {
+        oversize = true;
         recordDegradation({
           kind: 'pattern_roi_events_file_oversize',
-          severity: 'warn',
-          detail: { file: path.relative(projectRoot, fp), size: stat.size, cap: MAX_EVENTS_FILE_BYTES, dedup_key: 'oversize|' + fp },
+          severity: 'info',
+          detail: {
+            file: path.relative(projectRoot, fp),
+            size: stat.size,
+            cap: MAX_EVENTS_FILE_BYTES,
+            action: 'bounded_tail_read',
+            tail_bytes: BOUNDED_TAIL_BYTES,
+            dedup_key: 'oversize|' + fp,
+          },
           projectRoot,
         });
-        continue;
       }
     } catch (_statErr) {
-      // stat failed — let readFileSync handle it below.
+      // stat failed — let the read below handle it.
     }
 
     try {
-      const content = fs.readFileSync(fp, 'utf8');
+      const content = oversize ? readBoundedTail(fp, BOUNDED_TAIL_BYTES) : fs.readFileSync(fp, 'utf8');
       const lines   = content.split('\n');
       for (const line of lines) {
         const trimmed = line.trim();
@@ -1042,5 +1096,8 @@ module.exports = {
     tanhNorm,
     clamp,
     emitAuditEvent,
+    readBoundedTail,
+    BOUNDED_TAIL_BYTES,
+    MAX_EVENTS_FILE_BYTES,
   },
 };

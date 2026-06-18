@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/orchestray.svg)](https://www.npmjs.com/package/orchestray)
 [![npm downloads](https://img.shields.io/npm/dw/orchestray.svg)](https://www.npmjs.com/package/orchestray)
-[![Socket Badge](https://badge.socket.dev/npm/package/orchestray/2.3.11)](https://socket.dev/npm/package/orchestray)
+[![Socket Badge](https://badge.socket.dev/npm/package/orchestray/2.3.12)](https://socket.dev/npm/package/orchestray)
 [![License](https://img.shields.io/npm/l/orchestray.svg)](https://github.com/palginpav/orchestray/blob/master/LICENSE)
 [![Node](https://img.shields.io/node/v/orchestray.svg)](https://nodejs.org)
 
@@ -107,7 +107,7 @@ For plugin authoring instructions, see [docs/plugin-authoring-guide.md](./docs/p
 > npx orchestray --global   # global install
 > npx orchestray --local    # project-local install (if applicable)
 > ```
-> Then restart Claude Code.
+> Then run `/reload-plugins` (or `/orchestray:plugin reload`) to pick up new agents and hook changes in place — a full Claude Code restart is only needed if the upgrade added a new slash command, or you are in a cloud session.
 
 ## No sandbox security model
 
@@ -123,12 +123,13 @@ same filesystem and network access as Orchestray itself.** Specifically:
 > 2. **Capability flags are advisory by default.** A plugin's manifest
 >    declares `capabilities.network`, `capabilities.filesystem_write`, and
 >    `capabilities.spawn_subprocess`. These are the plugin author's stated
->    intent, **shown to you during consent**. By default Orchestray does not
->    enforce them at runtime — a plugin that declares `network: false` and then
->    makes outbound HTTP calls is misbehaving but not blocked. **As of v2.3.10**,
->    an opt-in strict mode (`plugin_loader.strict_capabilities: true`, default
->    `false`) kills a plugin on a confirmed capability violation and wraps
->    injection-suspected responses with a `[SECURITY]` marker.
+>    intent, **shown to you during consent**. **As of v2.3.12, strict mode is
+>    ON by default** (`plugin_loader.strict_capabilities: true`): a plugin that
+>    declares `network: false` and then makes outbound HTTP calls is killed on
+>    the confirmed capability violation, and injection-suspected responses are
+>    wrapped with a `[SECURITY]` marker. Revert with
+>    `plugin_loader.strict_capabilities: false` or
+>    `ORCHESTRAY_PLUGIN_STRICT_CAPS_DISABLED=1`.
 >
 > 3. **No signature verification.** Orchestray does not verify plugin signatures
 >    or provenance in v2.3.0. **You are responsible for trusting the source of

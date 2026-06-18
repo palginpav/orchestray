@@ -1752,17 +1752,10 @@ function mergeHooks(targetDir) {
         });
 
         if (newHooks.length === 0) {
-          recordDegradation({
-            kind: 'hook_merge_noop',
-            severity: 'info',
-            projectRoot: process.cwd(),
-            detail: {
-              event,
-              matcher: entryMatcher || null,
-              reason: 'all hooks already installed by prior version',
-              dedup_key: 'hook_merge_noop|' + event + '|' + (entryMatcher || ''),
-            },
-          });
+          // v2.3.12 W10 (B2): this is the expected steady state on every re-install
+          // (all hooks already present). Emitting a degraded-journal entry here
+          // produced pure noise (93× observed) with no diagnostic value. Skip
+          // silently — a real ordering change still emits install_hook_order_corrected.
           continue;
         }
 

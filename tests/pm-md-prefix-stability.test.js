@@ -136,7 +136,9 @@ describe('agents/pm.md Block A hash stability', () => {
     }
 
     // Normal mode: compare against the inline pinned value.
-    const PINNED_BLOCK_A_HASH = 'cdd72d6707ee5a0b';
+    // v2.3.12 W5 (A4): repinned after adding pattern_read/schema_get/cost_budget_check
+    // to the pm.md tools: frontmatter line (within Block A).
+    const PINNED_BLOCK_A_HASH = '908ca3fc89e0e3fa';
 
     assert.equal(
       actualHash,

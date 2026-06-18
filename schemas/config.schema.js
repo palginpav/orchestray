@@ -543,6 +543,9 @@ const configSchema = z.object({
   enable_outcome_tracking: z.boolean().optional(),
   enable_personas: z.boolean().optional(),
   enable_replay_analysis: z.boolean().optional(),
+  // v2.3.12 W3 (A2): gating flags referenced in pm.md / event-schemas prose.
+  enable_goal_inference: z.boolean().optional(),
+  enable_disagreement_protocol: z.boolean().optional(),
   max_turns_overrides: z.record(z.string(), z.number().int().min(1)).nullable().optional(),
 
   // R-CAT-DEFAULT (v2.1.16): pattern-find catalog-mode default flip. Boolean

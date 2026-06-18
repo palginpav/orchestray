@@ -827,6 +827,10 @@ process.stdin.on('data', c => {
       spawnTimeoutMs: 4_000,
       toolCallTimeoutMs: 4_000,
       maxRestartAttempts: 0,
+      // v2.3.12 W15 (M3): strictCapabilities now defaults true (which would kill
+      // the plugin on a confirmed violation). This test pins the observe-only
+      // telemetry path, so request non-strict explicitly.
+      strictCapabilities: false,
     });
     try {
       await loader.scan();

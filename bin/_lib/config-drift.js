@@ -103,6 +103,11 @@ const KNOWN_TOP_LEVEL_KEYS = Object.freeze([
   'enable_outcome_tracking',
   'enable_personas',
   'enable_replay_analysis',
+  // v2.3.12 W3 (A2): gating flags referenced in pm.md / event-schemas.md prose
+  // but previously absent from every validation registry — a typo failed
+  // silently with no drift warning. Registered here so misspellings surface.
+  'enable_goal_inference',
+  'enable_disagreement_protocol',
   'max_turns_overrides',
 
   // v2.1.16 (W12-fix F-002): top-level scalars added by R-CAT-DEFAULT and

@@ -10,6 +10,10 @@
  * Contract:
  *   - Never throws. All I/O wrapped in try/catch; errors are swallowed.
  *   - Idempotent per-process per-(kind, dedup_fingerprint).
+ *   - v2.3.12 W9 (B1): selected high-frequency `info` kinds
+ *     (PERSISTENT_DEDUP_KINDS) are ALSO deduped CROSS-process for DEDUP_TTL_MS
+ *     via an on-disk index (degraded-dedup.json). `error`/`warn` are never
+ *     suppressed. Kill switch: ORCHESTRAY_JOURNAL_PERSIST_DEDUP_DISABLED=1.
  *   - Rotation at 1 MB × 3 generations via jsonl-rotate.
  *   - Lines capped at 1024 bytes; detail fields truncated if over cap.
  *   - Orchestration-id resolved best-effort; cached 60 s per process.
@@ -34,6 +38,78 @@ const TAIL_CHUNK_BYTES     = 64 * 1024;          // 64 KB
 
 // In-process dedup: never append the same (kind, fingerprint) twice.
 const _seen = new Set();
+
+// ---------------------------------------------------------------------------
+// v2.3.12 W9 (B1): cross-process persistent dedup.
+//
+// The in-process `_seen` Set above is wiped on every process exit, so recurring
+// low-value `info` degradations (e.g. the same malformed legacy KB file scanned
+// every sweep run) re-append on each fresh process — the source of the 2170-line
+// degraded.jsonl flood. For a curated set of high-frequency `info` kinds we keep
+// an on-disk index of (kind, fingerprint) → last-seen timestamp and suppress
+// re-appends within DEDUP_TTL_MS. `error`/`warn` records are NEVER suppressed.
+//
+// Kill switch: ORCHESTRAY_JOURNAL_PERSIST_DEDUP_DISABLED=1 reverts to v2.3.11
+// (in-process dedup only).
+// ---------------------------------------------------------------------------
+const PERSISTENT_DEDUP_KINDS = new Set([
+  'kb_refs_sweep_malformed_frontmatter',
+  'kb_refs_sweep_malformed_summary',
+  'kb_refs_sweep_file_oversize',
+  'pattern_roi_events_file_oversize',
+  'agent_registry_stale',
+]);
+const DEDUP_TTL_MS      = 24 * 60 * 60 * 1000; // 24 h
+const DEDUP_MAX_ENTRIES = 2000;
+const DEDUP_REL_PATH    = ['.orchestray', 'state', 'degraded-dedup.json'];
+
+/**
+ * Persistent dedup check. Returns true when this (kind, fp) was recorded within
+ * DEDUP_TTL_MS (and the new record should be suppressed). Otherwise records the
+ * current timestamp and returns false. Fail-open: any error returns false so the
+ * record is appended (never suppress on uncertainty).
+ *
+ * @param {string} projectRoot
+ * @param {string} kind
+ * @param {string} fp
+ * @returns {boolean}
+ */
+function _persistDedupSkip(projectRoot, kind, fp) {
+  if (process.env.ORCHESTRAY_JOURNAL_PERSIST_DEDUP_DISABLED === '1') return false;
+  try {
+    const file = path.join(projectRoot, ...DEDUP_REL_PATH);
+    const key = kind + '|' + fp;
+    const now = Date.now();
+    let index = {};
+    try {
+      index = JSON.parse(fs.readFileSync(file, 'utf8')) || {};
+      if (typeof index !== 'object' || Array.isArray(index)) index = {};
+    } catch (_) { index = {}; }
+
+    const last = index[key];
+    if (typeof last === 'number' && (now - last) < DEDUP_TTL_MS) {
+      return true; // recently seen → suppress
+    }
+
+    // Record + prune expired + cap size (drop oldest).
+    index[key] = now;
+    for (const k of Object.keys(index)) {
+      if ((now - index[k]) >= DEDUP_TTL_MS) delete index[k];
+    }
+    const keys = Object.keys(index);
+    if (keys.length > DEDUP_MAX_ENTRIES) {
+      keys.sort((a, b) => index[a] - index[b]); // oldest first
+      for (const k of keys.slice(0, keys.length - DEDUP_MAX_ENTRIES)) delete index[k];
+    }
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(index));
+    } catch (_) { /* swallow — best effort */ }
+    return false;
+  } catch (_) {
+    return false; // fail-open: append
+  }
+}
 
 // Orchestration-id cache: resolve at most once per 60 s per projectRoot.
 const _orchIdCacheByRoot = new Map();
@@ -67,6 +143,7 @@ const KINDS = [
   'kb_refs_sweep_init_error',            // v2.1.6 W6: init error (cwd resolution failed)
   'kb_refs_sweep_uncaught',              // v2.1.6 W6: unexpected top-level error in sweep
   'kb_refs_sweep_file_oversize',         // v2.1.6 C5: .md file exceeded per-file read cap; scan skipped
+  'kb_refs_sweep_malformed_summary',     // v2.3.12 W11 (B3): one per-run summary of malformed-frontmatter files (replaces per-file flood)
   'shared_promote_local_collision',      // v2.1.6 C5: shared-promote local collision (same slug, different body)
   'pattern_roi_events_file_oversize',    // v2.1.6 C5: events.jsonl file exceeded per-file read cap; skipped
   'pattern_roi_events_file_read_error',  // v2.1.6 C5: failed to read an events.jsonl file
@@ -246,6 +323,12 @@ function recordDegradation(event) {
     if (_seen.has(fp)) return { appended: false };
     _seen.add(fp);
 
+    // v2.3.12 W9 (B1): cross-process persistent dedup for high-frequency info
+    // kinds. error/warn are never suppressed.
+    if (severity === 'info' && PERSISTENT_DEDUP_KINDS.has(kind)) {
+      if (_persistDedupSkip(projectRoot, kind, fp)) return { appended: false };
+    }
+
     // Resolve orchestration id (best-effort, cached).
     const orchId = _resolveOrchId(projectRoot);
 
@@ -368,4 +451,7 @@ module.exports = {
   _fingerprint,
   _resolveOrchId,
   _capLine,
+  _persistDedupSkip,
+  PERSISTENT_DEDUP_KINDS,
+  DEDUP_TTL_MS,
 };

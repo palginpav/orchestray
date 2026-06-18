@@ -176,6 +176,57 @@ function getRatesForTier(table, tier) {
 }
 
 /**
+ * True when a raw model ID uses the Opus-4.7-era tokenizer (Opus 4.7, Opus 4.8,
+ * Fable 5), which consumes ~35% more tokens for the same text.
+ *
+ * @param {string} modelRaw
+ * @returns {boolean}
+ */
+function usesOpus47Tokenizer(modelRaw) {
+  const m = (modelRaw || '').toLowerCase();
+  return (
+    m.includes('fable') ||
+    m.includes('opus-4-7') || m.includes('opus-4.7') ||
+    m.includes('opus-4-8') || m.includes('opus-4.8')
+  );
+}
+
+/**
+ * v2.3.12 W4 (A3): tokenizer-aware enforcement rates.
+ *
+ * The cost-cap ENFORCEMENT path (gate-cost-budget.js, cost_budget_check.js)
+ * previously collapsed the raw model ID to a bare tier via resolveModelTier and
+ * looked up base rates with getRatesForTier — dropping the 1.35× Opus-4.7+/Fable
+ * tokenizer multiplier that the REPORTING path (getPricing) applies. That made
+ * enforcement under-project Opus-4.8/Fable spawns by ~35%, so orchestrations
+ * could run past the intended cap. This helper resolves base rates from the
+ * (operator-overridable) config pricing table for the model's tier, then applies
+ * the multiplier when the raw model ID uses the new tokenizer — keeping
+ * enforcement and reporting in agreement.
+ *
+ * @param {object|null} table - Pricing table (from config or builtin)
+ * @param {string} modelRaw - Raw model ID or alias (e.g. 'claude-opus-4-8', 'fable')
+ * @returns {{ input_per_1m: number, output_per_1m: number }}
+ */
+function getEnforcementRates(table, modelRaw) {
+  const m = (modelRaw || '').toLowerCase();
+  let tier;
+  if (m.includes('fable')) tier = 'fable';
+  else if (m.includes('haiku')) tier = 'haiku';
+  else if (m.includes('opus')) tier = 'opus';
+  else if (m.includes('sonnet')) tier = 'sonnet';
+  else tier = 'sonnet'; // conservative default — mirrors resolveModelTier
+  const base = getRatesForTier(table, tier);
+  if (usesOpus47Tokenizer(modelRaw)) {
+    return {
+      input_per_1m: base.input_per_1m * OPUS_47_TOKENIZER_MULTIPLIER,
+      output_per_1m: base.output_per_1m * OPUS_47_TOKENIZER_MULTIPLIER,
+    };
+  }
+  return base;
+}
+
+/**
  * Read cost caps from config. All values may be null (unconfigured).
  *
  * @param {object|null} config
@@ -404,6 +455,8 @@ module.exports = {
   loadReservationTTLMs,
   getPricing,
   getRatesForTier,
+  getEnforcementRates,
+  usesOpus47Tokenizer,
   readCostCaps,
   loadRawConfig,
   readActiveReservations,

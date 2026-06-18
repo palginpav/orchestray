@@ -3,6 +3,32 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.12] - 2026-06-18
+
+**Orchestray 2.3.12 is a quiet-and-correct release: it stops the git safety gate from blocking ordinary commands, fixes a cost-limit under-count on the newest models, makes plugin safety on by default, and dramatically reduces diagnostic-log noise — plus you can now pick up upgrades without a full restart.**
+
+### Security
+
+- **Plugin safety is now on by default.** Misbehaving plugins that exceed the capabilities they declared are stopped, and any plugin output that looks like an injected instruction is flagged for the orchestrator instead of being passed through unmarked. Revert with `plugin_loader.strict_capabilities: false` (or `ORCHESTRAY_PLUGIN_STRICT_CAPS_DISABLED=1`).
+- **Documentation, test, and review agents can no longer overwrite the files that govern other agents.** Those roles are now blocked from writing agent instruction files (`agents/*.md`) and `CLAUDE.md`, while still writing their normal docs and findings.
+- **The git safety gate fails closed if git hangs.** A stuck `git` process can no longer cause the gate to time out and let a destructive command through in the shared checkout.
+
+### Fixed
+
+- **The git safety gate no longer blocks ordinary commands that merely mention "git".** Reading `.gitignore`, grepping a `*-git.js` filename, or quoting a git command inside an `echo`/`grep` argument is no longer mistaken for a destructive git operation. Genuinely destructive git commands are still blocked.
+- **Cost limits now count Opus 4.8 and Fable usage correctly.** Budget enforcement was under-projecting these models by about 35% (it dropped the larger-tokenizer multiplier), which could let an orchestration run past your configured cap. Enforcement now matches reporting.
+- **Mistyped feature flags in your config are caught.** Two settings (`enable_goal_inference`, `enable_disagreement_protocol`) were ignored if misspelled; typos now surface a "did you mean" warning like every other flag.
+- **The orchestrator can now reach two helper tools it was told to use.** `pattern_read` and `schema_get` were referenced in the orchestrator's instructions but missing from its allowed-tools list, so calls could silently fail; they are now available.
+
+### Changed
+
+- **Far less diagnostic-log noise, and state cleans itself up.** Recurring internal notices (e.g. a legacy file with no front-matter) are now recorded once instead of thousands of times, no-op install messages are dropped, and a periodic cleanup removes stale per-run lock files. Oversized internal logs are read from their recent tail instead of being skipped entirely.
+- **Upgrades no longer require a full restart.** After updating while a session is open, run `/reload-plugins` (or `/orchestray:plugin reload`) to pick up new agents and hook changes in place. A full restart is only needed if the upgrade added a brand-new slash command, or you are in a cloud session.
+
+### Added
+
+- **A release-completeness check.** Release commits are now verified before they land — the version must match across files, the CHANGELOG must have an entry, the README must be swept, and no scope-cut deferral language remains. It never publishes anything. Disable with `ORCHESTRAY_RELEASE_GATE_DISABLED=1`.
+
 ## [2.3.11] - 2026-06-16
 
 **Orchestray 2.3.11 fixes an intermittent startup error when resuming a session, and corrects three quality-gate / cost-limit behaviors that were silently misbehaving.**

@@ -40,11 +40,15 @@ const ROLE_WRITE_ALLOWLISTS = {
     '**/*.spec.ts',
   ],
   documenter: [
+    // v2.3.12 W14 (M2): narrowed from the over-broad '*.md' + '**/*.md' (which
+    // matched agents/pm.md and CLAUDE.md — the enforcement substrate). Doc writes
+    // now scope to docs/**, the root README/CHANGELOG, and the KB artifacts dir
+    // (legit findings output, same as reviewer/debugger). The RESTRICTED_WRITE_DENYLIST
+    // below is the hard backstop for the substrate paths.
     'docs/**',
-    '*.md',
-    '**/*.md',
     'README*',
     'CHANGELOG*',
+    '.orchestray/kb/artifacts/**.md',
   ],
   'release-manager': [
     'CHANGELOG.md',
@@ -69,6 +73,25 @@ const ROLE_WRITE_ALLOWLISTS = {
  * they legitimately need broad write access.
  */
 const RESTRICTED_ROLES = new Set(Object.keys(ROLE_WRITE_ALLOWLISTS));
+
+/**
+ * v2.3.12 W14 (M2): hard write-denylist applied to ALL restricted roles BEFORE
+ * the per-role allowlist. These are the "enforcement substrate" — files whose
+ * contents shape other agents' behavior. A doc/test/review-tier role must never
+ * rewrite them, even if a future allowlist edit would otherwise permit it.
+ *
+ * Scoped precisely:
+ *   - `agents/*.md` matches the agent DEFINITION prompts (agents/pm.md,
+ *     agents/developer.md, …) but NOT `agents/pm-reference/**` — so the
+ *     release-manager keeps its legitimate event-schemas.md write.
+ *   - `CLAUDE.md` is the project instruction substrate.
+ *
+ * Kill switch: ORCHESTRAY_ROLE_WRITE_SUBSTRATE_DENY_DISABLED=1.
+ */
+const RESTRICTED_WRITE_DENYLIST = [
+  'agents/*.md',
+  'CLAUDE.md',
+];
 
 // ---------------------------------------------------------------------------
 // Compiled regex map (v2.2.21 T8): root-anchored conversion of glob patterns.
@@ -116,9 +139,28 @@ function compileAllowlists() {
 
 const COMPILED_ALLOWLISTS = compileAllowlists();
 
+// v2.3.12 W14 (M2): compiled substrate denylist (root-anchored, same semantics).
+const COMPILED_DENYLIST = RESTRICTED_WRITE_DENYLIST.map(compileGlob);
+
+/**
+ * True when `relPath` targets the enforcement substrate and the deny kill switch
+ * is not set. Checked by the gate BEFORE the per-role allowlist.
+ *
+ * @param {string} relPath - project-relative path
+ * @returns {boolean}
+ */
+function isSubstrateDenied(relPath) {
+  if (process.env.ORCHESTRAY_ROLE_WRITE_SUBSTRATE_DENY_DISABLED === '1') return false;
+  const p = String(relPath || '');
+  return COMPILED_DENYLIST.some(re => re.test(p));
+}
+
 module.exports = {
   ROLE_WRITE_ALLOWLISTS,
   RESTRICTED_ROLES,
+  RESTRICTED_WRITE_DENYLIST,
+  COMPILED_DENYLIST,
+  isSubstrateDenied,
   compileGlob,
   COMPILED_ALLOWLISTS,
   // Test-only export: gives the unit test direct access to the compiled regex

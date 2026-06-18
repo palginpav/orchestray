@@ -28,6 +28,7 @@ const {
   BUILTIN_PRICING_TABLE,
   DEFAULT_TOKEN_ESTIMATES,
   getRatesForTier,
+  getEnforcementRates,
   readCostCaps,
   readActiveReservations,
 } = require('../../_lib/cost-helpers');
@@ -363,11 +364,12 @@ async function handle(input, context) {
     ({ table, source: pricingSource, last_verified: lastVerified } = resolvePricingTable(config));
   }
 
-  // Resolve model tier
+  // Resolve model tier (used for token estimates below)
   const tier = resolveModelTier(input.model);
 
-  // Resolve rates
-  const rates = getRatesForTier(table, tier);
+  // Resolve rates. v2.3.12 W4 (A3): tokenizer-aware — applies the 1.35×
+  // Opus-4.7+/Fable multiplier to enforcement (was dropped by tier-collapse).
+  const rates = getEnforcementRates(table, input.model);
 
   // Resolve token estimates
   const { input: inputTokens, output: outputTokens, from_history: fromHistory } =

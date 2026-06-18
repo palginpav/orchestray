@@ -72,7 +72,12 @@ test('mcp-server boots without MODULE_NOT_FOUND after --local install', (t, done
     if (finished) return;
     finished = true;
     child.kill();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    // Best-effort temp-dir cleanup. Under ORCHESTRAY_PARALLEL_TESTS the killed
+    // mcp-server child may not have released the dir yet (ENOTEMPTY/EBUSY race),
+    // so retry and never let a teardown race fail the suite.
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+    } catch (_e) { /* ignore — temp dir, OS reaps it */ }
     done(err);
   };
 

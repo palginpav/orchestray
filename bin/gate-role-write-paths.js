@@ -31,6 +31,8 @@ const {
   RESTRICTED_ROLES,
   COMPILED_ALLOWLISTS,
   compileGlob,
+  isSubstrateDenied,
+  RESTRICTED_WRITE_DENYLIST,
 } = require('./_lib/role-write-allowlists');
 
 // ---------------------------------------------------------------------------
@@ -310,6 +312,35 @@ function main() {
         process.stdout.write(JSON.stringify({
           continue: false,
           reason: 'role_write_path_blocked:' + role + ':' + pre.reason,
+        }));
+        process.exit(2);
+      }
+
+      // v2.3.12 W14 (M2): hard-deny the enforcement substrate (agents/*.md,
+      // CLAUDE.md) for ALL restricted roles, checked BEFORE the per-role
+      // allowlist so no role allowlist can re-grant it.
+      if (isSubstrateDenied(relPath)) {
+        emitAuditEvent(cwd, {
+          timestamp: new Date().toISOString(),
+          type: 'role_write_path_blocked',
+          hook: 'gate-role-write-paths',
+          agent_role: role,
+          attempted_path: relPath,
+          allowlist_matched: false,
+          allowlist: ROLE_WRITE_ALLOWLISTS[role] || [],
+          reason: 'substrate_write_denied',
+          session_id: event.session_id || null,
+        });
+        process.stderr.write(
+          '[orchestray] gate-role-write-paths: BLOCKED — ' + role + ' attempted to write "' + relPath + '" ' +
+          'which is the protected enforcement substrate ' + JSON.stringify(RESTRICTED_WRITE_DENYLIST) + '.\n' +
+          'Agent definition prompts (agents/*.md) and CLAUDE.md cannot be written by doc/test/review-tier roles.\n' +
+          'Kill switch (this check only): ORCHESTRAY_ROLE_WRITE_SUBSTRATE_DENY_DISABLED=1\n' +
+          'Kill switch (entire gate):     ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1\n'
+        );
+        process.stdout.write(JSON.stringify({
+          continue: false,
+          reason: 'role_write_path_blocked:' + role + ':substrate_write_denied',
         }));
         process.exit(2);
       }

@@ -352,11 +352,14 @@ const DEFAULT_OPTS = Object.freeze({
   /**
    * D3 (plugin trust boundary): when true, confirmed capability violations kill
    * the plugin (transition to dead) and injection-suspected responses are wrapped
-   * with a [SECURITY] prefix. Default false — strict mode is opt-in because it
-   * can disrupt legitimate plugins that trigger false-positive heuristics.
-   * Enable via config: { plugin_loader: { strict_capabilities: true } }.
+   * with a [SECURITY] prefix so the PM can identify tainted plugin output.
+   *
+   * v2.3.12 W15 (M3): default flipped to TRUE (default-on security, per project
+   * policy) — the prior opt-in default forwarded tainted plugin output to the PM
+   * unmarked. Revert with config { plugin_loader: { strict_capabilities: false } }
+   * or env ORCHESTRAY_PLUGIN_STRICT_CAPS_DISABLED=1.
    */
-  strictCapabilities: false,
+  strictCapabilities: true,
 });
 
 // ---------------------------------------------------------------------------
@@ -458,6 +461,12 @@ function withTimeout(p, ms, reason) {
  */
 function createLoader(userOpts) {
   const opts = Object.assign({}, DEFAULT_OPTS, userOpts || {});
+
+  // v2.3.12 W15 (M3): env kill switch reverts strict capabilities to off,
+  // regardless of default/config (emergency rollback without editing config).
+  if (process.env.ORCHESTRAY_PLUGIN_STRICT_CAPS_DISABLED === '1') {
+    opts.strictCapabilities = false;
+  }
 
   // Sanitize discoveryPaths against blocklist + cap.
   const blocklist = new Set((opts.scanPathsBlocklist || []).map(p => path.resolve(p)));

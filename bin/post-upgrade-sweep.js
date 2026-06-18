@@ -171,9 +171,12 @@ function emitUpgradePendingWarning(sessionId, cwd) {
       : '';
     process.stderr.write(
       '[orchestray] Upgraded' + versionSuffix + ' while this session was open — ' +
-      'one-time reminder. To restart: close this Claude Code window and reopen it ' +
-      '(or run `claude --resume` to preserve conversation context). ' +
-      'New agents and hook changes are NOT active until restarted.' +
+      'one-time reminder. Run `/reload-plugins` (or `/orchestray:plugin reload`) to ' +
+      'pick up new agents and hook changes in-place — no window restart needed. ' +
+      'A full restart (close + reopen, or `claude --resume` to keep context) is only ' +
+      'required if this upgrade ADDED a new slash command (reload does not rebuild the ' +
+      'slash-command index) or you are in a cloud session (reload is disabled there). ' +
+      'Until you reload, new agents and hook changes are NOT active.' +
       gatedSuffix + '\n'
     );
     // W2-T8 (F-02 fix): replace the 13 unconditional migration banners

@@ -95,6 +95,13 @@ const DEFAULT_MCP_ENFORCEMENT = Object.freeze({
   // metrics_query is read-only telemetry — 'allow' prevents
   // unknown_tool_policy:'block' from blocking it.
   metrics_query: 'allow',
+  // v2.3.12 W5 (A4): JIT read verbs the PM/reviewer prompts explicitly call
+  // (R-CAT-DEFAULT catalog→pattern_read; schema_get for D-8 full-load-disabled)
+  // and the specialist_save write tool. Previously absent from DEFAULT_MCP_ENFORCEMENT,
+  // so a fresh install diverged from the registered tool set. 'allow' = not spawn-gated.
+  pattern_read: 'allow',
+  schema_get: 'allow',
+  specialist_save: 'allow',
   unknown_tool_policy: 'block',
   global_kill_switch: false,
 });
@@ -125,6 +132,10 @@ const _McpEnforcementShape = {
   cost_budget_reserve:           _perToolEnum.optional(),
   pattern_deprecate:             _perToolEnum.optional(),
   metrics_query:                 _perToolEnum.optional(),
+  // v2.3.12 W5 (A4): registered JIT/write tools.
+  pattern_read:                  _perToolEnum.optional(),
+  schema_get:                    _perToolEnum.optional(),
+  specialist_save:               _perToolEnum.optional(),
   unknown_tool_policy:           _unknownToolPolicyEnum.optional(),
   global_kill_switch:            z.boolean().optional(),
   kill_switch_reason:            z.string().optional(),
@@ -2773,6 +2784,11 @@ const DEFAULT_AUTO_LEARNING = Object.freeze({
     enabled: false,
     min_days_between_runs: 7,
     ignore_slugs: Object.freeze([]),
+    // v2.3.12 W11 (B3): path-prefix substrings; a KB file whose relative path
+    // contains any of these is skipped from the malformed-frontmatter check.
+    // Defaults target the pre-frontmatter-convention legacy artifacts (2012-*/2013-*)
+    // that otherwise re-trip the check every run.
+    skip_paths: Object.freeze(['2012-', '2013-']),
   }),
   safety: Object.freeze({
     circuit_breaker: Object.freeze({
@@ -2898,6 +2914,7 @@ function _buildAutoLearningAllOff(killSwitch) {
       enabled: false,
       min_days_between_runs: DEFAULT_AUTO_LEARNING.kb_refs_sweep.min_days_between_runs,
       ignore_slugs: [],
+      skip_paths: DEFAULT_AUTO_LEARNING.kb_refs_sweep.skip_paths.slice(),
     },
     safety: {
       circuit_breaker: {
@@ -3049,10 +3066,21 @@ function _parseAutoLearningBlock(fromFile, cwd) {
     }
   }
 
+  // v2.3.12 W11 (B3): skip_paths — array of path-prefix substrings (max 50).
+  let skipPaths = DEFAULT_AUTO_LEARNING.kb_refs_sweep.skip_paths.slice();
+  if ('skip_paths' in kbSrc) {
+    if (Array.isArray(kbSrc.skip_paths)) {
+      skipPaths = kbSrc.skip_paths.filter((s) => typeof s === 'string' && s.length > 0).slice(0, 50);
+    } else {
+      _recordAutoLearningMalformed(cwd, 'kb_refs_sweep.skip_paths_wrong_type');
+    }
+  }
+
   const kbRefs = {
     enabled:              ('enabled' in kbSrc) ? kbSrc.enabled : DEFAULT_AUTO_LEARNING.kb_refs_sweep.enabled,
     min_days_between_runs: _clampInt(kbSrc.min_days_between_runs, 1, 90, DEFAULT_AUTO_LEARNING.kb_refs_sweep.min_days_between_runs),
     ignore_slugs: ignoreSlugs,
+    skip_paths: skipPaths,
   };
 
   // safety.circuit_breaker sub-block
@@ -4247,11 +4275,12 @@ function validateDualInstallConfig(obj) {
 //   Discover and validate plugins but do not activate them.
 //   Env override: ORCHESTRAY_PLUGIN_LOADER_DRY_RUN=1 → dry_run = true.
 //
-// plugin_loader.strict_capabilities — boolean, default false.
+// plugin_loader.strict_capabilities — boolean, default true (v2.3.12 W15/M3).
 //   When true: confirmed capability violations (manifest.capabilities vs tool descriptions)
 //   kill the plugin (transition to dead), and injection-suspected responses are wrapped
-//   with a [SECURITY] prefix. Default false to preserve existing observe-only behavior.
-//   Enable for higher-trust environments: { plugin_loader: { strict_capabilities: true } }.
+//   with a [SECURITY] prefix so tainted plugin output is identifiable by the PM.
+//   Default-on for security; revert with { plugin_loader: { strict_capabilities: false } }
+//   or env ORCHESTRAY_PLUGIN_STRICT_CAPS_DISABLED=1.
 //
 // Env override ORCHESTRAY_PLUGIN_DISABLE=<csv> — comma-separated list of plugin ids
 //   to force-disable at runtime. Resolved by plugin-loader.js at init; not stored here.
@@ -4282,7 +4311,10 @@ const DEFAULT_PLUGIN_LOADER = Object.freeze({
   notify_list_changed: true,
   restart_flag_check: true,
   dry_run: false,
-  strict_capabilities: false,
+  // v2.3.12 W15 (M3): default-on so the MCP server (server.js: strictCapabilities
+  // = !!pl.strict_capabilities) marks injection-suspected plugin output by
+  // default. Set to false (or env ORCHESTRAY_PLUGIN_STRICT_CAPS_DISABLED=1) to revert.
+  strict_capabilities: true,
 });
 
 /**

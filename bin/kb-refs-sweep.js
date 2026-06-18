@@ -77,7 +77,9 @@ const PATTERN_REF_RE_SOURCE = /@orchestray:pattern:\/\/([A-Za-z0-9_-]+)/;
 // ---------------------------------------------------------------------------
 
 function _parseArgs(argv) {
-  const args = { windowDays: DEFAULT_WINDOW_DAYS, force: false, dryRun: false };
+  // W6 (A5): windowDays starts null so runKbRefsSweep can fall back to the
+  // configured min_days_between_runs; only an explicit --window-days sets it.
+  const args = { windowDays: null, force: false, dryRun: false };
   for (const arg of argv.slice(2)) {
     if (arg === '--force') {
       args.force = true;
@@ -233,10 +235,17 @@ function _sanitizeMatchedText(text) {
  * @param {string[]} [ignoreList]  - Slugs to suppress (merged from config + slug-ignore.txt).
  * @returns {{ findings: Array<object>, skippedMalformed: boolean }}
  */
-function _scanFile(filePath, kbSlugs, patSlugs, projectRoot, ignoreList) {
+function _scanFile(filePath, kbSlugs, patSlugs, projectRoot, ignoreList, opts) {
   const findings = [];
   let skippedMalformed = false;
   const effectiveIgnoreList = Array.isArray(ignoreList) ? ignoreList : [];
+  // v2.3.12 W11 (B3): optional self-heal controls. skipPaths excludes legacy
+  // dirs from the malformed check; malformedCollector batches malformed files so
+  // the caller emits ONE summary instead of a per-file flood. When no collector
+  // is provided (legacy callers / tests) we keep the per-file emit for back-compat.
+  const w11 = opts || {};
+  const skipPaths = Array.isArray(w11.skipPaths) ? w11.skipPaths : [];
+  const malformedCollector = Array.isArray(w11.malformedCollector) ? w11.malformedCollector : null;
 
   // C3-04: Guard against oversized files.
   try {
@@ -270,13 +279,28 @@ function _scanFile(filePath, kbSlugs, patSlugs, projectRoot, ignoreList) {
   // Validate frontmatter presence (--- delimiters). If missing, note it but continue.
   const hasFrontmatter = /^---\r?\n[\s\S]*?\r?\n---/.test(content);
   if (!hasFrontmatter) {
-    skippedMalformed = true;
-    recordDegradation({
-      kind: 'kb_refs_sweep_malformed_frontmatter',
-      severity: 'info',
-      detail: { file: filePath, dedup_key: 'malformed|' + filePath },
-      projectRoot,
-    });
+    // W11 (B3): skip legacy / opted-out paths entirely (no nag). Review F4:
+    // match a path SEGMENT that starts with the token (e.g. basename '2012-…')
+    // rather than an arbitrary full-path substring, so 'notes-2012-x.md' is not
+    // skipped by the '2012-' token.
+    const segs = filePath.split(/[\\/]/);
+    const isSkipped = skipPaths.some((p) => p && segs.some((s) => s.startsWith(p)));
+    if (!isSkipped) {
+      skippedMalformed = true;
+      if (malformedCollector) {
+        // Batch for the per-run summary emitted by runKbRefsSweep.
+        malformedCollector.push(filePath);
+      } else {
+        // Back-compat path (no collector supplied): per-file emit. W9's
+        // persistent dedup still prevents the cross-run flood.
+        recordDegradation({
+          kind: 'kb_refs_sweep_malformed_frontmatter',
+          severity: 'info',
+          detail: { file: filePath, dedup_key: 'malformed|' + filePath },
+          projectRoot,
+        });
+      }
+    }
     // Still scan the body for references — "malformed" only means no frontmatter.
   }
 
@@ -667,7 +691,13 @@ function _snapshotFiles(files) {
  * }>}
  */
 async function runKbRefsSweep(options = {}) {
-  const windowDays = options.windowDays != null ? options.windowDays : DEFAULT_WINDOW_DAYS;
+  // v2.3.12 W6 (A5): throttle window precedence is CLI > config
+  // (auto_learning.kb_refs_sweep.min_days_between_runs) > DEFAULT_WINDOW_DAYS.
+  // Previously windowDays defaulted straight to DEFAULT_WINDOW_DAYS (1 day) and
+  // never read the configured value (7), so the nudge re-ran the sweep ~7× too
+  // often, multiplying the malformed-frontmatter journal flood. `null` here means
+  // "not explicitly provided" — resolved from config after it loads below.
+  let windowDays = options.windowDays != null ? options.windowDays : null;
   const force      = Boolean(options.force);
   const dryRun     = Boolean(options.dryRun);
 
@@ -693,6 +723,7 @@ async function runKbRefsSweep(options = {}) {
   // Fail-open: any error loading config allows the run to proceed.
   // Also collect config-level ignore_slugs for the bare-slug detector.
   let configIgnoreSlugs = [];
+  let configSkipPaths = [];
   try {
     const alConfig = loadAutoLearningConfig(cwd);
     if (alConfig.global_kill_switch) {
@@ -706,9 +737,19 @@ async function runKbRefsSweep(options = {}) {
     if (Array.isArray(alConfig.kb_refs_sweep.ignore_slugs)) {
       configIgnoreSlugs = alConfig.kb_refs_sweep.ignore_slugs;
     }
+    // W11 (B3): path-prefix skip-list for the malformed-frontmatter check.
+    if (Array.isArray(alConfig.kb_refs_sweep.skip_paths)) {
+      configSkipPaths = alConfig.kb_refs_sweep.skip_paths;
+    }
+    // W6 (A5): adopt configured throttle window when CLI did not specify one.
+    if (windowDays == null && typeof alConfig.kb_refs_sweep.min_days_between_runs === 'number') {
+      windowDays = alConfig.kb_refs_sweep.min_days_between_runs;
+    }
   } catch (_configErr) {
     // Fail-open: if config loading throws, proceed with the run.
   }
+  // Final fallback when neither CLI nor config supplied a window.
+  if (windowDays == null) windowDays = DEFAULT_WINDOW_DAYS;
 
   // Check KB directory exists.
   try {
@@ -749,8 +790,17 @@ async function runKbRefsSweep(options = {}) {
   const brokenPatternRefs = [];
   const brokenBareRefs    = [];
 
+  // W11 (B3): self-heal — batch malformed files and emit one summary, unless the
+  // quarantine kill switch is set (then fall back to per-file emit via no collector).
+  const w11Disabled = process.env.ORCHESTRAY_KB_SWEEP_QUARANTINE_DISABLED === '1';
+  const malformedFiles = w11Disabled ? null : [];
+  const scanOpts = {
+    skipPaths: w11Disabled ? [] : configSkipPaths,
+    malformedCollector: malformedFiles,
+  };
+
   for (const file of allFiles) {
-    const { findings } = _scanFile(file, kbSlugs, patSlugs, cwd, mergedIgnoreList);
+    const { findings } = _scanFile(file, kbSlugs, patSlugs, cwd, mergedIgnoreList, scanOpts);
     for (const f of findings) {
       if (f.reference_type === 'kb_ref') {
         brokenKbRefs.push(f);
@@ -760,6 +810,22 @@ async function runKbRefsSweep(options = {}) {
         brokenBareRefs.push(f);
       }
     }
+  }
+
+  // W11 (B3): emit ONE malformed-frontmatter summary per run (replaces the
+  // per-file flood). W9's persistent dedup suppresses identical summaries across
+  // runs, so the journal only records a line when the malformed set changes.
+  if (malformedFiles && malformedFiles.length > 0) {
+    recordDegradation({
+      kind: 'kb_refs_sweep_malformed_summary',
+      severity: 'info',
+      detail: {
+        count: malformedFiles.length,
+        sample: malformedFiles.slice(0, 5).map((f) => path.basename(f)),
+        dedup_key: 'malformed_summary|' + malformedFiles.length + '|' + malformedFiles.slice(0, 5).map((f) => path.basename(f)).join(','),
+      },
+      projectRoot: cwd,
+    });
   }
 
   if (dryRun) {

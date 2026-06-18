@@ -258,6 +258,16 @@ const TOOL_TABLE = Object.freeze({
   },
 });
 
+// v2.3.12 W16 (C1): tools that are registered + enabled but intentionally NOT
+// exposed to the PM allowlist (pm.md `tools:`). They are worker/housekeeper-only
+// (the PM never calls them directly). The allowlist-drift test asserts every
+// registered tool is either PM-intended (present in pm.md + DEFAULT_MCP_ENFORCEMENT)
+// or listed here — so a newly-added tool can never silently fall through the gap.
+const DOCUMENTED_EXCLUSIONS = Object.freeze([
+  'spawn_agent',       // worker-side spawn request tool; PM uses the Agent() tool, not this
+  'curator_tombstone', // curator-only lifecycle tool; never PM-invoked
+]);
+
 // Activate the layered tool registry.
 toolRegistry.initCoreTools(TOOL_TABLE);
 
@@ -709,7 +719,8 @@ function main() {
         ...(consent.require_explicit_grant != null && { requireConsent: consent.require_explicit_grant }),
         emitToolInvocationEvents: telemetry.emit_tool_invocation_events !== false,
         redactArgs:               telemetry.redact_args !== false,
-        // D3: strict capabilities mode (default false).
+        // D3: strict capabilities mode (v2.3.12 W15: config-schema default is now
+        // true; env ORCHESTRAY_PLUGIN_STRICT_CAPS_DISABLED=1 reverts in the loader).
         strictCapabilities: !!pl.strict_capabilities,
         // Lifecycle tuning from config (mirrors DEFAULT_OPTS keys).
         ...(lc.max_restart_attempts  != null && { maxRestartAttempts:    lc.max_restart_attempts }),

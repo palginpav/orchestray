@@ -44,6 +44,63 @@ const JSON_STATE_FILES = [
   { rel: 'kb-sweep-snapshot.json', defaultValue: {} },
 ];
 
+// v2.3.12 W8 (B5): per-orchestration litter files that accumulate one-per-run
+// and were never GC'd (runtime audit F-02/F-03). These are deleted outright once
+// their mtime exceeds the TTL. Patterns use `*` as the only wildcard.
+const MTIME_TTL_GLOBS = [
+  'roi-missing-dedup-*.lock',
+  'dossier-orphan-counter.*',
+];
+
+/**
+ * Convert a simple glob (only `*` wildcard) to an anchored RegExp.
+ * @param {string} glob
+ * @returns {RegExp}
+ */
+function _globToRegExp(glob) {
+  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  return new RegExp('^' + escaped + '$');
+}
+
+/**
+ * Delete files in `stateDir` matching any of `globs` whose mtime is older than
+ * `cutoffMs`. Fail-open: per-file errors are swallowed; a missing stateDir is a
+ * no-op. Returns a small summary for telemetry/testing.
+ *
+ * @param {string} stateDir
+ * @param {string[]} globs
+ * @param {number} cutoffMs
+ * @returns {{ scanned: number, deleted: number, kept: number }}
+ */
+function _pruneByMtime(stateDir, globs, cutoffMs) {
+  const summary = { scanned: 0, deleted: 0, kept: 0 };
+  const regexes = globs.map(_globToRegExp);
+  let entries;
+  try {
+    entries = fs.readdirSync(stateDir);
+  } catch (_e) {
+    return summary; // no state dir yet
+  }
+  for (const name of entries) {
+    if (!regexes.some(re => re.test(name))) continue;
+    summary.scanned++;
+    const fp = path.join(stateDir, name);
+    try {
+      const st = fs.statSync(fp);
+      if (!st.isFile()) { summary.kept++; continue; }
+      if (st.mtimeMs < cutoffMs) {
+        fs.unlinkSync(fp);
+        summary.deleted++;
+      } else {
+        summary.kept++;
+      }
+    } catch (_e) {
+      // fail-open: skip files we can't stat/unlink
+    }
+  }
+  return summary;
+}
+
 // ---------------------------------------------------------------------------
 // safeReadJson — self-healing JSON.parse
 // ---------------------------------------------------------------------------
@@ -285,6 +342,14 @@ function runOnce(projectDir, opts) {
     }
   }
 
+  // v2.3.12 W8 (B5): delete per-orchestration litter files past the TTL.
+  try {
+    results._mtime_litter = _pruneByMtime(stateDir, MTIME_TTL_GLOBS, cutoffMs);
+  } catch (err) {
+    process.stderr.write('[orchestray/state-gc] error pruning mtime litter: ' + (err && err.message) + '\n');
+    results._mtime_litter = { error: String(err && err.message) };
+  }
+
   return { results };
 }
 
@@ -300,5 +365,8 @@ module.exports = {
   _pruneJsonlAndRotations,
   _parseTimestamp,
   _emitStateFileCorrupt,
+  _pruneByMtime,
+  _globToRegExp,
+  MTIME_TTL_GLOBS,
   DEFAULT_TTL_MS,
 };
