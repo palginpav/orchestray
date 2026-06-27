@@ -351,8 +351,18 @@ function extractGitSubcommand(seg) {
   let ti = 0;
   while (ti < tokens.length && /^\w+=/.test(tokens[ti])) ti++;
 
-  // Find 'git' token
-  const gitIdx = tokens.indexOf('git', ti);
+  // Find the 'git' token — bare 'git' or a full path ending in /git (e.g.
+  // /usr/bin/git). F-RT-02: the prior tokens.indexOf('git', ti) only matched
+  // the bare string and missed full-path invocations like `/usr/bin/git reset
+  // --hard`, yielding a null subcommand and failing OPEN for destructive ops.
+  // This mirrors the path check in hasGitCommandToken().
+  let gitIdx = -1;
+  for (let k = ti; k < tokens.length; k++) {
+    if (tokens[k] === 'git' || /(?:^|\/)git$/.test(tokens[k])) {
+      gitIdx = k;
+      break;
+    }
+  }
   if (gitIdx === -1) return { subcommand: null, gitDirRedirected: false };
 
   let gitDirRedirected = false;

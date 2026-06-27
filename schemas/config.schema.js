@@ -77,6 +77,10 @@ const mcpServerSchema = z.object({
     pattern_deprecate: z.boolean().optional(),
     metrics_query: z.boolean().optional(),
     spawn_agent: z.boolean().optional(),
+    // v2.3.12 additions (F-MC-06): tools added in v2.3.12 but missing from schema.
+    pattern_read: z.boolean().optional(),
+    schema_get: z.boolean().optional(),
+    specialist_save: z.boolean().optional(),
   }).passthrough().optional(),
   cost_budget_check: z.object({
     pricing_table: z.record(
@@ -483,6 +487,35 @@ const curatorSliceLoadingSchema = z.object({
   enabled: z.boolean().optional(),
 }).passthrough();
 
+// F-MC-01 (v2.3.13): plugin_loader — documented in CONFIG.md and loaded by
+// bin/_lib/config-schema.js loadPluginLoaderConfig(). Missing from schema +
+// drift KNOWN_TOP_LEVEL_KEYS caused spurious "unknown config key" warnings.
+// Passthrough so forward-compat nested keys don't fail validation.
+const pluginLoaderSchema = z.object({
+  enabled: z.boolean().optional(),
+  discovery: z.object({
+    enabled: z.boolean().optional(),
+    scan_paths: z.array(z.string()).nullable().optional(),
+  }).passthrough().optional(),
+  consent: z.object({
+    require_explicit_grant: z.boolean().optional(),
+    auto_approve_unsigned: z.boolean().optional(),
+  }).passthrough().optional(),
+  lifecycle: z.object({
+    max_restart_attempts: z.number().int().min(0).optional(),
+    restart_backoff_ms: z.array(z.number().int().positive()).optional(),
+    restart_reset_window_ms: z.number().int().positive().optional(),
+  }).passthrough().optional(),
+}).passthrough();
+
+// F-MC-04 (v2.3.13): block_a_zone_caching — documented in CONFIG.md and
+// loaded by bin/_lib/config-schema.js loadBlockAZoneCachingConfig().
+// Missing from schema + drift KNOWN_TOP_LEVEL_KEYS caused spurious warnings.
+const blockAZoneCachingSchema = z.object({
+  enabled: z.boolean().optional(),
+  invariant_violation_threshold_24h: z.number().int().positive().optional(),
+}).passthrough();
+
 // ---------------------------------------------------------------------------
 // Top-level schema
 // ---------------------------------------------------------------------------
@@ -618,6 +651,10 @@ const configSchema = z.object({
   // `dossier_orphan_threshold_exceeded`. Declared here so config-repair
   // does not strip user-set values as unknown keys.
   dossier_orphan_threshold: z.number().int().min(1).optional(),
+  // F-MC-01 (v2.3.13): plugin_loader — was documented and loaded but absent from schema.
+  plugin_loader: pluginLoaderSchema.optional(),
+  // F-MC-04 (v2.3.13): block_a_zone_caching — was documented and loaded but absent from schema.
+  block_a_zone_caching: blockAZoneCachingSchema.optional(),
 }).passthrough(); // R-CONFIG-DRIFT (W9) owns unknown-key warnings; this schema tolerates them.
 
 module.exports = {
@@ -657,4 +694,7 @@ module.exports = {
   // v2.2.9 B-7: numeric thresholds out of prose (single config schema).
   spawnSchema,
   repoMapThresholdsSchema,
+  // F-MC-01 / F-MC-04 (v2.3.13): newly registered sections.
+  pluginLoaderSchema,
+  blockAZoneCachingSchema,
 };

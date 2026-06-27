@@ -34,7 +34,7 @@ the Read that fed it might have been Class B, but the *decision* is not.
 
 **Anti-pattern:** "spawn scout to grep `agents/pm.md` for Section 19" — the
 result is consumed for the PM's own routing decision (Class A in intent).
-The rule's `scout_blocked_paths: ["agents/**"]` short-circuits to inline.
+Inline it regardless of file size; this is Class A, not Class B.
 
 ### Class C — Deterministic helper (no LLM)
 
@@ -55,7 +55,7 @@ Section 19, not a replacement.
 | op | target_path | target_bytes | class | decision | rationale |
 |---|---|---|---|---|---|
 | Read | `/tmp/reviewer-report.md` | 22000 | B | spawn scout | over 12 KB; not in blocked paths; class B |
-| Read | `agents/pm.md` | 80000 | B | inline | path matches `agents/**` blocklist |
+| Read | `agents/pm.md` | 80000 | A | inline | PM uses content for its own routing/planning decision (Class A) |
 | Read | `/tmp/small.json` | 4000 | B | inline | below `scout_min_bytes` (12288) |
 | Edit | `/tmp/anything.md` | 50000 | B | inline | `Edit` is in `scout_blocked_ops` |
 | Read | `.orchestray/state/orchestration.md` | 30000 | B | inline | matches `.orchestray/state/*` |

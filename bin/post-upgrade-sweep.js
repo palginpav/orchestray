@@ -169,10 +169,13 @@ function emitUpgradePendingWarning(sessionId, cwd) {
     const gatedSuffix = gatedList.length
       ? ' New in this upgrade: ' + gatedList.join(', ') + '.'
       : '';
+    // F-UX-02: remove false equivalence between /reload-plugins and
+    // /orchestray:plugin reload — they serve different purposes.
     process.stderr.write(
       '[orchestray] Upgraded' + versionSuffix + ' while this session was open — ' +
-      'one-time reminder. Run `/reload-plugins` (or `/orchestray:plugin reload`) to ' +
-      'pick up new agents and hook changes in-place — no window restart needed. ' +
+      'one-time reminder. Run `/reload-plugins` to pick up new agents and hook changes ' +
+      'in place (a Claude Code built-in). To re-verify a single plugin\'s manifest, ' +
+      'use `/orchestray:plugin reload <name>`. ' +
       'A full restart (close + reopen, or `claude --resume` to keep context) is only ' +
       'required if this upgrade ADDED a new slash command (reload does not rebuild the ' +
       'slash-command index) or you are in a cloud session (reload is disabled there). ' +

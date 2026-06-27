@@ -63,6 +63,7 @@ const EXPLICIT_GATE_KEYS = [
   'enable_consequence_forecast',
   'enable_replay_analysis',
   'enable_disagreement_protocol',
+  'surface_disagreements',
   'enable_personas',
   'enable_introspection',
   'enable_backpressure',

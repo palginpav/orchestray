@@ -197,6 +197,15 @@ const KNOWN_TOP_LEVEL_KEYS = Object.freeze([
   // config-schema.js; mirrored here so the drift detector stops emitting
   // "unknown config key" warnings when users set this key.
   'dossier_orphan_threshold',
+
+  // F-MC-01 (v2.3.13): plugin_loader — documented in CONFIG.md, loaded by
+  // config-schema.js loadPluginLoaderConfig(), now declared in config.schema.js.
+  // Absent from this list caused spurious "unknown config key" boot warnings.
+  'plugin_loader',
+
+  // F-MC-04 (v2.3.13): block_a_zone_caching — documented in CONFIG.md, loaded
+  // by config-schema.js loadBlockAZoneCachingConfig(), now in config.schema.js.
+  'block_a_zone_caching',
 ]);
 
 /**

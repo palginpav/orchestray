@@ -222,16 +222,66 @@ function runCli() {
   }
 
   try {
-    const { run, validatePatternFiles, validateSpecialistFiles } = require('./validate-config.js');
+    const { run } = require('./validate-config.js');
     // Human-readable output in SessionStart context; use --json if the user
     // explicitly sets ORCHESTRAY_BOOT_VALIDATE_JSON=1.
     const json = process.env.ORCHESTRAY_BOOT_VALIDATE_JSON === '1';
     const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
+    // F-RT-07: run() already scans pattern/specialist files internally; capturing
+    // its JSON output lets us read per-group failure counts without a second
+    // traversal (the prior code re-called validatePatternFiles/validateSpecialistFiles
+    // after run() just to count failures — 3 scans total). We capture stdout, call
+    // run() once in JSON mode, parse the summary, then re-emit in the format requested.
+    const _stdoutChunks = [];
+    const _origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => {
+      _stdoutChunks.push(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
+      return true;
+    };
     // configOnlyExit: only hard-fail on config.json; artifact failures are warnings.
     // This prevents an ENOENT race or a schema-invalid pattern during resume from
     // aborting the session.
-    const code = run({ cwd, json, configOnlyExit: true });
+    const code = run({ cwd, json: true, configOnlyExit: true });
+    process.stdout.write = _origWrite;
+
+    let _runSummary = null;
+    try { _runSummary = JSON.parse(_stdoutChunks.join('')); } catch (_) { /* fail-open */ }
+    const artifactFailCount = (_runSummary && typeof _runSummary.artifact_failed === 'number')
+      ? _runSummary.artifact_failed : 0;
+
+    // Re-emit in the format the caller requested.
+    if (json && _runSummary) {
+      process.stdout.write(JSON.stringify(_runSummary, null, 2) + '\n');
+    } else if (!json && _runSummary && Array.isArray(_runSummary.groups)) {
+      // v2.3.13 (F-RT-07 follow-up): mirror validate-config.js's pretty printer,
+      // which shortens absolute label paths to project-relative for readability.
+      const _rel = (p) => {
+        try { return path.relative(cwd, p) || p; } catch (_) { return p; }
+      };
+      for (const g of _runSummary.groups) {
+        process.stdout.write('\n[' + g.group + '] (' + (g.results || []).length + ' file(s))\n');
+        for (const r of (g.results || [])) {
+          if (r.skipped) {
+            process.stdout.write('  · ' + _rel(r.label || '') + ' — ' + r.skipped + '\n');
+          } else if (r.ok) {
+            process.stdout.write('  ✓ ' + _rel(r.label || '') + '\n');
+          } else {
+            process.stdout.write('  ✗ ' + _rel(r.label || '') + '\n');
+            if (Array.isArray(r.issues)) {
+              for (const iss of r.issues) {
+                process.stdout.write('      - ' + (iss.path || '') + ': ' + (iss.message || '') + '\n');
+              }
+            } else if (r.message) {
+              process.stdout.write('      ' + r.message + '\n');
+            }
+          }
+        }
+      }
+      if (typeof _runSummary.checked === 'number') {
+        process.stdout.write('\n' + _runSummary.checked + ' checked, ' + _runSummary.failed + ' with findings\n');
+      }
+    }
 
     if (code !== 0) {
       // config.json failed — this is the only boot-blocking artifact.
@@ -240,19 +290,14 @@ function runCli() {
         '  Re-run with: node bin/validate-config.js --cwd ' + cwd + '\n' +
         '  See `.orchestray/config.json` for details.\n'
       );
-    } else {
-      // Config is valid; check whether any pattern/specialist artifacts had findings
-      // (run() with configOnlyExit already printed them — just emit the summary warning).
-      const patFails = validatePatternFiles(cwd).filter(r => !r.ok && !r.skipped);
-      const spFails  = validateSpecialistFiles(cwd).filter(r => !r.ok && !r.skipped);
-      const artifactFailCount = patFails.length + spFails.length;
-      if (artifactFailCount > 0) {
-        process.stderr.write(
-          '\n[orchestray] boot-validate-config: ' + artifactFailCount +
-          ' pattern/specialist artifact(s) failed schema validation (non-fatal — see above).' +
-          ' Run `node bin/validate-config.js` to inspect.\n'
-        );
-      }
+    } else if (artifactFailCount > 0) {
+      // Config is valid; surface pattern/specialist artifact warnings from the counts
+      // we already parsed from run()'s JSON output (no re-scan needed).
+      process.stderr.write(
+        '\n[orchestray] boot-validate-config: ' + artifactFailCount +
+        ' pattern/specialist artifact(s) failed schema validation (non-fatal — see above).' +
+        ' Run `node bin/validate-config.js` to inspect.\n'
+      );
     }
 
     // Drift detection runs regardless of zod pass/fail — a drift warning

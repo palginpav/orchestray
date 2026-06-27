@@ -64,12 +64,18 @@ function getCommand(payload) {
  * Extract the release version from an inline `-m`/`--message` release commit.
  * Returns the X.Y.Z string, or null when the command is not a recognizable
  * inline release commit.
+ *
+ * F-RT-05: also matches combined short-flag clusters that include -m, such as
+ * `git commit -am "release: v1.2.3"` (where -am combines -a and -m). The prior
+ * regex required a standalone `-m ` token and missed combined forms entirely.
  */
 function extractReleaseVersion(command) {
   if (typeof command !== 'string') return null;
   if (!/\bgit\b[\s\S]*\bcommit\b/.test(command)) return null;
   // Inline message only (cannot read -F file contents from here).
-  const m = command.match(/-m\s+['"]?\s*release:\s*v?(\d+\.\d+\.\d+)/i);
+  // Matches -m, -am, -mFOO (no-space form), or any short-flag cluster
+  // ending in m, followed by optional whitespace/quotes and the release prefix.
+  const m = command.match(/-[a-zA-Z]*m\s*['"]?\s*release:\s*v?(\d+\.\d+\.\d+)/i);
   return m ? m[1] : null;
 }
 
@@ -117,20 +123,24 @@ function main() {
   const command = getCommand(payload);
   const version = extractReleaseVersion(command);
   if (!version) {
-    // Review F2: a release committed via -F/--file carries its message in a file
-    // the gate cannot read here, so it cannot verify completeness. Surface a
-    // non-blocking note rather than silently passing.
-    if (typeof command === 'string' &&
-        /\bgit\b[\s\S]*\bcommit\b/.test(command) &&
-        /(?:^|\s)(?:-F\b|--file\b)/.test(command) &&
-        !/(?:^|\s)-m\b/.test(command)) {
-      process.stderr.write(
-        '[orchestray] gate-release-completeness: note — `git commit -F/--file` cannot be ' +
-        'verified for release completeness (message is not inline). If this is a release, ' +
-        'confirm version parity, CHANGELOG, and README sweep manually.\n'
-      );
+    // Surface a non-blocking note when the command looks like a release commit
+    // but cannot be verified: either the message is in a file (-F/--file) or
+    // the command has a recognisable release pattern that our regex could not
+    // fully parse (e.g. heredoc, unusual quoting, env-variable expansion).
+    // F-RT-05: broadened from -F-only to any plausible-but-unparseable release commit.
+    if (typeof command === 'string' && /\bgit\b[\s\S]*\bcommit\b/.test(command)) {
+      const isFileFlag = /(?:^|\s)(?:-F\b|--file\b)/.test(command) && !/(?:^|\s)-m\b/.test(command);
+      const hasReleaseCue = /\brelease:\s*v?\d+\.\d+\.\d+/i.test(command);
+      if (isFileFlag || hasReleaseCue) {
+        process.stderr.write(
+          '[orchestray] gate-release-completeness: note — `git commit' +
+          (isFileFlag ? ' -F/--file`' : '`') +
+          ' cannot be verified for release completeness (message is not inline or could not be parsed). ' +
+          'If this is a release, confirm version parity, CHANGELOG, and README sweep manually.\n'
+        );
+      }
     }
-    process.exit(0); // not an inline release commit → not applicable
+    process.exit(0); // not a parseable inline release commit → not applicable
   }
 
   let cwd;

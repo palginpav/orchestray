@@ -886,6 +886,7 @@ const DEFAULT_EFFORT_MULTIPLIERS = Object.freeze({
   low:    0.7,
   medium: 1.0,
   high:   1.4,
+  xhigh:  1.6, // F-MC-03 (v2.3.13): between high and max; matches CONFIG.md + cost-tool enums
   max:    1.8,
 });
 
@@ -4986,6 +4987,16 @@ function loadCatalogModeDefaultConfig(cwd) {
     return Object.assign({}, DEFAULT_CATALOG_MODE_DEFAULT);
   }
   const section = parsed.catalog_mode_default;
+  // Canonical top-level boolean form — matches the zod schema
+  // (catalog_mode_default: z.boolean()), config.json, and pm.md's documented
+  // `"catalog_mode_default": false` kill switch:
+  //   catalog_mode_default: true|false  →  catalog_default = that value.
+  // Without this branch a top-level boolean spreads to zero keys, so the
+  // documented kill switch was silently ignored (v2.3.13 fix).
+  if (typeof section === 'boolean') {
+    return { catalog_default: section };
+  }
+  // Legacy nested object form: { catalog_default: boolean }.
   if (!section || typeof section !== 'object' || Array.isArray(section)) {
     return Object.assign({}, DEFAULT_CATALOG_MODE_DEFAULT);
   }

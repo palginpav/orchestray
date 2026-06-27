@@ -136,9 +136,9 @@ describe('agents/pm.md Block A hash stability', () => {
     }
 
     // Normal mode: compare against the inline pinned value.
-    // v2.3.12 W5 (A4): repinned after adding pattern_read/schema_get/cost_budget_check
-    // to the pm.md tools: frontmatter line (within Block A).
-    const PINNED_BLOCK_A_HASH = '908ca3fc89e0e3fa';
+    // v2.3.13 F-PR-02: repinned after correcting stale "hard-block" claim to
+    // reflect warn+auto-seed default (routing_gate.auto_seed_on_miss).
+    const PINNED_BLOCK_A_HASH = 'b556d3c20c083f59';
 
     assert.equal(
       actualHash,

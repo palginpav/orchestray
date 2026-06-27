@@ -380,18 +380,36 @@ function runSingleCheck(cwd, condition) {
             'git', ['merge-base', 'HEAD', 'origin/master'],
             { cwd, encoding: 'utf8', timeout: 15000 }
           );
-          let diffArgs;
           if (mbResult.status === 0 && mbResult.stdout.trim()) {
-            diffArgs = ['diff', '--name-only', mbResult.stdout.trim(), 'HEAD'];
+            // Primary path: precise branch-scope diff against merge-base.
+            const diffResult = spawnSync(
+              'git', ['diff', '--name-only', mbResult.stdout.trim(), 'HEAD'],
+              { cwd, encoding: 'utf8', timeout: 15000 }
+            );
+            if (diffResult.status !== 0) {
+              return { ...base, result: 'skip', detail: 'git diff unavailable — merge_base_unavailable' };
+            }
+            changedFiles = diffResult.stdout.split('\n').map(f => f.trim()).filter(Boolean);
           } else {
-            // Fallback: diff against HEAD (unstaged + staged)
-            diffArgs = ['diff', '--name-only', 'HEAD'];
+            // F-RT-06: the prior fallback used only `git diff --name-only HEAD`
+            // (unstaged changes), which returns empty when the task already committed
+            // its work (e.g. in a worktree), causing the scope check to pass
+            // incorrectly. Now we combine uncommitted changes with the last committed
+            // diff (HEAD~1..HEAD) so pre-committed tasks are covered. If the combined
+            // set is still empty, return `skip` rather than false-passing.
+            const r1 = spawnSync('git', ['diff', '--name-only', 'HEAD'],
+              { cwd, encoding: 'utf8', timeout: 15000 });
+            const r2 = spawnSync('git', ['diff', '--name-only', 'HEAD~1', 'HEAD'],
+              { cwd, encoding: 'utf8', timeout: 15000 });
+            const f1 = (r1.status === 0 && r1.stdout)
+              ? r1.stdout.split('\n').map(f => f.trim()).filter(Boolean) : [];
+            const f2 = (r2.status === 0 && r2.stdout)
+              ? r2.stdout.split('\n').map(f => f.trim()).filter(Boolean) : [];
+            changedFiles = [...new Set([...f1, ...f2])];
+            if (changedFiles.length === 0) {
+              return { ...base, result: 'skip', detail: 'git diff fallback returned empty — merge_base_unavailable; cannot verify scope containment' };
+            }
           }
-          const diffResult = spawnSync('git', diffArgs, { cwd, encoding: 'utf8', timeout: 15000 });
-          if (diffResult.status !== 0) {
-            return { ...base, result: 'skip', detail: 'git diff unavailable — merge_base_unavailable' };
-          }
-          changedFiles = diffResult.stdout.split('\n').map(f => f.trim()).filter(Boolean);
         } catch (gitErr) {
           return { ...base, result: 'skip', detail: 'git error — merge_base_unavailable: ' + String(gitErr.message || gitErr).slice(0, 80) };
         }
@@ -404,7 +422,10 @@ function runSingleCheck(cwd, condition) {
         return { ...base, result: 'fail', detail: 'files outside allowed set: ' + offenders.slice(0, 10).join(', ') };
       }
       case 'file_exports': {
-        // Grep target file for `export.*<name>`. PASS if matched.
+        // Check target file for a named export. Supports both ESM and CommonJS.
+        // F-RT-03: the prior regex only matched ESM `export` keyword and missed
+        // CommonJS `module.exports.NAME`, `exports.NAME`, `exports = { NAME }`,
+        // and `module.exports = { NAME }` patterns.
         const exportName = String(condition.name || '');
         if (!exportName) {
           return { ...base, result: 'fail', detail: 'file_exports: no name specified' };
@@ -418,29 +439,43 @@ function runSingleCheck(cwd, condition) {
           return { ...base, result: 'fail', detail: 'cannot read file: ' + String(readErr.message).slice(0, 80) };
         }
         const escapedName = exportName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const re = new RegExp('\\bexport\\b[^\\n]*\\b' + escapedName + '\\b', 'm');
-        const found = re.test(raw);
+        // ESM: export { NAME } | export const NAME | export function NAME | export default NAME
+        const reEsm = new RegExp('\\bexport\\b[^\\n]*\\b' + escapedName + '\\b', 'm');
+        // CommonJS dot: module.exports.NAME = ... | exports.NAME = ...
+        const reCjsDot = new RegExp('(?:module\\.exports|exports)\\.' + escapedName + '\\b', 'm');
+        // CommonJS assignment: module.exports = { ..., NAME, ... } — bounded lookahead to
+        // avoid catastrophic backtracking on large files (2000-char window is ample for
+        // any realistic single exports object).
+        const reCjsAssign = new RegExp(
+          '(?:module\\.exports|exports)\\s*=[\\s\\S]{0,2000}\\b' + escapedName + '\\b', 'm'
+        );
+        const found = reEsm.test(raw) || reCjsDot.test(raw) || reCjsAssign.test(raw);
         return { ...base, result: found ? 'pass' : 'fail', detail: found ? 'export "' + exportName + '" found' : 'export "' + exportName + '" not found in ' + target };
       }
       case 'command_exits_zero': {
         // Fixed allow-list only — NEVER execute arbitrary strings.
+        // F-RT-04: index 6 (python -m py_compile) previously had no file argument and
+        // always exited non-zero. It now derives the target file from condition.target.
         const COMMAND_TABLE = {
           1: ['npm', ['test']],
           2: ['npm', ['run', 'build']],
           3: ['npm', ['run', 'lint']],
           4: ['npx', ['tsc', '--noEmit']],
           5: ['go', ['build', './...']],
-          6: ['python', ['-m', 'py_compile']],
+          6: target ? ['python', ['-m', 'py_compile', String(target)]] : null,
         };
         const idx = Number(condition.index);
-        if (!Number.isInteger(idx) || idx < 1 || idx > 6 || !(idx in COMMAND_TABLE)) {
+        const entry = Number.isInteger(idx) && idx >= 1 && idx <= 6 ? COMMAND_TABLE[idx] : undefined;
+        if (!entry) {
+          const detail = idx === 6 && !target
+            ? 'command_exits_zero index 6 (python -m py_compile) requires a target file — add target: <file> to the condition'
+            : 'rejected: index ' + String(condition.index) + ' not in allow-list (1-6)';
           process.stderr.write(
-            '[orchestray] validate-task-contracts: command_exits_zero index ' +
-            String(condition.index) + ' not in allow-list (1-6) — REJECTED, not executed.\n'
+            '[orchestray] validate-task-contracts: command_exits_zero ' + detail + ' — REJECTED, not executed.\n'
           );
-          return { ...base, result: 'fail', detail: 'rejected: index ' + String(condition.index) + ' not in allow-list (1-6)' };
+          return { ...base, result: 'fail', detail };
         }
-        const [bin, args] = COMMAND_TABLE[idx];
+        const [bin, args] = entry;
         const cmdStr = [bin].concat(args).join(' ');
         try {
           const { spawnSync } = require('child_process');

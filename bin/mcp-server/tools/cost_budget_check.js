@@ -37,7 +37,7 @@ const {
 // tier keys (fable | haiku | sonnet | opus). Unknown values default to sonnet.
 const MODEL_TIERS = ['fable', 'haiku', 'sonnet', 'opus'];
 
-const EFFORT_VALUES = ['low', 'medium', 'high', 'max'];
+const EFFORT_VALUES = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 const INPUT_SCHEMA = {
   type: 'object',
@@ -54,9 +54,9 @@ const INPUT_SCHEMA = {
       type: 'string',
       enum: EFFORT_VALUES,
       // W15 (v2.0.16): effort multiplier is now applied to projected cost.
-      // Multiplier table: low=0.7, medium=1.0, high=1.4, max=1.8.
+      // Multiplier table: low=0.7, medium=1.0, high=1.4, xhigh=1.6, max=1.8.
       // Configurable via mcp_server.cost_budget_check.effort_multipliers in config.
-      description: 'Effort level (low, medium, high, max). Optional — applies cost multiplier: low=0.7x, medium=1.0x, high=1.4x, max=1.8x.',
+      description: 'Effort level (low, medium, high, xhigh, max). Optional — applies cost multiplier: low=0.7x, medium=1.0x, high=1.4x, xhigh=1.6x, max=1.8x.',
     },
     orchestration_id: {
       type: 'string',
@@ -235,8 +235,41 @@ function resolveEffortMultiplier(effort, effortMultipliersConfig) {
 // Running-cost accumulation (W1)
 // ---------------------------------------------------------------------------
 
-// Maximum bytes to read from events.jsonl (same guard as record-pattern-skip.js).
+// Maximum bytes to read from the tail of events.jsonl. Files larger than this
+// get a bounded-tail read (F-RT-01: was a hard $0 return — silent cap bypass).
 const MAX_EVENTS_READ = 2 * 1024 * 1024; // 2 MB
+
+/**
+ * Read up to `maxBytes` from the end of `fp`, dropping the first (potentially
+ * partial) line. Mirrors pattern-roi-aggregate.js readBoundedTail.
+ *
+ * @param {string} fp
+ * @param {number} maxBytes
+ * @returns {string}
+ */
+function _readBoundedTail(fp, maxBytes) {
+  const fd = fs.openSync(fp, 'r');
+  try {
+    const size = fs.fstatSync(fd).size;
+    const start = Math.max(0, size - maxBytes);
+    const len = size - start;
+    const buf = Buffer.allocUnsafe(len);
+    let got = 0;
+    while (got < len) {
+      const n = fs.readSync(fd, buf, got, len - got, start + got);
+      if (n <= 0) break;
+      got += n;
+    }
+    let str = buf.slice(0, got).toString('utf8');
+    if (start > 0) {
+      const nl = str.indexOf('\n');
+      if (nl !== -1) str = str.slice(nl + 1); // drop partial leading line
+    }
+    return str;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
 
 /**
  * Sum `cost_usd` from `agent_stop` events in events.jsonl for the given
@@ -245,6 +278,11 @@ const MAX_EVENTS_READ = 2 * 1024 * 1024; // 2 MB
  * Fail-open contract: any I/O or parse error returns
  * `{ accumulated_usd: 0, warnings: ['running_cost_unavailable'] }` rather
  * than throwing. The caller adds this to projectedCostUsd before cap checks.
+ *
+ * When events.jsonl exceeds MAX_EVENTS_READ, a bounded-tail read is used so
+ * recent cost rows are still summed (F-RT-01). The tail may miss very early
+ * events in extremely long orchestrations but will never under-count recent
+ * spend — the conservative direction for cap enforcement.
  *
  * @param {string} orchId
  * @param {string|null} projectRoot
@@ -262,12 +300,11 @@ async function readAccumulatedCost(orchId, projectRoot, dateFilter, { sinceMs = 
     return unavailable;
   }
 
-  // Size guard — skip accumulation if file is too large to avoid blocking.
+  // Determine read strategy: full file or bounded tail.
+  let large = false;
   try {
     const stat = fs.statSync(eventsPath);
-    if (stat.size > MAX_EVENTS_READ) {
-      return { accumulated_usd: 0, warnings: ['running_cost_unavailable'] };
-    }
+    large = stat.size > MAX_EVENTS_READ;
   } catch (_e) {
     // File absent or unreadable — no accumulated cost.
     return { accumulated_usd: 0, warnings: [] };
@@ -277,7 +314,10 @@ async function readAccumulatedCost(orchId, projectRoot, dateFilter, { sinceMs = 
   let parseOk = true;
 
   try {
-    const raw = fs.readFileSync(eventsPath, 'utf8');
+    // F-RT-01: use bounded-tail read for large files instead of returning $0.
+    const raw = large
+      ? _readBoundedTail(eventsPath, MAX_EVENTS_READ)
+      : fs.readFileSync(eventsPath, 'utf8');
     for (const rawLine of raw.split('\n')) {
       const line = rawLine.trim();
       if (line.length === 0) continue;
@@ -319,7 +359,8 @@ async function readAccumulatedCost(orchId, projectRoot, dateFilter, { sinceMs = 
   }
 
   if (!parseOk) return unavailable;
-  return { accumulated_usd: totalUsd, warnings: [] };
+  const warnings = large ? ['running_cost_tail_read'] : [];
+  return { accumulated_usd: totalUsd, warnings };
 }
 
 // ---------------------------------------------------------------------------

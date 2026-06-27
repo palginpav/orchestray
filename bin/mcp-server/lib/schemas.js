@@ -576,7 +576,7 @@ const PATTERN_RECORD_SKIP_REASON_REASONS = deepFreeze(
  * Per 2014-scope-proposal.md §W3.
  */
 const COST_BUDGET_CHECK_EFFORT_VALUES = deepFreeze(
-  ['low', 'medium', 'high', 'max']
+  ['low', 'medium', 'high', 'xhigh', 'max']
 );
 
 /**

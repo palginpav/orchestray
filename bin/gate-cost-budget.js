@@ -194,6 +194,18 @@ process.stdin.on('end', async () => {
         accumulatedUsd = accTotal.accumulated_usd;
         accumulatedDailyUsd = accDaily.accumulated_usd;
         accumulatedWeeklyUsd = accWeekly.accumulated_usd;
+        // v2.3.13 (F-RT-01 follow-up): surface the bounded-tail read so operators
+        // know cost enforcement ran on a truncated events.jsonl tail.
+        const _accWarnings = [].concat(
+          accTotal.warnings || [], accDaily.warnings || [], accWeekly.warnings || []
+        );
+        if (_accWarnings.includes('running_cost_tail_read')) {
+          process.stderr.write(
+            '[orchestray] gate-cost-budget: events.jsonl exceeds the read cap; ' +
+            'cost enforced on a bounded tail — early spend in a very long ' +
+            'orchestration may be under-counted.\n'
+          );
+        }
       } catch (_accErr) {
         process.stderr.write(
           '[orchestray] gate-cost-budget: accumulated cost read failed; using $0 as accumulated\n'
@@ -263,7 +275,7 @@ process.stdin.on('end', async () => {
       const blockMsg =
         '[orchestray] cost budget exceeded — spawn blocked. ' +
         'To allow: raise the cap or set cost_budget_enforcement.hard_block=false. ' +
-        'Emergency bypass: set cost_budget_enforcement.enabled=false.\n';
+        'To disable enforcement entirely: set cost_budget_enforcement.enabled=false in .orchestray/config.json.\n';
       process.stderr.write(breachMsg + blockMsg);
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {

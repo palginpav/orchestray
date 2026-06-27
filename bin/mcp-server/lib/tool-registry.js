@@ -190,7 +190,7 @@ function listTools(opts) {
 
     let removedCount = 0;
     let lastDroppedPluginName = undefined;
-    while (result.length > pushedCoreCount && JSON.stringify(result).length > maxBytes) {
+    while (result.length > pushedCoreCount && Buffer.byteLength(JSON.stringify(result), 'utf8') > maxBytes) {
       result.pop();
       const overlayIdx = overlayItems.length - 1 - removedCount;
       if (overlayIdx >= 0 && overlayItems[overlayIdx]) {

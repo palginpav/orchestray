@@ -40,7 +40,7 @@ Set at the top level of `.orchestray/config.json` unless noted.
 | `force_solo` | `false` | Always route to single-agent (PM only) regardless of complexity score. |
 | `confirm_before_execute` | `false` | Pause and ask the user to confirm the orchestration plan before spawning agents. |
 | `enable_outcome_tracking` | `false` | Track probe outcomes (files changed, tests pass) after each orchestration and feed results back into pattern confidence. |
-| `max_cost_usd` | `null` | Per-orchestration spend ceiling in USD. `null` disables the check. When set, orchestration stops if the projected cost exceeds this value. |
+| `max_cost_usd` | `null` | Per-orchestration spend ceiling in USD. `null` disables the check. When set, orchestration stops if the projected cost exceeds this value. Caps are read-only until `cost_budget_enforcement.enabled: true` (see §3b). |
 | `dossier_orphan_threshold` | `5` | Number of dossier-orphan events within one orchestration before an alert is emitted. Top-level scalar (not nested). |
 | `routing_gate.auto_seed_on_miss` | `true` | When no routing entry exists for an `Agent()` spawn, auto-seed a synthetic entry instead of hard-blocking. Set `false` to restore hard-fail behaviour. |
 | `state_sentinel.pause_check_enabled` | `true` | Kill flag for the pause/cancel sentinel check. Set `false` to bypass the check entirely (emergency bypass). |
@@ -62,8 +62,8 @@ Set at the top level of `.orchestray/config.json` unless noted.
 | `adaptive_verbosity.enabled` | `false` | Enable response-length budgets injected into delegation prompts. Also requires `v2017_experiments.adaptive_verbosity: "on"`. |
 | `adaptive_verbosity.base_response_tokens` | `2000` | Default delegation response budget in approximate tokens. |
 | `adaptive_verbosity.reducer_on_late_phase` | `0.4` | Multiplier applied to `base_response_tokens` for phases past the midpoint (phase_position ≥ 0.5). Range: 0.0–1.0. |
-| `v2017_experiments.prompt_caching` | `"on"` | Enable v2.0.17 prompt-caching layout (`"off"` or `"on"`). |
-| `v2017_experiments.adaptive_verbosity` | `"off"` | Enable v2.0.17 adaptive-verbosity response budgets (`"off"` or `"on"`). |
+| `v2017_experiments.prompt_caching` | `"on"` | Enable v2.0.17 prompt-caching layout (`"off"` or `"on"`). Active and production-default; the `v2017` prefix is frozen for backward compatibility, not a sign of deprecation. |
+| `v2017_experiments.adaptive_verbosity` | `"off"` | Enable v2.0.17 adaptive-verbosity response budgets (`"off"` or `"on"`). The `v2017` prefix is frozen for backward compatibility, not a sign of deprecation. |
 | `v2017_experiments.global_kill_switch` | `false` | One-flip disables all v2.0.17 experiments simultaneously. |
 
 ---
@@ -88,14 +88,17 @@ Nested under `mcp_server` in `.orchestray/config.json` (e.g., `mcp_server.cost_b
 | `mcp_server.cost_budget_check.effort_multipliers.low` | `0.7` | Cost multiplier for `effort: "low"` spawns. |
 | `mcp_server.cost_budget_check.effort_multipliers.medium` | `1.0` | Cost multiplier for `effort: "medium"` spawns (baseline). |
 | `mcp_server.cost_budget_check.effort_multipliers.high` | `1.4` | Cost multiplier for `effort: "high"` spawns. |
+| `mcp_server.cost_budget_check.effort_multipliers.xhigh` | `1.6` | Cost multiplier for `effort: "xhigh"` spawns. |
 | `mcp_server.cost_budget_check.effort_multipliers.max` | `1.8` | Cost multiplier for `effort: "max"` spawns. |
 
 ### 3b. Reservation and enforcement
 
+**Important:** all cost caps (`daily_cost_limit_usd`, `weekly_cost_limit_usd`, `max_cost_usd`) are read-only log entries until `cost_budget_enforcement.enabled: true`. Without it, the budget gate is entirely skipped and no spawn is blocked.
+
 | Key | Default | What it does |
 |-----|---------|--------------|
 | `mcp_server.cost_budget_reserve.ttl_minutes` | `30` | How long a cost reservation remains active before expiry. Range: 1–1440 minutes. |
-| `cost_budget_enforcement.enabled` | `false` | Activate the pre-spawn cost gate. When `false`, the gate is entirely skipped. |
+| `cost_budget_enforcement.enabled` | `false` | Activate the pre-spawn cost gate. When `false`, the gate is entirely skipped and all cost caps have no effect. |
 | `cost_budget_enforcement.hard_block` | `true` | When enforcement is enabled: `true` exits with code 2 (blocks spawn); `false` emits a stderr warning and allows the spawn. |
 
 ### 3c. Per-task MCP call limits (`mcp_server.max_per_task.*`)
@@ -113,7 +116,7 @@ Nested under `mcp_server` in `.orchestray/config.json` (e.g., `mcp_server.cost_b
 | Key | Default | What it does |
 |-----|---------|--------------|
 | `delta_handoff.force_full` | `false` | Force full prompt delivery on every delegation (disable delta/incremental handoffs). Useful for debugging context issues. |
-| `catalog_mode_default.catalog_default` | `true` | When `true`, `pattern_find` defaults to catalog mode (returns compact summaries). Set `false` to default to full mode. Env override: `ORCHESTRAY_DISABLE_CATALOG_DEFAULT=1`. |
+| `catalog_mode_default` | `true` | Top-level boolean. When `true`, `pattern_find` defaults to catalog mode (returns compact summaries). Set `false` to default to full mode. Env override: `ORCHESTRAY_DISABLE_CATALOG_DEFAULT=1`. |
 | `caching.enabled` | `true` | Enable Block A prompt-zone caching (Zone 1). Set `false` to disable the caching layer entirely. |
 | `caching.zone1_ttl_ms` | `3600000` | Time-to-live for Zone 1 cache entries in milliseconds (default: 1 hour). |
 | `cache_choreography.pre_commit_guard_enabled` | `false` | Opt-in pre-commit hook that alerts on Block A changes missing an `BLOCK-A: approved` commit-message line. Run `bin/install-pre-commit-guard.sh` after enabling. |
@@ -149,7 +152,7 @@ All keys are nested under `plugin_loader` in `.orchestray/config.json`.
 |-----|---------|--------------|
 | `plugin_loader.enabled` | `true` | Master kill-switch. `false` disables the plugin loader entirely. Env: `ORCHESTRAY_PLUGIN_LOADER_DISABLED=1`. |
 | `plugin_loader.dry_run` | `false` | Discover and validate plugins but do not activate them. Env: `ORCHESTRAY_PLUGIN_LOADER_DRY_RUN=1`. |
-| `plugin_loader.strict_capabilities` | `false` | Enforce manifest capability declarations: violations kill the plugin and inject-suspected responses are prefixed `[SECURITY]`. Set `true` for higher-trust environments. |
+| `plugin_loader.strict_capabilities` | `true` | Enforce manifest capability declarations: violations kill the plugin and inject-suspected responses are prefixed `[SECURITY]`. Default-on since v2.3.12. Set `false` to revert to advisory-only (violations log but don't kill the plugin). Env: `ORCHESTRAY_PLUGIN_STRICT_CAPS_DISABLED=1`. |
 | `plugin_loader.notify_list_changed` | `true` | Emit an event when the active plugin list changes. |
 | `plugin_loader.restart_flag_check` | `true` | Check for a restart-required flag file before each tool call. |
 | `plugin_loader.discovery.enabled` | `true` | Enable automatic plugin discovery on startup. Env: `ORCHESTRAY_PLUGIN_DISCOVERY_DISABLED=1`. |
@@ -308,4 +311,4 @@ To **disable** a feature rather than tune it, see [KILL_SWITCHES.md](KILL_SWITCH
 
 ---
 
-*Generated for v2.3.10; `bin/_lib/config-schema.js` is the source of truth — when this doc and the schema disagree, the schema wins.*
+*Generated for v2.3.13; `bin/_lib/config-schema.js` is the source of truth — when this doc and the schema disagree, the schema wins.*

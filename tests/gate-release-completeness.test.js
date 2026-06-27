@@ -118,3 +118,40 @@ test('gate never references npm publish in its code path output', () => {
   assert.ok(!/npm publish (executed|running|done)/i.test(r.stderr + r.stdout));
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// F-RT-05: combined short-flag clusters (-am, etc.)
+test('extractReleaseVersion parses combined -am flag', () => {
+  assert.strictEqual(extractReleaseVersion('git commit -am "release: v2.3.13"'), '2.3.13');
+  assert.strictEqual(extractReleaseVersion("git commit -am 'release: v2.3.13'"), '2.3.13');
+  // -a -m separately (should already work)
+  assert.strictEqual(extractReleaseVersion('git commit -a -m "release: v2.3.13"'), '2.3.13');
+  // non-release combined commit is still null
+  assert.strictEqual(extractReleaseVersion('git commit -am "fix: something"'), null);
+});
+
+test('complete release commit via -am flag passes gate (exit 0)', () => {
+  const dir = mkRepo({ pkgVer: '1.2.3', versionFile: '1.2.3\n', changelog: GOOD_CL });
+  const r = runGate(dir, 'git commit -am "release: v1.2.3"');
+  assert.strictEqual(r.status, 0, r.stderr);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('version mismatch via -am flag still blocks (exit 2)', () => {
+  const dir = mkRepo({ pkgVer: '1.2.2', versionFile: '1.2.3\n', changelog: GOOD_CL });
+  const r = runGate(dir, 'git commit -am "release: v1.2.3"');
+  assert.strictEqual(r.status, 2);
+  assert.match(r.stderr, /version parity/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('cannot-verify note emitted for plausible release commit with unusual form', () => {
+  const dir = mkRepo({ pkgVer: '1.2.3', versionFile: '1.2.3\n', changelog: GOOD_CL });
+  // Simulate a commit whose message has release: but in a form our regex can't parse cleanly.
+  // We test via a command that contains "release: v1.2.3" but without a parseable -m flag.
+  // Using a heredoc-style inline: no -m flag, so version extraction returns null.
+  const r = runGate(dir, 'git commit --message release:v1.2.3');
+  // Should exit 0 (not blocked) but emit the cannot-verify note to stderr.
+  assert.strictEqual(r.status, 0);
+  assert.match(r.stderr, /cannot be verified|cannot verify|If this is a release/i);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

@@ -605,7 +605,7 @@ Spawn" rule above.
 
 ### Before Spawning: Write routing.jsonl First (REQUIRED)
 
-Before every `Agent()` call, append a routing.jsonl row (task_id + agent_type + model + effort + score) to `.orchestray/state/routing.jsonl`. The `PreToolUse:Agent` hook (`bin/gate-agent-spawn.js`) hard-blocks spawns with no matching row.
+Before every `Agent()` call, append a routing.jsonl row (task_id + agent_type + model + effort + score) to `.orchestray/state/routing.jsonl`. The `PreToolUse:Agent` hook (`bin/gate-agent-spawn.js`) emits a stderr warning and auto-seeds a synthetic entry when no matching row is found (default: `routing_gate.auto_seed_on_miss: true`), then allows the spawn. Set `routing_gate.auto_seed_on_miss: false` to restore hard-block behavior.
 
 The canonical write protocol — `ox routing add` form, primary `(task_id, agent_type)` match key, dynamic-spawn rules, and re-plan timestamp behavior — lives in Section 14 "Step 0" (in phase-execute.md). Follow it for every spawn, including dynamic and re-plan re-spawns. Do not duplicate the protocol here.
 

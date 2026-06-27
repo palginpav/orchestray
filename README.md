@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/orchestray.svg)](https://www.npmjs.com/package/orchestray)
 [![npm downloads](https://img.shields.io/npm/dw/orchestray.svg)](https://www.npmjs.com/package/orchestray)
-[![Socket Badge](https://badge.socket.dev/npm/package/orchestray/2.3.12)](https://socket.dev/npm/package/orchestray)
+[![Socket Badge](https://badge.socket.dev/npm/package/orchestray/2.3.13)](https://socket.dev/npm/package/orchestray)
 [![License](https://img.shields.io/npm/l/orchestray.svg)](https://github.com/palginpav/orchestray/blob/master/LICENSE)
 [![Node](https://img.shields.io/node/v/orchestray.svg)](https://nodejs.org)
 
@@ -61,13 +61,13 @@ That's it. Orchestray scores complexity, decomposes the task, routes agents, run
 | `/orchestray:config` | View or change any of ~80 settings; `show federation` for federation state |
 | `/orchestray:kb` | List, view, or add knowledge-base entries from past orchestrations |
 | `/orchestray:review-pr <PR>` | Review a GitHub pull request with the reviewer agent |
-| `/orchestray:learn-doc <url>` | Distill a URL into a reusable skill pack future agents auto-load |
+| `/orchestray:learn-doc <url>` | Distill a URL into a reusable skill pack future agents auto-load (alias: `/orchestray:distill`) |
 | `/orchestray:federation status` | Show federation state and shared tier contents |
 | `/orchestray:playbooks` | Manage project-specific playbooks that customize agent behavior |
 | `/orchestray:resume` | Resume an interrupted orchestration |
 | `/orchestray:loop` | Iterate-until primitive for tasks that need repeated adjustment |
 | `/orchestray:rollback` | Restore workspace to a pre-spawn snapshot |
-| `/orchestray:analytics` | Cost breakdown, pattern dashboard, health signals |
+| `/orchestray:analytics` | Cost breakdown, pattern dashboard, health signals; `--firing-audit` runs the hook-firing self-audit on demand |
 | `/orchestray:patterns` | Pattern effectiveness dashboard |
 | `/orchestray:learn [id]` | Extract patterns; `curate` to AI-curate; `list --proposed` to review auto-proposals |
 | `/orchestray:specialists` | Manage persistent specialist agents |
@@ -83,7 +83,7 @@ That's it. Orchestray scores complexity, decomposes the task, routes agents, run
 
 | Command | What it does |
 |---------|-------------|
-| `/orchestray:redo <task-id>` | Re-run a task; `--cascade` to update dependents |
+| `/orchestray:redo <W-id>` | Re-run a planning item; `--cascade` re-runs dependents; `--prompt="..."` overrides the delegation prompt |
 | `/orchestray:watch` | Live-tail a running orchestration |
 | `/orchestray:state` | Inspect (`peek`), pause, cancel, or gc orchestration state |
 
@@ -107,7 +107,7 @@ For plugin authoring instructions, see [docs/plugin-authoring-guide.md](./docs/p
 > npx orchestray --global   # global install
 > npx orchestray --local    # project-local install (if applicable)
 > ```
-> Then run `/reload-plugins` (or `/orchestray:plugin reload`) to pick up new agents and hook changes in place — a full Claude Code restart is only needed if the upgrade added a new slash command, or you are in a cloud session.
+> Run `/reload-plugins` to pick up new agents and hook changes in place (a Claude Code built-in). To re-verify a single plugin's manifest, use `/orchestray:plugin reload <name>`. A full Claude Code restart is only needed if the upgrade added a new slash command, or you are in a cloud session.
 
 ## No sandbox security model
 
@@ -246,7 +246,7 @@ Run `/orchestray:config` to view all settings, or browse the full grouped refere
 | `auto_review` | `true` | Auto-spawn reviewer after developer |
 | `model_floor` | `sonnet` | Minimum model tier: haiku / sonnet / opus / fable |
 | `confirm_before_execute` | `false` | Show preview before execution |
-| `daily_cost_limit_usd` | `null` | Daily spending cap |
+| `daily_cost_limit_usd` | `null` | Daily spending cap (read-only until `cost_budget_enforcement.enabled: true` — see CONFIG.md §3b) |
 | `force_model` | `null` | Pin all agents to a specific tier (e.g., `"fable"`) |
 
 **Model tiers** (cost per million tokens, input / output): Haiku $1 / $5 · Sonnet $3 / $15 · Opus $5 / $25 · Fable $10 / $50. Fable 5 (`alias: fable`) is an opt-in top tier above Opus — use `force_model: "fable"` in config or pass `model: "fable"` on individual agent spawns. Default routing uses Haiku through Opus; Fable must be explicitly requested.

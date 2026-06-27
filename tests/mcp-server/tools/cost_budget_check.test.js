@@ -415,6 +415,12 @@ describe('G: effort field', () => {
     assert.equal(result.structuredContent.effort, 'high');
   });
 
+  test('effort=xhigh is accepted (F-MC-03)', async () => {
+    const result = await handle(baseInput({ effort: 'xhigh' }), makeContext({}));
+    assert.equal(result.isError, false);
+    assert.equal(result.structuredContent.effort, 'xhigh');
+  });
+
   test('effort=max is accepted', async () => {
     const result = await handle(baseInput({ effort: 'max' }), makeContext({}));
     assert.equal(result.isError, false);
@@ -777,6 +783,61 @@ describe('W1: readAccumulatedCost helper', () => {
     try {
       const result = await readAccumulatedCost('orch-001', dir, null);
       assert.equal(result.accumulated_usd, 0);
+    } finally {
+      cleanTmpDir(dir);
+    }
+  });
+
+  // F-RT-01: large events.jsonl (>2 MB) must yield non-zero cost via bounded-tail read.
+  test('F-RT-01: events.jsonl >2MB yields non-zero accumulated cost (bounded-tail read)', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-cbc-test-large-'));
+    const auditDir = path.join(dir, '.orchestray', 'audit');
+    fs.mkdirSync(auditDir, { recursive: true });
+    const eventsPath = path.join(auditDir, 'events.jsonl');
+
+    // Write ~2.1 MB of filler events for orch-FILLER (different orchId), then
+    // append real cost events for orch-target at the tail.
+    const fillerLine = JSON.stringify({
+      type: 'agent_stop', orchestration_id: 'orch-filler',
+      cost_usd: 0, timestamp: '2026-01-01T00:00:00Z',
+      padding: 'x'.repeat(500),
+    }) + '\n';
+    const fillerCount = Math.ceil((2.2 * 1024 * 1024) / fillerLine.length);
+    const ws = fs.createWriteStream(eventsPath);
+    await new Promise((resolve, reject) => {
+      let i = 0;
+      function writeNext() {
+        while (i < fillerCount) {
+          i++;
+          if (!ws.write(fillerLine)) { ws.once('drain', writeNext); return; }
+        }
+        ws.end();
+      }
+      ws.on('finish', resolve);
+      ws.on('error', reject);
+      writeNext();
+    });
+
+    // Append cost events for the target orchestration at the tail.
+    fs.appendFileSync(eventsPath,
+      JSON.stringify({ type: 'agent_stop', orchestration_id: 'orch-target', cost_usd: 1.23, timestamp: '2026-04-13T12:00:00Z' }) + '\n' +
+      JSON.stringify({ type: 'agent_stop', orchestration_id: 'orch-target', cost_usd: 0.77, timestamp: '2026-04-13T12:01:00Z' }) + '\n',
+      'utf8'
+    );
+
+    try {
+      const stat = fs.statSync(eventsPath);
+      assert.ok(stat.size > 2 * 1024 * 1024, 'fixture file must exceed 2 MB');
+
+      const result = await readAccumulatedCost('orch-target', dir, null);
+      // Bounded-tail read should capture both tail events.
+      assert.ok(result.accumulated_usd > 0,
+        `accumulated_usd must be > 0 for large events.jsonl; got ${result.accumulated_usd}`);
+      assert.ok(Math.abs(result.accumulated_usd - 2.0) < 0.01,
+        `expected ~2.0, got ${result.accumulated_usd}`);
+      // Warning should indicate tail read was used.
+      assert.ok(result.warnings.includes('running_cost_tail_read'),
+        'must include running_cost_tail_read warning for large files');
     } finally {
       cleanTmpDir(dir);
     }

@@ -3,6 +3,25 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.13] - 2026-06-27
+
+**Orchestray 2.3.13 is a bugfix-and-polish release: it closes a spending-cap enforcement gap, makes a documented off switch work again, stops false "unknown setting" warnings at startup, hardens the release and git safety checks, and brings several pieces of documentation back in line with the code.**
+
+### Fixed
+
+- **Spending caps keep enforcing on long runs.** Cost caps could quietly stop being enforced once an orchestration's internal event log grew past a few megabytes, because accumulated spend was read as $0. Spend is now read from a bounded recent window, so caps keep working — and you get a warning when the log is large enough that early spend may be under-counted.
+- **The "catalog mode" off switch works again.** Setting `catalog_mode_default: false` had no effect — it was read in the wrong shape internally and silently stayed on. It now turns catalog mode off as documented.
+- **No more false "unknown setting" warnings at startup.** Two real, documented settings (`plugin_loader` and `block_a_zone_caching`) were being flagged as unknown. They are now recognized.
+- **Release safety checks can't be skipped by a shorthand commit.** The release-completeness check was bypassed when the version was committed with `git commit -am`. It now catches that form too.
+- **Destructive git commands invoked by full path are guarded.** Commands like `/usr/bin/git reset --hard` were not caught by the worktree safety gate; they now are, with no false positives on unrelated commands whose name merely ends in "git".
+- **`xhigh` reasoning effort is accepted by the cost estimator.** Asking for a cost projection on an `xhigh`-effort task no longer errors out.
+- **Task quality-gate checks behave correctly.** Export detection now recognizes CommonJS modules, a broken compile-check entry was corrected, and the scope-containment check no longer passes by accident on work that was already committed.
+- **Clearer cost-cap bypass message.** The hard-block message no longer calls the normal "turn enforcement off" action an "emergency bypass".
+
+### Changed
+
+- **Documentation now matches the code.** Corrected the documented default for plugin strict-capability mode (it is on by default), clarified that spending caps require enforcement to be enabled before they block anything, distinguished `/reload-plugins` (built-in, refreshes everything) from `/orchestray:plugin reload <name>` (one plugin's manifest), fixed the `catalog_mode_default` and `redo` command references, documented the `--firing-audit` analytics flag and the `xhigh` effort multiplier, noted that the `v2017_experiments` settings are still active despite their name, and tidied the kill-switch reference ordering. Startup diagnostics now show project-relative paths instead of absolute ones.
+
 ## [2.3.12] - 2026-06-18
 
 **Orchestray 2.3.12 is a quiet-and-correct release: it stops the git safety gate from blocking ordinary commands, fixes a cost-limit under-count on the newest models, makes plugin safety on by default, and dramatically reduces diagnostic-log noise — plus you can now pick up upgrades without a full restart.**

@@ -43,27 +43,13 @@ const NOT_FOR_PM = Object.freeze({
   // agents/curator-stages/phase-close.md). PM never tombstones directly.
   curator_tombstone:  'owned-by-curator',
 
-  // Internal: schema_get is consumed via the schema-redirect pipeline
-  // (bin/_lib/schema-redirect.js) and the chunked schema-load shield, not
-  // by PM frontmatter delegation.
-  schema_get:         'internal-schema-redirect',
-
   // System spawn path: bin/_lib/spawn-runner.js + Agent() tool. PM uses the
   // native `Agent()` shape, not the raw MCP tool.
   spawn_agent:        'internal-spawn-runner',
 
-  // PM never calls metrics_query directly; the analytics slash-command and
-  // post-orchestration extract paths invoke it.
-  metrics_query:      'analytics-only',
-
-  // pattern_read is auto-fetched by architect/developer/reviewer/debugger
-  // agents per their MCP grounding protocol; PM consumes pattern_find and
-  // pattern_record_application/_skip_reason for orchestration decisions.
-  pattern_read:       'specialist-only',
-
-  // cost_budget_check is consumed by the gate-agent-spawn cost shield, not
-  // by PM frontmatter delegation. PM uses cost_budget_reserve.
-  cost_budget_check:  'internal-spawn-shield',
+  // F-MC-08 (v2.3.13): schema_get, metrics_query, pattern_read, cost_budget_check
+  // removed — all four are now in agents/pm.md tools: frontmatter and PM calls
+  // them directly. Dead/misleading justifications removed.
 });
 
 // ---------------------------------------------------------------------------
