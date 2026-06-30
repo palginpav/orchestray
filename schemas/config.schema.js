@@ -516,6 +516,21 @@ const blockAZoneCachingSchema = z.object({
   invariant_violation_threshold_24h: z.number().int().positive().optional(),
 }).passthrough();
 
+// I4 (v2.3.14): oversized_input — documented in CONFIG.md and loaded by
+// bin/_lib/config-schema.js loadOversizedInputConfig(). Declared here so
+// drift detection and schema validation both accept the block.
+const oversizedInputSchema = z.object({
+  enabled: z.boolean().optional(),
+  threshold_bytes: z.number().int().positive().optional(),
+  threshold_tokens: z.number().int().positive().optional(),
+  slice_chars: z.number().int().positive().optional(),
+  max_slices: z.number().int().positive().optional(),
+  map_model: z.string().optional(),
+  synthesis_model: z.string().optional(),
+  confirm_over_slices: z.number().int().positive().optional(),
+  hierarchical_reduce: z.boolean().optional(),
+}).passthrough();
+
 // ---------------------------------------------------------------------------
 // Top-level schema
 // ---------------------------------------------------------------------------
@@ -655,6 +670,8 @@ const configSchema = z.object({
   plugin_loader: pluginLoaderSchema.optional(),
   // F-MC-04 (v2.3.13): block_a_zone_caching — was documented and loaded but absent from schema.
   block_a_zone_caching: blockAZoneCachingSchema.optional(),
+  // I4 (v2.3.14): oversized_input — documented in CONFIG.md and loaded by config-schema.js.
+  oversized_input: oversizedInputSchema.optional(),
 }).passthrough(); // R-CONFIG-DRIFT (W9) owns unknown-key warnings; this schema tolerates them.
 
 module.exports = {

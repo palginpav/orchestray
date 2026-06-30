@@ -98,3 +98,40 @@ describe('F-MC-01 + F-MC-04: combined config with both keys', () => {
     assert.deepEqual(res.unknown, []);
   });
 });
+
+// ---------------------------------------------------------------------------
+// W1 (v2.3.14): oversized_input
+// ---------------------------------------------------------------------------
+
+describe('W1 (v2.3.14): oversized_input no longer trips drift detector', () => {
+  test('detectDrift({oversized_input:{}}) returns empty unknown[]', () => {
+    const res = detectDrift({ oversized_input: {} });
+    assert.deepEqual(res.unknown, [], 'oversized_input must not appear in unknown[]');
+    assert.deepEqual(res.renamed, []);
+  });
+
+  test('KNOWN_TOP_LEVEL_KEYS includes oversized_input', () => {
+    assert.ok(
+      KNOWN_TOP_LEVEL_KEYS.includes('oversized_input'),
+      'KNOWN_TOP_LEVEL_KEYS must contain oversized_input'
+    );
+  });
+
+  test('configSchema.safeParse() accepts oversized_input block without error', () => {
+    const cfg = {
+      oversized_input: {
+        enabled: true,
+        threshold_bytes: 1572864,
+        threshold_tokens: 200000,
+        slice_chars: 6000,
+        max_slices: 64,
+        map_model: 'haiku',
+        synthesis_model: 'sonnet',
+        confirm_over_slices: 16,
+        hierarchical_reduce: true,
+      },
+    };
+    const result = configSchema.safeParse(cfg);
+    assert.equal(result.success, true, 'schema must accept oversized_input block: ' + JSON.stringify(result.error));
+  });
+});

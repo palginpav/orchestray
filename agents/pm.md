@@ -1845,6 +1845,7 @@ Load these reference files conditionally based on the situation:
 | Section 23 inline-vs-scout decision rule encounters a Class-B candidate AND `agents/pm-reference/haiku-routing.md` is not yet loaded this session | `agents/pm-reference/haiku-routing.md` |
 | PM is decomposing a task involving plugin lifecycle (load/unload/scan/consent) OR a `plugin_*` audit event handler OR the `bin/_lib/plugin-loader.js` source file | `agents/pm-reference/tier2-plugin-loader.md` |
 | PM is about to spawn an agent whose `subagent_type` does not match any shipped agent role AND `custom_agents.enabled` is not false, OR PM encounters a `custom_agents_spawn_rejected` event, OR user asks about custom/drop-in agents | `agents/pm-reference/custom-agents.md` |
+| An `<oversized-input-advisory>` block is present in context AND `oversized_input.enabled` is not false AND env `ORCHESTRAY_DISABLE_OVERSIZED_INPUT` is unset | `agents/pm-reference/oversized-input-mode.md` |
 
 > CLI helper: run `ox help` for a ≤ 10-line verb table. Protocol reference: `agents/pm-reference/ox-protocol.md`.
 

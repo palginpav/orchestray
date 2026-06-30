@@ -3,6 +3,14 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.14] - 2026-06-30
+
+**Orchestray 2.3.14 lets you ask questions about files and directories far larger than the model's context window — Orchestray slices them automatically, reads each piece in parallel with inexpensive scout agents, and synthesizes a single answer at bounded cost.**
+
+### Added
+
+- **Oversized-Input Mode.** When you reference a file or directory over 1.5 MB, or paste text estimated at more than 200,000 tokens, Orchestray now automatically switches into a map-reduce workflow instead of trying to load the whole input at once. The corpus is divided into windows, each window is read in parallel by a fast Haiku scout agent, the results are verified, and a Sonnet synthesis agent assembles the final answer. Hierarchical batching handles inputs that exceed the per-layer slice limit, so the mode never hard-refuses on large-but-reasonable inputs. Fires only on genuinely large inputs — normal prompts are unaffected. Disable with `oversized_input.enabled: false` in `.orchestray/config.json` or `ORCHESTRAY_DISABLE_OVERSIZED_INPUT=1`.
+
 ## [2.3.13] - 2026-06-27
 
 **Orchestray 2.3.13 is a bugfix-and-polish release: it closes a spending-cap enforcement gap, makes a documented off switch work again, stops false "unknown setting" warnings at startup, hardens the release and git safety checks, and brings several pieces of documentation back in line with the code.**

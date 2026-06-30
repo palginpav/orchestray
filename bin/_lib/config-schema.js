@@ -5008,6 +5008,122 @@ function loadCatalogModeDefaultConfig(cwd) {
   return merged;
 }
 
+// ---------------------------------------------------------------------------
+// oversized_input config block (W1 v2.3.14)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_OVERSIZED_INPUT = Object.freeze({
+  /** Kill flag: false disables the entire oversized-input pipeline. */
+  enabled: true,
+  /** Byte threshold above which a corpus is considered oversized. */
+  threshold_bytes: 1572864,
+  /** Token threshold above which the mode activates (alternative trigger). */
+  threshold_tokens: 200000,
+  /** Character window for each map slice sent to the map model. */
+  slice_chars: 6000,
+  /** Maximum slices before hierarchical reduce or refuse kicks in. */
+  max_slices: 64,
+  /** Model used for per-slice map passes. */
+  map_model: 'haiku',
+  /** Model used for the final synthesis reduce pass. */
+  synthesis_model: 'sonnet',
+  /** Prompt user confirmation when slice count exceeds this value. */
+  confirm_over_slices: 16,
+  /** When true, automatically batch over-cap corpora in two-level reduce. */
+  hierarchical_reduce: true,
+});
+
+/**
+ * Load and merge the oversized_input block from <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing/malformed returns DEFAULT_OVERSIZED_INPUT.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {object} Merged oversized_input config with all keys guaranteed present.
+ */
+function loadOversizedInputConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_OVERSIZED_INPUT);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_OVERSIZED_INPUT);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_OVERSIZED_INPUT);
+  }
+
+  const fromFile = parsed.oversized_input;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_OVERSIZED_INPUT);
+  }
+
+  const merged = Object.assign({}, DEFAULT_OVERSIZED_INPUT, sanitizeConfig(fromFile));
+
+  try {
+    const result = validateOversizedInputConfig(merged);
+    if (!result.valid) {
+      logStderr('oversized_input config warnings: ' + result.errors.join('; '));
+    }
+  } catch (_e) {
+    // Validation must never throw
+  }
+
+  return merged;
+}
+
+/**
+ * Validate an oversized_input config object.
+ *
+ * @param {unknown} obj
+ * @returns {{ valid: true } | { valid: false, errors: string[] }}
+ */
+function validateOversizedInputConfig(obj) {
+  const errors = [];
+
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { valid: false, errors: ['oversized_input must be an object'] };
+  }
+
+  if ('enabled' in obj && typeof obj.enabled !== 'boolean') {
+    errors.push('oversized_input.enabled must be a boolean — got ' + JSON.stringify(obj.enabled));
+  }
+  if ('threshold_bytes' in obj && (!Number.isInteger(obj.threshold_bytes) || obj.threshold_bytes < 1)) {
+    errors.push('oversized_input.threshold_bytes must be a positive integer — got ' + JSON.stringify(obj.threshold_bytes));
+  }
+  if ('threshold_tokens' in obj && (!Number.isInteger(obj.threshold_tokens) || obj.threshold_tokens < 1)) {
+    errors.push('oversized_input.threshold_tokens must be a positive integer — got ' + JSON.stringify(obj.threshold_tokens));
+  }
+  if ('slice_chars' in obj && (!Number.isInteger(obj.slice_chars) || obj.slice_chars < 1)) {
+    errors.push('oversized_input.slice_chars must be a positive integer — got ' + JSON.stringify(obj.slice_chars));
+  }
+  if ('max_slices' in obj && (!Number.isInteger(obj.max_slices) || obj.max_slices < 1)) {
+    errors.push('oversized_input.max_slices must be a positive integer — got ' + JSON.stringify(obj.max_slices));
+  }
+  if ('map_model' in obj && typeof obj.map_model !== 'string') {
+    errors.push('oversized_input.map_model must be a string — got ' + JSON.stringify(obj.map_model));
+  }
+  if ('synthesis_model' in obj && typeof obj.synthesis_model !== 'string') {
+    errors.push('oversized_input.synthesis_model must be a string — got ' + JSON.stringify(obj.synthesis_model));
+  }
+  if ('confirm_over_slices' in obj && (!Number.isInteger(obj.confirm_over_slices) || obj.confirm_over_slices < 1)) {
+    errors.push('oversized_input.confirm_over_slices must be a positive integer — got ' + JSON.stringify(obj.confirm_over_slices));
+  }
+  if ('hierarchical_reduce' in obj && typeof obj.hierarchical_reduce !== 'boolean') {
+    errors.push('oversized_input.hierarchical_reduce must be a boolean — got ' + JSON.stringify(obj.hierarchical_reduce));
+  }
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
 module.exports = {
   DEFAULT_MCP_ENFORCEMENT,
   loadMcpEnforcement,
@@ -5148,4 +5264,8 @@ module.exports = {
   loadBudgetEnforcementConfig,
   DEFAULT_CATALOG_MODE_DEFAULT,
   loadCatalogModeDefaultConfig,
+  // oversized_input config block (W1 v2.3.14)
+  DEFAULT_OVERSIZED_INPUT,
+  loadOversizedInputConfig,
+  validateOversizedInputConfig,
 };

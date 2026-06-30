@@ -25,6 +25,7 @@ All sections are fail-open: a missing or malformed config file causes each loade
 - [8. Learning and patterns](#8-learning-and-patterns)
 - [9. Resilience and telemetry](#9-resilience-and-telemetry)
 - [10. Install and worktree](#10-install-and-worktree)
+- [11. Oversized-Input Mode](#11-oversized-input-mode)
 - [Kill switches](#kill-switches)
 
 ---
@@ -305,10 +306,30 @@ All keys are nested under `plugin_loader` in `.orchestray/config.json`.
 
 ---
 
+## 11. Oversized-Input Mode
+
+All keys are nested under `oversized_input` in `.orchestray/config.json`.
+
+| Key | Default | What it does |
+|-----|---------|--------------|
+| `oversized_input.enabled` | `true` | Master kill-switch. `false` disables oversized-input detection entirely. Env: `ORCHESTRAY_DISABLE_OVERSIZED_INPUT=1`. |
+| `oversized_input.threshold_bytes` | `1572864` (1.5 MB) | File or directory byte size that triggers the mode. |
+| `oversized_input.threshold_tokens` | `200000` | Estimated token count for pasted text that triggers the mode (4 chars/token heuristic). |
+| `oversized_input.slice_chars` | `6000` | Character window for each map slice sent to a scout agent. |
+| `oversized_input.max_slices` | `64` | Maximum slices per map layer. Bounds fan-out and cost. |
+| `oversized_input.map_model` | `haiku` | Model used for per-slice scout reads. |
+| `oversized_input.synthesis_model` | `sonnet` | Model used for the final synthesis reduce pass. |
+| `oversized_input.confirm_over_slices` | `16` | Ask for confirmation before dispatching a map layer wider than this many slices. |
+| `oversized_input.hierarchical_reduce` | `true` | When the corpus exceeds `max_slices`, process in batches instead of refusing. |
+
+Kill switches: `oversized_input.enabled: false` in `.orchestray/config.json`, or env `ORCHESTRAY_DISABLE_OVERSIZED_INPUT=1`.
+
+---
+
 ## Kill switches
 
 To **disable** a feature rather than tune it, see [KILL_SWITCHES.md](KILL_SWITCHES.md). That file catalogs ~80 disable flags across 10 categories, including env-var kill switches that take effect without a session restart.
 
 ---
 
-*Generated for v2.3.13; `bin/_lib/config-schema.js` is the source of truth — when this doc and the schema disagree, the schema wins.*
+*Generated for v2.3.14; `bin/_lib/config-schema.js` is the source of truth — when this doc and the schema disagree, the schema wins.*

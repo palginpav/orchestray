@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/orchestray.svg)](https://www.npmjs.com/package/orchestray)
 [![npm downloads](https://img.shields.io/npm/dw/orchestray.svg)](https://www.npmjs.com/package/orchestray)
-[![Socket Badge](https://badge.socket.dev/npm/package/orchestray/2.3.13)](https://socket.dev/npm/package/orchestray)
+[![Socket Badge](https://badge.socket.dev/npm/package/orchestray/2.3.14)](https://socket.dev/npm/package/orchestray)
 [![License](https://img.shields.io/npm/l/orchestray.svg)](https://github.com/palginpav/orchestray/blob/master/LICENSE)
 [![Node](https://img.shields.io/node/v/orchestray.svg)](https://nodejs.org)
 
@@ -209,6 +209,14 @@ Orchestray discovers custom agents at session start and automatically symlinks e
 
 To disable custom agents entirely: set `ORCHESTRAY_DISABLE_CUSTOM_AGENTS=1` or add `"custom_agents": {"enabled": false}` to `.orchestray/config.json`.
 
+### Oversized-Input Mode
+
+When you reference a file or directory larger than **1.5 MB**, or paste text estimated over **200,000 tokens**, Orchestray automatically switches to Oversized-Input Mode. Instead of trying to load the entire corpus into the context window, it stages a small manifest, slices the corpus into bounded windows, reads each slice in parallel with cheap Haiku scout agents, and synthesizes an answer from the verified pieces — so you can ask questions about inputs far larger than the model's context window at bounded cost. The mode is **on by default** with a conservative threshold, so it only fires on genuinely large inputs and never affects normal prompts.
+
+To disable: set `ORCHESTRAY_DISABLE_OVERSIZED_INPUT=1` or add `"oversized_input": {"enabled": false}` to `.orchestray/config.json`. See the `oversized_input` block in the Configuration section for all tuning knobs.
+
+> **Note:** pasted text above ~1 MB / ~262k tokens exceeds the hook's stdin cap and bypasses this mode. For inputs that large, reference a file or directory instead.
+
 ## How it works
 
 - PM scores every prompt (0–12). Score below threshold → normal Claude Code. Score at or above threshold → orchestration.
@@ -248,6 +256,22 @@ Run `/orchestray:config` to view all settings, or browse the full grouped refere
 | `confirm_before_execute` | `false` | Show preview before execution |
 | `daily_cost_limit_usd` | `null` | Daily spending cap (read-only until `cost_budget_enforcement.enabled: true` — see CONFIG.md §3b) |
 | `force_model` | `null` | Pin all agents to a specific tier (e.g., `"fable"`) |
+
+**Oversized-Input Mode** (`oversized_input` block) — controls how Orchestray handles files/dirs over 1.5 MB or pasted text over 200,000 tokens:
+
+| Key | Default | What it does |
+|-----|---------|-------------|
+| `oversized_input.enabled` | `true` | Master switch — set to `false` to disable the mode entirely |
+| `oversized_input.threshold_bytes` | `1572864` (1.5 MB) | File or directory size that triggers the mode |
+| `oversized_input.threshold_tokens` | `200000` | Estimated token count for pasted text that triggers the mode |
+| `oversized_input.slice_chars` | `6000` | Characters per slice window sent to each scout agent |
+| `oversized_input.max_slices` | `64` | Maximum slices per map layer — bounds fan-out and cost |
+| `oversized_input.map_model` | `haiku` | Model used for per-slice scout reads |
+| `oversized_input.synthesis_model` | `sonnet` | Model used to synthesize the final answer from scout results |
+| `oversized_input.confirm_over_slices` | `16` | Ask before dispatching a map layer wider than this many slices |
+| `oversized_input.hierarchical_reduce` | `true` | When the corpus exceeds `max_slices`, process in batches instead of refusing |
+
+Kill switches: `oversized_input.enabled: false` in `.orchestray/config.json`, or env `ORCHESTRAY_DISABLE_OVERSIZED_INPUT=1`.
 
 **Model tiers** (cost per million tokens, input / output): Haiku $1 / $5 · Sonnet $3 / $15 · Opus $5 / $25 · Fable $10 / $50. Fable 5 (`alias: fable`) is an opt-in top tier above Opus — use `force_model: "fable"` in config or pass `model: "fable"` on individual agent spawns. Default routing uses Haiku through Opus; Fable must be explicitly requested.
 

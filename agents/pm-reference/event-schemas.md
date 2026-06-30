@@ -11484,3 +11484,167 @@ Field notes:
   `~/.claude/orchestray/custom-agents/<name>.md`.
 - Kill switch: `ORCHESTRAY_CUSTOM_AGENTS_GATE_DISABLED=1` — degrades to fail-open (unknown types allowed).
 - The event is emitted BEFORE the stdout deny envelope is written.
+
+---
+
+### `oversized_input_detected`
+
+IMPLEMENTED (as of v2.3.14, W3). Emitted by `bin/detect-oversized-input.js`
+(UserPromptSubmit hook) when the hook determines the user's input references a
+file/directory larger than `threshold_bytes`, or pasted text that exceeds
+`threshold_bytes` or `threshold_tokens`.
+
+Written via `writeEvent()` to `.orchestray/audit/events.jsonl`. Fail-open:
+if the write fails, the hook continues normally. Grep anchor: `W3-oversized-input`.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "oversized_input_detected",
+  "orchestration_id": "<current orch id, or null>",
+  "corpus_id": "<12 hex chars — sha1 of resolved path+size or text>",
+  "trigger": "file|dir|pasted",
+  "total_bytes": 1600000,
+  "est_tokens": 400000,
+  "natural_slices": 267,
+  "mode": "hierarchical|direct|refuse",
+  "threshold_bytes": 1572864
+}
+```
+
+**Fields:**
+
+- `corpus_id` (string) — first 12 hex chars of sha1; deterministic so the same
+  corpus produces the same id across invocations (idempotency guard).
+- `trigger` (string) — `"file"` for a referenced regular file over threshold,
+  `"dir"` for a referenced directory whose immediate-children total exceeds
+  threshold, `"pasted"` for inline prompt text over threshold.
+- `total_bytes` (number) — byte size of the corpus (file size, dir children sum,
+  or prompt byte length).
+- `est_tokens` (number) — estimated token count (4 chars/token heuristic).
+- `natural_slices` (number) — number of slices the corpus would require at the
+  configured `slice_chars` window.
+- `mode` (`"direct"`, `"hierarchical"`, or `"refuse"`) — reduction strategy
+  derived from `enforceSliceCap` using the configured `max_slices` and
+  `hierarchical_reduce`.
+- `threshold_bytes` (number) — the configured threshold that triggered detection.
+
+**Consumer guidance:** analytics-only in W3. Future waves (W4/W5) consume this
+event to drive the haiku-scout slice pipeline.
+
+**Schema stability:** additive only. New fields will only be added as optional.
+
+---
+
+### `oversized_refused_cap`
+
+IMPLEMENTED (as of v2.3.14, W6). Hook-emitted by `bin/detect-oversized-input.js`
+(UserPromptSubmit hook) on first detection of a new corpus when
+`manifest.slicePlan.mode === 'refuse'` — i.e. the natural slice count exceeds
+`max_slices` and `hierarchical_reduce` is disabled. Emitted alongside
+`oversized_input_detected` inside the same dedup guard (first detection only).
+Fail-open: if the write fails, the hook continues normally.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "oversized_refused_cap",
+  "orchestration_id": "<current orch id, or null>",
+  "corpus_id": "<12 hex chars>",
+  "trigger": "file|dir|pasted",
+  "natural_slices": 267,
+  "max_slices": 64,
+  "threshold_bytes": 1572864
+}
+```
+
+**Fields:**
+
+- `corpus_id` (string) — same id as the accompanying `oversized_input_detected` event.
+- `trigger` (string) — `"file"`, `"dir"`, or `"pasted"` (same as detection trigger).
+- `natural_slices` (number) — number of slices the corpus would require.
+- `max_slices` (number) — configured cap that was exceeded.
+- `threshold_bytes` (number) — the configured threshold that triggered detection.
+
+**Schema stability:** additive only. New fields will only be added as optional.
+
+---
+
+### `oversized_map_dispatched`
+
+PM-emitted during the oversized-input-mode protocol (Section OI.5) when the PM
+dispatches a map layer (or a hierarchical batch, Section OI.7). Written via
+`writeEvent()` to `.orchestray/audit/events.jsonl`.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "oversized_map_dispatched",
+  "orchestration_id": "<current orch id, or null>",
+  "corpus_id": "<12 hex chars>",
+  "slice_count": 42,
+  "map_model": "haiku",
+  "batch": 0
+}
+```
+
+**Fields:**
+
+- `corpus_id` (string) — identifies the oversized corpus being processed.
+- `slice_count` (number) — number of scout spawns in this map layer/batch.
+- `map_model` (string) — model used for scout spawns (e.g. `"haiku"`).
+- `batch` (number, optional) — batch index for hierarchical mode (0-based); omitted for direct mode.
+
+**Schema stability:** additive only. New fields will only be added as optional.
+
+---
+
+### `oversized_slice_skipped`
+
+PM-emitted during the oversized-input-mode protocol (Section OI.6) when a slice
+scout returns `RELEVANT: no` and the slice is dropped before aggregation. Written
+via `writeEvent()` to `.orchestray/audit/events.jsonl`.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "oversized_slice_skipped",
+  "orchestration_id": "<current orch id, or null>",
+  "corpus_id": "<12 hex chars>",
+  "slice_id": "oi-<corpus_id>-slice-<i>"
+}
+```
+
+**Fields:**
+
+- `corpus_id` (string) — identifies the oversized corpus being processed.
+- `slice_id` (string) — the slice task id that was dropped (format: `oi-<corpus_id>-slice-<i>`).
+
+**Schema stability:** additive only. New fields will only be added as optional.
+
+---
+
+### `oversized_synthesis_complete`
+
+PM-emitted during the oversized-input-mode protocol (Section OI.8) after the
+synthesis agent has produced the final answer. Written via `writeEvent()` to
+`.orchestray/audit/events.jsonl`.
+
+```json
+{
+  "timestamp": "<ISO 8601>",
+  "type": "oversized_synthesis_complete",
+  "orchestration_id": "<current orch id, or null>",
+  "corpus_id": "<12 hex chars>",
+  "slices_kept": 35,
+  "synthesis_model": "sonnet"
+}
+```
+
+**Fields:**
+
+- `corpus_id` (string) — identifies the oversized corpus being processed.
+- `slices_kept` (number) — number of slices that passed the verify-before-aggregate step.
+- `synthesis_model` (string) — model used for the synthesis agent (e.g. `"sonnet"`).
+
+**Schema stability:** additive only. New fields will only be added as optional.

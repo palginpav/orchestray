@@ -66,6 +66,12 @@ const WATCHED_EVENT_TYPES = [
   'delta_handoff_fallback',
   // v2.3.1: emitted by bin/discover-custom-agents.js per invalid file at SessionStart.
   'custom_agents_skipped',
+  // v2.3.14: oversized-input map-reduce protocol events, emitted by the PM /
+  // synthesizer subagent during oversized-input-mode.md (OI.5/OI.6/OI.8), not on
+  // PM state writes, so coverage-script rot-detection is the mechanical backstop.
+  'oversized_map_dispatched',
+  'oversized_slice_skipped',
+  'oversized_synthesis_complete',
 ];
 
 const FLOOR_TOTAL_EVENTS = 2;     // require at least 2 emits before alarming

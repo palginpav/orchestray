@@ -206,6 +206,9 @@ const KNOWN_TOP_LEVEL_KEYS = Object.freeze([
   // F-MC-04 (v2.3.13): block_a_zone_caching — documented in CONFIG.md, loaded
   // by config-schema.js loadBlockAZoneCachingConfig(), now in config.schema.js.
   'block_a_zone_caching',
+
+  // oversized-input mode (W1, v2.3.14)
+  'oversized_input',
 ]);
 
 /**
