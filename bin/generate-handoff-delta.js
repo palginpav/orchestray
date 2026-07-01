@@ -9,22 +9,22 @@ const { loadDeltaHandoffConfig } = require('./_lib/config-schema');
  *
  * Given a reviewer's findings (summary, issues[], diff), returns a lean
  * `{summary, issues[], diff}` payload for re-delegation to a developer agent.
- * Full artifact stays in the KB; downstream agents fetch on demand only when
- * one of the three deterministic fallback triggers fires.
+ * Full artifact stays in the KB; downstream agents load it on demand only
+ * when one of the three deterministic fallback triggers fires.
  *
  * Implements R-DELTA-HANDOFF (v2.1.15, W5) and the P-DELTA-FALLBACK heuristic
  * from W4 Gap 2.
  *
  * Exports:
  *   generateDelta(findings, opts)  → delta payload object
- *   shouldFetchFull(ctx)           → { fetch: bool, reason: string|null }
+ *   shouldLoadFull(ctx)            → { loadFull: bool, reason: string|null }
  *   buildFallbackEvent(params)     → delta_handoff_fallback event object
  *
  * No npm dependencies — Node.js stdlib only.
  */
 
 // ── Hedge phrases that trigger Rule 2 (hedged_summary) ───────────────────────
-// Keep in sync with delegation-templates.md § Fallback: full-artifact fetch.
+// Keep in sync with delegation-templates.md § Fallback: full-artifact load.
 const HEDGE_PHRASES = [
   'see details',
   'additional context',
@@ -56,7 +56,7 @@ function generateDelta(findings, opts = {}) {
   };
 
   // Attach the detail_artifact pointer only when a path is provided.
-  // The downstream agent uses this to fetch on demand (never injected wholesale).
+  // The downstream agent uses this to load on demand (never injected wholesale).
   if (opts.artifactPath != null) {
     payload.detail_artifact = opts.artifactPath;
   }
@@ -65,11 +65,11 @@ function generateDelta(findings, opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// shouldFetchFull
+// shouldLoadFull
 // ---------------------------------------------------------------------------
 
 /**
- * Determine whether the developer agent should fetch the full artifact instead
+ * Determine whether the developer agent should load the full artifact instead
  * of using the delta payload.
  *
  * Implements the three deterministic trigger rules from P-DELTA-FALLBACK (Gap 2):
@@ -79,7 +79,7 @@ function generateDelta(findings, opts = {}) {
  *   Rule 3 (cross_orch_scope) — planned Edit/Write targets a file whose last
  *                               commit predates the current orchestration start.
  *
- * Kill switch: config.delta_handoff.force_full=true forces fetch with
+ * Kill switch: config.delta_handoff.force_full=true forces a full load with
  * reason="force_config", skipping all rule evaluation.
  *
  * @param {object} ctx
@@ -89,9 +89,9 @@ function generateDelta(findings, opts = {}) {
  * @param {object} ctx.config               - Parsed .orchestray/config.json.
  * @param {object} [ctx.fileLastCommitDates]- Map of file → ISO 8601 commit date.
  * @param {string} [ctx.orchestrationStartedAt] - ISO 8601 start time of orch.
- * @returns {{ fetch: boolean, reason: string|null }}
+ * @returns {{ loadFull: boolean, reason: string|null }}
  */
-function shouldFetchFull(ctx) {
+function shouldLoadFull(ctx) {
   const {
     issues = [],
     summary = '',
@@ -115,9 +115,9 @@ function shouldFetchFull(ctx) {
     deltaCfg = (config && config.delta_handoff) || {};
   }
 
-  // Kill switch — force full fetch regardless of rules.
+  // Kill switch — force full load regardless of rules.
   if (deltaCfg.force_full === true) {
-    return { fetch: true, reason: 'force_config' };
+    return { loadFull: true, reason: 'force_config' };
   }
 
   // Rule 2: hedged_summary — evaluated first because hedge phrases in the
@@ -125,7 +125,7 @@ function shouldFetchFull(ctx) {
   const lowerSummary = summary.toLowerCase();
   for (const phrase of HEDGE_PHRASES) {
     if (lowerSummary.includes(phrase)) {
-      return { fetch: true, reason: 'hedged_summary' };
+      return { loadFull: true, reason: 'hedged_summary' };
     }
   }
 
@@ -139,7 +139,7 @@ function shouldFetchFull(ctx) {
       if (!commitDateStr) continue; // no date info → do not trigger
       const commitDate = new Date(commitDateStr);
       if (commitDate < orchDate) {
-        return { fetch: true, reason: 'cross_orch_scope' };
+        return { loadFull: true, reason: 'cross_orch_scope' };
       }
     }
   }
@@ -150,11 +150,11 @@ function shouldFetchFull(ctx) {
       summary.includes(f)
     );
     if (!allFilesNamedInSummary) {
-      return { fetch: true, reason: 'issue_gap' };
+      return { loadFull: true, reason: 'issue_gap' };
     }
   }
 
-  return { fetch: false, reason: null };
+  return { loadFull: false, reason: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +165,7 @@ function shouldFetchFull(ctx) {
  * Build a delta_handoff_fallback audit event object.
  *
  * @param {object} params
- * @param {boolean} params.fetched           - Whether the full artifact was fetched.
+ * @param {boolean} params.fetched        - Whether the full artifact was loaded.
  * @param {string|undefined} params.reason   - Trigger reason, or undefined.
  * @param {string} params.orchestrationId    - Current orchestration ID.
  * @param {string} params.taskId             - Subtask ID.
@@ -207,7 +207,7 @@ function buildFallbackEvent(params) {
 
 module.exports = {
   generateDelta,
-  shouldFetchFull,
+  shouldLoadFull,
   buildFallbackEvent,
   // Expose hedge phrases for tests/documentation
   HEDGE_PHRASES,

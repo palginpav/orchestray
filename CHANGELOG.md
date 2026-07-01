@@ -3,6 +3,14 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.16] - 2026-07-01
+
+**Orchestray 2.3.16 is a supply-chain hygiene patch: a third-party security scanner (Socket.dev) had incorrectly flagged Orchestray as making network calls. It doesn't — this release clears the false positive with no functional change.**
+
+### Fixed
+
+- **Cleared a false "network access" flag from Socket.dev's supply-chain scanner.** The scanner's static analyzer matched the word `fetch` used internally as a plain domain term ("load the full artifact on demand"), even though the file makes no network calls of any kind. The internal name has been clarified so the scanner no longer misreads it, and the scanner's config now explicitly documents that Orchestray makes no network requests. No behavior changed.
+
 ## [2.3.15] - 2026-07-01
 
 **Orchestray 2.3.15 adds Claude Sonnet 5 support and fixes two correctness bugs: a false-positive Oversized-Input trigger on very large directories, and a cost-cap under-estimate on Sonnet-heavy runs.**

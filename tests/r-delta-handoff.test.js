@@ -10,7 +10,7 @@
  *   3. Three deterministic fallback triggers fire (issue_gap, hedged_summary,
  *      cross_orch_scope).
  *   4. Kill switch (config.delta_handoff.force_full=true) reverts to full
- *      artifact injection (fetched=true, reason="force_config").
+ *      artifact injection (loadFull=true, reason="force_config").
  *
  * Strategy: unit-test `bin/generate-handoff-delta.js` directly (no subprocess
  * spawn needed — the module exports pure functions). Document-structure tests
@@ -32,7 +32,7 @@ const ROOT = path.resolve(__dirname, '..');
 // ---------------------------------------------------------------------------
 const {
   generateDelta,
-  shouldFetchFull,
+  shouldLoadFull,
   buildFallbackEvent,
 } = require('../bin/generate-handoff-delta');
 
@@ -148,7 +148,7 @@ describe('buildFallbackEvent — event payload structure', () => {
 
     assert.equal(evt.fetched, false);
     assert.equal(evt.event_type, 'delta_handoff_fallback');
-    assert.ok(!evt.reason || evt.reason === null, 'reason should be absent or null when not fetching');
+    assert.ok(!evt.reason || evt.reason === null, 'reason should be absent or null when not loading full');
   });
 });
 
@@ -156,31 +156,31 @@ describe('buildFallbackEvent — event payload structure', () => {
 // Test 3 — Three deterministic fallback triggers (P-DELTA-FALLBACK Gap 2)
 // ---------------------------------------------------------------------------
 
-describe('shouldFetchFull — three deterministic triggers', () => {
+describe('shouldLoadFull — three deterministic triggers', () => {
   // Rule 1: issue_gap — issues[] empty AND planned change touches file not named in summary
-  test('rule 1 (issue_gap): empty issues + summary does not name planned file → fetch', () => {
-    const result = shouldFetchFull({
+  test('rule 1 (issue_gap): empty issues + summary does not name planned file → load full', () => {
+    const result = shouldLoadFull({
       issues: [],
       summary: 'All checks passed.',
       plannedFiles: ['bin/foo.js'],
       config: { delta_handoff: { enabled: true, force_full: false } },
     });
-    assert.equal(result.fetch, true);
+    assert.equal(result.loadFull, true);
     assert.equal(result.reason, 'issue_gap');
   });
 
-  test('rule 1 (issue_gap): empty issues but summary names the planned file → no fetch', () => {
-    const result = shouldFetchFull({
+  test('rule 1 (issue_gap): empty issues but summary names the planned file → no load full', () => {
+    const result = shouldLoadFull({
       issues: [],
       summary: 'Updated bin/foo.js with error handling fix.',
       plannedFiles: ['bin/foo.js'],
       config: { delta_handoff: { enabled: true, force_full: false } },
     });
-    assert.equal(result.fetch, false);
+    assert.equal(result.loadFull, false);
   });
 
   test('rule 1: non-empty issues list → no issue_gap trigger', () => {
-    const result = shouldFetchFull({
+    const result = shouldLoadFull({
       issues: [{ message: 'fix something' }],
       summary: 'Some issues found.',
       plannedFiles: ['bin/bar.js'],
@@ -188,81 +188,81 @@ describe('shouldFetchFull — three deterministic triggers', () => {
     });
     // issues is non-empty, so issue_gap doesn't apply; hedged_summary and
     // cross_orch_scope don't apply here either
-    assert.equal(result.fetch, false);
+    assert.equal(result.loadFull, false);
   });
 
   // Rule 2: hedged_summary — summary contains hedge phrases
-  test('rule 2 (hedged_summary): "recommend reviewing" triggers fetch', () => {
-    const result = shouldFetchFull({
+  test('rule 2 (hedged_summary): "recommend reviewing" triggers load full', () => {
+    const result = shouldLoadFull({
       issues: [],
       summary: 'Looks mostly fine but recommend reviewing the auth flow.',
       plannedFiles: [],
       config: { delta_handoff: { enabled: true, force_full: false } },
     });
-    assert.equal(result.fetch, true);
+    assert.equal(result.loadFull, true);
     assert.equal(result.reason, 'hedged_summary');
   });
 
-  test('rule 2 (hedged_summary): "see details" triggers fetch', () => {
-    const result = shouldFetchFull({
+  test('rule 2 (hedged_summary): "see details" triggers load full', () => {
+    const result = shouldLoadFull({
       issues: [],
       summary: 'Passed all checks. See details for minor notes.',
       plannedFiles: [],
       config: { delta_handoff: { enabled: true, force_full: false } },
     });
-    assert.equal(result.fetch, true);
+    assert.equal(result.loadFull, true);
     assert.equal(result.reason, 'hedged_summary');
   });
 
-  test('rule 2 (hedged_summary): "additional context" triggers fetch', () => {
-    const result = shouldFetchFull({
+  test('rule 2 (hedged_summary): "additional context" triggers load full', () => {
+    const result = shouldLoadFull({
       issues: [],
       summary: 'Additional context is available in the artifact.',
       plannedFiles: [],
       config: { delta_handoff: { enabled: true, force_full: false } },
     });
-    assert.equal(result.fetch, true);
+    assert.equal(result.loadFull, true);
     assert.equal(result.reason, 'hedged_summary');
   });
 
-  test('rule 2 (hedged_summary): "depends on" triggers fetch', () => {
-    const result = shouldFetchFull({
+  test('rule 2 (hedged_summary): "depends on" triggers load full', () => {
+    const result = shouldLoadFull({
       issues: [],
       summary: 'This fix depends on the refactor described elsewhere.',
       plannedFiles: [],
       config: { delta_handoff: { enabled: true, force_full: false } },
     });
-    assert.equal(result.fetch, true);
+    assert.equal(result.loadFull, true);
     assert.equal(result.reason, 'hedged_summary');
   });
 
-  test('rule 2 (hedged_summary): "may need" triggers fetch', () => {
-    const result = shouldFetchFull({
+  test('rule 2 (hedged_summary): "may need" triggers load full', () => {
+    const result = shouldLoadFull({
       issues: [],
       summary: 'The implementation may need further validation.',
       plannedFiles: [],
       config: { delta_handoff: { enabled: true, force_full: false } },
     });
-    assert.equal(result.fetch, true);
+    assert.equal(result.loadFull, true);
     assert.equal(result.reason, 'hedged_summary');
   });
 
-  test('rule 2: clean summary with no hedge phrases → no fetch', () => {
-    const result = shouldFetchFull({
+  test('rule 2: clean summary with no hedge phrases → no load full', () => {
+    const result = shouldLoadFull({
       issues: [{ message: 'fix null check at L42' }],
       summary: 'Fixed null check at L42 in src/api/tasks.ts.',
       plannedFiles: ['src/api/tasks.ts'],
       config: { delta_handoff: { enabled: true, force_full: false } },
     });
-    assert.equal(result.fetch, false);
+    assert.equal(result.loadFull, false);
   });
 
   // Rule 3: cross_orch_scope — planned file predates current orchestration
-  test('rule 3 (cross_orch_scope): file predates orchestration → fetch', () => {
+  test('rule 3 (cross_orch_scope): file predates orchestration → load full', () => {
     const orchStart = new Date('2026-04-25T10:00:00Z');
     const fileCommitDate = new Date('2026-04-24T08:00:00Z'); // before orch start
 
-    const result = shouldFetchFull({
+    const result = shouldLoadFull({
       issues: [],
       summary: 'Nothing to fix.',
       plannedFiles: ['src/legacy/auth.ts'],
@@ -271,7 +271,7 @@ describe('shouldFetchFull — three deterministic triggers', () => {
       fileLastCommitDates: { 'src/legacy/auth.ts': fileCommitDate.toISOString() },
       orchestrationStartedAt: orchStart.toISOString(),
     });
-    assert.equal(result.fetch, true);
+    assert.equal(result.loadFull, true);
     assert.equal(result.reason, 'cross_orch_scope');
   });
 
@@ -281,7 +281,7 @@ describe('shouldFetchFull — three deterministic triggers', () => {
 
     // Use a non-empty issues list to avoid triggering issue_gap, and name the
     // file in the summary to avoid that path. This isolates cross_orch_scope.
-    const result = shouldFetchFull({
+    const result = shouldLoadFull({
       issues: [{ message: 'Fixed the new feature at src/new/feature.ts' }],
       summary: 'Updated src/new/feature.ts with the requested changes.',
       plannedFiles: ['src/new/feature.ts'],
@@ -289,12 +289,12 @@ describe('shouldFetchFull — three deterministic triggers', () => {
       fileLastCommitDates: { 'src/new/feature.ts': fileCommitDate.toISOString() },
       orchestrationStartedAt: orchStart.toISOString(),
     });
-    assert.equal(result.fetch, false);
+    assert.equal(result.loadFull, false);
   });
 
   test('rule 3: no file commit date provided → no cross_orch trigger (defensive)', () => {
     // Use non-empty issues and file named in summary to isolate cross_orch check.
-    const result = shouldFetchFull({
+    const result = shouldLoadFull({
       issues: [{ message: 'check src/unknown.ts' }],
       summary: 'Updated src/unknown.ts as requested.',
       plannedFiles: ['src/unknown.ts'],
@@ -303,7 +303,7 @@ describe('shouldFetchFull — three deterministic triggers', () => {
       orchestrationStartedAt: new Date('2026-04-25T10:00:00Z').toISOString(),
     });
     // Without date info, we cannot determine cross_orch — should not trigger
-    assert.equal(result.fetch, false);
+    assert.equal(result.loadFull, false);
   });
 });
 
@@ -311,38 +311,38 @@ describe('shouldFetchFull — three deterministic triggers', () => {
 // Test 4 — Kill switch: force_full=true overrides all rules
 // ---------------------------------------------------------------------------
 
-describe('shouldFetchFull — kill switch (force_full)', () => {
-  test('force_full=true forces fetch regardless of rules, reason="force_config"', () => {
-    const result = shouldFetchFull({
+describe('shouldLoadFull — kill switch (force_full)', () => {
+  test('force_full=true forces full load regardless of rules, reason="force_config"', () => {
+    const result = shouldLoadFull({
       issues: [{ message: 'already covers the change' }],
       summary: 'Fixed the issue at src/api/tasks.ts:42.',
       plannedFiles: ['src/api/tasks.ts'],
       config: { delta_handoff: { enabled: true, force_full: true } },
     });
-    assert.equal(result.fetch, true);
+    assert.equal(result.loadFull, true);
     assert.equal(result.reason, 'force_config');
   });
 
   test('force_full=true with hedged summary still reports force_config (not hedged_summary)', () => {
-    const result = shouldFetchFull({
+    const result = shouldLoadFull({
       issues: [],
       summary: 'Please recommend reviewing this carefully.',
       plannedFiles: [],
       config: { delta_handoff: { enabled: true, force_full: true } },
     });
-    assert.equal(result.fetch, true);
+    assert.equal(result.loadFull, true);
     assert.equal(result.reason, 'force_config');
   });
 
   test('force_full=false leaves rule evaluation active', () => {
-    // With force_full=false and clean input, no fetch
-    const result = shouldFetchFull({
+    // With force_full=false and clean input, no full load
+    const result = shouldLoadFull({
       issues: [{ message: 'fix at L10' }],
       summary: 'Fixed null check at bin/tool.js line 10.',
       plannedFiles: ['bin/tool.js'],
       config: { delta_handoff: { enabled: true, force_full: false } },
     });
-    assert.equal(result.fetch, false);
+    assert.equal(result.loadFull, false);
     assert.ok(!result.reason || result.reason === null);
   });
 });
