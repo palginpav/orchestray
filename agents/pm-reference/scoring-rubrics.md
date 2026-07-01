@@ -85,15 +85,17 @@ After model routing determines the model for each subtask, assign the effort lev
 
 ### Per-Model Effort Availability
 
-| Effort | Haiku | Sonnet 4.6 | Opus 4.6 | Opus 4.7 | Opus 4.8 | Fable 5 |
-|--------|-------|-----------|---------|---------|---------|---------|
-| low | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| medium | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| high | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| xhigh | — (coerces to high) | — (coerces to high) | — (coerces to high) | ✓ | ✓ | ✓ |
-| max | — (coerces to high) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Effort | Haiku | Sonnet 5 | Sonnet 4.6 | Opus 4.6 | Opus 4.7 | Opus 4.8 | Fable 5 |
+|--------|-------|----------|-----------|---------|---------|---------|---------|
+| low | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| medium | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| high | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| xhigh | — (coerces to high) | — (coerces to high) | — (coerces to high) | — (coerces to high) | ✓ | ✓ | ✓ |
+| max | — (coerces to high) | — (coerces to high) | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 `xhigh` was introduced in Claude Code v2.1.111 (2026-04-16) as the recommended default for Opus 4.7 and 4.8 on most coding and agentic tasks. If you specify `xhigh` on a model that does not support it, Claude Code silently falls back to the highest supported level at or below the one requested — no error is raised and nothing breaks.
+
+**Sonnet 5:** no extended thinking, adaptive thinking only; `effort` defaults to `high` (not `medium`). Uses the newer tokenizer (~30% more tokens for the same text vs Sonnet 4.6) — same family as Opus 4.7+/Fable 5. `sonnet` alias now resolves to Sonnet 5; Sonnet 4.6 remains available (not deprecated).
 
 **Fable 5 effort:** All five levels supported. Anthropic's recommended agentic starting effort for Fable 5 is `high` (use `xhigh` only for the most capability-sensitive workloads). Fable 5 is an opt-in tier above Opus; it is not in the default routing table. Use via `force_model: "fable"` in config or explicit `model: "fable"` on spawn.
 

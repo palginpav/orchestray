@@ -18,6 +18,12 @@ describe('lookupModel', () => {
     assert.equal(meta.window_default, 200000);
   });
 
+  test('returns metadata for claude-sonnet-5', () => {
+    const meta = lookupModel('claude-sonnet-5');
+    assert.equal(meta.short, 'son-5');
+    assert.equal(meta.window_default, 1000000);
+  });
+
   test('returns metadata for claude-opus-4-6', () => {
     const meta = lookupModel('claude-opus-4-6');
     assert.equal(meta.short, 'opu-4-6');

@@ -146,9 +146,10 @@ describe('B: custom-config path (pricing_table present in config)', () => {
     assert.equal(result.isError, false);
     const body = result.structuredContent;
     assert.equal(body.pricing_source, 'config', 'must use config pricing source');
-    // 1M input * $6 + 1M output * $30 = $36
-    assert.ok(Math.abs(body.projected_cost_usd - 36.00) < 0.001,
-      `expected $36 projected cost, got $${body.projected_cost_usd}`);
+    // 1M input * $6 + 1M output * $30 = $36 base, ×1.30 Sonnet 5 enforcement
+    // multiplier (bare `sonnet` alias resolves to Sonnet 5 — v2.3.15 F1) = $46.80
+    assert.ok(Math.abs(body.projected_cost_usd - 46.80) < 0.001,
+      `expected $46.80 projected cost, got $${body.projected_cost_usd}`);
   });
 
   test('returns last_verified from config', async () => {
@@ -208,9 +209,11 @@ describe('C: missing config fallback to builtin', () => {
       estimated_output_tokens: 1_000_000,
     });
     const result = await handle(input, makeContext({}));
+    // v2.3.15 F1: bare `sonnet` alias resolves to Sonnet 5 — enforcement applies
+    // the 1.30x tokenizer multiplier on top of BUILTIN_PRICING_TABLE base rates.
     const expected =
-      BUILTIN_PRICING_TABLE.sonnet.input_per_1m +
-      BUILTIN_PRICING_TABLE.sonnet.output_per_1m;
+      (BUILTIN_PRICING_TABLE.sonnet.input_per_1m +
+        BUILTIN_PRICING_TABLE.sonnet.output_per_1m) * 1.30;
     assert.ok(Math.abs(result.structuredContent.projected_cost_usd - expected) < 0.001,
       `expected $${expected}, got $${result.structuredContent.projected_cost_usd}`);
   });
@@ -531,8 +534,10 @@ describe('K: explicit token estimates', () => {
       estimated_output_tokens: 1_000_000,
     });
     const result = await handle(input, makeContext({}));
-    // builtin sonnet: $3/1M input + $15/1M output = $18 for 1M each
-    const expected = BUILTIN_PRICING_TABLE.sonnet.input_per_1m + BUILTIN_PRICING_TABLE.sonnet.output_per_1m;
+    // builtin sonnet: $3/1M input + $15/1M output = $18 for 1M each, ×1.30 Sonnet 5
+    // enforcement multiplier (bare `sonnet` alias — v2.3.15 F1)
+    const expected =
+      (BUILTIN_PRICING_TABLE.sonnet.input_per_1m + BUILTIN_PRICING_TABLE.sonnet.output_per_1m) * 1.30;
     assert.ok(Math.abs(result.structuredContent.projected_cost_usd - expected) < 0.001,
       `expected $${expected}, got $${result.structuredContent.projected_cost_usd}`);
   });

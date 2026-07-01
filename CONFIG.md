@@ -321,6 +321,7 @@ All keys are nested under `oversized_input` in `.orchestray/config.json`.
 | `oversized_input.synthesis_model` | `sonnet` | Model used for the final synthesis reduce pass. |
 | `oversized_input.confirm_over_slices` | `16` | Ask for confirmation before dispatching a map layer wider than this many slices. |
 | `oversized_input.hierarchical_reduce` | `true` | When the corpus exceeds `max_slices`, process in batches instead of refusing. |
+| `oversized_input.max_corpus_bytes` | `536870912` (512 MB) | Upper size limit — inputs larger than this are treated as normal, not sliced. |
 
 Kill switches: `oversized_input.enabled: false` in `.orchestray/config.json`, or env `ORCHESTRAY_DISABLE_OVERSIZED_INPUT=1`.
 

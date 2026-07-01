@@ -30,6 +30,7 @@
 
 const fs      = require('fs');
 const path    = require('path');
+const os      = require('os');
 const crypto  = require('crypto');
 
 const { MAX_INPUT_BYTES }          = require('./_lib/constants');
@@ -157,6 +158,10 @@ function resolveToken(tok, cwd) {
       // Relative — must exist under cwd to be considered
       abs = path.resolve(cwd, tok);
     }
+    // B2 (v2.3.15): reject filesystem-root or home-root paths — never a real
+    // corpus, but a mistyped/misresolved token can land here (e.g. "/") and a
+    // naive dir-children sum would report tens of GB.
+    if (abs === path.parse(abs).root || abs === os.homedir()) return null;
     const stat = fs.statSync(abs); // throws if absent
     return { abs, stat };
   } catch (_e) {
@@ -195,7 +200,7 @@ function main(event) {
       return;
     }
 
-    const { threshold_bytes, threshold_tokens, slice_chars, max_slices, hierarchical_reduce } = cfg;
+    const { threshold_bytes, threshold_tokens, slice_chars, max_slices, hierarchical_reduce, max_corpus_bytes } = cfg;
 
     // Extract prompt text from event (Claude Code payload shape)
     const promptText = (event && typeof event.prompt === 'string') ? event.prompt : '';
@@ -264,6 +269,14 @@ function main(event) {
     }
 
     if (!detection) {
+      process.stdout.write(CONTINUE_RESPONSE + '\n');
+      return;
+    }
+
+    // B1 (v2.3.15): size ceiling — a corpus this large is never a user document,
+    // e.g. a path token that mis-resolved to a filesystem root (27 GB dogfooding
+    // bug). Treat as no-detection rather than slicing or advising on it.
+    if (detection.totalBytes > max_corpus_bytes) {
       process.stdout.write(CONTINUE_RESPONSE + '\n');
       return;
     }

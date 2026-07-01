@@ -12,6 +12,7 @@ const MODELS = {
   'claude-opus-4-8':   { short: 'opu-4-8', display: 'Opus 4.8',   window_default: 200000, window_1m: 1000000 },
   'claude-opus-4-7':   { short: 'opu-4-7', display: 'Opus 4.7',   window_default: 200000, window_1m: 1000000 },
   'claude-opus-4-6':   { short: 'opu-4-6', display: 'Opus 4.6',   window_default: 200000, window_1m: 1000000 },
+  'claude-sonnet-5':   { short: 'son-5',   display: 'Sonnet 5',   window_default: 1000000 },
   'claude-sonnet-4-6': { short: 'son-4-6', display: 'Sonnet 4.6', window_default: 200000 },
   'claude-haiku-4-5':  { short: 'hai-4-5', display: 'Haiku 4.5',  window_default: 200000 },
 };

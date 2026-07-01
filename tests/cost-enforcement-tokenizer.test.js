@@ -43,10 +43,20 @@ test('fable enforcement rates are 1.35x fable base', () => {
   assert.ok(Math.abs(enf.input_per_1m - base.input_per_1m * OPUS_47_TOKENIZER_MULTIPLIER) < 1e-9);
 });
 
-test('sonnet / haiku / opus-4-6 unchanged (no multiplier)', () => {
-  assert.deepStrictEqual(getEnforcementRates(T, 'sonnet'), getRatesForTier(T, 'sonnet'));
+test('haiku / opus-4-6 unchanged (no multiplier)', () => {
   assert.deepStrictEqual(getEnforcementRates(T, 'haiku'), getRatesForTier(T, 'haiku'));
   assert.deepStrictEqual(getEnforcementRates(T, 'claude-opus-4-6'), getRatesForTier(T, 'opus'));
+});
+
+// v2.3.15 F1: bare `sonnet` alias now resolves to Sonnet 5 at spawn time, so
+// enforcement (fixed-baseline-token projection) applies the 1.30x Sonnet 5
+// multiplier here. See tests/cost-helpers-sonnet-5-tokenizer.test.js for the
+// full enforcement-vs-reporting asymmetry coverage.
+test('sonnet enforcement rate is 1.30x base (bare alias resolves to Sonnet 5)', () => {
+  const base = getRatesForTier(T, 'sonnet');
+  const enf = getEnforcementRates(T, 'sonnet');
+  assert.ok(Math.abs(enf.input_per_1m - base.input_per_1m * 1.30) < 1e-9);
+  assert.ok(Math.abs(enf.output_per_1m - base.output_per_1m * 1.30) < 1e-9);
 });
 
 test('config pricing table is respected as the base before multiplier', () => {

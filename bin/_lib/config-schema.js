@@ -5031,6 +5031,15 @@ const DEFAULT_OVERSIZED_INPUT = Object.freeze({
   confirm_over_slices: 16,
   /** When true, automatically batch over-cap corpora in two-level reduce. */
   hierarchical_reduce: true,
+  /**
+   * Upper size ceiling — corpora larger than this are treated as normal input,
+   * NOT sliced. Guards against false positives like a mistakenly-resolved
+   * filesystem-root path summing to tens of GB (v2.3.15 bugfix). 512 MB default
+   * sits above the extract-time MAX_SOURCE_CHARS cap (64 MB, oversized-input.js)
+   * — a corpus between 64 MB and this ceiling still trips `corpus_too_large` at
+   * extract time, but is at least a plausible user document, not a filesystem tree.
+   */
+  max_corpus_bytes: 536870912,
 });
 
 /**
@@ -5119,6 +5128,9 @@ function validateOversizedInputConfig(obj) {
   }
   if ('hierarchical_reduce' in obj && typeof obj.hierarchical_reduce !== 'boolean') {
     errors.push('oversized_input.hierarchical_reduce must be a boolean — got ' + JSON.stringify(obj.hierarchical_reduce));
+  }
+  if ('max_corpus_bytes' in obj && (!Number.isInteger(obj.max_corpus_bytes) || obj.max_corpus_bytes < 1)) {
+    errors.push('oversized_input.max_corpus_bytes must be a positive integer — got ' + JSON.stringify(obj.max_corpus_bytes));
   }
 
   return errors.length === 0 ? { valid: true } : { valid: false, errors };

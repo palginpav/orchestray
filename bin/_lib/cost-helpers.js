@@ -117,15 +117,26 @@ function loadReservationTTLMs(cwd) {
 const OPUS_47_TOKENIZER_MULTIPLIER = 1.35;
 
 /**
+ * Sonnet 5 tokenizer multiplier — same newer-tokenizer family as Opus 4.7+/Fable 5,
+ * but Sonnet 5 consumes ~30% more tokens for the same text (vs ~35% for the others).
+ * Per-token pricing is unchanged ($3/$15, same as Sonnet 4.6); effective cost is
+ * ~30% higher for the same prompt vs. the Sonnet 4.6 baseline.
+ *
+ * Source: platform-oracle Sonnet 5 research (v2.3.15).
+ */
+const SONNET_5_TOKENIZER_MULTIPLIER = 1.30;
+
+/**
  * Return per-1M-token rates for a model ID string.
  *
  * Recognises full model IDs (e.g. `claude-fable-5`, `claude-opus-4-7`,
- * `claude-opus-4.7`, `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`)
- * and short aliases (`fable`, `opus`, `sonnet`, `haiku`). Falls back to sonnet
- * rates for unknown strings.
+ * `claude-opus-4.7`, `claude-opus-4-8`, `claude-sonnet-5`, `claude-sonnet-4-6`,
+ * `claude-haiku-4-5`) and short aliases (`fable`, `opus`, `sonnet`, `haiku`).
+ * Falls back to sonnet rates for unknown strings.
  *
  * Fable 5, Opus 4.7, and Opus 4.8 apply a 1.35× tokenizer multiplier to both
  * input and output rates (all three use the same Opus 4.7-era tokenizer).
+ * Sonnet 5 applies a 1.30× multiplier (newer tokenizer, smaller inflation).
  *
  * @param {string} modelId - Model ID or alias string.
  * @returns {{ input_per_1m: number, output_per_1m: number }}
@@ -146,6 +157,15 @@ function getPricing(modelId) {
     return {
       input_per_1m: base.input_per_1m * OPUS_47_TOKENIZER_MULTIPLIER,
       output_per_1m: base.output_per_1m * OPUS_47_TOKENIZER_MULTIPLIER,
+    };
+  }
+  // Sonnet 5 (newer tokenizer) — must come before the generic sonnet check, which
+  // would otherwise also match claude-sonnet-4-6 (older tokenizer, no multiplier).
+  if (m.includes('sonnet-5')) {
+    const base = BUILTIN_PRICING_TABLE.sonnet;
+    return {
+      input_per_1m: base.input_per_1m * SONNET_5_TOKENIZER_MULTIPLIER,
+      output_per_1m: base.output_per_1m * SONNET_5_TOKENIZER_MULTIPLIER,
     };
   }
   if (m.includes('opus'))   return BUILTIN_PRICING_TABLE.opus;
@@ -192,6 +212,36 @@ function usesOpus47Tokenizer(modelRaw) {
 }
 
 /**
+ * True when a raw model ID is Sonnet 5, which uses its own newer tokenizer
+ * (~30% more tokens for the same text vs Sonnet 4.6). Kept separate from
+ * usesOpus47Tokenizer because the multiplier differs (1.30× vs 1.35×).
+ *
+ * @param {string} modelRaw
+ * @returns {boolean}
+ */
+function usesSonnet5Tokenizer(modelRaw) {
+  return (modelRaw || '').toLowerCase().includes('sonnet-5');
+}
+
+/**
+ * Enforcement-only: cost-CAP projection uses fixed baseline token estimates
+ * (not actual tokens). The bare `sonnet` alias now resolves to Sonnet 5 (newer
+ * tokenizer), so it must be projected at 1.30x; explicit `claude-sonnet-4-6`
+ * keeps the old tokenizer (1.0x). Distinct from usesSonnet5Tokenizer(), which is
+ * a factual test on concrete model IDs (used where ACTUAL token counts apply —
+ * getPricing() must NOT apply this multiplier there, or already-inflated actual
+ * token counts get double-counted).
+ *
+ * @param {string} modelRaw
+ * @returns {boolean}
+ */
+function enforcementUsesSonnet5Tokenizer(modelRaw) {
+  const m = (modelRaw || '').toLowerCase();
+  if (m.includes('sonnet-4')) return false;        // explicit Sonnet 4.6 → old tokenizer
+  return m === 'sonnet' || m.includes('sonnet-5'); // bare alias (now Sonnet 5) or explicit 5
+}
+
+/**
  * v2.3.12 W4 (A3): tokenizer-aware enforcement rates.
  *
  * The cost-cap ENFORCEMENT path (gate-cost-budget.js, cost_budget_check.js)
@@ -221,6 +271,12 @@ function getEnforcementRates(table, modelRaw) {
     return {
       input_per_1m: base.input_per_1m * OPUS_47_TOKENIZER_MULTIPLIER,
       output_per_1m: base.output_per_1m * OPUS_47_TOKENIZER_MULTIPLIER,
+    };
+  }
+  if (enforcementUsesSonnet5Tokenizer(modelRaw)) {
+    return {
+      input_per_1m: base.input_per_1m * SONNET_5_TOKENIZER_MULTIPLIER,
+      output_per_1m: base.output_per_1m * SONNET_5_TOKENIZER_MULTIPLIER,
     };
   }
   return base;
@@ -452,11 +508,14 @@ module.exports = {
   GC_NOOP_BELOW_BYTES,
   GC_OPPORTUNISTIC_TRIGGER_BYTES,
   OPUS_47_TOKENIZER_MULTIPLIER,
+  SONNET_5_TOKENIZER_MULTIPLIER,
   loadReservationTTLMs,
   getPricing,
   getRatesForTier,
   getEnforcementRates,
   usesOpus47Tokenizer,
+  usesSonnet5Tokenizer,
+  enforcementUsesSonnet5Tokenizer,
   readCostCaps,
   loadRawConfig,
   readActiveReservations,

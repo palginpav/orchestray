@@ -23,6 +23,11 @@ const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
 
+const {
+  DEFAULT_OVERSIZED_INPUT,
+  validateOversizedInputConfig,
+} = require('../../bin/_lib/config-schema');
+
 const SCRIPT = path.resolve(__dirname, '../../bin/detect-oversized-input.js');
 
 // Threshold from DEFAULT_OVERSIZED_INPUT (1.5 MB)
@@ -397,6 +402,89 @@ describe('idempotency', () => {
 
     const mtime2 = fs.statSync(mfPath).mtimeMs;
     assert.equal(mtime1, mtime2, 'manifest.json mtime must not change on second run (idempotent)');
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// max_corpus_bytes ceiling (B1, v2.3.15 dogfooding bugfix)
+// ---------------------------------------------------------------------------
+
+describe('max_corpus_bytes ceiling', () => {
+
+  test('DEFAULT_OVERSIZED_INPUT has correct max_corpus_bytes default', () => {
+    assert.equal(DEFAULT_OVERSIZED_INPUT.max_corpus_bytes, 536870912, '512 MB default');
+  });
+
+  test('validator rejects non-positive max_corpus_bytes', () => {
+    const result = validateOversizedInputConfig({ max_corpus_bytes: 0 });
+    assert.equal(result.valid, false, 'zero must be rejected');
+    const result2 = validateOversizedInputConfig({ max_corpus_bytes: -5 });
+    assert.equal(result2.valid, false, 'negative must be rejected');
+    const result3 = validateOversizedInputConfig({ max_corpus_bytes: 1.5 });
+    assert.equal(result3.valid, false, 'non-integer must be rejected');
+  });
+
+  test('dir whose size exceeds max_corpus_bytes → no detection, no manifest', () => {
+    const { dir } = makeDir({
+      withConfig: { oversized_input: { threshold_bytes: 1000, max_corpus_bytes: 5000 } },
+    });
+    const bigDir = path.join(dir, 'hugedir');
+    fs.mkdirSync(bigDir, { recursive: true });
+    makeSyntheticFile(bigDir, 'a.bin', 6000); // over threshold AND over ceiling
+    const prompt = 'Please analyze ' + bigDir;
+
+    const { status, stdout } = run(dir, prompt);
+    assert.equal(status, 0, 'must exit 0');
+    const out = parseOutput(stdout);
+    assert.ok(out && out.continue === true, 'must emit {"continue":true}');
+    assert.ok(!out.hookSpecificOutput, 'must not emit advisory when corpus exceeds max_corpus_bytes');
+
+    const corpusBase = path.join(dir, '.orchestray', 'state', 'input-corpus');
+    const entries = fs.existsSync(corpusBase) ? fs.readdirSync(corpusBase) : [];
+    assert.equal(entries.length, 0, 'no corpus dirs written when ceiling exceeded');
+  });
+
+  test('file at 2 MB (under ceiling, over threshold) still triggers — no regression', () => {
+    const { dir } = makeDir();
+    const fileSize = 2 * 1024 * 1024; // 2 MB, under 512 MB default ceiling
+    const filePath = makeSyntheticFile(dir, 'normal.bin', fileSize);
+    const prompt = 'Please summarize ' + filePath;
+
+    const { status, stdout } = run(dir, prompt);
+    assert.equal(status, 0, 'must exit 0');
+    const out = parseOutput(stdout);
+    assert.ok(out && out.hookSpecificOutput, 'must still trigger for a plausible 2 MB document');
+    assert.ok(out.hookSpecificOutput.additionalContext.includes('trigger: file'));
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// Root / home-root path guard (B2, v2.3.15 dogfooding bugfix)
+// ---------------------------------------------------------------------------
+
+describe('root/home path guard', () => {
+
+  test('path token resolving to filesystem root → no detection', () => {
+    const { dir } = makeDir();
+    const prompt = 'Please analyze /';
+
+    const { status, stdout } = run(dir, prompt);
+    assert.equal(status, 0, 'must exit 0');
+    const out = parseOutput(stdout);
+    assert.ok(out && out.continue === true, 'must emit {"continue":true}');
+    assert.ok(!out.hookSpecificOutput, 'must never trigger on a bare filesystem root token');
+  });
+
+  test('path token resolving to os.homedir() → no detection', () => {
+    const { dir } = makeDir();
+    const prompt = 'Please analyze ' + os.homedir();
+
+    const { status, stdout } = run(dir, prompt);
+    assert.equal(status, 0, 'must exit 0');
+    const out = parseOutput(stdout);
+    assert.ok(!out.hookSpecificOutput, 'must never trigger on the home directory itself');
   });
 
 });

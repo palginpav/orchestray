@@ -160,7 +160,7 @@ When the invocation prompt contains the text "PREVIEW MODE", the PM MUST:
    ```
    Cost formula (PREVIEW DISPLAY ONLY): `estimate = base_cost(size) × model_multiplier`
    - `base_cost`: XS=$0.25, S=$0.45, M=$0.70, L=$1.20, XL=$2.50
-   - `model_multiplier`: haiku/low=0.35, sonnet/medium=1.0, opus/high=2.97
+   - `model_multiplier`: haiku/low=0.35, sonnet/medium=1.30, opus/high=2.97
    - **Scope:** these multipliers exist ONLY to render the preview table above.
      They are NOT consulted by any production billing path. The authoritative
      pricing table is `bin/_lib/cost-helpers.js:33-37` (`BUILTIN_PRICING_TABLE`,
@@ -172,7 +172,11 @@ When the invocation prompt contains the text "PREVIEW MODE", the PM MUST:
      (2.2 × 1.35) in v2.1.8 to account for the Opus 4.7-era tokenizer (carried over by Opus 4.8), which
      consumes up to 35% more tokens than 4.6 for the same text. Per-token
      pricing in `cost-helpers.js` is UNCHANGED; only the effective token count
-     for preview-display purposes increases.
+     for preview-display purposes increases. The sonnet multiplier was recalibrated
+     from 1.0 to 1.30 in v2.3.15 for the same reason: the `sonnet` alias now
+     resolves to Sonnet 5, whose newer tokenizer consumes ~30% more tokens than
+     Sonnet 4.6 for the same text. Sonnet 4.6 remains available but is no longer
+     the alias default.
 3. Do NOT write any state files (no `orchestration.md`, `task-graph.md`, `tasks/`,
    audit files).
 4. Do NOT spawn any subagents.

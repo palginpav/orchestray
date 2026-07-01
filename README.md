@@ -270,10 +270,11 @@ Run `/orchestray:config` to view all settings, or browse the full grouped refere
 | `oversized_input.synthesis_model` | `sonnet` | Model used to synthesize the final answer from scout results |
 | `oversized_input.confirm_over_slices` | `16` | Ask before dispatching a map layer wider than this many slices |
 | `oversized_input.hierarchical_reduce` | `true` | When the corpus exceeds `max_slices`, process in batches instead of refusing |
+| `oversized_input.max_corpus_bytes` | `536870912` (512 MB) | Upper size limit — inputs larger than this are treated as normal, not sliced |
 
 Kill switches: `oversized_input.enabled: false` in `.orchestray/config.json`, or env `ORCHESTRAY_DISABLE_OVERSIZED_INPUT=1`.
 
-**Model tiers** (cost per million tokens, input / output): Haiku $1 / $5 · Sonnet $3 / $15 · Opus $5 / $25 · Fable $10 / $50. Fable 5 (`alias: fable`) is an opt-in top tier above Opus — use `force_model: "fable"` in config or pass `model: "fable"` on individual agent spawns. Default routing uses Haiku through Opus; Fable must be explicitly requested.
+**Model tiers** (cost per million tokens, input / output): Haiku $1 / $5 · Sonnet $3 / $15 · Opus $5 / $25 · Fable $10 / $50. The `sonnet` alias now resolves to Sonnet 5 (1M-token context; Sonnet 4.6 remains available). Fable 5 (`alias: fable`) is an opt-in top tier above Opus — use `force_model: "fable"` in config or pass `model: "fable"` on individual agent spawns. Default routing uses Haiku through Opus; Fable must be explicitly requested.
 
 ## Kill switches
 

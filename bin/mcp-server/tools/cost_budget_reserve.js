@@ -253,9 +253,11 @@ async function handle(input, context) {
   // Resolve model tier
   const tier = resolveModelTier(input.model);
 
-  // Resolve rates — use shared getRatesForTier from cost-helpers (F09: no inline BUILTIN).
-  const { getRatesForTier } = require('../../_lib/cost-helpers');
-  const rates = getRatesForTier(table, tier);
+  // Resolve rates — use shared getEnforcementRates (tokenizer-aware) so reservations
+  // agree with cost_budget_check / gate-cost-budget (v2.3.15 F2: getRatesForTier dropped
+  // the Opus-4.7+/Fable/Sonnet-5 tokenizer multipliers entirely, under-reserving those models).
+  const { getEnforcementRates } = require('../../_lib/cost-helpers');
+  const rates = getEnforcementRates(table, input.model);
 
   // Resolve token estimates
   const { input: inputTokens, output: outputTokens, from_defaults: fromDefaults } =

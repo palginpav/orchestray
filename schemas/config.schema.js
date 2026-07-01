@@ -529,6 +529,7 @@ const oversizedInputSchema = z.object({
   synthesis_model: z.string().optional(),
   confirm_over_slices: z.number().int().positive().optional(),
   hierarchical_reduce: z.boolean().optional(),
+  max_corpus_bytes: z.number().int().positive().optional(),
 }).passthrough();
 
 // ---------------------------------------------------------------------------

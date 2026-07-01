@@ -3,6 +3,19 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.15] - 2026-07-01
+
+**Orchestray 2.3.15 adds Claude Sonnet 5 support and fixes two correctness bugs: a false-positive Oversized-Input trigger on very large directories, and a cost-cap under-estimate on Sonnet-heavy runs.**
+
+### Added
+
+- **Claude Sonnet 5 support.** The `sonnet` model tier now runs Sonnet 5 by default — 1M-token context and a newer tokenizer. Sonnet 4.6 is still available if you need it. Pricing is $3/$15 per million input/output tokens (standard), with an introductory rate of $2/$10 through 2026-08-31.
+
+### Fixed
+
+- **Oversized-Input Mode no longer mis-fires on very large but ordinary directories.** Referencing a path that happens to resolve to the filesystem root, or another very large but unintended location, could incorrectly trigger the map-reduce oversized-input workflow. A new size ceiling (`oversized_input.max_corpus_bytes`, default 512 MB) and a root/home-path guard prevent the false positive while leaving genuine large-input handling unchanged.
+- **Cost caps now account for Sonnet 5 correctly.** Spend projections previously used Sonnet 4.6's token-usage profile for all Sonnet models, which could under-estimate spend on Sonnet 5-heavy orchestrations by roughly 30%. Enforcement now uses Sonnet 5's actual usage profile.
+
 ## [2.3.14] - 2026-06-30
 
 **Orchestray 2.3.14 lets you ask questions about files and directories far larger than the model's context window — Orchestray slices them automatically, reads each piece in parallel with inexpensive scout agents, and synthesizes a single answer at bounded cost.**
