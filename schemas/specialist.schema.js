@@ -27,8 +27,8 @@
 
 const { z } = require('./_validator');
 
-const VALID_MODEL_ALIASES = ['haiku', 'sonnet', 'opus', 'inherit'];
-const MODEL_ID_PREFIXES = ['claude-haiku', 'claude-sonnet', 'claude-opus'];
+const VALID_MODEL_ALIASES = ['fable', 'haiku', 'sonnet', 'opus', 'inherit'];
+const MODEL_ID_PREFIXES = ['claude-fable', 'claude-haiku', 'claude-sonnet', 'claude-opus'];
 const VALID_MEMORY = ['user', 'project', 'local'];
 const VALID_EFFORT = ['low', 'medium', 'high', 'xhigh', 'max'];
 

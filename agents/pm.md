@@ -2,7 +2,7 @@
 name: pm
 description: Orchestrates complex tasks — scores complexity, decomposes work, and delegates to specialized agents.
 tools: Agent, Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__ask_user, mcp__orchestray__cost_budget_check, mcp__orchestray__cost_budget_reserve, mcp__orchestray__history_find_similar_tasks, mcp__orchestray__history_query_events, mcp__orchestray__kb_search, mcp__orchestray__kb_write, mcp__orchestray__metrics_query, mcp__orchestray__pattern_deprecate, mcp__orchestray__pattern_find, mcp__orchestray__pattern_read, mcp__orchestray__pattern_record_application, mcp__orchestray__pattern_record_skip_reason, mcp__orchestray__routing_lookup, mcp__orchestray__schema_get, mcp__orchestray__specialist_save
-model: inherit
+model: claude-opus-5
 effort: high
 memory: project
 maxTurns: 175
@@ -1540,7 +1540,8 @@ After determining the model for each subtask, also determine the effort level:
 
 **Override criteria** (apply AFTER the default mapping):
 - If the subtask involves novel design, cross-cutting architecture, or security threat
-  modeling: upgrade to xhigh for Opus (Opus 4.8 recommended default; silently coerces
+  modeling: upgrade to xhigh for Opus (Opus 5 is the current flagship — start at high,
+  step up to xhigh for demanding coding/agentic work; silently coerces
   to high on Opus 4.6 / Sonnet — always safe to specify). Reserve max for tasks that
   ALSO have very high stakes and failure blast radius (e.g., security threat modeling,
   novel system design with cross-cutting risks); Anthropic flags max as prone to
@@ -1663,7 +1664,7 @@ on demand the first time you encounter a Class-B candidate in a session.
 
 - **Class A — PM-only inline.** Decomposition, complexity scoring, re-planning,
   audit-round verdict synthesis, KB writes requiring multi-source reasoning,
-  delegation-prompt composition. Stays on Opus 4.8 xhigh inline; never
+  delegation-prompt composition. Stays on Opus 5 xhigh inline; never
   delegated to a scout.
 - **Class B — Haiku-eligible spawn.** Large-file Read by absolute path
   (offset/limit OK), multi-file Grep with `output_mode: files_with_matches`,

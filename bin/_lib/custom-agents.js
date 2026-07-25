@@ -46,7 +46,7 @@ const ALLOWED_MODEL_SHORT = new Set(['fable', 'haiku', 'sonnet', 'opus', 'inheri
  * @type {Set<string>}
  */
 const ALLOWED_MODEL_FULL = new Set([
-  'claude-fable-5',
+  'claude-fable-5', 'claude-opus-5', 'claude-sonnet-5',
   'claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8',
   'claude-haiku-4-5-20251001', 'claude-sonnet-4-6-20250922',
 ]);
@@ -406,6 +406,7 @@ module.exports = {
   loadShippedSpecialistNames,
   // Expose constants for tests
   ALLOWED_TOOLS,
+  ALLOWED_MODEL_FULL,
   MAX_DIR_FILES,
   MAX_FILE_BYTES,
 };

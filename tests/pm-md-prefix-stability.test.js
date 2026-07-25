@@ -136,9 +136,9 @@ describe('agents/pm.md Block A hash stability', () => {
     }
 
     // Normal mode: compare against the inline pinned value.
-    // v2.3.13 F-PR-02: repinned after correcting stale "hard-block" claim to
-    // reflect warn+auto-seed default (routing_gate.auto_seed_on_miss).
-    const PINNED_BLOCK_A_HASH = 'b556d3c20c083f59';
+    // v2.3.17: repinned after PM frontmatter `model:` default changed from
+    // `inherit` to `claude-opus-5` (Opus 5 support rollout).
+    const PINNED_BLOCK_A_HASH = '1f1cc045e2772996';
 
     assert.equal(
       actualHash,

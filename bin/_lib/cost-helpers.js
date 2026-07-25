@@ -103,11 +103,11 @@ function loadReservationTTLMs(cwd) {
 // ---------------------------------------------------------------------------
 
 /**
- * Opus 4.7-and-later tokenizer multiplier (also applies to Fable 5).
+ * Opus 4.7-and-later tokenizer multiplier (also applies to Fable 5 and Opus 5).
  *
- * Opus 4.7 introduced a new tokenizer (carried over unchanged by Opus 4.8 and
- * Fable 5) that consumes ~35% more tokens than Opus 4.6 for the same text.
- * Per-token pricing is unchanged for each model, but effective cost is ~35%
+ * Opus 4.7 introduced a new tokenizer (carried over unchanged by Opus 4.8,
+ * Opus 5, and Fable 5) that consumes ~35% more tokens than Opus 4.6 for the same
+ * text. Per-token pricing is unchanged for each model, but effective cost is ~35%
  * higher for the same prompt vs. the Opus 4.6 baseline.
  *
  * Source: platform-oracle Opus 4.7 research — see
@@ -129,13 +129,13 @@ const SONNET_5_TOKENIZER_MULTIPLIER = 1.30;
 /**
  * Return per-1M-token rates for a model ID string.
  *
- * Recognises full model IDs (e.g. `claude-fable-5`, `claude-opus-4-7`,
- * `claude-opus-4.7`, `claude-opus-4-8`, `claude-sonnet-5`, `claude-sonnet-4-6`,
- * `claude-haiku-4-5`) and short aliases (`fable`, `opus`, `sonnet`, `haiku`).
- * Falls back to sonnet rates for unknown strings.
+ * Recognises full model IDs (e.g. `claude-fable-5`, `claude-opus-5`,
+ * `claude-opus-4-7`, `claude-opus-4.7`, `claude-opus-4-8`, `claude-sonnet-5`,
+ * `claude-sonnet-4-6`, `claude-haiku-4-5`) and short aliases (`fable`, `opus`,
+ * `sonnet`, `haiku`). Falls back to sonnet rates for unknown strings.
  *
- * Fable 5, Opus 4.7, and Opus 4.8 apply a 1.35× tokenizer multiplier to both
- * input and output rates (all three use the same Opus 4.7-era tokenizer).
+ * Fable 5, Opus 4.7, Opus 4.8, and Opus 5 apply a 1.35× tokenizer multiplier to
+ * both input and output rates (all use the same Opus 4.7-era tokenizer).
  * Sonnet 5 applies a 1.30× multiplier (newer tokenizer, smaller inflation).
  *
  * @param {string} modelId - Model ID or alias string.
@@ -151,8 +151,10 @@ function getPricing(modelId) {
       output_per_1m: base.output_per_1m * OPUS_47_TOKENIZER_MULTIPLIER,
     };
   }
-  // Check for Opus 4.7 / 4.8 (shared tokenizer) — must come before the generic opus check.
-  if (m.includes('opus-4-7') || m.includes('opus-4.7') || m.includes('opus-4-8') || m.includes('opus-4.8')) {
+  // Check for Opus 4.7 / 4.8 / 5 (shared tokenizer) — must come before the generic opus check.
+  // Opus 5 ($5/$25, unchanged from 4.8) reuses the Opus 4.7-era tokenizer, so it applies the
+  // same 1.35× multiplier and does NOT need a new coefficient.
+  if (m.includes('opus-4-7') || m.includes('opus-4.7') || m.includes('opus-4-8') || m.includes('opus-4.8') || m.includes('opus-5')) {
     const base = BUILTIN_PRICING_TABLE.opus;
     return {
       input_per_1m: base.input_per_1m * OPUS_47_TOKENIZER_MULTIPLIER,
@@ -197,7 +199,13 @@ function getRatesForTier(table, tier) {
 
 /**
  * True when a raw model ID uses the Opus-4.7-era tokenizer (Opus 4.7, Opus 4.8,
- * Fable 5), which consumes ~35% more tokens for the same text.
+ * Opus 5, Fable 5), which consumes ~35% more tokens for the same text.
+ *
+ * Matches only concrete Opus-5 IDs (e.g. `claude-opus-5`, `claude-opus-5[1m]`),
+ * NOT the bare `opus` alias. The bare `opus` alias resolves to Opus 5 only on
+ * Claude Code v2.1.219+ (and to Opus 4.6 on Microsoft Foundry), so its tokenizer
+ * is provider/version-dependent — enforcement leaves it at base rate, matching
+ * pre-existing behaviour for the whole Opus 4.8 era. See getPricing note above.
  *
  * @param {string} modelRaw
  * @returns {boolean}
@@ -207,7 +215,8 @@ function usesOpus47Tokenizer(modelRaw) {
   return (
     m.includes('fable') ||
     m.includes('opus-4-7') || m.includes('opus-4.7') ||
-    m.includes('opus-4-8') || m.includes('opus-4.8')
+    m.includes('opus-4-8') || m.includes('opus-4.8') ||
+    m.includes('opus-5')
   );
 }
 

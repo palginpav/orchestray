@@ -58,7 +58,7 @@ const { CANONICAL_AGENTS } = require('./_lib/canonical-agents');
 /** Valid model short-names and full IDs. */
 const VALID_MODELS = new Set([
   'fable', 'haiku', 'sonnet', 'opus',
-  'claude-fable-5',
+  'claude-fable-5', 'claude-opus-5', 'claude-sonnet-5',
   'claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8',
   'claude-haiku-4-5-20251001', 'claude-sonnet-4-6-20250922',
 ]);

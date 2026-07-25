@@ -85,15 +85,17 @@ After model routing determines the model for each subtask, assign the effort lev
 
 ### Per-Model Effort Availability
 
-| Effort | Haiku | Sonnet 5 | Sonnet 4.6 | Opus 4.6 | Opus 4.7 | Opus 4.8 | Fable 5 |
-|--------|-------|----------|-----------|---------|---------|---------|---------|
-| low | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| medium | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| high | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| xhigh | — (coerces to high) | — (coerces to high) | — (coerces to high) | — (coerces to high) | ✓ | ✓ | ✓ |
-| max | — (coerces to high) | — (coerces to high) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Effort | Haiku | Sonnet 5 | Sonnet 4.6 | Opus 4.6 | Opus 4.7 | Opus 4.8 | Opus 5 | Fable 5 |
+|--------|-------|----------|-----------|---------|---------|---------|--------|---------|
+| low | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| medium | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| high | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| xhigh | — (coerces to high) | — (coerces to high) | — (coerces to high) | — (coerces to high) | ✓ | ✓ | ✓ | ✓ |
+| max | — (coerces to high) | — (coerces to high) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
-`xhigh` was introduced in Claude Code v2.1.111 (2026-04-16) as the recommended default for Opus 4.7 and 4.8 on most coding and agentic tasks. If you specify `xhigh` on a model that does not support it, Claude Code silently falls back to the highest supported level at or below the one requested — no error is raised and nothing breaks.
+`xhigh` was introduced in Claude Code v2.1.111 (2026-04-16) as the recommended default for Opus 4.7 and 4.8 on most coding and agentic tasks. Opus 5 (current Opus flagship, all five effort levels) carries this forward: start with `high` (its default), step up to `xhigh` for demanding coding and agentic work. If you specify `xhigh` on a model that does not support it, Claude Code silently falls back to the highest supported level at or below the one requested — no error is raised and nothing breaks.
+
+**Opus 5 effort recalibration:** Opus 5 uses the same Opus 4.7-era tokenizer and the same per-token price ($5/$25) as Opus 4.8, but converts additional effort into results more reliably. Run a fresh effort sweep on your evals rather than reusing 4.8 settings — token *volume* per effort level may have shifted even though per-token *price* did not. Opus 4.8 remains available (legacy).
 
 **Sonnet 5:** no extended thinking, adaptive thinking only; `effort` defaults to `high` (not `medium`). Uses the newer tokenizer (~30% more tokens for the same text vs Sonnet 4.6) — same family as Opus 4.7+/Fable 5. `sonnet` alias now resolves to Sonnet 5; Sonnet 4.6 remains available (not deprecated).
 
@@ -106,7 +108,8 @@ Evaluate each subtask for reasoning depth. Override the default effort when:
 - **Upgrade sonnet to high**: Security-sensitive logic, complex algorithm implementation,
   multi-file refactoring with subtle dependencies
 - **Upgrade opus to xhigh**: Novel system design, cross-cutting architecture, agentic tasks
-  where reasoning depth matters. `xhigh` is the Opus 4.8 recommended default; it coerces
+  where reasoning depth matters. On Opus 5 (current flagship, `opus` alias default), `high`
+  is the baseline; step up to `xhigh` for demanding coding/agentic work. `xhigh` coerces
   safely to `high` on Opus 4.6. Use xhigh as the standard upgrade path, not max.
 - **Upgrade opus to max**: Tasks that combine very high complexity AND very high stakes
   (e.g., security threat modeling with cross-cutting risks, novel system design where failure
@@ -127,7 +130,7 @@ Evaluate each subtask for reasoning depth. Override the default effort when:
 | Haiku + high | Haiku's ceiling is low regardless of effort | Use Sonnet instead |
 | Haiku + max | max coerces to high on Haiku — you pay Haiku price, get Haiku ceiling | Use Sonnet/medium or Opus/high |
 | Opus + low | Pays Opus price for minimal reasoning | Use Sonnet/low or Haiku/low |
-| Opus 4.8 + max (default) | max prone to overthinking per Anthropic; xhigh is recommended default | Use xhigh; reserve max for explicit escalation |
+| Opus + max (default) | max prone to overthinking per Anthropic; xhigh is the recommended step-up for demanding Opus 5 work | Use xhigh; reserve max for explicit escalation |
 
 ### Effort Escalation
 

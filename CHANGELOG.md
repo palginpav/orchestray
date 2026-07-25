@@ -3,6 +3,20 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.17] - 2026-07-25
+
+**Orchestray 2.3.17 adds Claude Opus 5 support — the PM orchestrator now defaults to it — and fixes two fresh-install bugs: installing via `npx orchestray` could leave the MCP server and hooks unable to start, and repo-map code-symbol extraction silently never worked on any fresh install.**
+
+### Added
+
+- **Claude Opus 5 support.** The `opus` alias and the PM orchestrator's default model both now resolve to Opus 5 (1M-token context, same $5/$25 per-million-token pricing as Opus 4.8). Pin `claude-opus-5` explicitly if you want to be immune to the `opus` alias's Claude Code version gate. Opus 4.8 remains available.
+
+### Fixed
+
+- **Fresh installs via `npx orchestray` no longer fail to find a required dependency.** npm hoists that dependency next to the plugin's own folder rather than nesting it inside, and Orchestray only checked the nested location — so the MCP server and most hooks failed with `MODULE_NOT_FOUND` on first use after a fresh `npx` install. The installer now checks both layouts, and if the dependency genuinely can't be found, the install now fails outright with a clear next step instead of reporting success and breaking on first session.
+- **Repo-map code-symbol extraction now works on fresh installs.** The library used to pull function/class symbol tags into repo maps was never copied into the install directory on any install path, so this always silently degraded to no symbol tags. It's now vendored correctly.
+- **Closed a few model-name gaps.** `claude-opus-5` and `claude-sonnet-5` were previously rejected as invalid full model IDs in a couple of places (custom agent definitions, the `ox` CLI); specialist templates can now also request the `fable` / `claude-fable` model, matching what was already allowed elsewhere.
+
 ## [2.3.16] - 2026-07-01
 
 **Orchestray 2.3.16 is a supply-chain hygiene patch: a third-party security scanner (Socket.dev) had incorrectly flagged Orchestray as making network calls. It doesn't — this release clears the false positive with no functional change.**

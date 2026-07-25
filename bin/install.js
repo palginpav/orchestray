@@ -478,6 +478,33 @@ function readPreviousVersion(targetDir) {
   }
 }
 
+/**
+ * Resolve the on-disk directory of a vendored dependency (zod, web-tree-sitter)
+ * relative to pkgRoot, handling both install layouts:
+ *   - nested:  `npm install -g` — dep lands under pkgRoot/node_modules/<name>
+ *   - hoisted: `npx orchestray` (the primary documented install path) — npm
+ *     hoists the dep as a SIBLING of node_modules/orchestray/, not nested
+ *     inside it.
+ * Resolves `<name>/package.json` (not the bare specifier) to avoid package.json
+ * `exports` conditional-resolution edge cases. require.resolve's `paths` option
+ * walks the node_modules hierarchy up from pkgRoot, which covers both layouts.
+ * Falls back to a naive nested-path check for layouts require.resolve can't
+ * reach (e.g. a broken node_modules symlink farm).
+ *
+ * @param {string} pkgName  e.g. 'zod', 'web-tree-sitter'
+ * @param {string} pkgRoot  Orchestray package root (path.resolve(__dirname, '..'))
+ * @returns {string|null}   Absolute path to the dependency's directory, or null.
+ */
+function resolveVendoredPackageDir(pkgName, pkgRoot) {
+  try {
+    return path.dirname(require.resolve(`${pkgName}/package.json`, { paths: [pkgRoot] }));
+  } catch (_e) {
+    const nested = path.join(pkgRoot, 'node_modules', pkgName);
+    if (fs.existsSync(nested) && fs.statSync(nested).isDirectory()) return nested;
+    return null;
+  }
+}
+
 function install(targetDir) {
   // -------------------------------------------------------------------------
   // DEF-6: install footprint — verification comment
@@ -867,15 +894,20 @@ function install(targetDir) {
     say('  \x1b[33m⚠\x1b[0m schemas/ not found in source; skipping');
   }
 
-  // 3d-zod (v2.2.15 P1-11 install fix): bin/_lib/config-schema.js requires
-  // 'zod' at module-load. Without copying node_modules/zod into the install
-  // target, MCP server boots with MODULE_NOT_FOUND on every session. zod 4.x
-  // has zero transitive deps so a single-package copy is sufficient.
+  // 3d-zod (v2.2.15 P1-11 install fix; v2.3.17 hoisted-layout fix):
+  // bin/_lib/config-schema.js requires 'zod' at module-load. Without copying
+  // node_modules/zod into the install target, MCP server + ~30 hook files
+  // boot with MODULE_NOT_FOUND on every session. zod 4.x has zero transitive
+  // deps so a single-package copy is sufficient.
+  // Use resolveVendoredPackageDir (not a naive pkgRoot/node_modules/zod join)
+  // because `npx orchestray` — the primary documented install path — hoists
+  // zod as a SIBLING of node_modules/orchestray/, not nested inside it. The
+  // naive join only worked for `npm install -g`.
   // Use fs.cpSync (not copyJsTree) because zod's CommonJS entry point is
   // index.cjs which copyJsTree's .js-only filter excludes. cpSync also
   // preserves the package.json + .d.ts files needed by editor tooling.
-  const zodSrc = path.join(pkgRoot, 'node_modules', 'zod');
-  if (fs.existsSync(zodSrc) && fs.statSync(zodSrc).isDirectory()) {
+  const zodSrc = resolveVendoredPackageDir('zod', pkgRoot);
+  if (zodSrc) {
     const zodDst = path.join(targetDir, 'orchestray', 'node_modules', 'zod');
     fs.cpSync(zodSrc, zodDst, {
       recursive: true,
@@ -900,7 +932,41 @@ function install(targetDir) {
     countWalk(zodDst);
     say(`  \x1b[32m✓\x1b[0m Installed node_modules/zod (${zodFileCount} files)`);
   } else {
-    say('  \x1b[33m⚠\x1b[0m node_modules/zod not found in source; mcp-server boot will fail');
+    // Hard failure (v2.3.17): zod's absence breaks the MCP server and most
+    // hooks at first use, not just a degraded feature — a warning here left
+    // users with a "successful" install that silently fails on first session.
+    console.error(
+      `\n  \x1b[31m✗\x1b[0m Could not locate the 'zod' package (checked nested and\n` +
+      `    hoisted node_modules layouts relative to ${pkgRoot}).\n` +
+      `    Without it, the MCP server and most hooks will fail with\n` +
+      `    MODULE_NOT_FOUND on first use. Next step: run "npm install" inside\n` +
+      `    the orchestray package directory, or reinstall via "npx orchestray".\n`
+    );
+    process.exit(1);
+  }
+
+  // 3d-tree-sitter (v2.3.17): repo-map-tags.js lazily requires 'web-tree-sitter'
+  // (wrapped in try/catch) to extract code symbol tags for repo maps. Without
+  // vendoring it, tag extraction silently degrades on every fresh install
+  // (npx and global) — no copy logic existed for it before this fix. Copy the
+  // whole package dir (not just .js files) since it ships .wasm binaries that
+  // copyJsTree's filter would exclude. Missing web-tree-sitter degrades a
+  // feature rather than breaking boot, so this stays a warning, not a failure.
+  const treeSitterSrc = resolveVendoredPackageDir('web-tree-sitter', pkgRoot);
+  if (treeSitterSrc) {
+    const treeSitterDst = path.join(targetDir, 'orchestray', 'node_modules', 'web-tree-sitter');
+    fs.cpSync(treeSitterSrc, treeSitterDst, { recursive: true });
+    let treeSitterFileCount = 0;
+    const countWalkTs = (dir) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (e.isDirectory()) countWalkTs(path.join(dir, e.name));
+        else if (e.isFile()) { treeSitterFileCount++; track(path.relative(targetDir, path.join(dir, e.name))); }
+      }
+    };
+    countWalkTs(treeSitterDst);
+    say(`  \x1b[32m✓\x1b[0m Installed node_modules/web-tree-sitter (${treeSitterFileCount} files)`);
+  } else {
+    say('  \x1b[33m⚠\x1b[0m node_modules/web-tree-sitter not found in source; repo-map tree-sitter tag extraction will be disabled');
   }
 
   // ajv removed in v2.3.8: plugin-input-schema-validator.js now uses the
