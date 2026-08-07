@@ -477,6 +477,86 @@ describe('BDG: harvest arming', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Baseline worktree — node_modules symlink (v2.3.19 W3 fix)
+//
+// `git worktree add` never carries gitignored `node_modules/`. Any script
+// that transitively requires an npm package crashed to load on the baseline
+// side and reported a delta on EVERY fixture — not because it changed, but
+// because the harness's own baseline couldn't boot. That is a 100%
+// false-positive rate for every real script with a dependency; a synthetic
+// zero-dependency probe (as used elsewhere in this file and in the E1
+// regression suite) never exercises the failure.
+// ---------------------------------------------------------------------------
+
+describe('BDG: baseline worktree can load npm dependencies', () => {
+  const GIT_ENV = {
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_SYSTEM: '/dev/null',
+    GIT_AUTHOR_NAME: 'bdg-test', GIT_AUTHOR_EMAIL: 'bdg-test@test',
+    GIT_COMMITTER_NAME: 'bdg-test', GIT_COMMITTER_EMAIL: 'bdg-test@test',
+  };
+  const { execFileSync } = require('node:child_process');
+  function git(cwd, args) {
+    execFileSync('git', args, { cwd, encoding: 'utf8', env: Object.assign({}, process.env, GIT_ENV) });
+  }
+
+  test('linkNodeModules symlinks the real install into the worktree', () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bdg-nm-repo-'));
+    const worktree = fs.mkdtempSync(path.join(os.tmpdir(), 'bdg-nm-wt-'));
+    fs.mkdirSync(path.join(repoRoot, 'node_modules', 'fake-pkg'), { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, 'node_modules', 'fake-pkg', 'index.js'),
+      'module.exports = 42;\n', 'utf8');
+
+    bdg.linkNodeModules(repoRoot, worktree);
+
+    const linked = path.join(worktree, 'node_modules', 'fake-pkg', 'index.js');
+    assert.ok(fs.existsSync(linked));
+    assert.equal(require(linked), 42);
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+    fs.rmSync(worktree, { recursive: true, force: true });
+  });
+
+  test('a missing repo node_modules is a no-op, not a throw', () => {
+    const worktree = fs.mkdtempSync(path.join(os.tmpdir(), 'bdg-nm-none-'));
+    assert.doesNotThrow(() => bdg.linkNodeModules(path.join(os.tmpdir(), 'nope-' + Date.now()), worktree));
+    assert.equal(fs.existsSync(path.join(worktree, 'node_modules')), false);
+    fs.rmSync(worktree, { recursive: true, force: true });
+  });
+
+  test('a script requiring an npm dependency reports no delta when unchanged', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bdg-nm-e2e-'));
+    fs.mkdirSync(path.join(root, 'node_modules', 'fake-pkg'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'node_modules', 'fake-pkg', 'index.js'),
+      'module.exports = { greet: () => "hi" };\n', 'utf8');
+
+    const scriptSrc = [
+      "'use strict';",
+      'const { greet } = require("fake-pkg");',
+      'const fs = require("fs"), path = require("path");',
+      'fs.mkdirSync(path.join(process.cwd(), ".orchestray", "audit"), { recursive: true });',
+      'fs.appendFileSync(path.join(process.cwd(), ".orchestray", "audit", "events.jsonl"),',
+      '  JSON.stringify({ type: "nm_probe_" + greet() }) + "\\n");',
+      'process.exit(0);',
+      '',
+    ].join('\n');
+    fs.mkdirSync(path.join(root, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'bin', 'nm-probe.js'), scriptSrc, 'utf8');
+    writeFixture(root, 'nm-probe', 'a.json', fixture({ x: 1 }));
+
+    git(root, ['init', '-q']);
+    git(root, ['add', '-A']);
+    git(root, ['commit', '-q', '-m', 'base']);
+
+    const report = bdg.run({ cwd: root, base: 'HEAD', only: ['bin/nm-probe.js'], config: bdg.loadConfig(root) });
+    assert.equal(report.error, undefined, 'must not fail to build the baseline worktree');
+    const s = report.scripts[0];
+    assert.equal(s.uncovered, false, 'the probe emits a real event — must not report uncovered');
+    assert.deepEqual(s.deltas, [], JSON.stringify(s.deltas));
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Design constraint: no static JS analysis anywhere (§4.3, 20/20 false positives)
 // ---------------------------------------------------------------------------
 

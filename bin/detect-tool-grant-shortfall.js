@@ -15,12 +15,34 @@
  * whose `oracle-grounded` / `research-sourced` rules check the transcript
  * rather than the agent's self-reported source list.
  *
- * Compares the target agent's declared `tools:` (parsed from `agents/<role>.md`
- * frontmatter) against tool names actually observed in the completed subagent's
- * own transcript. When a declared CAPABILITY-CRITICAL tool (WebFetch, WebSearch
- * — the minimum set called out in the discovery doc) was never used, emits
- * `tool_grant_shortfall` with the unused tool list and, when determinable,
- * what was substituted instead (currently: Bash + curl).
+ * Compares the target agent's declared `tools:` (parsed from an `agents/<role>.md`
+ * frontmatter file) against tool names actually observed in the completed
+ * subagent's own transcript. When a declared CAPABILITY-CRITICAL tool
+ * (WebFetch, WebSearch — the minimum set called out in the discovery doc)
+ * was never used, emits `tool_grant_shortfall` with the unused tool list and,
+ * when determinable, what was substituted instead (currently: Bash + curl).
+ *
+ * v2.3.19 W2 fix — this hook shipped correct but blind and fired zero times:
+ *   1. `event.agent_type` on a real SubagentStop payload is the caller-chosen
+ *      ROSTER NAME (e.g. "oracle-v2318"), not the `subagent_type` role
+ *      ("platform-oracle") that decides tool grants — so `agents/<role>.md`
+ *      never resolved. Fixed by reusing the spawn-metadata sidecar resolution
+ *      `bin/gate-agent-spawn.js` established for the identical conflation in
+ *      W-AC-4 (`resolveCallerAgentTypeFromMeta` / `stripCollisionSuffix`),
+ *      rather than a second parallel heuristic.
+ *   2. The agent definition was only ever looked for under `<cwd>/agents/` —
+ *      the source-repo dev layout. Real installs put it under
+ *      `<cwd>/.claude/agents/` (project install) or `~/.claude/agents/`
+ *      (global install), with `~/.claude/orchestray/agents/` as a legacy
+ *      layout some machines still carry. Now searched in the same
+ *      project > project-legacy > user > plugin-legacy order established by
+ *      `bin/audit-housekeeper-drift.js#resolveAgentFile` for the same
+ *      multi-tier problem.
+ *   A role that resolves to no definition anywhere is NOT a shortfall — its
+ *   declared tools are unknowable from here, so nothing is emitted (silent,
+ *   matching this hook's existing no-stderr footprint; the alternative of a
+ *   stderr diagnostic was considered and rejected to avoid noise on every
+ *   dynamic-specialist spawn, which is the common case).
  *
  * Telemetry-only this wave — we do not yet know whether the root cause is
  * platform behaviour or an Orchestray-side spawn-option bug, so this hook
@@ -39,6 +61,7 @@
  */
 
 const fs   = require('fs');
+const os   = require('os');
 const path = require('path');
 const { resolveSafeCwd }        = require('./_lib/resolve-project-cwd');
 const { writeEvent }            = require('./_lib/audit-event-writer');
@@ -47,6 +70,10 @@ const { validateTranscriptPath } = require('./_lib/path-containment');
 const { readFileBounded }       = require('./_lib/file-read-bounded');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { readHookInputRaw }      = require('./_lib/hook-stdin');
+// Reuse of the established caller-identity resolution (W-AC-4, v2.3.19) —
+// gate-agent-spawn.js is required purely as a library here: its own stdin
+// handling is guarded behind `require.main === module` and never runs.
+const { resolveCallerAgentTypeFromMeta, stripCollisionSuffix } = require('./gate-agent-spawn');
 
 const SCHEMA_VERSION = 1;
 const MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024; // 8 MB — generous, telemetry-only
@@ -75,16 +102,51 @@ function isDisabled(cwd) {
 }
 
 /**
+ * Locate an agent definition file across every install location this
+ * codebase is known to use, in the same priority order established by
+ * `bin/audit-housekeeper-drift.js#resolveAgentFile` for the same problem:
+ * project install > project-legacy (source-repo dev layout) > user
+ * (global install) > plugin-legacy (older global install layout still
+ * present on some machines). Returns null — not a guess, an honest "not
+ * found here" — when none of the four candidates exist.
+ *
+ * @param {string} cwd
+ * @param {string} role
+ * @returns {string|null}
+ */
+function resolveAgentDefinitionPath(cwd, role) {
+  let home;
+  try { home = os.homedir(); } catch (_e) { home = null; }
+  const candidates = [
+    path.join(cwd, '.claude', 'agents', role + '.md'),
+    path.join(cwd, 'agents', role + '.md'),
+    home ? path.join(home, '.claude', 'agents', role + '.md') : null,
+    home ? path.join(home, '.claude', 'orchestray', 'agents', role + '.md') : null,
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch (_e) { /* keep looking */ }
+  }
+  return null;
+}
+
+/**
  * Parse the flat, comma-separated `tools:` frontmatter line from an agent
- * definition file. Returns [] on any error (missing file, no tools: line).
+ * definition file, searched across install tiers via
+ * `resolveAgentDefinitionPath`. Returns [] when the definition cannot be
+ * found anywhere, or on any read/parse error (no tools: line, malformed
+ * frontmatter).
  *
  * @param {string} cwd
  * @param {string} role
  * @returns {string[]}
  */
 function loadDeclaredTools(cwd, role) {
+  const defPath = resolveAgentDefinitionPath(cwd, role);
+  if (!defPath) return [];
   try {
-    const raw = fs.readFileSync(path.join(cwd, 'agents', role + '.md'), 'utf8');
+    const raw = fs.readFileSync(defPath, 'utf8');
     const fm = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     if (!fm) return [];
     const m = fm[1].match(/^tools:\s*(.+)$/m);
@@ -93,6 +155,38 @@ function loadDeclaredTools(cwd, role) {
   } catch (_e) {
     return [];
   }
+}
+
+/**
+ * Resolve the true agent role for a completed spawn, given the SubagentStop
+ * payload. `event.agent_type` (and its siblings) carry the caller-chosen
+ * ROSTER NAME, not the `subagent_type` that decided the agent's tool grants
+ * — see the v2.3.19 W2 header note. Resolution order:
+ *   1. Spawn-metadata sidecar (`resolveCallerAgentTypeFromMeta`) — authoritative,
+ *      recorded by the Claude Code runtime at spawn time.
+ *   2. `stripCollisionSuffix` on the roster name — repairs the common
+ *      `<role>-2` auto-suffix case when the sidecar is unreadable.
+ * Never throws; returns '' when no usable name is present at all.
+ *
+ * @param {object} event
+ * @param {string} cwd
+ * @returns {string}
+ */
+function resolveAgentRole(event, cwd) {
+  const rosterRaw = (
+    event.subagent_type || event.agent_type || event.agent_role ||
+    (event.tool_input && event.tool_input.subagent_type) || ''
+  );
+  if (typeof rosterRaw !== 'string' || !rosterRaw.trim()) return '';
+  const roster = rosterRaw.trim();
+
+  let resolved = null;
+  try {
+    resolved = resolveCallerAgentTypeFromMeta(roster, event.session_id, cwd);
+  } catch (_e) { resolved = null; }
+
+  const role = resolved || stripCollisionSuffix(roster);
+  return typeof role === 'string' ? role.toLowerCase().trim() : '';
 }
 
 /**
@@ -156,18 +250,17 @@ function main() {
         return;
       }
 
-      const role = (
-        event.subagent_type || event.agent_type || event.agent_role ||
-        (event.tool_input && event.tool_input.subagent_type) || ''
-      ).toLowerCase().trim();
+      let cwd;
+      try { cwd = resolveSafeCwd(event.cwd); } catch (_e) { cwd = process.cwd(); }
+
+      // cwd (and event.session_id) must be resolved before role resolution —
+      // the sidecar lookup keys on both.
+      const role = resolveAgentRole(event, cwd);
       if (!role) {
         process.stdout.write(JSON.stringify({ continue: true }));
         process.exit(0);
         return;
       }
-
-      let cwd;
-      try { cwd = resolveSafeCwd(event.cwd); } catch (_e) { cwd = process.cwd(); }
 
       if (isDisabled(cwd)) {
         process.stdout.write(JSON.stringify({ continue: true }));
@@ -230,6 +323,8 @@ function main() {
 
 module.exports = {
   loadDeclaredTools,
+  resolveAgentDefinitionPath,
+  resolveAgentRole,
   scanTranscriptToolUsage,
   isDisabled,
   CAPABILITY_CRITICAL_TOOLS,

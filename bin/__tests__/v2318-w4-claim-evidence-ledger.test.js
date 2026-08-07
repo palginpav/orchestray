@@ -1154,7 +1154,8 @@ describe('W6e/W-01: both accessors read the output fields in one order', () => {
       output: 'OUTPUT-FIELD-MARKER',
       agent_output: 'AGENT-OUTPUT-MARKER',
     };
-    assert.deepEqual(RAW_OUTPUT_FIELDS, ['result', 'output', 'agent_output']);
+    assert.deepEqual(RAW_OUTPUT_FIELDS,
+      ['last_assistant_message', 'result', 'output', 'agent_output']);
     assert.equal(rawOutputText(event), 'RESULT-FIELD-MARKER');
     const text = buildClaimText(event, null);
     assert.ok(text.includes('RESULT-FIELD-MARKER'));
@@ -1180,6 +1181,25 @@ describe('W6e/W-01: both accessors read the output fields in one order', () => {
     assert.equal(rawOutputText({ result: { a: 1 }, agent_output: 'Y' }), 'Y');
     assert.equal(rawOutputText({}), null);
     assert.equal(rawOutputText(null), null);
+  });
+
+  test('last_assistant_message is read, and outranks the legacy field names', () => {
+    // The v2.3.19 W1 defect: a live SubagentStop carries this field and no
+    // other, so reading only result|output|agent_output emptied the corpus on
+    // every production spawn.
+    assert.equal(rawOutputText({ last_assistant_message: 'LAM' }), 'LAM');
+    assert.equal(rawOutputText({ last_assistant_message: 'LAM', result: 'R' }), 'LAM');
+    // Empty is still absent — `realPayload` always sets the key, often to ''.
+    assert.equal(rawOutputText({ last_assistant_message: '', result: 'R' }), 'R');
+  });
+
+  test('a Structured Result is extracted from last_assistant_message', () => {
+    const sr = { status: 'complete', summary: 'S', files_changed: [{ path: 'a.js' }] };
+    const event = {
+      last_assistant_message: 'Done.\n\n## Structured Result\n\n```json\n' +
+        JSON.stringify(sr) + '\n```\n',
+    };
+    assert.deepEqual(extractStructuredResult(event), sr);
   });
 });
 

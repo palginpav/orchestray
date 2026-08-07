@@ -35,7 +35,11 @@
 
 const fs = require('fs');
 const path = require('path');
-const { writeEvent } = require('./_lib/audit-event-writer');
+// writeEventWithAliases also fires the task_validation_attempt/result shadow
+// pair when task_validation_failed is emitted (v2.2.11 rename-cycle) — see
+// bin/_lib/audit-event-writer.js W2-11. It behaves identically to writeEvent
+// for every other event type this file emits (no-op alias lookup).
+const { writeEventWithAliases: writeEvent } = require('./_lib/audit-event-writer');
 // B-2.1: per-role schema map (16/38 W2 findings collapse here).
 const { validateRoleSchema, isRoleHardDisabled } = require('./_lib/role-schemas');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');

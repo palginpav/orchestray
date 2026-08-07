@@ -149,7 +149,7 @@ Rendering rules:
 - If `model_used` is null: show `[inherited]`; if model field absent entirely, omit the bracket annotation.
 - If `routing_outcome` exists for this agent and `escalated` is true: append `[{model_used}, escalated from {escalated_from}]` instead.
 - Parallel group (2+ agents): use `┬─` for first, `├─` for middle, `┴─` for last. Sequential (1 agent): use `┌─` / `└─`.
-- Annotate `replan` and `verify_fix_attempt` / `verify_fix_fail` events inline at their `T+{N}s` offset, indented with `│  [{event_type}] {detail}`.
+- Annotate `replan` and `verify_fix_attempt` events inline at their `T+{N}s` offset, indented with `│  [{event_type}] {detail}`. (`verify_fix_fail` is a defined type with no live write site — it never fires, so it is omitted here.)
 - Outcome preview: take first 80 characters of `last_message_preview`, stripping any leading `## Result Summary` header line. Truncate with `...` if longer than 80 characters. Omit entirely if `last_message_preview` is null or empty.
 - Cap each timeline line at 120 characters; truncate with `...` if needed.
 

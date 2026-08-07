@@ -16,7 +16,7 @@ The user wants to see aggregate performance analytics across orchestration histo
    - If empty: analyze all orchestrations.
 
 2. **Scan history via MCP:** Call `mcp__orchestray__history_query_events` with:
-   - `event_types: ["orchestration_start", "orchestration_complete", "agent_stop", "task_completed_metrics", "routing_outcome", "replan", "verify_fix_attempt", "verify_fix_fail"]`
+   - `event_types: ["orchestration_start", "orchestration_complete", "agent_stop", "task_completed_metrics", "routing_outcome", "replan", "verify_fix_attempt"]`
    - `limit: 500` (the server-side maximum)
    - If N was specified, filter the returned `events` array client-side to the
      last N unique `orchestration_id` values (the server does not expose a
@@ -41,7 +41,7 @@ The user wants to see aggregate performance analytics across orchestration histo
    - `agent_stop` / `task_completed_metrics`: extract `agent_type`, `estimated_cost_usd`, `model_used`.
    - `routing_outcome`: extract `agent_type`, `model_assigned`, `escalated` (boolean).
    - `replan`: count occurrences per orchestration.
-   - `verify_fix_attempt` / `verify_fix_fail`: count verify-fix rounds per orchestration.
+   - `verify_fix_attempt`: count verify-fix retry rounds per orchestration (the formal `verify_fix_pass`/`verify_fix_fail` quartet from `phase-verify.md` has no live write site in this repo and never fires — `verify_fix_attempt` is the informal retry-note the PM actually emits; see `event-schemas.md`).
 
    Skip orchestrations that have no `orchestration_start` event in the returned set.
 

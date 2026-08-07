@@ -7459,6 +7459,52 @@ Field notes:
 - v2.2.9 B-7.1 (W1 F-PM-18): mechanises the prose-only base_turns table at pm.md:872-885 by enforcing a single hard ceiling read from `.orchestray/config.json`.
 - Operator override: raise `spawn.max_turns_hard_cap` in config (no env kill switch — per-call permission is the escape hatch).
 
+### `tool_grant_shortfall` event
+
+Emitted by `bin/detect-tool-grant-shortfall.js` (SubagentStop, telemetry-only —
+never blocks) when a completed spawn's resolved agent role declares a
+CAPABILITY-CRITICAL tool (`WebFetch`, `WebSearch`) in its agent-definition
+frontmatter but the tool was never observed in the subagent's own transcript.
+
+```json
+{
+  "type": "tool_grant_shortfall",
+  "version": 1,
+  "schema_version": 1,
+  "orchestration_id": "...",
+  "agent_role": "platform-oracle",
+  "declared_but_unused": ["WebFetch"],
+  "substituted_via": "bash_curl",
+  "spawn_id": "agent-ab7e7714"
+}
+```
+
+Field notes:
+- `agent_role`: resolved via `resolveAgentRole()` — prefers the spawn-metadata
+  sidecar (`resolveCallerAgentTypeFromMeta`, authoritative) over the raw
+  `event.agent_type` / `subagent_type` roster name, which is the caller-chosen
+  spawn label (e.g. `oracle-v2318`), not the role that decided tool grants.
+  Falls back to `stripCollisionSuffix` on the roster name when the sidecar is
+  unreadable.
+- Agent definition lookup order (`resolveAgentDefinitionPath`): project
+  install (`<cwd>/.claude/agents/`) > project-legacy (`<cwd>/agents/`,
+  source-repo dev layout) > user/global (`~/.claude/agents/`) > plugin-legacy
+  (`~/.claude/orchestray/agents/`). A role that resolves to no definition
+  anywhere is NOT a shortfall — nothing is emitted (its declared tools are
+  unknowable, not absent).
+- `declared_but_unused`: subset of `CAPABILITY_CRITICAL_TOOLS` (`WebFetch`,
+  `WebSearch`) present in the role's declared `tools:` frontmatter but never
+  called in the spawn's transcript.
+- `substituted_via`: `"bash_curl"` when the transcript shows a `Bash` call
+  whose command contains `curl`, else `null`.
+- `spawn_id`: `event.agent_id` if present, else `event.task_id`, else `null`.
+- v2.3.19 W2: fixed two root causes that made this hook fire zero times since
+  it shipped (agent-role conflated with the caller-chosen roster name;
+  agent-definition lookup missed real install layouts) — see
+  `bin/detect-tool-grant-shortfall.js` header comment.
+- Kill switch: `ORCHESTRAY_TOOL_GRANT_SHORTFALL_DISABLED=1`, or
+  `tool_grant_shortfall.enabled: false` in config.
+
 ### `repo_map_threshold_drift` event
 
 Emitted by `bin/_lib/repo-map-drift-detector.js` (called from periodic validation) when a numeric threshold cited in pm.md / phase-*.md prose disagrees with `.orchestray/config.json` `repo_map_thresholds.*`.
@@ -8673,7 +8719,11 @@ Emitted alongside `staging_write_failed` during the rename-cycle transition.
 Field notes:
 - `original_event_type`: the pre-rename event type this alias shadows.
 - `schema_version`: always 1 (v2.2.11 baseline).
-- Transitional: retire in v2.2.13.
+- Transitional: the planned v2.2.13 retirement of the pre-rename `*_failed`
+  name never happened — both names remain live indefinitely. Until v2.3.19
+  `writeEventWithAliases()` had zero production callers (dead code, exercised
+  only by its own unit tests); the two real `*_failed` emitters now call it,
+  so this alias fires for real.
 
 ---
 
@@ -8698,7 +8748,11 @@ Field notes:
 - `original_event_type`: the pre-rename event type this alias shadows.
 - `outcome`: always `"failed"` in v2.2.11 (the alias fires only when the original `*_failed` event fires).
 - `schema_version`: always 1 (v2.2.11 baseline).
-- Transitional: retire in v2.2.13.
+- Transitional: the planned v2.2.13 retirement of the pre-rename `*_failed`
+  name never happened — both names remain live indefinitely. Until v2.3.19
+  `writeEventWithAliases()` had zero production callers (dead code, exercised
+  only by its own unit tests); the two real `*_failed` emitters now call it,
+  so this alias fires for real.
 
 ---
 
@@ -8721,7 +8775,11 @@ Emitted alongside `task_validation_failed` during the rename-cycle transition.
 Field notes:
 - `original_event_type`: the pre-rename event type this alias shadows.
 - `schema_version`: always 1 (v2.2.11 baseline).
-- Transitional: retire in v2.2.13.
+- Transitional: the planned v2.2.13 retirement of the pre-rename `*_failed`
+  name never happened — both names remain live indefinitely. Until v2.3.19
+  `writeEventWithAliases()` had zero production callers (dead code, exercised
+  only by its own unit tests); the two real `*_failed` emitters now call it,
+  so this alias fires for real.
 
 ---
 
@@ -8746,7 +8804,11 @@ Field notes:
 - `original_event_type`: the pre-rename event type this alias shadows.
 - `outcome`: always `"failed"` in v2.2.11 (the alias fires only when the original `*_failed` event fires).
 - `schema_version`: always 1 (v2.2.11 baseline).
-- Transitional: retire in v2.2.13.
+- Transitional: the planned v2.2.13 retirement of the pre-rename `*_failed`
+  name never happened — both names remain live indefinitely. Until v2.3.19
+  `writeEventWithAliases()` had zero production callers (dead code, exercised
+  only by its own unit tests); the two real `*_failed` emitters now call it,
+  so this alias fires for real.
 
 ---
 

@@ -36,7 +36,9 @@ function _emitStagingWriteFailed(projectDir, cachePath, op, err) {
     try {
       // eslint-disable-next-line global-require
       const mod = require('./audit-event-writer');
-      _writeEvent = (mod && mod.writeEvent) || null;
+      // writeEventWithAliases also fires the staging_write_attempt/result
+      // shadow pair (v2.2.11 rename-cycle) — see audit-event-writer.js W2-11.
+      _writeEvent = (mod && mod.writeEventWithAliases) || null;
       _resolveOrchestrationId = (mod && mod.resolveOrchestrationId) || null;
     } catch (_e) {
       _writeEvent = null;

@@ -903,12 +903,31 @@ function handle(event) {
       } catch (_e) { /* keep unknown */ }
       if (oid !== 'unknown') {
         const stateDir = path.join(cwd, STATE_DIR);
-        const turnId = (event && event.session_id) || 'unknown-turn';
-        const dedupKey = oid + ':' + turnId + ':block_a';
+        // v2.3.19 fix: event.session_id is stable for the whole Claude Code
+        // session, not per-turn — a dedup_key keyed on it recurred across a
+        // 47-minute span in production, wrongly suppressing legitimate later
+        // turns whenever a stale claim from an earlier turn was still inside
+        // the TTL window (v2319-guard-window-analysis.md §3). Hash the actual
+        // prompt text instead: two racing installs handling the SAME turn
+        // receive identical prompt text (the genuine race is still caught),
+        // while two DISTINCT turns almost always have different prompt text
+        // (no longer share a dedup_key, so an earlier turn's claim can no
+        // longer suppress a new one). Residual: two turns with byte-identical
+        // prompt text (e.g. the user resubmits "continue") still collide —
+        // narrowing ttlMs below shrinks that exposure window but cannot
+        // eliminate it.
+        const promptText = (event && typeof event.prompt === 'string') ? event.prompt : '';
+        const turnDiscriminator = crypto.createHash('sha256').update(promptText).digest('hex').slice(0, 16);
+        const dedupKey = oid + ':' + turnDiscriminator + ':block_a';
         const guard = requireGuard({
           guardName:       'compose-block-a',
           dedupKey,
-          ttlMs:           60 * 1000, // turn-scoped
+          // Narrowed 60000 -> 2000ms as defense-in-depth on top of the key
+          // fix above. Genuine same-turn races measure 1-20ms (>100x
+          // headroom at 2000ms); shrinking the window from 60s to 2s cuts
+          // the residual identical-prompt-resubmission exposure by 30x,
+          // matching the window used by the other per-event guards.
+          ttlMs:           2000,
           stateDir,
           callerPath:      __filename,
           orchestrationId: oid,

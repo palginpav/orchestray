@@ -357,8 +357,24 @@ const JSON_FENCE_INFO = /^(json|jsonc|json5)$/i;
  * text to strip it out of*. On a payload carrying both `result` and `output`
  * they picked different fields, so the strip ran against text that never held
  * the block and the raw JSON — `issues[]` and all — stayed in the claim corpus.
+ *
+ * `last_assistant_message` leads, and that is the whole fix of v2.3.19 W1.
+ * A real `SubagentStop` payload carries the agent's text on that field and on
+ * NO other — `result`, `output` and `agent_output` are absent from every one of
+ * the harvested live payloads in `.orchestray/fixtures/validate-claim-evidence/`.
+ * Reading only the three legacy names meant the claim corpus was empty on every
+ * production spawn, which is why all 28 shipped `claim_evidence_ok` rows carry
+ * `claims_count: 0`: the ledger passed because it had nothing to check.
+ *
+ * Order is deliberate, not incidental. The platform-populated field wins over
+ * the three legacy ones because it is the only one a live payload has, so a
+ * future payload that adds `result` (as a status string, a preview, anything)
+ * cannot displace the real testimony and re-darken the gate. The legacy names
+ * stay behind it for back-compat: tests and internal callers synthesise events
+ * with `output`/`result`, no live payload sets both, and no caller loses its
+ * field.
  */
-const RAW_OUTPUT_FIELDS = ['result', 'output', 'agent_output'];
+const RAW_OUTPUT_FIELDS = ['last_assistant_message', 'result', 'output', 'agent_output'];
 
 /**
  * The spawn's raw text output under the canonical field precedence.

@@ -117,13 +117,19 @@ describe('validation gate — blocking on missing fields', () => {
       const input = JSON.stringify({ cwd: tmpDir }); // missing both fields
       run(input);
       const events = readEventsJsonl(auditDir);
-      assert.equal(events.length, 1, 'exactly one rejection event should be logged');
+      // task_validation_failed now fans out through writeEventWithAliases
+      // (v2.2.11 rename-cycle): the original event plus a task_validation_attempt
+      // / task_validation_result shadow pair — 3 rows total.
+      assert.equal(events.length, 3, 'rejection event plus its rename-cycle alias pair should be logged');
       const ev = events[0];
       assert.equal(ev.type, 'task_validation_failed');
       assert.ok(ev.reason.includes('task_id') || ev.reason.includes('task_subject'),
         'reason should identify which field is missing');
       assert.ok(Array.isArray(ev.payload_keys), 'payload_keys must be an array');
-      // No task_completed event — only the rejection.
+      assert.equal(events[1].type, 'task_validation_attempt');
+      assert.equal(events[2].type, 'task_validation_result');
+      assert.equal(events[2].outcome, 'failed');
+      // No task_completed event — only the rejection (+ its aliases).
       assert.ok(!events.some(e => e.type === 'task_completed'),
         'no task_completed event should exist on rejection path');
     } finally {
@@ -149,7 +155,9 @@ describe('validation gate — blocking on missing fields', () => {
       run(input);
 
       const events = readEventsJsonl(auditDir);
-      assert.equal(events.length, 1);
+      // task_validation_failed fans out to its rename-cycle alias pair (see
+      // the "plus its rename-cycle alias pair" test above) — 3 rows total.
+      assert.equal(events.length, 3);
       const raw = fs.readFileSync(path.join(auditDir, 'events.jsonl'), 'utf8');
       assert.ok(!raw.includes(sensitive),
         'rejection audit event must NOT contain payload values');

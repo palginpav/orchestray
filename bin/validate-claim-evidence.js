@@ -42,7 +42,7 @@ const { writeEvent }      = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { readHookInputRaw } = require('./_lib/hook-stdin');
-const { extractToolCalls } = require('./_lib/transcript-tools');
+const { extractToolCalls, resolveSpawnTranscript } = require('./_lib/transcript-tools');
 const {
   matchClaims,
   findEvidence,
@@ -289,9 +289,9 @@ function eventRole(ev) {
  * Residual: an event stamped for the *same* role as a concurrently-running
  * sibling is still ambiguous. Closing it needs a spawn id shared by the
  * PreToolUse:Agent payload and the SubagentStop payload; there is none today
- * (SubagentStop carries no `tool_use_id`, and its `transcript_path` is the
- * subagent's, not the parent's), so role-level attribution is the tightest
- * join available.
+ * (SubagentStop carries no `tool_use_id`; it does carry `agent_id`, but the
+ * PreToolUse:Agent side has no such field to join on), so role-level
+ * attribution is the tightest join available.
  *
  * @param {object} ev
  * @param {string|null} orchId
@@ -497,8 +497,10 @@ function evaluateSpawn(event, cwd, opts = {}) {
   const sr   = extractStructuredResult(event);
 
   // Transcript first: pattern_find in the call log is itself a claim trigger.
-  // SubagentStop payloads carry the spawn transcript under either key.
-  const transcriptPath = event.transcript_path || event.agent_transcript_path;
+  // `resolveSpawnTranscript` picks the SPAWN's transcript over the parent
+  // session's — the two are different files in a real payload, and preferring
+  // the session let the PM's tool calls answer for the subagent's claims.
+  const transcriptPath = resolveSpawnTranscript(event);
   const calls = extractToolCalls(transcriptPath, { cwd });
 
   const hasAuditEvent = opts.hasAuditEvent ||

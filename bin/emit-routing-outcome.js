@@ -190,7 +190,21 @@ setImmediate(() => {
       const guard = requireGuard({
         guardName:       'emit-routing-outcome',
         dedupKey,
-        ttlMs:           100, // spawn-scoped
+        // v2.3.19 fix: 100ms was too tight for real dual-install spawn
+        // latency under CPU contention — same class of risk as
+        // inject-delegation-delta.js's pre-a17d9ce defect (identical
+        // dedupKey coarseness here: orchId:agentDiscriminator, no
+        // per-spawn discriminator). Measured real catches for this site
+        // are 0-6ms (median 3ms, p90 5ms); 2000ms gives >300x headroom
+        // while staying well under the 4757ms floor of the closest
+        // genuinely-distinct-task pair observed sharing this key
+        // (v2319-guard-window-analysis.md §1). This widening does NOT
+        // fix the separately-diagnosed same-caller_path miss category —
+        // double-fire-guard.js only flags a collision when caller_path
+        // differs, so same-process/same-install duplicate fires never
+        // reach this window check at all; that needs a library-level
+        // change (tracked as a follow-up, not in scope here).
+        ttlMs:           2000,
         stateDir,
         callerPath:      __filename,
         orchestrationId,

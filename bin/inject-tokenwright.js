@@ -212,9 +212,22 @@ setImmediate(() => {
     // Double-fire guard — still needed so the lightweight estimate write
     // below doesn't double-journal the same spawn on a duplicate hook fire.
     if (doubleFireGuardEnabled(cfg)) {
-      const spawnTs   = Date.now();
+      // v2.3.19 fix: dedupToken used to embed a locally-computed Date.now()
+      // stamped independently by each racing process, so two installs
+      // handling the SAME Agent spawn never produced matching tokens — the
+      // guard structurally could not detect a single duplicate in the
+      // entire event log despite firing on every spawn
+      // (v2319-guard-window-analysis.md §4). event.tool_use_id identifies
+      // the underlying tool call and is delivered identically to both
+      // racing installs, so keying on it is deterministic across the race
+      // while staying unique per real spawn. Falls back to the prompt text
+      // when tool_use_id is absent (defensive — expected present on every
+      // PreToolUse:Agent payload).
+      const spawnDiscriminator = (typeof event.tool_use_id === 'string' && event.tool_use_id)
+        ? event.tool_use_id
+        : prompt;
       const dedupToken = crypto.createHash('sha256')
-        .update(prompt + agentType + String(spawnTs)).digest('hex').slice(0, 16);
+        .update(agentType + ':' + spawnDiscriminator).digest('hex').slice(0, 16);
       const { shouldFire, doubleFireEvent } = checkDoubleFire({
         dedupToken,
         callerPath: __filename,

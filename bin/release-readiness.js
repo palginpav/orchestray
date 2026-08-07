@@ -19,6 +19,15 @@
  *   (d) All 5 specialists exist (specialists/*.md).
  *   (e) A recent agent_metrics.jsonl entry contains structural_score.
  *       Skipped if the file has fewer than 5 entries.
+ *   (g) v2.3.19 W3: no unexplained Behavior Diff Gate delta in bin/*.js
+ *       scripts since the last release tag. Release-time is BDG's cheapest
+ *       trigger point — it replays once per release rather than per edit,
+ *       so the multi-second-per-script replay cost (git worktree + fixture
+ *       corpus) never touches the interactive edit path. Obeys BDG's own
+ *       behavior_diff_gate.enabled/block config and
+ *       ORCHESTRAY_BEHAVIOR_DIFF_DISABLED kill switch — fail-open on any
+ *       harness error (missing git, no prior tag, worktree failure) so a
+ *       bug in the replay harness can never block a release.
  *
  * Exit codes:
  *   0 — all checks pass (or skipped with a note)
@@ -333,6 +342,87 @@ function checkStructuralScoreLive(root) {
   }
 }
 
+/**
+ * (g) v2.3.19 W3: Behavior Diff Gate — replay changed bin/*.js scripts against
+ * the last release tag and fail readiness on an unexplained delta.
+ *
+ * Deliberately reuses BDG's OWN kill switches (behavior_diff_gate.enabled /
+ * .block, ORCHESTRAY_BEHAVIOR_DIFF_DISABLED) rather than adding a parallel
+ * on/off knob — release-readiness obeys whatever the operator already told
+ * BDG to do, so `block: false` degrades this check to informational and
+ * `enabled: false` / the env var skip it outright, same as the CLI.
+ *
+ * Every failure path here is a SKIP, not a FAIL: no git, no prior release
+ * tag (first release), or a harness error (e.g. worktree creation failed) all
+ * fail open. A bug in the replay harness must never be the reason a release
+ * cannot ship.
+ */
+function checkBehaviorDiffGate(root) {
+  let bdg;
+  try {
+    bdg = require('./_tools/behavior-diff');
+  } catch (err) {
+    return { pass: true, skipped: true, note: 'behavior-diff.js not loadable — skipping (' + err.message + ')' };
+  }
+
+  let cfg;
+  try {
+    cfg = bdg.loadConfig(root);
+  } catch (_e) {
+    return { pass: true, skipped: true, note: 'could not load behavior_diff_gate config — skipping' };
+  }
+  if (bdg.isDisabled(cfg)) {
+    return { pass: true, skipped: true, note: 'Behavior Diff Gate disabled (behavior_diff_gate.enabled: false or ORCHESTRAY_BEHAVIOR_DIFF_DISABLED=1)' };
+  }
+
+  let baseTag;
+  try {
+    const { execFileSync } = require('node:child_process');
+    baseTag = execFileSync('git', ['describe', '--tags', '--abbrev=0'], {
+      cwd: root, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  } catch (_e) {
+    baseTag = null;
+  }
+  if (!baseTag) {
+    return { pass: true, skipped: true, note: 'no prior release tag found (not a git repo, or first release) — nothing to diff against' };
+  }
+
+  let report;
+  try {
+    report = bdg.run({ cwd: root, base: baseTag, config: cfg });
+  } catch (err) {
+    return { pass: true, skipped: true, note: 'Behavior Diff Gate harness error — skipping (fail-open): ' + err.message };
+  }
+  if (report.error) {
+    return { pass: true, skipped: true, note: 'Behavior Diff Gate harness error — skipping (fail-open): ' + report.error };
+  }
+
+  // Telemetry-first: persist the report and emit the audit event regardless
+  // of the caller — matches the CLI path (`main()`), which does the same.
+  try { bdg.writeReport(root, report); } catch (_e) { /* best-effort */ }
+  try { bdg.emitRunEvent(root, report); } catch (_e) { /* best-effort */ }
+
+  if (report.scripts.length === 0) {
+    return { pass: true, note: `no bin/*.js changes since ${baseTag} — nothing to replay` };
+  }
+  if (!report.blocked) {
+    return {
+      pass: true,
+      note: report.delta_count === 0
+        ? `no behavior deltas since ${baseTag} (${report.scripts.length} script(s) replayed)`
+        : `${report.delta_count} behavior delta(s) since ${baseTag} — telemetry only (behavior_diff_gate.block is false)`,
+    };
+  }
+
+  const flagged = report.scripts.filter((s) => s.deltas.length > 0).map((s) => s.script);
+  return {
+    pass: false,
+    note: `${report.delta_count} unexplained behavior delta(s) since ${baseTag} in: ${flagged.join(', ')} — ` +
+      `run \`node bin/_tools/behavior-diff.js --base ${baseTag}\` for detail, or set behavior_diff_gate.block: false to demote to telemetry.`,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -367,6 +457,11 @@ const checks = [
     id:    'f',
     label: 'event-schemas.{shadow,tier2-index} _meta.source_hash matches live source SHA (F-014)',
     run:   () => checkSchemaSidecarsFresh(projectRoot),
+  },
+  {
+    id:    'g',
+    label: 'Behavior Diff Gate — no unexplained behavior delta since the last release tag',
+    run:   () => checkBehaviorDiffGate(projectRoot),
   },
 ];
 

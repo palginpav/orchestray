@@ -356,8 +356,115 @@ describe('release-readiness: JSON output format', () => {
     assert.ok(typeof output.summary.skipped === 'number');
     // F-014 (v2.2.0 pre-ship cross-phase fix-pass): added check (f) for
     // schema-sidecar source_hash freshness. Total raised from 5 to 6.
-    assert.strictEqual(output.results.length, 6, 'should have 6 check results');
+    // v2.3.19 W3: added check (g) for the Behavior Diff Gate. Total raised
+    // from 6 to 7.
+    assert.strictEqual(output.results.length, 7, 'should have 7 check results');
     const checkF = output.results.find((r) => r.id === 'f');
     assert.ok(checkF, 'check (f) sidecar coherence must appear in results');
+    const checkG = output.results.find((r) => r.id === 'g');
+    assert.ok(checkG, 'check (g) Behavior Diff Gate must appear in results');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test: check (g) — Behavior Diff Gate
+// ---------------------------------------------------------------------------
+
+describe('release-readiness: check (g) Behavior Diff Gate', () => {
+  const GIT_ENV = {
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_SYSTEM: '/dev/null',
+    GIT_AUTHOR_NAME: 'rr-test', GIT_AUTHOR_EMAIL: 'rr-test@test',
+    GIT_COMMITTER_NAME: 'rr-test', GIT_COMMITTER_EMAIL: 'rr-test@test',
+  };
+
+  function git(cwd, args) {
+    const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: Object.assign({}, process.env, GIT_ENV) });
+    if (r.status !== 0) throw new Error('git ' + args.join(' ') + ' failed: ' + r.stderr);
+    return r.stdout;
+  }
+
+  /** A probe hook: emits a different event/exit code depending on `state`. */
+  const PROBE_SCRIPT = [
+    "'use strict';",
+    'const fs = require("fs");',
+    'const path = require("path");',
+    'let raw = ""; try { raw = String(fs.readFileSync(0, "utf8") || ""); } catch (_e) { raw = ""; }',
+    'const dir = path.join(process.cwd(), ".orchestray", "audit");',
+    'fs.mkdirSync(dir, { recursive: true });',
+    'const armed = fs.existsSync(path.join(process.cwd(), ".orchestray", "state", "flag.txt"));',
+    'fs.appendFileSync(path.join(dir, "events.jsonl"),',
+    '  JSON.stringify({ type: armed ? "probe_armed" : "probe_idle" }) + "\\n");',
+    'process.exit(0);',
+    '',
+  ].join('\n');
+
+  /** Same input, but the armed branch now exits non-zero — a real delta. */
+  const PROBE_SCRIPT_CHANGED = PROBE_SCRIPT.replace(
+    'process.exit(0);',
+    'if (armed) process.exit(2);\nprocess.exit(0);'
+  );
+
+  function buildGitFixture() {
+    const root = buildPassingFixture();
+    git(root, ['init', '-q']);
+    fs.mkdirSync(path.join(root, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'bin', 'probe.js'), PROBE_SCRIPT, 'utf8');
+    const fixDir = path.join(root, '.orchestray', 'fixtures', 'probe');
+    fs.mkdirSync(fixDir, { recursive: true });
+    fs.writeFileSync(path.join(fixDir, 'a1.json'), JSON.stringify({
+      stdin: { hook_event_name: 'PreToolUse' },
+      state: { 'flag.txt': '1' },
+    }), 'utf8');
+    git(root, ['add', '-A']);
+    git(root, ['commit', '-q', '-m', 'base']);
+    git(root, ['tag', 'v0.0.1']);
+    return root;
+  }
+
+  test('passes and reports no deltas when nothing changed since the tag', () => {
+    const root = buildGitFixture();
+    const { output } = runScript(root);
+    const checkG = output.results.find((r) => r.id === 'g');
+    assert.ok(checkG, 'check (g) must run');
+    assert.strictEqual(checkG.pass, true);
+    assert.ok(!checkG.skipped, 'a real tag + real git repo must not skip');
+  });
+
+  test('fails release readiness on a real behavior-changing edit since the tag', () => {
+    const root = buildGitFixture();
+    // A behavior-changing edit, left uncommitted — release-readiness diffs
+    // the working tree against the last tag, same as a not-yet-committed
+    // release candidate.
+    fs.writeFileSync(path.join(root, 'bin', 'probe.js'), PROBE_SCRIPT_CHANGED, 'utf8');
+
+    const { exitCode, output } = runScript(root);
+    const checkG = output.results.find((r) => r.id === 'g');
+    assert.ok(checkG, 'check (g) must run');
+    assert.strictEqual(checkG.pass, false, 'an unexplained delta must fail readiness');
+    assert.ok(checkG.note.includes('bin/probe.js'), checkG.note);
+    assert.strictEqual(exitCode, 1, 'overall readiness must fail too');
+
+    // Telemetry-first: the run must have emitted the verdict event.
+    const events = fs.readFileSync(path.join(root, '.orchestray', 'audit', 'events.jsonl'), 'utf8')
+      .split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    assert.ok(events.some((e) => e.type === 'behavior_diff_unexpected'),
+      'expected a behavior_diff_unexpected event, saw: ' + events.map((e) => e.type).join(','));
+  });
+
+  test('kill switch skips the check entirely', () => {
+    const root = buildGitFixture();
+    fs.writeFileSync(path.join(root, 'bin', 'probe.js'), PROBE_SCRIPT_CHANGED, 'utf8');
+
+    const args = ['--json', '--project-root=' + root];
+    const r = spawnSync(process.execPath, [SCRIPT, ...args], {
+      encoding: 'utf8', timeout: 10000,
+      env: Object.assign({}, process.env, { ORCHESTRAY_BEHAVIOR_DIFF_DISABLED: '1' }),
+    });
+    const output = JSON.parse(r.stdout);
+    const checkG = output.results.find((r2) => r2.id === 'g');
+    assert.ok(checkG, 'check (g) must still appear, just skipped');
+    assert.strictEqual(checkG.skipped, true);
+    assert.strictEqual(checkG.pass, true, 'a skipped check must never fail readiness');
   });
 });

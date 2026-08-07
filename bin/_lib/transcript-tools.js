@@ -29,6 +29,37 @@ const DEFAULT_MAX_BYTES = 512 * 1024;
 const MAX_INPUT_CHARS = 8 * 1024;
 
 /**
+ * The transcript belonging to the spawn a `SubagentStop` payload describes.
+ *
+ * A real payload carries BOTH keys and they are DIFFERENT files:
+ *
+ *   transcript_path        <proj>/<session>.jsonl                — parent session
+ *   agent_transcript_path  <proj>/<session>/subagents/agent-*.jsonl — this spawn
+ *
+ * Reading `transcript_path` first — as this module's callers did until v2.3.19
+ * W1 — pointed the evidence side at the PM's transcript. Any tool call the PM
+ * ever made discharged the subagent's claim, and the subagent's own calls were
+ * never examined: evidence laundering in the direction that always passes.
+ *
+ * The spawn's own transcript therefore leads. `transcript_path` stays as the
+ * fallback for the shapes that carry only it (synthesised events, and the
+ * in-process teammate payloads `collect-agent-metrics.js:357` documents as
+ * session-keyed) — an approximate transcript still beats no evidence at all,
+ * and the fallback only ever runs when there is no spawn transcript to prefer.
+ *
+ * @param {object} event  a hook payload
+ * @returns {string}  a path, or '' when the payload names no transcript
+ */
+function resolveSpawnTranscript(event) {
+  if (!event || typeof event !== 'object') return '';
+  for (const field of ['agent_transcript_path', 'transcript_path']) {
+    const v = event[field];
+    if (typeof v === 'string' && v.length > 0) return v;
+  }
+  return '';
+}
+
+/**
  * Extract tool_use blocks from a transcript JSONL tail.
  *
  * @param {string} transcriptPath
@@ -107,6 +138,7 @@ function callHaystack(call) {
 }
 
 module.exports = {
+  resolveSpawnTranscript,
   extractToolCalls,
   callHaystack,
   DEFAULT_MAX_BYTES,

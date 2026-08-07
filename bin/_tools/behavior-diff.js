@@ -392,6 +392,27 @@ function changedScripts(repoRoot, base) {
 }
 
 /**
+ * `git worktree add` never carries gitignored `node_modules/` — every script
+ * that transitively `require()`s an npm package (e.g. `zod` via
+ * `_lib/config-schema.js`) would crash to load on the baseline side, faking a
+ * behavior delta on EVERY fixture rather than reporting the real one. A
+ * symlink is O(1) (no copy) and lets Node's normal upward node_modules walk
+ * from the worktree find the real repo's install. Best-effort: if the repo
+ * itself has no node_modules (never installed), both sides already fail
+ * identically and this is a no-op, not a new failure mode.
+ *
+ * @param {string} repoRoot
+ * @param {string} worktreeDir
+ */
+function linkNodeModules(repoRoot, worktreeDir) {
+  const src = path.join(repoRoot, 'node_modules');
+  const dest = path.join(worktreeDir, 'node_modules');
+  try {
+    if (fs.existsSync(src) && !fs.existsSync(dest)) fs.symlinkSync(src, dest, 'dir');
+  } catch (_e) { /* best-effort — a missing symlink surfaces as a delta, not a crash */ }
+}
+
+/**
  * Detached worktree at `base`. Caller must call `cleanup()`.
  *
  * @param {string} repoRoot
@@ -401,6 +422,7 @@ function changedScripts(repoRoot, base) {
 function createBaselineWorktree(repoRoot, base) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdg-base-'));
   git(repoRoot, ['worktree', 'add', '--detach', dir, base]);
+  linkNodeModules(repoRoot, dir);
   return {
     root: dir,
     cleanup() {
@@ -630,6 +652,7 @@ module.exports = {
   scriptsWithFixtures,
   changedScripts,
   createBaselineWorktree,
+  linkNodeModules,
   materialiseState,
   loadConfig,
   isDisabled,

@@ -192,6 +192,7 @@ All keys are nested under `plugin_loader` in `.orchestray/config.json`.
 | `behavior_diff_gate.harvest` | `true` | Collect fixtures from live hook runs into `.orchestray/fixtures/`. Separable from `block` on purpose: the corpus must build before the gate is worth arming. |
 | `behavior_diff_gate.block` | `true` | Treat an unexplained behavior delta as a failure. Set `false` for telemetry only. |
 | `behavior_diff_gate.max_fixtures_per_script` | `40` | Corpus cap per script. |
+| — | — | Wired at release-readiness time (`bin/release-readiness.js` check g), diffing changed `bin/*.js` scripts against the last release tag. Not wired to interactive edits — replay cost (git worktree + fixture corpus) is multiple seconds per script, too slow for a hot path. |
 
 ---
 

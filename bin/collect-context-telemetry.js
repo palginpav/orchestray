@@ -459,7 +459,7 @@ setImmediate(() => {
     // can tell read paths from write paths. Emission itself is fail-open.
     try {
       // eslint-disable-next-line global-require
-      const { writeEvent } = require('./_lib/audit-event-writer');
+      const { writeEventWithAliases } = require('./_lib/audit-event-writer');
       const opMap = {
         'pre-spawn':  'write',
         'start':      'update',
@@ -471,7 +471,10 @@ setImmediate(() => {
       const code = (err && (err.code || (err.constructor && err.constructor.name))) || 'Error';
       const msgRaw = err && err.message ? String(err.message) : String(err);
       const message = msgRaw.length > 256 ? msgRaw.slice(0, 256) : msgRaw;
-      writeEvent({
+      // writeEventWithAliases also fires the staging_write_attempt/result shadow
+      // pair (v2.2.11 rename-cycle) so downstream analytics can consume the new
+      // names — see bin/_lib/audit-event-writer.js W2-11.
+      writeEventWithAliases({
         version:       1,
         type:          'staging_write_failed',
         cwd:           resolvedCwd,
