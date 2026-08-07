@@ -48,6 +48,7 @@ const { writeEvent } = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { recordDegradation } = require('./_lib/degraded-journal');
 const { dispatch: dispatchMigrationBanners } = require('./_lib/migration-banner-ledger');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ──────────────────────────────────────────────────────────────────────────────
 // v2.0.21: upgrade-pending warning
@@ -2396,23 +2397,16 @@ function runTokenwrightSelfProbeIfNeeded(cwd, stateDir) {
 
 function main() {
   let input = '';
-  process.stdin.setEncoding('utf8');
 
-  process.stdin.on('error', () => {
+
+  input = readHookInputRaw();
+  if (input.length > MAX_INPUT_BYTES) {
+    process.stderr.write('[orchestray] post-upgrade-sweep: stdin exceeded limit; aborting\n');
     process.stdout.write(JSON.stringify({ continue: true }) + '\n');
     process.exit(0);
-  });
+  }
 
-  process.stdin.on('data', chunk => {
-    input += chunk;
-    if (input.length > MAX_INPUT_BYTES) {
-      process.stderr.write('[orchestray] post-upgrade-sweep: stdin exceeded limit; aborting\n');
-      process.stdout.write(JSON.stringify({ continue: true }) + '\n');
-      process.exit(0);
-    }
-  });
-
-  process.stdin.on('end', () => {
+  setImmediate(() => {
     try {
       const data = JSON.parse(input);
       const sessionId = (data.session_id || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_');

@@ -29,6 +29,7 @@ const path = require('path');
 const { MAX_INPUT_BYTES }       = require('./_lib/constants');
 const { resolveSafeCwd }        = require('./_lib/resolve-project-cwd');
 const { writeEvent }            = require('./_lib/audit-event-writer');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ---------------------------------------------------------------------------
 // KB index auto-append (W2d)
@@ -120,13 +121,9 @@ function isKbPath(filePath) {
 // ---------------------------------------------------------------------------
 
 let _input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => exitContinue());
-process.stdin.on('data', (chunk) => {
-  _input += chunk;
-  if (_input.length > MAX_INPUT_BYTES) exitContinue();
-});
-process.stdin.on('end', () => {
+_input = readHookInputRaw();
+if (_input.length > MAX_INPUT_BYTES) exitContinue();
+setImmediate(() => {
   try {
     const event = JSON.parse(_input);
     main(event).catch(() => exitContinue());

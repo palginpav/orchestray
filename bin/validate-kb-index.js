@@ -25,7 +25,20 @@
  *     allowing the call to proceed (cheap check; the MCP tool will validate
  *     the inputs again, but this layer surfaces the issue earlier).
  *
+ * D9 (v2.3.18): detection alone turned a recoverable index into a hard block
+ * on every KB write until someone hand-repaired index.json. Before blocking,
+ * this hook now attempts `repair(cwd)` (bin/_lib/kb-index-validator.js) — it
+ * only fixes the two mechanically-unambiguous shapes (mis-bucketed entries,
+ * exact-duplicate ids) and never guesses. On success it emits
+ * `kb_index_repaired` (with the diff) and lets the original call proceed. On
+ * failure (or a genuinely ambiguous corruption) it falls back to the
+ * pre-existing block below, now naming the specific unrepairable entry.
+ *
  * Exit 2 on detected corruption with a `kb_index_invalid` event emitted.
+ *
+ * CLI: `node bin/validate-kb-index.js --repair [cwd]` runs repair() directly
+ * against a project root (default: process.cwd()) without needing a hook
+ * stdin payload — for manual/CI invocation.
  *
  * Fail-open: any unexpected error → exit 0 (do not block legitimate work).
  */
@@ -33,9 +46,47 @@
 const path = require('path');
 
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
-const { validate } = require('./_lib/kb-index-validator');
+const { validate, repair } = require('./_lib/kb-index-validator');
 const { writeEvent } = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
+
+function _emitRepairedEvent(cwd, repairResult, triggerReason) {
+  try {
+    writeEvent({
+      type: 'kb_index_repaired',
+      version: 1,
+      timestamp: new Date().toISOString(),
+      index_path: repairResult.file_path,
+      changes: repairResult.changes,
+      change_count: repairResult.changes.length,
+      trigger_reason: triggerReason || null,
+    }, { cwd });
+  } catch (_evErr) { /* fail-open on emit failure */ }
+}
+
+// --repair CLI path: bypass the stdin hook protocol entirely.
+if (process.argv.includes('--repair')) {
+  const cliCwdArg = process.argv.find((a, i) => i > 1 && !a.startsWith('-'));
+  const cwd = resolveSafeCwd(cliCwdArg || process.cwd());
+  let result;
+  try {
+    result = repair(cwd);
+  } catch (err) {
+    process.stderr.write('[orchestray] validate-kb-index --repair: threw: ' + (err && err.message) + '\n');
+    process.exit(1);
+  }
+  if (result.repaired) {
+    _emitRepairedEvent(cwd, result, 'manual_cli');
+    process.stdout.write(
+      '[orchestray] kb index repaired: ' + result.changes.length + ' change(s)\n' +
+      JSON.stringify(result.changes, null, 2) + '\n'
+    );
+    process.exit(0);
+  }
+  process.stderr.write('[orchestray] kb index repair failed (reason=' + result.reason + ')\n');
+  process.exit(1);
+}
 
 function _isIndexPath(p, cwd) {
   if (typeof p !== 'string' || p.length === 0) return false;
@@ -45,13 +96,9 @@ function _isIndexPath(p, cwd) {
 }
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => { process.exit(0); });
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) process.exit(0);
-});
-process.stdin.on('end', () => {
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) process.exit(0);
+setImmediate(() => {
   let event;
   try {
     event = input ? JSON.parse(input) : {};
@@ -80,7 +127,23 @@ process.stdin.on('end', () => {
 
   if (result.valid) process.exit(0);
 
-  // Emit event and block.
+  // D9: try mechanical auto-repair before blocking. A recoverable index
+  // should never hard-block a KB write.
+  let repairResult = null;
+  try {
+    repairResult = repair(cwd);
+  } catch (_e) {
+    repairResult = null;
+  }
+
+  if (repairResult && repairResult.repaired) {
+    _emitRepairedEvent(cwd, repairResult, result.reason);
+    process.exit(0); // repaired in place — let the original call proceed
+  }
+
+  // Not repairable (or repair itself failed) — emit + block, naming the
+  // most specific reason we have (repair's, if it got further than validate's).
+  const blockingReason = (repairResult && repairResult.reason) ? repairResult.reason : result.reason;
   try {
     writeEvent({
       type: 'kb_index_invalid',
@@ -88,13 +151,16 @@ process.stdin.on('end', () => {
       timestamp: new Date().toISOString(),
       index_path: result.file_path,
       reason: result.reason,
+      repair_attempted: !!repairResult,
+      repair_reason: repairResult ? repairResult.reason : null,
     }, { cwd });
   } catch (_evErr) { /* fail-open on emit failure */ }
 
   const msg =
     '[orchestray] validate-kb-index: .orchestray/kb/index.json fails structural ' +
-    'validation (reason=' + result.reason + '). Refusing to write — repair the ' +
-    'index by hand or via `mcp__orchestray__kb_write` before retrying.';
+    'validation (reason=' + blockingReason + '). Refusing to write — repair the ' +
+    'index by hand, via `node bin/validate-kb-index.js --repair`, or via ' +
+    '`mcp__orchestray__kb_write` before retrying.';
   process.stderr.write(msg + '\n');
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {

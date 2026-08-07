@@ -39,6 +39,7 @@
  */
 
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const TARGETED_ROLES = new Set(['developer', 'refactorer', 'security-engineer']);
 
@@ -69,20 +70,16 @@ function emitAllowUpdated(updatedInput) {
 
 function runMain() {
   let input = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', () => { emitContinue(); process.exit(0); });
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-    if (input.length > MAX_INPUT_BYTES) {
-      process.stderr.write(
-        '[orchestray] inject-spawn-agent-hint: stdin exceeded ' +
-        MAX_INPUT_BYTES + ' bytes; failing open\n'
-      );
-      emitContinue();
-      process.exit(0);
-    }
-  });
-  process.stdin.on('end', () => {
+  input = readHookInputRaw();
+  if (input.length > MAX_INPUT_BYTES) {
+    process.stderr.write(
+      '[orchestray] inject-spawn-agent-hint: stdin exceeded ' +
+      MAX_INPUT_BYTES + ' bytes; failing open\n'
+    );
+    emitContinue();
+    process.exit(0);
+  }
+  setImmediate(() => {
   try {
     if (process.env.ORCHESTRAY_SPAWN_AGENT_HINT_DISABLED === '1') {
       emitContinue();

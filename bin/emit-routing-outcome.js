@@ -26,6 +26,7 @@ const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { requireGuard } = require('./_lib/double-fire-guard');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ---------------------------------------------------------------------------
 // Per-model output token caps used to compute completion_volume_ratio.
@@ -138,17 +139,13 @@ function normalizeModel(model) {
 }
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => { process.stdout.write(JSON.stringify({ continue: true })); process.exit(0); });
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[orchestray] hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
-    process.stdout.write(JSON.stringify({ continue: true }) + '\n');
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  process.stderr.write('[orchestray] hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
+  process.stdout.write(JSON.stringify({ continue: true }) + '\n');
+  process.exit(0);
+}
+setImmediate(() => {
   try {
     const event = JSON.parse(input);
 

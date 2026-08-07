@@ -32,3 +32,21 @@ if (!process.env.ORCHESTRAY_TEST_SHARED_DIR) {
     'orchestray-test-no-shared-' + process.pid
   );
 }
+
+// ---------------------------------------------------------------------------
+// D7 (v2.3.18 W0) — keep the test suite out of the live project audit log.
+//
+// Tests that call writeEvent without an explicit cwd fell back to
+// process.cwd() and appended straight into `.orchestray/audit/events.jsonl`,
+// contaminating production telemetry with fixtures (`/nonexistent/path.jsonl`,
+// `session_id: v2217-ramp-test`, `orch-smoke-*`). ORCHESTRAY_TEST is the gate
+// that bin/_lib/audit-event-writer.js checks; ORCHESTRAY_TEST_EVENTS_PATH is
+// where those writes go instead — per-worker so parallel runs cannot collide.
+// ---------------------------------------------------------------------------
+process.env.ORCHESTRAY_TEST = '1';
+if (!process.env.ORCHESTRAY_TEST_EVENTS_PATH) {
+  process.env.ORCHESTRAY_TEST_EVENTS_PATH = path.join(
+    os.tmpdir(),
+    'orchestray-test-events-' + process.pid + '.jsonl'
+  );
+}

@@ -3,6 +3,41 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.18] - 2026-08-07
+
+**Orchestray 2.3.18 is a reliability and hardening release: a security fix closes a local write primitive that could silence every hook on a dual-install machine, a new Claim–Evidence Ledger checks agents' own claims against what they actually did during the session, and a long list of dual-install, audit-log, and cost-tracking bugs are fixed.**
+
+### Security
+
+- **Closed a local write primitive that could silence every Orchestray hook.** On a machine with both a global and a project-local install, a planted file — or in the worst case a symlink — placed in the system temp directory could make hooks stop running entirely on either install, with no error and no warning. The file Orchestray relies on for this coordination is now checked for correct ownership and rejected outright if it's a symlink, closing both the spoofing and the write-primitive case.
+
+### Added
+
+- **Claim–Evidence Ledger.** When an agent's own report claims it ran the tests, registered a hook, or grounded an answer in a real source, Orchestray now checks that agent's actual tool calls from the session and blocks the handoff if the claim isn't backed up. Replaces five separate, narrower checks that tried to catch different flavors of the same problem and had quietly gone dark — one had fired zero times in over three months without anyone noticing.
+- **Behavior Diff Gate.** Internal script changes are now replayed against real captured inputs before landing, and any change in output is reported — catching regressions that "the code still runs" wouldn't.
+- **Co-change Oracle.** Learns which files tend to change together (for example, a schema and its validator) and flags or blocks a change that only touched one side of a known pair.
+- **The orchestrator now checks whether subtasks are genuinely independent, not just how complex the overall task looks, before splitting work across parallel agents.** Tightly-coupled work — where one subtask needs another's real output rather than just running after it — now runs as a short sequential chain instead of paying for parallel agents that end up blocked on each other.
+- **A new session-close checkpoint.** In addition to existing recovery points, Orchestray now also saves its recovery state when a session actually ends (including `/clear` and logging out), so a resumed session has the freshest possible picture of an in-progress orchestration.
+- **A new detector flags when `platform-oracle` or `researcher` silently substitute a plain `curl` command for their dedicated web tools** — previously invisible, now visible in telemetry. It reports the substitution; it doesn't yet correct it.
+- **Reviewers are now explicitly reminded not to let answer length or writing style influence a pass/fail score** — a documented bias in LLM-based review — and to double-check their own passing scores especially closely when reviewing code written by a similar model.
+
+### Fixed
+
+- **Hooks no longer fire twice on a machine with both a global and a project-local Orchestray install.** The dual-install coordination logic — previously spread across several overlapping layers, including a debounce that had stopped doing anything useful — is now a single decision point, which also fixes an accidental doubling of related log volume.
+- **A nightly audit job stopped writing hundreds of false "this event hasn't fired recently" warnings per day.** It was checking every registered event type instead of only the ones actually expected to fire regularly; it now writes one accurate summary per run instead.
+- **A missing "context size" hint on an agent spawn no longer hard-blocks that spawn.** Orchestray now computes a reasonable estimate directly from the prompt and proceeds with a warning, only blocking in the rare case where there's genuinely nothing to compute from.
+- **A corrupted knowledge-base index no longer blocks every write to the knowledge base until someone fixes it by hand.** Mechanically-repairable corruption is now repaired automatically; only genuinely ambiguous corruption still blocks, and you're told which.
+- **Fixed a family of dropped internal lifecycle events.** A validation failure on an event missing a required field used to silently drop the entire event instead of recording it — over 50 events, including orchestration start/complete records, were being lost this way with no visibility into it. These are now recorded with a warning instead of disappearing.
+- **Cost tracking for Agent-Teams spawns is far less likely to fall back to a generic estimate.** Orchestray now also checks the team's own task-assignment log to identify which model actually ran a task, instead of relying solely on a lookup that rarely has team spawns in it.
+- **Fixed a knowledge-base path bug that could double-nest a save path** (for example, writing to `decisions/decisions/foo.md` instead of `decisions/foo.md`) when the bucket name was already included in the path you gave it.
+- **Orchestray's own test suite no longer writes into your real audit log.** A leftover test-setup gap could mix test data into actual orchestration history.
+- **Repo maps no longer silently rebuild from scratch on every single spawn.** A file you'd deleted but not yet staged in git made the cache's two internal views of the repo permanently disagree, so the cache could never register as valid — a very common state during ordinary development.
+- **Removed a dead prompt-compression path** that had matched 0 of nearly 500 real prompts in an earlier audit and was still running, uselessly, on every single agent spawn.
+
+### Under the hood
+
+- Consolidated hook-input reading and dual-install dedup handling into shared internal helpers used by roughly 100 hook scripts, and split an internal fallback-reason code that had been overloaded to mean two very different situations. No behavior change for either.
+
 ## [2.3.17] - 2026-07-25
 
 **Orchestray 2.3.17 adds Claude Opus 5 support — the PM orchestrator now defaults to it — and fixes two fresh-install bugs: installing via `npx orchestray` could leave the MCP server and hooks unable to start, and repo-map code-symbol extraction silently never worked on any fresh install.**

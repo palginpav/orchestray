@@ -54,6 +54,7 @@ const path = require('node:path');
 const { resolveSafeCwd }              = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { writeEvent }                  = require('./_lib/audit-event-writer');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const ORPHAN_AGE_THRESHOLD_MS = 60 * 1000;
 const REQUESTER_SYSTEM        = 'system:housekeeper-trigger';
@@ -322,7 +323,7 @@ function main() {
   let payload = {};
   try {
     if (!process.stdin.isTTY) {
-      const raw = fs.readFileSync(0, 'utf8');
+      const raw = readHookInputRaw();
       if (raw && raw.trim().length > 0) payload = JSON.parse(raw);
     }
   } catch (_e) { /* fail-open */ }

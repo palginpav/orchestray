@@ -37,11 +37,11 @@ const path = require('node:path');
 const { resolveSafeCwd }                  = require('./_lib/resolve-project-cwd');
 const { writeEvent }                      = require('./_lib/audit-event-writer');
 const { hasOrchComplete, readCurrentOrchId } = require('./audit-on-orch-complete');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 let raw = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', c => { raw += c; });
-process.stdin.on('end', () => {
+raw = readHookInputRaw();
+setImmediate(() => {
   if (process.env.ORCHESTRAY_ORCH_LIFECYCLE_EMIT_DISABLED === '1') {
     return process.exit(0);
   }

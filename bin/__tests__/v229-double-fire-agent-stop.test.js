@@ -6,7 +6,9 @@
  *
  * Spawns bin/collect-agent-metrics.js as a child process with synthesized
  * SubagentStop / TaskCompleted payloads on stdin. Asserts:
- *   1. Same agent_stop fired twice (dual-install) → 1 emit + 1
+ *   1. Same agent_stop fired twice (dual-install) → 1 emit; the sibling install
+ *      is suppressed at the shared hook entry (v2.3.18 W0 / D1).
+ *   1b. With the legacy dual-install bypass set, the post-fire guard still emits
  *      agent_stop_double_fire_suppressed.
  *   2. Distinct agent_stops (different agent_type) → 2 emits, no suppression.
  *   3. ORCHESTRAY_AGENT_STOP_DOUBLE_FIRE_GUARD_DISABLED=1 → both fire (kill switch).
@@ -90,58 +92,69 @@ function buildPayload(root, overrides) {
 }
 
 describe('v229 B-4.1 — agent_stop double-fire guard', () => {
-  test('dual-install double fire → 1 agent_stop + 1 agent_stop_double_fire_suppressed', () => {
-    const root = makeTmpRoot();
-
-    // Simulate dual-install: two distinct hook script paths that both forward
-    // to the real hook implementation. The double-fire-guard tracks
-    // caller_path via the script's __filename, so two `require('real-hook')`
-    // shims sitting at different paths will look like two distinct installs.
-    //
-    // We must keep _lib resolution working, so each shim sits in a directory
-    // that has access to the real `_lib/` (we re-export `__filename`-aware
-    // logic by direct require of the real script — which sets the calling
-    // module's __filename, not the requirer's).
-    //
-    // Cleaner approach: copy the hook script body to two different paths
-    // and rewrite the require() prefixes to absolute paths into the real
-    // _lib dir so the modules resolve from the new location.
+  // Simulate dual-install: two distinct hook script paths that both forward to
+  // the real hook implementation. The guard tracks caller_path via the script's
+  // __filename, so two copies at different paths look like two installs. Each
+  // copy has its `require('./_lib/...')` prefixes rewritten to absolute paths so
+  // the module still resolves from its new location.
+  function makeDualInstallShims(root) {
     const realLibDir = path.join(REPO_ROOT, 'bin', '_lib');
-    function makeShimAt(shimPath) {
+    const makeShimAt = (shimPath) => {
       const original = fs.readFileSync(HOOK_PATH, 'utf8');
-      // Rewrite require('./_lib/...') and require('./read-event') to
-      // absolute paths so the copied script can run from anywhere.
       const rewritten = original
         .replace(/require\('\.\/_lib\//g, "require('" + realLibDir.replace(/\\/g, '\\\\') + "/")
         .replace(/require\('\.\/read-event'\)/g,
                  "require('" + path.join(REPO_ROOT, 'bin', 'read-event.js').replace(/\\/g, '\\\\') + "')");
       fs.mkdirSync(path.dirname(shimPath), { recursive: true });
       fs.writeFileSync(shimPath, rewritten, 'utf8');
-    }
+      return shimPath;
+    };
+    return [
+      makeShimAt(path.join(root, '.claude', 'install-A', 'collect-agent-metrics.js')),
+      makeShimAt(path.join(root, '.claude', 'install-B', 'collect-agent-metrics.js')),
+    ];
+  }
 
-    const installAPath = path.join(root, '.claude', 'install-A', 'collect-agent-metrics.js');
-    const installBPath = path.join(root, '.claude', 'install-B', 'collect-agent-metrics.js');
-    makeShimAt(installAPath);
-    makeShimAt(installBPath);
+  function fireShim(shimPath, payload, extraEnv) {
+    return cp.spawnSync(NODE, [shimPath], {
+      input: JSON.stringify(payload),
+      env: Object.assign({}, process.env, { ORCHESTRAY_PROJECT_ROOT: payload.cwd }, extraEnv || {}),
+      encoding: 'utf8',
+      timeout: 8000,
+    });
+  }
 
+  // v2.3.18 W0 (D1): the dedup guard moved from this one opt-in script to the
+  // shared hook entry (bin/_lib/hook-stdin.js). The sibling install now exits
+  // BEFORE running the hook body, so it never reaches the post-fire guard and
+  // no `agent_stop_double_fire_suppressed` row is produced. The user-visible
+  // contract — exactly one `agent_stop` — is unchanged and is what this asserts.
+  test('dual-install double fire → 1 agent_stop, sibling suppressed at the entry', () => {
+    const root = makeTmpRoot();
+    const [installAPath, installBPath] = makeDualInstallShims(root);
     const payload = buildPayload(root);
 
-    // First fire: install A.
-    const r1 = cp.spawnSync(NODE, [installAPath], {
-      input: JSON.stringify(payload),
-      env: Object.assign({}, process.env, { ORCHESTRAY_PROJECT_ROOT: root }),
-      encoding: 'utf8',
-      timeout: 8000,
-    });
+    const r1 = fireShim(installAPath, payload);
     assert.equal(r1.status, 0, 'first fire exits 0; stderr=' + r1.stderr);
+    const r2 = fireShim(installBPath, payload);
+    assert.equal(r2.status, 0, 'second fire exits 0; stderr=' + r2.stderr);
 
-    // Second fire: install B.
-    const r2 = cp.spawnSync(NODE, [installBPath], {
-      input: JSON.stringify(payload),
-      env: Object.assign({}, process.env, { ORCHESTRAY_PROJECT_ROOT: root }),
-      encoding: 'utf8',
-      timeout: 8000,
-    });
+    const events = readEvents(root);
+    const stops = events.filter(e => e.type === 'agent_stop');
+    assert.equal(stops.length, 1, 'exactly one agent_stop row written; got ' + stops.length);
+  });
+
+  // The post-fire guard is still the fallback whenever the entry-level dedup is
+  // bypassed, so its emit path must keep working.
+  test('legacy bypass → post-fire guard still emits agent_stop_double_fire_suppressed', () => {
+    const root = makeTmpRoot();
+    const [installAPath, installBPath] = makeDualInstallShims(root);
+    const payload = buildPayload(root);
+    const env = { ORCHESTRAY_DUAL_INSTALL_BYPASS_DISABLED: '1' };
+
+    const r1 = fireShim(installAPath, payload, env);
+    assert.equal(r1.status, 0, 'first fire exits 0; stderr=' + r1.stderr);
+    const r2 = fireShim(installBPath, payload, env);
     assert.equal(r2.status, 0, 'second fire exits 0; stderr=' + r2.stderr);
 
     const events = readEvents(root);

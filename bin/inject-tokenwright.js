@@ -2,25 +2,36 @@
 'use strict';
 
 /**
- * inject-tokenwright.js — PreToolUse:Agent hook (v2.2.6, tokenwright L1).
+ * inject-tokenwright.js — PreToolUse:Agent hook.
  *
- * v2.2.6 changes vs v2.2.5:
- *   - All silent skip paths now emit compression_skipped (event 5)
- *   - Double-fire guard via checkDoubleFire (event 6, §B3)
- *   - Journal sweep on write: TTL + size cap + count cap (event 7, §B4)
- *   - Invariant check post-compression: verifyLoadBearing (event 2, §B1)
- *   - Extended prompt_compression payload: sections_total, eligibility_rate,
- *     dedup_drop_by_heading, compression_skipped_path, tokenwright_version
- *   - expires_at added to pending journal entries (§B4)
+ * v2.3.18 retirement (W1f): the L1 MinHash compression pipeline (runL1 and
+ * the tokenwright.l1_compression_enabled gate that guarded it) has been
+ * removed. It shipped default-off since v2.2.19 and was reaffirmed dead in
+ * the v2.2.20 corpus audit (0/477 production prompts matched any
+ * dedup-eligible heading — see .orchestray/kb/artifacts/v2219-compression-rca.md
+ * §Symptom 1 and .orchestray/kb/artifacts/v2220-l1-revival-design.md
+ * §Executive Verdict). The mechanics (parseSections, classifySection,
+ * applyMinHashDedup) remain as tested library code under
+ * bin/_lib/tokenwright/ for a possible future revival — they are just no
+ * longer wired into this hot spawn-time path.
  *
- * Kill switches: ORCHESTRAY_DISABLE_COMPRESSION=1, cfg.compression.enabled===false,
- * level 'off', level 'debug-passthrough'. All skip paths now emit compression_skipped.
+ * What this hook still does on every Agent spawn:
+ *   - Passes the delegation prompt through UNMODIFIED (no compression).
+ *   - Writes a lightweight pre-spawn token estimate (bootstrapEstimate) to
+ *     the pending journal so bin/capture-tokenwright-realized.js can keep
+ *     emitting tokenwright_realized_savings / tokenwright_estimation_drift
+ *     telemetry (estimation-accuracy tracking, independent of compression —
+ *     see v2219-compression-rca.md §Symptom 2 "lightweight pre-spawn
+ *     estimate write" recommendation).
+ *   - Emits compression_skipped for kill-switch / no-prompt / exception
+ *     paths, and compression_double_fire_detected / tokenwright_journal_truncated
+ *     for the journal-write guard rails.
+ *
+ * Kill switches: ORCHESTRAY_DISABLE_COMPRESSION=1, cfg.compression.enabled===false.
  * ORCHESTRAY_DISABLE_SKIP_EVENT=1 or cfg.compression.skip_event_enabled===false restores
  * silent behavior.
  * ORCHESTRAY_DISABLE_DOUBLE_FIRE_GUARD=1 or cfg.compression.double_fire_guard_enabled===false
  * skips the double-fire guard.
- * ORCHESTRAY_DISABLE_INVARIANT_CHECK=1 or cfg.compression.invariant_check_enabled===false
- * skips the load-bearing invariant check.
  *
  * Fail-safe: any exception → original tool_input unchanged, spawn always allowed.
  * routing.jsonl is never opened, read, or written by this hook.
@@ -33,20 +44,15 @@ const crypto = require('crypto');
 const { resolveSafeCwd }              = require('./_lib/resolve-project-cwd');
 const { MAX_INPUT_BYTES }             = require('./_lib/constants');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
-const { parseSections, reassembleSections } = require('./_lib/tokenwright/parse-sections');
-const { classifySection, DEDUP_ELIGIBLE_HEADINGS } = require('./_lib/tokenwright/classify-section');
-const { applyMinHashDedup }           = require('./_lib/tokenwright/dedup-minhash');
 const {
-  emitPromptCompression,
   emitCompressionSkipped,
   emitCompressionDoubleFireDetected,
-  emitCompressionInvariantViolated,
   emitTokenwrightJournalTruncated,
 } = require('./_lib/tokenwright/emit');
 const { checkDoubleFire }    = require('./_lib/tokenwright/double-fire-guard');
 const { sweepJournal }       = require('./_lib/tokenwright/journal-sweep');
-const { verifyLoadBearing, DEFAULT_LOAD_BEARING_SECTIONS } = require('./_lib/tokenwright/verify-load-bearing');
 const { bootstrapEstimate }  = require('./_lib/tokenwright/bootstrap-estimator');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ---------------------------------------------------------------------------
 // Per-process skip-event dedup cache (suppress duplicate skips per reason)
@@ -63,12 +69,6 @@ function emitPassthrough(toolInput) {
 function loadConfig(cwd) {
   try { return JSON.parse(fs.readFileSync(path.join(cwd, '.orchestray', 'config.json'), 'utf8')); }
   catch (_e) { return {}; }
-}
-
-function resolveLevel(cfg) {
-  const env = process.env.ORCHESTRAY_COMPRESSION_LEVEL;
-  if (env) return env;
-  return (cfg.compression && cfg.compression.level) || 'safe';
 }
 
 function resolveOrchestrationId(cwd) {
@@ -95,15 +95,9 @@ function doubleFireGuardEnabled(cfg) {
   return true;
 }
 
-function invariantCheckEnabled(cfg) {
-  if (process.env.ORCHESTRAY_DISABLE_INVARIANT_CHECK === '1') return false;
-  if (cfg.compression && cfg.compression.invariant_check_enabled === false) return false;
-  return true;
-}
-
 /**
  * Emit a compression_skipped event, suppressing duplicates per (orchId, reason).
- * Dedup is process-local; cross-invocation dedup not required for v2.2.6.
+ * Dedup is process-local; cross-invocation dedup not required.
  */
 function emitSkip(cfg, orchId, agentType, reason, skipPath) {
   if (!skipEventEnabled(cfg)) return;
@@ -150,65 +144,17 @@ function writeJournal(pendingPath, entries) {
   }
 }
 
-function runL1(prompt) {
-  const sections = parseSections(prompt);
-  for (const s of sections) s.kind = classifySection(s).kind;
-  const { dropped: droppedCount } = applyMinHashDedup(sections);
-
-  // Section counts
-  const sectionsTotal          = sections.length;
-  const sectionsDedupEligible  = sections.filter(s => s.kind === 'dedup-eligible').length;
-  const sectionsScoreEligible  = sections.filter(s => s.kind === 'score-eligible').length;
-  const sectionsPreserve       = sections.filter(s => s.kind === 'preserve').length;
-  const eligibilityRate        = sectionsTotal > 0
-    ? (sectionsDedupEligible + sectionsScoreEligible) / sectionsTotal
-    : 0;
-
-  // Per-heading drop counts for every DEDUP_ELIGIBLE_HEADINGS entry
-  const dedupDropByHeading = {};
-  for (const h of DEDUP_ELIGIBLE_HEADINGS) dedupDropByHeading[h] = 0;
-  const droppedSections = sections.filter(s => s.dropped);
-  for (const s of droppedSections) {
-    const h = s.heading || '(preamble)';
-    if (h in dedupDropByHeading) dedupDropByHeading[h]++;
-  }
-
-  // Dropped sections as object array (v2.2.6 shape)
-  const droppedSectionsObjects = droppedSections.map(s => ({
-    heading:       s.heading || null,
-    kind:          s.kind || 'unknown',
-    body_bytes:    s.raw ? Buffer.byteLength(s.raw, 'utf8') : 0,
-    dropped_reason: 'minhash_dedup',
-  }));
-
-  return {
-    compressed: reassembleSections(sections),
-    droppedSections: droppedSectionsObjects,
-    droppedCount,
-    sectionsTotal,
-    sectionsDedupEligible,
-    sectionsScoreEligible,
-    sectionsPreserve,
-    eligibilityRate,
-    dedupDropByHeading,
-  };
-}
-
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => { process.stdout.write(JSON.stringify({ continue: true })); process.exit(0); });
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[inject-tokenwright] stdin exceeded limit; failing open\n');
-    // oversize_stdin: we don't have parsed context yet, so minimal payload
-    // We attempt to emit with what we know: no orchId yet at this point
-    // but we can at least try after parsing
-    process.stdout.write(JSON.stringify({ continue: true }));
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  process.stderr.write('[inject-tokenwright] stdin exceeded limit; failing open\n');
+  // oversize_stdin: we don't have parsed context yet, so minimal payload
+  // We attempt to emit with what we know: no orchId yet at this point
+  // but we can at least try after parsing
+  process.stdout.write(JSON.stringify({ continue: true }));
+  process.exit(0);
+}
+setImmediate(() => {
   let toolInput;
   let cfg = {};
   let orchId = null;
@@ -239,7 +185,6 @@ process.stdin.on('end', () => {
     try { cwd = resolveSafeCwd(event.cwd); } catch (_e) { cwd = process.cwd(); }
 
     cfg       = loadConfig(cwd);
-    const level = resolveLevel(cfg);
     orchId    = resolveOrchestrationId(cwd);
     agentType = typeof toolInput.subagent_type === 'string' ? toolInput.subagent_type : 'unknown';
 
@@ -255,31 +200,6 @@ process.stdin.on('end', () => {
       emitPassthrough(toolInput); process.exit(0); return;
     }
 
-    // S1 kill switch: tokenwright.l1_compression_enabled (v2.2.19).
-    // Default false until heading-list audit is complete (revival planned for v2.2.20).
-    // See .orchestray/kb/artifacts/v2219-compression-rca.md §Symptom 1.
-    // Default sourced from config-defaults.js — single source of truth for kill-switch defaults.
-    const { defaults: _configDefaults } = require('./_lib/config-defaults');
-    const l1Enabled = cfg.tokenwright && typeof cfg.tokenwright.l1_compression_enabled === 'boolean'
-      ? cfg.tokenwright.l1_compression_enabled
-      : _configDefaults.tokenwright.l1_compression_enabled;
-    if (!l1Enabled) {
-      emitSkip(cfg, orchId, agentType, 'kill_switch_config', 'tokenwright.l1_compression_enabled=false');
-      emitPassthrough(toolInput); process.exit(0); return;
-    }
-
-    // Level: off
-    if (level === 'off') {
-      emitSkip(cfg, orchId, agentType, 'level_off', 'ORCHESTRAY_COMPRESSION_LEVEL=off');
-      emitPassthrough(toolInput); process.exit(0); return;
-    }
-
-    // Level: debug-passthrough
-    if (level === 'debug-passthrough') {
-      emitSkip(cfg, orchId, agentType, 'level_debug_passthrough', 'level=debug-passthrough');
-      emitPassthrough(toolInput); process.exit(0); return;
-    }
-
     const prompt = typeof toolInput.prompt === 'string' ? toolInput.prompt : null;
     if (prompt === null) {
       emitSkip(cfg, orchId, agentType, 'no_prompt_field', 'toolInput.prompt_not_string');
@@ -287,10 +207,10 @@ process.stdin.on('end', () => {
     }
 
     const inBytes  = Buffer.byteLength(prompt, 'utf8');
-    const tag      = level === 'aggressive' ? 'aggressive-l1' : level === 'experimental' ? 'experimental-l1' : 'safe-l1';
     const stateDir = path.join(cwd, '.orchestray', 'state');
 
-    // Double-fire guard
+    // Double-fire guard — still needed so the lightweight estimate write
+    // below doesn't double-journal the same spawn on a duplicate hook fire.
     if (doubleFireGuardEnabled(cfg)) {
       const spawnTs   = Date.now();
       const dedupToken = crypto.createHash('sha256')
@@ -309,66 +229,11 @@ process.stdin.on('end', () => {
       }
     }
 
-    // Run L1 compression
-    const {
-      compressed,
-      droppedSections,
-      droppedCount,
-      sectionsTotal,
-      sectionsDedupEligible,
-      sectionsScoreEligible,
-      sectionsPreserve,
-      eligibilityRate,
-      dedupDropByHeading,
-    } = runL1(prompt);
-
-    // Invariant check post-compression
-    let compressionSkippedPath = null;
-    let finalPrompt = compressed;
-
-    if (invariantCheckEnabled(cfg)) {
-      const loadBearingSet = (cfg.compression && Array.isArray(cfg.compression.load_bearing_sections))
-        ? cfg.compression.load_bearing_sections
-        : DEFAULT_LOAD_BEARING_SECTIONS;
-
-      const { violated, violatedSection, violationKind } = verifyLoadBearing({
-        originalPrompt:   prompt,
-        compressedPrompt: compressed,
-        loadBearingSet,
-      });
-
-      if (violated) {
-        emitCompressionInvariantViolated({
-          orchestration_id: orchId,
-          agent_type:       agentType,
-          violated_section: violatedSection,
-          violation_kind:   violationKind,
-          input_bytes_pre:  inBytes,
-          input_bytes_post: Buffer.byteLength(compressed, 'utf8'),
-          load_bearing_set: loadBearingSet,
-        });
-        // Fallback to original if configured (default true)
-        const fallback = !(cfg.compression && cfg.compression.invariant_check_fallback_to_original === false);
-        if (fallback) {
-          finalPrompt = prompt;
-          compressionSkippedPath = 'invariant_violation_fallback';
-        }
-      }
-    }
-
-    const outBytes   = Buffer.byteLength(finalPrompt, 'utf8');
-    const ratio      = inBytes > 0 ? outBytes / inBytes : 1;
-    // S2 wire (v2.2.19): bootstrapEstimate — wired but inert when
-    // l1_compression_enabled=false (default since v2.2.19 safe-l1 kill-switch).
-    // Activates with v2.2.20 L1 revival per heading-list audit. When active,
-    // uses rolling-median from historical actuals; falls back to bytes/4
-    // when < 3 samples (W9: inBytes passed so cold-cache avoids STATIC_FALLBACK=500).
-    const inTokEst   = bootstrapEstimate(agentType, { cwd, config: cfg, inBytes });
-    const outTokEst  = Math.round(outBytes / 4);
-    const ttlHours   = (cfg.compression && typeof cfg.compression.pending_journal_ttl_hours === 'number')
-      ? cfg.compression.pending_journal_ttl_hours : 24;
-
-    // Journal sweep before write
+    // Lightweight pre-spawn token estimate (no compression pipeline runs).
+    // See v2219-compression-rca.md §Symptom 2 — kept so realized-savings /
+    // estimation-drift telemetry in capture-tokenwright-realized.js keeps
+    // receiving data after the L1 pipeline's retirement.
+    const inTokEst  = bootstrapEstimate(agentType, { cwd, config: cfg, inBytes });
     const pendingPath = path.join(stateDir, 'tokenwright-pending.jsonl');
     const { kept, truncationEvent } = readAndSweepJournal(pendingPath, cfg);
 
@@ -376,42 +241,21 @@ process.stdin.on('end', () => {
       emitTokenwrightJournalTruncated(Object.assign({ orchestration_id: orchId }, truncationEvent));
     }
 
-    // Append new pending entry
+    const ttlHours = (cfg.compression && typeof cfg.compression.pending_journal_ttl_hours === 'number')
+      ? cfg.compression.pending_journal_ttl_hours : 24;
     const newEntry = {
-      spawn_key:           spawnKey(agentType, prompt),
-      orchestration_id:    orchId,
-      task_id:             null,
-      agent_type:          agentType,
-      technique_tag:       tag,
+      spawn_key:            spawnKey(agentType, prompt),
+      orchestration_id:     orchId,
+      task_id:              null,
+      agent_type:           agentType,
+      technique_tag:        'passthrough',
       input_token_estimate: inTokEst,
-      timestamp:           new Date().toISOString(),
-      expires_at:          Date.now() + (ttlHours * 3600 * 1000),
+      timestamp:            new Date().toISOString(),
+      expires_at:           Date.now() + (ttlHours * 3600 * 1000),
     };
     writeJournal(pendingPath, [...kept, newEntry]);
 
-    emitPromptCompression({
-      orchestration_id:            orchId,
-      task_id:                     null,
-      agent_type:                  agentType,
-      input_bytes:                 inBytes,
-      output_bytes:                outBytes,
-      ratio,
-      technique_tag:               tag,
-      input_token_estimate:        inTokEst,
-      output_token_estimate:       outTokEst,
-      dropped_sections:            droppedSections,
-      layer1_dedup_blocks_dropped: droppedCount,
-      sections_total:              sectionsTotal,
-      sections_dedup_eligible:     sectionsDedupEligible,
-      sections_score_eligible:     sectionsScoreEligible,
-      sections_preserve:           sectionsPreserve,
-      eligibility_rate:            eligibilityRate,
-      dedup_drop_by_heading:       dedupDropByHeading,
-      compression_skipped_path:    compressionSkippedPath,
-      tokenwright_version:         '2.2.6-l1',
-    });
-
-    emitPassthrough(Object.assign({}, toolInput, { prompt: finalPrompt }));
+    emitPassthrough(toolInput);
     process.exit(0);
 
   } catch (_err) {

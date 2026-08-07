@@ -58,6 +58,7 @@ const { signRow }                     = require('./_lib/spawn-hmac');
 // B4: advisory lock shared with process-spawn-requests.js drain (same file).
 // atomicAppendJsonl replaces naked appendFileSync for >PIPE_BUF prompt payloads.
 const { _withAdvisoryLock, atomicAppendJsonl } = require('./_lib/atomic-append');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -169,17 +170,11 @@ process.stdout.write(JSON.stringify({ continue: true }));  // always emit early
 (async () => {
   try {
     // Read stdin.
-    const chunks = [];
-    let total = 0;
-    for await (const chunk of process.stdin) {
-      total += chunk.length;
-      if (total > MAX_INPUT_BYTES) {
-        process.stderr.write('[spawn-housekeeper-on-trigger] stdin too large, skipping\n');
-        return;
-      }
-      chunks.push(chunk);
+    const raw = readHookInputRaw().trim();
+    if (raw.length > MAX_INPUT_BYTES) {
+      process.stderr.write('[spawn-housekeeper-on-trigger] stdin too large, skipping\n');
+      return;
     }
-    const raw = Buffer.concat(chunks).toString('utf8').trim();
     if (!raw) return;
 
     let event;

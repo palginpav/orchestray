@@ -794,7 +794,9 @@ function install(targetDir) {
   // installed as hook registrations but the scripts themselves are never copied —
   // causing the pruning pass on the next install to remove those entries (because
   // the scripts don't exist), then re-add them merged into the wrong entry.
-  const BIN_SUBDIRS = ['release-manager', 'learn-commands'];
+  // `_tools/` ships because `/orchestray:doctor` P9b shells out to
+  // bin/_tools/behavior-diff.js — an uninstalled harness makes the probe FAIL.
+  const BIN_SUBDIRS = ['release-manager', 'learn-commands', '_tools'];
   for (const subName of BIN_SUBDIRS) {
     const subSrc = path.join(binDir, subName);
     if (fs.existsSync(subSrc) && fs.statSync(subSrc).isDirectory()) {

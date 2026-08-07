@@ -7,7 +7,7 @@ argument-hint: "[--verbose|-v] [--deep]"
 
 # Orchestray Doctor
 
-Run 9 probes (10 with `--deep`) against the current Orchestray installation and print a
+Run 10 probes (11 with `--deep`) against the current Orchestray installation and print a
 structured health report. If `$ARGUMENTS` contains `--verbose` or `-v`, emit a
 `## Detail` section after the summary.
 
@@ -228,6 +228,41 @@ Steps:
 
 ---
 
+### P9b: BDG fixture-corpus coverage
+
+The Behavior Diff Gate is only as good as its corpus. A script whose fixtures all
+fail-open reports "no behavior change" forever — a false-negative machine that looks
+green while testing nothing. This probe is what keeps that visible.
+
+Skip when `$PROJECT_ROOT/.orchestray/` does not exist.
+
+Run from `$PLUGIN_ROOT`:
+
+```bash
+CLAUDE_PROJECT_DIR="$PROJECT_ROOT" node bin/_tools/behavior-diff.js --coverage --json
+```
+
+Parse the stdout JSON: `{scripts_with_fixtures, covered_scripts, ratio, total_fixtures,
+invalid_fixtures, uncovered[]}`. Output `{"disabled":true}` means the gate is switched off.
+
+- `disabled: true`: status=OK.
+  Line: `[OK]    BDG corpus (behavior diff gate disabled; skipped)`
+- `scripts_with_fixtures == 0`: status=WARN.
+  Line: `[WARN]  BDG corpus empty — harvest has not run yet; the gate cannot catch anything`
+- `invalid_fixtures > 0`: status=WARN.
+  Line: `[WARN]  BDG corpus: {invalid_fixtures} malformed fixture(s) — a fixture must be {stdin, state}`
+- `ratio < 0.5`: status=WARN.
+  Line: `[WARN]  BDG corpus thin: {covered_scripts}/{scripts_with_fixtures} scripts covered — uncovered: {first 3 of uncovered}`
+- Otherwise: status=OK.
+  Line: `[OK]    BDG corpus: {covered_scripts}/{scripts_with_fixtures} scripts covered ({total_fixtures} fixtures)`
+
+In `--verbose` mode, list every entry of `uncovered[]` under `## Detail`.
+
+P9b WARN increments `N_warn`. This probe never FAILs — an empty corpus is a
+"not yet useful" state, not a broken install.
+
+---
+
 ### P10: Install-integrity deep verify (only when `--deep`)
 
 Skip this probe entirely when `DEEP` is not set.
@@ -292,7 +327,7 @@ P10 FAIL increments `N_fail`. P10 WARN increments `N_warn`.
 
 ## Output format
 
-After running all probes (9 without `--deep`, 10 with `--deep`), print:
+After running all probes (10 without `--deep`, 11 with `--deep`), print:
 
 ```
 Orchestray v{VERSION} — health check
@@ -306,13 +341,14 @@ Orchestray v{VERSION} — health check
 {P7 line}
 {P8 line}
 {P9 line}
+{P9b line}
 {P10 line — only when --deep}
 
 {N_total} probes, {N_warn} warning(s), {N_fail} failure(s).{suffix}
 doctor-result-code: {code}
 ```
 
-`N_total` is 9 without `--deep`, 10 with `--deep`.
+`N_total` is 10 without `--deep`, 11 with `--deep`.
 
 Where:
 - `{suffix}` is ` Run with --verbose for details.` when `N_warn + N_fail > 0` and
@@ -337,8 +373,9 @@ Orchestray v2.1.3 — health check
 [OK]    better-sqlite3 (not in use; node:sqlite active)
 [OK]    degraded journal clean (0 entries in last 24h)
 [OK]    plugin install coherent (v2.1.3, 162 files tracked)
+[OK]    BDG corpus: 12/14 scripts covered (183 fixtures)
 
-8 probes, 0 warning(s), 0 failure(s).
+9 probes, 0 warning(s), 0 failure(s).
 doctor-result-code: 0
 ```
 
@@ -354,9 +391,10 @@ Orchestray v2.1.3 — health check
 [OK]    better-sqlite3 (not in use; node:sqlite active)
 [OK]    degraded journal clean (0 entries in last 24h)
 [OK]    plugin install coherent (v2.1.3, 162 files tracked)
+[OK]    BDG corpus: 12/14 scripts covered (183 fixtures)
 [OK]    install integrity verified (162 files)
 
-9 probes, 0 warning(s), 0 failure(s).
+10 probes, 0 warning(s), 0 failure(s).
 doctor-result-code: 0
 ```
 
@@ -376,5 +414,5 @@ If `$PROJECT_ROOT/.orchestray/` does not exist at all, emit before the probe lis
 ```
 [WARN]  no .orchestray/ directory — run from a project root or run /orchestray:run first
 ```
-Then skip P3, P4, P7 (project-scoped probes) and run P1, P2, P5, P6, P8 only.
+Then skip P3, P4, P7, P9b (project-scoped probes) and run P1, P2, P5, P6, P8 only.
 Adjust totals accordingly.

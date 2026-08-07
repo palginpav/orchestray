@@ -48,6 +48,7 @@ const {
 
 // Import the effort multiplier resolver (exported from cost_budget_check).
 const { resolveEffortMultiplier } = require('./mcp-server/tools/cost_budget_check');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // Shared cost helpers — canonical pricing table, token estimates, cap helpers,
 // and reservation reader (F09: de-duplicated from three callers).
@@ -79,16 +80,12 @@ function readOrchestrationId(cwd) {
 // ---------------------------------------------------------------------------
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => { process.exit(0); });
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[orchestray] gate-cost-budget: stdin exceeded limit; failing open\n');
-    process.exit(0);
-  }
-});
-process.stdin.on('end', async () => {
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  process.stderr.write('[orchestray] gate-cost-budget: stdin exceeded limit; failing open\n');
+  process.exit(0);
+}
+setImmediate(async () => {
   try {
     const event = JSON.parse(input);
 

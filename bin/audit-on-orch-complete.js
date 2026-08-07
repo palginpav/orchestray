@@ -59,6 +59,7 @@ const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES }             = require('./_lib/constants');
 const { writeEvent }                  = require('./_lib/audit-event-writer');
 const { computeDecisions }            = require('./_lib/decision-recorder-helpers');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const REPO_ROOT  = path.resolve(__dirname, '..');
 const STATE_FILE = path.join('.orchestray', 'state', 'orch-complete-trigger.json');
@@ -516,17 +517,11 @@ process.stdout.write(JSON.stringify({ continue: true }));
     }
 
     // Read stdin payload (Claude Code PostToolUse JSON).
-    const chunks = [];
-    let total    = 0;
-    for await (const chunk of process.stdin) {
-      total += chunk.length;
-      if (total > MAX_INPUT_BYTES) {
-        process.stderr.write('[audit-on-orch-complete] stdin too large; skipping\n');
-        process.exit(0);
-      }
-      chunks.push(chunk);
+    const raw = readHookInputRaw().trim();
+    if (raw.length > MAX_INPUT_BYTES) {
+      process.stderr.write('[audit-on-orch-complete] stdin too large; skipping\n');
+      process.exit(0);
     }
-    const raw = Buffer.concat(chunks).toString('utf8').trim();
 
     let payload = {};
     if (raw) {

@@ -65,6 +65,7 @@ const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 // v2.2.2 Fix #7: single source of truth for the Section 12.a suffix shared
 // with bin/validate-task-completion.js and the C2 unit test.
 const { HANDOFF_CONTRACT_SUFFIX } = require('./_lib/handoff-contract-text');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ---------------------------------------------------------------------------
 // stdout helpers
@@ -165,20 +166,13 @@ function buildAppendix(shape) {
 // ---------------------------------------------------------------------------
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => {
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  process.stderr.write('[orchestray] inject-output-shape: stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; failing open\n');
   emitContinue();
   process.exit(0);
-});
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[orchestray] inject-output-shape: stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; failing open\n');
-    emitContinue();
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+}
+setImmediate(() => {
   // Top-level try/catch: ANY unexpected exception → fail-open.
   try {
     // Env kill-switch: zero-overhead exit.

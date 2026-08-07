@@ -4,19 +4,16 @@
 /**
  * v2211-w2-8-context-size-hint-required.test.js — W2-8 fail-closed tests (v2.2.11).
  *
- * Verifies that preflight-spawn-budget.js promotes context_size_hint_missing
- * from warn-only to hard-block (exit 2) when a spawn lacks context_size_hint
- * or has all-zero values. Both the warn event AND the required_failed event
- * must fire before the block.
- *
- * Tests:
- *   1. Valid hint (system:5000) → 0 fails, both events absent, exit 0.
- *   2. All-zero hint → both context_size_hint_missing AND
- *      context_size_hint_required_failed emit, exit 2.
- *   3. Missing context_size_hint field → both events emit, exit 2.
- *   4. ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1 is retired (v2.2.14 G-04) —
- *      spawn hard-blocks (exit 2) regardless; var is a no-op.
- *   5. context_size_hint_required_failed carries subagent_type from spawn payload.
+ * v2.3.18 W3 Q1 UPDATE: the hard-block-on-any-missing-hint behaviour these
+ * tests originally verified was replaced by a compute-and-warn fallback
+ * (v2318-implementation-plan.md "Q1 -> compute-and-warn, not block" — 14 real
+ * misses / 51 days, zero on developer/architect; blocking on a number the
+ * hook can derive itself is prose-enforcement in a hook costume). Test 1
+ * (valid hint passes through unaffected) is unchanged. Tests 2-5 are rewritten
+ * to verify the new behaviour: a missing/all-zero hint with a readable prompt
+ * now computes a fallback and PROCEEDS (exit 0); only a genuinely unreadable
+ * prompt (or the ORCHESTRAY_CONTEXT_SIZE_HINT_COMPUTE_DISABLED=1 escape hatch)
+ * still hard-blocks.
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
@@ -86,6 +83,7 @@ function runHookSync(cwd, toolInput, envOverrides) {
   const baseEnv = Object.assign({}, process.env);
   delete baseEnv.ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED;
   delete baseEnv.ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED;
+  delete baseEnv.ORCHESTRAY_CONTEXT_SIZE_HINT_COMPUTE_DISABLED;
   const env = Object.assign({}, baseEnv, { ORCHESTRAY_DEBUG: '' }, envOverrides || {});
   const r = cp.spawnSync(NODE, [HOOK_PATH], {
     input: JSON.stringify(payload),
@@ -100,13 +98,13 @@ function runHookSync(cwd, toolInput, envOverrides) {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('v2.2.11 W2-8 — context_size_hint fail-closed (warn → exit-2)', () => {
+describe('v2.2.11 W2-8 / v2.3.18 W3 Q1 — context_size_hint compute-and-warn (not block)', () => {
 
   let tmpRoot;
   beforeEach(() => { tmpRoot = makeTmpRoot(); });
   afterEach(() => { fs.rmSync(tmpRoot, { recursive: true, force: true }); });
 
-  // ── Test 1: valid hint → no block, both events absent ──────────────────
+  // ── Test 1: valid hint → no block, both events absent (unchanged) ──────
   test('valid context_size_hint (system:5000) → 0 fails, both events absent, exit 0', () => {
     const r = runHookSync(tmpRoot, {
       subagent_type: 'developer',
@@ -122,69 +120,91 @@ describe('v2.2.11 W2-8 — context_size_hint fail-closed (warn → exit-2)', () 
     assert.equal(required.length, 0, 'no context_size_hint_required_failed events expected');
   });
 
-  // ── Test 2: all-zero hint → both events fire, exit 2 ───────────────────
-  test('all-zero context_size_hint → both warn AND required_failed emit, exit 2', () => {
+  // ── Test 2: all-zero hint, readable prompt → computed fallback, exit 0 ──
+  test('all-zero context_size_hint + readable prompt → computed fallback, warn AND computed emit, exit 0', () => {
     const r = runHookSync(tmpRoot, {
       subagent_type: 'developer',
       task_id: 'T2',
       context_size_hint: { system: 0, tier2: 0, handoff: 0 },
+      prompt: 'Please implement the widget. '.repeat(50),
     });
-    assert.equal(r.status, 2, 'hook exits 2 (hard-block); stderr=' + r.stderr);
+    assert.equal(r.status, 0, 'hook exits 0 (computed fallback, not blocked); stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
     const missing  = events.filter(e => e.event_type === 'context_size_hint_missing');
+    const computed = events.filter(e => e.event_type === 'context_size_hint_computed');
     const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
-    assert.equal(missing.length,  1, 'exactly 1 context_size_hint_missing event');
-    assert.equal(required.length, 1, 'exactly 1 context_size_hint_required_failed event');
+    assert.equal(missing.length,  1, 'exactly 1 context_size_hint_missing event (telemetry trail)');
+    assert.equal(computed.length, 1, 'exactly 1 context_size_hint_computed event');
+    assert.equal(required.length, 0, 'no context_size_hint_required_failed event — spawn was not blocked');
+    assert.ok(computed[0].handoff > 0, 'computed handoff size must be derived from the prompt body');
   });
 
-  // ── Test 3: missing context_size_hint field → both events fire, exit 2 ─
-  test('no context_size_hint field → both warn AND required_failed emit, exit 2', () => {
+  // ── Test 3: missing hint field, readable prompt → computed fallback, exit 0
+  test('no context_size_hint field + readable prompt → computed fallback, exit 0', () => {
     const r = runHookSync(tmpRoot, {
       subagent_type: 'architect',
       task_id: 'T3',
+      prompt: 'Design the widget subsystem. '.repeat(50),
       // no context_size_hint
     });
-    assert.equal(r.status, 2, 'hook exits 2 (hard-block); stderr=' + r.stderr);
+    assert.equal(r.status, 0, 'hook exits 0 (computed fallback, not blocked); stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
     const missing  = events.filter(e => e.event_type === 'context_size_hint_missing');
-    const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
+    const computed = events.filter(e => e.event_type === 'context_size_hint_computed');
     assert.equal(missing.length,  1, 'exactly 1 context_size_hint_missing event');
-    assert.equal(required.length, 1, 'exactly 1 context_size_hint_required_failed event');
+    assert.equal(computed.length, 1, 'exactly 1 context_size_hint_computed event');
+    assert.equal(computed[0].subagent_type, 'architect');
   });
 
-  // ── Test 4: retired env var is no-op — hard-block still fires (v2.2.14 G-04)
-  test('ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1 → exits 2 (var is retired, no-op)', () => {
-    const r = runHookSync(
-      tmpRoot,
-      { subagent_type: 'developer', task_id: 'T4' },
-      { ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED: '1' },
-    );
-    assert.equal(r.status, 2, 'retired var must not bypass hard-block; stderr=' + r.stderr);
+  // ── Test 4: unreadable prompt (genuinely nothing to compute) → still blocks
+  test('no context_size_hint AND no readable prompt → hard-blocks (only remaining block path)', () => {
+    const r = runHookSync(tmpRoot, {
+      subagent_type: 'developer',
+      task_id: 'T4',
+      // no context_size_hint, no prompt at all
+    });
+    assert.equal(r.status, 2, 'hook exits 2 — nothing to compute from; stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
     const missing  = events.filter(e => e.event_type === 'context_size_hint_missing');
     const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
     assert.equal(missing.length,  1, 'context_size_hint_missing still emits (telemetry trail)');
-    assert.equal(required.length, 1, 'context_size_hint_required_failed must emit (var is retired no-op)');
+    assert.equal(required.length, 1, 'context_size_hint_required_failed emits — genuine block');
+    assert.equal(required[0].reason, 'prompt_unreadable');
   });
 
-  // ── Test 5: required_failed event carries subagent_type ────────────────
-  test('context_size_hint_required_failed event has subagent_type from spawn payload', () => {
-    const r = runHookSync(tmpRoot, {
-      subagent_type: 'architect',
-      task_id: 'T5',
-      // no context_size_hint → triggers the block
-    });
-    assert.equal(r.status, 2, 'hook exits 2; stderr=' + r.stderr);
+  // ── Test 5: ORCHESTRAY_CONTEXT_SIZE_HINT_COMPUTE_DISABLED=1 → legacy strict block
+  test('ORCHESTRAY_CONTEXT_SIZE_HINT_COMPUTE_DISABLED=1 restores the pre-v2.3.18 strict hard-block', () => {
+    const r = runHookSync(
+      tmpRoot,
+      { subagent_type: 'developer', task_id: 'T5', prompt: 'Do real work here. '.repeat(50) },
+      { ORCHESTRAY_CONTEXT_SIZE_HINT_COMPUTE_DISABLED: '1' },
+    );
+    assert.equal(r.status, 2, 'compute-fallback kill switch restores strict blocking; stderr=' + r.stderr);
 
     const events   = readEvents(tmpRoot);
     const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
     assert.equal(required.length, 1, 'exactly 1 context_size_hint_required_failed event');
-    assert.equal(required[0].subagent_type, 'architect', 'subagent_type must match the spawn payload');
+    assert.equal(required[0].reason, 'compute_fallback_disabled');
     assert.equal(required[0].version, 1, 'version field must be 1');
     assert.ok('schema_version' in required[0], 'schema_version field must be present');
+  });
+
+  // ── Test 6: computed event carries subagent_type from spawn payload ────
+  test('context_size_hint_computed event has subagent_type from spawn payload', () => {
+    const r = runHookSync(tmpRoot, {
+      subagent_type: 'architect',
+      task_id: 'T6',
+      prompt: 'Design something. '.repeat(50),
+    });
+    assert.equal(r.status, 0, 'hook exits 0; stderr=' + r.stderr);
+
+    const events   = readEvents(tmpRoot);
+    const computed = events.filter(e => e.event_type === 'context_size_hint_computed');
+    assert.equal(computed.length, 1, 'exactly 1 context_size_hint_computed event');
+    assert.equal(computed[0].subagent_type, 'architect', 'subagent_type must match the spawn payload');
   });
 
 });

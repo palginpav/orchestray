@@ -21,6 +21,7 @@ const fs = require('fs');
 const path = require('path');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // Complexity signals (mirrors PM Section 12 heuristics)
 const COMPLEXITY_KEYWORDS = [
@@ -115,17 +116,13 @@ function scoreComplexity(prompt) {
 
 function main() {
   let input = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', () => { process.stdout.write(JSON.stringify({ continue: true })); process.exit(0); });
-  process.stdin.on('data', chunk => {
-    input += chunk;
-    if (input.length > MAX_INPUT_BYTES) {
-      process.stderr.write('[orchestray] hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
-      process.stdout.write(JSON.stringify({ continue: true }) + '\n');
-      process.exit(0);
-    }
-  });
-  process.stdin.on('end', () => {
+  input = readHookInputRaw();
+  if (input.length > MAX_INPUT_BYTES) {
+    process.stderr.write('[orchestray] hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
+    process.stdout.write(JSON.stringify({ continue: true }) + '\n');
+    process.exit(0);
+  }
+  setImmediate(() => {
     try {
       const data = JSON.parse(input);
       const prompt = data.message || data.prompt || '';

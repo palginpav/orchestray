@@ -52,8 +52,9 @@ function checkDoubleFire({ dedupToken, callerPath, stateDir, orchestrationId }) 
     // S3 wire (v2.2.19): rename dedup_key → dedup_token so the emitted event
     // matches the compression_double_fire_detected schema (which uses dedup_token).
     // The generalized guard uses dedup_key; the tokenwright schema predates that rename.
-    // Wired but inert when l1_compression_enabled=false (default since v2.2.19);
-    // activates with v2.2.20 L1 revival per heading-list audit.
+    // Still live (v2.3.18): guards the pending-journal writes in both
+    // inject-tokenwright.js (pre-spawn estimate) and capture-tokenwright-realized.js
+    // (SubagentStop) even after the L1 compression pipeline's retirement.
     result.doubleFireEvent.dedup_token = result.doubleFireEvent.dedup_key;
     delete result.doubleFireEvent.dedup_key;
   }

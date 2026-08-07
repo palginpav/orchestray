@@ -25,11 +25,12 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const { resolveSafeCwd } = require('../_lib/resolve-project-cwd');
+const { readHookInputRaw } = require('../_lib/hook-stdin');
 
 function readStdinSync() {
   try {
     if (process.stdin.isTTY) return null;
-    const raw = fs.readFileSync(0, 'utf8');
+    const raw = readHookInputRaw();
     if (!raw || raw.trim().length === 0) return null;
     return JSON.parse(raw);
   } catch (_e) {

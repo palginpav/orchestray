@@ -30,7 +30,7 @@
  * Output: { continue: true }
  */
 
-const { MAX_INPUT_BYTES } = require('./_lib/constants');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 let _warned = false;
 function warnDeprecated() {
@@ -46,11 +46,7 @@ function warnDeprecated() {
 (async () => {
   try {
     // Drain stdin (required so Claude Code does not hit EPIPE).
-    let total = 0;
-    for await (const chunk of process.stdin) {
-      total += chunk.length;
-      if (total > MAX_INPUT_BYTES) break;
-    }
+    readHookInputRaw();
   } catch (_e) { /* fail-open */ }
   warnDeprecated();
   process.stdout.write(JSON.stringify({ continue: true }));

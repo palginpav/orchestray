@@ -132,6 +132,15 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-companion-files.js --build-cache",
+            "timeout": 20
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -185,11 +194,6 @@
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-reviewer-git-diff.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/warn-isolation-omitted.js",
             "timeout": 5
           },
@@ -216,6 +220,11 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/inject-tokenwright.js",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-reviewer-git-diff.js",
             "timeout": 5
           },
           {
@@ -735,16 +744,6 @@
         ]
       },
       {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-mcp-grounding.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
         "hooks": [
           {
             "type": "command",
@@ -765,6 +764,24 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-no-deferral.js",
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-claim-evidence.js",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-companion-files.js",
+            "timeout": 10
           }
         ]
       },
@@ -831,34 +848,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-tester-runs-tests.js",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-pattern-application.js",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-researcher-citations.js",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-platform-oracle-grounding.js",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/detect-tool-grant-shortfall.js",
             "timeout": 10
           }
         ]
@@ -952,6 +942,17 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/worktree-remove.js",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/flush-dossier-on-session-end.js",
             "timeout": 5
           }
         ]

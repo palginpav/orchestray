@@ -80,8 +80,8 @@ function stageSessionStartWarn(stateDir, payload) {
 // ---------------------------------------------------------------------------
 // v2.2.21 G3-W1-T1 — Sibling-install pair classifier.
 //
-// Defence-in-depth on top of bin/_lib/install-path-priority.js
-// (`shouldFireFromThisInstall`). If a caller bypasses the pre-fire dedup
+// Defence-in-depth on top of the pre-fire payload claim in
+// bin/_lib/hook-stdin.js (`dedupDecision`). If a caller bypasses that dedup
 // (e.g., kill switch ORCHESTRAY_DUAL_INSTALL_BYPASS_DISABLED=1, or the
 // hook calls requireGuard from outside the standard stdin-end handler),
 // we still want the post-fire guard to recognise the global↔local sibling
@@ -96,9 +96,9 @@ function stageSessionStartWarn(stateDir, payload) {
 //     / unrelated paths — the v2.2.20 behaviour).
 //
 // We do NOT realpath the inputs here: callers register raw `__filename` in
-// the journal and we compare textually. Any symlink-collapsing happened at
-// the install-path-priority layer where it matters; here we just classify
-// the observed pair.
+// the journal and we compare textually. This classifies a pair that was
+// actually observed — it never predicts whether a sibling install will fire,
+// which is the inference class deleted in v2.3.18 W9.
 // ---------------------------------------------------------------------------
 
 const _GLOBAL_INSTALL_FRAGMENT = path.sep + path.join('.claude', 'orchestray') + path.sep;
@@ -347,8 +347,8 @@ function requireGuard({ guardName, dedupKey, ttlMs, stateDir, callerPath, orches
       // and for any future hook that wants to log sibling-install racing
       // separately from same-install re-entry.
       //
-      // Defence-in-depth: install-path-priority.js should have already
-      // short-circuited the GLOBAL fire BEFORE we got here, so observing
+      // Defence-in-depth: hook-stdin.js's payload claim should have already
+      // suppressed the losing install BEFORE we got here, so observing
       // a 'sibling-install-pair' from this guard in the wild indicates
       // either (a) ORCHESTRAY_DUAL_INSTALL_BYPASS_DISABLED=1 is set, or
       // (b) a hook is missing the pre-fire short-circuit.

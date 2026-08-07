@@ -38,6 +38,7 @@ const { resolveSafeCwd }           = require('./_lib/resolve-project-cwd');
 const { loadOversizedInputConfig } = require('./_lib/config-schema');
 const { estimateTokens, planSlices, buildManifest } = require('./_lib/oversized-input');
 const { writeEvent }               = require('./_lib/audit-event-writer');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const CONTINUE_RESPONSE = JSON.stringify({ continue: true });
 
@@ -51,17 +52,13 @@ const MAX_PATH_TOKENS = 50;
 // ─── Stdin reader ─────────────────────────────────────────────────────────────
 
 let _input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => { process.stdout.write(CONTINUE_RESPONSE + '\n'); process.exit(0); });
-process.stdin.on('data', (chunk) => {
-  _input += chunk;
-  if (_input.length > MAX_INPUT_BYTES) {
-    // Oversized stdin itself — fail-open (can't safely parse it)
-    process.stdout.write(CONTINUE_RESPONSE + '\n');
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+_input = readHookInputRaw();
+if (_input.length > MAX_INPUT_BYTES) {
+  // Oversized stdin itself — fail-open (can't safely parse it)
+  process.stdout.write(CONTINUE_RESPONSE + '\n');
+  process.exit(0);
+}
+setImmediate(() => {
   try {
     const event = JSON.parse(_input);
     main(event);

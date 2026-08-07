@@ -28,6 +28,7 @@ const { safeRealpath, isInsideAllowed, encodeProjectPath } = require('./_lib/pat
 const { updateCache }              = require('./_lib/context-telemetry-cache');
 const { lookupModel, resolveContextWindow } = require('./_lib/models');
 const { runJanitor }               = require('./_lib/subagent-janitor');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ── Self-test mode ────────────────────────────────────────────────────────────
 // `node bin/capture-pm-turn.js --self-test` smoke-tests the extraction logic
@@ -229,20 +230,13 @@ function runSelfTest() {
 
 // ── Main hook ─────────────────────────────────────────────────────────────────
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => {
-  process.stdout.write(JSON.stringify({ continue: true }));
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  process.stderr.write('[orchestray] capture-pm-turn: hook stdin exceeded limit; aborting\n');
+  process.stdout.write(JSON.stringify({ continue: true }) + '\n');
   process.exit(0);
-});
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[orchestray] capture-pm-turn: hook stdin exceeded limit; aborting\n');
-    process.stdout.write(JSON.stringify({ continue: true }) + '\n');
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+}
+setImmediate(() => {
   let event = {};
   let cwd   = null;
   try {

@@ -35,6 +35,7 @@ const { spawn } = require('node:child_process');
 const { resolveSafeCwd }   = require('./_lib/resolve-project-cwd');
 const { recordDegradation } = require('./_lib/degraded-journal');
 const { MAX_INPUT_BYTES }   = require('./_lib/constants');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 /** Background scripts to nudge, relative to bin/. */
 const NUDGE_SCRIPTS = [
@@ -140,18 +141,14 @@ if (require.main === module) {
     process.exit(0);
   };
 
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', finish);
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-    if (input.length > MAX_INPUT_BYTES) {
-      process.stderr.write(
-        '[orchestray] nudge-auto-learning: stdin exceeded ' +
-        MAX_INPUT_BYTES + ' bytes; aborting\n'
-      );
-      process.stdout.write(JSON.stringify({ continue: true }) + '\n');
-      process.exit(0);
-    }
-  });
-  process.stdin.on('end', finish);
+  input = readHookInputRaw();
+  if (input.length > MAX_INPUT_BYTES) {
+    process.stderr.write(
+      '[orchestray] nudge-auto-learning: stdin exceeded ' +
+      MAX_INPUT_BYTES + ' bytes; aborting\n'
+    );
+    process.stdout.write(JSON.stringify({ continue: true }) + '\n');
+    process.exit(0);
+  }
+  setImmediate(finish);
 }

@@ -37,6 +37,7 @@ const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { verifyRow } = require('./_lib/spawn-hmac');
 // B2: advisory lock for serializing the full read-filter-rewrite drain.
 const { _withAdvisoryLock } = require('./_lib/atomic-append');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // Import helpers from the spawn_agent tool module.
 const {
@@ -65,16 +66,12 @@ const STALE_ROW_TTL_MS = 5 * 60 * 1000;
 // ---------------------------------------------------------------------------
 
 let _stdinBuf = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => {});
-process.stdin.on('data', (chunk) => {
-  _stdinBuf += chunk;
-  if (_stdinBuf.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[orchestray] process-spawn-requests: stdin exceeded limit; failing open\n');
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => { main(); });
+_stdinBuf = readHookInputRaw();
+if (_stdinBuf.length > MAX_INPUT_BYTES) {
+  process.stderr.write('[orchestray] process-spawn-requests: stdin exceeded limit; failing open\n');
+  process.exit(0);
+}
+setImmediate(() => { main(); });
 
 // Guard: if stdin never closes (unlikely in test contexts), run after 200ms.
 const _guard = setTimeout(() => { main(); }, 200);

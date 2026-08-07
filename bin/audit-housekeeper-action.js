@@ -54,6 +54,7 @@ const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { extractStructuredResult, identifyAgentRole } = require('./validate-task-completion');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const HOUSEKEEPER_AGENT = 'orchestray-housekeeper';
 const VALID_OP_TYPES = new Set(['kb-write-verify', 'regen-schema-shadow', 'rollup-recompute']);
@@ -153,19 +154,12 @@ function buildHousekeeperActionEvent(event, cwd) {
 
 function main() {
   let input = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', () => {
-    process.stdout.write(JSON.stringify({ continue: true }));
+  input = readHookInputRaw();
+  if (input.length > MAX_INPUT_BYTES) {
+    process.stdout.write(JSON.stringify({ continue: true }) + '\n');
     process.exit(0);
-  });
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-    if (input.length > MAX_INPUT_BYTES) {
-      process.stdout.write(JSON.stringify({ continue: true }) + '\n');
-      process.exit(0);
-    }
-  });
-  process.stdin.on('end', () => {
+  }
+  setImmediate(() => {
     let event = {};
     try { event = input ? JSON.parse(input) : {}; }
     catch (_e) { event = {}; }

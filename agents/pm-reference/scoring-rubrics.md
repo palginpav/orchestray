@@ -35,6 +35,29 @@ Evaluate every task using these four signals, each scoring 0-3 points:
 
 ---
 
+## Section 12: Parallelizability Shape Check
+
+Judgment call, not a formula -- applied after the score triggers orchestration
+(see pm.md § "Parallelizability Shape Check").
+
+**Parallelizable signals:**
+- Subtasks touch disjoint files/modules.
+- A subtask's output is not a required input to another subtask's work.
+- Each subtask could be described to its agent independently, without referencing
+  another subtask's result.
+
+**Tightly-coupled signals:**
+- Subtask N+1 needs subtask N's actual output, not just "comes after" it.
+- Multiple subtasks in the same round design or edit the same shared file/interface.
+- The task is fundamentally "do X, then based on what happened, do Y."
+
+When tightly-coupled signals dominate, prefer solo or a short sequential chain
+(e.g. one developer, not developer + three parallel implementers). Do not force a
+parallel plan onto sequential work to "use the agents" -- that pays the ~15x
+multiplier for a task shape the evidence shows does not benefit from it.
+
+---
+
 ## Section 19a: Model Routing Decision Table
 
 1. **Read config overrides** from `.orchestray/config.json`:

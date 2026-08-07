@@ -25,6 +25,7 @@
 const fs            = require('node:fs');
 const path          = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 function logStderr(msg) {
   try { process.stderr.write('[orchestray/worktree-create] ' + msg + '\n'); } catch (_e) {}
@@ -32,7 +33,7 @@ function logStderr(msg) {
 
 let stdinBuf = '';
 try {
-  stdinBuf = fs.readFileSync(0, 'utf8');
+  stdinBuf = readHookInputRaw();
 } catch (_e) {
   // No stdin available — abort
   logStderr('FAIL: could not read stdin');

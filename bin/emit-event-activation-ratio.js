@@ -36,6 +36,7 @@ const path = require('node:path');
 const { loadShadow, computeRatios } = require('./_lib/firing-audit-roll');
 const { writeEvent }                = require('./_lib/audit-event-writer');
 const { resolveSafeCwd }            = require('./_lib/resolve-project-cwd');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const KILL_SWITCH = 'ORCHESTRAY_ACTIVATION_RATIO_EMIT_DISABLED';
 
@@ -155,9 +156,7 @@ module.exports = { run, tallyOrchFires };
 if (require.main === module) {
   (async () => {
     try {
-      const chunks = [];
-      for await (const chunk of process.stdin) chunks.push(chunk);
-      const raw = Buffer.concat(chunks).toString('utf8').trim();
+      const raw = readHookInputRaw().trim();
       let payload = {};
       if (raw) {
         try { payload = JSON.parse(raw); } catch (_e) { /* ignore */ }

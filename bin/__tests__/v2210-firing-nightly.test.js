@@ -6,13 +6,20 @@
  *
  * Covers:
  *   1. Happy path: synthetic shadow (5 declared types) + events.jsonl with 2
- *      fires in the last 24h → emits 1 `event_activation_ratio` (ratio=0.4,
- *      numerator=2, denominator=5) and 3 `event_promised_but_dark` rows (one
- *      per dark type).
+ *      fires in the last 24h → emits exactly 1 `event_activation_ratio` row
+ *      (ratio=0.4, numerator=2, denominator=5) with `dark_types` carrying the
+ *      3 dark types.
  *   2. Once-per-day guard: sentinel file blocks re-run on the same day (exit 0,
  *      no new emits).
  *   3. Kill switch: `ORCHESTRAY_FIRING_AUDIT_DISABLED=1` → exit 0 silently, no
  *      emits at all.
+ *
+ * D2 (v2.3.18 W1a): the per-dark-type `event_promised_but_dark` fan-out (one
+ * row per quiet-today type) was removed — it reused the SAME type
+ * `audit-promised-events.js` reserves for lifetime-dark events, and flooded
+ * ~300 false rows/day since only ~15-20 of ~300 registered types fire on any
+ * given day. Dark types are now folded into `dark_types` on the single
+ * `event_activation_ratio` summary row. Tests updated accordingly.
  */
 
 const { test, describe } = require('node:test');
@@ -125,11 +132,14 @@ describe('v2210 F3 — audit-firing-nightly', () => {
    *               type_c fired 30 hours ago (outside 24h window).
    *               type_d and type_e never fired.
    *
-   * Expected:
-   *   - 1 × `event_activation_ratio` with numerator=2, denominator=5, ratio≈0.4, dark_count=3
-   *   - 3 × `event_promised_but_dark` (type_c, type_d, type_e)
+   * Expected (D2, v2.3.18 W1a):
+   *   - exactly 1 row emitted total: `event_activation_ratio` with
+   *     numerator=2, denominator=5, ratio≈0.4, dark_count=3,
+   *     dark_types=[type_c, type_d, type_e].
+   *   - zero `event_promised_but_dark` rows (that type is reserved for
+   *     audit-promised-events.js's lifetime-dark signal).
    */
-  test('emits ratio summary and one dark row per dark type', () => {
+  test('emits a single ratio-summary row with dark_types folded in', () => {
     const dir = makeRepo();
 
     writeShadow(dir, {
@@ -149,10 +159,21 @@ describe('v2210 F3 — audit-firing-nightly', () => {
     const { status, emittedEvents } = runScript(dir);
     assert.strictEqual(status, 0, 'script must exit 0');
 
+    // emittedEvents includes the 3 fixture rows appendEvent() pre-seeded
+    // (type_a/type_b/type_c) plus whatever the script itself wrote. The
+    // script must contribute exactly 1 new row (the ratio summary).
+    const scriptRows = emittedEvents.filter(
+      e => !['type_a', 'type_b', 'type_c'].includes(e.type),
+    );
+    assert.strictEqual(scriptRows.length, 1,
+      `nightly must append exactly 1 row; got ${scriptRows.length}`);
+
     const ratioRows = emittedEvents.filter(e => e.event === 'event_activation_ratio' || e.type === 'event_activation_ratio');
     const darkRows  = emittedEvents.filter(e => e.event === 'event_promised_but_dark' || e.type === 'event_promised_but_dark');
 
     assert.strictEqual(ratioRows.length, 1, 'must emit exactly 1 event_activation_ratio row');
+    assert.strictEqual(darkRows.length, 0,
+      'must NOT emit event_promised_but_dark — that type is reserved for audit-promised-events.js');
 
     const ratio = ratioRows[0];
     assert.strictEqual(ratio.numerator,   2,  'numerator should be 2');
@@ -164,11 +185,9 @@ describe('v2210 F3 — audit-firing-nightly', () => {
     assert.strictEqual(ratio.dark_count,   3,  'dark_count should be 3');
     assert.strictEqual(ratio.window_label, 'daily', 'window_label must be "daily"');
 
-    assert.strictEqual(darkRows.length, 3, 'must emit exactly 3 event_promised_but_dark rows');
-
-    const darkTypes = darkRows.map(r => r.event_type).sort();
+    const darkTypes = (ratio.dark_types || []).slice().sort();
     assert.deepStrictEqual(darkTypes, ['type_c', 'type_d', 'type_e'].sort(),
-      'dark rows must cover the 3 non-fired types');
+      'dark_types must cover the 3 non-fired types');
   });
 
   /**
@@ -239,10 +258,10 @@ describe('v2210 F3 — audit-firing-nightly', () => {
    *
    * Shadow: 3 normal + 2 feature_optional (f:1).
    * No fires at all.
-   * Expected: ratio denominator=3, dark_count=3, and dark rows cover only the
-   * 3 non-optional types.
+   * Expected: ratio denominator=3, dark_count=3, and dark_types covers only
+   * the 3 non-optional types.
    */
-  test('feature_optional types are excluded from ratio and dark rows', () => {
+  test('feature_optional types are excluded from ratio and dark_types', () => {
     const dir = makeRepo();
 
     writeShadow(dir, {
@@ -264,11 +283,8 @@ describe('v2210 F3 — audit-firing-nightly', () => {
       'feature_optional types must not count in denominator');
     assert.strictEqual(ratioRows[0].dark_count,  3);
 
-    const darkRows = emittedEvents.filter(
-      e => e.event === 'event_promised_but_dark' || e.type === 'event_promised_but_dark',
-    );
-    const darkTypes = darkRows.map(r => r.event_type);
-    assert.ok(!darkTypes.includes('optional_a'), 'optional_a must not appear in dark rows');
-    assert.ok(!darkTypes.includes('optional_b'), 'optional_b must not appear in dark rows');
+    const darkTypes = ratioRows[0].dark_types || [];
+    assert.ok(!darkTypes.includes('optional_a'), 'optional_a must not appear in dark_types');
+    assert.ok(!darkTypes.includes('optional_b'), 'optional_b must not appear in dark_types');
   });
 });

@@ -33,6 +33,7 @@ const { writeEvent }                  = require('./_lib/audit-event-writer');
 const { resolveSafeCwd }              = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES }             = require('./_lib/constants');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 const {
   getQuarantineCandidates,
   readSessionWakes,
@@ -145,20 +146,13 @@ function walkNamespacedGates(config) {
 const CONTINUE_RESPONSE = JSON.stringify({ continue: true });
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => {
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  process.stderr.write('[orchestray] gate-telemetry: stdin exceeded limit; skipping\n');
   process.stdout.write(CONTINUE_RESPONSE);
   process.exit(0);
-});
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[orchestray] gate-telemetry: stdin exceeded limit; skipping\n');
-    process.stdout.write(CONTINUE_RESPONSE);
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+}
+setImmediate(() => {
   try {
     handle(JSON.parse(input || '{}'));
   } catch (_e) {

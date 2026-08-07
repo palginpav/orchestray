@@ -22,15 +22,12 @@ const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { scan } = require('./_lib/cite-label-scanner');
 const { writeEvent } = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => { process.exit(0); });
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) process.exit(0);
-});
-process.stdin.on('end', () => {
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) process.exit(0);
+setImmediate(() => {
   let event;
   try {
     event = input ? JSON.parse(input) : {};

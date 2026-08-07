@@ -136,9 +136,9 @@ describe('agents/pm.md Block A hash stability', () => {
     }
 
     // Normal mode: compare against the inline pinned value.
-    // v2.3.17: repinned after PM frontmatter `model:` default changed from
-    // `inherit` to `claude-opus-5` (Opus 5 support rollout).
-    const PINNED_BLOCK_A_HASH = '1f1cc045e2772996';
+    // v2.3.18 W2: repinned after Section 12 gained the Parallelizability Shape
+    // Check subsection (decomposition gate on task shape, not score alone).
+    const PINNED_BLOCK_A_HASH = '5fabcdd4119cea10';
 
     assert.equal(
       actualHash,

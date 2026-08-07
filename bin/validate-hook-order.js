@@ -20,6 +20,7 @@
 
 const fs   = require('fs');
 const path = require('path');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // Kill switch: bail immediately, no-op.
 if (process.env.ORCHESTRAY_HOOK_ORDER_VALIDATION_DISABLED === '1') {
@@ -72,7 +73,7 @@ function computeDivergenceAt(canBasenames, liveBasenames) {
     // Resolve project cwd from stdin (Claude Code passes hook payload as JSON on stdin).
     let cwd = process.cwd();
     try {
-      const payload = JSON.parse(fs.readFileSync('/dev/stdin', 'utf8'));
+      const payload = JSON.parse(readHookInputRaw());
       if (payload && typeof payload.cwd === 'string') cwd = payload.cwd;
     } catch (_) { /* fail-open: use process.cwd() */ }
 

@@ -26,6 +26,7 @@ const { writeEvent }                  = require('./_lib/audit-event-writer');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES }             = require('./_lib/constants');
 const { loadWorktreeAutoCommitConfig } = require('./_lib/config-schema');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -123,16 +124,12 @@ if (process.env.ORCHESTRAY_WORKTREE_AUTO_COMMIT_DISABLED === '1') {
 
 let _stdinBuffer = '';
 
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => { process.exit(0); });
-process.stdin.on('data', (chunk) => {
-  _stdinBuffer += chunk;
-  if (_stdinBuffer.length > MAX_INPUT_BYTES) {
-    logStderr('stdin exceeded MAX_INPUT_BYTES; aborting');
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+_stdinBuffer = readHookInputRaw();
+if (_stdinBuffer.length > MAX_INPUT_BYTES) {
+  logStderr('stdin exceeded MAX_INPUT_BYTES; aborting');
+  process.exit(0);
+}
+setImmediate(() => {
   // 2. Parse the SubagentStop hook payload.
   let event = {};
   try {

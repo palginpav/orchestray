@@ -40,9 +40,17 @@
  *      registration window without depending on shadow's `_meta.generated_at`
  *      (which resets on every regen).
  *
- *   5. Debounce marker `.orchestray/state/promised-event-tracker.last-run.json`
+ *   5. Debounce marker `.orchestray/state/promised-event-debounce.last-run.json`
  *      — stores `{event_type: last_emit_iso}` per type. Each event_type emits
  *      at most ONCE per 24h.
+ *
+ *      D3 (v2.3.18 W1a): this file used to share its name with the 30-day
+ *      fire-count tracker `audit-firing-nightly.js` writes to
+ *      `promised-event-tracker.last-run.json` — same path, incompatible
+ *      shapes (`{type: iso_string}` here vs. `{type: count}` there). Whichever
+ *      script ran last clobbered the other's format, so `Date.parse()` on a
+ *      count value returned NaN and the debounce silently never held. Renamed
+ *      to a distinct path to make the collision structurally impossible.
  *
  * Wall-clock budget
  * -----------------
@@ -65,6 +73,7 @@ const path = require('node:path');
 
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { writeEvent }     = require('./_lib/audit-event-writer');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -148,9 +157,14 @@ function saveRegistry(cwd, reg) {
 
 /**
  * Load the debounce marker. Returns `{event_types:{event_type:last_emit_iso}}`.
+ *
+ * D3 (v2.3.18 W1a): filename deliberately distinct from
+ * `promised-event-tracker.last-run.json` (the 30d fire-count tracker written
+ * by `audit-firing-nightly.js`) — see file header for the collision this
+ * fixes.
  */
 function loadDebounce(cwd) {
-  const file = path.join(cwd, '.orchestray', 'state', 'promised-event-tracker.last-run.json');
+  const file = path.join(cwd, '.orchestray', 'state', 'promised-event-debounce.last-run.json');
   try {
     const raw = fs.readFileSync(file, 'utf8');
     const parsed = JSON.parse(raw);
@@ -163,7 +177,7 @@ function loadDebounce(cwd) {
 
 function saveDebounce(cwd, marker) {
   const dir  = path.join(cwd, '.orchestray', 'state');
-  const file = path.join(dir, 'promised-event-tracker.last-run.json');
+  const file = path.join(dir, 'promised-event-debounce.last-run.json');
   try {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(file, JSON.stringify(marker, null, 2), { mode: 0o600 });
@@ -272,7 +286,7 @@ function main() {
   let payload = {};
   try {
     if (!process.stdin.isTTY) {
-      const raw = fs.readFileSync(0, 'utf8');
+      const raw = readHookInputRaw();
       if (raw && raw.trim().length > 0) {
         payload = JSON.parse(raw);
       }

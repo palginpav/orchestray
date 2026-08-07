@@ -7,10 +7,18 @@
  * Verifies that audit-firing-nightly.js:
  *   1. Populates promised-event-tracker.last-run.json with 30-day fire counts
  *      before running dark detection.
- *   2. Emits event_promised_but_dark for event types with count=0 over the
- *      30-day window.
+ *   2. Folds 24h-dark types into `dark_types` on the `event_activation_ratio`
+ *      row (not a per-type `event_promised_but_dark` emit — see D2 note below).
  *   3. Is idempotent: running twice produces the same tracker contents.
- *   4. Does not emit event_promised_but_dark for types that fired in the window.
+ *   4. Does not include types that fired in the window in `dark_types`.
+ *
+ * D2 (v2.3.18 W1a): this script used to emit one `event_promised_but_dark`
+ * row per 24h-dark type — the SAME type `audit-promised-events.js` reserves
+ * for lifetime-dark (7+ day) events. ~300 types are quiet on any given day by
+ * construction, so this flooded ~300 false rows/day and collided with the
+ * lifetime-dark meaning. Folded into `dark_types[]` on the single
+ * `event_activation_ratio` summary row instead; this script never emits
+ * `event_promised_but_dark` anymore.
  */
 
 const { test, describe } = require('node:test');
@@ -199,7 +207,7 @@ describe('F-05 fix — promised-event-tracker population by audit-firing-nightly
       'event from 31 days ago must not count toward 30-day window');
   });
 
-  test('event_promised_but_dark emitted for dark types (zero 24h fires) with 30d count enrichment', () => {
+  test('dark_types (zero 24h fires) folded into the event_activation_ratio row', () => {
     const dir = makeRepo();
     writeShadow(dir, {
       dark_event:    { v: 1, r: 1, o: 0 },
@@ -218,29 +226,30 @@ describe('F-05 fix — promised-event-tracker population by audit-firing-nightly
     assert.equal(r.status, 0, `exit=${r.status} stderr=${r.stderr}`);
 
     const allEvents = readEmittedEvents(dir);
+
+    // D2: this script must never emit the per-type event_promised_but_dark
+    // row anymore — that type is reserved for audit-promised-events.js.
     const darkEmits = allEvents.filter((e) => e.type === 'event_promised_but_dark');
+    assert.equal(darkEmits.length, 0,
+      'audit-firing-nightly.js must not emit event_promised_but_dark rows');
+
+    const ratioRows = allEvents.filter((e) => e.type === 'event_activation_ratio');
+    assert.equal(ratioRows.length, 1, 'must emit exactly 1 event_activation_ratio row');
+    const darkTypes = ratioRows[0].dark_types || [];
 
     // alive_event must NOT appear (fired in 24h window).
-    const darkTypes = darkEmits.map((e) => e.event_type);
     assert.ok(!darkTypes.includes('alive_event'),
-      'alive_event must NOT appear in event_promised_but_dark (it fired recently)');
+      'alive_event must NOT appear in dark_types (it fired recently)');
 
-    // dark_event must appear with total_fire_count=0.
+    // dark_event and stale_event (dark in 24h window even though stale_event
+    // fired 5 days ago — 24h detection, not 30d) must both appear.
     assert.ok(darkTypes.includes('dark_event'),
-      `dark_event must be in event_promised_but_dark emits, got: ${JSON.stringify(darkTypes)}`);
-    const darkEventRow = darkEmits.find((e) => e.event_type === 'dark_event');
-    assert.equal(darkEventRow.total_fire_count, 0, 'dark_event total_fire_count must be 0');
-
-    // stale_event is dark in 24h window but alive in 30d window — still emitted
-    // as dark (24h detection), but total_fire_count reflects the 30d count.
+      `dark_event must be in dark_types, got: ${JSON.stringify(darkTypes)}`);
     assert.ok(darkTypes.includes('stale_event'),
       'stale_event must appear (dark in 24h window even if it fired 5 days ago)');
-    const staleRow = darkEmits.find((e) => e.event_type === 'stale_event');
-    assert.ok(staleRow.total_fire_count >= 1,
-      `stale_event total_fire_count must be >= 1 (30d enrichment), got ${staleRow.total_fire_count}`);
   });
 
-  test('event_promised_but_dark NOT emitted for feature_optional (f:1) event types', () => {
+  test('feature_optional (f:1) event types excluded from dark_types', () => {
     const dir = makeRepo();
     writeShadow(dir, {
       optional_dark: { v: 1, r: 1, o: 0, f: 1 },  // feature_optional
@@ -253,7 +262,13 @@ describe('F-05 fix — promised-event-tracker population by audit-firing-nightly
     const allEvents = readEmittedEvents(dir);
     const darkEmits = allEvents.filter((e) => e.type === 'event_promised_but_dark');
     assert.equal(darkEmits.length, 0,
-      'feature_optional event types must never emit event_promised_but_dark');
+      'audit-firing-nightly.js must not emit event_promised_but_dark rows');
+
+    const ratioRows = allEvents.filter((e) => e.type === 'event_activation_ratio');
+    assert.equal(ratioRows.length, 1);
+    const darkTypes = ratioRows[0].dark_types || [];
+    assert.ok(!darkTypes.includes('optional_dark'),
+      'feature_optional event types must not appear in dark_types');
   });
 
   test('idempotent: running twice produces same tracker contents', () => {

@@ -28,9 +28,13 @@ const driftModPath = path.join(REPO_ROOT, 'bin', '_lib', 'config-drift.js');
 const renameModPath = path.join(REPO_ROOT, 'bin', '_lib', 'config-rename-map.js');
 const bootScriptPath = path.join(REPO_ROOT, 'bin', 'boot-validate-config.js');
 const schemaPath = path.join(REPO_ROOT, 'schemas', 'config.schema.js');
+const configDefaultsPath = path.join(REPO_ROOT, 'bin', '_lib', 'config-defaults.js');
 
 const { detectDrift, lev, nearestKey, KNOWN_TOP_LEVEL_KEYS } = require(driftModPath);
 const { RENAME_MAP } = require(renameModPath);
+const { configSchema } = require(schemaPath);
+const { validate } = require(path.join(REPO_ROOT, 'schemas'));
+const { defaults: configDefaults } = require(configDefaultsPath);
 
 // ---------------------------------------------------------------------------
 // Pure detector
@@ -434,5 +438,61 @@ describe('config-drift — v2.2.0 P1.2/P1.3/P3.2 top-level keys are registered',
     assert.ok(known.has('pm_protocol'),    'KNOWN_TOP_LEVEL_KEYS missing pm_protocol');
     assert.ok(known.has('event_schemas'),  'KNOWN_TOP_LEVEL_KEYS missing event_schemas');
     assert.ok(known.has('output_shape'),   'KNOWN_TOP_LEVEL_KEYS missing output_shape');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v2.3.18 W13 — mechanical guard against config-defaults.js going
+// unregistered, same shape as the state-GC glob list (tests/state-gc-litter-
+// coverage.test.js): a namespace shipped a *behaviour* (a working kill
+// switch) without shipping its *registration* (drift list + schema), so the
+// boot-time drift detector warned "unknown config key" and the schema gave
+// it zero type-checking. `bin/_lib/config-defaults.js` is the single source
+// of truth for the namespaces it centralises; this test derives its
+// top-level keys and fails loudly if either registry falls behind.
+// ---------------------------------------------------------------------------
+
+describe('config-drift — config-defaults.js namespaces are fully registered', () => {
+  test('every top-level key in config-defaults.js is in KNOWN_TOP_LEVEL_KEYS', () => {
+    const known = new Set(KNOWN_TOP_LEVEL_KEYS);
+    const missing = Object.keys(configDefaults).filter((k) => !known.has(k));
+    assert.deepEqual(
+      missing, [],
+      'config-defaults.js namespace(s) missing from KNOWN_TOP_LEVEL_KEYS: ' + missing.join(', ')
+    );
+  });
+
+  test('every top-level key in config-defaults.js validates against configSchema with its shipped default', () => {
+    const failures = [];
+    for (const key of Object.keys(configDefaults)) {
+      const res = validate(configSchema, { [key]: configDefaults[key] }, key);
+      if (!res.ok) failures.push(key + ': ' + res.message);
+    }
+    assert.deepEqual(
+      failures, [],
+      'config-defaults.js shipped default(s) rejected by configSchema (schema is stricter ' +
+      'than what we ship — fix the schema, not the default):\n' + failures.join('\n')
+    );
+  });
+
+  test('guard is not vacuous — actually covers the known namespaces today', () => {
+    // Pins the families this test is protecting. If config-defaults.js stops
+    // exporting one of these, the guard above would trivially pass for the
+    // wrong reason (nothing left to check) — this pins it the same way
+    // state-gc-litter-coverage.test.js pins its known prefixes.
+    const keys = Object.keys(configDefaults);
+    for (const expected of ['tokenwright', 'plugin_loader']) {
+      assert.ok(keys.includes(expected), 'config-defaults.js must still export "' + expected + '"');
+    }
+  });
+
+  test('proof the guard actually fails: a namespace missing from KNOWN_TOP_LEVEL_KEYS is caught', () => {
+    // Simulates exactly the regression this guard exists to catch — a
+    // config-defaults.js namespace present but unregistered — without
+    // mutating the real module (require cache would leak across tests).
+    const knownMinusTokenwright = KNOWN_TOP_LEVEL_KEYS.filter((k) => k !== 'tokenwright');
+    const known = new Set(knownMinusTokenwright);
+    const missing = Object.keys(configDefaults).filter((k) => !known.has(k));
+    assert.deepEqual(missing, ['tokenwright'], 'guard must flag a de-registered namespace, not stay silent');
   });
 });

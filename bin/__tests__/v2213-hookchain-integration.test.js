@@ -302,10 +302,14 @@ describe('v2.2.13 W2 — PreToolUse:Agent hook-chain integration', () => {
     },
   );
 
-  // ── Negative: no hint → preflight hard-blocks ────────────────────────────
+  // ── Negative → now positive: no hint, readable prompt → computed fallback ─
+  // v2.3.18 W3 Q1 UPDATE: was "chain blocked (exit 2)" — a missing hint with
+  // a readable prompt now computes a fallback and proceeds instead of
+  // blocking (v2318-implementation-plan.md "Q1 -> compute-and-warn, not
+  // block"). Renamed from "negative" since this is no longer an error path.
 
   test(
-    'negative: [collect-context-telemetry pre-spawn, preflight] without hint → chain blocked (exit 2)',
+    '[collect-context-telemetry pre-spawn, preflight] without hint, readable prompt → chain NOT blocked (computed fallback)',
     { skip: SKIP_ALL ? 'ORCHESTRAY_HOOKCHAIN_INTEGRATION_TEST_DISABLED=1' : false },
     () => {
       const payload = {
@@ -325,20 +329,21 @@ describe('v2.2.13 W2 — PreToolUse:Agent hook-chain integration', () => {
         payload,
       );
 
-      assert.equal(result.blocked, true,
-        'chain must block when no hint is present');
-
-      // Preflight writes the block message to stdout; check it contains the
-      // identifying token so a future reader knows WHY it blocked.
-      assert.match(result.lastStdout, /context_size_hint/,
-        'block message must mention context_size_hint');
+      assert.equal(result.blocked, false,
+        'chain must NOT block — the missing hint is computed from the prompt instead');
+      // runChain() only captures stdout/stderr on the blocked path (see its
+      // jsdoc above) — nothing further to assert on the non-blocked outcome.
     },
   );
 
-  // ── Kill-switch: inline parse disabled → blocks even with prompt hint ─────
+  // ── Kill-switch: inline parse disabled → computed fallback, not blocked ───
+  // v2.3.18 W3 Q1 UPDATE: was "chain blocked even with hint in prompt" — the
+  // hint line is ignored (inline parser disabled) but the raw prompt text is
+  // still readable, so the v2.3.18 compute-and-warn fallback derives a size
+  // from it and proceeds instead of blocking.
 
   test(
-    'kill-switch ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED=1 → chain blocked even with hint in prompt',
+    'kill-switch ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED=1 → computed fallback, chain not blocked',
     { skip: SKIP_ALL ? 'ORCHESTRAY_HOOKCHAIN_INTEGRATION_TEST_DISABLED=1' : false },
     () => {
       const payload = {
@@ -356,8 +361,8 @@ describe('v2.2.13 W2 — PreToolUse:Agent hook-chain integration', () => {
         { ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED: '1' },
       );
 
-      assert.equal(result.blocked, true,
-        'chain must block when inline parse is disabled, even if prompt contains hint');
+      assert.equal(result.blocked, false,
+        'chain must NOT block — computed fallback proceeds even with inline parse disabled');
     },
   );
 

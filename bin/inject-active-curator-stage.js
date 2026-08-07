@@ -28,6 +28,7 @@ const fs = require('fs');
 const path = require('path');
 // NEW-01 (v2.3.9): canonical loader for curator_slice_loading config.
 const { loadCuratorSliceLoadingConfig } = require('./_lib/config-schema');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const CONTINUE_RESPONSE = JSON.stringify({ continue: true });
 
@@ -58,19 +59,12 @@ const STAGES_DIR_RELATIVE = path.join('agents', 'curator-stages');
 
 if (require.main === module) {
   let input = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', () => {
+  input = readHookInputRaw();
+  if (input.length > 1024 * 1024) {
     process.stdout.write(CONTINUE_RESPONSE + '\n');
     process.exit(0);
-  });
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-    if (input.length > 1024 * 1024) {
-      process.stdout.write(CONTINUE_RESPONSE + '\n');
-      process.exit(0);
-    }
-  });
-  process.stdin.on('end', () => {
+  }
+  setImmediate(() => {
     try {
       handle(JSON.parse(input || '{}'));
     } catch (_e) {

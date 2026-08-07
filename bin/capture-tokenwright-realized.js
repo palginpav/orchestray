@@ -51,6 +51,7 @@ const {
 const { resolveActualTokens, readFirstUserMessageTokens } = require('./_lib/tokenwright/resolve-actual-tokens');
 const { sweepJournal }                 = require('./_lib/tokenwright/journal-sweep');
 const { checkDoubleFire }              = require('./_lib/tokenwright/double-fire-guard');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -443,17 +444,13 @@ function handleTaskCompleted(event, cwd, cfg) {
 // ---------------------------------------------------------------------------
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => { emitContinue(); process.exit(0); });
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[capture-tokenwright-realized] stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; failing open\n');
-    emitContinue();
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  process.stderr.write('[capture-tokenwright-realized] stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; failing open\n');
+  emitContinue();
+  process.exit(0);
+}
+setImmediate(() => {
   try {
     let event;
     try {

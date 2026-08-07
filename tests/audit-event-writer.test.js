@@ -10,8 +10,11 @@
  *
  * Test plan (W2 design § "Test plan (TDD seed for W3)"):
  *   1. Happy-path emit with a known event type.
- *   2. Schema violation — drop original + emit surrogate `schema_shadow_validation_block`.
- *   3. Unknown event type (shadow miss == schema miss) — same drop + surrogate.
+ *   2. Schema violation — emit original (autofilled) + surrogate
+ *      `schema_shadow_validation_block` + `schema_shape_violation` advisory.
+ *      (D6, v2.3.18 W1b: changed from "drop original" — dropping lost real
+ *      lifecycle events like orchestration_complete permanently.)
+ *   3. Unknown event type (shadow miss == schema miss) — same emit + advisory.
  *   4. Three-strike circuit broken — bypass validation, append as-is, stderr warning.
  *   5. PreToolUse hook blocks direct Edit on events.jsonl (path-based defence).
  */
@@ -58,7 +61,7 @@ function readEventsJsonl(tmpDir) {
  * result }, where `result` is the parsed JSON return value of writeEvent
  * (printed by the harness on stdout).
  */
-function callWriteEvent(eventPayload, opts) {
+function callWriteEvent(eventPayload, opts, env) {
   const gatewayPath = path.resolve(REPO_ROOT, 'bin', '_lib', 'audit-event-writer.js');
   const harness = `
     const { writeEvent } = require(${JSON.stringify(gatewayPath)});
@@ -68,6 +71,7 @@ function callWriteEvent(eventPayload, opts) {
   const r = spawnSync(process.execPath, ['-e', harness], {
     encoding: 'utf8',
     timeout: 5000,
+    env: Object.assign({}, process.env, env || {}),
   });
   let parsed = null;
   try { parsed = JSON.parse(r.stdout); } catch (_e) { /* ignore */ }
@@ -91,7 +95,13 @@ describe('audit-event-writer (R-SHDW-EMIT gateway)', () => {
       setupTmpRepo(tmpDir);
 
       const event = { type: 'schema_shadow_hit', version: 1, event_type: 'tier2_load' };
-      const { result } = callWriteEvent(event, { cwd: tmpDir });
+      // D4 (v2.3.18 W1a): the autofill telemetry advisory is sampled
+      // (1 aggregate row per AUTOFILL_SAMPLE_INTERVAL occurrences per
+      // event_type) rather than emitted 1:1. This test asserts the per-call
+      // shape of the advisory, so disable sampling for a clean single-call
+      // 1:1 read — production behavior (sampled) is covered by the D4 tests
+      // in bin/_lib/__tests__/v2318-w1a-audit-autofill-sample.test.js.
+      const { result } = callWriteEvent(event, { cwd: tmpDir }, { ORCHESTRAY_AUTOFILL_SAMPLE_DISABLED: '1' });
 
       assert.equal(result.written, true, 'written should be true');
       assert.equal(result.reason, 'ok', 'reason should be "ok"');
@@ -122,7 +132,7 @@ describe('audit-event-writer (R-SHDW-EMIT gateway)', () => {
     }
   });
 
-  test('Test 2 — schema violation drops original and emits surrogate', () => {
+  test('Test 2 — schema violation emits original plus surrogate (degrade, not drop)', () => {
     const tmpDir = makeTmpDir();
     try {
       setupTmpRepo(tmpDir);
@@ -131,16 +141,20 @@ describe('audit-event-writer (R-SHDW-EMIT gateway)', () => {
       const badEvent = { type: 'tier2_load' };
       const { result } = callWriteEvent(badEvent, { cwd: tmpDir });
 
-      assert.equal(result.written, false, 'written should be false');
-      assert.equal(result.reason, 'validation_failed', 'reason should be "validation_failed"');
+      // D6 (v2.3.18 W1b): a shape violation on a KNOWN type now degrades to
+      // emit-with-warning instead of dropping the original event — dropping
+      // silently corrupted history for lifecycle events like
+      // orchestration_complete (55 dropped rows observed live).
+      assert.equal(result.written, true, 'written should be true — original is no longer dropped');
+      assert.equal(result.reason, 'shape_violation_emitted', 'reason should be "shape_violation_emitted"');
       assert.equal(result.event_type, 'tier2_load');
-      assert.ok(Array.isArray(result.errors) && result.errors.length > 0, 'errors should be non-empty');
+      assert.ok(Array.isArray(result.errors) && result.errors.length > 0, 'errors should be non-empty (still surfaced)');
 
       // v2.2.12 W1b: the surrogate path now ALSO emits a rate-limited
-      // `schema_shape_violation` advisory (1 per process per type). For first
-      // emit of a given type, we expect 2 lines: the surrogate + the advisory.
+      // `schema_shape_violation` advisory (1 per process per type). We now
+      // expect 3 lines: the original event + the surrogate + the advisory.
       const lines = readEventsJsonl(tmpDir);
-      assert.equal(lines.length, 2, 'exactly two lines: surrogate + schema_shape_violation advisory');
+      assert.equal(lines.length, 3, 'three lines: original + surrogate + schema_shape_violation advisory');
       const surrogate = lines.find((e) => e.type === 'schema_shadow_validation_block');
       const advisory = lines.find((e) => e.type === 'schema_shape_violation');
       assert.ok(surrogate, 'surrogate event present');
@@ -148,15 +162,38 @@ describe('audit-event-writer (R-SHDW-EMIT gateway)', () => {
       assert.ok(Array.isArray(surrogate.errors) && surrogate.errors.length > 0);
       assert.ok(advisory, 'schema_shape_violation advisory present');
       assert.equal(advisory.event_type, 'tier2_load');
-      // Confirm the original tier2_load was NOT written
+      // D6: the original tier2_load IS written (autofilled), despite the violation.
       const tier2Lines = lines.filter((e) => e.type === 'tier2_load');
-      assert.equal(tier2Lines.length, 0, 'no original tier2_load line written');
+      assert.equal(tier2Lines.length, 1, 'original tier2_load line is written, not dropped');
 
       // v2.2.12 W1b: recordMiss MUST NOT fire for shape-violations.
       const missesPath = path.join(tmpDir, '.orchestray', 'state', 'schema-shadow-misses.jsonl');
       const missesExist = fs.existsSync(missesPath);
       const missLines = missesExist ? fs.readFileSync(missesPath, 'utf8').split('\n').filter(Boolean) : [];
       assert.equal(missLines.length, 0, 'shape-violation no longer increments misses log (W1b)');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('Test 2b — a genuine lifecycle-shaped violation (orchestration_complete) is never lost', () => {
+    // Regression guard for the exact D6 scenario observed live: an
+    // orchestration_complete emitted without the required "status" field
+    // must still land in events.jsonl so the completion rollup can find it.
+    const tmpDir = makeTmpDir();
+    try {
+      setupTmpRepo(tmpDir);
+
+      const badComplete = { type: 'orchestration_complete', orchestration_id: 'orch-d6-test' };
+      const { result } = callWriteEvent(badComplete, { cwd: tmpDir });
+
+      assert.equal(result.written, true);
+      assert.equal(result.reason, 'shape_violation_emitted');
+
+      const lines = readEventsJsonl(tmpDir);
+      const original = lines.find((e) => e.type === 'orchestration_complete');
+      assert.ok(original, 'orchestration_complete row is present despite missing "status"');
+      assert.equal(original.orchestration_id, 'orch-d6-test');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

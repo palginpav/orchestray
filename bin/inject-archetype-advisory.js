@@ -58,6 +58,7 @@ const {
 
 const { emitTier2Invoked } = require('./_lib/tier2-invoked-emitter');
 const { writeEvent }       = require('./_lib/audit-event-writer');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const FENCE_OPEN  = '<orchestray-archetype-advisory>';
 const FENCE_CLOSE = '</orchestray-archetype-advisory>';
@@ -65,15 +66,11 @@ const FENCE_CLOSE = '</orchestray-archetype-advisory>';
 // ─── Stdin reader ─────────────────────────────────────────────────────────────
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => { process.exit(0); });
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  process.exit(0);
+}
+setImmediate(() => {
   try {
     const event = JSON.parse(input);
     handleUserPromptSubmit(event);

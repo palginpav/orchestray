@@ -15,6 +15,10 @@
  *      archive cancels the dark alarm).
  *   5. Kill switch `ORCHESTRAY_PROMISED_EVENT_TRACKER_DISABLED=1` short-circuits.
  *   6. Recent (≤ 7 days) registrations do NOT alarm.
+ *   7. D3 (v2.3.18 W1a): the debounce survives an interleaved
+ *      audit-firing-nightly.js run — regression test for the file-format
+ *      collision where both scripts wrote to the same
+ *      `promised-event-tracker.last-run.json` path with incompatible shapes.
  */
 
 const { test, describe } = require('node:test');
@@ -26,6 +30,7 @@ const { spawnSync }      = require('node:child_process');
 
 const REPO_ROOT  = path.resolve(__dirname, '..', '..');
 const SCRIPT     = path.join(REPO_ROOT, 'bin', 'audit-promised-events.js');
+const NIGHTLY_SCRIPT = path.join(REPO_ROOT, 'bin', 'audit-firing-nightly.js');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -193,6 +198,44 @@ describe('v2.2.9 F3 — audit-promised-events.js', () => {
     const events = readEvents(dir);
     const dark = events.filter((e) => e.type === 'event_promised_but_dark');
     assert.equal(dark.length, 0, 'kill switch must suppress emit');
+  });
+
+  test('D3: debounce survives an interleaved audit-firing-nightly.js run', () => {
+    const dir = makeRepo();
+    writeShadow(dir, { events: { my_dark_event: { v: 1, r: 1, o: 0 } } });
+    writeRegistry(dir, ['my_dark_event'], eightDaysAgoIso());
+
+    // Run 1: promised-events fires and debounces my_dark_event.
+    const r1 = runScript(dir);
+    assert.equal(r1.status, 0, `run1 exit=${r1.status} stderr=${r1.stderr}`);
+    const afterR1 = readEvents(dir).filter(
+      (e) => e.type === 'event_promised_but_dark' && e.event_type === 'my_dark_event'
+    );
+    assert.equal(afterR1.length, 1, 'run1 must emit the initial dark alarm');
+
+    // Interleave: audit-firing-nightly.js runs (writes its OWN 30d fire-count
+    // tracker to promised-event-tracker.last-run.json). Before D3 this shared
+    // the same path as the promised-events debounce marker and clobbered it.
+    const nightly = spawnSync('node', [NIGHTLY_SCRIPT], {
+      cwd: dir,
+      env: { ...process.env },
+      input: JSON.stringify({ cwd: dir }),
+      encoding: 'utf8',
+      timeout: 15_000,
+    });
+    assert.equal(nightly.status, 0, `nightly exit=${nightly.status} stderr=${nightly.stderr}`);
+
+    // Run 2: promised-events fires again, still within the 24h debounce
+    // window. Must NOT re-emit — the debounce marker must have survived the
+    // interleaved nightly run untouched.
+    const r2 = runScript(dir);
+    assert.equal(r2.status, 0, `run2 exit=${r2.status} stderr=${r2.stderr}`);
+
+    const dark = readEvents(dir).filter(
+      (e) => e.type === 'event_promised_but_dark' && e.event_type === 'my_dark_event'
+    );
+    assert.equal(dark.length, 1,
+      `debounce must survive the interleaved nightly run; got ${dark.length} emits`);
   });
 
   test('events younger than 7 days do NOT alarm', () => {

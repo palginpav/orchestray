@@ -29,6 +29,7 @@ const { safeRealpath, isInsideAllowed, encodeProjectPath } = require('./_lib/pat
 const { lookupModel, resolveContextWindow } = require('./_lib/models');
 const { runJanitor }             = require('./_lib/subagent-janitor');
 const { extractReviewDimensions } = require('./_lib/extract-review-dimensions');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 let _staging_counter = 0;
 
@@ -430,20 +431,13 @@ function handlePostSpawn(event, cwd) {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => {
-  process.stdout.write(JSON.stringify({ continue: true }));
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  process.stderr.write('[orchestray] collect-context-telemetry: stdin exceeded limit; aborting\n');
+  process.stdout.write(JSON.stringify({ continue: true }) + '\n');
   process.exit(0);
-});
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[orchestray] collect-context-telemetry: stdin exceeded limit; aborting\n');
-    process.stdout.write(JSON.stringify({ continue: true }) + '\n');
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+}
+setImmediate(() => {
   let resolvedCwd = process.cwd();
   try {
     const event = JSON.parse(input || '{}');

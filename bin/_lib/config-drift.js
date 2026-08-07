@@ -209,6 +209,27 @@ const KNOWN_TOP_LEVEL_KEYS = Object.freeze([
 
   // oversized-input mode (W1, v2.3.14)
   'oversized_input',
+
+  // Claim–Evidence Ledger (W4, v2.3.18) — loaded by
+  // bin/validate-claim-evidence.js loadClaimEvidenceConfig().
+  'claim_evidence_ledger',
+
+  // Co-change Oracle (v2.3.18) — loaded by bin/validate-companion-files.js
+  // loadConfig() and bin/validate-task-contracts.js loadCochangeConfig().
+  'cochange_oracle',
+
+  // Behavior Diff Gate (W5b, v2.3.18) — loaded by bin/_tools/behavior-diff.js
+  // loadConfig() and bin/_lib/hook-stdin.js harvestConfigured().
+  'behavior_diff_gate',
+
+  // Tool-grant-shortfall telemetry detector (W3, v2.3.18) — loaded by
+  // bin/detect-tool-grant-shortfall.js isDisabled(). Never blocks.
+  'tool_grant_shortfall',
+
+  // tokenwright bootstrap-estimator kill switch (W1f carryover, v2.3.18) —
+  // loaded by bin/_lib/tokenwright/bootstrap-estimator.js isConfigEnabled().
+  // Distinct from top-level `compression` (see that key's schema comment).
+  'tokenwright',
 ]);
 
 /**

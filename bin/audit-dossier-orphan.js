@@ -55,6 +55,7 @@ const path = require('path');
 const { resolveSafeCwd }  = require('./_lib/resolve-project-cwd');
 const { writeEvent }      = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const KILL_SWITCH_REASON = 'kill_switch_set';
 
@@ -459,22 +460,15 @@ const CONTINUE_RESPONSE = JSON.stringify({ continue: true });
 
 if (require.main === module) {
   let input = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', () => {
-    try { process.stdout.write(CONTINUE_RESPONSE); } catch (_e) {}
+  input = readHookInputRaw();
+  if (input.length > MAX_INPUT_BYTES) {
+    try {
+      process.stderr.write('[audit-dossier-orphan] stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
+      process.stdout.write(CONTINUE_RESPONSE + '\n');
+    } catch (_e) {}
     process.exit(0);
-  });
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-    if (input.length > MAX_INPUT_BYTES) {
-      try {
-        process.stderr.write('[audit-dossier-orphan] stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
-        process.stdout.write(CONTINUE_RESPONSE + '\n');
-      } catch (_e) {}
-      process.exit(0);
-    }
-  });
-  process.stdin.on('end', () => {
+  }
+  setImmediate(() => {
     try {
       if (process.env.ORCHESTRAY_DOSSIER_ORPHAN_AUDIT_DISABLED === '1') {
         process.stdout.write(CONTINUE_RESPONSE + '\n');

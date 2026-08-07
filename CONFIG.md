@@ -182,6 +182,16 @@ All keys are nested under `plugin_loader` in `.orchestray/config.json`.
 | `mcp_enforcement.unknown_tool_policy` | `"block"` | Policy for MCP tool names not in the agent/skip allowlists: `"block"` (fail-closed), `"warn"`, or `"allow"`. |
 | `mcp_enforcement.pattern_record_application` | `"hook-strict"` | Enforcement mode for `pattern_record_application` calls: `"hook-strict"` (blocking), `"hook-warn"` (advisory), `"hook"`, `"prompt"`, or `"allow"`. |
 | `mcp_enforcement.global_kill_switch` | `false` | When `true`, disables all MCP enforcement (requires `kill_switch_reason` to be set). |
+| `cochange_oracle.enabled` | `true` | Enable the Co-change Oracle — mines `git log` for files that historically change together, then flags half-done changes. |
+| `cochange_oracle.companion_gate` | `"block"` | Companion-file gate at `SubagentStop`: `"block"`, `"advisory"` (telemetry only), or `"off"`. Only rules confirmed on recent history can block. |
+| `cochange_oracle.seam_gate` | `"advisory"` | Pre-spawn warning when two parallel tasks own historically coupled files. Advisory-only in v2.3.18; `"off"` silences it. |
+| `cochange_oracle.min_conf` | `0.8` | Minimum confidence `P(companion changed \| file changed)` for the companion gate to block. |
+| `cochange_oracle.min_support` | `5` | Minimum number of commits backing a rule before it may block. |
+| `cochange_oracle.ramp` | `3` | Warn-only occurrences of each individual finding (per role, per co-change rule) before the companion gate starts blocking. A new obligation always warns first. The gate only ever considers files the spawn itself reported writing, and skips read-only roles entirely. |
+| `behavior_diff_gate.enabled` | `true` | Enable the Behavior Diff Gate — replays changed hook scripts against harvested real inputs and diffs observed behavior. |
+| `behavior_diff_gate.harvest` | `true` | Collect fixtures from live hook runs into `.orchestray/fixtures/`. Separable from `block` on purpose: the corpus must build before the gate is worth arming. |
+| `behavior_diff_gate.block` | `true` | Treat an unexplained behavior delta as a failure. Set `false` for telemetry only. |
+| `behavior_diff_gate.max_fixtures_per_script` | `40` | Corpus cap per script. |
 
 ---
 

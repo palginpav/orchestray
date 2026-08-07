@@ -57,13 +57,15 @@ Within each category, entries are sorted case-insensitive alphabetically by feat
 | Context-size-hint warn-then-block ramp (v2.2.15) | — | `ORCHESTRAY_CONTEXT_SIZE_HINT_GATE_DISABLED=1` (full bypass); `ORCHESTRAY_CONTEXT_SIZE_HINT_RAMP_THRESHOLD=N` (default 3 spawns/orch before exit 2) | default-on |
 | Contracts missing-contracts warn | — | `ORCHESTRAY_CONTRACTS_MISSING_WARN_DISABLED=1` | default-on |
 | Contracts postcondition silent-skip audit emit (v2.2.13) | — | `ORCHESTRAY_CONTRACTS_RUNPOST_AUDIT_DISABLED=1` | default-on |
+| Behavior Diff Gate (v2.3.18) — replays changed `bin/*.js` against harvested fixtures and reports behavior deltas | `behavior_diff_gate.enabled: false` (or `harvest: false` / `block: false` — the two are separable) | `ORCHESTRAY_BEHAVIOR_DIFF_DISABLED=1`; harvest off: `ORCHESTRAY_FIXTURE_HARVEST=0` | default-on |
+| Co-change Oracle (v2.3.18) — companion-file gate blocks holdout-validated half-changes; seam gate is advisory-only | `cochange_oracle.enabled: false` (or `companion_gate: "advisory"` for telemetry-only, `seam_gate: "off"`) | `ORCHESTRAY_COCHANGE_DISABLED=1`; soft-warn: `ORCHESTRAY_COCHANGE_RAMP_THRESHOLD=N` | default-on |
 | Contracts task-YAML validator | — | `ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED=1` | default-on |
 | Contracts validation hard-fail (v2.2.12, reverts to warn) | — | `ORCHESTRAY_CONTRACTS_PARSE_GATE_DISABLED=1` | default-on |
 | Developer git-action gate | — | `ORCHESTRAY_GIT_GATE_DISABLED=1` | default-on |
-| Dual-install bypass guard (v2.2.21) | — | `ORCHESTRAY_DUAL_INSTALL_BYPASS_DISABLED=1` | default-on |
+| Dual-install hook dedup (v2.2.21; single-layer since v2.3.18) — when both a global and a project-local install are registered, the first one to claim the hook payload runs and the other exits silently | — | `ORCHESTRAY_DUAL_INSTALL_BYPASS_DISABLED=1` (both installs fire; the post-fire guard suppresses the duplicate). `ORCHESTRAY_DISABLE_HOOK_ENTRY_DEDUP=1` is an equivalent spelling | default-on |
 | Hook double-fire skip + SessionStart dual-install version-mismatch surfacing (v2.2.15) | — | `ORCHESTRAY_DOUBLE_FIRE_SKIP_GATE_DISABLED=1` | default-on |
 | KB slug path-traversal hard-block | — | `ORCHESTRAY_KB_SLUG_VALIDATION_DISABLED=1` | default-on |
-| Pattern-application acknowledgement exit-2 (v2.2.17, was warn in v2.2.15) | — | `ORCHESTRAY_PATTERN_APPLICATION_GATE_DISABLED=1`; soft-warn: `ORCHESTRAY_PATTERN_APPLICATION_RAMP_THRESHOLD=N` | default-on |
+| Claim–Evidence Ledger (v2.3.18) — blocks unevidenced claims; replaces the tester-runs-tests, pattern-application, researcher-citations, platform-oracle-grounding and MCP-grounding gates | `claim_evidence_ledger.enabled: false` (or `block: false` for telemetry-only) | `ORCHESTRAY_CLAIM_EVIDENCE_DISABLED=1`; soft-warn: `ORCHESTRAY_CLAIM_EVIDENCE_RAMP_THRESHOLD=N` | default-on |
 | Per-role hard-tier handoff schema | — | `ORCHESTRAY_T15_<ROLE>_HARD_DISABLED=1` (per role: `DEVELOPER`, `RESEARCHER`, etc.) | default-on |
 | Per-role write-path gate | — | `ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1` | default-on |
 | Role write-path traversal guard (v2.2.21) | — | `ORCHESTRAY_ROLE_WRITE_TRAVERSAL_DISABLED=1` | default-on |
@@ -87,8 +89,7 @@ Within each category, entries are sorted case-insensitive alphabetically by feat
 
 | Feature | Config key | Env var | Default |
 |---------|-----------|---------|---------|
-| L1 prompt compression (v2.2.19, default-off) | `tokenwright.l1_compression_enabled: true` | — (re-enable only; compression is off by default in v2.2.19) | default-off |
-| Prompt compression (Tokenwright) | `compression.enabled: false` | `ORCHESTRAY_DISABLE_COMPRESSION=1` | default-on |
+| Tokenwright spawn hook (passthrough + estimate journaling; L1 compression retired v2.3.18) | `compression.enabled: false` | `ORCHESTRAY_DISABLE_COMPRESSION=1` | default-on |
 | Rolling-median token estimate bootstrapper (v2.2.18) | `tokenwright.bootstrap_enabled: false` | `ORCHESTRAY_TOKENWRIGHT_BOOTSTRAP_DISABLED=1` | default-on |
 
 ## 5. Dossier & resilience
@@ -122,6 +123,7 @@ Within each category, entries are sorted case-insensitive alphabetically by feat
 | Per-orch activation ratio KPI emit | — | `ORCHESTRAY_ACTIVATION_RATIO_EMIT_DISABLED=1` | default-on |
 | Sentinel probe per-session dedup | — | `ORCHESTRAY_SENTINEL_DEDUP_DISABLED=1` | default-on |
 | Tier2 protocol watcher auto-emit | — | `ORCHESTRAY_TIER2_WATCHER_DISABLED=1` | default-on |
+| Tool-grant shortfall detector (v2.3.18) — flags a declared capability-critical tool (WebFetch/WebSearch) never used in a spawn's transcript; telemetry-only, never blocks | `tool_grant_shortfall.enabled: false` | `ORCHESTRAY_TOOL_GRANT_SHORTFALL_DISABLED=1` | default-on |
 | Verify-fix watcher auto-emit | — | `ORCHESTRAY_VERIFY_FIX_WATCHER_DISABLED=1` | default-on |
 
 ## 7. MCP
@@ -131,7 +133,6 @@ Within each category, entries are sorted case-insensitive alphabetically by feat
 | KB write auto-index update (v2.2.12) | — | `ORCHESTRAY_KB_INDEX_AUTO_DISABLED=1` | default-on |
 | KB write redirect to MCP (Phase 1 transparent-pass) | — | `ORCHESTRAY_KB_WRITE_REDIRECT_DISABLED=1` | default-on |
 | MCP enforcement gate | `mcp_enforcement.global_kill_switch: true` | — | default-on |
-| MCP grounding hard-reject gate | — | `ORCHESTRAY_MCP_GROUNDING_GATE_DISABLED=1` | default-on |
 | MCP handler-entry instrumentation (v2.2.11) | — | `ORCHESTRAY_MCP_ENTRY_INSTRUMENTATION_DISABLED=1` | default-on |
 | Orch-complete MCP fanout (metrics/routing/pattern) | — | `ORCHESTRAY_ORCH_COMPLETE_MCP_FANOUT_DISABLED=1` | default-on |
 | Server-side MCP grounding prefetch | — | `ORCHESTRAY_MCP_PREFETCH_DISABLED=1` | default-on |

@@ -37,6 +37,7 @@ const crypto = require('crypto');
 const { writeEvent }      = require('./_lib/audit-event-writer');
 const { resolveSafeCwd }  = require('./_lib/resolve-project-cwd');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const AGENT_FILE_NAME = 'orchestray-housekeeper.md';             // NEW
 // Legacy/dev cwd-relative path retained for plugin-source repo layouts and
@@ -252,16 +253,12 @@ function runDriftCheck(cwd) {
 
 function main() {
   let input = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', () => { process.exit(0); });
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-    if (input.length > MAX_INPUT_BYTES) {
-      // Don't block SessionStart on giant payload — drop and exit 0.
-      process.exit(0);
-    }
-  });
-  process.stdin.on('end', () => {
+  input = readHookInputRaw();
+  if (input.length > MAX_INPUT_BYTES) {
+    // Don't block SessionStart on giant payload — drop and exit 0.
+    process.exit(0);
+  }
+  setImmediate(() => {
     let cwd;
     try {
       let parsed = {};

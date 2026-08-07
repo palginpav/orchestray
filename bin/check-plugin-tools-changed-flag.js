@@ -25,6 +25,7 @@ const path = require('path');
 
 const { MAX_INPUT_BYTES }  = require('./_lib/constants');
 const { resolveSafeCwd }   = require('./_lib/resolve-project-cwd');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const FLAG_REL_PATH = path.join('.orchestray', 'state', 'plugin-tools-changed.flag');
 
@@ -80,15 +81,11 @@ function resolveFlagRoot(eventCwd) {
 // ─── Stdin reader ─────────────────────────────────────────────────────────────
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => { process.exit(0); });
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  process.exit(0);
+}
+setImmediate(() => {
   try {
     const event = JSON.parse(input || '{}');
     handleUserPromptSubmit(event);

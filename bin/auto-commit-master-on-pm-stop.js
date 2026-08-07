@@ -107,6 +107,7 @@ function detectMidGitOperation(projectRoot) {
 // S-2 (v2.2.18): parseFrontmatter consolidated into bin/_lib/frontmatter-parse.js.
 // Local hand-rolled parser removed; behavior preserved via the shared module.
 const { parseFrontmatter } = require('./_lib/frontmatter-parse');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 /**
  * Read orchestration state from .orchestray/state/orchestration.md.
@@ -151,16 +152,12 @@ if (process.env.ORCHESTRAY_MASTER_AUTO_COMMIT_DISABLED === '1') {
 
 let _stdinBuffer = '';
 
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => { process.exit(0); });
-process.stdin.on('data', (chunk) => {
-  _stdinBuffer += chunk;
-  if (_stdinBuffer.length > MAX_INPUT_BYTES) {
-    logStderr('stdin exceeded MAX_INPUT_BYTES; aborting');
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+_stdinBuffer = readHookInputRaw();
+if (_stdinBuffer.length > MAX_INPUT_BYTES) {
+  logStderr('stdin exceeded MAX_INPUT_BYTES; aborting');
+  process.exit(0);
+}
+setImmediate(() => {
   // 2. Parse the Stop hook payload.
   let event = {};
   try {

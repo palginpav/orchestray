@@ -25,10 +25,16 @@
  *      (F-05 fix).
  *   4. Counts fires in the last 24h for the activation-ratio metric.
  *   5. Emits one `event_activation_ratio` summary row:
- *        { numerator, denominator, ratio, dark_count, window_label:"daily" }
- *   6. Emits one `event_promised_but_dark` row per event type with 0 fires
- *      over the 30-day window.
- *   7. Writes the day-sentinel so subsequent same-day SessionStarts skip.
+ *        { numerator, denominator, ratio, dark_count, dark_types[], window_label:"daily" }
+ *      D2 (v2.3.18 W1a): `dark_types` used to fan out into one
+ *      `event_promised_but_dark` row per quiet-today type — the SAME type
+ *      `audit-promised-events.js` reserves for lifetime-dark (7+ day,
+ *      debounced) events. Only ~15-20 of ~300 registered types fire on any
+ *      given day, so this flooded ~300 false "promised but dark" rows/day
+ *      (22% of the entire log) and collided with the lifetime-dark meaning.
+ *      Folded into a single array field on the existing summary row instead —
+ *      zero extra rows, no reused type name, no diagnostic signal lost.
+ *   6. Writes the day-sentinel so subsequent same-day SessionStarts skip.
  *
  * Kill switch
  * -----------
@@ -50,6 +56,7 @@ const path = require('node:path');
 const { resolveSafeCwd }                        = require('./_lib/resolve-project-cwd');
 const { writeEvent }                            = require('./_lib/audit-event-writer');
 const { loadShadow, tally24hFires, computeRatios } = require('./_lib/firing-audit-roll');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -231,7 +238,7 @@ function main() {
   let payload = {};
   try {
     if (!process.stdin.isTTY) {
-      const raw = fs.readFileSync(0, 'utf8');
+      const raw = readHookInputRaw();
       if (raw && raw.trim().length > 0) {
         payload = JSON.parse(raw);
       }
@@ -275,7 +282,9 @@ function main() {
   // Compute ratios.
   const { numerator, denominator, ratio, darkCount, darkTypes } = computeRatios(shadow, fireMap);
 
-  // Emit the summary row.
+  // Emit the summary row. `dark_types` folds in what used to be N separate
+  // `event_promised_but_dark` rows (D2, v2.3.18 W1a — see file header). One
+  // row per nightly run, regardless of how many types are quiet today.
   try {
     writeEvent({
       type:         'event_activation_ratio',
@@ -284,30 +293,11 @@ function main() {
       denominator,
       ratio:        Math.round(ratio * 1e6) / 1e6,  // 6 decimal places
       dark_count:   darkCount,
+      dark_types:   darkTypes,
       window_label: WINDOW_LABEL,
     }, { cwd });
   } catch (e) {
     process.stderr.write(`audit-firing-nightly: emit event_activation_ratio failed: ${e.message}\n`);
-  }
-
-  // Emit one event_promised_but_dark row per dark type (dark = zero 24h fires,
-  // non-optional). Enrich with the 30d total_fire_count from the tracker so
-  // consumers know whether the event is truly never-fired vs. just quiet today.
-  for (const darkType of darkTypes) {
-    const totalFireCount = fireCounts30d[darkType] || 0;
-    try {
-      writeEvent({
-        type:                    'event_promised_but_dark',
-        version:                 1,
-        event_type:              darkType,
-        days_dark:               null,   // age tracking delegated to audit-promised-events
-        first_seen_in_shadow_at: null,
-        total_fire_count:        totalFireCount,
-        window_label:            WINDOW_LABEL,
-      }, { cwd });
-    } catch (e) {
-      process.stderr.write(`audit-firing-nightly: emit event_promised_but_dark(${darkType}) failed: ${e.message}\n`);
-    }
   }
 
   // Write today's sentinel so same-day re-runs are no-ops.

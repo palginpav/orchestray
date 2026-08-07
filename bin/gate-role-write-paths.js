@@ -26,6 +26,7 @@ const { resolveSafeCwd }    = require('./_lib/resolve-project-cwd');
 const { writeEvent }         = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES }    = require('./_lib/constants');
 const { recordDegradation }  = require('./_lib/degraded-journal');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 const {
   ROLE_WRITE_ALLOWLISTS,
   RESTRICTED_ROLES,
@@ -220,30 +221,23 @@ function emitAuditEvent(cwd, record) {
 
 function main() {
   let input = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', () => {
-    process.stdout.write(JSON.stringify({ continue: true }));
-    process.exit(0);
-  });
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-    if (input.length > MAX_INPUT_BYTES) {
-      // A1 (v2.3.10): a security gate MUST fail CLOSED on stdin overflow. An
-      // oversized payload could bury an out-of-scope write target past the
-      // parse window; block rather than pass.
-      process.stderr.write(
-        '[orchestray] gate-role-write-paths: BLOCKED — stdin exceeded ' +
-        MAX_INPUT_BYTES + ' bytes; failing closed (security gate).\n' +
-        'Kill switch: ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1\n'
-      );
-      process.stdout.write(JSON.stringify({
-        continue: false,
-        reason: 'role_write_gate_input_overflow',
-      }));
-      process.exit(2);
-    }
-  });
-  process.stdin.on('end', () => {
+  input = readHookInputRaw();
+  if (input.length > MAX_INPUT_BYTES) {
+    // A1 (v2.3.10): a security gate MUST fail CLOSED on stdin overflow. An
+    // oversized payload could bury an out-of-scope write target past the
+    // parse window; block rather than pass.
+    process.stderr.write(
+      '[orchestray] gate-role-write-paths: BLOCKED — stdin exceeded ' +
+      MAX_INPUT_BYTES + ' bytes; failing closed (security gate).\n' +
+      'Kill switch: ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1\n'
+    );
+    process.stdout.write(JSON.stringify({
+      continue: false,
+      reason: 'role_write_gate_input_overflow',
+    }));
+    process.exit(2);
+  }
+  setImmediate(() => {
     // Kill switch: global disable.
     if (process.env.ORCHESTRAY_ROLE_WRITE_GATE_DISABLED === '1') {
       process.stdout.write(JSON.stringify({ continue: true }));

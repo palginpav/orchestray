@@ -197,6 +197,8 @@ function resolveModelUsed(allEvents, orchestrationId, agentType) {
 // then flips cost_confidence to 'estimated' (the floor) rather than lying.
 // ---------------------------------------------------------------------------
 const { CANONICAL_AGENTS } = require('./_lib/canonical-agents');
+// D5 (v2.3.18 W1b): task_id-keyed routing.jsonl lookup — see call site below.
+const { findRoutingEntryByTaskId } = require('./_lib/routing-lookup');
 
 function recoverAgentTypeFromTranscript(text) {
   if (typeof text !== 'string' || text.length === 0) return null;
@@ -246,6 +248,7 @@ function estimateCost(usage, rates) {
 //      DESIGN §D5 phase 1; durable rotation in W6 will supersede this cap)
 // ---------------------------------------------------------------------------
 const { loadAuditConfig } = require('./_lib/config-schema');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const MAX_EVENTS_BYTES_DEFAULT = 32 * 1024 * 1024; // 32 MB — see BUG-PERF-2.0.13 comment above
 
@@ -316,17 +319,13 @@ function _hasOrchestrationComplete(eventsPath, orchestrationId) {
 }
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => { process.stdout.write(JSON.stringify({ continue: true })); process.exit(0); });
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[orchestray] hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
-    process.stdout.write(JSON.stringify({ continue: true }) + '\n');
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  process.stderr.write('[orchestray] hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
+  process.stdout.write(JSON.stringify({ continue: true }) + '\n');
+  process.exit(0);
+}
+setImmediate(() => {
   try {
     const event = JSON.parse(input);
     const cwd = resolveSafeCwd(event.cwd);
@@ -553,8 +552,32 @@ process.stdin.on('end', () => {
       agentTypeResolvedFrom = 'transcript';
     }
     let resolvedModel = resolveModelUsed(routingOutcomes, orchestrationId, agentType);
+    let resolvedModelFrom = resolvedModel ? 'routing_outcome' : null;
+
+    // D5 (v2.3.18 W1b): task_id is a more reliable correlation key than
+    // agent_type for Agent-Teams spawns. routing_outcome events (above) are
+    // written by the PostToolUse:Agent hook, which never fires for team task
+    // assignment — only for the initial Agent() teammate spawn, if any — so
+    // ordinary team tasks (isTeamEvent) almost always miss that lookup. The
+    // agent_type available here is often the teammate's operator-chosen
+    // nickname (e.g. "dev-w0-hookentry"), which also can't match a canonical
+    // agent_type or an agents/<name>.md filename. task_id is the one key both
+    // the PM's routing.jsonl row (written at decomposition, `ox routing add
+    // <task_id> ...`) and this event share.
+    const taskId = event.task_id || null;
+    if (!resolvedModel && taskId) {
+      const routingEntry = findRoutingEntryByTaskId(cwd, orchestrationId, taskId);
+      if (routingEntry && routingEntry.model) {
+        resolvedModel = routingEntry.model;
+        resolvedModelFrom = 'routing_log_task_id';
+      }
+    }
+
     if (!resolvedModel && agentType) {
       resolvedModel = resolveTeammateModel(agentType, cwd);
+      if (resolvedModel && resolvedModel !== 'unknown_team_member') {
+        resolvedModelFrom = 'agent_frontmatter';
+      }
     }
 
     // DEF-2: detect escalation by counting routing_outcome events for this
@@ -612,9 +635,20 @@ process.stdin.on('end', () => {
     if (!resolvedModel || resolvedModel === 'unknown_team_member') {
       costConfidence = 'estimated';
       if (!modelResolutionNote) {
-        modelResolutionNote = agentType
-          ? 'model unresolved (no routing_outcome match); cost is a Sonnet-heuristic estimate'
-          : 'agent_type unresolved from payload and transcript; cost is a Sonnet-heuristic estimate';
+        // D5: name exactly which inputs were checked and missing, so the
+        // fallback is honest and debuggable rather than a generic "unresolved".
+        if (!agentType) {
+          modelResolutionNote = taskId
+            ? 'agent_type unresolved from payload and transcript (task_id "' + taskId +
+              '" had no routing.jsonl match either); cost is a Sonnet-heuristic estimate'
+            : 'agent_type unresolved from payload and transcript; cost is a Sonnet-heuristic estimate';
+        } else {
+          modelResolutionNote = 'model unresolved: no routing_outcome match for agent_type "' + agentType + '"' +
+            (taskId
+              ? ', no routing.jsonl row for task_id "' + taskId + '"'
+              : ' and no task_id on this event to check routing.jsonl') +
+            ', no agents/' + agentType + '.md frontmatter; cost is a Sonnet-heuristic estimate';
+        }
       }
     }
 
@@ -862,6 +896,10 @@ process.stdin.on('end', () => {
           estimated_cost_usd: estimatedCostUsd,
         };
         if (modelResolutionNote) metricsRow.model_resolution_note = modelResolutionNote;
+        // D5: which resolver actually produced model_used — lets analytics
+        // distinguish "measured spawn param" from "PM decomposition intent"
+        // from "guessed off role frontmatter" without re-deriving it.
+        if (resolvedModelFrom) metricsRow.model_resolved_from = resolvedModelFrom;
 
         // P1.1 M0.1: defence-in-depth metrics-row dedupe. Per-process seen-set
         // is empty in normal flow (one append per hook invocation by

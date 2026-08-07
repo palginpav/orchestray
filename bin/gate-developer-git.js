@@ -53,6 +53,7 @@ const { resolveSafeCwd }   = require('./_lib/resolve-project-cwd');
 const { writeEvent }        = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES }   = require('./_lib/constants');
 const { recordDegradation } = require('./_lib/degraded-journal');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ---------------------------------------------------------------------------
 // Read-only roles: always block destructive git regardless of cwd.
@@ -664,30 +665,23 @@ function emitAuditEvent(cwd, record) {
 
 function main() {
   let input = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', () => {
-    process.stdout.write(JSON.stringify({ continue: true }));
-    process.exit(0);
-  });
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-    if (input.length > MAX_INPUT_BYTES) {
-      // A1 (v2.3.10): a security gate MUST fail CLOSED on stdin overflow.
-      // An oversized payload is either an attack (trying to bury a forbidden
-      // command past the parse window) or corruption; either way we block.
-      process.stderr.write(
-        '[orchestray] gate-developer-git: BLOCKED — stdin exceeded ' +
-        MAX_INPUT_BYTES + ' bytes; failing closed (security gate).\n' +
-        'Kill switch: ORCHESTRAY_GIT_GATE_DISABLED=1\n'
-      );
-      process.stdout.write(JSON.stringify({
-        continue: false,
-        reason: 'git_gate_input_overflow',
-      }));
-      process.exit(2);
-    }
-  });
-  process.stdin.on('end', () => {
+  input = readHookInputRaw();
+  if (input.length > MAX_INPUT_BYTES) {
+    // A1 (v2.3.10): a security gate MUST fail CLOSED on stdin overflow.
+    // An oversized payload is either an attack (trying to bury a forbidden
+    // command past the parse window) or corruption; either way we block.
+    process.stderr.write(
+      '[orchestray] gate-developer-git: BLOCKED — stdin exceeded ' +
+      MAX_INPUT_BYTES + ' bytes; failing closed (security gate).\n' +
+      'Kill switch: ORCHESTRAY_GIT_GATE_DISABLED=1\n'
+    );
+    process.stdout.write(JSON.stringify({
+      continue: false,
+      reason: 'git_gate_input_overflow',
+    }));
+    process.exit(2);
+  }
+  setImmediate(() => {
     // Kill switch.
     if (process.env.ORCHESTRAY_GIT_GATE_DISABLED === '1') {
       process.stdout.write(JSON.stringify({ continue: true }));

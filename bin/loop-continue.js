@@ -36,6 +36,7 @@
 
 const fs   = require('node:fs');
 const path = require('node:path');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ---------------------------------------------------------------------------
 // Stdin drain + entry point
@@ -45,18 +46,16 @@ const MAX_INPUT_BYTES = 64 * 1024;
 let _stdinBuf = '';
 let _ran = false;
 
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => { _allowStop(); });
-process.stdin.on('data', (chunk) => {
-  _stdinBuf += chunk;
-  if (_stdinBuf.length > MAX_INPUT_BYTES) {
-    _allowStop();
-  }
-});
-process.stdin.on('end', () => { _once(main); });
+_stdinBuf = readHookInputRaw();
+setImmediate(() => { _once(main); });
 
 // Guard: if stdin never closes (test contexts), run after 300ms.
 const _guard = setTimeout(() => { _once(main); }, 300);
+
+// Oversize bail runs after _guard is initialised — _once clears that timer.
+if (_stdinBuf.length > MAX_INPUT_BYTES) {
+  _allowStop();
+}
 
 function _once(fn) {
   if (_ran) return;

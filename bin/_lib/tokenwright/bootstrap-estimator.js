@@ -3,11 +3,14 @@
 /**
  * bootstrap-estimator.js — Rolling-median pre-spawn token estimator (W8, v2.2.18).
  *
- * E#5 / W9 note (v2.2.19 audit-fix R1): This module is inert in production when
- * tokenwright.l1_compression_enabled=false (default since v2.2.19 safe-l1 kill-switch).
- * The S2 wire in inject-tokenwright.js calls bootstrapEstimate() after the L1 kill
- * switch, so this code only executes when L1 is re-enabled. Tested at unit level;
- * integration tests activate in v2.2.20 L1 revival.
+ * v2.3.18 (W1f): the L1 compression pipeline this module originally backed
+ * was retired (0/477 production prompts ever matched it, per the v2.2.20
+ * audit). `inject-tokenwright.js` still calls `bootstrapEstimate()`
+ * unconditionally on every spawn — it now only feeds a lightweight
+ * pre-spawn token estimate into the pending journal, independent of any
+ * compression, so `capture-tokenwright-realized.js` keeps producing
+ * estimation-accuracy telemetry. See
+ * .orchestray/kb/artifacts/v2219-compression-rca.md §Symptom 2.
  *
  *
  * Problem: static bytes/4 formula drifts 900% on researcher agents and ~5x on

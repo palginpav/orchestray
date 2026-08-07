@@ -41,6 +41,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ---------------------------------------------------------------------------
 // Determine project dir
@@ -56,10 +57,8 @@ const projectDir = positionalArg || process.env.CLAUDE_PLUGIN_ROOT || process.cw
 // ---------------------------------------------------------------------------
 
 let _stdinBuf = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => {});
-process.stdin.on('data', (chunk) => { _stdinBuf += chunk; });
-process.stdin.on('end', () => { run(); });
+_stdinBuf = readHookInputRaw();
+setImmediate(() => { run(); });
 
 // Guard: if stdin never closes (unlikely in test contexts), run after 200ms.
 const _guard = setTimeout(() => { run(); }, 200);

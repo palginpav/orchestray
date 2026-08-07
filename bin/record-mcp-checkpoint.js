@@ -39,6 +39,7 @@ const { readRoutingEntries } = require('./_lib/routing-lookup');
 const { appendCheckpointEntry } = require('./_lib/mcp-checkpoint');
 // T3 X3: MAX_INPUT_BYTES is now the shared constant from _lib/constants.js.
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 /** Tools this hook enforces. Any mcp__orchestray__ call not in this set is ignored. */
 const ENFORCED_TOOLS = new Set([
@@ -113,20 +114,13 @@ function extractResultCount(tool, parsedResponse) {
 }
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => {
-  process.stdout.write(JSON.stringify({ continue: true }));
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  process.stderr.write('[orchestray] hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
+  process.stdout.write(JSON.stringify({ continue: true }) + '\n');
   process.exit(0);
-});
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[orchestray] hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
-    process.stdout.write(JSON.stringify({ continue: true }) + '\n');
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+}
+setImmediate(() => {
   try {
     const event = JSON.parse(input);
 

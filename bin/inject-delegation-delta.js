@@ -53,7 +53,7 @@ const { writeEvent }     = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { requireGuard }   = require('./_lib/double-fire-guard');
-const { shouldFireFromThisInstall } = require('./_lib/install-path-priority');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const PREFIX_CACHE_DIR_REL = path.join('.orchestray', 'state', 'spawn-prefix-cache');
 const DOSSIER_REL          = path.join('.orchestray', 'state', 'resilience-dossier.json');
@@ -403,20 +403,22 @@ function registerSlot4(orchestration_id, result) {
 // ---------------------------------------------------------------------------
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => {
+// The shared entry (bin/_lib/hook-stdin.js) owns the dual-install decision for
+// this hook — see the setImmediate() comment below. `onDuplicate` keeps the
+// suppressed process emitting the same `{continue:true}` no-opinion response it
+// emitted when the gate lived in the hook body.
+input = readHookInputRaw({
+  onDuplicate: () => {
+    try { emitContinue(); } catch (_e) { /* swallow */ }
+    process.exit(0);
+  },
+});
+if (input.length > MAX_INPUT_BYTES) {
+  process.stderr.write('[orchestray] inject-delegation-delta: stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; failing open\n');
   emitContinue();
   process.exit(0);
-});
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[orchestray] inject-delegation-delta: stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; failing open\n');
-    emitContinue();
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+}
+setImmediate(() => {
   // ----------------------------------------------------------------------
   // v2.2.21 G3-W1-T1 — Dual-install pre-fire dedup.
   //
@@ -430,17 +432,20 @@ process.stdin.on('end', () => {
   // `audit_event_autofilled` surrogate (T2 F-01, CRITICAL — 4× audit-volume
   // amplification on `mcp_tool_call`, 2× on every other event type).
   //
-  // The fix: short-circuit GLOBAL fires when LOCAL also exists, BEFORE any
-  // work happens (no stdin parse, no config read, no schema validation).
+  // That decision is made ONCE, at `readHookInputRaw()` above — which routes
+  // through `bin/_lib/hook-stdin.js#dedupDecision` and suppresses before any
+  // work happens (no stdin parse, no config read, no schema validation). The
+  // loser of the atomic payload claim exits 0 up there and never reaches this
+  // line.
+  //
+  // A second dual-install gate used to sit right here, re-deciding the
+  // question against `process.cwd()` while the entry had decided it against
+  // the payload cwd. The two disagreed and nothing fired at all (v2.3.18 W7b
+  // E-B). Do not add another decision point: consume the entry's.
+  //
   // Kill switch ORCHESTRAY_DUAL_INSTALL_BYPASS_DISABLED=1 reverts to the
-  // v2.2.20 behaviour (both fire; post-fire guard handles dedup). See
-  // bin/_lib/install-path-priority.js for the resolution rules.
+  // v2.2.20 behaviour (both fire; post-fire guard handles dedup).
   // ----------------------------------------------------------------------
-  if (!shouldFireFromThisInstall(__filename)) {
-    try { emitContinue(); } catch (_e) { /* swallow */ }
-    process.exit(0);
-    return;
-  }
 
   // Top-level try/catch: ANY unexpected exception → fail-open silent allow.
   let cwd = '';

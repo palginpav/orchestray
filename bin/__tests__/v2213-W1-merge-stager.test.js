@@ -144,26 +144,35 @@ describe('v2.2.13 W1 — inline context_size_hint parser in preflight-spawn-budg
   });
 
   // ── Case 3: no hint in prompt, context_size_hint absent → absent/block ──
-  test('prompt has no hint line, context_size_hint absent → source=absent, exits 2 (hard-block)', () => {
+  // v2.3.18 W3 Q1 UPDATE: was "exits 2 (hard-block)" — a missing hint with a
+  // READABLE prompt now computes a fallback and proceeds instead of blocking
+  // (v2318-implementation-plan.md "Q1 -> compute-and-warn, not block"). The
+  // ONLY remaining block condition is an unreadable prompt (see
+  // bin/__tests__/v2211-w2-8-context-size-hint-required.test.js Test 4).
+  test('prompt has no hint line, context_size_hint absent → source=absent, computed fallback, exits 0', () => {
     const r = runHook(tmpRoot, {
       subagent_type: 'developer',
       task_id: 'W1-C3',
       prompt: 'You are a developer. Do the task.',
       // no context_size_hint
     });
-    assert.equal(r.status, 2, 'exits 2 (hard-block) when no hint anywhere; stderr=' + r.stderr);
+    assert.equal(r.status, 0, 'exits 0 — computed fallback, not blocked; stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
     const inline = events.filter(e => e.event_type === 'context_size_hint_parsed_inline');
     assert.equal(inline.length, 1, 'exactly 1 context_size_hint_parsed_inline event');
     assert.equal(inline[0].source, 'absent', 'source must be absent');
 
+    const computed = events.filter(e => e.event_type === 'context_size_hint_computed');
+    assert.equal(computed.length, 1, 'exactly 1 context_size_hint_computed event');
+
     const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
-    assert.equal(required.length, 1, 'exactly 1 context_size_hint_required_failed event');
+    assert.equal(required.length, 0, 'no block event — the prompt was readable');
   });
 
-  // ── Case 4: retired env var is no-op — spawn still hard-blocks (v2.2.14 G-04)
-  test('ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1 → exits 2 (var is retired no-op)', () => {
+  // ── Case 4: retired env var is still a no-op — behaviour it gates is now the
+  // compute-fallback path (v2.3.18), not the block path. Renamed accordingly.
+  test('ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED=1 → still a no-op, computed fallback fires, exits 0', () => {
     const r = runHook(
       tmpRoot,
       {
@@ -174,7 +183,7 @@ describe('v2.2.13 W1 — inline context_size_hint parser in preflight-spawn-budg
       },
       { ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED: '1' },
     );
-    assert.equal(r.status, 2, 'retired var must not bypass hard-block; stderr=' + r.stderr);
+    assert.equal(r.status, 0, 'retired var has no effect either way; computed fallback still proceeds; stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
     // inline parse event still fires (source=absent because no hint in prompt)
@@ -182,17 +191,23 @@ describe('v2.2.13 W1 — inline context_size_hint parser in preflight-spawn-budg
     assert.equal(inline.length, 1, 'context_size_hint_parsed_inline still emits');
     assert.equal(inline[0].source, 'absent', 'source=absent (no hint anywhere)');
 
-    // required_failed MUST emit — var is no longer read
+    // computed-fallback fires; no block — the retired var is not consulted by
+    // either the old block path or the new compute-fallback path.
+    const computed = events.filter(e => e.event_type === 'context_size_hint_computed');
+    assert.equal(computed.length, 1, 'context_size_hint_computed must emit (var is no-op either way)');
+
     const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
-    assert.equal(required.length, 1, 'context_size_hint_required_failed must emit (var is no-op)');
+    assert.equal(required.length, 0, 'no block event — retired var does not restore blocking');
 
     // deprecated_kill_switch_detected must NOT emit — detection code removed
     const deprecated = events.filter(e => e.event_type === 'deprecated_kill_switch_detected');
     assert.equal(deprecated.length, 0, 'deprecated_kill_switch_detected must not emit (function removed in G-04)');
   });
 
-  // ── Case 5: INLINE_PARSE_DISABLED skips prompt-body parse → absent/block ─
-  test('ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED=1 + hint in prompt → source=absent, exits 2', () => {
+  // ── Case 5: INLINE_PARSE_DISABLED skips prompt-body parse → absent, then
+  // the v2.3.18 compute-fallback still runs off the raw prompt text (it does
+  // not depend on the flat/object regex having matched).
+  test('ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED=1 + hint in prompt → source=absent, computed fallback, exits 0', () => {
     const r = runHook(
       tmpRoot,
       {
@@ -203,15 +218,18 @@ describe('v2.2.13 W1 — inline context_size_hint parser in preflight-spawn-budg
       },
       { ORCHESTRAY_CONTEXT_SIZE_HINT_INLINE_PARSE_DISABLED: '1' },
     );
-    assert.equal(r.status, 2, 'exits 2 when inline parse is disabled; stderr=' + r.stderr);
+    assert.equal(r.status, 0, 'exits 0 — computed fallback when inline parse is disabled; stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
     const inline = events.filter(e => e.event_type === 'context_size_hint_parsed_inline');
     assert.equal(inline.length, 1, 'context_size_hint_parsed_inline still emits');
     assert.equal(inline[0].source, 'absent', 'source=absent (parser disabled; hint in prompt ignored)');
 
+    const computed = events.filter(e => e.event_type === 'context_size_hint_computed');
+    assert.equal(computed.length, 1, 'computed fallback fires when inline parse disabled');
+
     const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
-    assert.equal(required.length, 1, 'hard-block fires when inline parse disabled');
+    assert.equal(required.length, 0, 'no block — the prompt was readable');
   });
 
 });

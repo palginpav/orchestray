@@ -29,6 +29,7 @@ const { MAX_INPUT_BYTES }             = require('./_lib/constants');
 const { resolveSafeCwd }              = require('./_lib/resolve-project-cwd');
 const { writeEvent }                  = require('./_lib/audit-event-writer');
 const { appendCheckpointEntry }       = require('./_lib/mcp-checkpoint');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ---------------------------------------------------------------------------
 // § 11.1 Per-role MCP-grounding prefetch map (single source of truth).
@@ -70,13 +71,9 @@ function getHandler(toolName) {
 // ---------------------------------------------------------------------------
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => { process.exit(0); });
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) { process.exit(0); }
-});
-process.stdin.on('end', () => {
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) { process.exit(0); }
+setImmediate(() => {
   try {
     const event = JSON.parse(input);
     main(event).catch(() => process.exit(0));
@@ -182,7 +179,14 @@ async function runPrefetch(cwd, role, tools, hookEvent) {
 
     const duration_ms = Date.now() - t0;
 
-    // Emit mcp_tool_call per tool (mirrors MCP server audit.js shape)
+    // Emit mcp_tool_call per tool (mirrors MCP server audit.js shape).
+    //
+    // `grounded_for` names the spawn this row grounds. The prefetch runs before
+    // its subagent exists, so the row carries no agent role of its own — and a
+    // roleless row is indistinguishable from a *sibling* agent's MCP call, which
+    // let one agent's `pattern_record_skip_reason` discharge the next agent's
+    // grounding obligation. The stamp is what `validate-claim-evidence.js`
+    // attributes the row by; without it the row is ambient, not evidence.
     try {
       writeEvent({
         type: 'mcp_tool_call',
@@ -191,6 +195,7 @@ async function runPrefetch(cwd, role, tools, hookEvent) {
         outcome,
         form_fields_count: 0,
         source: 'prefetch',
+        grounded_for: role,
       }, { cwd });
     } catch (_e) { /* fail-open */ }
 

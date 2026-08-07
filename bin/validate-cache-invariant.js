@@ -70,6 +70,7 @@ const { loadShadowWithCheck } = require('./_lib/load-schema-shadow');
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
 const { writeEvent }        = require('./_lib/audit-event-writer');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const STATE_DIR        = path.join('.orchestray', 'state');
 const ZONES_FILE       = 'block-a-zones.json';
@@ -114,32 +115,19 @@ if (require.main === module) {
   const _argv = process.argv.slice(2);
   const _manifestMode = _argv.includes('--manifest') || _argv.includes('--mode=manifest');
 
+  // Both branches read the same hook payload — one shared read, then dispatch.
+  const _raw = readHookInputRaw();
+
   if (_manifestMode) {
     // Read stdin if available (UserPromptSubmit hook payload), but tolerate empty.
-    let manifestInput = '';
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('error', () => runManifestInvariantFromStdin(''));
-    process.stdin.on('data', (chunk) => {
-      manifestInput += chunk;
-      if (manifestInput.length > MAX_INPUT_BYTES) {
-        runManifestInvariantFromStdin(manifestInput);
-      }
-    });
-    process.stdin.on('end', () => runManifestInvariantFromStdin(manifestInput));
+    setImmediate(() => runManifestInvariantFromStdin(
+      _raw.length > MAX_INPUT_BYTES ? '' : _raw));
   } else {
     // Original PreToolUse advisory path
-    let input = '';
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('error', () => process.exit(0));
-    process.stdin.on('data', (chunk) => {
-      input += chunk;
-      if (input.length > MAX_INPUT_BYTES) {
-        process.exit(0);
-      }
-    });
-    process.stdin.on('end', () => {
+    if (_raw.length > MAX_INPUT_BYTES) process.exit(0);
+    setImmediate(() => {
       try {
-        handle(JSON.parse(input || '{}'));
+        handle(JSON.parse(_raw || '{}'));
       } catch (_e) {
         process.exit(0);
       }

@@ -34,6 +34,7 @@ const { MAX_INPUT_BYTES }      = require('./_lib/constants');
 const { writeEvent }           = require('./_lib/audit-event-writer');
 // NEW-01 (v2.3.9): use canonical loaders so malformed config values are caught.
 const { loadRoleBudgetsConfig, loadBudgetEnforcementConfig } = require('./_lib/config-schema');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ---------------------------------------------------------------------------
 // loadLiveRoleBudgets — try `.orchestray/state/role-budgets.json` first, fall
@@ -117,6 +118,88 @@ function checkBudget(role, computedSize, config) {
 }
 
 // ---------------------------------------------------------------------------
+// Q1 compute-and-warn fallback (v2.3.18 W3) — replaces the v2.2.11 hard-block.
+//
+// Telemetry (v218-bugfix-candidates.md §3 Q1): 14 real misses over 51 days,
+// concentrated in reviewer/researcher/curator/debugger, ZERO on developer/
+// architect. `context_size_hint_parsed_inline` (source: prompt_body) already
+// fired 176x — the inline parser carries the load. Blocking the spawn on a
+// number the hook can derive itself is prose-enforcement wearing a hook
+// costume (feedback_mechanical_over_prose.md). Compute it instead.
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive a context_size_hint from the spawn prompt when neither the native
+ * `tool_input.context_size_hint` field nor an inline `context_size_hint:`
+ * line was present. Character-count / 4 approximates tokens.
+ *
+ * The split across system/tier2/handoff is "best determinable", not exact:
+ *   - system: looked up directly from `agents/<role>.md` on disk (the one
+ *     component we can measure rather than guess — it is the receiving
+ *     agent's own system prompt).
+ *   - When the prompt carries `inject-delegation-delta.js` markers, the
+ *     static (`<!-- delta:static-begin -->...`) block folds into system
+ *     (boilerplate repeated on every spawn of this role); the per-spawn
+ *     block (`<!-- delta:per-spawn-begin -->...`) is handoff; anything left
+ *     over (design-doc refs, KB pointers) is tier2.
+ *   - Without markers the whole body is undifferentiated and counted
+ *     conservatively as handoff.
+ *
+ * @param {string} promptText
+ * @param {string} role
+ * @param {string} cwd
+ * @returns {{systemSize: number, tier2Size: number, handoffSize: number}}
+ */
+function computeHintFromPrompt(promptText, role, cwd) {
+  let systemSize = 0;
+  try {
+    const st = fs.statSync(path.join(cwd, 'agents', role + '.md'));
+    systemSize = Math.ceil(st.size / 4);
+  } catch (_e) { /* role file not found — fail-open, systemSize stays 0 */ }
+
+  const staticMatch   = /<!--\s*delta:static-begin\s*-->([\s\S]*?)<!--\s*delta:static-end\s*-->/.exec(promptText);
+  const perSpawnMatch = /<!--\s*delta:per-spawn-begin\s*-->([\s\S]*?)<!--\s*delta:per-spawn-end\s*-->/.exec(promptText);
+
+  if (staticMatch || perSpawnMatch) {
+    const staticLen   = staticMatch ? staticMatch[1].length : 0;
+    const perSpawnLen = perSpawnMatch ? perSpawnMatch[1].length : 0;
+    const restLen      = Math.max(0, promptText.length - staticLen - perSpawnLen);
+    return {
+      systemSize:  systemSize + Math.ceil(staticLen / 4),
+      tier2Size:   Math.ceil(restLen / 4),
+      handoffSize: Math.ceil(perSpawnLen / 4),
+    };
+  }
+
+  return { systemSize, tier2Size: 0, handoffSize: Math.ceil(promptText.length / 4) };
+}
+
+/**
+ * Kill switch for the compute-fallback path. When disabled, a missing hint
+ * reverts to the pre-v2.3.18 behaviour (hard-block, no computed fallback).
+ * Config key: `context_size_hint_compute.enabled` (default true).
+ * Env: ORCHESTRAY_CONTEXT_SIZE_HINT_COMPUTE_DISABLED=1
+ *
+ * Reads config.json directly (not via config-schema.js loaders) — this
+ * section is out of scope for this wave; direct read matches the pattern
+ * already used by several PreToolUse hooks (e.g. inject-active-phase-slice.js
+ * loadConfig, inject-delegation-delta.js isKillSwitchConfig).
+ *
+ * @param {string} cwd
+ * @returns {boolean}
+ */
+function isComputeFallbackDisabled(cwd) {
+  if (process.env.ORCHESTRAY_CONTEXT_SIZE_HINT_COMPUTE_DISABLED === '1') return true;
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(cwd, '.orchestray', 'config.json'), 'utf8'));
+    if (cfg && cfg.context_size_hint_compute && cfg.context_size_hint_compute.enabled === false) {
+      return true;
+    }
+  } catch (_e) { /* fail-open: treat as enabled */ }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // Module-vs-script guard
 // ---------------------------------------------------------------------------
 // When this file is `require()`'d (e.g. by tests importing `checkBudget`),
@@ -174,16 +257,12 @@ if (process.argv.includes('--self-test')) {
 // ---------------------------------------------------------------------------
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => { process.exit(0); });
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[orchestray] preflight-spawn-budget: stdin exceeded limit; failing open\n');
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  process.stderr.write('[orchestray] preflight-spawn-budget: stdin exceeded limit; failing open\n');
+  process.exit(0);
+}
+setImmediate(() => {
   try {
     const event = JSON.parse(input);
 
@@ -304,14 +383,14 @@ process.stdin.on('end', () => {
       }, { cwd });
     } catch (_e) { /* fail-open */ }
 
-    const computedSize = systemSize + tier2Size + handoffSize;
+    let computedSize = systemSize + tier2Size + handoffSize;
 
-    // Emit warn event when hint is missing or all-zero and role is known.
-    // B4 (v2.2.10): emit context_size_hint_missing warn-event when the hint is
-    // absent or all values are zero. Never blocks the spawn (warn-only).
-    // Kill switch: ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED=1
-    // B4 (v2.2.11): after the warn emit, hard-block the spawn via
-    // context_size_hint_required_failed + exit 2 (fail-closed).
+    // v2.3.18 W3 Q1: compute-and-warn fallback (was: hard-block on any missing
+    // hint — v2318-implementation-plan.md "Q1 -> compute-and-warn, not block").
+    // Kill switch ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED=1 still bypasses
+    // this entire subsystem (no missing-event, no compute, no block), same as
+    // before. Within the subsystem, isComputeFallbackDisabled() restores the
+    // pre-v2.3.18 strict hard-block for anyone who wants it back.
     if (computedSize === 0 && role && process.env.ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED !== '1') {
       let orchId = 'unknown';
       try {
@@ -321,7 +400,7 @@ process.stdin.on('end', () => {
           orchId = orchRaw.orchestration_id || 'unknown';
         } catch (_e) { /* fail-open */ }
 
-        // Warn event always fires (telemetry trail).
+        // Warn event always fires (telemetry trail) — hint was absent from the spawn.
         writeEvent({
           event_type:     'context_size_hint_missing',
           version:        1,
@@ -333,33 +412,67 @@ process.stdin.on('end', () => {
         // Audit emit failure never blocks the spawn
       }
 
-      // Hard-block: emit required_failed and exit 2.
-      // The inline prompt-body parser (parseSource='prompt_body') is the primary
-      // mechanism — if the hint was in the prompt it would have been resolved above.
-      // Reaching here means neither tool_input nor prompt had the hint.
+      const promptText       = typeof toolInput.prompt === 'string' ? toolInput.prompt : '';
+      const promptUnreadable = promptText.trim().length === 0;
+      const strictModeOn     = isComputeFallbackDisabled(cwd);
+
+      if (promptUnreadable || strictModeOn) {
+        // Nothing to compute from (or the operator opted back into strict
+        // enforcement) — the ONLY remaining block path (was: any missing hint).
+        try {
+          writeEvent({
+            event_type:    'context_size_hint_required_failed',
+            version:       1,
+            spawn_id:      toolInput.task_id || orchId,
+            subagent_type: role,
+            reason:        promptUnreadable ? 'prompt_unreadable' : 'compute_fallback_disabled',
+            schema_version: 1,
+          }, { cwd });
+        } catch (_e) {
+          // Audit emit failure does not prevent the block
+        }
+        const _missingMsg = promptUnreadable
+          ? `[orchestray] Spawn blocked: the "${role}" agent was spawned without a context_size_hint AND ` +
+            `without a readable prompt to compute one from. Include a non-empty prompt, or a ` +
+            `"context_size_hint: system=N tier2=N handoff=N" line.`
+          : `[orchestray] Spawn blocked: the "${role}" agent was spawned without a context_size_hint and ` +
+            `ORCHESTRAY_CONTEXT_SIZE_HINT_COMPUTE_DISABLED=1 (or context_size_hint_compute.enabled=false) ` +
+            `disables the v2.3.18 compute-and-warn fallback. Include "context_size_hint: system=N tier2=N ` +
+            `handoff=N", or unset the kill switch to allow the automatic fallback.`;
+        // PM-2 fix (v2.2.21): mirror to stderr so Claude Code's error reporter shows the actionable instruction.
+        process.stderr.write(_missingMsg + '\n');
+        process.stdout.write(JSON.stringify({
+          type: 'block',
+          message: _missingMsg,
+        }) + '\n');
+        process.exit(2);
+      }
+
+      // Compute a fallback from the prompt body / agent-definition file size
+      // and proceed — no block.
+      const computed = computeHintFromPrompt(promptText, role, cwd);
+      systemSize   = computed.systemSize;
+      tier2Size    = computed.tier2Size;
+      handoffSize  = computed.handoffSize;
+      computedSize = systemSize + tier2Size + handoffSize;
+
       try {
         writeEvent({
-          event_type:    'context_size_hint_required_failed',
-          version:       1,
-          spawn_id:      toolInput.task_id || orchId,
-          subagent_type: role,
-          schema_version: 1,
+          event_type:       'context_size_hint_computed',
+          version:          1,
+          schema_version:   1,
+          orchestration_id: orchId,
+          subagent_type:    role,
+          system:           systemSize,
+          tier2:            tier2Size,
+          handoff:          handoffSize,
         }, { cwd });
-      } catch (_e) {
-        // Audit emit failure does not prevent the block
-      }
-      const _missingMsg = `[orchestray] Spawn blocked: the "${role}" agent was spawned without a context_size_hint. ` +
-                 `To fix: include "context_size_hint: system=N tier2=N handoff=N" as a line in the delegation ` +
-                 `prompt (or pass tool_input.context_size_hint with non-zero system/tier2/handoff values). ` +
-                 `To disable this gate entirely (not recommended in production): ` +
-                 `ORCHESTRAY_CONTEXT_SIZE_HINT_WARN_DISABLED=1.`;
-      // PM-2 fix (v2.2.21): mirror to stderr so Claude Code's error reporter shows the actionable instruction.
-      process.stderr.write(_missingMsg + '\n');
-      process.stdout.write(JSON.stringify({
-        type: 'block',
-        message: _missingMsg,
-      }) + '\n');
-      process.exit(2);
+      } catch (_e) { /* fail-open */ }
+      process.stderr.write(
+        `[orchestray] Budget notice: "${role}" spawned without a context_size_hint — computed ` +
+        `system=${systemSize} tier2=${tier2Size} handoff=${handoffSize} from the prompt body. ` +
+        `The spawn will proceed. To silence: add an explicit context_size_hint line.\n`
+      );
     }
 
     // When no context hint is provided, skip the budget check (fail-open).
@@ -436,4 +549,4 @@ process.stdin.on('end', () => {
 
 } // end: if (require.main === module)
 
-module.exports = { checkBudget, loadLiveRoleBudgets };
+module.exports = { checkBudget, loadLiveRoleBudgets, computeHintFromPrompt, isComputeFallbackDisabled };

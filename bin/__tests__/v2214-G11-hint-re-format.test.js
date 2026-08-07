@@ -179,7 +179,12 @@ describe('v2.2.14 G-11 — dual-form context_size_hint parser in preflight-spawn
   });
 
   // ── Case 3: mixed form fails gracefully ───────────────────────────────────
-  test('mixed form "system: N tier2=N" → source=absent, exits 2, no JS exception in stderr', () => {
+  // v2.3.18 W3 Q1 UPDATE: an unrecognised inline form still parses to
+  // source=absent, but a missing/unparseable hint with a READABLE prompt no
+  // longer blocks — it computes a fallback and proceeds (see
+  // bin/__tests__/v2211-w2-8-context-size-hint-required.test.js). The
+  // "no JS exception" invariant this test guards is unaffected.
+  test('mixed form "system: N tier2=N" → source=absent, computed fallback, exits 0, no JS exception in stderr', () => {
     const r = runHook(tmpRoot, {
       subagent_type: 'developer',
       task_id: 'G11-C3',
@@ -187,7 +192,7 @@ describe('v2.2.14 G-11 — dual-form context_size_hint parser in preflight-spawn
       // matches neither HINT_RE_FLAT nor HINT_RE_OBJ
       prompt: 'context_size_hint: system: 8000 tier2=4000 handoff=12000\n\nDo the task.',
     });
-    assert.equal(r.status, 2, 'exits 2 for mixed/invalid hint form; stderr=' + r.stderr);
+    assert.equal(r.status, 0, 'exits 0 for mixed/invalid hint form (computed fallback); stderr=' + r.stderr);
     // Must fail gracefully — no uncaught JS exception
     assert.ok(!r.stderr.includes('TypeError'),   'no TypeError in stderr');
     assert.ok(!r.stderr.includes('SyntaxError'), 'no SyntaxError in stderr');
@@ -197,8 +202,11 @@ describe('v2.2.14 G-11 — dual-form context_size_hint parser in preflight-spawn
     assert.equal(inline.length, 1, 'exactly 1 context_size_hint_parsed_inline event');
     assert.equal(inline[0].source, 'absent', 'source must be absent for unrecognised form');
 
+    const computed = events.filter(e => e.event_type === 'context_size_hint_computed');
+    assert.equal(computed.length, 1, 'exactly 1 context_size_hint_computed event — fallback, not block');
+
     const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
-    assert.equal(required.length, 1, 'exactly 1 context_size_hint_required_failed spawn-block event');
+    assert.equal(required.length, 0, 'no block event — prompt was readable, fallback computed instead');
   });
 
   // ── Case 4: empty inline hint → falls through to tool_input.context_size_hint
@@ -221,23 +229,30 @@ describe('v2.2.14 G-11 — dual-form context_size_hint parser in preflight-spawn
     assert.equal(required.length, 0, 'no block event for native tool_input hint');
   });
 
-  // ── Case 5: no hint anywhere → absent/block ───────────────────────────────
-  test('no hint anywhere → source=absent, exits 2', () => {
+  // ── Case 5: no hint anywhere, readable prompt → absent/computed fallback ───
+  // v2.3.18 W3 Q1 UPDATE: was "exits 2" — now computes a fallback and
+  // proceeds since the prompt is readable (see v2318-implementation-plan.md
+  // "Q1 -> compute-and-warn, not block"). Blocking now happens ONLY when the
+  // prompt itself is unreadable (bin/__tests__/v2211-w2-8-...test.js Test 4).
+  test('no hint anywhere, readable prompt → source=absent, computed fallback, exits 0', () => {
     const r = runHook(tmpRoot, {
       subagent_type: 'developer',
       task_id: 'G11-C5',
       prompt: 'You are a developer agent. Do the task.',
       // no context_size_hint field
     });
-    assert.equal(r.status, 2, 'exits 2 when no hint at all; stderr=' + r.stderr);
+    assert.equal(r.status, 0, 'exits 0 — computed fallback, not blocked; stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
     const inline = events.filter(e => e.event_type === 'context_size_hint_parsed_inline');
     assert.equal(inline.length, 1);
     assert.equal(inline[0].source, 'absent');
 
+    const computed = events.filter(e => e.event_type === 'context_size_hint_computed');
+    assert.equal(computed.length, 1, 'exactly 1 computed-fallback event when no hint present');
+
     const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
-    assert.equal(required.length, 1, 'exactly 1 block event when no hint present');
+    assert.equal(required.length, 0, 'no block event — the prompt was readable');
   });
 
   // ── Case 6: flat and object forms are equivalent (same exit code/source) ───

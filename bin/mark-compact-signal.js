@@ -33,6 +33,7 @@ const { writeEvent } = require('./_lib/audit-event-writer');
 const { recordDegradation } = require('./_lib/degraded-journal');
 const { loadResilienceConfig } = require('./_lib/config-schema');
 const { peekOrchestrationId } = require('./_lib/peek-orchestration-id');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const LOCK_BASENAME = 'compact-signal.lock';
 
@@ -125,22 +126,15 @@ function _dirExists(p) {
 
 if (require.main === module) {
   let input = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', () => {
-    try { process.stdout.write(JSON.stringify({ continue: true })); } catch (_e) {}
+  input = readHookInputRaw();
+  if (input.length > MAX_INPUT_BYTES) {
+    try {
+      process.stderr.write('[orchestray] mark-compact-signal: stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
+      process.stdout.write(JSON.stringify({ continue: true }) + '\n');
+    } catch (_e) {}
     process.exit(0);
-  });
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-    if (input.length > MAX_INPUT_BYTES) {
-      try {
-        process.stderr.write('[orchestray] mark-compact-signal: stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
-        process.stdout.write(JSON.stringify({ continue: true }) + '\n');
-      } catch (_e) {}
-      process.exit(0);
-    }
-  });
-  process.stdin.on('end', () => {
+  }
+  setImmediate(() => {
     let event = {};
     try { event = JSON.parse(input || '{}'); } catch (_e) { event = {}; }
     handleSessionStart(event);

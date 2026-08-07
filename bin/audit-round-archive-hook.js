@@ -29,6 +29,7 @@ const { resolveSafeCwd }              = require('./_lib/resolve-project-cwd');
 const { writeEvent }                  = require('./_lib/audit-event-writer');
 const { archiveRound }                = require('./_lib/audit-round-archive');
 const { MAX_INPUT_BYTES }             = require('./_lib/constants');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const CONTINUE_RESPONSE = JSON.stringify({ continue: true });
 const TAIL_LINES        = 200;
@@ -37,19 +38,12 @@ const ROUND_CLOSE_TYPES = new Set([
 ]);
 
 let stdinBuf = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => {
+stdinBuf = readHookInputRaw();
+if (stdinBuf.length > MAX_INPUT_BYTES) {
   process.stdout.write(CONTINUE_RESPONSE + '\n');
   process.exit(0);
-});
-process.stdin.on('data', (chunk) => {
-  stdinBuf += chunk;
-  if (stdinBuf.length > MAX_INPUT_BYTES) {
-    process.stdout.write(CONTINUE_RESPONSE + '\n');
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+}
+setImmediate(() => {
   try {
     const payload = stdinBuf ? JSON.parse(stdinBuf) : {};
     handle(payload);

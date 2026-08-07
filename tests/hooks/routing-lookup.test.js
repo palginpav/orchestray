@@ -18,6 +18,7 @@ const {
   appendRoutingEntry,
   readRoutingEntries,
   findRoutingEntry,
+  findRoutingEntryByTaskId,
   ROUTING_FILE,
 } = require('../../bin/_lib/routing-lookup');
 
@@ -301,6 +302,63 @@ describe('findRoutingEntry', () => {
     // Undefined / empty lookup must NOT wildcard-match any stored entry.
     // The PM is required to pass a real description for routing lookup.
     const result = findRoutingEntry(cwd, 'developer', undefined);
+    assert.equal(result, null);
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// findRoutingEntryByTaskId (D5, v2.3.18 W1b)
+// ---------------------------------------------------------------------------
+
+describe('findRoutingEntryByTaskId', () => {
+
+  test('matches on (orchestration_id, task_id) regardless of agent_type naming', () => {
+    const cwd = makeTmpDir();
+    appendRoutingEntry(cwd, makeEntry({
+      orchestration_id: 'orch-1', task_id: 'W1b', agent_type: 'developer', model: 'opus',
+    }));
+
+    const result = findRoutingEntryByTaskId(cwd, 'orch-1', 'W1b');
+    assert.ok(result);
+    assert.equal(result.model, 'opus');
+    assert.equal(result.task_id, 'W1b');
+  });
+
+  test('orchestration_id mismatch returns null even when task_id matches', () => {
+    const cwd = makeTmpDir();
+    appendRoutingEntry(cwd, makeEntry({ orchestration_id: 'orch-1', task_id: 'W1b' }));
+
+    const result = findRoutingEntryByTaskId(cwd, 'orch-2', 'W1b');
+    assert.equal(result, null);
+  });
+
+  test('returns the most recent entry when a task_id is re-routed (redo/re-plan)', () => {
+    const cwd = makeTmpDir();
+    appendRoutingEntry(cwd, makeEntry({
+      orchestration_id: 'orch-1', task_id: 'W1b', model: 'sonnet',
+      timestamp: '2026-01-01T00:00:00.000Z',
+    }));
+    appendRoutingEntry(cwd, makeEntry({
+      orchestration_id: 'orch-1', task_id: 'W1b', model: 'opus',
+      timestamp: '2026-01-01T00:05:00.000Z',
+    }));
+
+    const result = findRoutingEntryByTaskId(cwd, 'orch-1', 'W1b');
+    assert.equal(result.model, 'opus', 'most recent (re-planned) routing entry wins');
+  });
+
+  test('missing task_id or orchestration_id returns null', () => {
+    const cwd = makeTmpDir();
+    appendRoutingEntry(cwd, makeEntry({ orchestration_id: 'orch-1', task_id: 'W1b' }));
+
+    assert.equal(findRoutingEntryByTaskId(cwd, 'orch-1', null), null);
+    assert.equal(findRoutingEntryByTaskId(cwd, null, 'W1b'), null);
+  });
+
+  test('empty routing.jsonl returns null', () => {
+    const cwd = makeTmpDir();
+    const result = findRoutingEntryByTaskId(cwd, 'orch-1', 'W1b');
     assert.equal(result, null);
   });
 

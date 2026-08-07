@@ -250,6 +250,15 @@ const autoLearningSchema = z.object({
   safety: autoLearningSafetySchema.optional(),
 }).passthrough();
 
+// v2.3.18 Q4 (bugfix-candidates D-list investigation): this key
+// (`context_compression_v218`) and the `compression` block below
+// (`compressionSchema`, read by inject-tokenwright.js) are TWO UNRELATED
+// FEATURES that happen to share "compression" in the name. This one gates
+// the v2.1.8 archetype/citation cache (cite_cache, spec_sketch,
+// repo_map_delta, archetype_cache — see archetype-cache-protocol.md).
+// `compression_skipped` audit events with `kill_switch_config` come from
+// this block's own `enabled` flag, NOT from this key. Do not "fix" one by
+// touching the other.
 const contextCompressionSchema = z.object({
   enabled: z.boolean().optional(),
   cite_cache: z.boolean().optional(),
@@ -417,6 +426,10 @@ const eventSchemasSchema = z.object({
 // `feedback_default_on_shipping.md`, defaults on. Env kill switches:
 // ORCHESTRAY_DISABLE_COMPRESSION=1 (full bypass),
 // ORCHESTRAY_COMPRESSION_LEVEL=off|safe|aggressive|experimental|debug-passthrough.
+// NOT the same feature as `context_compression_v218` above — see that
+// schema's comment. Layer 1 (MinHash dedup) was retired in v2.3.18 (W1f) —
+// it never fired in production (0/477 prompts matched, v2.2.20 audit) and
+// inject-tokenwright.js no longer runs any compression pipeline.
 const compressionSchema = z.object({
   enabled: z.boolean().optional(),
   level: z.enum(['off', 'safe', 'aggressive', 'experimental', 'debug-passthrough']).optional(),
@@ -530,6 +543,60 @@ const oversizedInputSchema = z.object({
   confirm_over_slices: z.number().int().positive().optional(),
   hierarchical_reduce: z.boolean().optional(),
   max_corpus_bytes: z.number().int().positive().optional(),
+}).passthrough();
+
+// W4 (v2.3.18): claim_evidence_ledger — the Claim–Evidence Ledger gate.
+// Loaded by bin/validate-claim-evidence.js loadClaimEvidenceConfig().
+const claimEvidenceLedgerSchema = z.object({
+  enabled: z.boolean().optional(),
+  ramp: z.number().int().min(0).optional(),
+  block: z.boolean().optional(),
+}).passthrough();
+
+// v2.3.18 (Co-change Oracle): cochange_oracle — flags/blocks a spawn that
+// touched one half of a historically-coupled file pair without the other.
+// `companion_gate` governs the (default-on) per-file blocking check in
+// bin/validate-companion-files.js loadConfig(); `seam_gate` governs the
+// advisory-only wave-conflict check in bin/validate-task-contracts.js
+// loadCochangeConfig() (`block` is deliberately not honoured there — see
+// that function's docstring).
+const cochangeOracleSchema = z.object({
+  enabled: z.boolean().optional(),
+  companion_gate: z.enum(['off', 'advisory', 'block']).optional(),
+  seam_gate: z.enum(['off', 'advisory', 'block']).optional(),
+  min_conf: z.number().min(0).max(1).optional(),
+  min_support: z.number().int().min(0).optional(),
+  ramp: z.number().int().min(0).optional(),
+}).passthrough();
+
+// v2.3.18 W5b: behavior_diff_gate — the Behavior Diff Gate replay harness.
+// Loaded by bin/_tools/behavior-diff.js loadConfig(); `harvest` is also
+// read directly by bin/_lib/hook-stdin.js harvestConfigured().
+const behaviorDiffGateSchema = z.object({
+  enabled: z.boolean().optional(),
+  harvest: z.boolean().optional(),
+  block: z.boolean().optional(),
+  max_fixtures_per_script: z.number().int().min(0).optional(),
+  ramp: z.number().int().min(0).optional(),
+}).passthrough();
+
+// v2.3.18 W3: tool_grant_shortfall — telemetry-only detector for a declared
+// capability-critical tool (WebFetch/WebSearch) never used in a spawn's
+// transcript. Loaded by bin/detect-tool-grant-shortfall.js isDisabled().
+// Never blocks — `enabled` is the only key the hook reads.
+const toolGrantShortfallSchema = z.object({
+  enabled: z.boolean().optional(),
+}).passthrough();
+
+// v2.3.18 (W1f carryover): tokenwright — bootstrap-estimator kill switch.
+// `l1_compression_enabled` was retired along with the dead L1 compression
+// pipeline (0/477 production prompts ever matched it, v2.2.20 audit);
+// `bootstrap_enabled` is the sole surviving key. Loaded by
+// bin/_lib/tokenwright/bootstrap-estimator.js isConfigEnabled(). NOT the
+// same block as top-level `compression` (also called "tokenwright" in
+// comments/docs) — see that schema's note above.
+const tokenwrightSchema = z.object({
+  bootstrap_enabled: z.boolean().optional(),
 }).passthrough();
 
 // ---------------------------------------------------------------------------
@@ -673,6 +740,16 @@ const configSchema = z.object({
   block_a_zone_caching: blockAZoneCachingSchema.optional(),
   // I4 (v2.3.14): oversized_input — documented in CONFIG.md and loaded by config-schema.js.
   oversized_input: oversizedInputSchema.optional(),
+  // W4 (v2.3.18): claim_evidence_ledger — CEL gate config.
+  claim_evidence_ledger: claimEvidenceLedgerSchema.optional(),
+  // v2.3.18 (Co-change Oracle): companion-file + seam-conflict gate config.
+  cochange_oracle: cochangeOracleSchema.optional(),
+  // v2.3.18 W5b: Behavior Diff Gate replay harness config.
+  behavior_diff_gate: behaviorDiffGateSchema.optional(),
+  // v2.3.18 W3: tool-grant-shortfall telemetry detector config.
+  tool_grant_shortfall: toolGrantShortfallSchema.optional(),
+  // v2.3.18 (W1f carryover): tokenwright bootstrap-estimator config.
+  tokenwright: tokenwrightSchema.optional(),
 }).passthrough(); // R-CONFIG-DRIFT (W9) owns unknown-key warnings; this schema tolerates them.
 
 module.exports = {
@@ -685,6 +762,11 @@ module.exports = {
   routingGateSchema,
   v2017ExperimentsSchema,
   cacheChoreographySchema,
+  claimEvidenceLedgerSchema,
+  cochangeOracleSchema,
+  behaviorDiffGateSchema,
+  toolGrantShortfallSchema,
+  tokenwrightSchema,
   adaptiveVerbositySchema,
   patternDecaySchema,
   antiPatternGateSchema,

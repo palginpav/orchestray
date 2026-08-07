@@ -20,6 +20,7 @@ const path = require('path');
 const { readCache }               = require('./_lib/context-telemetry-cache');
 const { lookupModel, resolveContextWindow, modelShort } = require('./_lib/models');
 const { loadContextStatusbarConfig } = require('./_lib/config-schema');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ── Stdin / CLI flags ─────────────────────────────────────────────────────────
 
@@ -340,21 +341,14 @@ function render(cache, payload, config) {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => {
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  // Stdin too large — fail-open.
+  process.stderr.write('[statusline] stdin exceeded limit\n');
   process.stdout.write('\n');
   process.exit(0);
-});
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    // Stdin too large — fail-open.
-    process.stderr.write('[statusline] stdin exceeded limit\n');
-    process.stdout.write('\n');
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+}
+setImmediate(() => {
   try {
     // Parse stdin payload.
     let payload = {};

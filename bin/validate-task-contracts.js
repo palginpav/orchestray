@@ -47,6 +47,11 @@ const { MAX_INPUT_BYTES }     = require('./_lib/constants');
 const { recordDegradation }   = require('./_lib/degraded-journal');
 const { peekOrchestrationId } = require('./_lib/peek-orchestration-id');
 const { loadTaskYaml, matchGlob } = require('./_lib/load-task-yaml');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
+const { getGraph, seamFindings } = require('./_lib/cochange-graph');
+
+/** Coupling above this earns an advisory. Advisory-only — never a block. */
+const SEAM_ADVISORY_THRESHOLD = 0.5;
 
 // ---------------------------------------------------------------------------
 // Exit-code signal: functions set this to 2 when a hard-fail condition is met.
@@ -112,19 +117,12 @@ const SUPPORTED_CHECK_TYPES = new Set([
 
 function main() {
   let input = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', () => {
+  input = readHookInputRaw();
+  if (input.length > MAX_INPUT_BYTES) {
     process.stdout.write(JSON.stringify({ continue: true }) + '\n');
     process.exit(0);
-  });
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-    if (input.length > MAX_INPUT_BYTES) {
-      process.stdout.write(JSON.stringify({ continue: true }) + '\n');
-      process.exit(0);
-    }
-  });
-  process.stdin.on('end', () => {
+  }
+  setImmediate(() => {
     let event = {};
     try {
       event = input.length > 0 ? JSON.parse(input) : {};
@@ -229,6 +227,103 @@ function runPre(event, cwd) {
   const checks = runChecks(cwd, preconditions, 'pre');
 
   emitContractCheck(cwd, taskId, orchId, 'pre', checks);
+
+  seamAdvisory(cwd, taskId, orchId, contracts);
+}
+
+// ---------------------------------------------------------------------------
+// Seam advisory (v2.3.18, Co-change Oracle) — ADVISORY ONLY
+// ---------------------------------------------------------------------------
+
+/**
+ * Warn when this task's `write_allowed` set is historically coupled to another
+ * in-flight task's. High coupling means the two will fight: one's assumption
+ * invalidates the other's, and the cost surfaces later as re-plans.
+ *
+ * **Never blocks, by design.** "Coupling predicts wave conflict" is a
+ * hypothesis, not a finding — the seam half stays advisory until the
+ * correlation is measured over >= 10 orchestrations (design §3.6, last row).
+ * Config `cochange_oracle.seam_gate` may be set to `off`; `block` is
+ * deliberately not honoured here.
+ */
+function seamAdvisory(cwd, taskId, orchId, contracts) {
+  try {
+    if (process.env.ORCHESTRAY_COCHANGE_DISABLED === '1') return;
+    const cfg = loadCochangeConfig(cwd);
+    if (!cfg.enabled || cfg.seam_gate === 'off') return;
+
+    const mine = (contracts.file_ownership && contracts.file_ownership.write_allowed) || [];
+    if (!Array.isArray(mine) || mine.length === 0) return;
+
+    const graph = getGraph(cwd, { noBuild: true });
+    if (!graph.rule_count) return;
+
+    const peers = siblingTaskOwnership(cwd, taskId);
+    if (peers.length === 0) return;
+
+    const findings = seamFindings(
+      [{ id: taskId, write_allowed: mine }, ...peers], graph, SEAM_ADVISORY_THRESHOLD
+    ).filter((f) => f.a === taskId || f.b === taskId);
+    if (findings.length === 0) return;
+
+    writeEvent({
+      type:             'seam_coupling_advisory',
+      version:          1,
+      schema_version:   1,
+      task_id:          taskId,
+      orchestration_id: orchId,
+      enforcement:      'advisory',
+      finding_count:    findings.length,
+      max_coupling:     findings[0].coupling,
+      findings:         findings.slice(0, 5),
+    }, { cwd });
+
+    const top = findings[0];
+    process.stderr.write(
+      '[orchestray] validate-task-contracts: seam advisory — task ' + taskId +
+      ' and ' + (top.a === taskId ? top.b : top.a) + ' write to historically coupled files' +
+      ' (coupling ' + top.coupling + ')' +
+      (top.shared.length ? ': ' + top.shared.slice(0, 2).join(', ') : '') +
+      '. Consider re-splitting along that seam. Advisory only.\n'
+    );
+  } catch (_e) { /* fail-open — an advisory never wedges a spawn */ }
+}
+
+/** `cochange_oracle` config, fail-open to defaults. */
+function loadCochangeConfig(cwd) {
+  const defaults = { enabled: true, seam_gate: 'advisory' };
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(cwd, '.orchestray', 'config.json'), 'utf8'));
+    const s = parsed && parsed.cochange_oracle;
+    if (!s || typeof s !== 'object') return defaults;
+    return {
+      enabled: typeof s.enabled === 'boolean' ? s.enabled : defaults.enabled,
+      seam_gate: typeof s.seam_gate === 'string' ? s.seam_gate : defaults.seam_gate,
+    };
+  } catch (_e) { return defaults; }
+}
+
+/**
+ * `write_allowed` sets of the other task YAMLs in this orchestration.
+ * Bounded: only the tasks dir, only files that parse, at most 20.
+ */
+function siblingTaskOwnership(cwd, taskId) {
+  const out = [];
+  let names = [];
+  try { names = fs.readdirSync(path.join(cwd, '.orchestray', 'state', 'tasks')); } catch (_e) { return out; }
+  for (const name of names.slice(0, 40)) {
+    if (!/\.(ya?ml|md)$/.test(name)) continue;
+    const id = name.replace(/\.(ya?ml|md)$/, '');
+    if (id === taskId) continue;
+    try {
+      const parsed = loadTaskYaml(path.join(cwd, '.orchestray', 'state', 'tasks', name));
+      const wa = parsed && parsed.contracts && parsed.contracts.file_ownership &&
+        parsed.contracts.file_ownership.write_allowed;
+      if (Array.isArray(wa) && wa.length) out.push({ id, write_allowed: wa });
+    } catch (_e) { /* skip unreadable peer */ }
+    if (out.length >= 20) break;
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -765,6 +860,9 @@ module.exports = {
   emitParseFailed,
   emitContractCheck,
   emitOwnershipViolation,
+  seamAdvisory,
+  siblingTaskOwnership,
+  loadCochangeConfig,
 };
 
 // ---------------------------------------------------------------------------

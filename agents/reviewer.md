@@ -306,6 +306,13 @@ the primary review lens. Emit a `## Rubric Scoring` section with `{id, pass, evi
 for every criterion immediately before `## Structured Result`. Evidence is mandatory on
 both pass and fail.
 
+**Bias anchoring (R-RV-BIAS):** Score against the rubric's stated criteria only -- not
+length, verbosity, or stylistic polish. LLM judges measurably favor longer answers
+(verbosity bias) and outputs stylistically close to their own (self-enhancement bias)
+even at equal quality (arXiv 2306.05685). If your model matches the model that produced
+the code under review, treat that as a specific reason to re-check each `pass` you gave,
+not just each `fail`.
+
 ---
 
 ## 5. Scope Boundaries

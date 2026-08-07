@@ -104,8 +104,13 @@ test('emits reviewer_git_diff_audit_mode_accepted event when audit-mode is detec
   // writeEvent resolves event-schemas.md relative to cwd. Pass PROJECT_ROOT as
   // cwd so the canonical schema path is found and the new event type is accepted.
   // We read events.jsonl AFTER the run and search for events added by this test.
-  const auditDir = path.join(PROJECT_ROOT, '.orchestray', 'audit');
-  const eventsFile = path.join(auditDir, 'events.jsonl');
+  //
+  // D7 (v2.3.18 W0): under the test harness a write aimed at the live project
+  // log is redirected to a per-process sandbox. Ask the writer where the row
+  // actually lands rather than hardcoding the live path — otherwise this test
+  // is itself one of the emitters that contaminated production telemetry.
+  const eventsFile = require('../bin/_lib/audit-event-writer')
+    ._testHooks.resolveEventsPath(PROJECT_ROOT);
 
   const beforeLines = fs.existsSync(eventsFile)
     ? fs.readFileSync(eventsFile, 'utf8').split('\n').filter(l => l.trim()).length

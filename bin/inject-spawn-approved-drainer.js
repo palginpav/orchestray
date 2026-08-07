@@ -34,6 +34,7 @@ const { resolveSafeCwd }    = require('./_lib/resolve-project-cwd');
 const { writeEvent }        = require('./_lib/audit-event-writer');
 // B5: advisory lock serializes drainer rewrite vs appender append on spawn-approved.jsonl.
 const { _withAdvisoryLock } = require('./_lib/atomic-append');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const HOUSEKEEPER_AGENT = 'orchestray-housekeeper';
 const APPROVED_REL      = path.join('.orchestray', 'state', 'spawn-approved.jsonl');
@@ -206,15 +207,11 @@ module.exports = { handleUserPromptSubmit, buildPromptBlock, readApproved, write
 
 if (require.main === module) {
   let input = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', () => { process.exit(0); });
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-    if (input.length > MAX_INPUT_BYTES) {
-      process.exit(0);
-    }
-  });
-  process.stdin.on('end', () => {
+  input = readHookInputRaw();
+  if (input.length > MAX_INPUT_BYTES) {
+    process.exit(0);
+  }
+  setImmediate(() => {
     try {
       let event = {};
       if (input.trim()) {

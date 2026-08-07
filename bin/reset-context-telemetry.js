@@ -19,6 +19,7 @@ const path = require('node:path');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { resetCache }     = require('./_lib/context-telemetry-cache');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 /**
  * v2.0.20 hotfix: advisory check that the user-scope `~/.claude/settings.json`
@@ -46,20 +47,13 @@ function checkUserStatusline() {
 }
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => {
-  process.stdout.write(JSON.stringify({ continue: true }));
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  process.stderr.write('[orchestray] reset-context-telemetry: stdin exceeded limit; aborting\n');
+  process.stdout.write(JSON.stringify({ continue: true }) + '\n');
   process.exit(0);
-});
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[orchestray] reset-context-telemetry: stdin exceeded limit; aborting\n');
-    process.stdout.write(JSON.stringify({ continue: true }) + '\n');
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+}
+setImmediate(() => {
   try {
     const event  = JSON.parse(input || '{}');
     const cwd    = resolveSafeCwd(event.cwd);

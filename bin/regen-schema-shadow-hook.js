@@ -20,6 +20,7 @@ const path = require('path');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { main: regenMain } = require('./regen-schema-shadow');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const CONTINUE_RESPONSE = JSON.stringify({ continue: true });
 
@@ -77,20 +78,13 @@ function invalidateZone1Hash(cwd) {
 }
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => {
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  process.stderr.write('[regen-schema-shadow-hook] stdin exceeded limit; skipping\n');
   process.stdout.write(CONTINUE_RESPONSE + '\n');
   process.exit(0);
-});
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[regen-schema-shadow-hook] stdin exceeded limit; skipping\n');
-    process.stdout.write(CONTINUE_RESPONSE + '\n');
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+}
+setImmediate(() => {
   try {
     const event = JSON.parse(input || '{}');
     handle(event);

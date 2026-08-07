@@ -41,6 +41,7 @@ const { writeEvent } = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { recordDegradation } = require('./_lib/degraded-journal');
 const { validateTranscriptPath } = require('./_lib/path-containment');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // Outputs bigger than this are sliced down from the tail to keep the hook fast.
 const MAX_SCAN_BYTES = 100 * 1024; // 100 KB
@@ -211,20 +212,13 @@ function emitAuditEvent(cwd, record) {
 
 function main() {
   let input = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', () => {
-    process.stdout.write(JSON.stringify({ continue: true }));
+  input = readHookInputRaw();
+  if (input.length > MAX_INPUT_BYTES) {
+    process.stderr.write('[orchestray] validate-no-deferral: stdin exceeded cap; fail-open\n');
+    process.stdout.write(JSON.stringify({ continue: true }) + '\n');
     process.exit(0);
-  });
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-    if (input.length > MAX_INPUT_BYTES) {
-      process.stderr.write('[orchestray] validate-no-deferral: stdin exceeded cap; fail-open\n');
-      process.stdout.write(JSON.stringify({ continue: true }) + '\n');
-      process.exit(0);
-    }
-  });
-  process.stdin.on('end', () => {
+  }
+  setImmediate(() => {
     let event = {};
     let cwd;
     try {

@@ -136,8 +136,13 @@ describe('v2.2.14 G-04 — ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED fully 
     );
   });
 
-  // ── Test 2: var set → spawn still hard-blocks (exit 2) ─────────────────
-  test(`${VAR_NAME}=1 + missing hint → exits 2 (hard-block is unconditional)`, () => {
+  // ── Test 2: var set → spawn still exits 0 (v2.3.18: computed fallback) ──
+  // v2.3.18 W3 Q1 UPDATE: was "exits 2 (hard-block is unconditional)" — the
+  // hard-block-on-any-missing-hint path this retired var used to be a no-op
+  // against no longer exists for a readable prompt; it now computes a
+  // fallback and proceeds. The retired var remains a no-op either way — that
+  // invariant (Test 1: no process.env read) is unaffected.
+  test(`${VAR_NAME}=1 + missing hint, readable prompt → exits 0 (computed fallback; var remains a no-op)`, () => {
     const r = runHook(
       tmpRoot,
       {
@@ -151,13 +156,13 @@ describe('v2.2.14 G-04 — ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED fully 
 
     assert.equal(
       r.status,
-      2,
-      `Setting ${VAR_NAME}=1 must not bypass the hard-block; stderr=${r.stderr}`,
+      0,
+      `Setting ${VAR_NAME}=1 has no effect either way; computed fallback proceeds; stderr=${r.stderr}`,
     );
   });
 
-  // ── Test 3: var set → context_size_hint_required_failed still emits ────
-  test(`${VAR_NAME}=1 → context_size_hint_required_failed event fires`, () => {
+  // ── Test 3: var set → context_size_hint_computed emits, NOT required_failed
+  test(`${VAR_NAME}=1 → context_size_hint_computed fires (retired var does not restore blocking)`, () => {
     runHook(
       tmpRoot,
       {
@@ -169,12 +174,14 @@ describe('v2.2.14 G-04 — ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED fully 
     );
 
     const events  = readEvents(tmpRoot);
-    const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
+    const computed = events.filter(e => e.event_type === 'context_size_hint_computed');
     assert.equal(
-      required.length,
+      computed.length,
       1,
-      'context_size_hint_required_failed must emit even when (retired) var is set',
+      'context_size_hint_computed must emit — the retired var does not restore the old block',
     );
+    const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
+    assert.equal(required.length, 0, 'context_size_hint_required_failed must NOT emit — no block occurred');
   });
 
 });

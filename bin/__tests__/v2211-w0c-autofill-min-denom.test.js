@@ -162,10 +162,15 @@ describe('W0c: B3 min-denominator guard — production happy path (v2.2.11)', fu
       ORCHESTRAY_AUTOFILL_THRESHOLD_DISABLED: process.env.ORCHESTRAY_AUTOFILL_THRESHOLD_DISABLED,
       ORCHESTRAY_AUTOFILL_THRESHOLD:          process.env.ORCHESTRAY_AUTOFILL_THRESHOLD,
       ORCHESTRAY_DISABLE_SCHEMA_SHADOW:       process.env.ORCHESTRAY_DISABLE_SCHEMA_SHADOW,
+      // D4 (v2.3.18 W1a): this suite asserts on audit_event_autofill_threshold_exceeded,
+      // not on audit_event_autofilled sampling — disable sampling so Test 7's
+      // per-call assertion keeps its pre-D4 1:1 shape.
+      ORCHESTRAY_AUTOFILL_SAMPLE_DISABLED:    process.env.ORCHESTRAY_AUTOFILL_SAMPLE_DISABLED,
     };
     delete process.env.ORCHESTRAY_AUTOFILL_THRESHOLD_DISABLED;
     delete process.env.ORCHESTRAY_AUTOFILL_THRESHOLD;
     delete process.env.ORCHESTRAY_DISABLE_SCHEMA_SHADOW;
+    process.env.ORCHESTRAY_AUTOFILL_SAMPLE_DISABLED = '1';
   });
 
   afterEach(function () {

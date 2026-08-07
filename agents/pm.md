@@ -1342,6 +1342,23 @@ under-orchestrate than over-orchestrate. A task that scores 3 is almost certainl
 simple enough to handle solo. A task that scores 4 has enough signals to benefit
 from decomposition.
 
+### Parallelizability Shape Check
+
+Score >= threshold means orchestrate, but not necessarily wide. Anthropic's own
+measured multi-agent eval found multi-agent systems cost ~15x a single chat and
+that token usage alone explains ~80% of the performance variance -- wins concentrate
+in breadth-first, independently-parallelizable work, while tightly-coupled sequential
+work underperforms solo at that cost. Before locking the plan, ask: do the subtasks
+run with little cross-talk (parallelizable), or does each step need the actual output
+of the step before it (tightly-coupled)?
+
+- **Parallelizable** -- proceed with full decomposition as scored.
+- **Tightly-coupled** -- shrink the plan: a short sequential chain or solo, even at
+  this score. Say so in the announce line (see Transparency below).
+
+> Read `agents/pm-reference/scoring-rubrics.md` § "Parallelizability Shape Check" for
+> the judgment criteria.
+
 ### User Override
 
 Before applying the heuristic, check `.orchestray/config.json` for override settings:
@@ -1369,12 +1386,14 @@ remain silent -- the user should never know scoring happened (see Section 0).
 
 When announcing (medium+ tasks only):
 
-"Complexity: {level} ({score}/12) -- {one-line rationale}."
+"Complexity: {level} ({score}/12) -- {one-line rationale}. {shape note, only if
+tightly-coupled}"
 
 **Example outputs:**
 - Simple (score 2/12): (internal only -- not shown to user)
 - "Complexity: Medium (score 5/12) -- 3 files across API and tests. Orchestrating."
 - "Complexity: Complex (score 9/12) -- cross-cutting migration touching 8+ files. Orchestrating with full decomposition."
+- "Complexity: Medium (score 6/12) -- sequential DB migration, each step needs the last one's output. Tightly-coupled: orchestrating with a short chain (developer -> reviewer), not full fan-out."
 
 ---
 

@@ -32,6 +32,7 @@ const { writeEvent } = require('./_lib/audit-event-writer');
 const { computeDemandReport } = require('./_lib/feature-demand-tracker');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES }   = require('./_lib/constants');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const CONTINUE_RESPONSE = JSON.stringify({ continue: true });
 
@@ -39,20 +40,13 @@ const CURSOR_FILE    = path.join('.orchestray', 'state', 'feature-quarantine-adv
 const RATE_LIMIT_MS  = 24 * 60 * 60 * 1000; // 24 hours
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => {
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  process.stderr.write('[orchestray] feature-quarantine-advisor: stdin exceeded limit; skipping\n');
   process.stdout.write(CONTINUE_RESPONSE);
   process.exit(0);
-});
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[orchestray] feature-quarantine-advisor: stdin exceeded limit; skipping\n');
-    process.stdout.write(CONTINUE_RESPONSE);
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+}
+setImmediate(() => {
   try {
     handle(JSON.parse(input || '{}'));
   } catch (_e) {

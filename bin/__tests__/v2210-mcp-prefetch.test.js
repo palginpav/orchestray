@@ -307,4 +307,37 @@ require(${JSON.stringify(HOOK)});
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  // W7c: the row this hook writes is the *only* proof a prefetch-grounded spawn
+  // has, and it carries no agent role of its own — the subagent does not exist
+  // yet. `grounded_for` is what makes it attributable; without it the row is
+  // indistinguishable from a sibling agent's MCP call and
+  // `validate-claim-evidence.js` (scopeEvent) refuses to count it, which blocks
+  // every prefetch-grounded pm / researcher / architect / debugger spawn.
+  // Only this hook's own rows are stamped. The `phase: "entry"` rows come from
+  // `_lib/mcp-handler-entry.js`, which the handlers emit for themselves and
+  // which knows nothing about the spawn — they stay unattributed, exactly like
+  // a sibling agent's MCP call, and are not grounding evidence for anyone.
+  test('9. each prefetched tool leaves one row stamped grounded_for the spawn it grounds', () => {
+    const expected = {
+      pm:         ['pattern_find', 'kb_search'],
+      architect:  ['pattern_find', 'kb_search', 'history_find_similar_tasks', 'routing_lookup'],
+      debugger:   ['pattern_find', 'kb_search', 'history_find_similar_tasks', 'history_query_events'],
+      researcher: ['pattern_find', 'kb_search', 'history_find_similar_tasks'],
+    };
+    for (const [role, tools] of Object.entries(expected)) {
+      const tmpDir = makeTmpDir();
+      const { events } = runHook(tmpDir, role);
+      const stamped = events.filter(e => e.type === 'mcp_tool_call' && e.grounded_for !== undefined);
+
+      assert.deepStrictEqual([...new Set(stamped.map(e => e.tool))].sort(), [...tools].sort(),
+        `${role}: stamped rows do not cover the prefetched tools`);
+      for (const row of stamped) {
+        assert.strictEqual(row.grounded_for, role,
+          `${row.tool} stamped for ${row.grounded_for}, not ${role}`);
+        assert.strictEqual(row.source, 'prefetch');
+      }
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
 });

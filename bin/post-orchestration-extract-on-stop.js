@@ -46,6 +46,7 @@ const { runCoverageProbe }  = require('./_lib/tokenwright/coverage-probe');
 const { emitTokenwrightSpawnCoverage } = require('./_lib/tokenwright/emit');
 const { runVerifyFixCoverageProbe } = require('./_lib/verify-fix-coverage');
 const { writeEvent } = require('./_lib/audit-event-writer');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 /** Only consider history archives newer than this (ms). 15 minutes. */
 const FRESH_ARCHIVE_WINDOW_MS = 15 * 60 * 1000;
@@ -290,18 +291,14 @@ if (require.main === module) {
     process.exit(0);
   };
 
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', finish);
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-    if (input.length > MAX_INPUT_BYTES) {
-      process.stderr.write(
-        '[orchestray] post-orchestration-extract-on-stop: stdin exceeded ' +
-        MAX_INPUT_BYTES + ' bytes; aborting\n'
-      );
-      process.stdout.write(JSON.stringify({ continue: true }) + '\n');
-      process.exit(0);
-    }
-  });
-  process.stdin.on('end', finish);
+  input = readHookInputRaw();
+  if (input.length > MAX_INPUT_BYTES) {
+    process.stderr.write(
+      '[orchestray] post-orchestration-extract-on-stop: stdin exceeded ' +
+      MAX_INPUT_BYTES + ' bytes; aborting\n'
+    );
+    process.stdout.write(JSON.stringify({ continue: true }) + '\n');
+    process.exit(0);
+  }
+  setImmediate(finish);
 }

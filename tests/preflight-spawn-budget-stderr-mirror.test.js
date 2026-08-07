@@ -59,10 +59,16 @@ function run(payload, extraEnv = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Block path 1: missing context_size_hint → hard-block (PM-2 fix)
+// Block path 1: unreadable prompt (nothing to compute) → hard-block (PM-2 fix)
+//
+// v2.3.18 W3 Q1: a missing context_size_hint with a READABLE prompt no
+// longer blocks (it computes a fallback and proceeds — see
+// bin/__tests__/v2211-w2-8-context-size-hint-required.test.js). The only
+// remaining block condition is a genuinely unreadable prompt (absent/empty),
+// which this test now exercises instead.
 // ---------------------------------------------------------------------------
 
-describe('stderr mirror — missing context_size_hint block path (PM-2 fix v2.2.21)', () => {
+describe('stderr mirror — unreadable-prompt block path (PM-2 fix v2.2.21, updated v2.3.18 W3)', () => {
   test('block emits JSON envelope on stdout AND message on stderr', () => {
     const dir = makeProject();
     const payload = {
@@ -70,8 +76,7 @@ describe('stderr mirror — missing context_size_hint block path (PM-2 fix v2.2.
       cwd: dir,
       tool_input: {
         subagent_type: 'developer',
-        // No context_size_hint in tool_input and no hint in prompt
-        prompt: 'Do something without any hint.',
+        // No context_size_hint AND no prompt at all — nothing to compute from.
       },
     };
 

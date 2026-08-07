@@ -11,11 +11,17 @@
  * Contract:
  *   - Validates the event payload against `agents/pm-reference/event-schemas.md`
  *     before the line touches disk (via `bin/_lib/schema-emit-validator.js`).
- *   - On validation failure: DROPS the original event and writes a
- *     `schema_shadow_validation_block` surrogate in its place via a recursive
- *     self-call with `skipValidation: true`. The 3-strike miss counter
- *     (`recordMiss`) is incremented so v2.1.14's auto-disable kicks in.
- *   - On unknown event type: same as validation failure.
+ *   - On validation failure (declared type, missing required field): the
+ *     original event is STILL WRITTEN (D6, v2.3.18 W1b — degrade to
+ *     emit-with-warning, never drop), plus a `schema_shadow_validation_block`
+ *     surrogate + rate-limited `schema_shape_violation` advisory via a
+ *     recursive self-call with `skipValidation: true`. recordMiss is NOT
+ *     incremented for shape violations (only for unknown types, below) —
+ *     see W-MISS-SPLIT.
+ *   - On unknown event type: same emit-original-plus-advisory behavior, via
+ *     a separate `schema_unknown_type_warn` advisory. Unlike shape
+ *     violations, this DOES increment the 3-strike miss counter
+ *     (`recordMiss`) so v2.1.14's auto-disable kicks in.
  *   - On 3-strike circuit broken (sentinel present, env kill switch set, or
  *     `event_schema_shadow.enabled === false`): bypasses validation entirely
  *     and appends the event as-is. Emits a one-shot stderr warning per process.
@@ -38,7 +44,11 @@
 const fs   = require('fs');
 const path = require('path');
 
-const { atomicAppendJsonl }            = require('./atomic-append');
+const {
+  atomicAppendJsonl,
+  atomicWriteFile,
+  _withAdvisoryLock,
+}                                      = require('./atomic-append');
 const { resolveSafeCwd }               = require('./resolve-project-cwd');
 const { getCurrentOrchestrationFile }  = require('./orchestration-state');
 const { MAX_INPUT_BYTES }              = require('./constants');
@@ -51,6 +61,7 @@ const {
 const { peekOrchestrationId }          = require('./peek-orchestration-id');
 // === v2.2.21 W4-T18: state-gc safeReadJson for corrupt state-file self-heal (F-15) ===
 const { safeReadJson }                 = require('./state-gc');
+const { readHookInputRaw } = require('./hook-stdin');
 
 // ---------------------------------------------------------------------------
 // Internal state
@@ -69,6 +80,183 @@ const _shapeViolationWarnedTypes = new Map(); // event_type -> true
 const _deprecatedNamesWarnedThisProcess = new Set();
 
 const SHADOW_REL_CONFIG = path.join('.orchestray', 'config.json');
+
+// Package root = <repo>/bin/_lib -> <repo>. Derived from __dirname, so it is
+// the SAME value in a hook child process spawned with a temp cwd — which is
+// what makes the D7/E2 test redirects safe: a test that spawns a hook into its
+// own tmpdir keeps writing to that tmpdir, only writes aimed at the real
+// project move. Declared here rather than next to `testRedirectFor` because
+// `autofillSampleRedirectFor` (~190 lines earlier) reads it too.
+const PACKAGE_ROOT = path.resolve(__dirname, '..', '..');
+
+// D4 (v2.3.18 W1a): `audit_event_autofilled` used to fire 1:1 with every
+// autofilled field — 9,781 rows/day baseline, doubling log volume for no
+// extra diagnostic value (every occurrence just restates "field X was
+// autofilled again"). Sample instead: accumulate occurrences + the union of
+// autofilled field names per event_type in a small state file (survives the
+// short-lived hook processes that emit most of these), and emit one row per
+// AUTOFILL_SAMPLE_INTERVAL occurrences carrying the full field union for that
+// window — no diagnostic signal lost, only the 1:1 duplication.
+const AUTOFILL_SAMPLE_INTERVAL = parseInt(process.env.ORCHESTRAY_AUTOFILL_SAMPLE_INTERVAL, 10) || 10;
+
+// Event types that close an orchestration. Emitting one flushes whatever
+// partial sampling windows that orchestration accumulated (E3, below).
+const AUTOFILL_FLUSH_EVENT_TYPES = new Set(['orchestration_complete', 'orchestration_end']);
+
+// E2 (v2.3.18 W6b): the sampling file is the SECOND live artefact under the
+// package root, and W0's D7 redirect covered only events.jsonl. A full
+// `npm test` therefore mutated the PRODUCTION counters in place
+// (state_file_corrupt 8 -> 1 across the %10 boundary, mcp_tool_call 9 -> 5),
+// so `sample_count` on emitted rows was wrong and windows straddled unrelated
+// orchestrations. Same seam, same rule as D7: a test-context write aimed at
+// THIS package's own sample file lands in a per-process sandbox instead.
+function sandboxAutofillSamplePath() {
+  if (process.env.ORCHESTRAY_TEST_AUTOFILL_SAMPLE_PATH) {
+    return process.env.ORCHESTRAY_TEST_AUTOFILL_SAMPLE_PATH;
+  }
+  return path.join(
+    require('os').tmpdir(),
+    'orchestray-test-autofill-sample-' + process.pid + '.json'
+  );
+}
+
+function autofillSampleRedirectFor(resolved) {
+  if (!isTestContext()) return null;
+  try {
+    const live = path.join(PACKAGE_ROOT, '.orchestray', 'state', 'audit-autofill-sample.json');
+    if (path.resolve(resolved) !== live) return null;
+    return sandboxAutofillSamplePath();
+  } catch (_e) {
+    return null;
+  }
+}
+
+function autofillSamplePath(cwd) {
+  const candidate = path.join(cwd, '.orchestray', 'state', 'audit-autofill-sample.json');
+  return autofillSampleRedirectFor(candidate) || candidate;
+}
+
+function loadAutofillSample(cwd) {
+  try {
+    const raw = fs.readFileSync(autofillSamplePath(cwd), 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.by_type && typeof parsed.by_type === 'object') return parsed;
+  } catch (_e) { /* fail-open */ }
+  return { by_type: {} };
+}
+
+function saveAutofillSample(cwd, data) {
+  try {
+    const file = autofillSamplePath(cwd);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    // E3 (v2.3.18 W6b): tmp+rename, not a bare writeFileSync. A concurrent
+    // reader used to be able to hit a half-written file; the JSON.parse throw
+    // fails open to `{by_type:{}}`, which silently RESETS the counter. Under
+    // sustained concurrency the reset can beat the interval every time, so
+    // `audit_event_autofilled` stops emitting entirely — total loss of the
+    // signal the sampling exists to preserve.
+    atomicWriteFile(file, JSON.stringify(data));
+    try { fs.chmodSync(file, 0o600); } catch (_e) { /* best-effort */ }
+  } catch (_e) { /* fail-open */ }
+}
+
+/**
+ * Advance the sampling window for one event_type under an advisory lock.
+ *
+ * E3: the read-modify-write was lock-free, so two hook processes racing on the
+ * same key both read `count=N` and both wrote `N+1` — one occurrence lost per
+ * collision. `_withAdvisoryLock` + `atomicWriteFile` is the pair already used
+ * for this shape in `kb-index-validator.js`.
+ *
+ * @returns {{due: object|null, flushes: object[], lock_contention?: boolean}}
+ *   `due` is non-null when this occurrence completed a window; `flushes`
+ *   carries windows inherited from a previous orchestration.
+ */
+function _advanceAutofillSample(cwd, key, fields, orchId) {
+  const file = autofillSamplePath(cwd);
+  const result = _withAdvisoryLock(file + '.lock', function () {
+    const sample  = loadAutofillSample(cwd);
+    const flushes = [];
+
+    // Orchestration rollover. A partial window (count 1..interval-1) never
+    // reaches the emit threshold, and before this fix it simply persisted:
+    // the next orchestration inherited the count and the eventual row
+    // straddled two unrelated runs. Flush partials against the orchestration
+    // that produced them, then start clean.
+    const prevOrch = sample.orchestration_id;
+    if (orchId && prevOrch && prevOrch !== orchId) {
+      for (const type of Object.keys(sample.by_type)) {
+        const e = sample.by_type[type];
+        if (e && e.count > 0) {
+          flushes.push({
+            eventType: type,
+            count:     e.count,
+            fields:    (e.fields || []).slice(),
+            orchId:    prevOrch,
+          });
+        }
+      }
+      sample.by_type = {};
+    }
+    if (orchId) sample.orchestration_id = orchId;
+
+    const entry = sample.by_type[key] || { count: 0, fields: [] };
+    entry.count += 1;
+    entry.fields = Array.from(new Set(entry.fields.concat(fields)));
+
+    let due = null;
+    if (entry.count % AUTOFILL_SAMPLE_INTERVAL === 0) {
+      due = { count: entry.count, fields: entry.fields };
+      sample.by_type[key] = { count: 0, fields: [] };
+    } else {
+      sample.by_type[key] = entry;
+    }
+
+    saveAutofillSample(cwd, sample);
+    return { due: due, flushes: flushes };
+  });
+
+  if (!result || result.skipped) {
+    // Lock unavailable. Fail toward EMITTING: a duplicate row costs log
+    // volume, a swallowed one costs the signal outright.
+    return { due: { count: 1, fields: fields.slice() }, flushes: [], lock_contention: true };
+  }
+  return result;
+}
+
+/**
+ * Emit whatever partial windows are pending and clear them. Called when an
+ * orchestration-closing event is written so a sub-interval window is reported
+ * against its own orchestration instead of bleeding into the next one.
+ */
+function _flushAutofillSample(cwd, eventsPath) {
+  if (process.env.ORCHESTRAY_AUTOFILL_SAMPLE_DISABLED === '1') return;
+  if (_inAutofillEmit || _inGuardEmit) return;
+
+  const file = autofillSamplePath(cwd);
+  const result = _withAdvisoryLock(file + '.lock', function () {
+    const sample = loadAutofillSample(cwd);
+    const rows   = [];
+    for (const type of Object.keys(sample.by_type)) {
+      const e = sample.by_type[type];
+      if (e && e.count > 0) {
+        rows.push({
+          eventType: type,
+          count:     e.count,
+          fields:    (e.fields || []).slice(),
+          orchId:    sample.orchestration_id || null,
+        });
+      }
+    }
+    if (rows.length === 0) return { rows: [] };
+    sample.by_type = {};
+    saveAutofillSample(cwd, sample);
+    return { rows: rows };
+  });
+
+  if (!result || result.skipped) return;
+  _emitAutofillRows(result.rows, cwd, eventsPath, null);
+}
 
 // Single-source-of-truth for the 24h miss threshold so `loadShadowConfig`
 // defaults and the recordMiss fallback at the unknown-type emit branch can
@@ -107,17 +295,67 @@ function resolveOrchestrationId(cwd) {
   return 'unknown';
 }
 
+// ---------------------------------------------------------------------------
+// D7 (v2.3.18 W0) — test writes must never land in the live project audit log.
+//
+// Tests exercise writeEvent with a temp cwd for the *subject* file but let the
+// writer resolve the audit path back to the real project (via resolveSafeCwd's
+// process.cwd() fallback). That contaminated events.jsonl with 184
+// `state_file_corrupt`, 46 `multiple_structured_result_blocks` and 23
+// `task_validation_failed` rows carrying obvious test fixtures — and misdirected
+// a whole bug-mining pass.
+//
+// Rule: under the test harness, a write that would land on THIS package's own
+// events.jsonl is redirected to a per-process sandbox log. Writes to a
+// caller-supplied temp cwd (the correct pattern) are untouched, as are explicit
+// `eventsPath` overrides.
+// ---------------------------------------------------------------------------
+
+// PACKAGE_ROOT is declared with the other module constants at the top of the
+// file — `autofillSampleRedirectFor` needs it before this point.
+
+function isTestContext() {
+  return process.env.ORCHESTRAY_TEST === '1' || process.env.NODE_ENV === 'test';
+}
+
+/** Per-process sandbox events log used in place of the live project log. */
+function sandboxEventsPath() {
+  if (process.env.ORCHESTRAY_TEST_EVENTS_PATH) return process.env.ORCHESTRAY_TEST_EVENTS_PATH;
+  return path.join(require('os').tmpdir(), 'orchestray-test-events-' + process.pid + '.jsonl');
+}
+
+/**
+ * Return a redirect target when `resolved` points at a live (non-test) project
+ * audit log while running under test, else null.
+ */
+function testRedirectFor(resolved) {
+  if (!isTestContext()) return null;
+  try {
+    const live = path.join(PACKAGE_ROOT, '.orchestray', 'audit', 'events.jsonl');
+    if (path.resolve(resolved) !== live) return null;
+    return sandboxEventsPath();
+  } catch (_e) {
+    return null;
+  }
+}
+
 /**
  * Ensure .orchestray/audit exists and return the events.jsonl path.
  */
 function resolveEventsPath(cwd, eventsPathOverride) {
-  if (eventsPathOverride) return eventsPathOverride;
+  if (eventsPathOverride) {
+    const redirected = testRedirectFor(eventsPathOverride);
+    return redirected || eventsPathOverride;
+  }
   const auditDir = path.join(cwd, '.orchestray', 'audit');
+  const candidate = path.join(auditDir, 'events.jsonl');
+  const redirected = testRedirectFor(candidate);
+  if (redirected) return redirected;
   try {
     fs.mkdirSync(auditDir, { recursive: true });
     try { fs.chmodSync(auditDir, 0o700); } catch (_e) { /* best-effort */ }
   } catch (_e) { /* fail-open */ }
-  return path.join(auditDir, 'events.jsonl');
+  return candidate;
 }
 
 /**
@@ -348,21 +586,67 @@ function emitAutofillTelemetry(eventType, fields, cwd, eventsPath, schemaState) 
   if (!fields || fields.length === 0) return;
   if (_inAutofillEmit) return;
   if (_inGuardEmit) return; // surrogate path — never emit telemetry from there
+
+  // D4 sampling gate — see AUTOFILL_SAMPLE_INTERVAL comment above. Disabled
+  // via kill switch reverts to the pre-D4 1:1 behavior.
+  const key = eventType || 'unknown';
+  let occurrenceCount   = 1;
+  let fieldsSinceSample = fields.slice();
+  let flushes           = [];
+
+  if (process.env.ORCHESTRAY_AUTOFILL_SAMPLE_DISABLED !== '1') {
+    let orchId = null;
+    try { orchId = peekOrchestrationId(cwd); } catch (_e) { /* fail-open */ }
+
+    const advanced = _advanceAutofillSample(cwd, key, fields, orchId);
+    flushes = advanced.flushes || [];
+    if (!advanced.due) {
+      // Sampled out — not yet due. Any inherited windows still get reported.
+      _emitAutofillRows(flushes, cwd, eventsPath, schemaState);
+      return;
+    }
+    occurrenceCount   = advanced.due.count;
+    fieldsSinceSample = advanced.due.fields;
+  }
+
+  _emitAutofillRows(
+    flushes.concat([{ eventType: key, count: occurrenceCount, fields: fieldsSinceSample, orchId: null }]),
+    cwd,
+    eventsPath,
+    schemaState
+  );
+}
+
+/**
+ * Write one `audit_event_autofilled` row per aggregated window.
+ *
+ * @param {Array<{eventType:string,count:number,fields:string[],orchId:?string}>} rows
+ */
+function _emitAutofillRows(rows, cwd, eventsPath, schemaState) {
+  if (!rows || rows.length === 0) return;
+
   _inAutofillEmit = true;
   try {
-    const telemetry = {
-      version:           1,
-      type:              'audit_event_autofilled',
-      event_type:        eventType || 'unknown',
-      fields_autofilled: fields.slice(),
-    };
-    // Include schema_state tag when provided (schema-unreadable branch).
-    if (schemaState !== undefined && schemaState !== null) {
-      telemetry.schema_state = schemaState;
+    for (const row of rows) {
+      const telemetry = {
+        version:           1,
+        type:              'audit_event_autofilled',
+        event_type:        row.eventType,
+        fields_autofilled: row.fields,
+        sample_count:      row.count,
+      };
+      // A flushed window belongs to the orchestration that produced it — stamp
+      // that id explicitly so autofill is never reattributed to the run that
+      // happened to trigger the flush.
+      if (row.orchId) telemetry.orchestration_id = row.orchId;
+      // Include schema_state tag when provided (schema-unreadable branch).
+      if (schemaState !== undefined && schemaState !== null) {
+        telemetry.schema_state = schemaState;
+      }
+      try {
+        writeEvent(telemetry, { cwd, eventsPath, skipValidation: true });
+      } catch (_e) { /* fail-open */ }
     }
-    try {
-      writeEvent(telemetry, { cwd, eventsPath, skipValidation: true });
-    } catch (_e) { /* fail-open */ }
   } finally {
     _inAutofillEmit = false;
   }
@@ -581,15 +865,33 @@ function writeEvent(eventPayload, opts) {
       };
     }
     // -----------------------------------------------------------------------
-    // Drop original + emit surrogate via recursion-guarded self-call
+    // D6 (v2.3.18 W1b): degrade to emit-with-warning, never drop.
+    //
+    // Pre-fix this branch DROPPED the original event and wrote only a
+    // `schema_shadow_validation_block` surrogate carrying `blocked_event_type`
+    // + errors — the real payload was gone. Live data showed 55+ lifecycle
+    // events lost this way (orchestration_start missing "task",
+    // orchestration_complete missing "status", etc.), which silently
+    // corrupted history: collect-agent-metrics.js's `_hasOrchestrationComplete`
+    // scan looks for `ev.type === 'orchestration_complete'`, which the
+    // surrogate never satisfies, so the completion rollup never fired either.
+    //
+    // Fix: a shape violation on a KNOWN type now emits the original
+    // (autofilled) payload AND the advisory/surrogate rows, matching the
+    // unknown-type branch above. Only a genuinely unparseable payload (never
+    // reaches here) or an I/O failure loses data now.
     // -----------------------------------------------------------------------
     if (_inGuardEmit) {
       // Defence in depth: a surrogate emit somehow re-entered. Fall through to
-      // a raw append of the *surrogate* using atomicAppendJsonl directly.
+      // a raw append of BOTH the original payload and the surrogate using
+      // atomicAppendJsonl directly — never drop, even in the re-entrant case.
       try {
         process.stderr.write(
-          '[audit-event-writer] recursion guard tripped — emitting raw surrogate\n'
+          '[audit-event-writer] recursion guard tripped — emitting raw original + surrogate\n'
         );
+      } catch (_e) { /* ignore */ }
+      try {
+        atomicAppendJsonl(eventsPath, filledPayload);
       } catch (_e) { /* ignore */ }
       try {
         const { filled: rawSurrogate } = withAutofill({
@@ -602,8 +904,8 @@ function writeEvent(eventPayload, opts) {
         atomicAppendJsonl(eventsPath, rawSurrogate);
       } catch (_e) { /* ignore */ }
       return {
-        written:    false,
-        reason:     'validation_failed',
+        written:    true,
+        reason:     'shape_violation_emitted',
         event_type: validation.event_type,
         errors:     validation.errors,
       };
@@ -614,6 +916,9 @@ function writeEvent(eventPayload, opts) {
       // W-MISS-SPLIT (v2.2.12): recordMiss NOT called here — a declared type
       // with bad shape is a shape violation, not a shadow miss. recordMiss stays
       // ONLY in the unknown_type_emitted path above.
+
+      // Emit the original event despite the shape violation — see D6 note above.
+      try { atomicAppendJsonl(eventsPath, filledPayload); } catch (_e) { /* fail-open */ }
 
       // Emit schema_shape_violation once per event_type per process (rate-limited
       // to avoid flooding events.jsonl; was 321 false miss-writes/24h before fix).
@@ -642,8 +947,8 @@ function writeEvent(eventPayload, opts) {
     }
 
     return {
-      written:    false,
-      reason:     'validation_failed',
+      written:    true,
+      reason:     'shape_violation_emitted',
       event_type: validation.event_type,
       errors:     validation.errors,
     };
@@ -655,6 +960,12 @@ function writeEvent(eventPayload, opts) {
   try {
     atomicAppendJsonl(eventsPath, filledPayload);
     emitAutofillTelemetry(validation.event_type, autofilledFields, cwd, eventsPath);
+    // E3 (v2.3.18 W6b): an orchestration closing flushes its partial sampling
+    // windows. Without this a window of 1-9 occurrences never reached the
+    // emit threshold and persisted into whatever ran next.
+    if (AUTOFILL_FLUSH_EVENT_TYPES.has(validation.event_type)) {
+      try { _flushAutofillSample(cwd, eventsPath); } catch (_e) { /* fail-open */ }
+    }
     // B3 (v2.2.11): wire min-denominator guard — track every event so the
     // denominator is real before the threshold-exceeded alarm can fire.
     // peekOrchestrationId returns null when no orchestration is active;
@@ -698,20 +1009,13 @@ function writeEvent(eventPayload, opts) {
  */
 function writeAuditEvent({ type, mode, extraFieldsPicker, additionalEventsPicker }) {
   let input = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', () => {
-    process.stdout.write(JSON.stringify({ continue: true }));
+  input = readHookInputRaw();
+  if (input.length > MAX_INPUT_BYTES) {
+    process.stderr.write('[orchestray] hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
+    process.stdout.write(JSON.stringify({ continue: true }) + '\n');
     process.exit(0);
-  });
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-    if (input.length > MAX_INPUT_BYTES) {
-      process.stderr.write('[orchestray] hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
-      process.stdout.write(JSON.stringify({ continue: true }) + '\n');
-      process.exit(0);
-    }
-  });
-  process.stdin.on('end', () => {
+  }
+  setImmediate(() => {
     try {
       const event = JSON.parse(input);
       const cwd = resolveSafeCwd(event.cwd);
@@ -803,6 +1107,12 @@ function _trackAutofillThreshold(eventType, wasAutofilled, orchId, cwd, eventsPa
     const thresholdEvent = {
       version:         1,
       type:            'audit_event_autofill_threshold_exceeded',
+      // D4 (v2.3.18 W1a): this event bypasses writeEvent (raw appendFileSync
+      // below) to avoid recursing into the autofill gateway it polices, which
+      // means it never got the `timestamp` autofill every other event gets —
+      // 48/48 production rows carried no timestamp, violating the required-
+      // field contract this event exists to enforce. Stamp it explicitly.
+      timestamp:       new Date().toISOString(),
       event_type:      eventType,
       autofilled_count: counter.autofilled,
       total_count:     counter.total,
@@ -1040,4 +1350,20 @@ module.exports._testHooks = {
 
   /** P1-13: reset the schema-warned-this-process flag between tests. */
   resetSchemaWarned() { _schemaWarnedThisProcess = false; },
+
+  /** D7 (v2.3.18): expose the test-log-pollution guard for direct assertions. */
+  resolveEventsPath,
+  testRedirectFor,
+  sandboxEventsPath,
+  PACKAGE_ROOT,
+
+  /** E2/E3 (v2.3.18 W6b): sampling-state sandbox + locked RMW internals. */
+  autofillSamplePath,
+  autofillSampleRedirectFor,
+  sandboxAutofillSamplePath,
+  loadAutofillSample,
+  saveAutofillSample,
+  advanceAutofillSample: _advanceAutofillSample,
+  flushAutofillSample:   _flushAutofillSample,
+  AUTOFILL_SAMPLE_INTERVAL,
 };

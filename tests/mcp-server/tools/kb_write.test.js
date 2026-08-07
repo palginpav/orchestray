@@ -165,6 +165,102 @@ describe('A. happy path', () => {
 });
 
 // ---------------------------------------------------------------------------
+// A2. D8 — bucket-relative path normalisation (no doubled bucket segment)
+// ---------------------------------------------------------------------------
+
+describe('A2. bucket-relative path normalisation (D8)', () => {
+
+  test('bare filename lands at bucket root', async () => {
+    const tmp = makeTmpProject();
+    try {
+      const ctx = makeContext(tmp);
+      const result = await handle(
+        baseInput({ id: 'd8-bare', path: 'd8-bare.md' }),
+        ctx
+      );
+      assert.equal(result.isError, false);
+      assert.equal(
+        result.structuredContent.path,
+        '.orchestray/kb/artifacts/d8-bare.md'
+      );
+      assert.ok(fs.existsSync(path.join(tmp, '.orchestray', 'kb', 'artifacts', 'd8-bare.md')));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('bucket-relative path ("<bucket>/foo.md") does not double the bucket segment', async () => {
+    const tmp = makeTmpProject();
+    try {
+      const ctx = makeContext(tmp);
+      const result = await handle(
+        baseInput({ id: 'd8-bucket-rel', bucket: 'decisions', path: 'decisions/d8-bucket-rel.md' }),
+        ctx
+      );
+      assert.equal(result.isError, false, result.content && result.content[0] && result.content[0].text);
+      assert.equal(
+        result.structuredContent.path,
+        '.orchestray/kb/decisions/d8-bucket-rel.md',
+        'must not double the bucket segment'
+      );
+      assert.ok(
+        fs.existsSync(path.join(tmp, '.orchestray', 'kb', 'decisions', 'd8-bucket-rel.md')),
+        'file must land directly under the bucket, not decisions/decisions/'
+      );
+      assert.ok(
+        !fs.existsSync(path.join(tmp, '.orchestray', 'kb', 'decisions', 'decisions')),
+        'must not create a nested decisions/decisions/ directory'
+      );
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('project-relative path (".orchestray/kb/<bucket>/foo.md") resolves the same as the other two forms', async () => {
+    const tmp = makeTmpProject();
+    try {
+      const ctx = makeContext(tmp);
+      const result = await handle(
+        baseInput({ id: 'd8-full', bucket: 'facts', path: '.orchestray/kb/facts/d8-full.md' }),
+        ctx
+      );
+      assert.equal(result.isError, false);
+      assert.equal(result.structuredContent.path, '.orchestray/kb/facts/d8-full.md');
+      assert.ok(fs.existsSync(path.join(tmp, '.orchestray', 'kb', 'facts', 'd8-full.md')));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('nested subdir under a bucket-relative path only strips the leading bucket segment once', async () => {
+    const tmp = makeTmpProject();
+    try {
+      const ctx = makeContext(tmp);
+      const result = await handle(
+        baseInput({
+          id: 'd8-nested',
+          bucket: 'decisions',
+          path: 'decisions/sub/d8-nested.md',
+        }),
+        ctx
+      );
+      assert.equal(result.isError, false, result.content && result.content[0] && result.content[0].text);
+      assert.equal(
+        result.structuredContent.path,
+        '.orchestray/kb/decisions/sub/d8-nested.md',
+        'nested subdir must be preserved after stripping only the leading "decisions/"'
+      );
+      assert.ok(
+        fs.existsSync(path.join(tmp, '.orchestray', 'kb', 'decisions', 'sub', 'd8-nested.md'))
+      );
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+});
+
+// ---------------------------------------------------------------------------
 // B. Overwrite=true
 // ---------------------------------------------------------------------------
 

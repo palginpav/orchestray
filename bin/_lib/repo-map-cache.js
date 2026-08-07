@@ -62,6 +62,28 @@ function tagPath(cacheDir, blobSha) {
 
 let _gitLsFilesCache = null; // {cwd, sha => path}
 
+/**
+ * Index entries whose worktree file is gone — tracked, deleted, deletion not
+ * yet staged. Paths are printed with the same `core.quotePath` rules as
+ * `ls-files -s`, so the two lists compare textually without unquoting.
+ *
+ * @param {string} cwd
+ * @returns {string[]}
+ */
+function _deletedInWorktree(cwd) {
+  try {
+    const out = execFileSync('git', ['ls-files', '--deleted'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    return out.split('\n').filter(Boolean);
+  } catch (_e) {
+    return [];
+  }
+}
+
 function _populateGitBlobShas(cwd) {
   // git ls-files -s prints: <mode> <sha> <stage>\t<path>
   try {
@@ -83,6 +105,14 @@ function _populateGitBlobShas(cwd) {
       const relPath = line.slice(tabIdx + 1);
       map.set(relPath, sha);
     }
+    // Drop tracked-but-deleted-unstaged entries. discoverFiles() enumerates
+    // from this map while harvestTags() reads the worktree; a file the index
+    // still knows but the filesystem does not makes the two views disagree,
+    // so the manifest aggregate can never match on a warm read and every
+    // spawn silently rebuilds from scratch (~1.3 s here). Deleting a file and
+    // not yet staging it is the ordinary developer state, so this is the
+    // common case, not an edge one.
+    for (const rel of _deletedInWorktree(cwd)) map.delete(rel);
     _gitLsFilesCache = { cwd, map };
     return map;
   } catch (_e) {

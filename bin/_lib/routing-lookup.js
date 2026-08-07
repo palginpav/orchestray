@@ -173,10 +173,57 @@ function findRoutingEntry(cwd, agentType, description) {
   return matches[0];
 }
 
+/**
+ * D5 (v2.3.18 W1b) — find the routing entry for a given (orchestration_id,
+ * task_id) pair. Agent-Teams TaskCompleted events carry `task_id` (e.g.
+ * "W1b") but NOT the agent_type that routing_outcome events are keyed by —
+ * the teammate's operator-chosen nickname (e.g. "dev-w0-hookentry") never
+ * matches a canonical agent_type or an `agents/<name>.md` filename. task_id
+ * is the one correlation key both sides always share: the PM writes a
+ * routing.jsonl row per task_id at decomposition time (`ox routing add
+ * <task_id> ...`) regardless of whether the spawn later goes through
+ * Agent() or team task assignment.
+ *
+ * Matching rules:
+ *   1. orchestration_id must match exactly.
+ *   2. task_id must match exactly.
+ *   3. If multiple entries match (re-plan / redo re-spawns the same
+ *      task_id), return the MOST RECENT one (last timestamp).
+ *
+ * @param {string} cwd              - Project root (result of resolveSafeCwd)
+ * @param {string} orchestrationId
+ * @param {string} taskId
+ * @returns {RoutingEntry|null} Routing entry object or null if no match
+ */
+function findRoutingEntryByTaskId(cwd, orchestrationId, taskId) {
+  if (!orchestrationId || !taskId) return null;
+  const entries = readRoutingEntries(cwd);
+  if (!entries.length) return null;
+
+  const matches = entries.filter(entry =>
+    entry &&
+    typeof entry === 'object' &&
+    entry.orchestration_id === orchestrationId &&
+    entry.task_id === taskId
+  );
+  if (!matches.length) return null;
+
+  matches.sort((a, b) => {
+    const ta = a.timestamp || '';
+    const tb = b.timestamp || '';
+    if (tb > ta) return 1;
+    if (tb < ta) return -1;
+    return 0;
+  });
+
+  return matches[0];
+}
+
 module.exports = {
   ROUTING_FILE,
   getRoutingFilePath,
   appendRoutingEntry,
   readRoutingEntries,
   findRoutingEntry,
+  findRoutingEntryByTaskId,
 };

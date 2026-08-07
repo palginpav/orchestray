@@ -33,6 +33,7 @@ const { loadV2017ExperimentsConfig, isExperimentActive } = require('./_lib/confi
 const { writeEvent }              = require('./_lib/audit-event-writer');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { MAX_INPUT_BYTES }         = require('./_lib/constants');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -141,20 +142,13 @@ function runSelfTest() {
 
 // ── Main hook ─────────────────────────────────────────────────────────────────
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => {
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  process.stderr.write('[orchestray] cache-prefix-lock: stdin exceeded limit; aborting\n');
   process.stdout.write(EMPTY_OUTPUT);
   process.exit(0);
-});
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[orchestray] cache-prefix-lock: stdin exceeded limit; aborting\n');
-    process.stdout.write(EMPTY_OUTPUT);
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+}
+setImmediate(() => {
   try {
     const event = JSON.parse(input || '{}');
     const cwd   = resolveSafeCwd(event.cwd);

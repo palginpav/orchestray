@@ -65,6 +65,7 @@ const { resolveSafeCwd }              = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { pruneOrphanedTaskState }      = require('./_lib/orchestration-state');
 const { writeEvent }                  = require('./_lib/audit-event-writer');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 /** Cap on live events.jsonl read size (defence against runaway growth). */
 const MAX_LIVE_EVENTS_BYTES = 256 * 1024 * 1024; // 256 MB hard cap
@@ -257,7 +258,7 @@ function main() {
   let payload = {};
   try {
     if (!process.stdin.isTTY) {
-      const raw = fs.readFileSync(0, 'utf8');
+      const raw = readHookInputRaw();
       if (raw && raw.trim().length > 0) {
         payload = JSON.parse(raw);
       }

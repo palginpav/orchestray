@@ -54,6 +54,7 @@ const { runExtractor }          = require('./_lib/haiku-extractor-transport');
 // R-TGATE (v2.1.14): tier2_invoked emitter for pattern_extraction protocol
 const { emitTier2Invoked }      = require('./_lib/tier2-invoked-emitter');
 const { parseExtractorOutput }  = require('./_lib/extractor-output-parser');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ---------------------------------------------------------------------------
 // Category allowlist — auto-extraction may only propose from this subset.
@@ -810,20 +811,13 @@ module.exports = {
 // Only run as a hook script when executed directly (not when require()'d in tests).
 if (require.main === module) {
   let input = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', () => {
-    process.stdout.write(JSON.stringify({ continue: true }));
+  input = readHookInputRaw();
+  if (input.length > MAX_INPUT_BYTES) {
+    process.stderr.write('[orchestray] post-orchestration-extract: stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
+    process.stdout.write(JSON.stringify({ continue: true }) + '\n');
     process.exit(0);
-  });
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-    if (input.length > MAX_INPUT_BYTES) {
-      process.stderr.write('[orchestray] post-orchestration-extract: stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
-      process.stdout.write(JSON.stringify({ continue: true }) + '\n');
-      process.exit(0);
-    }
-  });
-  process.stdin.on('end', () => {
+  }
+  setImmediate(() => {
     try {
       let event;
       try {

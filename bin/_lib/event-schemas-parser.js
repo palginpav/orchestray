@@ -306,22 +306,31 @@ function _enumerateSections(content) {
   const anchors = [];
   const seenIndexes = new Set();
 
-  // Pass 1: strict canonical shape (existing behaviour).
+  // Pass 1: strict canonical shape (existing behaviour). fromFallback: false
+  // because the heading itself IS the event declaration ("### `slug`" /
+  // "### slug event") — a missing "type" match in the section's json fence
+  // may safely fall back to this heading-captured slug.
   // Re-create the regex per call so concurrent callers do not race on lastIndex.
   let m;
   const re1 = new RegExp(SECTION_RE.source, SECTION_RE.flags);
   while ((m = re1.exec(content)) !== null) {
     if (!seenIndexes.has(m.index)) {
-      anchors.push({ index: m.index, slug: m[1] });
+      anchors.push({ index: m.index, slug: m[1], fromFallback: false });
       seenIndexes.add(m.index);
     }
   }
 
-  // Pass 2: fallback for prefix-prose headings (e.g. Variant D).
+  // Pass 2: fallback for prefix-prose headings (e.g. Variant D). fromFallback:
+  // true — the backtick token here is incidental prose (e.g. "Tombstone
+  // `rationale` field", "Degraded-journal `kind` additions"), not necessarily
+  // a declared event type. Callers must NOT fall back to this heading slug
+  // when the section's json fence lacks a matching "type" key (see D6,
+  // v2.3.18 W1b — 4 prose headings were being scraped as bogus event types:
+  // rationale, kind, manifest.json, rationale.similarity_score).
   const re2 = new RegExp(SECTION_RE_PREFIXED.source, SECTION_RE_PREFIXED.flags);
   while ((m = re2.exec(content)) !== null) {
     if (!seenIndexes.has(m.index)) {
-      anchors.push({ index: m.index, slug: m[1] });
+      anchors.push({ index: m.index, slug: m[1], fromFallback: true });
       seenIndexes.add(m.index);
     }
   }
@@ -356,7 +365,7 @@ function parseEventSchemas(content) {
   const anchors = _enumerateSections(content);
 
   for (let i = 0; i < anchors.length; i++) {
-    const { slug } = anchors[i];
+    const { slug, fromFallback } = anchors[i];
     const sectionEnd = i + 1 < anchors.length ? anchors[i + 1].index : content.length;
     const sectionContent = content.slice(anchors[i].index, sectionEnd);
 
@@ -369,6 +378,10 @@ function parseEventSchemas(content) {
     const jsonBlock = sectionContent.slice(fenceContentStart, fenceEnd);
 
     const typeMatch = jsonBlock.match(/"type"\s*:\s*"([^"]+)"/);
+    // A pass-2 (prefix-prose) anchor with no matching "type" key is prose
+    // discussing a field/file name, not an event declaration — skip it
+    // rather than registering it under the heading's incidental slug.
+    if (!typeMatch && fromFallback) continue;
     const effectiveSlug = typeMatch ? typeMatch[1] : slug;
 
     if (seenSlugs.has(effectiveSlug)) continue;
@@ -407,7 +420,7 @@ function parseEventSchemasWithRanges(content) {
   const totalLines = (content.match(/\n/g) || []).length + 1;
 
   for (let i = 0; i < anchors.length; i++) {
-    const { slug } = anchors[i];
+    const { slug, fromFallback } = anchors[i];
     const startOffset = anchors[i].index;
     const sectionEnd = i + 1 < anchors.length ? anchors[i + 1].index : content.length;
     const sectionContent = content.slice(startOffset, sectionEnd);
@@ -421,6 +434,9 @@ function parseEventSchemasWithRanges(content) {
     const jsonBlock = sectionContent.slice(fenceContentStart, fenceEnd);
 
     const typeMatch = jsonBlock.match(/"type"\s*:\s*"([^"]+)"/);
+    // See parseEventSchemas() above — fallback anchors without a matching
+    // "type" key are prose, not a schema declaration.
+    if (!typeMatch && fromFallback) continue;
     const effectiveSlug = typeMatch ? typeMatch[1] : slug;
 
     if (seenSlugs.has(effectiveSlug)) continue;

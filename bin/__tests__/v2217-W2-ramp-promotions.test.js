@@ -6,7 +6,6 @@
  *
  * Covers:
  *   P1-05: multiple_structured_result_blocks → exit 2 (promoted from warn-only)
- *   P1-07: pattern_application_gate → exit 2 on first miss (threshold=0)
  *   C-01:  lint-doesnotthrow-orphan CLI → exit 2 on orphan findings
  *
  * Runner: node --test bin/__tests__/v2217-W2-ramp-promotions.test.js
@@ -21,7 +20,6 @@ const { spawnSync } = require('node:child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const VTC_PATH  = path.join(REPO_ROOT, 'bin', 'validate-task-completion.js');
-const VPA_PATH  = path.join(REPO_ROOT, 'bin', 'validate-pattern-application.js');
 const LINT_PATH = path.join(REPO_ROOT, 'bin', 'lint-doesnotthrow-orphan.js');
 
 // ---------------------------------------------------------------------------
@@ -222,79 +220,6 @@ describe('P1-05: multiple_structured_result_blocks → exit 2 (v2.2.17 promotion
         r.stderr.includes('BLOCKED') || r.stderr.includes('multiple'),
         '3-block input must mention BLOCKED or multiple in stderr; got: ' + r.stderr,
       );
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// P1-07: pattern_application_gate (validate-pattern-application.js)
-// ---------------------------------------------------------------------------
-
-describe('P1-07: pattern_application_gate → immediate exit 2 (threshold=0)', () => {
-  test('pattern_find without ack (first spawn) → exit 2 with threshold=0', () => {
-    const dir = makeTmpProject();
-    try {
-      // Write an events.jsonl that contains a pattern_find mcp_checkpoint but
-      // no corresponding ack.
-      const patternFindEvent = JSON.stringify({
-        type: 'mcp_checkpoint_recorded',
-        tool_name: 'mcp__orchestray__pattern_find',
-        timestamp: new Date().toISOString(),
-      });
-      fs.writeFileSync(
-        path.join(dir, '.orchestray', 'audit', 'events.jsonl'),
-        patternFindEvent + '\n',
-        'utf8',
-      );
-
-      // Write a current-orchestration.json so resolveOrchId works.
-      // The file lives at .orchestray/audit/current-orchestration.json.
-      fs.writeFileSync(
-        path.join(dir, '.orchestray', 'audit', 'current-orchestration.json'),
-        JSON.stringify({ orchestration_id: 'orch-test-001' }),
-        'utf8',
-      );
-
-      const event = makeSubagentStopEvent({ agent_role: 'developer', cwd: dir });
-      const r = runScript(VPA_PATH, event, {});
-
-      assert.equal(r.status, 2,
-        'expected exit 2 on first ack-missing with threshold=0; stderr: ' + r.stderr);
-      assert.ok(r.stderr.includes('BLOCKED') || r.stderr.includes('pattern_record'),
-        'stderr should indicate blocked; got: ' + r.stderr);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test('pattern_find without ack + kill switch → exit 0', () => {
-    const dir = makeTmpProject();
-    try {
-      const patternFindEvent = JSON.stringify({
-        type: 'mcp_checkpoint_recorded',
-        tool_name: 'mcp__orchestray__pattern_find',
-        timestamp: new Date().toISOString(),
-      });
-      fs.writeFileSync(
-        path.join(dir, '.orchestray', 'audit', 'events.jsonl'),
-        patternFindEvent + '\n',
-        'utf8',
-      );
-      fs.writeFileSync(
-        path.join(dir, '.orchestray', 'audit', 'current-orchestration.json'),
-        JSON.stringify({ orchestration_id: 'orch-test-002' }),
-        'utf8',
-      );
-
-      const event = makeSubagentStopEvent({ agent_role: 'developer', cwd: dir });
-      const r = runScript(VPA_PATH, event, {
-        ORCHESTRAY_PATTERN_APPLICATION_GATE_DISABLED: '1',
-      });
-
-      assert.ok(r.status === 0 || r.status === null,
-        'kill switch should allow exit 0; got ' + r.status + ' stderr: ' + r.stderr);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

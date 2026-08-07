@@ -42,11 +42,12 @@ const { resolveSafeCwd } = require('../_lib/resolve-project-cwd');
 // when a release cue sits within the context window — avoiding false-blocks on
 // benign CHANGELOG prose like "supported for now".
 const { findDeferral } = require('../validate-no-deferral');
+const { readHookInputRaw } = require('../_lib/hook-stdin');
 
 function readStdin() {
   try {
     if (process.stdin.isTTY) return null;
-    const raw = fs.readFileSync(0, 'utf8');
+    const raw = readHookInputRaw();
     if (!raw || !raw.trim()) return null;
     return JSON.parse(raw);
   } catch (_e) {

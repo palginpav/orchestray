@@ -50,6 +50,7 @@ const { MAX_INPUT_BYTES }              = require('./_lib/constants');
 const { getCurrentOrchestrationFile }  = require('./_lib/orchestration-state');
 const { classifyReviewDimensions }     = require('./_lib/classify-review-dimensions');
 const { extractReviewDimensions }      = require('./_lib/extract-review-dimensions');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ---------------------------------------------------------------------------
 // stdout helpers
@@ -327,20 +328,13 @@ function emitScopingEvent(cwd, fields) {
 // ---------------------------------------------------------------------------
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => {
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  process.stderr.write('[orchestray] inject-review-dimensions: stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; failing open\n');
   emitContinue();
   process.exit(0);
-});
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[orchestray] inject-review-dimensions: stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; failing open\n');
-    emitContinue();
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+}
+setImmediate(() => {
   // Top-level try/catch: ANY unexpected exception → fail-open.
   try {
     // Master kill switch: zero overhead, no event.

@@ -23,6 +23,7 @@
 
 const { MAX_INPUT_BYTES }   = require('./_lib/constants');
 const { processEdit }       = require('./_lib/pm-emit-state-watcher');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // Always emit the continue envelope first so a mid-stream abort still
 // produces a valid hook response.
@@ -30,17 +31,11 @@ process.stdout.write(JSON.stringify({ continue: true }));
 
 (async () => {
   try {
-    const chunks = [];
-    let total = 0;
-    for await (const chunk of process.stdin) {
-      total += chunk.length;
-      if (total > MAX_INPUT_BYTES) {
-        process.stderr.write('[pm-emit-state-watcher] stdin too large; skipping\n');
-        return;
-      }
-      chunks.push(chunk);
+    const raw = readHookInputRaw().trim();
+    if (raw.length > MAX_INPUT_BYTES) {
+      process.stderr.write('[pm-emit-state-watcher] stdin too large; skipping\n');
+      return;
     }
-    const raw = Buffer.concat(chunks).toString('utf8').trim();
     if (!raw) return;
 
     let event;

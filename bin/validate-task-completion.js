@@ -51,6 +51,7 @@ const { validateCrossField } = require('./_lib/t15-cross-field');
 const { HANDOFF_REQUIRED_SECTIONS } = require('./_lib/handoff-contract-text');
 // shared path-containment guard for artifact-body reads.
 const { validateTranscriptPath } = require('./_lib/path-containment');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ---------------------------------------------------------------------------
 // Artifact-path fields and placeholder rejection
@@ -751,20 +752,13 @@ function emitAuditEvent(cwd, record) {
 
 function main() {
   let input = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', () => {
-    process.stdout.write(JSON.stringify({ continue: true }));
+  input = readHookInputRaw();
+  if (input.length > MAX_INPUT_BYTES) {
+    process.stderr.write('[orchestray] validate-task-completion: stdin exceeded cap; fail-open\n');
+    process.stdout.write(JSON.stringify({ continue: true }) + '\n');
     process.exit(0);
-  });
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-    if (input.length > MAX_INPUT_BYTES) {
-      process.stderr.write('[orchestray] validate-task-completion: stdin exceeded cap; fail-open\n');
-      process.stdout.write(JSON.stringify({ continue: true }) + '\n');
-      process.exit(0);
-    }
-  });
-  process.stdin.on('end', () => {
+  }
+  setImmediate(() => {
     // Empty stdin: fail-open (historical behavior — some hook runners send
     // no payload in smoke tests). Invalid JSON: same.
     if (input.length === 0) {

@@ -27,6 +27,7 @@ const { resolveSafeCwd }    = require('./_lib/resolve-project-cwd');
 const { MAX_INPUT_BYTES }   = require('./_lib/constants');
 const { loadShadowWithCheck, recordMiss } = require('./_lib/load-schema-shadow');
 const { writeEvent } = require('./_lib/audit-event-writer');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const CONTINUE_RESPONSE = JSON.stringify({ continue: true });
 
@@ -35,20 +36,13 @@ const CONTINUE_RESPONSE = JSON.stringify({ continue: true });
 // ---------------------------------------------------------------------------
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => {
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  process.stderr.write('[inject-schema-shadow] stdin exceeded limit; skipping\n');
   process.stdout.write(CONTINUE_RESPONSE + '\n');
   process.exit(0);
-});
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[inject-schema-shadow] stdin exceeded limit; skipping\n');
-    process.stdout.write(CONTINUE_RESPONSE + '\n');
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+}
+setImmediate(() => {
   try {
     handle(JSON.parse(input || '{}'));
   } catch (_e) {

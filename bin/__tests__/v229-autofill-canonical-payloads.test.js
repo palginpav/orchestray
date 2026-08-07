@@ -26,6 +26,12 @@
  *      surrogate path and no `audit_event_autofilled` row appears.
  *   4. Recursion guard: emitting `audit_event_autofilled` itself does not
  *      cascade into more `audit_event_autofilled` rows.
+ *
+ * D4 (v2.3.18 W1a) note: audit_event_autofilled now samples (1 row per
+ * AUTOFILL_SAMPLE_INTERVAL occurrences per event_type) instead of emitting
+ * 1:1. Tests below that assert on a specific per-call telemetry count run
+ * with ORCHESTRAY_AUTOFILL_SAMPLE_DISABLED=1 — sampling itself is covered by
+ * bin/_lib/__tests__/v2318-w1a-audit-autofill-sample.test.js.
  */
 
 const { test, describe } = require('node:test');
@@ -217,7 +223,9 @@ describe('v229 F1 — required-field autofill', () => {
 
     const tmpDir = makeTmpRepo();
     try {
-      const lines = callWriteEvents(tmpDir, payloads);
+      // D4: sampling disabled — this test asserts a 1:1 relationship between
+      // autofilled slugs and telemetry rows.
+      const lines = callWriteEvents(tmpDir, payloads, { ORCHESTRAY_AUTOFILL_SAMPLE_DISABLED: '1' });
 
       // Partition rows.
       const surrogates = lines.filter((e) => e.type === 'schema_shadow_validation_block');
@@ -353,8 +361,15 @@ describe('v229 F1 — required-field autofill', () => {
   test('3. kill switch — ORCHESTRAY_AUDIT_AUTOFILL_DISABLED=1 reverts to v2.2.8 behavior', () => {
     const tmpDir = makeTmpRepo();
     try {
-      // Same payload as test 1, version omitted. Pre-F1 / kill-switch-on
-      // behavior: validation fails, original drops, surrogate emitted.
+      // Same payload as test 1, version omitted. Kill-switch-on reverts
+      // withAutofill() to the v2.2.8 two-field set (timestamp +
+      // orchestration_id only), so `version` is still missing and validation
+      // still fails into the shape-violation path.
+      // D6 (v2.3.18 W1b): the shape-violation path no longer drops the
+      // original event — it degrades to emit-with-warning regardless of the
+      // autofill kill switch (the kill switch only governs withAutofill()'s
+      // field set, not writeEvent()'s validation-failure branch). So the
+      // original schema_shadow_hit IS still appended alongside the surrogate.
       const lines = callWriteEvents(
         tmpDir,
         [{ type: 'schema_shadow_hit', event_type: 'tier2_load' }],
@@ -368,8 +383,8 @@ describe('v229 F1 — required-field autofill', () => {
         'kill-switch on: missing-version payload must drop into surrogate path; got ' +
         surrogates.length + ' surrogates'
       );
-      assert.equal(originals.length, 0,
-        'kill-switch on: original schema_shadow_hit must NOT be appended'
+      assert.equal(originals.length, 1,
+        'kill-switch on: original schema_shadow_hit IS still appended (D6 — never drop)'
       );
       assert.equal(autofills.length, 0,
         'kill-switch on: no audit_event_autofilled rows; got ' + autofills.length
@@ -384,9 +399,10 @@ describe('v229 F1 — required-field autofill', () => {
     try {
       // Trigger one autofill via a version-omitted payload. The resulting
       // audit_event_autofilled row must not itself trigger another one.
+      // D4: sampling disabled so the single occurrence emits immediately.
       const lines = callWriteEvents(tmpDir, [
         { type: 'schema_shadow_hit', event_type: 'tier2_load' },
-      ]);
+      ], { ORCHESTRAY_AUTOFILL_SAMPLE_DISABLED: '1' });
       const autofills = lines.filter((e) => e.type === 'audit_event_autofilled');
       // Exactly one telemetry row (for the schema_shadow_hit), not two.
       assert.equal(autofills.length, 1,

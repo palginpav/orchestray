@@ -54,7 +54,7 @@ const SCHEMA_REL_PATH = path.join(
 // (14 including the updated loop_completed), pushing the sidecar from 95 KB to
 // ~101 KB. The 128 KB ceiling gives headroom for the remaining v2.2.11 waves
 // (W2-W4 add further event types). The sidecar is JIT-loaded, not PM-injected.
-const MAX_INDEX_BYTES = 163840; // 160 KB soft ceiling (v2.3.0 W-EVT-1: bumped from 144 KB after 17 new plugin-loader event types pushed sidecar past 147 KB).
+const MAX_INDEX_BYTES = 180224; // 176 KB soft ceiling (v2.3.18 W5b: bumped from 160 KB after the CEL / Co-change / BDG event types pushed the sidecar past 164 KB).
 
 // W7 fix-pass L-001 (security): pre-stat ceiling for the source markdown.
 // 25× the current 226 KB source — generous headroom for legitimate growth,

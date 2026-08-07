@@ -40,6 +40,7 @@ const { RULES } = require('./_lib/shield-rules');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { writeEvent } = require('./_lib/audit-event-writer');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // Env-var escape hatch: set ORCHESTRAY_SHIELD_DISABLED=1 for zero-overhead exit
 // when the shield is permanently disabled (avoids even one config readFileSync).
@@ -254,20 +255,13 @@ function emitRedirectEmitted(cwd, oid, filePath, agentType, slug) {
 // ---------------------------------------------------------------------------
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => {
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  process.stderr.write('[orchestray] context-shield: hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; failing open\n');
   process.stdout.write(allowDecision());
   process.exit(0);
-});
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[orchestray] context-shield: hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; failing open\n');
-    process.stdout.write(allowDecision());
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+}
+setImmediate(() => {
   // Entire handler is wrapped in a try/catch to guarantee fail-open behavior.
   try {
     const event = JSON.parse(input || '{}');

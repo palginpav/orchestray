@@ -43,6 +43,7 @@ const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { writeEvent } = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { recordDegradation } = require('./_lib/degraded-journal');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // Minimum description length to count as "meaningful" (rejects empty strings,
 // single words like "fix", etc).
@@ -179,20 +180,13 @@ function emitAuditEvent(cwd, record) {
 
 function main() {
   let input = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', () => {
-    process.stdout.write(JSON.stringify({ continue: true }));
+  input = readHookInputRaw();
+  if (input.length > MAX_INPUT_BYTES) {
+    process.stderr.write('[orchestray] validate-task-subject: stdin exceeded cap; fail-open\n');
+    process.stdout.write(JSON.stringify({ continue: true }) + '\n');
     process.exit(0);
-  });
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-    if (input.length > MAX_INPUT_BYTES) {
-      process.stderr.write('[orchestray] validate-task-subject: stdin exceeded cap; fail-open\n');
-      process.stdout.write(JSON.stringify({ continue: true }) + '\n');
-      process.exit(0);
-    }
-  });
-  process.stdin.on('end', () => {
+  }
+  setImmediate(() => {
     let event = {};
     try {
       event = input.length > 0 ? JSON.parse(input) : {};

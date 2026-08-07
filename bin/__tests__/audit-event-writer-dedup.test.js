@@ -9,7 +9,10 @@
  *
  *   1. Happy path                — known event type with required fields.
  *   2. Unknown event type        — appends original AND advisory (2 lines, NOT 4).
- *   3. Validation failure        — appends only the surrogate (1 line, NOT 2).
+ *   3. Validation failure        — appends original + shape-violation advisory +
+ *      surrogate (3 lines). D6 (v2.3.18 W1b) changed this from "drop the
+ *      original" to "degrade to emit-with-warning" — dropping silently
+ *      corrupted history for lifecycle events like orchestration_complete.
  *   4. Circuit-broken bypass     — appends original as-is (1 line).
  *   5. Schema-unreadable warning — appends original (1 line).
  *   6. Stress: 100 sequential calls produce exactly 100 lines.
@@ -128,26 +131,29 @@ describe('audit-event-writer dedup (v2.2.2 B2)', () => {
     }
   });
 
-  test('4. Validation failure (missing required) — surrogate + shape-violation advisory (2 lines); original NOT written', () => {
+  test('4. Validation failure (missing required) — original + surrogate + shape-violation advisory (3 lines)', () => {
     const tmpDir = makeTmpRepo();
     try {
       // tier2_load is in the schema but requires fields. Empty payload triggers
-      // the strict drop+surrogate path.
-      // W-MISS-SPLIT (v2.2.12 W1b): shape-violation path now emits TWO events:
-      //   - schema_shape_violation (new, rate-limited advisory)
+      // the shape-violation path.
+      // W-MISS-SPLIT (v2.2.12 W1b): shape-violation path emits TWO advisory events:
+      //   - schema_shape_violation (rate-limited advisory)
       //   - schema_shadow_validation_block (legacy surrogate, preserved for compat)
-      // The original tier2_load MUST NOT be written.
+      // D6 (v2.3.18 W1b): the original event is no longer dropped — it is
+      // still appended (autofilled) alongside the advisories. Dropping
+      // silently lost real lifecycle events (orchestration_complete, etc.)
+      // in production; see the D6 note in bin/_lib/audit-event-writer.js.
       const lines = callWriteEventN(tmpDir, { type: 'tier2_load' }, 1);
-      assert.equal(lines.length, 2, 'two lines (surrogate + shape-violation advisory); got: ' + lines.length);
+      assert.equal(lines.length, 3, 'three lines (original + surrogate + shape-violation advisory); got: ' + lines.length);
       const surrogate      = lines.find((e) => e.type === 'schema_shadow_validation_block');
       const shapeViolation = lines.find((e) => e.type === 'schema_shape_violation');
       assert.ok(surrogate,      'schema_shadow_validation_block must be present');
       assert.ok(shapeViolation, 'schema_shape_violation must be present');
       assert.equal(surrogate.blocked_event_type, 'tier2_load');
       assert.equal(shapeViolation.event_type,    'tier2_load');
-      // The original tier2_load MUST NOT be written.
+      // D6: the original tier2_load IS written (autofilled), despite the violation.
       const originals = lines.filter((e) => e.type === 'tier2_load');
-      assert.equal(originals.length, 0, 'original NOT written');
+      assert.equal(originals.length, 1, 'original IS written (D6 — never drop)');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

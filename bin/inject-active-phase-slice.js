@@ -27,6 +27,7 @@ const fs = require('fs');
 const path = require('path');
 // NEW-01 (v2.3.9): canonical loader for phase_slice_loading config.
 const { loadPhaseSliceLoadingConfig } = require('./_lib/config-schema');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const CONTINUE_RESPONSE = JSON.stringify({ continue: true });
 
@@ -57,20 +58,13 @@ const SLICES_DIR_RELATIVE = path.join('agents', 'pm-reference');
 
 if (require.main === module) {
   let input = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', () => {
+  input = readHookInputRaw();
+  // Hard cap to avoid runaway input
+  if (input.length > 1024 * 1024) {
     process.stdout.write(CONTINUE_RESPONSE + '\n');
     process.exit(0);
-  });
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-    // Hard cap to avoid runaway input
-    if (input.length > 1024 * 1024) {
-      process.stdout.write(CONTINUE_RESPONSE + '\n');
-      process.exit(0);
-    }
-  });
-  process.stdin.on('end', () => {
+  }
+  setImmediate(() => {
     try {
       handle(JSON.parse(input || '{}'));
     } catch (_e) {
@@ -280,12 +274,26 @@ function handle(_payload) {
   }
 
   // Read current phase from orchestration.md
+  const orchPath = path.join(cwd, STATE_DIR, ORCH_FILE);
   const phase = readPhaseFromOrchestration(cwd);
   const slice = resolveSliceForPhase(phase);
 
   if (!slice) {
-    // Unparseable / missing phase → contract-only injection (no slice).
-    emitFallbackEvent(cwd, phase ? 'unrecognized_phase' : 'no_active_orchestration');
+    // v2.3.18 W3 Q3: split the old single `no_active_orchestration` reason
+    // (126/126 rows) into two distinct, measurable situations:
+    //   - no_orch_file: orchestration.md absent — benign, this hook runs on
+    //     every UserPromptSubmit regardless of whether an orchestration exists.
+    //   - phase_unparseable: orchestration.md exists but neither parse
+    //     strategy in readPhaseFromOrchestration() could extract a phase —
+    //     a real degradation of PM protocol loading.
+    // `unrecognized_phase` (phase parsed but not in PHASE_TO_FILE) is unchanged.
+    let reason;
+    if (phase) {
+      reason = 'unrecognized_phase';
+    } else {
+      reason = fs.existsSync(orchPath) ? 'phase_unparseable' : 'no_orch_file';
+    }
+    emitFallbackEvent(cwd, reason);
     process.stdout.write(CONTINUE_RESPONSE + '\n');
     return;
   }

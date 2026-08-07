@@ -13,6 +13,13 @@
  * Isolation contract:
  *   - Tests call emitAutofillTelemetry directly, with an isolated tmp eventsPath.
  *   - No real events.jsonl or project root is modified.
+ *
+ * D4 (v2.3.18 W1a) note: emitAutofillTelemetry now samples (1 row per
+ * AUTOFILL_SAMPLE_INTERVAL occurrences) rather than emitting 1:1. That's
+ * orthogonal to what this file tests (the schema_state field), so these
+ * tests run with ORCHESTRAY_AUTOFILL_SAMPLE_DISABLED=1 to keep exercising
+ * the pre-D4 1-call-in/1-row-out shape. Sampling itself is covered by
+ * v2318-w1a-audit-autofill-sample.test.js.
  */
 
 const { describe, test } = require('node:test');
@@ -23,6 +30,9 @@ const os     = require('node:os');
 
 const auditEventWriter = require('../audit-event-writer.js');
 const { emitAutofillTelemetry } = auditEventWriter._testHooks;
+
+// D4 sampling is orthogonal here — see file header note.
+process.env.ORCHESTRAY_AUTOFILL_SAMPLE_DISABLED = '1';
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -42,6 +42,7 @@ const { writeEvent }        = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { readCache: readCustomAgentsCache } = require('./_lib/custom-agents');
 const { CANONICAL_AGENTS } = require('./_lib/canonical-agents');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const VALID_TIERS = ['fable', 'haiku', 'sonnet', 'opus'];
 
@@ -55,16 +56,12 @@ function isValidModel(model) {
 // compareGroupOrder) don't block on stdin.
 if (require.main === module) {
   let input = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', () => { process.exit(0); });
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-    if (input.length > MAX_INPUT_BYTES) {
-      process.stderr.write('[orchestray] hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
-      process.exit(0);
-    }
-  });
-  process.stdin.on('end', () => {
+  input = readHookInputRaw();
+  if (input.length > MAX_INPUT_BYTES) {
+    process.stderr.write('[orchestray] hook stdin exceeded ' + MAX_INPUT_BYTES + ' bytes; aborting\n');
+    process.exit(0);
+  }
+  setImmediate(() => {
   try {
     const event = JSON.parse(input);
 

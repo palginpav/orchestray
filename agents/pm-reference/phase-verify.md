@@ -215,6 +215,16 @@ The verify-fix loop is triggered when:
 If the reviewer returns `status: "failure"` but all issues are warning or info severity,
 proceed normally -- the implementation is acceptable with noted improvements.
 
+### Grounding Requirement (R-VF-GROUND)
+
+Every verify-fix round must be grounded in an external signal: test results, command
+exit codes, contract/schema checks, or reviewer findings tied to a specific file:line.
+A round whose only input is an agent re-reading its own prior output, with no external
+check re-run, is forbidden. "LLMs Cannot Self-Correct Reasoning Yet" (arXiv 2310.01798)
+found intrinsic self-correction with no external signal can *degrade* answers that were
+already correct -- the reviewer re-spawn in step (d) below is what keeps this loop
+grounded; do not collapse it into a developer self-check.
+
 ### Loop Mechanics
 
 For each round of the verify-fix loop:
@@ -249,6 +259,13 @@ Include ALL of the following in the developer's delegation prompt:
 6. **Scope restriction**: "Fix ONLY the listed issues. Do not refactor, add features,
    or make unrelated changes."
 
+7. **Prior-round failure diagnosis** (rounds 2+, if present): the `failure_reason` text
+   written into the previous round's `round_history` entry (see step f), verbatim. This
+   is grounded in what the reviewer/tests actually showed, not speculation about
+   developer intent -- it stops the developer from repeating an approach that already
+   failed once (Reflexion, arXiv 2303.11366: grounded reflection carried across attempts
+   improves outcomes; see R-VF-GROUND above for why it must stay grounded).
+
 **c. Spawn developer** with the fix prompt.
 
 **d. Spawn reviewer** to re-validate the developer's fixes.
@@ -258,7 +275,11 @@ Include ALL of the following in the developer's delegation prompt:
 - If `status: "success"` (no error-severity issues): **EXIT loop**, proceed normally
   with the orchestration flow.
 - If errors remain AND round < `verify_fix_max_rounds`: **CONTINUE loop** (go to step a
-  with the new reviewer result).
+  with the new reviewer result). Before building the next prompt, write a one-line
+  `failure_reason` into this round's `round_history` entry (step f) diagnosing why the
+  issue is still open -- grounded in the new reviewer's finding text or test/command
+  output (e.g. "reviewer still reports the same null-check missing at file:line"), not
+  developer self-assessment.
 - If errors remain AND round >= `verify_fix_max_rounds`: **ESCALATE** to the user
   (see User Escalation below).
 - If the developer reports the fix is impossible or requires a design change: **TRIGGER
@@ -278,6 +299,7 @@ verify_fix:
       reviewer_issues: {count}
       developer_fixed: {count}
       remaining: {count}
+      failure_reason: "{one-line diagnosis if round continues; omit/empty if round passed}"
   status: in_progress | resolved | escalated | design_rejected
 ```
 

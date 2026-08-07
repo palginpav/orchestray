@@ -40,6 +40,7 @@ const { atomicAppendJsonl } = require('./_lib/atomic-append');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { isSentinelActive } = require('./_lib/load-schema-shadow');
 const fs = require('fs');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // ---------------------------------------------------------------------------
 // Output helpers
@@ -100,20 +101,13 @@ function emitValidationBlockEvent(cwd, eventType, errors) {
 // ---------------------------------------------------------------------------
 
 let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('error', () => {
+input = readHookInputRaw();
+if (input.length > MAX_INPUT_BYTES) {
+  process.stderr.write('[validate-schema-emit] stdin exceeded limit; allowing\n');
   process.stdout.write(allowResponse() + '\n');
   process.exit(0);
-});
-process.stdin.on('data', (chunk) => {
-  input += chunk;
-  if (input.length > MAX_INPUT_BYTES) {
-    process.stderr.write('[validate-schema-emit] stdin exceeded limit; allowing\n');
-    process.stdout.write(allowResponse() + '\n');
-    process.exit(0);
-  }
-});
-process.stdin.on('end', () => {
+}
+setImmediate(() => {
   try {
     handle(JSON.parse(input || '{}'));
   } catch (_e) {

@@ -186,7 +186,9 @@ function checkTranscriptResolution() {
 /**
  * Step 4 — Synthetic compression run.
  * Builds an in-memory prompt with two near-duplicate ## Prior Findings blocks
- * and runs runL1. Verifies droppedCount === 1.
+ * and runs the parse/classify/dedup pipeline directly (library-level check;
+ * inject-tokenwright.js itself no longer wires this pipeline — see v2.3.18
+ * retirement note there). Verifies droppedCount === 1.
  *
  * @returns {boolean} fixture_compression_ran
  */

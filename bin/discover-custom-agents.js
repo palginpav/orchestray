@@ -38,6 +38,7 @@ const {
 const { CANONICAL_AGENTS } = require('./_lib/canonical-agents');
 const { syncCustomAgentSymlinks }    = require('./_lib/agent-symlinks');
 const { filterShadowedArenaV0s }     = require('./_lib/custom-agents-shadow');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 /** Claude Code user-scope agent registry dir; honour env override for tests. */
 function _agentsDir() {
@@ -102,7 +103,7 @@ function safeEmit(payload, cwd) {
   // Parse hook payload from stdin (best-effort; ignore parse errors).
   let eventCwd;
   try {
-    const stdinData = fs.readFileSync('/dev/stdin', 'utf8');
+    const stdinData = readHookInputRaw();
     const payload   = JSON.parse(stdinData);
     eventCwd        = payload && payload.cwd;
   } catch (_) { /* ignore — we fall back to process.cwd() */ }

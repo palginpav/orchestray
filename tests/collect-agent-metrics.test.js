@@ -17,6 +17,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 
 const SCRIPT = path.resolve(__dirname, '../bin/collect-agent-metrics.js');
+const { appendRoutingEntry } = require('../bin/_lib/routing-lookup');
 
 function run(stdinData) {
   const result = spawnSync(process.execPath, [SCRIPT], {
@@ -409,6 +410,90 @@ describe('TaskCompleted event handling', () => {
       const ev = events[1];
       assert.equal(ev.usage.input_tokens, 800);
       assert.equal(ev.usage_source, 'transcript');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// D5 (v2.3.18 W1b): task_id-keyed routing.jsonl resolution for team events
+// ---------------------------------------------------------------------------
+
+describe('model resolution via routing.jsonl task_id (D5)', () => {
+
+  test('resolves model from routing.jsonl when teammate_name is an operator nickname', () => {
+    const tmpDir = makeTmpDir();
+    const auditDir = path.join(tmpDir, '.orchestray', 'audit');
+    writeOrchestrationId(auditDir, 'orch-team-d5-001');
+
+    // PM's decomposition-time routing decision — keyed by task_id, NOT by
+    // the teammate's nickname. "dev-w0-hookentry" matches neither a
+    // canonical agent_type nor any agents/<name>.md filename.
+    appendRoutingEntry(tmpDir, {
+      timestamp: new Date().toISOString(),
+      orchestration_id: 'orch-team-d5-001',
+      task_id: 'W1b',
+      agent_type: 'developer',
+      description: 'make cost telemetry real',
+      model: 'claude-opus-5',
+      effort: 'high',
+      complexity_score: 9,
+      decided_by: 'pm',
+      decided_at: 'decomposition',
+    });
+
+    try {
+      const input = JSON.stringify({
+        cwd: tmpDir,
+        hook_event_name: 'TaskCompleted',
+        task_id: 'W1b',
+        task_subject: 'make cost telemetry real',
+        teammate_name: 'dev-w0-hookentry',
+        team_name: 'alpha',
+        session_id: 'sess-d5-001',
+      });
+      run(input);
+
+      const events = readEventsJsonl(auditDir);
+      const ev = events.find((e) => e.type === 'task_completed_metrics');
+      assert.ok(ev, 'task_completed_metrics event written');
+      assert.equal(ev.model_used, 'claude-opus-5',
+        'model resolved from routing.jsonl by task_id, not guessed as Sonnet');
+      assert.equal(ev.cost_confidence, 'measured');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('honest fallback names the missing inputs when neither routing_outcome nor routing.jsonl match', () => {
+    const tmpDir = makeTmpDir();
+    const auditDir = path.join(tmpDir, '.orchestray', 'audit');
+    writeOrchestrationId(auditDir, 'orch-team-d5-002');
+
+    try {
+      const input = JSON.stringify({
+        cwd: tmpDir,
+        hook_event_name: 'TaskCompleted',
+        task_id: 'W-ghost',
+        task_subject: 'no routing row exists for this task',
+        teammate_name: 'dev-ghost-nickname',
+        team_name: 'alpha',
+        session_id: 'sess-d5-002',
+      });
+      run(input);
+
+      const events = readEventsJsonl(auditDir);
+      const ev = events.find((e) => e.type === 'task_completed_metrics');
+      assert.ok(ev, 'task_completed_metrics event written');
+      assert.equal(ev.model_used, 'unknown_team_member');
+      assert.equal(ev.cost_confidence, 'estimated');
+      assert.ok(ev.model_resolution_note, 'honest note present');
+      assert.ok(ev.model_resolution_note.includes('W-ghost'),
+        'note names the task_id that was checked and missed: ' + ev.model_resolution_note);
+      assert.ok(ev.model_resolution_note.includes('routing.jsonl'),
+        'note names routing.jsonl as a checked-and-missed source: ' + ev.model_resolution_note);
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
     }

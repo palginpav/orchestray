@@ -2403,9 +2403,20 @@ each item in the returned pattern or artifact list carries a `source` field:
   "matches": null,
   "slug": null,
   "confidence": null,
-  "source": null
+  "source": null,
+  "grounded_for": null
 }
 ```
+
+**`grounded_for`** — the agent role this call was made *on behalf of*, stamped by
+`bin/prefetch-mcp-grounding.js` (M1 grounding prefetch). The prefetch runs in
+PreToolUse:Agent, before its subagent exists, so the row has no agent role of its
+own; `grounded_for` names the spawn it grounds. `bin/validate-claim-evidence.js`
+(`scopeEvent`) treats it as an attribution field: a row with no attribution at all
+is ambient activity — possibly a sibling agent's MCP call — and is NOT accepted as
+grounding evidence for the spawn under evaluation. Absent on rows emitted by the
+MCP server dispatcher and on every row written before v2.3.18; those rows are
+scoped out of grounding evidence by the spawn window regardless.
 
 **`source` enum values:**
 - `"local"` — pattern is from `.orchestray/patterns/` (Tier 1, project-local).
@@ -5975,6 +5986,40 @@ Field notes:
 
 ---
 
+### `verify_fix_attempt` event
+
+Emitted by the PM as an informal progress note when a verify-fix round
+is retried mid-loop after an interruption (e.g. a respawned agent hit
+`maxTurns`) — distinct from the `verify_fix_start/pass/fail/oscillation`
+quartet above, which mark round boundaries. Registered v2.3.18 W1d
+(D6/FN-34 follow-up) to close a coverage gap: the type was observed
+live in `events.jsonl` with no schema declaration.
+
+```json
+{
+  "version": 1,
+  "type": "verify_fix_attempt",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id>",
+  "task_id": "task-N",
+  "reason": "<one-line note on why this round is being retried>"
+}
+```
+
+Field notes:
+- `reason`: free-text one-liner describing the interruption and retry
+  plan (e.g. maxTurns hit, respawn parameters).
+- Source: PM, direct append (not `ox events append`) — the two observed
+  live emits (v2.3.18 dogfooding) used `event`/`ts` in place of
+  `type`/`timestamp`; `extractObservedTypes()` in
+  `tests/schema-emit-coverage.test.js` already falls back to `row.event`
+  for exactly this reason. The canonical shape above is what future
+  emitters should target; `type`/`timestamp` are what this document
+  requires (FN-31) and what every other event here uses.
+- Backward compat: new in v2.3.18, ignore-unknown per R-EVENT-NAMING.
+
+---
+
 ### `output_shape_applied` event
 
 Emitted by the PM at delegation time, immediately after the `Agent()`
@@ -6759,6 +6804,37 @@ Emitted by `bin/_lib/double-fire-guard.js` when the same `dedup_key` is seen fro
 Field notes:
 - `guard_name` ∈ `{tokenwright, compose-block-a, inject-delegation-delta, emit-routing-outcome}`.
 - One emit per `(orchestration_id, guard_name, dedup_key)` tuple (Issue D fix).
+
+### `hook_dedup_decision` event
+
+Emitted by `bin/_lib/hook-stdin.js` (v2.3.18 W11, volume-corrected W12) from the single dedup decision point, one row per decision. Answers "did dedup swallow that hook?" and surfaces claim tampering. Since W9 deleted the install-topology layer, the payload-hash claim is the sole mechanism preventing duplicate hook execution, so its decisions are load-bearing.
+
+```json
+{
+  "type": "hook_dedup_decision",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "...",
+  "reason": "duplicate_install",
+  "fire": false,
+  "script": "compose-block-a.js",
+  "sampled": true,
+  "session_id": "<string|null, optional — from the hook payload>",
+  "first_caller": "<string|null, optional — redacted, suppressions only>",
+  "delta_ms": "<int|null, optional — suppressions only>",
+  "untrusted_at": "<string|null, optional — untrusted paths only>",
+  "untrusted_why": "<string|null, optional — untrusted paths only>",
+  "err_code": "<string|null, optional — claim_error only>"
+}
+```
+
+Field notes:
+- `reason` ∈ `{claimed, duplicate_install, same_caller_repeat, window_expired, claim_unreadable, claim_untrusted, claim_dir_untrusted, claim_dir_unavailable, claim_error, window_disabled, kill_switch, legacy_kill_switch, dedup_error}`.
+- `fire: false` occurs only with `reason: "duplicate_install"` — that is the module's sole suppression.
+- **Volume policy (W12).** Untrusted and error reasons are emitted every time — those are rare by construction. `duplicate_install` recurs 1:1 with hook traffic on the losing side of a dual-install machine (it is the NORMAL, HEALTHY outcome there, not an anomaly), so — like `claimed`, `same_caller_repeat`, and the operator-switch reasons (`kill_switch`, `legacy_kill_switch`, `window_disabled`) — it is sampled at 1% (`ORCHESTRAY_HOOK_DEDUP_SAMPLE_RATE`, `0` silences it, `1` forces every sampled row through for exact-answer debugging). `sampled` is `true` on rows that came through the sampled path, so rate math must scale those by `1 / rate`. `duplicate_install` and `claimed` share the same rate deliberately: they are paired 1:1 per tool call, so their sampled counts remain a valid estimator of the true suppression ratio.
+- `first_caller` is **redacted**, not a path: `#<sha256(dirname)[0:12]>/<basename>`. The absolute path embeds a username, and the basename alone carries no signal (the dedup key is built from the basename, so both sides of a collision always share it). The hash distinguishes the global from the local install across rows.
+- `untrusted_at` ∈ `{parent, leaf, claim_file}`; `untrusted_why` ∈ `{symlink, not_directory, not_file, foreign_uid, lax_mode, lax_mode_unrepaired, chmod_failed, unstattable}`. Neither ever names a symlink's target — that string is attacker-chosen.
+- Emission is downstream of the decision and fully guarded: a failing audit writer cannot change `fire`, throw, or be retried.
 
 ### `snapshot_captured` event
 
@@ -7792,6 +7868,10 @@ Field notes:
 ---
 
 ### `agent_mcp_grounding_missing` event
+
+**RETIRED in v2.3.18 (W4)** — `bin/validate-mcp-grounding.js` was replaced
+by the Claim–Evidence Ledger (`claim_evidence_*`). Schema retained so
+historical `events.jsonl` rows remain readable.
 
 Emitted by `bin/validate-mcp-grounding.js` (SubagentStop, F2) when a subagent completes
 without having made any MCP tool calls, indicating it may have reasoned from stale
@@ -9931,7 +10011,431 @@ Kill switch: `ORCHESTRAY_MULTI_STRUCTURED_RESULT_GATE_DISABLED=1`.
 
 ---
 
+### `claim_evidence_ok` event
+
+Emitted by `bin/validate-claim-evidence.js` (W4, v2.3.18) when a spawn made no
+matching claim, or every blocking claim had strong tool-call evidence in the
+transcript. Exit 0.
+
+```json
+{
+  "type": "claim_evidence_ok",
+  "version": 1,
+  "schema_version": 1,
+  "agent_role": "developer",
+  "claims_count": 2,
+  "rows_count": 2,
+  "tool_call_count": 37,
+  "gap_count": 0,
+  "rule_ids": [],
+  "orchestration_id": "orch-20260101T000000Z-example"
+}
+```
+
+Field notes:
+- `claims_count`: claim-bearing sentences matched (claim density — watch for a
+  collapse, which means agents stopped claiming rather than started verifying).
+- `rows_count`: ledger rows written (one per rule, plus SR assertions).
+- `tool_call_count`: `tool_use` blocks found in the scanned transcript tail.
+
+Emitted from: `bin/validate-claim-evidence.js`.
+
+Kill switch: `ORCHESTRAY_CLAIM_EVIDENCE_DISABLED=1`, or
+`claim_evidence_ledger.enabled: false`.
+
+---
+
+### `claim_evidence_gap` event
+
+Emitted by `bin/validate-claim-evidence.js` (W4, v2.3.18) when a blocking claim
+has no strong evidence but the gate does not block: either the ramp window is
+still open, `claim_evidence_ledger.block` is `false`, or there is no
+orchestration to ramp against. Exit 0.
+
+```json
+{
+  "type": "claim_evidence_gap",
+  "version": 1,
+  "schema_version": 1,
+  "agent_role": "developer",
+  "claims_count": 3,
+  "rows_count": 3,
+  "tool_call_count": 12,
+  "gap_count": 2,
+  "rule_ids": ["tests-run", "hook-registered"],
+  "ramp_count": 1,
+  "ramp_threshold": 3,
+  "ramp_state": "warn",
+  "orchestration_id": "orch-20260101T000000Z-example"
+}
+```
+
+Field notes:
+- `ramp_state`: one of `warn`, `telemetry_only`, `no_orchestration`.
+- `rule_ids`: ids from `bin/_lib/claim-rules.js` (first 20).
+
+Emitted from: `bin/validate-claim-evidence.js`.
+
+Kill switch: `ORCHESTRAY_CLAIM_EVIDENCE_DISABLED=1`.
+
+---
+
+### `claim_evidence_blocked` event
+
+Emitted by `bin/validate-claim-evidence.js` (W4, v2.3.18) when the ramp window
+is exhausted and a blocking claim still has no strong tool-call evidence.
+Exits 2. The stderr message offers two remedies — produce the evidence, or
+downgrade the claim — so the gate can never wedge an orchestration.
+
+```json
+{
+  "type": "claim_evidence_blocked",
+  "version": 1,
+  "schema_version": 1,
+  "agent_role": "developer",
+  "claims_count": 3,
+  "rows_count": 3,
+  "tool_call_count": 12,
+  "gap_count": 2,
+  "rule_ids": ["tests-run", "lint-run"],
+  "ramp_count": 4,
+  "ramp_threshold": 3,
+  "ramp_state": "blocked",
+  "orchestration_id": "orch-20260101T000000Z-example"
+}
+```
+
+Field notes:
+- `ramp_state`: always `"blocked"`.
+- Per-verdict detail is persisted to
+  `.orchestray/state/claim-ledger-<orch-id>.jsonl`.
+
+Emitted from: `bin/validate-claim-evidence.js`.
+
+Kill switch: `ORCHESTRAY_CLAIM_EVIDENCE_DISABLED=1`, or
+`claim_evidence_ledger.block: false` to degrade to telemetry.
+
+---
+
+### `behavior_diff_clean` event
+
+Emitted by `bin/_tools/behavior-diff.js` (W5b, v2.3.18) after a replay run in
+which no changed `bin/*.js` script behaved differently against its fixture
+corpus. Zero LLM tokens — Node child processes only.
+
+```json
+{
+  "type": "behavior_diff_clean",
+  "version": 1,
+  "schema_version": 1,
+  "base": "HEAD",
+  "scripts_replayed": 3,
+  "delta_count": 0,
+  "uncovered_count": 1,
+  "covered_scripts": 12,
+  "scripts_with_fixtures": 14,
+  "coverage_ratio": 0.857,
+  "blocked": false,
+  "scripts": []
+}
+```
+
+Field notes:
+- `uncovered_count`: scripts whose fixtures produced the trivial observation
+  `{0, [], ""}` on both sides. **A clean run with a rising `uncovered_count` is
+  not good news** — it means the corpus is testing nothing. Watch this against
+  `coverage_ratio`, which `/orchestray:doctor` surfaces directly.
+
+Emitted from: `bin/_tools/behavior-diff.js`.
+
+Kill switch: `ORCHESTRAY_BEHAVIOR_DIFF_DISABLED=1`, or
+`behavior_diff_gate.enabled: false`.
+
+---
+
+### `behavior_diff_unexpected` event
+
+Emitted by `bin/_tools/behavior-diff.js` (W5b, v2.3.18) when a changed script
+produced a different `{exit code, emitted events, stderr class}` observation
+against at least one harvested fixture. `blocked` is true when
+`behavior_diff_gate.block` is on.
+
+```json
+{
+  "type": "behavior_diff_unexpected",
+  "version": 1,
+  "schema_version": 1,
+  "base": "HEAD",
+  "scripts_replayed": 3,
+  "delta_count": 2,
+  "uncovered_count": 0,
+  "covered_scripts": 12,
+  "scripts_with_fixtures": 14,
+  "coverage_ratio": 0.857,
+  "blocked": true,
+  "scripts": ["bin/validate-no-deferral.js"]
+}
+```
+
+Field notes:
+- This is the falsifiability signal for the whole mechanism: it must be non-zero
+  and each firing must map to a real pre-commit catch. **Flat zero across a
+  release means the corpus lacks the inputs that matter** — fix the corpus or
+  retire the gate.
+- stderr is compared by *class*, not text, and events as a sorted set, so
+  rewording a message is not a delta. If the waiver rate ever approaches 100 %,
+  the diff is too sensitive and the gate has become a rubber stamp.
+
+Emitted from: `bin/_tools/behavior-diff.js`.
+
+Kill switch: `ORCHESTRAY_BEHAVIOR_DIFF_DISABLED=1`, or
+`behavior_diff_gate.block: false` to degrade to telemetry.
+
+---
+
+### `cochange_graph_built` event
+
+Emitted by `bin/validate-companion-files.js --build-cache` (W5b, v2.3.18) on
+`SessionStart` when the co-change graph was mined because the cache was missing
+or HEAD had moved more than 25 commits. Zero LLM tokens — one `git log` walk.
+
+```json
+{
+  "type": "cochange_graph_built",
+  "version": 1,
+  "schema_version": 1,
+  "rule_count": 63,
+  "block_count": 2,
+  "commits_scanned": 492
+}
+```
+
+Field notes:
+- `rule_count`: directional rules mined on the training window.
+- `block_count`: subset that also held on the holdout window and may therefore
+  block. Expect this to be small (2 on this repo today) and to grow slowly.
+
+Emitted from: `bin/validate-companion-files.js`.
+
+Kill switch: `ORCHESTRAY_COCHANGE_DISABLED=1`, or `cochange_oracle.enabled: false`.
+
+---
+
+### `companion_files_ok` event
+
+Emitted by `bin/validate-companion-files.js` (W5b, v2.3.18) when the spawn's
+`git diff` left no holdout-validated companion file untouched **and** no
+advisory rule matched either — a genuinely clean run. Exit 0.
+
+```json
+{
+  "type": "companion_files_ok",
+  "version": 1,
+  "schema_version": 1,
+  "agent_role": "developer",
+  "changed_count": 6,
+  "missing_count": 0,
+  "advisory_count": 0,
+  "waived_count": 0,
+  "rule_count": 63,
+  "missing": [],
+  "orchestration_id": "orch-20260101T000000Z-example"
+}
+```
+
+Field notes:
+- `changed_count`: files from `git diff --name-only HEAD` plus untracked files —
+  the tree is the witness, not the agent's `files_changed`.
+- `advisory_count`: always 0 since v2.3.18 W7a. A run with advisory findings
+  emits `companion_files_advisory` instead, so "ok" means clean.
+
+Emitted from: `bin/validate-companion-files.js`.
+
+Kill switch: `ORCHESTRAY_COCHANGE_DISABLED=1`, or `cochange_oracle.enabled: false`.
+
+---
+
+### `companion_files_advisory` event
+
+Emitted by `bin/validate-companion-files.js` (W7a, v2.3.18) when nothing
+blocking was missed but at least one advisory rule matched. Exit 0.
+
+Split out of `companion_files_ok` because "ok" is the wrong label for a run that
+surfaced findings: an unattributed spawn is always evaluated advisory-only, so
+every finding it produced was reported under the same event type as a spotless
+diff and was invisible to anyone counting outcomes.
+
+```json
+{
+  "type": "companion_files_advisory",
+  "version": 1,
+  "schema_version": 1,
+  "agent_role": "developer",
+  "changed_count": 6,
+  "missing_count": 0,
+  "advisory_count": 2,
+  "waived_count": 0,
+  "rule_count": 63,
+  "missing": [],
+  "advisory": [{"file": "bin/validate-companion-files.js", "companion": "bin/__tests__/v2318-w5b-cochange-oracle.test.js", "conf": 0.82, "support": 11, "enforcement": "advisory"}],
+  "orchestration_id": "orch-20260101T000000Z-example"
+}
+```
+
+Field notes:
+- `missing_count` is always 0 here — anything blocking routes to
+  `companion_file_missing` or `companion_files_blocked` instead.
+- `advisory`: the matched advisory rules, capped at 10. These never block; a
+  rising count against a flat `missing_count` means the mined rules are
+  conventions rather than obligations.
+- The `missing` / `advisory` rows stay on ONE line above deliberately. The
+  schema parser reads this block line by line, so an expanded nested object
+  registers `file`, `companion`, `conf`, `support` and `enforcement` as
+  **top-level required fields**; every emission then fails validation and writes
+  three rows (payload + `schema_shape_violation` + `schema_shadow_validation_block`)
+  instead of one. `tests/cochange-oracle.test.js` fails if this is re-expanded
+  (v2.3.18 W8 C-2).
+
+Emitted from: `bin/validate-companion-files.js`.
+
+Kill switch: `ORCHESTRAY_COCHANGE_DISABLED=1`, or `cochange_oracle.enabled: false`.
+
+---
+
+### `companion_file_missing` event
+
+Emitted by `bin/validate-companion-files.js` (W5b, v2.3.18) when a
+holdout-validated companion was not updated but the gate does not block: the
+ramp window is still open, `cochange_oracle.companion_gate` is not `"block"`, or
+there is no active orchestration to ramp against. Exit 0.
+
+```json
+{
+  "type": "companion_file_missing",
+  "version": 1,
+  "schema_version": 1,
+  "agent_role": "developer",
+  "changed_count": 4,
+  "missing_count": 1,
+  "advisory_count": 2,
+  "waived_count": 0,
+  "rule_count": 63,
+  "missing": [{"file": "agents/pm-reference/event-schemas.tier2-index.json", "companion": "agents/pm-reference/event-schemas.shadow.json", "conf": 1.0, "support": 25, "enforcement": "block"}],
+  "ramp_count": 1,
+  "ramp_threshold": 3,
+  "ramp_state": "warn",
+  "orchestration_id": "orch-20260101T000000Z-example"
+}
+```
+
+Field notes:
+- `ramp_state`: `"warn"` inside the ramp, `"telemetry_only"` when
+  `companion_gate` is not `"block"`, `"no_orchestration"` when there is no
+  orchestration id to count against.
+- `waived_count`: findings the agent accounted for by naming the companion in
+  its Structured Result `assumptions`. A waiver rate above ~50 % means the rules
+  are conventions, not obligations — demote them.
+- `missing` rows stay on one line — see the note under `companion_files_advisory`
+  (v2.3.18 W8 C-2).
+
+Emitted from: `bin/validate-companion-files.js`.
+
+Kill switch: `ORCHESTRAY_COCHANGE_DISABLED=1`, or
+`cochange_oracle.companion_gate: "advisory"` to degrade to telemetry.
+
+---
+
+### `companion_files_blocked` event
+
+Emitted by `bin/validate-companion-files.js` (W5b, v2.3.18) when the ramp window
+is exhausted and a holdout-validated companion is still untouched. Exits 2. The
+stderr message offers two remedies — update the companion, or name it in
+`assumptions` — so the gate can never wedge an orchestration.
+
+```json
+{
+  "type": "companion_files_blocked",
+  "version": 1,
+  "schema_version": 1,
+  "agent_role": "developer",
+  "changed_count": 4,
+  "missing_count": 1,
+  "advisory_count": 0,
+  "waived_count": 0,
+  "rule_count": 63,
+  "missing": [{"file": "agents/pm-reference/event-schemas.tier2-index.json", "companion": "agents/pm-reference/event-schemas.md", "conf": 0.84, "support": 25, "enforcement": "block"}],
+  "ramp_count": 4,
+  "ramp_threshold": 3,
+  "ramp_state": "blocked",
+  "orchestration_id": "orch-20260101T000000Z-example"
+}
+```
+
+Field notes:
+- `ramp_state`: always `"blocked"` — the same value every other ramp gate emits.
+  Before v2.3.18 W7a this event alone said `"block"`, so any analytics grouped on
+  `ramp_state === "blocked"` silently dropped every companion block.
+- Only rules whose `enforcement` is `"block"` — mined on the oldest ⅔ of history
+  AND re-confirmed on the newest ⅓ — reach this event.
+- On exit 2 the gate also writes `{"continue": false, "reason":
+  "companion_files_blocked:<file>-><companion>,…"}` to stdout, matching
+  `claim_evidence_blocked`.
+- `missing` rows stay on one line — see the note under `companion_files_advisory`
+  (v2.3.18 W8 C-2).
+
+Emitted from: `bin/validate-companion-files.js`.
+
+Kill switch: `ORCHESTRAY_COCHANGE_DISABLED=1`, or
+`cochange_oracle.companion_gate: "advisory"` to degrade to telemetry.
+
+---
+
+### `seam_coupling_advisory` event
+
+Emitted by `bin/validate-task-contracts.js` (W5b, v2.3.18) on `PreToolUse:Agent`
+when a task's `write_allowed` set is historically coupled to another in-flight
+task's. **Advisory only** — "coupling predicts wave conflict" is a hypothesis,
+not a finding, so the seam half never blocks until the correlation is measured
+over ≥ 10 orchestrations. Exit 0 always.
+
+```json
+{
+  "type": "seam_coupling_advisory",
+  "version": 1,
+  "schema_version": 1,
+  "task_id": "W3",
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "enforcement": "advisory",
+  "finding_count": 1,
+  "max_coupling": 0.92,
+  "findings": [
+    {
+      "a": "W3",
+      "b": "W4",
+      "coupling": 0.92,
+      "shared": ["bin/_lib/cost-helpers.js -> bin/collect-agent-metrics.js"]
+    }
+  ]
+}
+```
+
+Field notes:
+- `enforcement`: always `"advisory"` in v2.3.18.
+- Correlate against `replan` and `verify_fix_attempt` on the same orchestration.
+  If high-coupling waves do not re-plan more often, the seam half does not
+  predict conflict and should be dropped rather than promoted.
+
+Emitted from: `bin/validate-task-contracts.js`.
+
+Kill switch: `ORCHESTRAY_COCHANGE_DISABLED=1`, or `cochange_oracle.seam_gate: "off"`.
+
+---
+
 ### `tester_runs_tests_gate_warn` event
+
+**RETIRED in v2.3.18 (W4)** — `bin/validate-tester-runs-tests.js` was replaced
+by the Claim–Evidence Ledger (`claim_evidence_*`). Schema retained so
+historical `events.jsonl` rows remain readable.
 
 Emitted by `bin/validate-tester-runs-tests.js` (P1-06, v2.2.15) during the
 ramp window when a tester claims `tests_passing: true` but no test-runner
@@ -9962,6 +10466,10 @@ Kill switch: `ORCHESTRAY_TESTER_RUNS_TESTS_GATE_DISABLED=1`.
 
 ### `tester_runs_tests_gate_blocked` event
 
+**RETIRED in v2.3.18 (W4)** — `bin/validate-tester-runs-tests.js` was replaced
+by the Claim–Evidence Ledger (`claim_evidence_*`). Schema retained so
+historical `events.jsonl` rows remain readable.
+
 Emitted by `bin/validate-tester-runs-tests.js` (P1-06, v2.2.15) when the
 ramp window is exhausted and a tester claims `tests_passing: true` without
 test-runner Bash evidence. Exits 2.
@@ -9990,6 +10498,10 @@ Kill switch: `ORCHESTRAY_TESTER_RUNS_TESTS_GATE_DISABLED=1`.
 ---
 
 ### `pattern_application_gate_warn` event
+
+**RETIRED in v2.3.18 (W4)** — `bin/validate-pattern-application.js` was replaced
+by the Claim–Evidence Ledger (`claim_evidence_*`). Schema retained so
+historical `events.jsonl` rows remain readable.
 
 Emitted by `bin/validate-pattern-application.js` (P1-07, v2.2.15) during the
 ramp window when `pattern_find` was called but no `pattern_record_application`
@@ -10020,6 +10532,10 @@ Kill switch: `ORCHESTRAY_PATTERN_APPLICATION_GATE_DISABLED=1`.
 
 ### `pattern_application_gate_blocked` event
 
+**RETIRED in v2.3.18 (W4)** — `bin/validate-pattern-application.js` was replaced
+by the Claim–Evidence Ledger (`claim_evidence_*`). Schema retained so
+historical `events.jsonl` rows remain readable.
+
 Emitted by `bin/validate-pattern-application.js` (P1-07, v2.2.15) when the
 ramp window is exhausted and `pattern_find` was called without an ack. Exits 2.
 
@@ -10046,6 +10562,10 @@ Kill switch: `ORCHESTRAY_PATTERN_APPLICATION_GATE_DISABLED=1`.
 ---
 
 ### `researcher_citations_gate_blocked` event
+
+**RETIRED in v2.3.18 (W4)** — `bin/validate-researcher-citations.js` was replaced
+by the Claim–Evidence Ledger (`claim_evidence_*`). Schema retained so
+historical `events.jsonl` rows remain readable.
 
 Emitted by `bin/validate-researcher-citations.js` (P1-09, v2.2.15) when a
 researcher returns a non-`no_clear_fit` verdict but cites fewer than 3 sources.
@@ -10074,6 +10594,10 @@ Kill switch: `ORCHESTRAY_RESEARCHER_CITATIONS_GATE_DISABLED=1`.
 ---
 
 ### `platform_oracle_grounding_gate_blocked` event
+
+**RETIRED in v2.3.18 (W4)** — `bin/validate-platform-oracle-grounding.js` was replaced
+by the Claim–Evidence Ledger (`claim_evidence_*`). Schema retained so
+historical `events.jsonl` rows remain readable.
 
 Emitted by `bin/validate-platform-oracle-grounding.js` (P1-10, v2.2.15) when
 a platform-oracle result is missing `stability_tier` ∈ {stable, experimental,

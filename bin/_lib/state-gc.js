@@ -47,9 +47,43 @@ const JSON_STATE_FILES = [
 // v2.3.12 W8 (B5): per-orchestration litter files that accumulate one-per-run
 // and were never GC'd (runtime audit F-02/F-03). These are deleted outright once
 // their mtime exceeds the TTL. Patterns use `*` as the only wildcard.
+//
+// ADDING A PER-RUN STATE FILE? Add its glob here in the same commit.
+// `tests/state-gc-litter-coverage.test.js` scans `bin/` for state-file names
+// built by concatenating a fixed prefix with an orchestration/session id and
+// fails if any prefix has no glob below. That guard exists because keeping this
+// list current by hand did not work: W8 shipped two globs in v2.3.12, and by
+// v2.3.18 seventeen more families were leaking — three reported by review, the
+// other fourteen only found once the scan existed.
 const MTIME_TTL_GLOBS = [
   'roi-missing-dedup-*.lock',
   'dossier-orphan-counter.*',
+  // v2.3.18 W7b (O-3): claim-evidence + companion-file state, one set per run.
+  'claim-ledger-*.jsonl',
+  'claim-evidence-warn-count-*.json',
+  'companion-warn-count-*.json',
+  // Per-run ramp counters, same class as the two above.
+  'commit-handoff-warn-count-*.json',
+  'context-size-hint-warn-count-*.json',
+  // Per-orchestration idempotency markers. Keyed by orchestration id, which
+  // never recurs, so a marker older than the TTL can only ever be dead weight —
+  // there is no run left for it to suppress.
+  'orchestration-start-emitted.*',
+  'orchestration-complete-emitted.*',
+  'dossier-orphan-emitted.*',
+  'replan-budget-exceeded-*',
+  'quarantine-banner-autofill-*.txt',
+  '.rollup-*.done',
+  // Per-session caches and locks. A session outliving the TTL is not a thing,
+  // and the worst case is a cold cache / one extra probe.
+  '.shield-session-*.json',
+  'sentinel-probe-session-*.lock',
+  // Per-day "already ran today" lock (YYYYMMDD); a week-old one is inert.
+  'firing-audit-day-*.lock',
+  // Per-run suppression sentinels (dotfiles — `readdirSync` lists them).
+  '.events-rotation-*.sentinel',
+  '.gate-22b-warned-*',
+  '.curator-cursor-reset-*',
 ];
 
 /**

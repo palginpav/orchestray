@@ -91,7 +91,14 @@ const INPUT_SCHEMA = deepFreeze({
   properties: {
     id: { type: 'string', minLength: 1, maxLength: 200 },
     bucket: { type: 'string', enum: KB_BUCKETS },
-    path: { type: 'string', minLength: 1, maxLength: 500 },
+    path: {
+      type: 'string', minLength: 1, maxLength: 500,
+      description:
+        'Relative path for the artifact. Accepts a bare filename ("foo.md"), a ' +
+        'bucket-relative path ("<bucket>/foo.md", must match the "bucket" field), or ' +
+        'a project-relative path (".orchestray/kb/<bucket>/foo.md"). All three forms ' +
+        'resolve to the same location; do not include the bucket segment twice.',
+    },
     author: { type: 'string', minLength: 1, maxLength: 100 },
     task: { type: 'string', maxLength: 100 },
     topic: { type: 'string', minLength: 1, maxLength: 200 },
@@ -200,11 +207,21 @@ async function handle(input, context) {
     const prefixToStrip = path.join('.orchestray', 'kb', input.bucket) + path.sep;
     // Also handle forward-slash variant for cross-platform callers.
     const prefixFwd = '.orchestray/kb/' + input.bucket + '/';
+    // D8 fix: also strip a bare bucket-relative prefix ("<bucket>/foo.md") —
+    // without this, callers who pass path:"decisions/foo.md" with
+    // bucket:"decisions" got it joined again under bucketDir, doubling the
+    // segment ("kb/decisions/decisions/foo.md"). Only one strip pass is
+    // applied, so a legitimately nested subdir sharing the bucket's name
+    // (e.g. "decisions/decisions-notes/foo.md") only loses its first segment,
+    // same as the two prefixes above.
+    const bucketPrefixFwd = input.bucket + '/';
     let relative = suppliedPath;
     if (relative.startsWith(prefixToStrip)) {
       relative = relative.slice(prefixToStrip.length);
     } else if (relative.startsWith(prefixFwd)) {
       relative = relative.slice(prefixFwd.length);
+    } else if (relative.startsWith(bucketPrefixFwd)) {
+      relative = relative.slice(bucketPrefixFwd.length);
     }
 
     // Validate each path segment.

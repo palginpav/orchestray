@@ -29,6 +29,7 @@ const { findOrphans, isDisabled } = require('./_lib/lint-doesnotthrow-orphan');
 const { writeEvent }              = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES }         = require('./_lib/constants');
 const { resolveSafeCwd }          = require('./_lib/resolve-project-cwd');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 // Commands that indicate a test-runner invocation.
 // v2.2.17 W9 reviewer F-10: dropped invalid `node -test` (single-dash) variant.
@@ -52,19 +53,12 @@ function main() {
   }
 
   let input = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', () => {
+  input = readHookInputRaw();
+  if (input.length > MAX_INPUT_BYTES) {
     process.stdout.write(JSON.stringify({ continue: true }));
     process.exit(0);
-  });
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-    if (input.length > MAX_INPUT_BYTES) {
-      process.stdout.write(JSON.stringify({ continue: true }));
-      process.exit(0);
-    }
-  });
-  process.stdin.on('end', () => {
+  }
+  setImmediate(() => {
     let event = {};
     try {
       event = input.length > 0 ? JSON.parse(input) : {};

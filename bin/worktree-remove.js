@@ -14,13 +14,14 @@
 const fs            = require('node:fs');
 const path          = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 function logStderr(msg) {
   try { process.stderr.write('[orchestray/worktree-remove] ' + msg + '\n'); } catch (_e) {}
 }
 
 let stdinBuf = '';
-try { stdinBuf = fs.readFileSync(0, 'utf8'); } catch (_e) {}
+try { stdinBuf = readHookInputRaw(); } catch (_e) {}
 
 let input = {};
 try { input = JSON.parse(stdinBuf || '{}'); } catch (_e) {}

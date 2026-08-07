@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/orchestray.svg)](https://www.npmjs.com/package/orchestray)
 [![npm downloads](https://img.shields.io/npm/dw/orchestray.svg)](https://www.npmjs.com/package/orchestray)
-[![Socket Badge](https://badge.socket.dev/npm/package/orchestray/2.3.14)](https://socket.dev/npm/package/orchestray)
+[![Socket Badge](https://badge.socket.dev/npm/package/orchestray/2.3.18)](https://socket.dev/npm/package/orchestray)
 [![License](https://img.shields.io/npm/l/orchestray.svg)](https://github.com/palginpav/orchestray/blob/master/LICENSE)
 [![Node](https://img.shields.io/node/v/orchestray.svg)](https://nodejs.org)
 
@@ -278,7 +278,7 @@ Kill switches: `oversized_input.enabled: false` in `.orchestray/config.json`, or
 
 ## Kill switches
 
-Orchestray ships ~80 feature-level kill switches (config keys + env vars) for emergency rollback or selective opt-out. The full reference lives in [`KILL_SWITCHES.md`](./KILL_SWITCHES.md), grouped into 10 categories (orchestration core, hooks & gates, reviewer, tokenwright, dossier, telemetry, MCP, install, lints, worktree). No session restart required for any of them.
+Orchestray ships ~105 feature-level kill switches (config keys + env vars) for emergency rollback or selective opt-out. The full reference lives in [`KILL_SWITCHES.md`](./KILL_SWITCHES.md), grouped into 10 categories (orchestration core, hooks & gates, reviewer, tokenwright, dossier, telemetry, MCP, install, lints, worktree). No session restart required for any of them.
 
 ## Requirements
 
@@ -308,8 +308,8 @@ Each write-capable specialist has a per-role allowlist defined in `bin/_lib/role
 **Task YAML Contracts section blocked at spawn** (`contracts_parse_failed`)
 Since v2.2.12, Contracts validation is a hard-fail (exit 2). If a task YAML `## Contracts` section is malformed, the spawn is blocked and `contracts_parse_failed` is emitted. To revert to soft-warn, set `ORCHESTRAY_CONTRACTS_PARSE_GATE_DISABLED=1`. To disable the validator entirely, set `ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED=1` or `ORCHESTRAY_CONTRACTS_MISSING_WARN_DISABLED=1`.
 
-**MCP grounding missing blocks pm / researcher / debugger / architect spawns** (`agent_mcp_grounding_missing`)
-v2.2.10 promotes the MCP grounding gate from warning to hard-block (exit 2) for these four roles. The server-side prefetch hook normally satisfies the gate automatically before each spawn. If the gate fires unexpectedly (e.g. in a custom spawn path that bypasses the prefetch hook), verify that `bin/prefetch-mcp-grounding.js` is registered as `PreToolUse:Agent` in your hooks configuration. Set `ORCHESTRAY_MCP_GROUNDING_GATE_DISABLED=1` as an emergency bypass.
+**Spawn blocked for an unevidenced claim** (`claim_evidence_blocked`)
+Since v2.3.18, the Claim–Evidence Ledger checks an agent's transcript tool calls against its own claims (including MCP grounding, test runs, and cited research) and blocks the handoff if a blocking claim has no supporting evidence once the ramp window is exhausted. It replaces five narrower single-purpose gates, including the old MCP-grounding hard-block (`agent_mcp_grounding_missing`, v2.2.10). The server-side prefetch hook normally satisfies MCP-grounding evidence automatically before each spawn; if the gate fires unexpectedly, verify that `bin/prefetch-mcp-grounding.js` is registered as `PreToolUse:Agent` in your hooks configuration. Emergency bypass: `ORCHESTRAY_CLAIM_EVIDENCE_DISABLED=1`.
 
 **Reviewer spawn blocked on missing `## Dimensions to Apply` or `## Git Diff` (v2.2.15+)** (`reviewer_dimensions_gate_blocked` / `reviewer_git_diff_check_failed`)
 The PM must include both blocks in the reviewer delegation prompt. To downgrade to warn-only: `ORCHESTRAY_REVIEWER_DIMENSIONS_GATE_DISABLED=1`, `ORCHESTRAY_REVIEWER_GIT_DIFF_GATE_DISABLED=1`. See `agents/pm-reference/delegation-templates.md` for the canonical template.

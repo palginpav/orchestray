@@ -50,6 +50,7 @@ const { buildManifest }  = require('./_lib/cache-breakpoint-manifest');
 const { requireGuard }   = require('./_lib/double-fire-guard');
 // NEW-01 (v2.3.9): canonical loader for caching config section.
 const { loadCachingConfig } = require('./_lib/config-schema');
+const { readHookInputRaw } = require('./_lib/hook-stdin');
 
 const CONTINUE_RESPONSE = JSON.stringify({ continue: true });
 
@@ -82,20 +83,13 @@ let input = '';
 if (require.main === module) {
   // CLI mode — wire stdin only when invoked as a script. Skipping when
   // require()'d makes the module unit-testable (p3-fixpass-hardening §S-005).
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', () => {
+  input = readHookInputRaw();
+  if (input.length > MAX_INPUT_BYTES) {
+    process.stderr.write('[compose-block-a] stdin exceeded limit; skipping\n');
     process.stdout.write(CONTINUE_RESPONSE + '\n');
     process.exit(0);
-  });
-  process.stdin.on('data', (chunk) => {
-    input += chunk;
-    if (input.length > MAX_INPUT_BYTES) {
-      process.stderr.write('[compose-block-a] stdin exceeded limit; skipping\n');
-      process.stdout.write(CONTINUE_RESPONSE + '\n');
-      process.exit(0);
-    }
-  });
-  process.stdin.on('end', () => {
+  }
+  setImmediate(() => {
     try {
       handle(JSON.parse(input || '{}'));
     } catch (_e) {

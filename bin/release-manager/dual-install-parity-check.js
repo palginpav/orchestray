@@ -78,6 +78,7 @@ const { resolveSafeCwd } = require('../_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('../_lib/orchestration-state');
 const { MAX_INPUT_BYTES } = require('../_lib/constants');
 const { loadDualInstallConfig } = require('../_lib/config-schema');
+const { readHookInputRaw } = require('../_lib/hook-stdin');
 
 const RELEASE_MANAGER_ROLE = 'release-manager';
 
@@ -522,18 +523,10 @@ function runAutoHeal(cwd, divergences) {
 // ---------------------------------------------------------------------------
 
 function readStdin(cb) {
-  let buf = '';
-  let bytes = 0;
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('error', () => cb(''));
-  process.stdin.on('data', (chunk) => {
-    bytes += Buffer.byteLength(chunk, 'utf8');
-    if (bytes > MAX_INPUT_BYTES) { cb(''); return; }
-    buf += chunk;
-  });
-  process.stdin.on('end', () => cb(buf));
-  // If stdin is not a pipe (manual invocation), end immediately.
-  if (process.stdin.isTTY) cb('');
+  // readHookInputRaw already fails open on a TTY / closed fd, returning ''.
+  const buf = readHookInputRaw();
+  const oversized = Buffer.byteLength(buf, 'utf8') > MAX_INPUT_BYTES;
+  setImmediate(() => cb(oversized ? '' : buf));
 }
 
 function isReleaseContext(event) {
