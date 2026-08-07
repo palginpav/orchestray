@@ -50,3 +50,24 @@ if (!process.env.ORCHESTRAY_TEST_EVENTS_PATH) {
     'orchestray-test-events-' + process.pid + '.jsonl'
   );
 }
+
+// ---------------------------------------------------------------------------
+// Per-worker claim namespace for bin/_lib/hook-stdin.js's dedup claim dir.
+//
+// claimDir(cwd) keys solely on (uid, sha256(cwd)) under os.tmpdir() — by
+// design, so the two real installs racing on the same project meet in the
+// same place. But `node --test` isolates each test file into its own
+// process, and multiple files run concurrently under ORCHESTRAY_PARALLEL_TESTS=1.
+// Any two of those worker processes that end up resolving the same cwd for a
+// claim (e.g. a fixed sandbox path, or a fallback to process.cwd()) would
+// share one claim namespace and could suppress each other's hooks.
+//
+// process.pid, set once here per worker, is inherited by any child process a
+// test spawns (spawnSync/execFileSync default to copying process.env) — so a
+// hook launched by this worker and a sibling hook it deliberately races
+// against still land in the SAME namespace as each other, just one distinct
+// from every other worker's. hook-stdin.js only reads this under
+// isTestContext(); the production claim path is untouched.
+if (!process.env.ORCHESTRAY_TEST_WORKER_ID) {
+  process.env.ORCHESTRAY_TEST_WORKER_ID = String(process.pid);
+}

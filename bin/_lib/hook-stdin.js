@@ -234,6 +234,15 @@ function dedupKey(callerPath, raw, payload) {
  * derivable by an attacker. `verifyClaimDir` and `claimFileTrusted` are what
  * make a claim believable — not the obscurity of where it sits.
  *
+ * Under `isTestContext()` only, an extra `ORCHESTRAY_TEST_WORKER_ID` segment
+ * (set once per worker process by tests/helpers/setup.js) is folded into the
+ * parent dir name. `node --test` isolates each test file into its own
+ * process, and several run concurrently — this keeps any two workers that
+ * happen to resolve the same cwd from sharing one claim namespace. The
+ * segment is inherited by any child process a test spawns, so a hook and the
+ * sibling hook it deliberately races against still land in the SAME
+ * namespace as each other. The production path (non-test) is unchanged.
+ *
  * @param {string} cwd
  * @returns {string}
  */
@@ -241,7 +250,10 @@ function claimDir(cwd) {
   const uid = currentUid();
   const seg = uid === null ? 'u' : String(uid);
   const projectHash = crypto.createHash('sha256').update(String(cwd)).digest('hex').slice(0, 16);
-  return path.join(os.tmpdir(), 'orchestray-' + DEDUP_DIRNAME + '-' + seg, projectHash);
+  const workerSeg = isTestContext() && process.env.ORCHESTRAY_TEST_WORKER_ID
+    ? '-w' + process.env.ORCHESTRAY_TEST_WORKER_ID
+    : '';
+  return path.join(os.tmpdir(), 'orchestray-' + DEDUP_DIRNAME + '-' + seg + workerSeg, projectHash);
 }
 
 // ---------------------------------------------------------------------------

@@ -525,7 +525,20 @@ setImmediate(() => {
       const guard = requireGuard({
         guardName:       'inject-delegation-delta',
         dedupKey,
-        ttlMs:           100, // spawn-scoped: a legitimate second fire within 100ms is a dual-install
+        // v2.3.19 D5 fix: 100ms was too tight for real process-spawn latency
+        // under CPU contention (14-24/40 flake rate on test 13b in this repo's
+        // measurements). Production dual-install fires are 7-30ms apart; 2000ms
+        // gives >65x headroom over that and was empirically validated (0/120
+        // failures at 2000ms vs. failures at 100ms). Deliberately NOT the
+        // library default of 60000ms (used by compose-block-a.js): dedupKey
+        // here is coarse (orchId:agentType only, no per-spawn discriminator —
+        // unlike compose-block-a's orchId:turnId:block_a or
+        // collect-agent-metrics's orchId:agentType:sessionId), so a genuinely
+        // distinct second real spawn of the same agent_type sharing this
+        // dedupKey risks false suppression the wider the window gets. 2000ms
+        // stays an order of magnitude below the windows used by callers whose
+        // dedupKey already disambiguates per-event.
+        ttlMs:           2000,
         stateDir,
         callerPath:      __filename,
         orchestrationId: orchestration_id,

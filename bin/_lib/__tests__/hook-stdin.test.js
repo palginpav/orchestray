@@ -348,6 +348,81 @@ describe('hook-stdin: D1 dedup guard', () => {
   });
 });
 
+describe('hook-stdin: claim dir — per-worker test isolation (D4)', () => {
+  test('under test context, claimDir folds in ORCHESTRAY_TEST_WORKER_ID', () => {
+    assert.equal(hookStdin.isTestContext(), true, 'suite runs under ORCHESTRAY_TEST=1');
+    assert.ok(process.env.ORCHESTRAY_TEST_WORKER_ID, 'setup.js must have set a worker id');
+    const dir = claimDir('/some/project');
+    assert.ok(
+      dir.includes('-w' + process.env.ORCHESTRAY_TEST_WORKER_ID),
+      'claim dir must carry this worker\'s id: ' + dir
+    );
+  });
+
+  test('two different test workers never share a claim namespace for the same cwd', () => {
+    // Spawn two child processes rather than mutating process.env here: this
+    // suite's own tests can interleave within one worker (node:test does not
+    // guarantee strict serial execution across describe blocks), and
+    // claimDir() reads ORCHESTRAY_TEST_WORKER_ID live — a global mutation in
+    // this process would be visible to any sibling test computing a claim
+    // path at the same moment.
+    const cwd = '/some/shared/project';
+    const script = `
+      const { claimDir } = require(${JSON.stringify(path.join(LIB_DIR, 'hook-stdin.js'))})._internal;
+      process.stdout.write(claimDir(${JSON.stringify(cwd)}));
+    `;
+    const dirFor = (workerId) => execFileSync(process.execPath, ['-e', script], {
+      env: Object.assign({}, process.env, { ORCHESTRAY_TEST_WORKER_ID: workerId }),
+      encoding: 'utf8', timeout: 15000,
+    });
+    assert.notEqual(dirFor('worker-a'), dirFor('worker-b'));
+  });
+
+  test('a child hook process inherits the parent worker id and lands in the same namespace', () => {
+    // Two sibling installs (distinct callerPath) spawned as separate child
+    // processes from this worker, both racing the same cwd, must derive the
+    // IDENTICAL claim dir — child_process copies process.env by default,
+    // which is what carries ORCHESTRAY_TEST_WORKER_ID down to each of them.
+    const cwd = mkSandbox();
+    try {
+      const script = `
+        const { claimDir } = require(${JSON.stringify(path.join(LIB_DIR, 'hook-stdin.js'))})._internal;
+        process.stdout.write(claimDir(${JSON.stringify(cwd)}));
+      `;
+      const childDir = execFileSync(process.execPath, ['-e', script], {
+        env: process.env, encoding: 'utf8', timeout: 15000,
+      });
+      assert.equal(childDir, claimDir(cwd));
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test('production (non-test) claim path is byte-identical to the pre-D4 formula', () => {
+    const cwd = '/some/project';
+    const script = `
+      const crypto = require('crypto');
+      const os = require('os');
+      const path = require('path');
+      const internal = require(${JSON.stringify(path.join(LIB_DIR, 'hook-stdin.js'))})._internal;
+      const cwd = ${JSON.stringify(cwd)};
+      const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+      const seg = uid === null ? 'u' : String(uid);
+      const projectHash = crypto.createHash('sha256').update(String(cwd)).digest('hex').slice(0, 16);
+      const expected = path.join(os.tmpdir(), 'orchestray-' + internal.DEDUP_DIRNAME + '-' + seg, projectHash);
+      process.stdout.write(JSON.stringify({ actual: internal.claimDir(cwd), expected }));
+    `;
+    const env = Object.assign({}, process.env);
+    delete env.ORCHESTRAY_TEST;
+    delete env.ORCHESTRAY_TEST_WORKER_ID;
+    env.NODE_ENV = 'production';
+    const out = execFileSync(process.execPath, ['-e', script], { env, encoding: 'utf8', timeout: 15000 });
+    const { actual, expected } = JSON.parse(out);
+    assert.equal(actual, expected, 'outside test context the claim path must be unchanged');
+    assert.ok(!actual.includes('-w'), 'production claim dir must not carry a worker segment: ' + actual);
+  });
+});
+
 describe('hook-stdin: BDG harvest seam', () => {
   let sandbox;
   beforeEach(() => { sandbox = mkSandbox(); });
