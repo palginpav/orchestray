@@ -115,6 +115,13 @@ Construct the curator delegation prompt with these fields and spawn via
 `Agent(subagent_type="curator", model="sonnet", maxTurns=65, ...)`. Required
 prompt sections:
 
+- **`context_size_hint: system=N tier2=N handoff=N`** as the FIRST line of the
+  prompt. **Mandatory** — `bin/validate-context-size-hint.js` (PreToolUse:Agent)
+  hard-blocks the spawn once the ramp threshold is exceeded, and a blocked
+  curator spawn makes the curator unreachable through its only sanctioned entry
+  point. Estimate from the prompt you just composed: characters / 4 ≈ tokens.
+  `system=4200` is a reasonable curator baseline; `tier2=0`; `handoff` = your
+  composed prompt length / 4.
 - `run_id`
 - `dry_run` boolean
 - `only_filter` (or none)

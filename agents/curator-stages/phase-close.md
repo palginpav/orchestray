@@ -29,20 +29,30 @@ operations go through `mcp__orchestray__curator_tombstone`.
 
 ### Run lifecycle
 
-**At the very start of every run** (before any promote/merge/deprecate action):
+**Use the `run_id` supplied in your delegation prompt. Do NOT call `start_run`
+yourself.**
 
-```
-mcp__orchestray__curator_tombstone({ "action": "start_run" })
-```
+`curate-runner` owns the run lifecycle: it calls `start_run` in its Step 5,
+because it needs the `run_id` before you exist — the H3 duplicate-detect
+shortlist filename is derived from it. It then hands you that `run_id`.
 
-Save the returned `run_id`. The tool also acquires the `run.lock`.
+Calling `start_run` again would mint a **second** `run_id`. Your tombstone rows
+would be split across two IDs, and the runner's post-run reconciliation and
+stamp-apply both key off the single ID it generated — so half your actions would
+appear unapplied and could be "repaired" or flagged incorrectly. `curate-runner`
+is the only sanctioned entry point to this agent (the PM is locked out of
+`Agent(curator)` by directive D1), so a `run_id` is always provided.
+
+If your delegation prompt contains no `run_id`, stop and report that rather than
+minting one — a missing `run_id` means the runner's protocol was not followed,
+and inventing one hides the fault.
 
 **After each destructive action** (on success only), call:
 
 ```
 mcp__orchestray__curator_tombstone({
   "action": "write",
-  "run_id": "<run_id from start_run>",
+  "run_id": "<run_id supplied by curate-runner>",
   "tombstone": "<JSON-serialised tombstone object>"
 })
 ```

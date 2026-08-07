@@ -372,8 +372,14 @@ function runSelfProbe(opts) {
     ? opts.projectRoot
     : process.cwd();
 
-  const sentinelPath  = path.join(PKG_ROOT, '.orchestray', 'state', 'tokenwright-self-probe-needed');
-  const lastRunPath   = path.join(PKG_ROOT, '.orchestray', 'state', 'tokenwright-self-probe-last.json');
+  // Sentinel + last-run live under projectRoot, matching where install.js writes them
+  // (it uses process.cwd()). Reading them from PKG_ROOT ignored the caller's
+  // projectRoot, so a sentinel left in the package dir by any local `bin/install.js`
+  // run leaked into unrelated callers: the probe ran instead of skipping and returned
+  // 'fail' against a fixture dir. Same projectRoot-vs-PKG_ROOT split already fixed for
+  // local_install_present below.
+  const sentinelPath  = path.join(projectRoot, '.orchestray', 'state', 'tokenwright-self-probe-needed');
+  const lastRunPath   = path.join(projectRoot, '.orchestray', 'state', 'tokenwright-self-probe-last.json');
 
   // Sentinel gate
   const forcedRun = opts.force === true;

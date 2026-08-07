@@ -391,24 +391,25 @@ You are responsible only for supplying the correct payload.
 
 ### Run lifecycle
 
-**At the very start of every run** (before any promote/merge/deprecate action):
+**Use the `run_id` supplied in your delegation prompt. Do NOT call `start_run`
+yourself.**
 
-```
-mcp__orchestray__curator_tombstone({
-  "action": "start_run"
-})
-```
+`curate-runner` owns the run lifecycle: it calls `start_run` before spawning you,
+because the H3 duplicate-detect shortlist filename is derived from the `run_id`.
+It hands you that ID. Calling `start_run` again mints a second one, splitting your
+tombstone rows across two IDs — the runner's reconciliation and stamp-apply both
+key off the single ID it generated, so half your actions would look unapplied.
 
-Save the returned `run_id`. Every subsequent tombstone write for this run requires it.
-The tool also acquires the `run.lock` to prevent concurrent curator runs — do not
-proceed if this call returns an error.
+If no `run_id` is supplied, stop and report it rather than minting one; a missing
+`run_id` means the runner's protocol was not followed, and inventing one hides
+the fault.
 
 **After each destructive action** (on success only), call:
 
 ```
 mcp__orchestray__curator_tombstone({
   "action": "write",
-  "run_id": "<run_id from start_run>",
+  "run_id": "<run_id supplied by curate-runner>",
   "tombstone": "<JSON-serialised tombstone object>"
 })
 ```

@@ -629,7 +629,13 @@ function install(targetDir) {
 
   // 1. Copy agents
   const agentsDir = path.join(pkgRoot, 'agents');
-  const agentFiles = fs.readdirSync(agentsDir).filter(f => f.endsWith('.md'));
+  // `.md.legacy` files are the atomic rollback targets for the slice-loading kill
+  // switches (e.g. curator_slice_loading.enabled: false loads agents/curator.md.legacy).
+  // Filtering on `.md` alone silently dropped them, so the documented rollback path
+  // pointed at a file no install had. Sibling .legacy files under agents/*/ already
+  // shipped via the subdirectory copy below — this closes the top-level gap.
+  const agentFiles = fs.readdirSync(agentsDir)
+    .filter(f => f.endsWith('.md') || f.endsWith('.md.legacy'));
   for (const file of agentFiles) {
     fs.copyFileSync(
       path.join(agentsDir, file),
