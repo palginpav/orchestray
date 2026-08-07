@@ -137,10 +137,17 @@ describe('gate + writer round-trip', () => {
     // Write routing.jsonl (decomposition happened after MCP calls)
     writeRoutingEntry(dir, orchId, 'developer', 'Build the feature', 'sonnet');
 
-    // Also run the writer for pattern_record_application to satisfy the §22c
-    // post-decomp gate (routing.jsonl exists → second-spawn window active;
-    // gate emits hook-warn advisory unless a post-decomp record exists).
-    runWriter(dir, 'mcp__orchestray__pattern_record_application', { isError: false });
+    // Satisfy the §22c post-decomp gate (routing.jsonl exists → second-spawn
+    // window active). pattern-application-evidence-design.md §6.1: only
+    // pattern_record_skip_reason satisfies this gate now (application is
+    // committed from evidence, not self-report) — and record-mcp-checkpoint.js's
+    // ENFORCED_TOOLS set does not track that tool, so (as in production, where
+    // the real MCP tool's own audit trail is what the gate reads) we write the
+    // events.jsonl row directly rather than through the checkpoint writer stub.
+    fs.appendFileSync(
+      path.join(dir, '.orchestray', 'audit', 'events.jsonl'),
+      JSON.stringify({ type: 'pattern_record_skip_reason', orchestration_id: orchId, timestamp: new Date().toISOString() }) + '\n',
+    );
 
     // Gate must allow the first spawn
     const gateResult = runGate(dir, {

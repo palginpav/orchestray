@@ -104,13 +104,20 @@ function agentStopEvent(orchId, costUsd, ts) {
   };
 }
 
+// §0.3/§9.5 fix: pattern_record_application never emitted a typed event
+// (the tool only wrote frontmatter + a generic mcp_tool_call row), so
+// app_rate was structurally 0 in every ROI snapshot ever produced.
+// pattern_application_recorded (bin/commit-pattern-applications.js, Phase 3
+// orch-close commit) is the evidence-backed replacement the aggregator now
+// reads; evidence_grade "observed" is the closed-set spawn-evidence path.
 function patternApplyEvent(orchId, slug, ts) {
   return {
     timestamp: ts || new Date().toISOString(),
-    type: 'pattern_record_application',
+    type: 'pattern_application_recorded',
     orchestration_id: orchId,
     slug,
-    outcome: 'applied',
+    pattern_name: slug,
+    evidence_grade: 'observed',
   };
 }
 

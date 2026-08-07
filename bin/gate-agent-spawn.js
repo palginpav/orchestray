@@ -1273,11 +1273,24 @@ if (require.main === module) {
     }
 
     // §22c Stage B (v2.0.16): second-spawn post-decomposition gate.
-    // After the first Agent() spawn (i.e., routing.jsonl exists for this orch),
-    // check whether the PM called pattern_record_application OR pattern_record_skip_reason.
+    // pattern-application-evidence-design.md §6.1 (v2.3.19 Phase 2 — polarity
+    // flip): after the first Agent() spawn (routing.jsonl exists), check
+    // whether the PM called pattern_record_skip_reason. `times_applied` is
+    // no longer discharged by any PM call — it is committed from evidence
+    // (Phase 3, orch close) — so gating on pattern_record_application here
+    // would measure nothing. pattern_record_skip_reason remains gated: it is
+    // the only channel that records *why* an offered pattern was not cited,
+    // which the mechanical path cannot supply and the curator needs for
+    // deprecation decisions (times-applied-undercount-diagnosis.md).
     // Enforcement mode: 'hook-warn' = stderr warn + allow; 'hook-strict' = block (exit 2).
     // Kill switch short-circuit retained. First-spawn carve-out: if routing.jsonl is absent,
     // this is the pre-decomposition window — skip this gate entirely.
+    //
+    // NOTE: the config key read below is still named
+    // `mcp_enforcement.pattern_record_application` for this narrowing — the
+    // §6.2 rename to `.pattern_record_skip_reason` (with back-compat alias)
+    // touches schemas/config.schema.js and is out of scope for this change;
+    // it is a deferred fast-follow (see this task's Structured Result).
     if (mcpEnforcement.global_kill_switch !== true) {
       try {
         const praEnforcement = mcpEnforcement.pattern_record_application;
@@ -1302,9 +1315,12 @@ if (require.main === module) {
                   ? findCheckpointsForOrchestration(cwd, orchId)
                   : [];
 
-                // Check for EITHER pattern_record_application OR pattern_record_skip_reason.
-                // Either satisfies the post-decomposition protocol.
-                const postDecompTools = ['pattern_record_application', 'pattern_record_skip_reason'];
+                // §6.1 polarity flip: only pattern_record_skip_reason satisfies the
+                // post-decomposition protocol now. pattern_record_application no longer
+                // drives times_applied (evidence-committed at orch close instead), so
+                // accepting it here would let the cheap self-report branch keep
+                // discharging an obligation it no longer has anything to do with.
+                const postDecompTools = ['pattern_record_skip_reason'];
                 const hasPostDecompRecord = rowsForThisOrch.some(
                   row => row && postDecompTools.includes(row.tool)
                 );
@@ -1372,7 +1388,7 @@ if (require.main === module) {
                         writeEvent({
                           type: 'mcp_checkpoint_missing',
                           orchestration_id: orchId,
-                          missing_tools: ['pattern_record_application'],
+                          missing_tools: ['pattern_record_skip_reason'],
                           phase: 'post-decomposition',
                           phase_mismatch: false,
                           source: 'hook',
@@ -1385,10 +1401,10 @@ if (require.main === module) {
                       }
                       const hookStrictMsg =
                         '[orchestray] §22c hook-strict: second Agent() spawn blocked — no ' +
-                        'pattern_record_application or pattern_record_skip_reason record found ' +
-                        'for orchestration ' + orchId + ' in post-decomposition window. ' +
-                        'Per §22b, call mcp__orchestray__pattern_record_application (or ' +
-                        'mcp__orchestray__pattern_record_skip_reason) before the next spawn. ' +
+                        'pattern_record_skip_reason record found for orchestration ' + orchId +
+                        ' in post-decomposition window. Application is recorded from evidence and ' +
+                        'requires no PM call — call mcp__orchestray__pattern_record_skip_reason with a ' +
+                        'skip_category for every offered pattern you did not cite before the next spawn. ' +
                         'Emergency override: set mcp_enforcement.global_kill_switch=true or ' +
                         'mcp_enforcement.pattern_record_application to "allow".';
                       process.stderr.write(hookStrictMsg + '\n');
@@ -1406,11 +1422,10 @@ if (require.main === module) {
                       // hook-warn: stderr warn + allow
                       process.stderr.write(
                         '[orchestray] §22c hook-warn: second Agent() spawn — no ' +
-                        'pattern_record_application or pattern_record_skip_reason record found ' +
-                        'for orchestration ' + orchId + '. Per §22b, call ' +
-                        'mcp__orchestray__pattern_record_application (or ' +
-                        'mcp__orchestray__pattern_record_skip_reason) to complete the protocol. ' +
-                        'To upgrade to blocking enforcement, set ' +
+                        'pattern_record_skip_reason record found for orchestration ' + orchId +
+                        '. Application is recorded from evidence and requires no PM call — call ' +
+                        'mcp__orchestray__pattern_record_skip_reason with a skip_category for every ' +
+                        'offered pattern you did not cite. To upgrade to blocking enforcement, set ' +
                         'mcp_enforcement.pattern_record_application to "hook-strict".\n'
                       );
                       // Fall through to allow (exit 0 below)

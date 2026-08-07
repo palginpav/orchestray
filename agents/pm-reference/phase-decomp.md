@@ -356,24 +356,37 @@ prompt as `@orchestray:pattern://<slug>` attachments. Patterns are **ADVISORY** 
 read the `match_reasons` field on each result and discard any that look wrong. **Team
 patterns:** `pattern_find` reads `.orchestray/patterns/` only; to merge in
 `.orchestray/team-patterns/*.md` (see `agents/pm-reference/team-config.md` §33B for merge order),
-glob them separately and combine client-side after the MCP call returns. **Application record — MUST call either tool before the first `Agent()` spawn:**
+glob them separately and combine client-side after the MCP call returns.
 
-> **Timing:** this MUST happen before the first `Agent()` spawn in the orchestration.
+> **Timing:** the obligation below MUST happen before the first `Agent()` spawn in the orchestration.
 
-After `pattern_find` returns, the PM MUST call EITHER:
-- `mcp__orchestray__pattern_record_application` one or more times (one call per
-  pattern that measurably shaped the decomposition), with `slug`, `orchestration_id`,
-  and `outcome: "applied"`, OR
-- `mcp__orchestray__pattern_record_skip_reason` once per unapplied pattern (when a
-  returned pattern did NOT shape the decomposition), with `orchestration_id`,
+**Application record — v2.3.19 evidence design §6.3.** `times_applied` is no longer
+discharged by a PM tool call — it is recorded from observed evidence at
+orchestration close (offer → ack → commit; see `agents/pm-reference/event-schemas.md`
+Section 45). The PM's remaining obligation is narrower and mechanical:
+
+- Cite every pattern the decomposition actually used as
+  `@orchestray:pattern://<slug>` with the `[tier] conf X, applied Nx` label. This
+  citation IS the application signal — a `PreToolUse:Agent` hook scans it into the
+  offer ledger, and the spawned agent's own `patterns_used[]` structured-result field
+  supplies the affirmation. No separate MCP call is needed for patterns that were used.
+- For every pattern `pattern_find` returned that was **not** cited, call
+  `mcp__orchestray__pattern_record_skip_reason` once, with `orchestration_id`,
   `pattern_name` set to the pattern's `slug` from the `pattern_find` result (REQUIRED
   — omitting it produces `pattern_name: null` in the audit event and breaks the
   curator's deprecation formula), a `reason` from
   `all-irrelevant | all-low-confidence | all-stale | other`, and (when
-  `reason: "other"`) a mandatory `note` explaining the decision.
+  `reason: "other"`) a mandatory `note` explaining the decision. This remains the
+  sole gate `gate-agent-spawn.js` enforces post-decomposition.
+- Do **NOT** call `mcp__orchestray__pattern_record_application`. Application requires
+  no PM call now; the tool is retained only as a narrow out-of-band self-report
+  channel (design §7.1) for applications that never went through an `Agent()` spawn.
+  Calling it here just adds a redundant `self_report`-grade row and eats into
+  `pattern_evidence.max_self_report_per_orchestration` (default 2) for no benefit.
 
-Calling neither is a protocol violation. Both paths produce an auditable `mcp_tool_call`
-row and feed the §22c false-positive analysis (see phase-close.md).
+Skipping the skip-reason call for an unused pattern is a protocol violation. It
+produces an auditable `mcp_tool_call` row and feeds the §22c false-positive analysis
+(see phase-close.md).
 
 **Fallback path: config-disabled tool.** When
 `mcp_server.tools.pattern_record_skip_reason: false` in `.orchestray/config.json`, the
@@ -460,13 +473,16 @@ Patterns applied:
 (unchanged from v2.0.x behavior). No `pattern_collision_resolved` events are emitted
 and no advisory framing is applied.
 
-**`pattern_record_application` on shared-tier patterns.** Calling
-`pattern_record_application` for a shared-tier pattern increments `times_applied` in
-the **local copy** of that pattern (`.orchestray/patterns/<slug>.md` if it exists, or
-a new local stub created for the purpose). The shared-tier copy at
-`~/.orchestray/shared/patterns/<slug>.md` is never mutated by an application record
-— shared patterns are read-only from the PM's perspective. B8 (curator) handles
-shared-tier write operations.
+**`pattern_record_application` on shared-tier patterns.** v2.3.19 evidence design
+§7.1: the tool no longer mutates frontmatter directly. Calling
+`pattern_record_application` for a shared-tier pattern appends a `source: "self_report"`
+ack row that the Phase 3 orch-close commit (`bin/commit-pattern-applications.js`)
+later credits against the **local copy** of that pattern
+(`.orchestray/patterns/<slug>.md` if it exists, or a new local stub created for the
+purpose), same as any other evidence-based credit. The shared-tier copy at
+`~/.orchestray/shared/patterns/<slug>.md` is never mutated directly — shared patterns
+are read-only from the PM's perspective. B8 (curator) handles shared-tier write
+operations.
 
 ### §22b.R — Re-entry on MCP checkpoint block
 

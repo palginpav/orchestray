@@ -15,15 +15,21 @@
  *   boost        = 1 + (success_rate * 0.4)               # max +40%
  *   score        = baseline_score * boost
  *
- * CAVEAT (H2b surface-count proxy): `times_applied` from frontmatter is used as
- * a coarse proxy for "number of times the pattern was surfaced and could have
- * succeeded." Since `success_events` counts audit events within a 90-day window
- * while `times_applied` is a lifetime counter written to the pattern file, the
- * ratio may slightly undercount recent success_rate for high-velocity patterns.
- * Additionally, every `applied-success` event also increments `times_applied`,
- * so `success_events <= times_applied` always holds by construction (meaning the
- * ratio is bounded at 1.0). This proxy is accepted for shadow-mode telemetry;
- * it should be revisited before any promotion to primary scorer.
+ * CAVEAT (H2b surface-count proxy, updated for pattern-application-evidence-
+ * design.md §9.4): `times_applied` from frontmatter is used as a coarse proxy
+ * for "number of times the pattern was surfaced and could have succeeded."
+ * Since `success_events` counts audit events within a 90-day window while
+ * `times_applied` is a lifetime counter written to the pattern file, the
+ * ratio may slightly undercount recent success_rate for high-velocity
+ * patterns. The two caveats this comment previously carried are now FALSE and
+ * have been removed: `times_applied` is committed at orchestration close from
+ * evidence (bin/commit-pattern-applications.js), not from every
+ * `pattern_record_application` call, so `success_events <= times_applied` no
+ * longer holds by construction — `pattern_record_application` is now a capped
+ * self-report signal that does not mutate frontmatter at all (§7.1). The
+ * rawRate clamp below stays as defensive paranoia, not a guaranteed bound.
+ * This proxy is accepted for shadow-mode telemetry; it should be revisited
+ * before any promotion to primary scorer.
  * (Deferred per architect design Step 6 — no audit event added in v2.1.3.)
  *
  * Bundle RS (v2.1.3): H2b scorer.

@@ -258,7 +258,7 @@ The user wants to see the pattern learning dashboard showing what the system has
 
     | Pattern | Score | Pruned In | Date |
     |---------|-------|-----------|------|
-    | {name} | {confidence * times_applied} | {orch-id} | {date} |
+    | {name} | {confidence * (1 + times_applied)} | {orch-id} | {date} |
 
     Total pruned: {N} patterns removed to maintain the 50-pattern cap.
     ```
@@ -269,7 +269,8 @@ The user wants to see the pattern learning dashboard showing what the system has
 
     | Condition | Recommendation |
     |-----------|---------------|
-    | Any pattern with times_applied == 0 | "{N} patterns have never been applied. Consider running orchestrations on similar tasks, or remove patterns that no longer match your workflow with `/orchestray:learn prune <name>`." |
+    | Any pattern with times_offered >= 10 and times_applied == 0 | "{N} patterns have been offered 10+ times and never applied. These are genuinely dead — consider removing with `/orchestray:learn prune <name>`." |
+    | Any pattern with times_offered == 0 | "{N} patterns have never been offered (invisible, not dead — v2.3.19 evidence design §9.2). Do not prune on this signal alone; investigate `pattern_find` ranking or context-hook quality instead." |
     | No user-correction patterns exist | "No user corrections captured. Use `/orchestray:learn correct <description>` to teach the system about mistakes it should avoid." |
     | No team patterns exist | "No team patterns. Promote proven local patterns with `/orchestray:learn promote <name>` to share with your team." |
     | Any pattern with confidence < 0.3 | "{N} patterns have low confidence. They may need more evidence or should be removed." |

@@ -350,6 +350,11 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/prefetch-mcp-grounding.js",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/record-pattern-offers.js",
+            "timeout": 5
           }
         ]
       },

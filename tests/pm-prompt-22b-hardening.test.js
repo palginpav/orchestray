@@ -5,7 +5,12 @@
  * Golden-file test for W2 — §22b prompt hardening.
  *
  * Asserts that agents/pm-reference/phase-decomp.md §22b (post-W8 split) contains:
- *   1. The MUST directive with both tool names in an OR relationship.
+ *   1. The non-softened directive naming both tools. v2.3.19 evidence design §6.3
+ *      retired the either/or framing (`pattern_record_application` no longer
+ *      satisfies the gate — see gate-agent-spawn.js §6.1) in favor of: cite used
+ *      patterns as `@orchestray:pattern://<slug>` (no MCP call needed), call
+ *      `pattern_record_skip_reason` for every uncited pattern (protocol violation
+ *      if skipped), and do NOT call `pattern_record_application` here.
  *   2. The fallback marker format example (pattern_record_skipped_reason:) in a
  *      code block context.
  *   3. All four reason enum values.
@@ -51,21 +56,28 @@ const section22b = src.slice(section22bIdx, section22bEnd === -1 ? undefined : s
 
 describe('W2 golden-file — §22b prompt hardening', () => {
 
-  test('AC1: MUST directive is present in §22b (not softened to "should")', () => {
-    // Scoped to §22b so a future edit that softens the directive in §22b but
-    // leaves "MUST call EITHER" in another section of the file cannot pass.
+  test('AC1: non-softened directive is present in §22b (not softened to "should")', () => {
+    // v2.3.19 evidence design §6.3 retired "MUST call EITHER" (application no
+    // longer gates anything — §6.1). Scoped to §22b so a future edit that softens
+    // the replacement directive back to "should" cannot pass silently.
     assert.ok(
-      section22b.includes('MUST call EITHER'),
-      '§22b must contain "MUST call EITHER" — not "should"; scoped to §22b section only'
+      section22b.includes('is a protocol violation'),
+      '§22b must state that skipping the skip-reason call is "a protocol violation" — not softened to "should"'
     );
   });
 
-  test('AC1: pattern_record_application tool is named in §22b directive', () => {
-    // Scoped to §22b so removing the tool name from the directive section
-    // while leaving it in a different part of the file does not pass.
+  test('AC1: pattern_record_application is named and explicitly excluded in §22b directive', () => {
+    // Scoped to §22b. Post-§6.3, the tool must still be NAMED (so the PM knows
+    // not to call it) but paired with an explicit "do NOT call" instruction —
+    // removing the tool name entirely would silently reintroduce the confusion
+    // this rewrite was meant to resolve.
     assert.ok(
       section22b.includes('pattern_record_application'),
       '§22b must name pattern_record_application explicitly within the §22b section'
+    );
+    assert.ok(
+      /NOT\*\*? call `?mcp__orchestray__pattern_record_application/.test(section22b),
+      '§22b must explicitly instruct the PM NOT to call pattern_record_application'
     );
   });
 

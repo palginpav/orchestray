@@ -37,6 +37,14 @@
  * Per v2.1.9 design-spec §5 I-12 item (c), `assumptions` is required even
  * when empty so downstream consumers can distinguish "no assumptions made"
  * from "assumptions omitted".
+ *
+ * `patterns_used` / `patterns_rejected` (pattern-application-evidence-design
+ * §4.2, v2.3.19 Phase 2): same required-even-when-empty rationale as
+ * `assumptions`. Each entry is `{ slug, how }` (used) or `{ slug, why }`
+ * (rejected), prose 10..300 chars. Field PRESENCE is graced at the
+ * validate-task-completion.js call site (PATTERN_ACK_FIELDS_ENFORCED,
+ * default off) so agents/tests that predate this change are not blocked;
+ * ENTRY SHAPE, when the fields are present, is always validated.
  */
 const HANDOFF_REQUIRED_SECTIONS = [
   'status',
@@ -45,6 +53,8 @@ const HANDOFF_REQUIRED_SECTIONS = [
   'files_read',
   'issues',
   'assumptions',
+  'patterns_used',
+  'patterns_rejected',
 ];
 
 /**
@@ -60,7 +70,12 @@ const HANDOFF_CONTRACT_SUFFIX =
   '\n\n## Output — Structured Result\n\n' +
   'Your output must end with a `## Structured Result` fenced JSON block ' +
   'conforming to `agents/pm-reference/handoff-contract.md`. Required fields: ' +
-  '`status`, `summary`, `files_changed`, `files_read`, `issues`, `assumptions`.';
+  '`status`, `summary`, `files_changed`, `files_read`, `issues`, `assumptions`, ' +
+  '`patterns_used`, `patterns_rejected`. For every pattern offered to this spawn, ' +
+  'add one entry to exactly one of the two: `patterns_used: [{ "slug", "how" }]` ' +
+  '(how the pattern changed the work, 10-300 chars) or `patterns_rejected: ' +
+  '[{ "slug", "why" }]` (why it did not apply, 10-300 chars). No patterns offered: ' +
+  'both may be `[]`.';
 
 module.exports = {
   HANDOFF_CONTRACT_SUFFIX,

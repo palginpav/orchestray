@@ -50,7 +50,12 @@ const DEFAULT_TOOL_INPUTS = {
   kb_search:                  { query: 'grounding prefetch context', limit: 5 },
   history_find_similar_tasks: { task_summary: 'grounding prefetch', limit: 3 },
   history_query_events:       { limit: 10 },
-  routing_lookup:             { limit: 10 },
+  // routing_lookup has no `limit` property and sets additionalProperties:false, so
+  // `{limit:10}` failed schema validation on every architect spawn and the grounding
+  // block silently carried an error string instead of routing history. Its real
+  // knobs are orchestration_id / task_id / agent_type / fields; `fields` keeps the
+  // projection small, and the tool self-caps at 500 rows.
+  routing_lookup:             { fields: ['ts', 'task_id', 'agent_type', 'model', 'effort'] },
 };
 
 // ---------------------------------------------------------------------------

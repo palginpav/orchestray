@@ -32,8 +32,9 @@
  *   2. bin/audit-housekeeper-orphan.js
  *   3. bin/audit-promised-events.js
  *   4. bin/scan-cite-labels.js
- *   5. bin/audit-pm-emit-coverage.js
- *   6. bin/audit-round-archive-hook.js
+ *   5. bin/commit-pattern-applications.js
+ *   6. bin/audit-pm-emit-coverage.js
+ *   7. bin/audit-round-archive-hook.js
  *
  * Each audit is spawned as a separate child process with the same stdin
  * payload this hook received, so they see the correct cwd and tool context.
@@ -73,6 +74,7 @@ const AUDIT_SCRIPTS = [
   'audit-housekeeper-orphan.js',
   'audit-promised-events.js',
   'scan-cite-labels.js',
+  'commit-pattern-applications.js', // pattern-application-evidence-design.md §4.3
   'audit-pm-emit-coverage.js',
   'audit-round-archive-hook.js',
 ];

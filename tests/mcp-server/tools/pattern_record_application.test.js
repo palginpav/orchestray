@@ -4,7 +4,11 @@
 /**
  * Tests for bin/mcp-server/tools/pattern_record_application.js
  *
- * Per v2011c-stage2-plan.md §4, §6, §13; v2011b-architecture.md §3.2.2.
+ * pattern-application-evidence-design.md §7.1 (v2.3.19 Phase 2): this tool
+ * is now the out-of-band self-report channel. It no longer mutates pattern
+ * frontmatter — see times-applied-undercount-diagnosis.md for why direct
+ * mutation from a cheap self-report call was the root cause of the 26-vs-6945
+ * gradient.
  *
  * Contract under test:
  *   module exports: { definition, handle }
@@ -13,16 +17,13 @@
  *     -> { isError, content, structuredContent? }
  *
  * Behavior:
- *   - Increments frontmatter.times_applied by 1.
- *   - Sets frontmatter.last_applied to current ISO timestamp.
- *   - Preserves body and other frontmatter byte-identically.
+ *   - Does NOT mutate times_applied / last_applied in the pattern file.
+ *   - Appends a `source: "self_report"` ack row to
+ *     .orchestray/state/pattern-acks.jsonl.
+ *   - Emits a typed `pattern_application_recorded` event with
+ *     evidence_grade: "self_report".
  *   - Unknown slug -> isError: true, content mentions "pattern not found".
  *   - Path traversal attempts -> isError: true.
- *
- * Concurrent-writer behavior is undefined in Stage 2 — see v2011c-stage2-plan.md §6
- * This file only tests single-writer correctness.
- *
- * RED PHASE: source module does not exist yet; tests must fail at require().
  */
 
 const { test, describe } = require('node:test');
@@ -72,6 +73,18 @@ function writePattern(tmp, slug, frontmatter, body) {
 
 function readPatternRaw(tmp, slug) {
   return fs.readFileSync(path.join(tmp, '.orchestray', 'patterns', slug + '.md'), 'utf8');
+}
+
+function readAckRows(tmp) {
+  const p = path.join(tmp, '.orchestray', 'state', 'pattern-acks.jsonl');
+  if (!fs.existsSync(p)) return [];
+  return fs.readFileSync(p, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+}
+
+function readEvents(tmp) {
+  const p = path.join(tmp, '.orchestray', 'audit', 'events.jsonl');
+  if (!fs.existsSync(p)) return [];
+  return fs.readFileSync(p, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 }
 
 function validInput(overrides = {}) {
@@ -180,10 +193,10 @@ describe('pattern_record_application input validation', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Behavior
+// Behavior — self-report, no frontmatter mutation
 // ---------------------------------------------------------------------------
 
-describe('pattern_record_application behavior', () => {
+describe('pattern_record_application behavior (self-report channel)', () => {
 
   test('returns isError and "pattern not found" for unknown slug', async () => {
     const tmp = makeTmpProject();
@@ -201,7 +214,7 @@ describe('pattern_record_application behavior', () => {
     }
   });
 
-  test('increments times_applied on applied outcome', async () => {
+  test('does NOT mutate times_applied or last_applied on the pattern file', async () => {
     const tmp = makeTmpProject();
     try {
       writePattern(tmp, 'sample', {
@@ -211,132 +224,105 @@ describe('pattern_record_application behavior', () => {
         times_applied: 2,
         last_applied: '2026-04-01T00:00:00Z',
       });
-      const result = await withCwd(tmp, () =>
-        handle(validInput(), makeContext(tmp))
-      );
-      assert.equal(result.isError, false);
-      const after = readPatternRaw(tmp, 'sample');
-      assert.ok(after.includes('times_applied: 3'));
-      assert.ok(!after.includes('times_applied: 2'));
-    } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
-    }
-  });
-
-  test('updates last_applied to an ISO-8601 timestamp', async () => {
-    const tmp = makeTmpProject();
-    try {
-      writePattern(tmp, 'sample', {
-        name: 'sample',
-        category: 'decomposition',
-        confidence: 0.7,
-        times_applied: 0,
-        last_applied: '2026-04-01T00:00:00Z',
-      });
-      const result = await withCwd(tmp, () =>
-        handle(validInput(), makeContext(tmp))
-      );
-      assert.equal(result.isError, false);
-      const after = readPatternRaw(tmp, 'sample');
-      // Some ISO-8601 form should appear on the last_applied line.
-      const m = /last_applied:\s*(\S+)/.exec(after);
-      assert.ok(m, 'last_applied line should exist');
-      const iso = m[1].replace(/^['"]|['"]$/g, '');
-      // Must parse as a valid Date and not be the old value.
-      const parsed = new Date(iso);
-      assert.ok(!Number.isNaN(parsed.getTime()), 'last_applied should be a valid Date');
-      assert.notEqual(iso, '2026-04-01T00:00:00Z');
-    } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
-    }
-  });
-
-  test('adds times_applied field when missing from frontmatter', async () => {
-    const tmp = makeTmpProject();
-    try {
-      writePattern(tmp, 'sample', {
-        name: 'sample',
-        category: 'decomposition',
-        confidence: 0.7,
-        // no times_applied, no last_applied
-      });
-      const result = await withCwd(tmp, () =>
-        handle(validInput(), makeContext(tmp))
-      );
-      assert.equal(result.isError, false);
-      const after = readPatternRaw(tmp, 'sample');
-      // Missing field should have been treated as 0 and incremented to 1
-      // (per §6: "adds a missing field at end of frontmatter").
-      assert.ok(after.includes('times_applied: 1'));
-      assert.ok(/last_applied:/.test(after));
-    } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
-    }
-  });
-
-  test('preserves body and other frontmatter fields byte-identically', async () => {
-    const tmp = makeTmpProject();
-    try {
-      const body = '\n# Pattern: Sample\n\n## Context\n\nThe body must not change.\n\n## Approach\n\n- bullet 1\n- bullet 2\n';
-      writePattern(
-        tmp,
-        'sample',
-        {
-          name: 'sample',
-          category: 'decomposition',
-          confidence: 0.75,
-          times_applied: 1,
-          last_applied: '2026-04-01T00:00:00Z',
-          description: 'A static description',
-          created_from: 'orch-original',
-        },
-        body.slice(1) // body without leading \n since writer adds it
-      );
       const before = readPatternRaw(tmp, 'sample');
       const result = await withCwd(tmp, () =>
         handle(validInput(), makeContext(tmp))
       );
       assert.equal(result.isError, false);
       const after = readPatternRaw(tmp, 'sample');
-      // All preserved fields should still appear unchanged.
-      assert.ok(after.includes('name: sample'));
-      assert.ok(after.includes('category: decomposition'));
-      assert.ok(after.includes('confidence: 0.75'));
-      assert.ok(after.includes('description: A static description'));
-      assert.ok(after.includes('created_from: orch-original'));
-      // Body lines should be unchanged.
-      assert.ok(after.includes('## Context'));
-      assert.ok(after.includes('The body must not change.'));
-      assert.ok(after.includes('## Approach'));
-      assert.ok(after.includes('- bullet 1'));
-      assert.ok(after.includes('- bullet 2'));
-      // The only changed lines should be times_applied and last_applied.
-      const diffBefore = before.split('\n').filter((l) => !/^times_applied:|^last_applied:/.test(l));
-      const diffAfter = after.split('\n').filter((l) => !/^times_applied:|^last_applied:/.test(l));
-      assert.deepEqual(diffAfter, diffBefore, 'non-updated lines must be byte-identical');
+      assert.equal(after, before, 'pattern frontmatter must be byte-identical — no mutation');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
 
-  test('single writer: sequential calls increment monotonically', async () => {
-    // Concurrent-writer behavior is undefined in Stage 2 — see v2011c-stage2-plan.md §6
+  test('response reports current (unchanged) times_applied and evidence_grade self_report', async () => {
     const tmp = makeTmpProject();
     try {
       writePattern(tmp, 'sample', {
-        name: 'sample',
-        category: 'decomposition',
-        confidence: 0.7,
-        times_applied: 0,
+        name: 'sample', category: 'decomposition', confidence: 0.7, times_applied: 5,
       });
+      const result = await withCwd(tmp, () =>
+        handle(validInput(), makeContext(tmp))
+      );
+      assert.equal(result.isError, false);
+      assert.equal(result.structuredContent.times_applied, 5);
+      assert.equal(result.structuredContent.evidence_grade, 'self_report');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('appends a source:"self_report" row to pattern-acks.jsonl', async () => {
+    const tmp = makeTmpProject();
+    try {
+      writePattern(tmp, 'sample', { name: 'sample', category: 'decomposition', confidence: 0.7, times_applied: 0 });
+      const result = await withCwd(tmp, () =>
+        handle(validInput({ note: 'applied in-line during PM review' }), makeContext(tmp))
+      );
+      assert.equal(result.isError, false);
+      const rows = readAckRows(tmp);
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].source, 'self_report');
+      assert.equal(rows[0].orchestration_id, 'orch-1744197600');
+      assert.equal(rows[0].used.length, 1);
+      assert.equal(rows[0].used[0].slug, 'sample');
+      assert.ok(rows[0].used[0].how_len > 0);
+      assert.deepEqual(rows[0].rejected, []);
+      assert.equal(rows[0].agent_status, 'success');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('outcome "applied-failure" maps to agent_status "failure" in the ack row', async () => {
+    const tmp = makeTmpProject();
+    try {
+      writePattern(tmp, 'sample', { name: 'sample', category: 'decomposition', confidence: 0.7, times_applied: 0 });
+      const result = await withCwd(tmp, () =>
+        handle(validInput({ outcome: 'applied-failure' }), makeContext(tmp))
+      );
+      assert.equal(result.isError, false);
+      const rows = readAckRows(tmp);
+      assert.equal(rows[0].agent_status, 'failure');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('emits a typed pattern_application_recorded event with evidence_grade self_report', async () => {
+    const tmp = makeTmpProject();
+    try {
+      writePattern(tmp, 'sample', { name: 'sample', category: 'decomposition', confidence: 0.7, times_applied: 3 });
+      const result = await withCwd(tmp, () =>
+        handle(validInput(), makeContext(tmp))
+      );
+      assert.equal(result.isError, false);
+      const events = readEvents(tmp).filter((e) => e.type === 'pattern_application_recorded');
+      assert.equal(events.length, 1, 'fixes §0.3 — this event type was never emitted before');
+      assert.equal(events[0].slug, 'sample');
+      assert.equal(events[0].pattern_name, 'sample');
+      assert.equal(events[0].evidence_grade, 'self_report');
+      assert.equal(events[0].times_applied_before, 3);
+      assert.equal(events[0].times_applied_after, 3, 'no mutation happened — before/after must match');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('multiple calls append multiple ack rows and events (no counter to interleave on)', async () => {
+    const tmp = makeTmpProject();
+    try {
+      writePattern(tmp, 'sample', { name: 'sample', category: 'decomposition', confidence: 0.7, times_applied: 0 });
       for (let i = 1; i <= 3; i++) {
-        const result = await withCwd(tmp, () =>
-          handle(validInput(), makeContext(tmp))
-        );
+        const result = await withCwd(tmp, () => handle(validInput(), makeContext(tmp)));
         assert.equal(result.isError, false, `iteration ${i} should succeed`);
       }
+      assert.equal(readAckRows(tmp).length, 3);
+      assert.equal(readEvents(tmp).filter((e) => e.type === 'pattern_application_recorded').length, 3);
+      // Frontmatter is still untouched after repeated calls.
       const after = readPatternRaw(tmp, 'sample');
-      assert.ok(after.includes('times_applied: 3'));
+      assert.ok(after.includes('times_applied: 0'));
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -345,7 +331,7 @@ describe('pattern_record_application behavior', () => {
 });
 
 // ---------------------------------------------------------------------------
-// W6 rate-limit: pre-check happens before pattern write; failure no count
+// W6 rate-limit: pre-check happens before any ledger/event write
 // ---------------------------------------------------------------------------
 
 const { COUNTS_FILE } = require('../../../bin/mcp-server/lib/tool-counts.js');
@@ -375,7 +361,7 @@ function countLedgerRecords(tmp, orchId, taskId, toolName) {
 
 describe('W6 rate-limit behavior', () => {
 
-  test('rate-limit pre-check blocks call before pattern write when limit exceeded', async () => {
+  test('rate-limit pre-check blocks call before any ledger write when limit exceeded', async () => {
     const tmp = makeTmpProject();
     try {
       writePattern(tmp, 'sample', {
@@ -402,9 +388,8 @@ describe('W6 rate-limit behavior', () => {
         'error must mention rate limit'
       );
 
-      // Pattern file times_applied must NOT have been incremented.
-      const raw = readPatternRaw(tmp, 'sample');
-      assert.ok(raw.includes('times_applied: 0'), 'pattern file must not be modified when rate-limited');
+      // No ack row must have been written when rate-limited.
+      assert.equal(readAckRows(tmp).length, 0, 'ack ledger must not be written when rate-limited');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

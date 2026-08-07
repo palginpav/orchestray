@@ -53,25 +53,49 @@ candidates deferred — re-run `/orchestray:learn curate` after reviewing this b
 
 ## 3. `times_applied` Counter Semantics — Read This Before Scoring
 
-**The `times_applied` counter double-counts within a single orchestration.**
+**v2.3.19 evidence design §3.4 — the counter's documented meaning:**
 
-The counter increments BOTH when a pattern influences an orchestration's decomposition
-(pre-spawn, at §22b of the PM prompt) AND when an outcome is recorded (§22c,
-`outcome: "applied-success"` or `"applied-failure"`). Therefore:
+> `times_applied` = the number of **distinct orchestrations** in which this pattern was
+> placed in a spawned agent's context and that agent affirmatively identified it, in a
+> required output field, as shaping its result, in a run that completed successfully.
 
-> **`times_applied ≥ 1` means "involved in at least one orchestration event" — NOT
-> "applied in at least one distinct orchestration."**
+It does not claim the pattern *caused* the outcome — only availability + affirmation +
+success. This replaces the pre-v2.3.19 double-count semantic (the counter used to
+increment both at pre-spawn §22b and again at outcome-recording §22c, so
+`times_applied ≥ 1` meant "involved in at least one orchestration event," not "applied
+in at least one distinct orchestration"). `counter_epoch: 2` on a pattern marks that it
+uses this new semantic; `times_applied_legacy` preserves the old value for context only
+— never an input to a formula.
 
-Factor this in when judging promote-worthiness: a pattern with `times_applied: 2`
-may be a single orchestration's pre-spawn + outcome pair, or it may be two separate
-orchestrations. The threshold remains a meaningful signal (real involvement), but the
-semantics are not "N distinct orchestrations."
+**Score by `application_rate`, not raw `times_applied` (§9.2).**
 
-If distinguishing matters, cross-reference `.orchestray/audit/events.jsonl` and count
-unique `orchestration_id` values associated with this pattern slug.
+```
+application_rate = times_applied / max(times_offered, 1)
+```
 
-**Pre-condition on `times_applied` reliability:** Until the `pattern_record_application`
-plumbing fix (A2) is deployed to production, 100% of patterns may show `times_applied: 0`
-because the per-slug counter was not being incremented at §22b. The promote gate and
-deprecation formula handle this via the fallback signals described in
-(see phase-execute.md §"4. Decision Protocol").
+`times_offered` — a new counter, the number of distinct orchestrations in which the
+pattern was placed in a spawn's context regardless of outcome — is what raw
+`times_applied` could never supply: a denominator. Use it to split the zero case:
+
+| `times_offered` | `times_applied` | Interpretation | Curator action |
+|---|---|---|---|
+| high (≥10) | 0 | Repeatedly shown, never used. **Genuinely dead.** | Strong deprecate |
+| high | high | Load-bearing | Promote candidate |
+| **0** | 0 | **Invisible — a retrieval problem, not a value problem** | Do **not** deprecate. Investigate `pattern_find` ranking / context-hook quality. Surfaced by the `pattern_never_offered` event (`agents/pm-reference/event-schemas.md` Section 45). |
+| low (1-3) | 0 | Insufficient data | Hold |
+
+**Epoch grace (§9.3) — how to treat pre-epoch and low-evidence counts.** For
+`pattern_evidence.epoch_grace_orchestrations` (default 10) orchestrations after the
+epoch-2 migration (`bin/migrate-pattern-counter-epoch.js`), treat `counter_epoch: 2`
+patterns with `times_offered < 3` as `insufficient_data` — no deprecate, no promote.
+This is the replacement for the pre-v2.3.19 "A2 plumbing fix" pre-condition: instead of
+a blanket "100% of patterns may show times_applied: 0, use the phase-execute.md
+fallback signals" caveat, the epoch/offered-count pair on the pattern itself tells you
+directly whether a zero count is meaningful yet. Patterns without a `counter_epoch`
+field at all predate the migration — treat them the same as `counter_epoch: 2` with
+`times_offered: 0` (insufficient_data) rather than assuming legacy `times_applied` is
+reliable.
+
+If distinguishing distinct orchestrations matters beyond the frontmatter counters,
+cross-reference `.orchestray/audit/events.jsonl` `pattern_application_recorded` /
+`pattern_offered` rows and count unique `orchestration_id` values for the slug.

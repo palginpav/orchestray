@@ -378,10 +378,10 @@ describe('D2 step 6 — MCP checkpoint gate', () => {
   test('D2 step 6: all 3 required tools present → gate exits 0', () => {
     const dir = makeDir({ withOrch: true });
     writeRoutingFile(dir, [routingEntry()]);
-    // Include pattern_record_application to satisfy the §22c post-decomp gate
+    // Include pattern_record_skip_reason to satisfy the §22c post-decomp gate
     // (routing.jsonl exists → second-spawn window → §22c hook-warn fires without it).
     writeCheckpointRows(dir, 'orch-test-001', [
-      'pattern_find', 'kb_search', 'history_find_similar_tasks', 'pattern_record_application',
+      'pattern_find', 'kb_search', 'history_find_similar_tasks', 'pattern_record_skip_reason',
     ]);
     const { status, stderr } = run({
       tool_name: 'Agent',
@@ -394,12 +394,12 @@ describe('D2 step 6 — MCP checkpoint gate', () => {
 
   test('D2 step 6: pattern_find present, kb_search missing → warn-mode: exits 0 with advisory naming kb_search', () => {
     // v2.0.23 §22b warn-mode: gate emits advisory but ALLOWS spawn (no exit 2).
-    // pattern_record_application also included to satisfy §22c post-decomp gate
+    // pattern_record_skip_reason also included to satisfy §22c post-decomp gate
     // (routing.jsonl exists → second-spawn window is active).
     const dir = makeDir({ withOrch: true });
     writeRoutingFile(dir, [routingEntry()]);
     writeCheckpointRows(dir, 'orch-test-001', [
-      'pattern_find', 'history_find_similar_tasks', 'pattern_record_application',
+      'pattern_find', 'history_find_similar_tasks', 'pattern_record_skip_reason',
       // kb_search intentionally omitted — §22b advisory fires for it
     ]);
     const { status, stderr } = run({
@@ -417,7 +417,7 @@ describe('D2 step 6 — MCP checkpoint gate', () => {
     const dir = makeDir({ withOrch: true });
     writeRoutingFile(dir, [routingEntry()]);
     // No mcp-checkpoint.jsonl written — file absent.
-    // Write a pattern_record_application event to events.jsonl to satisfy the §22c
+    // Write a pattern_record_skip_reason event to events.jsonl to satisfy the §22c
     // post-decomp gate (routing.jsonl exists → second-spawn window active).
     const auditDir = path.join(dir, '.orchestray', 'audit');
     fs.mkdirSync(auditDir, { recursive: true });
@@ -787,7 +787,7 @@ describe('G8 — BUG-B+C regression: repeated-orchestration gate pass-through', 
 
     // Step 3: mcp-checkpoint.jsonl has three rows for orch-CURRENT with
     //         phase='pre-decomposition' (correct per the BUG-B fix),
-    //         PLUS a pattern_record_application row to satisfy the §22c
+    //         PLUS a pattern_record_skip_reason row to satisfy the §22c
     //         post-decomp gate (routing.jsonl exists → second-spawn window).
     const requiredTools = ['pattern_find', 'kb_search', 'history_find_similar_tasks'];
     const checkpointRowsList = requiredTools.map(tool => JSON.stringify({
@@ -801,7 +801,7 @@ describe('G8 — BUG-B+C regression: repeated-orchestration gate pass-through', 
     checkpointRowsList.push(JSON.stringify({
       timestamp: now,
       orchestration_id: 'orch-CURRENT',
-      tool: 'pattern_record_application',
+      tool: 'pattern_record_skip_reason',
       outcome: 'answered',
       phase: 'post-decomposition',
       result_count: null,
@@ -872,13 +872,13 @@ describe('G8 — BUG-B+C regression: repeated-orchestration gate pass-through', 
       result_count: null,
     }));
     // Satisfy the §22c Stage B post-decomp gate (D2 v2.0.16: default is hook-strict).
-    // routing.jsonl exists → second-spawn window is active. Add pattern_record_application
+    // routing.jsonl exists → second-spawn window is active. Add pattern_record_skip_reason
     // so the gate passes and the BUG-C phase-filter defense-in-depth is the only thing
     // being tested here.
     checkpointRows.push(JSON.stringify({
       timestamp: now,
       orchestration_id: 'orch-CURRENT',
-      tool: 'pattern_record_application',
+      tool: 'pattern_record_skip_reason',
       outcome: 'answered',
       phase: 'post-decomposition',
       result_count: null,
@@ -1739,6 +1739,45 @@ describe('v2023-W3: §22b warn-mode — once-per-orchestration advisory', () => 
       '22b-T5: §22c block message must appear in stderr');
   });
 
+  test('22c-POLARITY: a pattern_record_application checkpoint row alone no longer satisfies §22c ' +
+       '(pattern-application-evidence-design.md §6.1 polarity flip)', () => {
+    // Before the flip, EITHER tool satisfied the post-decomp obligation, so a lone
+    // pattern_record_application row would pass this gate. After the flip only
+    // pattern_record_skip_reason counts — application is committed from evidence and
+    // requires no PM call, so accepting the self-report tool here would be gating on
+    // a call that no longer drives times_applied.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-22c-polarity-'));
+    cleanup.push(dir);
+    const orchId = 'orch-22c-polarity';
+    writeOrch(dir, orchId);
+    writeEnforceAllConfig(dir);
+    writeRoutingFile22b(dir, orchId);
+
+    const stateDir = path.join(dir, '.orchestray', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const now = new Date().toISOString();
+    const rows = ['pattern_find', 'kb_search', 'history_find_similar_tasks'].map((tool) => JSON.stringify({
+      timestamp: now, orchestration_id: orchId, tool, outcome: 'answered', phase: 'pre-decomposition', result_count: null,
+    }));
+    // Only pattern_record_application — the tool the old either/or gate accepted.
+    rows.push(JSON.stringify({
+      timestamp: now, orchestration_id: orchId, tool: 'pattern_record_application',
+      outcome: 'answered', phase: 'post-decomposition', result_count: null,
+    }));
+    fs.writeFileSync(path.join(stateDir, 'mcp-checkpoint.jsonl'), rows.join('\n') + '\n');
+
+    const result = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Execute task' },
+    });
+
+    assert.equal(result.status, 2,
+      '22c-POLARITY: pattern_record_application alone must no longer satisfy §22c');
+    assert.match(result.stderr, /§22c|pattern_record_skip_reason/,
+      '22c-POLARITY: block message must point at pattern_record_skip_reason');
+  });
+
   test('22b-T4: spawn is allowed even when gate fires (no exit 2 in warn-mode)', () => {
     // Belt-and-suspenders: explicitly verify that warn-mode never blocks.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-22b-t4-'));
@@ -1855,7 +1894,7 @@ describe('W4 — task_id-based routing match', () => {
   }
 
   /** Write mcp-checkpoint.jsonl with all 3 required pre-decomp tools plus
-   *  a pattern_record_application row to satisfy the §22c Stage B post-decomp
+   *  a pattern_record_skip_reason row to satisfy the §22c Stage B post-decomp
    *  gate (D2 v2.0.16 default: hook-strict). W4 tests always write routing.jsonl
    *  first, so the gate treats every spawn as a second-spawn-window spawn.
    */
@@ -1876,7 +1915,7 @@ describe('W4 — task_id-based routing match', () => {
     rows.push(JSON.stringify({
       timestamp: now,
       orchestration_id: orchId,
-      tool: 'pattern_record_application',
+      tool: 'pattern_record_skip_reason',
       outcome: 'answered',
       phase: 'post-decomposition',
       result_count: null,

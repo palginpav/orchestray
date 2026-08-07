@@ -94,7 +94,7 @@ The user wants to extract reusable patterns from a completed orchestration.
    - {orch-id}: {brief outcome description}
    ```
 
-7. **Run pruning** if pattern count > 50: glob all `.md` files in `.orchestray/patterns/`. If count exceeds 50, compute `score = confidence * times_applied` for each pattern (read frontmatter). Sort ascending. Remove patterns with the lowest scores until count = 50. Report pruned patterns: "Pruned {M} low-value pattern(s): {names}"
+7. **Run pruning** if pattern count > 50: glob all `.md` files in `.orchestray/patterns/`. If count exceeds 50, compute `score = confidence * (1 + times_applied)` for each pattern (read frontmatter; v2.3.19 evidence design §9.1 — the `1 +` keeps confidence a meaningful tiebreaker among zero-application patterns). Exempt from pruning regardless of score: patterns with `times_offered == 0` (never had a chance to be applied) or `created_from` within the last `pattern_evidence.pattern_prune_grace_orchestrations` (default 5) orchestrations. Sort ascending. Remove patterns with the lowest scores until count = 50. Report pruned patterns: "Pruned {M} low-value pattern(s): {names}"
 
 8. **Report:** "{N} pattern(s) extracted from orchestration {orch-id}." If patterns were pruned, also report: "Pruned {M} low-value patterns to stay within the 50-pattern cap."
 

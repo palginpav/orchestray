@@ -14,7 +14,11 @@
  *   - category           : required, enum — see CATEGORIES below
  *   - confidence         : required, number in [0, 1]
  *   - description        : required, string
- *   - times_applied      : optional, non-negative integer
+ *   - times_applied      : optional, non-negative integer (semantics below)
+ *   - times_offered      : optional, non-negative integer — v2.3.19 evidence design §8
+ *   - times_contradicted : optional, non-negative integer — v2.3.19 evidence design §8
+ *   - times_applied_legacy: optional, non-negative integer — pre-epoch-2 value, advisory only
+ *   - counter_epoch      : optional, non-negative integer — 2 = evidence-based counter (§7.2)
  *   - last_applied       : optional, ISO timestamp or null
  *   - created_from       : optional, orchestration-id string
  *   - deprecated         : optional, boolean
@@ -108,7 +112,31 @@ const patternFrontmatterSchema = z.object({
   description: z.string().min(1),
 
   // Optional / observed-in-corpus fields
+  //
+  // times_applied — v2.3.19 evidence design §3.4 (also stated in the curator
+  // contract, agents/curator-stages/phase-contract.md §3): the number of
+  // DISTINCT orchestrations in which this pattern was placed in a spawned
+  // agent's context and that agent affirmatively identified it, in a required
+  // output field, as shaping its result, in a run that completed successfully.
+  // It does NOT claim the pattern caused the outcome — only availability +
+  // affirmation + success. counter_epoch distinguishes pre-fix values (epoch 1,
+  // no stated semantic) from this documented meaning (epoch 2).
   times_applied: yamlNumber.pipe(z.number().int().min(0)).optional(),
+  // times_offered — count of distinct orchestrations in which this pattern was
+  // placed in a spawn's context, regardless of whether it was applied. Denominator
+  // for application_rate (§9.2); the numerator without it cannot tell "dead" from
+  // "never had a chance" (§9.2 curator table).
+  times_offered: yamlNumber.pipe(z.number().int().min(0)).optional(),
+  // times_contradicted — count of distinct orchestrations in which the pattern
+  // was offered and the agent's structured result explicitly rejected it
+  // (patterns_rejected[]), as opposed to simply not citing it.
+  times_contradicted: yamlNumber.pipe(z.number().int().min(0)).optional(),
+  // times_applied_legacy — the epoch-1 times_applied value, preserved for
+  // context only. Never an input to a formula (§7.2, §9.3).
+  times_applied_legacy: yamlNumber.pipe(z.number().int().min(0)).optional(),
+  // counter_epoch — 2 once bin/migrate-pattern-counter-epoch.js has run on this
+  // pattern (§7.2). Patterns without this field predate the migration.
+  counter_epoch: yamlNumber.pipe(z.number().int().min(0)).optional(),
   last_applied: yamlIsoOrNull.optional(),
   created_from: z.string().min(1).optional(),
 

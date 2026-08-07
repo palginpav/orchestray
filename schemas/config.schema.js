@@ -117,7 +117,19 @@ const mcpEnforcementSchema = z.object({
   pattern_find: perToolPolicy.optional(),
   kb_search: perToolPolicy.optional(),
   history_find_similar_tasks: perToolPolicy.optional(),
+  // DEPRECATED (v2.3.19 evidence design §6.2): pattern_record_application no
+  // longer gates anything — the postDecompTools gate narrowed to
+  // pattern_record_skip_reason only (§6.1), since times_applied is now
+  // discharged by evidence (§4.3), not by this MCP call. Kept schema-valid so
+  // existing configs don't fail validation; back-compat alias merge (old key
+  // value folds into pattern_record_skip_reason when the new key is absent,
+  // taking the stricter of the two, logged once as config_key_renamed) is
+  // runtime-loader work in bin/_lib/config-schema.js::loadMcpEnforcement, not
+  // in this validation-only schema — see this delegation's structured result.
   pattern_record_application: perToolPolicy.optional(),
+  // Canonical key for the skip-reason gate (§6.1/§6.2). Shipped default
+  // hook-strict per feedback_default_on_shipping.md; current shipped configs
+  // may still carry "allow" until the loader migration above lands.
   pattern_record_skip_reason: perToolPolicy.optional(),
   cost_budget_check: perToolPolicy.optional(),
   kb_write: perToolPolicy.optional(),
@@ -599,6 +611,32 @@ const tokenwrightSchema = z.object({
   bootstrap_enabled: z.boolean().optional(),
 }).passthrough();
 
+// v2.3.19: pattern_evidence — evidence-based pattern-application counting
+// (design §11 interface contract). Governs Phase 1-3 of the pipeline: offer
+// scanning (bin/record-pattern-offers.js), ack capture
+// (bin/validate-pattern-ack.js), and orch-close commit
+// (bin/commit-pattern-applications.js). Ships default-on with commit enabled
+// per feedback_default_on_shipping.md (§10.1) — no shadow-mode default.
+const patternEvidenceSchema = z.object({
+  enabled: z.boolean().optional(),
+  commit: z.boolean().optional(),
+  // Time-bounded ramp flag read by bin/validate-task-completion.js
+  // (patternAckFieldsEnforced) — see that function's docstring. Not in the
+  // §11 interface contract's default block (added post-landing, ramp-only).
+  enforce_ack_fields: z.boolean().optional(),
+  max_credits_per_orchestration: z.number().int().min(0).optional(),
+  max_self_report_per_orchestration: z.number().int().min(0).optional(),
+  min_how_length: z.number().int().min(0).optional(),
+  ambient_promotion: z.object({
+    enabled: z.boolean().optional(),
+    min_how_length: z.number().int().min(0).optional(),
+    max_per_spawn: z.number().int().min(0).optional(),
+  }).passthrough().optional(),
+  pattern_prune_grace_orchestrations: z.number().int().min(0).optional(),
+  epoch_grace_orchestrations: z.number().int().min(0).optional(),
+  never_offered_window_orchestrations: z.number().int().min(1).optional(),
+}).passthrough();
+
 // ---------------------------------------------------------------------------
 // Top-level schema
 // ---------------------------------------------------------------------------
@@ -750,6 +788,8 @@ const configSchema = z.object({
   tool_grant_shortfall: toolGrantShortfallSchema.optional(),
   // v2.3.18 (W1f carryover): tokenwright bootstrap-estimator config.
   tokenwright: tokenwrightSchema.optional(),
+  // v2.3.19: pattern_evidence — evidence-based pattern-application counting.
+  pattern_evidence: patternEvidenceSchema.optional(),
 }).passthrough(); // R-CONFIG-DRIFT (W9) owns unknown-key warnings; this schema tolerates them.
 
 module.exports = {
@@ -797,4 +837,6 @@ module.exports = {
   // F-MC-01 / F-MC-04 (v2.3.13): newly registered sections.
   pluginLoaderSchema,
   blockAZoneCachingSchema,
+  // v2.3.19: evidence-based pattern-application counting.
+  patternEvidenceSchema,
 };

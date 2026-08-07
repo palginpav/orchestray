@@ -257,6 +257,7 @@ function writeLastRun(projectRoot, now) {
  * @property {string} category
  * @property {number} confidence
  * @property {number} timesApplied
+ * @property {number} timesOffered
  * @property {string|null} lastApplied
  * @property {string|null} createdFrom
  * @property {number} halfLifeDays
@@ -317,6 +318,8 @@ function loadPatterns(projectRoot, now) {
         category:        fm.category || 'unknown',
         confidence,
         timesApplied:    (typeof fm.times_applied === 'number') ? fm.times_applied : 0,
+        // §9.5: cumulative denominator for application_rate (design §9.2).
+        timesOffered:    (typeof fm.times_offered === 'number') ? fm.times_offered : 0,
         lastApplied,
         createdFrom:     fm.created_from || null,
         halfLifeDays:    halfLife,
@@ -507,7 +510,12 @@ function computeRoi(patterns, events, now) {
     byType[t].push(ev);
   }
 
-  const applicationEvents = byType['pattern_record_application'] || [];
+  // §0.3/§9.5: pattern_record_application never emitted a typed event, so
+  // app_rate was structurally 0 in every ROI snapshot ever produced.
+  // pattern_application_recorded (bin/commit-pattern-applications.js, orch
+  // close) is the evidence-backed replacement, carrying evidence_grade so
+  // observed and self-report applications can be split out.
+  const applicationEvents = byType['pattern_application_recorded'] || [];
   const skipEvents         = byType['pattern_skip_enriched']      || [];
   const agentStopEvents    = byType['agent_stop']                  || [];
 
@@ -537,6 +545,19 @@ function computeRoi(patterns, events, now) {
     const timesSkippedRecent  = skipped.length;
     const denominator         = timesAppliedRecent + timesSkippedRecent;
     const appRate             = denominator > 0 ? timesAppliedRecent / denominator : 0;
+
+    // §9.5: split the windowed applied count by evidence_grade so operators
+    // can see what fraction of "applied" rests on the out-of-band self-report
+    // channel (design §7.1) rather than closed-set-observed evidence.
+    const observedApplied     = applied.filter((ev) => ev.evidence_grade === 'observed').length;
+    const selfReportApplied   = applied.filter((ev) => ev.evidence_grade === 'self_report').length;
+    const selfReportFraction  = timesAppliedRecent > 0 ? selfReportApplied / timesAppliedRecent : 0;
+
+    // §9.2 cumulative application_rate (distinct from the windowed appRate
+    // above, which drives roi_score): times_applied / max(times_offered, 1)
+    // read straight from frontmatter, the ratio that finally separates
+    // "offered N times, applied 0" (dead) from "offered 0 times" (invisible).
+    const applicationRate = p.timesApplied / Math.max(p.timesOffered, 1);
 
     // Orchestrations where this pattern was applied
     const appliedOrchIds = new Set(applied.map(ev => ev.orchestration_id).filter(Boolean));
@@ -583,8 +604,13 @@ function computeRoi(patterns, events, now) {
       confidence:            p.confidence,
       decayed_confidence:    parseFloat(p.decayedConfidence.toFixed(4)),
       times_applied_recent:  timesAppliedRecent,
+      times_applied_recent_observed:    observedApplied,
+      times_applied_recent_self_report: selfReportApplied,
+      self_report_fraction:  parseFloat(selfReportFraction.toFixed(4)),
       times_skipped_recent:  timesSkippedRecent,
       app_rate:              parseFloat(appRate.toFixed(4)),
+      times_offered:         p.timesOffered,
+      application_rate:      parseFloat(applicationRate.toFixed(4)),
       avg_cost_applied:      avgCostApplied !== null ? parseFloat(avgCostApplied.toFixed(4)) : null,
       avg_cost_baseline:     avgCostBaseline !== null ? parseFloat(avgCostBaseline.toFixed(4)) : null,
       delta_cost:            deltaCost !== null ? parseFloat(deltaCost.toFixed(4)) : null,

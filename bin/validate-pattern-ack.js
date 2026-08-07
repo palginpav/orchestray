@@ -2,157 +2,123 @@
 'use strict';
 
 /**
- * validate-pattern-ack.js — PostToolUse:Agent hook (v2.2.11 W2-6).
+ * validate-pattern-ack.js — PostToolUse:Agent hook.
  *
- * Pattern-acknowledgement check for architect spawns. After an architect agent
- * completes, verifies that its structured result references at least one of the
- * high-confidence patterns that were offered in the <mcp-grounding> block
- * injected by bin/prefetch-mcp-grounding.js.
+ * pattern-application-evidence-design.md §4.2 (v2.3.19 Phase 2 — "capturing
+ * it"). Originally v2.2.11 W2-6, architect-only. Rewritten twice: first for
+ * the three reasons below, then again (RV-2 review, Issue 2) because the
+ * first rewrite dropped the `isAgentSpawn` role guard but left a downstream
+ * `<mcp-grounding>`-block gate that silently re-imposed it.
+ *
+ *   1. §0.2 parser bug (now moot — see below): `pattern_find(mode:'catalog')`
+ *      returns `{ mode, catalog: "PATTERN slug=… confidence=…" (a STRING),
+ *      … }`. The original `parsePatternFindResults` only recognised
+ *      `matches|items|results|patterns` ARRAY keys, found none, and returned
+ *      `[]` — decapitating this validator since the R-CAT-DEFAULT catalog
+ *      switch (v2.1.16).
+ *   2. Architect-only was too narrow — developers and testers are where
+ *      patterns most often shape work (2 architect spawns vs 304
+ *      routing_outcome rows in the live log).
+ *   3. It only ever recorded the NEGATIVE (a miss). It now records the
+ *      POSITIVE too — every offered pattern's used/rejected disposition —
+ *      via the `patterns_used`/`patterns_rejected` Structured Result fields
+ *      (bin/_lib/handoff-contract-text.js), falling back to the old
+ *      substring-scan heuristic only when an agent's payload predates those
+ *      fields (grace window, same rationale as validate-task-completion.js).
+ *
+ * RV-2 Issue 2 fix: this hook no longer parses `tool_input.prompt` or the
+ * `<mcp-grounding>` fence at all. It reads the "offered" set from the Phase-1
+ * offer ledger (bin/_lib/pattern-evidence-ledger.js, written by
+ * bin/record-pattern-offers.js at PreToolUse:Agent) by `spawn_id`, filtered
+ * to `offer_kind: "curated"`. This fixes two independent bugs in one move:
+ * the ledger exists for every spawn regardless of role, so the 4-of-15-role
+ * restriction (only pm/researcher/architect/debugger ever receive a
+ * `<mcp-grounding>` fence — bin/prefetch-mcp-grounding.js) is gone; and
+ * "offered" now means the same thing here as it does in Phase 1 — curated,
+ * PM-authored citations, not the ambient catalog (design §5.4: ambient
+ * offers are not application-eligible by default). It also deletes the
+ * second, independently-drifting TOON-catalog parser this file used to
+ * carry (RV-2 Issue 5) — bin/_lib/pattern-offer-scan.js is now the only one.
  *
  * Behaviour:
- *   1. Triggers only when subagent_type === "architect".
- *   2. Extracts pattern_find results from the <mcp-grounding> block in the
- *      spawn prompt (tool_input.prompt).
- *   3. Filters patterns to those with confidence >= 0.7 (configurable via
- *      .orchestray/config.json key `pattern_ack_confidence_threshold`).
- *   4. If ≥1 high-confidence pattern was offered AND the architect's structured
- *      result summary + files_changed description text references zero slugs,
- *      emits an `architect_pattern_ack_missing` audit event.
+ *   1. Triggers on any Agent() spawn that carries an offered pattern (any
+ *      subagent_type — see reason 2 above).
+ *   2. Reads curated-offer slugs for this spawn_id from the Phase-1 ledger
+ *      (`.orchestray/state/pattern-offers.jsonl`) — the offer set this
+ *      validator reasons about.
+ *   3. Reads the agent's patterns_used/patterns_rejected from its Structured
+ *      Result and computes per-slug coverage against the offered set.
+ *   4. Emits `pattern_ack_captured` (always, when ≥1 pattern was offered)
+ *      and `pattern_application_withheld` (reason: "no_ack", once per
+ *      uncovered slug) — the latter supersedes `architect_pattern_ack_missing`
+ *      per design §8.4/§8.6.
+ *   5. Appends a `source: "structured_result"` row to
+ *      `.orchestray/state/pattern-acks.jsonl` when the structured fields were
+ *      present (not appended for the legacy text-scan fallback — that signal
+ *      is too unreliable to feed the §4.3 Phase 3 commit join).
  *
- * Fail-open contract:
- *   - Missing grounding → no check → no event (safe).
+ * Fail-open contract (unchanged):
+ *   - No curated offer row for this spawn_id → no check → no event (safe).
  *   - Any internal error → exit 0 (never blocks a spawn).
  *   - Kill switch: ORCHESTRAY_PATTERN_ACK_CHECK_DISABLED=1 → exit 0.
  *
  * Default-on per feedback_default_on_shipping.md.
  *
- * Hook wiring (for G3b to add to hooks.json):
- *   event:   PostToolUse:Agent
- *   matcher: Agent
- *   script:  bin/validate-pattern-ack.js
- *
  * Input:  Claude Code PostToolUse:Agent JSON payload on stdin
  * Output: { continue: true } on stdout always; exit 0 always
  */
 
-const fs   = require('fs');
-const path = require('path');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { writeEvent }     = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { readHookInputRaw } = require('./_lib/hook-stdin');
+const { peekOrchestrationId } = require('./_lib/peek-orchestration-id');
+const { readOffersForOrch, appendAck } = require('./_lib/pattern-evidence-ledger');
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_CONFIDENCE_THRESHOLD = 0.7;
-const SCHEMA_VERSION               = 1;
+const SCHEMA_VERSION = 1;
 
 // ---------------------------------------------------------------------------
-// Config loader — reads pattern_ack_confidence_threshold from .orchestray/config.json
-// ---------------------------------------------------------------------------
-
-function loadConfidenceThreshold(cwd) {
-  try {
-    const configPath = path.join(cwd, '.orchestray', 'config.json');
-    if (!fs.existsSync(configPath)) return DEFAULT_CONFIDENCE_THRESHOLD;
-    const raw = fs.readFileSync(configPath, 'utf8');
-    const cfg = JSON.parse(raw);
-    const val = cfg && cfg.pattern_ack_confidence_threshold;
-    if (typeof val === 'number' && val > 0 && val <= 1) return val;
-  } catch (_) { /* fail-open */ }
-  return DEFAULT_CONFIDENCE_THRESHOLD;
-}
-
-// ---------------------------------------------------------------------------
-// Grounding parser — extracts pattern_find results from <mcp-grounding> block
+// Offered-set lookup — Phase-1 ledger read (RV-2 Issue 2). Replaces the old
+// grounding-block re-parse: the ledger already resolved curated vs ambient
+// once, at PreToolUse, for every spawn regardless of role.
 // ---------------------------------------------------------------------------
 
 /**
- * Locate the <mcp-grounding> fence in the spawn prompt and return the text
- * of the "## pattern_find results" section within it.
+ * Curated slugs offered to this spawn, per the Phase-1 offer ledger
+ * (.orchestray/state/pattern-offers.jsonl). Ambient offers are excluded —
+ * design §5.4: not application-eligible by default, so they must not carry
+ * the ack-coverage obligation either. Normally 0 or 1 ledger row exists per
+ * spawn_id; multiple rows (e.g. a retried spawn) are unioned defensively.
  *
- * @param {string} promptText
- * @returns {string|null}
+ * @param {string} cwd
+ * @param {string} orchId
+ * @param {string|null} spawnId
+ * @returns {string[]}
  */
-function extractGroundingBlock(promptText) {
-  if (typeof promptText !== 'string' || !promptText) return null;
-  const start = promptText.indexOf('<mcp-grounding');
-  if (start === -1) return null;
-  const end = promptText.indexOf('</mcp-grounding>', start);
-  if (end === -1) return null;
-  return promptText.slice(start, end + '</mcp-grounding>'.length);
-}
-
-/**
- * Extract pattern_find result items from the grounding block text.
- * The grounding block contains a section "## pattern_find results" followed
- * by JSON (from prefetch-mcp-grounding.js line 209: JSON.stringify(structuredContent)).
- *
- * Returns an array of objects with at least { slug, confidence } or [].
- *
- * @param {string} groundingBlock
- * @returns {Array<{slug: string, confidence: number, [k: string]: unknown}>}
- */
-function parsePatternFindResults(groundingBlock) {
-  if (!groundingBlock) return [];
-
-  // Locate the pattern_find section header.
-  const sectionRe = /##\s*pattern_find\s+results\s*\n([\s\S]*?)(?=\n##\s|\n<\/mcp-grounding>|$)/i;
-  const match = groundingBlock.match(sectionRe);
-  if (!match) return [];
-
-  const sectionBody = match[1].trim();
-  if (!sectionBody) return [];
-
-  // Try to parse as JSON. prefetch-mcp-grounding.js writes the structuredContent
-  // directly as JSON.stringify'd text. It may be an array or an object with a
-  // matches/items/results key.
-  let parsed;
-  try {
-    parsed = JSON.parse(sectionBody);
-  } catch (_) {
-    return [];
-  }
-
-  // Normalise to an array of pattern objects.
-  if (Array.isArray(parsed)) return parsed;
-  if (parsed && typeof parsed === 'object') {
-    // Common shapes: { matches: [...] }, { items: [...] }, { results: [...] }
-    for (const key of ['matches', 'items', 'results', 'patterns']) {
-      if (Array.isArray(parsed[key])) return parsed[key];
+function curatedOfferedSlugs(cwd, orchId, spawnId) {
+  if (!spawnId) return [];
+  const rows = readOffersForOrch(cwd, orchId).filter((r) => r && r.spawn_id === spawnId);
+  const slugs = new Set();
+  for (const row of rows) {
+    if (!Array.isArray(row.offers)) continue;
+    for (const o of row.offers) {
+      if (o && o.offer_kind === 'curated' && typeof o.slug === 'string' && o.slug) slugs.add(o.slug);
     }
   }
-  return [];
-}
-
-/**
- * Filter to high-confidence patterns (confidence >= threshold).
- *
- * @param {Array<object>} patterns
- * @param {number} threshold
- * @returns {string[]} Array of slug strings
- */
-function highConfidenceSlugs(patterns, threshold) {
-  const slugs = [];
-  for (const p of patterns) {
-    if (!p || typeof p !== 'object') continue;
-    const confidence = typeof p.confidence === 'number' ? p.confidence : -1;
-    if (confidence >= threshold) {
-      const slug = typeof p.slug === 'string' ? p.slug.trim() : null;
-      if (slug) slugs.push(slug);
-    }
-  }
-  return slugs;
+  return Array.from(slugs);
 }
 
 // ---------------------------------------------------------------------------
-// Structured result extractor — reused from validate-task-completion pattern
+// Structured result extractor
 // ---------------------------------------------------------------------------
 
 /**
- * Extract the architect's Structured Result from the PostToolUse hook payload.
+ * Extract the spawned agent's Structured Result from the PostToolUse hook
+ * payload.
  *
  * PostToolUse:Agent payload fields (as observed in sibling validators):
  *   event.tool_response  — the agent's raw text output
@@ -160,9 +126,10 @@ function highConfidenceSlugs(patterns, threshold) {
  *   event.result         — alternative key
  *
  * @param {object} event
- * @returns {{ summary: string, filesChangedText: string }}
+ * @returns {{ summary: string, filesChangedText: string, status: string|null,
+ *             patternsUsedRaw: *, patternsRejectedRaw: * }}
  */
-function extractResultText(event) {
+function extractResult(event) {
   const raw = [
     event.tool_response,
     event.output,
@@ -170,7 +137,11 @@ function extractResultText(event) {
     event.agent_output,
   ].find(v => typeof v === 'string' && v.length > 0) || '';
 
-  if (!raw) return { summary: '', filesChangedText: '' };
+  const empty = {
+    summary: '', filesChangedText: '', status: null,
+    patternsUsedRaw: undefined, patternsRejectedRaw: undefined,
+  };
+  if (!raw) return empty;
 
   // Locate ## Structured Result block.
   const tail = raw.slice(-65536);
@@ -179,7 +150,6 @@ function extractResultText(event) {
     try {
       const sr = JSON.parse(srMatch[1]);
       const summary = typeof sr.summary === 'string' ? sr.summary : '';
-      // Collect description text from files_changed entries.
       let filesChangedText = '';
       if (Array.isArray(sr.files_changed)) {
         for (const fc of sr.files_changed) {
@@ -190,41 +160,82 @@ function extractResultText(event) {
           }
         }
       }
-      return { summary, filesChangedText: filesChangedText.trim() };
+      return {
+        summary,
+        filesChangedText: filesChangedText.trim(),
+        status: typeof sr.status === 'string' ? sr.status : null,
+        patternsUsedRaw: sr.patterns_used,
+        patternsRejectedRaw: sr.patterns_rejected,
+      };
     } catch (_) { /* fall through */ }
   }
 
-  // Fallback: raw text (slug grep will still work).
-  return { summary: raw.slice(-8192), filesChangedText: '' };
+  // Fallback: raw text (slug grep will still work for the legacy path).
+  return Object.assign({}, empty, { summary: raw.slice(-8192) });
 }
 
-// ---------------------------------------------------------------------------
-// Acknowledgement check
-// ---------------------------------------------------------------------------
+/**
+ * Normalise a patterns_used/patterns_rejected array into
+ * { slug, <proseKey>_len }[]. Tolerates the malformed shapes
+ * bin/validate-task-completion.js's entry-shape check rejects (bare
+ * strings, missing prose) — this hook is advisory-only and must not throw
+ * on input the blocking validator would have already caught.
+ *
+ * @param {*} arr
+ * @param {string} proseKey - 'how' or 'why'
+ * @returns {Array<{slug: string, [k: string]: number}>}
+ */
+function normalizeAckEntries(arr, proseKey) {
+  if (!Array.isArray(arr)) return [];
+  const out = [];
+  for (const e of arr) {
+    if (typeof e === 'string' && e.trim()) {
+      out.push({ slug: e.trim(), [proseKey + '_len']: 0 });
+    } else if (e && typeof e === 'object' && typeof e.slug === 'string' && e.slug.trim()) {
+      const prose = e[proseKey];
+      out.push({ slug: e.slug.trim(), [proseKey + '_len']: typeof prose === 'string' ? prose.trim().length : 0 });
+    }
+  }
+  return out;
+}
 
 /**
- * Return true if ANY of the offered slugs appears (case-insensitive) in the
- * haystack text.
+ * Case-insensitive substring scan — the pre-§4.2 heuristic, kept as a
+ * fallback for agents whose payload predates patterns_used/patterns_rejected
+ * (same grace-window rationale as bin/validate-task-completion.js).
  *
  * @param {string[]} slugs
  * @param {string}   haystack
- * @returns {boolean}
+ * @returns {string[]} the subset of `slugs` found in `haystack`
  */
-function anySlugAcknowledged(slugs, haystack) {
+function slugsAcknowledgedByText(slugs, haystack) {
   const lower = haystack.toLowerCase();
-  return slugs.some(slug => lower.includes(slug.toLowerCase()));
+  return slugs.filter(slug => lower.includes(slug.toLowerCase()));
 }
 
+// ---------------------------------------------------------------------------
+// Ack ledger row shape (source: "structured_result"), appended via the
+// shared bin/_lib/pattern-evidence-ledger.js#appendAck (fail-open — see
+// module docstring there):
+//   { timestamp, orchestration_id, spawn_id, agent_role, task_id,
+//     source: "structured_result", used: [{slug, how_len}],
+//     rejected: [{slug, why_len}], agent_status }
+// Same file bin/mcp-server/tools/pattern_record_application.js writes
+// self-report rows to (.orchestray/state/pattern-acks.jsonl).
 // ---------------------------------------------------------------------------
 // Trigger guard
 // ---------------------------------------------------------------------------
 
-function isArchitectSpawn(event) {
+/**
+ * Any Agent() spawn with a subagent_type qualifies now (was architect-only).
+ * Developers and testers are where patterns most often shape work — see
+ * module header reason 2.
+ */
+function isAgentSpawn(event) {
   if (!event) return false;
-  const toolName = event.tool_name || '';
-  if (toolName !== 'Agent') return false;
+  if ((event.tool_name || '') !== 'Agent') return false;
   const subtype = (event.tool_input && event.tool_input.subagent_type) || '';
-  return subtype === 'architect';
+  return typeof subtype === 'string' && subtype.length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -252,8 +263,7 @@ function main() {
       return;
     }
 
-    // Only runs for architect spawns.
-    if (!isArchitectSpawn(event)) return;
+    if (!isAgentSpawn(event)) return;
 
     let cwd;
     try {
@@ -271,47 +281,113 @@ function main() {
 }
 
 function run(event, cwd) {
-  const threshold = loadConfidenceThreshold(cwd);
-
-  // Extract the spawn prompt (contains injected <mcp-grounding>).
-  const promptText = (event.tool_input && typeof event.tool_input.prompt === 'string')
-    ? event.tool_input.prompt
-    : '';
-
-  const groundingBlock = extractGroundingBlock(promptText);
-  // No grounding → no check (safe-on-missing contract).
-  if (!groundingBlock) return;
-
-  const patterns = parsePatternFindResults(groundingBlock);
-  const offered  = highConfidenceSlugs(patterns, threshold);
-  // No high-confidence patterns offered → no check.
-  if (offered.length === 0) return;
-
-  // Extract what the architect actually said.
-  const { summary, filesChangedText } = extractResultText(event);
-  const haystack = [summary, filesChangedText].join(' ');
-
-  // If at least one slug is mentioned, the architect acknowledged — no event.
-  if (anySlugAcknowledged(offered, haystack)) return;
-
-  // Emit architect_pattern_ack_missing.
-  const spawnId = (event.tool_input && event.tool_input.agent_id)
+  const agentRole = (event.tool_input && event.tool_input.subagent_type) || null;
+  const taskId     = (event.tool_input && event.tool_input.task_id) || null;
+  const spawnId    = (event.tool_input && event.tool_input.agent_id)
     || (event.tool_input && event.tool_input.spawn_id)
     || null;
 
+  // Same fallback record-pattern-offers.js uses (peekOrchestrationId(cwd) ||
+  // 'unknown') — both phases must resolve the identical join key even when
+  // no orchestration marker file exists (e.g. a solo, non-orchestrated spawn).
+  const orchId  = peekOrchestrationId(cwd) || 'unknown';
+  const offered = curatedOfferedSlugs(cwd, orchId, spawnId);
+  // No curated offer for this spawn_id → no check (safe-on-missing contract).
+  if (offered.length === 0) return;
+
+  const { summary, filesChangedText, status, patternsUsedRaw, patternsRejectedRaw } = extractResult(event);
+  const hasStructuredAck = Array.isArray(patternsUsedRaw) || Array.isArray(patternsRejectedRaw);
+
+  const offeredSet = new Set(offered);
+  let usedSlugs, rejectedSlugs, usedEntries, rejectedEntries;
+
+  if (hasStructuredAck) {
+    usedEntries    = normalizeAckEntries(patternsUsedRaw, 'how');
+    rejectedEntries = normalizeAckEntries(patternsRejectedRaw, 'why');
+    usedSlugs     = usedEntries.map(e => e.slug);
+    rejectedSlugs = rejectedEntries.map(e => e.slug);
+  } else {
+    // Legacy fallback (pre-§4.2 payload): substring-scan summary/files_changed.
+    const haystack = [summary, filesChangedText].join(' ');
+    usedSlugs     = slugsAcknowledgedByText(offered, haystack);
+    rejectedSlugs = [];
+  }
+
+  const usedOffered     = usedSlugs.filter(s => offeredSet.has(s));
+  const rejectedOffered = rejectedSlugs.filter(s => offeredSet.has(s));
+  const coveredSet      = new Set(usedOffered.concat(rejectedOffered));
+  const uncovered        = offered.filter(s => !coveredSet.has(s));
+  const coverageComplete = uncovered.length === 0;
+
+  const agentStatus = status || 'unknown';
+
+  // §8.2: pattern_ack_captured — the positive record, always emitted when
+  // ≥1 curated pattern was offered.
   writeEvent({
-    version:               SCHEMA_VERSION,
-    type:                  'architect_pattern_ack_missing',
-    spawn_id:              spawnId,
-    pattern_slugs_offered: offered,
-    schema_version:        SCHEMA_VERSION,
+    version:         SCHEMA_VERSION,
+    type:            'pattern_ack_captured',
+    spawn_id:        spawnId,
+    agent_role:      agentRole,
+    used_slugs:      usedOffered,
+    rejected_slugs:  rejectedOffered,
+    offered_count:   offered.length,
+    coverage_complete: coverageComplete,
+    agent_status:    agentStatus,
+    ack_source:      hasStructuredAck ? 'structured_fields' : 'legacy_text_scan',
+    schema_version:  SCHEMA_VERSION,
   }, { cwd });
 
-  process.stderr.write(
-    '[orchestray] validate-pattern-ack: WARN — architect spawn ' + (spawnId || '(unknown)') +
-    ' did not acknowledge ' + offered.length + ' offered pattern(s): ' + offered.join(', ') + '. ' +
-    'Kill switch: ORCHESTRAY_PATTERN_ACK_CHECK_DISABLED=1\n'
-  );
+  // §8.4/§8.6: pattern_application_withheld (reason: "no_ack") supersedes
+  // architect_pattern_ack_missing, one event per uncovered offered slug.
+  for (const slug of uncovered) {
+    writeEvent({
+      version:        SCHEMA_VERSION,
+      type:           'pattern_application_withheld',
+      slug,
+      pattern_name:   slug,
+      reason:         'no_ack',
+      offer_kind:     'curated',
+      spawn_ids:      spawnId ? [spawnId] : [],
+      schema_version: SCHEMA_VERSION,
+    }, { cwd });
+  }
+
+  if (!coverageComplete) {
+    process.stderr.write(
+      '[orchestray] validate-pattern-ack: WARN — ' + (agentRole || '(unknown role)') + ' spawn ' +
+      (spawnId || '(unknown)') + ' did not cover ' + uncovered.length + ' of ' + offered.length +
+      ' offered pattern(s): ' + uncovered.join(', ') + '. ' +
+      'Kill switch: ORCHESTRAY_PATTERN_ACK_CHECK_DISABLED=1\n'
+    );
+  }
+
+  // Ledger row: only for the structured-fields path — the legacy text-scan
+  // signal is too unreliable to feed the §4.3 Phase 3 commit join (no prose,
+  // no explicit rejection, false positives from stray slug mentions).
+  if (hasStructuredAck) {
+    appendAck(cwd, {
+      timestamp:        new Date().toISOString(),
+      orchestration_id: orchId,
+      spawn_id:         spawnId,
+      agent_role:       agentRole,
+      task_id:          taskId,
+      source:           'structured_result',
+      used:             usedEntries,
+      rejected:         rejectedEntries,
+      agent_status:     agentStatus,
+    });
+  }
 }
 
-main();
+module.exports = {
+  curatedOfferedSlugs,
+  normalizeAckEntries,
+  slugsAcknowledgedByText,
+  extractResult,
+  isAgentSpawn,
+  run,
+};
+
+if (require.main === module) {
+  main();
+}

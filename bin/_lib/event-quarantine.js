@@ -68,6 +68,27 @@ const QUARANTINE_ALLOWLIST = {
   pattern_skip_enriched: [
     'orchestration_id', 'timestamp', 'pattern_name', 'skip_category',
   ],
+  // v2.3.19: evidence-based pattern-application counting (Section 45,
+  // event-schemas.md). Slug arrays and scalars only — no free-text `how`/`why`
+  // prose fields, which live in the Structured Result contract, not these events.
+  pattern_offered: [
+    'orchestration_id', 'timestamp', 'spawn_id', 'agent_role', 'task_id',
+    'slugs_curated', 'slugs_ambient', 'shape_detected',
+  ],
+  pattern_ack_captured: [
+    'orchestration_id', 'timestamp', 'spawn_id', 'agent_role', 'used_slugs',
+    'rejected_slugs', 'offered_count', 'coverage_complete', 'agent_status',
+  ],
+  pattern_application_recorded: [
+    'orchestration_id', 'timestamp', 'slug', 'pattern_name', 'evidence_grade',
+    'offer_kind', 'times_applied_before', 'times_applied_after',
+  ],
+  pattern_application_withheld: [
+    'orchestration_id', 'timestamp', 'slug', 'pattern_name', 'reason', 'offer_kind',
+  ],
+  pattern_never_offered: [
+    'orchestration_id', 'timestamp', 'window_orchestrations', 'slugs', 'corpus_size',
+  ],
   pattern_deprecated: [
     'orchestration_id', 'timestamp', 'pattern_name', 'reason',
   ],

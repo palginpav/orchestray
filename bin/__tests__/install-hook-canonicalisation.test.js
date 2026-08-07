@@ -156,6 +156,10 @@ describe('FN-13 install-hook-canonicalisation', () => {
     'scan-cite-labels.js',
     'archive-orch-events.js',
     'audit-round-archive-hook.js',
+    // pattern-application-evidence-design.md §4.3 — same architecture as the
+    // 6 scripts above: a 7th subprocess in audit-on-orch-complete.js's
+    // fan-out, not a direct hooks.json entry.
+    'commit-pattern-applications.js',
   ]);
 
   test('every stdin-reading hook handler appears in canonical hooks/hooks.json', () => {

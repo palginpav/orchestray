@@ -514,7 +514,12 @@ describe('C. tools/call pattern_find', () => {
 
 describe('D. tools/call pattern_record_application', () => {
 
-  test('increments times_applied and updates last_applied on disk',
+  // pattern-application-evidence-design.md §7.1 (v2.3.19 Phase 2): this tool
+  // is now the out-of-band self-report channel — it no longer mutates
+  // times_applied/last_applied on disk. See times-applied-undercount-diagnosis.md
+  // for why direct mutation from a cheap self-report call was the root cause
+  // of the diagnosed 26-vs-6945 gradient.
+  test('self-report: does NOT mutate disk; reports current times_applied and evidence_grade',
     { timeout: TEST_TIMEOUT },
     async () => {
       await withServer(
@@ -544,18 +549,31 @@ describe('D. tools/call pattern_record_application', () => {
           assert.equal(resp.result.isError, false);
           const body = resp.result.structuredContent;
           assert.equal(body.slug, 'sample');
-          assert.equal(body.times_applied, 1);
-          assert.ok(typeof body.last_applied === 'string' && body.last_applied.length > 0);
-          // Verify it parses as a Date and differs from the seed.
-          assert.ok(!Number.isNaN(new Date(body.last_applied).getTime()));
-          assert.notEqual(body.last_applied, '2026-01-01T00:00:00Z');
+          assert.equal(body.times_applied, 0, 'unchanged — commit happens at §4.3 Phase 3, not here');
+          assert.equal(body.evidence_grade, 'self_report');
 
-          // Verify disk was updated.
+          // Verify disk was NOT updated.
           const raw = fs.readFileSync(
             path.join(tmp, '.orchestray', 'patterns', 'sample.md'), 'utf8'
           );
-          assert.ok(raw.includes('times_applied: 1'));
-          assert.ok(!raw.includes('times_applied: 0'));
+          assert.ok(raw.includes('times_applied: 0'));
+          assert.ok(raw.includes('last_applied: 2026-01-01T00:00:00Z'));
+
+          // Verify the self-report ack row and typed event landed.
+          const ackRaw = fs.readFileSync(
+            path.join(tmp, '.orchestray', 'state', 'pattern-acks.jsonl'), 'utf8'
+          );
+          const ackRow = JSON.parse(ackRaw.trim().split('\n')[0]);
+          assert.equal(ackRow.source, 'self_report');
+          assert.equal(ackRow.used[0].slug, 'sample');
+
+          const eventsRaw = fs.readFileSync(
+            path.join(tmp, '.orchestray', 'audit', 'events.jsonl'), 'utf8'
+          );
+          const events = eventsRaw.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+          const recorded = events.filter((e) => e.type === 'pattern_application_recorded');
+          assert.equal(recorded.length, 1);
+          assert.equal(recorded[0].evidence_grade, 'self_report');
         }
       );
     }

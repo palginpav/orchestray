@@ -230,6 +230,12 @@ const KNOWN_TOP_LEVEL_KEYS = Object.freeze([
   // loaded by bin/_lib/tokenwright/bootstrap-estimator.js isConfigEnabled().
   // Distinct from top-level `compression` (see that key's schema comment).
   'tokenwright',
+
+  // pattern_evidence (v2.3.19) — evidence-based pattern-application counting.
+  // Mirrors patternEvidenceSchema in schemas/config.schema.js. Already read
+  // live by bin/validate-task-completion.js (enforce_ack_fields ramp flag) —
+  // absent from this list would trip drift detection on that flag today.
+  'pattern_evidence',
 ]);
 
 /**

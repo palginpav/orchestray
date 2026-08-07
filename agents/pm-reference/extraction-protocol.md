@@ -669,10 +669,15 @@ The half-life defaults to **90 days** (`pattern_decay.default_half_life_days` in
 Run AFTER writing new patterns in Section 22a step 7.
 
 1. Count all `.md` files in `.orchestray/patterns/`.
-2. If count > 50: compute `score = confidence * times_applied` for each pattern.
+2. If count > 50: compute `score = confidence * (1 + times_applied)` for each pattern
+   (v2.3.19 evidence design §9.1 — the `1 +` keeps confidence a meaningful tiebreaker
+   among zero-application patterns).
    **Exclude replay patterns**: Before computing scores, filter the pattern list to
    exclude files with `category: replay` in their frontmatter. Replay patterns are
    owned by §43c and have their own pruning lifecycle.
+   **Exempt from pruning regardless of score**: patterns with `times_offered == 0`
+   (never had a chance to be applied) OR `created_from` within the last
+   `pattern_evidence.pattern_prune_grace_orchestrations` (default 5) orchestrations.
 3. Sort ascending. Remove patterns with the lowest scores until count = 50.
 4. Log: "Pruned {N} low-value patterns: {names}"
 5. Append `pattern_pruned` event(s) to the current audit trail (if still active)

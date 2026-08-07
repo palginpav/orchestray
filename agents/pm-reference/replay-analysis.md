@@ -122,8 +122,10 @@ Protocol:
 2. **Log `replay_analysis` event** to `.orchestray/audit/events.jsonl`.
 
 3. **Standard pruning**: Replay patterns participate in Section 22d pruning with the same
-   scoring formula: `score = confidence * times_applied`. They are not exempt from pruning
-   when the pattern cap (50) is reached.
+   scoring formula: `score = confidence * (1 + times_applied)` (v2.3.19 evidence design
+   §9.1). They ARE subject to the same `times_offered == 0` / grace-window exemptions as
+   every other pattern type when the pattern cap (50) is reached — they are not exempt
+   from pruning on any other basis.
 
 ---
 

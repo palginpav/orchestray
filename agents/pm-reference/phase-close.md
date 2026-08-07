@@ -301,17 +301,21 @@ failure.
 
 **What this does.** The `bin/gate-agent-spawn.js` PreToolUse:Agent hook now
 enforces a post-decomposition check on second-and-subsequent `Agent()` spawns within an
-orchestration. Enforcement mode is controlled by
-`mcp_enforcement.pattern_record_application` in `.orchestray/config.json`:
+orchestration. v2.3.19 evidence design §6.1 narrowed the gate to the half that still
+carries information: only `mcp__orchestray__pattern_record_skip_reason` satisfies it now
+— `pattern_record_application` no longer does, since `times_applied` is discharged by
+evidence (§4.3), not by that call. Enforcement mode is controlled by
+`mcp_enforcement.pattern_record_skip_reason` in `.orchestray/config.json` (renamed from
+`.pattern_record_application` per §6.2; the old key is honored as a back-compat alias,
+taking the stricter of the two values, logged once as `config_key_renamed`):
 
 - **`hook-strict`** (default mode): on a second spawn with no post-decomposition
-  record, emit a `mcp_checkpoint_missing` event to `events.jsonl` with
-  `phase: 'post-decomposition'` and exit 2 (deny spawn). Re-run §22b (in phase-decomp.md)
-  to unblock — call the missing tool, then retry.
+  `pattern_record_skip_reason` record, emit a `mcp_checkpoint_missing` event to
+  `events.jsonl` with `phase: 'post-decomposition'` and exit 2 (deny spawn). Re-run
+  §22b (in phase-decomp.md) to unblock — call the missing tool, then retry.
 - **`hook-warn`** (soft mode): on a second spawn with no post-decomposition record,
   emit a stderr warning and allow the spawn. The PM should call
-  `mcp__orchestray__pattern_record_application` or `mcp__orchestray__pattern_record_skip_reason`
-  before the next spawn.
+  `mcp__orchestray__pattern_record_skip_reason` before the next spawn.
 - **`hook`, `prompt`, `allow`**: Stage C gate is skipped entirely for these values.
 
 **First-spawn carve-out:** the gate only activates after `routing.jsonl` exists for the
@@ -319,11 +323,10 @@ current orchestration (i.e., after decomposition). Pre-decomposition spawns are 
 
 **Re-entry on hook-strict block.** If a second spawn is blocked under `hook-strict`,
 follow the §22b.R re-entry protocol (in phase-decomp.md): call
-`mcp__orchestray__pattern_record_application` (or
-`mcp__orchestray__pattern_record_skip_reason`) for the current `orchestration_id`,
-then retry the spawn. The gate reads both `mcp-checkpoint.jsonl` and `events.jsonl` for
-the record — either path satisfies the requirement. Emergency override: set
-`mcp_enforcement.global_kill_switch=true` or set `pattern_record_application` to `allow`.
+`mcp__orchestray__pattern_record_skip_reason` for the current `orchestration_id`, then
+retry the spawn. The gate reads both `mcp-checkpoint.jsonl` and `events.jsonl` for the
+record — either path satisfies the requirement. Emergency override: set
+`mcp_enforcement.global_kill_switch=true` or set `pattern_record_skip_reason` to `allow`.
 
 **Escalation ladder:**
 - Stage A: warn, allow — advisory event in `events.jsonl`
@@ -332,7 +335,12 @@ the record — either path satisfies the requirement. Emergency override: set
 
 ### 22d. Pruning
 
-Run AFTER writing new patterns. Cap at 50 patterns, prune lowest `confidence * times_applied`.
+Run AFTER writing new patterns. Cap at 50 patterns, prune lowest
+`score = confidence * (1 + times_applied)` (v2.3.19 evidence design §9.1 — the `1 +`
+keeps confidence a meaningful tiebreaker among zero-application patterns). **Exempt
+from pruning regardless of score:** patterns with `times_offered == 0` (never had a
+chance to be applied) OR `created_from` within the last
+`pattern_evidence.pattern_prune_grace_orchestrations` (default 5) orchestrations.
 
 > Read `agents/pm-reference/extraction-protocol.md` §§22a–22e for the full extraction steps, pattern file template, application protocol, confidence feedback details, and pruning rules.
 
@@ -406,8 +414,9 @@ current" or "apply suggestion", save a design-preference pattern following the f
   (cap 1.0), increment `times_applied`.
 
 **Pruning:** Design-preference patterns participate in the same pruning pass as other
-pattern types (§22d above). They are scored by `confidence * times_applied` alongside
-decomposition, routing, specialization, and anti-pattern entries.
+pattern types (§22d above). They are scored by `confidence * (1 + times_applied)`,
+with the same `times_offered == 0` / grace-window exemptions, alongside decomposition,
+routing, specialization, and anti-pattern entries.
 
 ### 22.f — Auto-extraction first-run notice
 

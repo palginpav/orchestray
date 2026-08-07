@@ -521,19 +521,83 @@ function extractStructuredResult(event) {
   return null;
 }
 
+// pattern-application-evidence-design.md §4.2 (v2.3.19 Phase 2): entry-shape
+// contract for patterns_used/patterns_rejected. proseKey names the per-entry
+// prose field the design requires (`how` for used, `why` for rejected).
+const PATTERN_ACK_FIELDS = { patterns_used: 'how', patterns_rejected: 'why' };
+
+/**
+ * One patterns_used/patterns_rejected entry: { slug, <proseKey> }, prose
+ * 10..300 chars. This is the mechanical fix for the 6,945:26 self-report
+ * gradient (times-applied-undercount-diagnosis.md) — a bare string or an
+ * empty-prose entry can no longer discharge the per-pattern obligation.
+ *
+ * @param {*} entry
+ * @param {string} proseKey
+ * @returns {boolean}
+ */
+function isValidPatternAckEntry(entry, proseKey) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+  if (typeof entry.slug !== 'string' || entry.slug.trim().length === 0) return false;
+  const prose = entry[proseKey];
+  if (typeof prose !== 'string') return false;
+  const len = prose.trim().length;
+  return len >= 10 && len <= 300;
+}
+
+/**
+ * Grace gate for patterns_used/patterns_rejected PRESENCE (not shape).
+ *
+ * Default OFF: field ABSENCE does not (yet) block. HANDOFF_REQUIRED_SECTIONS
+ * lists both fields unconditionally (handoff-contract-text.js), so every new
+ * spawn prompt already asks for them — but agents in flight when this
+ * shipped, and any custom/drop-in agent definitions, cannot see the updated
+ * prompt and must not be blocked by a field they were never told about.
+ * ENTRY SHAPE, when the fields ARE present, is always enforced regardless of
+ * this switch (see validateStructuredResult) — that check costs nothing
+ * against the existing test corpus, since no pre-existing payload ever
+ * included these keys.
+ *
+ * This is a time-bounded ramp, not a permanent bypass (pattern-application-
+ * evidence-design.md §4.2 back-compat note): flip
+ * `pattern_evidence.enforce_ack_fields` to `true` once adoption is visible in
+ * the `pattern_ack_captured` / `coverage_complete` telemetry
+ * (validate-pattern-ack.js) across a representative window of orchestrations.
+ *
+ * Kill switch: ORCHESTRAY_T15_PATTERN_ACK_FIELDS_ENFORCED=1|0 overrides config.
+ *
+ * @param {string} cwd
+ * @returns {boolean}
+ */
+function patternAckFieldsEnforced(cwd) {
+  if (process.env.ORCHESTRAY_T15_PATTERN_ACK_FIELDS_ENFORCED === '1') return true;
+  if (process.env.ORCHESTRAY_T15_PATTERN_ACK_FIELDS_ENFORCED === '0') return false;
+  try {
+    const configPath = path.join(cwd, '.orchestray', 'config.json');
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    return !!(cfg && cfg.pattern_evidence && cfg.pattern_evidence.enforce_ack_fields === true);
+  } catch (_) {
+    return false;
+  }
+}
+
 /**
  * Validate a Structured Result against the T15 checklist.
  *
  * @param {object} result
+ * @param {{ enforcePatternAckFields?: boolean }} [opts]
  * @returns {{ valid: boolean, missing: string[] }}
  */
-function validateStructuredResult(result) {
+function validateStructuredResult(result, opts) {
+  const options = opts || {};
   if (!result || typeof result !== 'object') {
     return { valid: false, missing: REQUIRED_SECTIONS.slice() };
   }
   const missing = [];
   for (const key of REQUIRED_SECTIONS) {
     if (!(key in result)) {
+      // Grace window: see patternAckFieldsEnforced doc above.
+      if (PATTERN_ACK_FIELDS[key] && !options.enforcePatternAckFields) continue;
       missing.push(key);
       continue;
     }
@@ -543,6 +607,13 @@ function validateStructuredResult(result) {
     } else if (key === 'status') {
       const ALLOWED_STATUS = new Set(['success', 'partial', 'failure']);
       if (typeof val !== 'string' || !ALLOWED_STATUS.has(val.trim())) missing.push(key);
+    } else if (PATTERN_ACK_FIELDS[key]) {
+      // patterns_used / patterns_rejected: array of well-formed entries,
+      // always validated when present (not gated by the grace switch).
+      const proseKey = PATTERN_ACK_FIELDS[key];
+      if (!Array.isArray(val) || !val.every((e) => isValidPatternAckEntry(e, proseKey))) {
+        missing.push(key);
+      }
     } else {
       // files_changed / files_read / issues must be arrays (empty allowed).
       if (!Array.isArray(val)) missing.push(key);
@@ -982,7 +1053,9 @@ function main() {
     }
 
     if (agentRole && (HARD_TIER.has(agentRole) || WARN_TIER.has(agentRole))) {
-      const check = validateStructuredResult(structuredResult);
+      const check = validateStructuredResult(structuredResult, {
+        enforcePatternAckFields: patternAckFieldsEnforced(cwd),
+      });
       if (!check.valid) {
         const isHard = HARD_TIER.has(agentRole);
         const auditRecord = {
@@ -1022,10 +1095,16 @@ function main() {
           process.stderr.write(
             '[orchestray] validate-task-completion: BLOCKED — ' + agentRole +
             ' Structured Result missing required field(s): ' + check.missing.join(', ') + '.\n' +
-            'Required: `status`, `summary`, `files_changed`, `files_read`, `issues`, `assumptions`.\n' +
+            'Required: `status`, `summary`, `files_changed`, `files_read`, `issues`, `assumptions`, ' +
+            '`patterns_used`, `patterns_rejected`.\n' +
+            (check.missing.some((k) => PATTERN_ACK_FIELDS[k])
+              ? '`patterns_used`/`patterns_rejected` must be arrays; each entry needs `slug` plus ' +
+                'a 10-300 char `how`/`why`. One entry per pattern offered to this spawn.\n'
+              : '') +
             'Example fix:\n' +
             '  ```json\n' +
-            '  { "status": "complete", "summary": "...", "files_changed": [], "files_read": [], "issues": [], "assumptions": [] }\n' +
+            '  { "status": "complete", "summary": "...", "files_changed": [], "files_read": [], "issues": [], ' +
+            '"assumptions": [], "patterns_used": [], "patterns_rejected": [] }\n' +
             '  ```\n' +
             'See agents/pm-reference/handoff-contract.md §10 for the JSON schema.\n'
           );
@@ -1107,7 +1186,7 @@ function main() {
           process.stderr.write(
             '[orchestray] validate-task-completion: BLOCKED — ROLE-SCHEMA violation for ' + agentRole + ':\n' +
             violations.map(v => '  - ' + v.field + ': ' + v.reason).join('\n') + '\n' +
-            'Required: `status`, `summary`, `files_changed`, `files_read`, `issues`, `assumptions`.\n' +
+            'Required: `status`, `summary`, `files_changed`, `files_read`, `issues`, `assumptions`, `patterns_used`, `patterns_rejected`.\n' +
             'Common causes: missing_required_field, wrong_type, below_minimum.\n' +
             'Example fix:\n' +
             '  ```json\n' +
@@ -1147,7 +1226,7 @@ function main() {
               '[orchestray] validate-task-completion: CROSS-FIELD violation for ' +
               (agentRole || 'unknown') + ':\n' +
               cfResult.violations.map(v => '  - ' + v.rule + ' (' + v.field + '): ' + v.actual).join('\n') + '\n' +
-              'Required: `status`, `summary`, `files_changed`, `files_read`, `issues`, `assumptions`.\n' +
+              'Required: `status`, `summary`, `files_changed`, `files_read`, `issues`, `assumptions`, `patterns_used`, `patterns_rejected`.\n' +
               'See agents/pm-reference/handoff-contract.md §10 for the JSON schema.\n'
             );
           }
@@ -1302,6 +1381,10 @@ module.exports = {
   validateCrossField,
   // P1-05 (v2.2.15): multiple Structured Result block detector
   detectMultipleStructuredResultBlocks,
+  // pattern-application-evidence-design.md §4.2 (v2.3.19 Phase 2)
+  isValidPatternAckEntry,
+  patternAckFieldsEnforced,
+  PATTERN_ACK_FIELDS,
 };
 
 if (require.main === module) {

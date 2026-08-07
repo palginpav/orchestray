@@ -8655,6 +8655,13 @@ Field notes:
 
 ### `architect_pattern_ack_missing` event
 
+**SUPERSEDED v2.3.19 — by `pattern_application_withheld` (`reason: "no_ack"`),
+generalized past the architect role to every offered-but-uncredited pattern (see
+Section 45 above). `bin/validate-pattern-ack.js` no longer emits this type. Declare
+retained only for audit-replay validity of pre-v2.3.19 `events.jsonl` and because 23
+`event_promised_but_dark` rows reference this entry — the dark-event auditor needs
+the declare present to resolve them.**
+
 Emitted by `bin/validate-pattern-ack.js` (PostToolUse:Agent, v2.2.11 W2-6) when an
 architect subagent completes without referencing any of the high-confidence patterns
 (confidence >= 0.7) that were offered in the `<mcp-grounding>` block injected by
@@ -8675,6 +8682,8 @@ Field notes:
 - `spawn_id`: the architect subagent spawn identifier (`tool_input.agent_id` or `spawn_id`); `null` when absent from payload.
 - `pattern_slugs_offered`: slugs of high-confidence patterns present in the grounding block that were not referenced in the architect's structured result summary or files_changed descriptions.
 - `schema_version`: always 1 (v2.2.11 baseline).
+- feature_optional: true (retired — no longer emitted; excluded from the
+  promised-but-dark tracker's candidate set per `bin/audit-promised-events.js`).
 
 ### `replan_budget_exceeded` event
 
@@ -12378,3 +12387,204 @@ synthesis agent has produced the final answer. Written via `writeEvent()` to
 - `synthesis_model` (string) — model used for the synthesis agent (e.g. `"sonnet"`).
 
 **Schema stability:** additive only. New fields will only be added as optional.
+
+---
+
+## Section 45: Pattern Application Evidence Events (v2.3.19)
+
+Five new event types for the evidence-based pattern-application counting design
+(`.orchestray/kb/artifacts/pattern-application-evidence-design.md` §8). Replaces
+self-report (`pattern_record_application`) as the source of `times_applied` with a
+three-phase observed pipeline: offer (spawn-time) → ack (completion-time) → commit
+(orch-close). Kill switches: `ORCHESTRAY_PATTERN_EVIDENCE_DISABLED=1` (all three
+phases off), `ORCHESTRAY_PATTERN_EVIDENCE_COMMIT_DISABLED=1` (observe-only — phases
+1-2 still write, phase 3 emits `pattern_application_recorded`/`_withheld` but writes
+no frontmatter), `config.pattern_evidence.enabled: false` / `.commit: false` (same,
+config form). Ships default-on with commit enabled (§10.1).
+
+### `pattern_offered` event
+
+Emitted by `bin/record-pattern-offers.js` (`PreToolUse:Agent`), once per spawn that
+carries ≥1 resolvable pattern slug (curated or ambient). This is Phase 1 — the offer
+ledger — and the denominator for `times_offered` (§9.2).
+
+```json
+{
+  "version": 1,
+  "type": "pattern_offered",
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "spawn_id": "subagent-abc123",
+  "agent_role": "<subagent_type string, or null if unresolved, optional>",
+  "task_id": "<task id string, or null if unresolved, optional>",
+  "slugs_curated": ["decomposition-audit-fix-verify-cycle"],
+  "slugs_ambient": ["<offer_kind=ambient pattern slugs, optional array>"],
+  "shape_detected": "<toon_catalog | json_matches | uri_only | mixed | none, optional>",
+  "unresolved_slugs": ["<slug text that failed to resolve, optional array>"],
+  "schema_version": 1
+}
+```
+
+Required: `orchestration_id`, `timestamp`, `spawn_id`, `slugs_curated`.
+
+Field notes:
+- `slugs_curated` / `slugs_ambient`: the two `offer_kind` buckets from
+  `bin/_lib/pattern-offer-scan.js::scanOffers` — curated (from `pattern_find`
+  results cited via `@orchestray:pattern://<slug>`) and ambient (context-injected,
+  not explicitly cited).
+- `shape_detected`: which payload shape the scanner recognized in the spawn prompt.
+  `none` when no pattern references were found in a resolvable shape.
+- `unresolved_slugs`: slug-shaped strings the scanner found that did not resolve
+  against the corpus (typo or stale slug) — diagnostic only, not an offer.
+
+---
+
+### `pattern_ack_captured` event
+
+Emitted by `bin/validate-pattern-ack.js` (`PostToolUse:Agent`), once per spawn that
+had a `pattern_offered` row. Phase 2 — joins the spawn's structured-result
+`patterns_used[]` / `patterns_rejected[]` fields (or, pre-adoption, a legacy
+substring scan of summary/files_changed) back against the offer ledger.
+
+```json
+{
+  "version": 1,
+  "type": "pattern_ack_captured",
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "timestamp": "2026-01-01T00:04:00.000Z",
+  "spawn_id": "subagent-abc123",
+  "agent_role": "<subagent_type string, or null, optional>",
+  "used_slugs": ["decomposition-audit-fix-verify-cycle"],
+  "rejected_slugs": ["<slugs named in patterns_rejected[], optional array>"],
+  "offered_count": 2,
+  "coverage_complete": "<bool — false means the §4.2 symmetry rule was violated, optional>",
+  "agent_status": "<success | failure | unknown, optional>",
+  "ack_source": "<structured_fields | legacy_text_scan, optional>",
+  "schema_version": 1
+}
+```
+
+Required: `orchestration_id`, `timestamp`, `spawn_id`, `used_slugs`, `offered_count`.
+
+Field notes:
+- `coverage_complete: false` is a plumbing alarm, not a normal outcome — the
+  `SubagentStop` validator should already have blocked an incomplete structured
+  result before this event fires.
+- `ack_source`: `structured_fields` when the spawn used the `patterns_used[]` /
+  `patterns_rejected[]` contract fields; `legacy_text_scan` for the pre-adoption
+  substring-match fallback (unreliable — see §3.3 of the design; not fed into the
+  Phase 3 commit ledger).
+- Kill switch: `ORCHESTRAY_PATTERN_ACK_CHECK_DISABLED=1` (pre-existing, now scoped
+  to this phase).
+
+---
+
+### `pattern_application_recorded` event
+
+Emitted by `bin/commit-pattern-applications.js` (orchestration close), once per
+credited (pattern, orchestration) pair. Phase 3 — this is the event
+`bin/pattern-roi-aggregate.js` reads for `times_applied` deltas, replacing the dead
+`pattern_record_application` lookup.
+
+```json
+{
+  "version": 1,
+  "type": "pattern_application_recorded",
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "timestamp": "2026-01-01T18:00:00.000Z",
+  "slug": "decomposition-audit-fix-verify-cycle",
+  "pattern_name": "<duplicates slug — see field notes, optional>",
+  "evidence_grade": "observed",
+  "offer_kind": "<curated | ambient, optional>",
+  "spawn_ids": ["subagent-abc123"],
+  "agent_roles": ["<agent_role per spawn_id, optional array>"],
+  "times_applied_before": "<int, optional>",
+  "times_applied_after": 4,
+  "schema_version": 1
+}
+```
+
+Required: `orchestration_id`, `timestamp`, `slug`, `evidence_grade`, `times_applied_after`.
+`evidence_grade` enum: `observed | self_report`.
+
+Field notes:
+- `pattern_name` deliberately duplicates `slug` — `pattern-roi-aggregate.js` matches
+  on `ev.slug === slug || ev.pattern_name === slug`, and the withheld/skip-side
+  events key on `pattern_name`; carrying both avoids a join asymmetry.
+- `evidence_grade: self_report` rows come from `pattern_record_application`
+  (retained as an out-of-band channel per §7.1 of the design) and are bounded by
+  `pattern_evidence.max_self_report_per_orchestration` (default 2).
+- `times_applied_before` / `times_applied_after`: the frontmatter counter values
+  either side of the write — makes a wrong inference visible and reversible
+  (`bin/pattern-counter-revert.js --orchestration <id>`) without a shadow-mode
+  release (§10.1/§10.2).
+
+---
+
+### `pattern_application_withheld` event
+
+Emitted by `bin/commit-pattern-applications.js` (orchestration close) and by
+`bin/validate-pattern-ack.js` (Phase 2, `reason: "no_ack"` only), once per
+offered-but-uncredited (pattern, orchestration) pair. Supersedes
+`architect_pattern_ack_missing` (`reason: "no_ack"` is its exact replacement,
+generalized past the architect role — see that event's entry below).
+
+```json
+{
+  "version": 1,
+  "type": "pattern_application_withheld",
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "timestamp": "2026-01-01T18:00:00.000Z",
+  "slug": "user-correction-no-deferral-rule",
+  "pattern_name": "<duplicates slug, optional>",
+  "reason": "ambient_not_promoted",
+  "offer_kind": "<curated | ambient, optional>",
+  "spawn_ids": ["<spawn ids this offer touched, optional array>"],
+  "schema_version": 1
+}
+```
+
+Required: `orchestration_id`, `timestamp`, `slug`, `reason`.
+`reason` enum: `no_ack | not_offered | used_and_rejected | ambient_not_promoted |
+spawn_failed | verify_fix_escalated | orch_cap | self_report_cap | how_too_short`.
+
+Field notes:
+- `no_ack` fires from `bin/validate-pattern-ack.js` at completion time (one event
+  per uncovered offered slug) — the only reason emitted before orch close, since it
+  is knowable as soon as the spawn's structured result is validated.
+- The remaining reasons fire from `bin/commit-pattern-applications.js` at orch
+  close, where the full-orchestration view (caps, verify-fix escalation, ambient
+  promotion) is available.
+
+---
+
+### `pattern_never_offered` event
+
+Emitted by `bin/commit-pattern-applications.js` at orchestration close, at most once
+per orchestration, listing corpus patterns with `times_offered == 0` over the last
+`pattern_evidence.never_offered_window_orchestrations` (default 20). The diagnostic
+that separates *dead* (offered, never used) from *invisible* (never offered at all) —
+see the curator table in `agents/curator-stages/phase-contract.md` §3.
+
+```json
+{
+  "version": 1,
+  "type": "pattern_never_offered",
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "timestamp": "2026-01-01T18:00:00.000Z",
+  "window_orchestrations": 20,
+  "slugs": ["anti-pattern-core-set-expansion-consistency"],
+  "corpus_size": "<int, optional>",
+  "schema_version": 1
+}
+```
+
+Required: `orchestration_id`, `timestamp`, `slugs`, `window_orchestrations`.
+
+Field notes:
+- `slugs`: patterns never placed in any spawn's context over the window — a
+  retrieval-quality signal, not a value judgement. The curator must NOT deprecate
+  on this signal alone (§9.2: `times_offered: 0` is "invisible", not "dead").
+- `corpus_size`: total pattern count at emission time, for computing a fraction.
+
+---
