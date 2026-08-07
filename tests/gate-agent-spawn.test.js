@@ -2093,3 +2093,243 @@ describe('W4 — task_id-based routing match', () => {
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// D1 (v2.3.19): W-AC-4 authorizes on the caller's real subagent type, not on
+// the roster name it happens to be spawned under.
+// ---------------------------------------------------------------------------
+
+describe('W-AC-4 caller identity — spawn-metadata authorization', () => {
+  const {
+    stripCollisionSuffix,
+    resolveCallerAgentTypeFromMeta,
+  } = require('../bin/gate-agent-spawn.js');
+
+  const SESSION_ID = 'sess-d1-0000-1111-2222';
+
+  /** Encode a project root the way Claude Code names its cache dir. */
+  function encodeProject(root) {
+    return root.replace(/^\//, '').replace(/\//g, '-');
+  }
+
+  /** Fresh fake $HOME so sidecar lookups never touch the real home dir. */
+  function makeHome() {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-gate-home-'));
+    cleanup.push(home);
+    return home;
+  }
+
+  /**
+   * Write a spawn-metadata sidecar exactly as Claude Code does: the file name
+   * embeds the roster name plus a runtime hash, `customAgentType` carries the
+   * real subagent_type.
+   */
+  function writeMeta(home, cwd, { rosterName, customAgentType, sessionId = SESSION_ID, raw }) {
+    const subDir = path.join(
+      home, '.claude', 'projects', '-' + encodeProject(cwd), sessionId, 'subagents'
+    );
+    fs.mkdirSync(subDir, { recursive: true });
+    const file = path.join(subDir, 'agent-a' + rosterName + '-c528d894081a8347.meta.json');
+    fs.writeFileSync(file, raw !== undefined ? raw : JSON.stringify({
+      agentType: rosterName,
+      name: rosterName,
+      customAgentType,
+      taskKind: 'in_process_teammate',
+      model: 'sonnet',
+    }));
+    return { subDir, file };
+  }
+
+  function runAs(payload, home) {
+    return run(payload, { env: { HOME: home } });
+  }
+
+  function spawnCurator(dir, rosterName) {
+    return {
+      tool_name: 'Agent',
+      cwd: dir,
+      session_id: SESSION_ID,
+      agent_type: rosterName,
+      tool_input: { subagent_type: 'curator', model: 'sonnet', description: 'Curate patterns' },
+    };
+  }
+
+  // --- Test 1: false negative — legitimate role under an arbitrary roster name
+
+  test('D1-1a: curate-runner spawned as "curate-v2318" is allowed to call Agent()', () => {
+    const dir = makeDir();
+    const home = makeHome();
+    writeMeta(home, dir, { rosterName: 'curate-v2318', customAgentType: 'curate-runner' });
+
+    const { status, stderr } = runAs(spawnCurator(dir, 'curate-v2318'), home);
+
+    assert.equal(status, 0,
+      'curate-runner under an arbitrary roster name must authorize');
+    assert.ok(!stderr.includes('non_pm_agent_declares_agent_tool'),
+      'no non-PM block for a real curate-runner');
+  });
+
+  test('D1-1b: curate-runner spawned as collision-suffixed "curate-runner-2" is allowed', () => {
+    const dir = makeDir();
+    const home = makeHome();
+    writeMeta(home, dir, { rosterName: 'curate-runner-2', customAgentType: 'curate-runner' });
+
+    const { status, stderr } = runAs(spawnCurator(dir, 'curate-runner-2'), home);
+
+    assert.equal(status, 0, 'auto-suffixed roster name must not de-authorize the role');
+    assert.ok(!stderr.includes('non_pm_agent_declares_agent_tool'));
+  });
+
+  test('D1-1c: suffixed name resolves even when the unsuffixed sidecar is also present', () => {
+    // Substring matching alone would let `curate-runner` collide with
+    // `curate-runner-2`; resolution must disambiguate on meta.name.
+    const dir = makeDir();
+    const home = makeHome();
+    writeMeta(home, dir, { rosterName: 'curate-runner', customAgentType: 'curate-runner' });
+    writeMeta(home, dir, { rosterName: 'curate-runner-2', customAgentType: 'developer' });
+
+    const { status, stderr } = runAs(spawnCurator(dir, 'curate-runner-2'), home);
+
+    assert.equal(status, 2,
+      'the -2 sidecar says developer — must block despite a sibling curate-runner sidecar');
+    assert.ok(stderr.includes('non_pm_agent_declares_agent_tool'));
+    assert.ok(stderr.includes("agent role 'developer'"),
+      'blocked on the resolved type, not the roster name');
+  });
+
+  // --- Test 2: false positive — the serious direction (FAILS pre-fix)
+
+  test('D1-2: non-authorized agent type spawned with name "pm" is BLOCKED', () => {
+    // Pre-fix this passed the gate: `agent_type` read as "pm" hit the allowlist.
+    // The sidecar records what the agent really is, so it must be blocked.
+    const dir = makeDir();
+    const home = makeHome();
+    writeMeta(home, dir, { rosterName: 'pm', customAgentType: 'developer' });
+
+    const { status, stderr } = runAs(spawnCurator(dir, 'pm'), home);
+
+    assert.equal(status, 2,
+      'a developer that named itself "pm" must not be authorized to spawn');
+    assert.ok(stderr.includes('non_pm_agent_declares_agent_tool'));
+    assert.ok(stderr.includes("agent role 'developer'"),
+      'message reports the resolved type');
+    assert.ok(stderr.includes("spawned as 'pm'"),
+      'message discloses the roster name the caller used');
+  });
+
+  test('D1-2b: a real pm is still allowed', () => {
+    const dir = makeDir();
+    const home = makeHome();
+    writeMeta(home, dir, { rosterName: 'pm-lead', customAgentType: 'pm' });
+
+    const { status } = runAs(spawnCurator(dir, 'pm-lead'), home);
+
+    assert.equal(status, 0, 'genuine pm must keep spawning');
+  });
+
+  // --- Test 3: absent agent_type (orchestrator session)
+
+  test('D1-3: absent agent_type — orchestrator session still allowed', () => {
+    const dir = makeDir();
+    const home = makeHome();
+
+    const payload = spawnCurator(dir, 'irrelevant');
+    delete payload.agent_type;
+    const { status, stderr } = runAs(payload, home);
+
+    assert.equal(status, 0, 'parent session carries no role restriction');
+    assert.ok(!stderr.includes('non_pm_agent_declares_agent_tool'));
+  });
+
+  // --- Test 4: kill switch
+
+  test('D1-4: ORCHESTRAY_NON_PM_AGENT_GATE_DISABLED=1 overrides the block', () => {
+    const dir = makeDir();
+    const home = makeHome();
+    writeMeta(home, dir, { rosterName: 'dev-1', customAgentType: 'developer' });
+
+    const { status, stderr } = run(spawnCurator(dir, 'dev-1'), {
+      env: { HOME: home, ORCHESTRAY_NON_PM_AGENT_GATE_DISABLED: '1' },
+    });
+
+    assert.equal(status, 0, 'kill switch must allow the spawn');
+    assert.ok(!stderr.includes('non_pm_agent_declares_agent_tool'));
+  });
+
+  // --- Test 5: resolution errors degrade to the fallback, never crash
+
+  test('D1-5a: unreadable sidecar dir — falls back to the roster-name heuristic', () => {
+    const dir = makeDir();
+    const home = makeHome();
+    // No sidecar at all: `developer` is not authorized either way.
+    const { status, stderr } = runAs(spawnCurator(dir, 'developer'), home);
+
+    assert.equal(status, 2, 'fallback preserves the pre-existing block');
+    assert.ok(stderr.includes('non_pm_agent_declares_agent_tool'));
+  });
+
+  test('D1-5b: corrupt sidecar JSON does not crash the hook', () => {
+    const dir = makeDir();
+    const home = makeHome();
+    writeMeta(home, dir, { rosterName: 'curate-runner-2', customAgentType: 'x', raw: '{ not json' });
+
+    const { status, stderr } = runAs(spawnCurator(dir, 'curate-runner-2'), home);
+
+    // Resolution fails → suffix-stripped fallback yields `curate-runner` → allowed.
+    assert.equal(status, 0, 'corrupt sidecar degrades to the fallback, no crash');
+    assert.ok(!stderr.includes('Error:'), 'no unhandled error surfaced');
+  });
+
+  test('D1-5c: sidecars dir replaced by a file — readdir error degrades cleanly', () => {
+    const dir = makeDir();
+    const home = makeHome();
+    const projDir = path.join(home, '.claude', 'projects', '-' + encodeProject(dir), SESSION_ID);
+    fs.mkdirSync(projDir, { recursive: true });
+    fs.writeFileSync(path.join(projDir, 'subagents'), 'not a directory');
+
+    const { status } = runAs(spawnCurator(dir, 'developer'), home);
+
+    assert.equal(status, 2, 'ENOTDIR degrades to fallback, which still blocks developer');
+  });
+
+  // --- Unit coverage for the exported helpers
+
+  test('D1-6a: stripCollisionSuffix removes only a trailing numeric suffix', () => {
+    assert.equal(stripCollisionSuffix('curate-runner-2'), 'curate-runner');
+    assert.equal(stripCollisionSuffix('curate-runner-13'), 'curate-runner');
+    assert.equal(stripCollisionSuffix('curate-runner'), 'curate-runner');
+    assert.equal(stripCollisionSuffix('pm'), 'pm');
+    // Non-strings pass through untouched rather than throwing.
+    assert.equal(stripCollisionSuffix(null), null);
+    assert.deepEqual(stripCollisionSuffix({ a: 1 }), { a: 1 });
+  });
+
+  test('D1-6b: resolveCallerAgentTypeFromMeta returns null on bad input instead of throwing', () => {
+    assert.equal(resolveCallerAgentTypeFromMeta(null, 's', '/tmp'), null);
+    assert.equal(resolveCallerAgentTypeFromMeta('n', null, '/tmp'), null);
+    assert.equal(resolveCallerAgentTypeFromMeta('n', 's', null), null);
+    assert.equal(resolveCallerAgentTypeFromMeta('', '', ''), null);
+    assert.equal(resolveCallerAgentTypeFromMeta({}, {}, {}), null);
+  });
+
+  test('D1-6c: resolveCallerAgentTypeFromMeta reads customAgentType from the sidecar', () => {
+    const dir = makeDir();
+    const home = makeHome();
+    writeMeta(home, dir, { rosterName: 'oracle-v2318', customAgentType: 'platform-oracle' });
+
+    const realHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      assert.equal(
+        resolveCallerAgentTypeFromMeta('oracle-v2318', SESSION_ID, dir),
+        'platform-oracle'
+      );
+      assert.equal(
+        resolveCallerAgentTypeFromMeta('oracle-v2318', 'other-session', dir), null,
+        'session mismatch resolves to null'
+      );
+    } finally {
+      if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
+    }
+  });
+});

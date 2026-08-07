@@ -505,6 +505,80 @@ function resolveVendoredPackageDir(pkgName, pkgRoot) {
   }
 }
 
+/**
+ * Remove vendored dependency directories under
+ * `{targetDir}/orchestray/node_modules/` that are not in `allowlist`.
+ *
+ * Installs accumulate cruft across upgrades: a dep vendored by a prior
+ * version (e.g. ajv, dropped in v2.3.8 in favor of the in-house
+ * json-schema-subset.js, along with its four transitive deps) is copied once
+ * and then never revisited by the normal install flow — nothing removes it
+ * on later installs. `allowlist` is the single source of truth for what THIS
+ * install version vendors; anything else present under node_modules/ is
+ * stale leftover from an earlier version.
+ *
+ * Safety, per the caller's contract (only ever prune inside our own
+ * node_modules/ tree, directories only, never follow a symlink out):
+ *   - Only reads/removes entries directly under `{targetDir}/orchestray/node_modules/`.
+ *   - `Dirent.isDirectory()` reflects the entry's own lstat-style type, so a
+ *     symlink (even one pointing at a real directory) reports false here and
+ *     is skipped outright — never traversed, never deleted.
+ *   - For each surviving candidate, the realpath is re-checked to confirm it
+ *     resolves inside the same node_modules/ root before rmSync is called,
+ *     as defense in depth against exotic filesystem layouts (bind mounts,
+ *     hardlinks) that Dirent alone wouldn't catch.
+ *
+ * @param {string} targetDir  The Claude config directory (e.g. ~/.claude).
+ * @param {string[]} allowlist  Vendored dep names this install version ships.
+ * @returns {{pruned: string[], failed: Array<{name: string, error: string}>}}
+ */
+function pruneStaleVendoredDeps(targetDir, allowlist) {
+  const result = { pruned: [], failed: [] };
+  const nmDir = path.join(targetDir, 'orchestray', 'node_modules');
+  if (!fs.existsSync(nmDir)) return result;
+
+  let nmRealRoot;
+  try {
+    nmRealRoot = fs.realpathSync(nmDir);
+  } catch (_e) {
+    return result; // race / permission issue — leave everything alone
+  }
+
+  let entries;
+  try {
+    entries = fs.readdirSync(nmDir, { withFileTypes: true });
+  } catch (_e) {
+    return result;
+  }
+
+  for (const entry of entries) {
+    if (allowlist.includes(entry.name)) continue;
+    if (!entry.isDirectory()) continue; // excludes symlinks, files
+
+    const entryPath = path.join(nmDir, entry.name);
+    let realEntryPath;
+    try {
+      realEntryPath = fs.realpathSync(entryPath);
+    } catch (_e) {
+      continue; // gone already / unreadable — leave it
+    }
+    const rel = path.relative(nmRealRoot, realEntryPath);
+    if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+      // Resolves outside node_modules/ — never follow it out to delete.
+      continue;
+    }
+
+    try {
+      fs.rmSync(entryPath, { recursive: true, force: true });
+      result.pruned.push(entry.name);
+    } catch (err) {
+      result.failed.push({ name: entry.name, error: err.message });
+    }
+  }
+
+  return result;
+}
+
 function install(targetDir) {
   // -------------------------------------------------------------------------
   // DEF-6: install footprint — verification comment
@@ -896,6 +970,17 @@ function install(targetDir) {
     say('  \x1b[33m⚠\x1b[0m schemas/ not found in source; skipping');
   }
 
+  // VENDORED_DEP_NAMES (D2): single source of truth for what THIS
+  // install version vendors under node_modules/. Feeds both the copy blocks
+  // below (via the named consts) and pruneStaleVendoredDeps further down,
+  // which removes anything present that isn't in this list — e.g. ajv and
+  // its transitive deps, left behind by installs predating v2.3.8. Adding a
+  // future vendored dep only requires updating this array (plus its own
+  // copy block, since each dep may need its own copy filter).
+  const VENDORED_ZOD_NAME = 'zod';
+  const VENDORED_TREE_SITTER_NAME = 'web-tree-sitter';
+  const VENDORED_DEP_NAMES = [VENDORED_ZOD_NAME, VENDORED_TREE_SITTER_NAME];
+
   // 3d-zod (v2.2.15 P1-11 install fix; v2.3.17 hoisted-layout fix):
   // bin/_lib/config-schema.js requires 'zod' at module-load. Without copying
   // node_modules/zod into the install target, MCP server + ~30 hook files
@@ -908,9 +993,9 @@ function install(targetDir) {
   // Use fs.cpSync (not copyJsTree) because zod's CommonJS entry point is
   // index.cjs which copyJsTree's .js-only filter excludes. cpSync also
   // preserves the package.json + .d.ts files needed by editor tooling.
-  const zodSrc = resolveVendoredPackageDir('zod', pkgRoot);
+  const zodSrc = resolveVendoredPackageDir(VENDORED_ZOD_NAME, pkgRoot);
   if (zodSrc) {
-    const zodDst = path.join(targetDir, 'orchestray', 'node_modules', 'zod');
+    const zodDst = path.join(targetDir, 'orchestray', 'node_modules', VENDORED_ZOD_NAME);
     fs.cpSync(zodSrc, zodDst, {
       recursive: true,
       // Skip src/ (TypeScript source — runtime uses index.cjs / index.js) and
@@ -954,9 +1039,9 @@ function install(targetDir) {
   // whole package dir (not just .js files) since it ships .wasm binaries that
   // copyJsTree's filter would exclude. Missing web-tree-sitter degrades a
   // feature rather than breaking boot, so this stays a warning, not a failure.
-  const treeSitterSrc = resolveVendoredPackageDir('web-tree-sitter', pkgRoot);
+  const treeSitterSrc = resolveVendoredPackageDir(VENDORED_TREE_SITTER_NAME, pkgRoot);
   if (treeSitterSrc) {
-    const treeSitterDst = path.join(targetDir, 'orchestray', 'node_modules', 'web-tree-sitter');
+    const treeSitterDst = path.join(targetDir, 'orchestray', 'node_modules', VENDORED_TREE_SITTER_NAME);
     fs.cpSync(treeSitterSrc, treeSitterDst, { recursive: true });
     let treeSitterFileCount = 0;
     const countWalkTs = (dir) => {
@@ -972,7 +1057,18 @@ function install(targetDir) {
   }
 
   // ajv removed in v2.3.8: plugin-input-schema-validator.js now uses the
-  // in-house json-schema-subset.js (no eval, no external deps). Nothing to copy.
+  // in-house json-schema-subset.js (no eval, no external deps). Nothing to copy —
+  // but installs that predate v2.3.8 still have ajv (and its transitive deps
+  // fast-deep-equal, fast-uri, json-schema-traverse, require-from-string)
+  // sitting in node_modules/ from before the removal. The prune step below
+  // (D2) sweeps those out on every install/upgrade.
+  const prunedVendored = pruneStaleVendoredDeps(targetDir, VENDORED_DEP_NAMES);
+  for (const name of prunedVendored.pruned) {
+    say(`  \x1b[32m✓\x1b[0m Pruned stale vendored dependency: node_modules/${name}`);
+  }
+  for (const f of prunedVendored.failed) {
+    say(`  \x1b[33m⚠\x1b[0m Could not prune stale vendored dependency node_modules/${f.name}: ${f.error}`);
+  }
 
   // 3d post-install verification (FN-20 v2.2.15): fork validate-config.js
   // against a tmp fixture. The prior bare `require.resolve('../schemas')`

@@ -692,7 +692,16 @@ describe('W11: test-context emits stay in the D7 sandbox', () => {
   }
 
   test('an emit resolving to this package\'s own log lands in the sandbox instead', () => {
-    const liveBefore = readRows(LIVE_LOG).length;
+    // LIVE_LOG is this repo's real project audit log, and this repo dogfoods
+    // its own hooks -- normal (non-test) hook invocations append genuine
+    // hook_dedup_decision rows to it over time. An absolute "zero dedup rows"
+    // check would fail the moment the feature it's testing gets used for
+    // real, so every check here is a before/after delta or a marker match,
+    // never an absolute count.
+    const before = readRows(LIVE_LOG);
+    const liveBefore = before.length;
+    const dedupBefore = before.filter((r) => r.type === DEDUP_EVENT_TYPE).length;
+
     const { marker, decision, script } = probe('d7');
     assert.equal(decision.fire, true);
 
@@ -701,8 +710,9 @@ describe('W11: test-context emits stay in the D7 sandbox', () => {
       'the live project audit log must not grow under test');
     assert.equal(liveAfter.filter((r) => r.session_id === marker).length, 0,
       'the row must not be in the live log');
-    assert.equal(liveAfter.filter((r) => r.type === DEDUP_EVENT_TYPE).length, 0,
-      'no dedup row may ever appear in the live log from a test');
+    assert.equal(liveAfter.filter((r) => r.type === DEDUP_EVENT_TYPE).length, dedupBefore,
+      'no NEW dedup row may appear in the live log from this test (pre-existing production rows, ' +
+      'written by real hook invocations against this repo, are untouched)');
 
     const mine = dedupRows(auditWriter._testHooks.sandboxEventsPath())
       .filter((r) => r.session_id === marker);

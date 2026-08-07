@@ -27,7 +27,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
+const { encodeProjectPath } = require('./_lib/path-containment');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { getRoutingFilePath, findRoutingEntry, readRoutingEntries } = require('./_lib/routing-lookup');
 const { loadMcpEnforcement, loadRoutingGateConfig, loadAntiPatternGateConfig, loadPatternDecayConfig } = require('./_lib/config-schema');
@@ -339,8 +341,12 @@ if (require.main === module) {
     // creates a rogue orchestration path outside the PM's planning loop.
     // Only the pm and curate-runner roles are authorized to call Agent().
     //
-    // Detection: the hook payload carries `agent_type` (the calling agent's
-    // role). If it is set, non-empty, and NOT pm/curate-runner, block.
+    // Detection: `event.agent_type` carries the ROSTER NAME the caller was
+    // spawned under, not its subagent_type — so it is not an authorization
+    // input on its own. We resolve the caller's real type from Claude Code's
+    // spawn-metadata sidecar and authorize on that; see
+    // resolveCallerAgentTypeFromMeta for the full rationale and the residual
+    // exposure when the sidecar is unreadable.
     // Absent agent_type (orchestrator session) is allowed through — the parent
     // session has no role restriction.
     //
@@ -349,38 +355,49 @@ if (require.main === module) {
     // -----------------------------------------------------------------------
     {
       try {
-        const callerRole = event.agent_type || null;
+        const rosterName = event.agent_type || null;
         const AUTHORIZED_AGENT_ROLES = new Set(['pm', 'curate-runner']);
+
         if (
-          callerRole &&
-          !AUTHORIZED_AGENT_ROLES.has(callerRole) &&
+          rosterName &&
           process.env.ORCHESTRAY_NON_PM_AGENT_GATE_DISABLED !== '1'
         ) {
-          const nonPmMsg =
-            "[orchestray] gate-agent-spawn: non_pm_agent_declares_agent_tool — " +
-            "agent role '" + callerRole + "' is not authorized to call Agent(). " +
-            "Only 'pm' and 'curate-runner' may spawn sub-agents. " +
-            "Emergency override: set ORCHESTRAY_NON_PM_AGENT_GATE_DISABLED=1.";
-          process.stderr.write(nonPmMsg + '\n');
-          try {
-            writeEvent({
-              type:           'non_pm_agent_spawn_blocked',
-              version:        1,
-              schema_version: 1,
-              timestamp:      new Date().toISOString(),
-              caller_role:    callerRole,
-              tool_name:      toolName,
-              source:         'gate-agent-spawn',
-            }, { cwd });
-          } catch (_npEvErr) { /* fail-open on emit */ }
-          process.stdout.write(JSON.stringify({
-            hookSpecificOutput: {
-              hookEventName: 'PreToolUse',
-              permissionDecision: 'deny',
-              permissionDecisionReason: nonPmMsg,
-            },
-          }));
-          process.exit(2);
+          // Authoritative when available; falls back to the (unsound) roster
+          // name only when the sidecar cannot be read.
+          const resolvedType = resolveCallerAgentTypeFromMeta(
+            rosterName, event.session_id, cwd
+          );
+          const callerRole = resolvedType || stripCollisionSuffix(rosterName);
+
+          if (!AUTHORIZED_AGENT_ROLES.has(callerRole)) {
+            const nonPmMsg =
+              "[orchestray] gate-agent-spawn: non_pm_agent_declares_agent_tool — " +
+              "agent role '" + callerRole + "'" +
+              (callerRole === rosterName ? '' : " (spawned as '" + rosterName + "')") +
+              " is not authorized to call Agent(). " +
+              "Only 'pm' and 'curate-runner' may spawn sub-agents. " +
+              "Emergency override: set ORCHESTRAY_NON_PM_AGENT_GATE_DISABLED=1.";
+            process.stderr.write(nonPmMsg + '\n');
+            try {
+              writeEvent({
+                type:           'non_pm_agent_spawn_blocked',
+                version:        1,
+                schema_version: 1,
+                timestamp:      new Date().toISOString(),
+                caller_role:    callerRole,
+                tool_name:      toolName,
+                source:         'gate-agent-spawn',
+              }, { cwd });
+            } catch (_npEvErr) { /* fail-open on emit */ }
+            process.stdout.write(JSON.stringify({
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'deny',
+                permissionDecisionReason: nonPmMsg,
+              },
+            }));
+            process.exit(2);
+          }
         }
       } catch (_nonPmErr) {
         // Fail-open: any error → allow.
@@ -1955,9 +1972,101 @@ function compareGroupOrder(a, b) {
   return String(a) < String(b) ? -1 : (String(a) > String(b) ? 1 : 0);
 }
 
+// ---------------------------------------------------------------------------
+// W-AC-4 caller identity (v2.3.19).
+//
+// `event.agent_type` carries the ROSTER NAME the caller was spawned under (the
+// Agent Teams `name:` field), not the `subagent_type` that decides what the
+// agent actually is. Authorizing on it was wrong in both directions:
+//
+//   False negative (observed twice, v2.3.18): a legitimate `curate-runner`
+//   spawned as `curate-v2318` / `curate-runner-2` read as that name, failed the
+//   allowlist, and could not spawn Agent(curator).
+//
+//   False positive: any agent spawned with `name: "pm"` read as `pm` and passed
+//   — a caller-chosen string defeating the gate it is supposed to feed.
+//
+// Claude Code writes the real type to a sidecar it owns:
+//   ~/.claude/projects/-<encoded-cwd>/<session_id>/subagents/agent-<id>.meta.json
+//   { "name": "<roster name>", "customAgentType": "<subagent_type>", ... }
+//
+// `customAgentType` is recorded by the runtime at spawn time and is not chosen
+// by the calling agent, so it — not `agent_type` — is what we authorize on.
+// Verified against 55/55 sidecars in a live session: every one carries
+// `customAgentType`, and `agentType` always equals the roster `name`.
+// ---------------------------------------------------------------------------
+
+/** Cap on sidecars parsed per lookup — bounds the worst case on a hot path. */
+const MAX_META_CANDIDATES = 8;
+
+/**
+ * Strip a Claude Code collision suffix (`-2`, `-3`, …) from a roster name.
+ *
+ * NOT AUTHORIZATION — this is a lossy fallback used only when the spawn-metadata
+ * sidecar cannot be read. It repairs the false negative (a legitimate role whose
+ * roster name was auto-suffixed after a name collision) but does nothing about
+ * the false positive: the input is still a caller-chosen string, so a caller
+ * that names itself `pm` still authorizes on this path.
+ *
+ * @param {*} rosterName
+ * @returns {*} Suffix-stripped name, or the input unchanged if not a string.
+ */
+function stripCollisionSuffix(rosterName) {
+  if (typeof rosterName !== 'string') return rosterName;
+  return rosterName.replace(/-\d+$/, '');
+}
+
+/**
+ * Resolve the caller's true subagent type from Claude Code's spawn metadata.
+ *
+ * Returns null when the sidecar cannot be located or read — the caller must
+ * then fall back to the roster-name heuristic and accept that it is not
+ * authoritative.
+ *
+ * @param {string} rosterName - event.agent_type (caller-chosen roster name).
+ * @param {string} sessionId  - event.session_id.
+ * @param {string} cwd        - Resolved project root.
+ * @returns {string|null} The runtime-recorded customAgentType, or null.
+ */
+function resolveCallerAgentTypeFromMeta(rosterName, sessionId, cwd) {
+  if (typeof rosterName !== 'string' || !rosterName) return null;
+  if (typeof sessionId  !== 'string' || !sessionId)  return null;
+  if (typeof cwd        !== 'string' || !cwd)        return null;
+
+  const subDir = path.join(
+    os.homedir(), '.claude', 'projects',
+    '-' + encodeProjectPath(cwd), sessionId, 'subagents'
+  );
+
+  let entries;
+  try { entries = fs.readdirSync(subDir); } catch (_e) { return null; }
+
+  // The filename embeds the roster name plus a runtime hash, so narrow by
+  // substring to avoid parsing every sidecar, then confirm on `meta.name`.
+  // Substring alone is not enough: needle `curate-runner-` also hits
+  // `agent-acurate-runner-2-<hash>.meta.json`, a different agent.
+  const needle = rosterName + '-';
+  let parsed = 0;
+  for (const entry of entries) {
+    if (!entry.endsWith('.meta.json') || !entry.includes(needle)) continue;
+    if (++parsed > MAX_META_CANDIDATES) break;
+    let meta;
+    try {
+      meta = JSON.parse(fs.readFileSync(path.join(subDir, entry), 'utf8'));
+    } catch (_e) { continue; }
+    if (meta && meta.name === rosterName &&
+        typeof meta.customAgentType === 'string' && meta.customAgentType) {
+      return meta.customAgentType;
+    }
+  }
+  return null;
+}
+
 // Export helpers for test access.
 module.exports = Object.assign(module.exports || {}, {
   computeGroupBoundaryViolation,
   parseTaskGraphGroups,
   compareGroupOrder,
+  stripCollisionSuffix,
+  resolveCallerAgentTypeFromMeta,
 });
