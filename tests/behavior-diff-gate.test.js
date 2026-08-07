@@ -477,6 +477,168 @@ describe('BDG: harvest arming', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Behavior-Change declarations (v2.3.19 W3 fix)
+//
+// The gate advertised `Behavior-Change: <script> <reason>` as the escape
+// hatch for an intentional delta, but nothing parsed it — every intentional
+// change was permanently blocked. These tests cover the parser and its
+// wiring into run()/renderText().
+// ---------------------------------------------------------------------------
+
+describe('BDG: Behavior-Change declarations', () => {
+  test('a well-formed trailer parses into script -> [reason]', () => {
+    const body = 'release notes\n\nBehavior-Change: bin/foo.js fixture abc goes 2->0: it is fine\n';
+    const { declared, malformed } = bdg.parseDeclarations(body);
+    assert.deepEqual(declared.get('bin/foo.js'), ['fixture abc goes 2->0: it is fine']);
+    assert.deepEqual(malformed, []);
+  });
+
+  test('a reason-less declaration is rejected, not silently accepted', () => {
+    const { declared, malformed } = bdg.parseDeclarations('Behavior-Change: bin/foo.js\n');
+    assert.equal(declared.has('bin/foo.js'), false);
+    assert.equal(malformed.length, 1);
+    assert.match(malformed[0], /bin\/foo\.js/);
+  });
+
+  test('a declaration with only trailing whitespace after the path is still reason-less', () => {
+    const { declared, malformed } = bdg.parseDeclarations('Behavior-Change: bin/foo.js   \n');
+    assert.equal(declared.has('bin/foo.js'), false);
+    assert.equal(malformed.length, 1);
+  });
+
+  test('multiple lines and repeated scripts across commits all accumulate', () => {
+    const body = [
+      'Behavior-Change: bin/a.js first reason',
+      'Behavior-Change: bin/b.js second reason',
+      'Behavior-Change: bin/a.js third reason too',
+    ].join('\n');
+    const { declared } = bdg.parseDeclarations(body);
+    assert.deepEqual(declared.get('bin/a.js'), ['first reason', 'third reason too']);
+    assert.deepEqual(declared.get('bin/b.js'), ['second reason']);
+  });
+
+  test('matching is by exact repo-relative path — a bare basename does not alias it', () => {
+    const { declared } = bdg.parseDeclarations('Behavior-Change: gate-agent-spawn.js some reason\n');
+    assert.equal(declared.has('bin/gate-agent-spawn.js'), false, 'no accidental basename aliasing');
+    assert.equal(declared.has('gate-agent-spawn.js'), true, 'parses exactly as written');
+  });
+
+  test('a declared delta is excluded from delta_count/blocked and marked on its script entry', () => {
+    const root = tmpRepo();
+    touchScript(root, 'bin/demo.js');
+    writeFixture(root, 'demo', 'a.json', fixture({ x: 1 }));
+    let call = 0;
+    const declarations = { declared: new Map([['bin/demo.js', ['intentional change']]]), malformed: [] };
+    const report = bdg.run({
+      cwd: root, base: 'HEAD', only: ['bin/demo.js'], baselineRoot: root, declarations,
+      config: bdg.loadConfig(root),
+      observe: () => (++call === 1
+        ? { code: 0, events: ['a'], stderr_class: '' }
+        : { code: 1, events: ['b'], stderr_class: '' }),
+    });
+    assert.equal(report.scripts[0].declared, true);
+    assert.equal(report.scripts[0].declared_reason, 'intentional change');
+    assert.equal(report.delta_count, 0, 'a declared delta must not count as unexplained');
+    assert.equal(report.declared_delta_count, 1);
+    assert.equal(report.blocked, false);
+    assert.match(bdg.renderText(report), /\[DECLARED\]/);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  // Proves the guard is load-bearing: pass an empty declarations map for the
+  // exact same delta and confirm it still blocks. Disabling the `declared`
+  // check in behavior-diff.js (e.g. commenting out the `result.declared = ...`
+  // assignment) makes this fail, because `delta_count`/`blocked` would then
+  // be computed identically regardless of what `declarations` contains.
+  test('an undeclared delta still blocks', () => {
+    const root = tmpRepo();
+    touchScript(root, 'bin/demo.js');
+    writeFixture(root, 'demo', 'a.json', fixture({ x: 1 }));
+    let call = 0;
+    const report = bdg.run({
+      cwd: root, base: 'HEAD', only: ['bin/demo.js'], baselineRoot: root,
+      declarations: { declared: new Map(), malformed: [] },
+      config: bdg.loadConfig(root),
+      observe: () => (++call === 1
+        ? { code: 0, events: ['a'], stderr_class: '' }
+        : { code: 1, events: ['b'], stderr_class: '' }),
+    });
+    assert.equal(report.scripts[0].declared, false);
+    assert.equal(report.delta_count, 1);
+    assert.equal(report.blocked, true);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test('a declaration naming a script with no delta is surfaced, not silently dropped', () => {
+    const root = tmpRepo();
+    touchScript(root, 'bin/demo.js');
+    writeFixture(root, 'demo', 'a.json', fixture({ x: 1 }));
+    const declarations = { declared: new Map([['bin/nope.js', ['typo path']]]), malformed: [] };
+    const report = bdg.run({
+      cwd: root, base: 'HEAD', only: ['bin/demo.js'], baselineRoot: root, declarations,
+      config: bdg.loadConfig(root),
+      observe: () => ({ code: 0, events: ['a'], stderr_class: '' }),   // no delta at all
+    });
+    assert.deepEqual(report.unmatched_declarations, ['bin/nope.js']);
+    assert.match(bdg.renderText(report), /bin\/nope\.js/);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test('a malformed trailer is surfaced in renderText as a warning', () => {
+    const root = tmpRepo();
+    touchScript(root, 'bin/demo.js');
+    writeFixture(root, 'demo', 'a.json', fixture({ x: 1 }));
+    let call = 0;
+    const declarations = { declared: new Map(), malformed: ['Behavior-Change: bin/demo.js'] };
+    const report = bdg.run({
+      cwd: root, base: 'HEAD', only: ['bin/demo.js'], baselineRoot: root, declarations,
+      config: bdg.loadConfig(root),
+      observe: () => (++call === 1
+        ? { code: 0, events: ['a'], stderr_class: '' }
+        : { code: 1, events: ['b'], stderr_class: '' }),
+    });
+    assert.equal(report.blocked, true, 'a malformed trailer must not declare anything');
+    assert.match(bdg.renderText(report), /\[WARN\].*malformed/);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test('loadDeclarations reads real Behavior-Change trailers from base..HEAD', () => {
+    const GIT_ENV = {
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_SYSTEM: '/dev/null',
+      GIT_AUTHOR_NAME: 'bdg-test', GIT_AUTHOR_EMAIL: 'bdg-test@test',
+      GIT_COMMITTER_NAME: 'bdg-test', GIT_COMMITTER_EMAIL: 'bdg-test@test',
+    };
+    const { execFileSync } = require('node:child_process');
+    const git = (cwd, args) => execFileSync('git', args, { cwd, encoding: 'utf8', env: Object.assign({}, process.env, GIT_ENV) });
+
+    const root = tmpRepo();
+    git(root, ['init', '-q']);
+    fs.writeFileSync(path.join(root, 'f.txt'), '1', 'utf8');
+    git(root, ['add', '-A']);
+    git(root, ['commit', '-q', '-m', 'base commit']);
+    const baseSha = git(root, ['rev-parse', 'HEAD']).trim();
+
+    fs.writeFileSync(path.join(root, 'f.txt'), '2', 'utf8');
+    git(root, ['add', '-A']);
+    git(root, ['commit', '-q', '-m', 'declare it\n\nBehavior-Change: bin/foo.js it changed on purpose']);
+
+    const { declared, malformed } = bdg.loadDeclarations(root, baseSha);
+    assert.deepEqual(declared.get('bin/foo.js'), ['it changed on purpose']);
+    assert.deepEqual(malformed, []);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test('loadDeclarations fails open when the range is unusable (no git repo)', () => {
+    const root = tmpRepo();
+    const { declared, malformed } = bdg.loadDeclarations(root, 'HEAD');
+    assert.equal(declared.size, 0);
+    assert.deepEqual(malformed, []);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Baseline worktree — node_modules symlink (v2.3.19 W3 fix)
 //
 // `git worktree add` never carries gitignored `node_modules/`. Any script

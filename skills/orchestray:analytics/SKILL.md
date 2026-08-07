@@ -16,7 +16,7 @@ The user wants to see aggregate performance analytics across orchestration histo
    - If empty: analyze all orchestrations.
 
 2. **Scan history via MCP:** Call `mcp__orchestray__history_query_events` with:
-   - `event_types: ["orchestration_start", "orchestration_complete", "agent_stop", "task_completed_metrics", "routing_outcome", "replan", "verify_fix_attempt"]`
+   - `event_types: ["orchestration_start", "orchestration_complete", "agent_stop", "task_completed_metrics", "routing_outcome", "replan", "verify_fix_start", "verify_fix_pass", "verify_fix_fail", "verify_fix_oscillation", "verify_fix_attempt"]`
    - `limit: 500` (the server-side maximum)
    - If N was specified, filter the returned `events` array client-side to the
      last N unique `orchestration_id` values (the server does not expose a
@@ -41,7 +41,7 @@ The user wants to see aggregate performance analytics across orchestration histo
    - `agent_stop` / `task_completed_metrics`: extract `agent_type`, `estimated_cost_usd`, `model_used`.
    - `routing_outcome`: extract `agent_type`, `model_assigned`, `escalated` (boolean).
    - `replan`: count occurrences per orchestration.
-   - `verify_fix_attempt`: count verify-fix retry rounds per orchestration (the formal `verify_fix_pass`/`verify_fix_fail` quartet from `phase-verify.md` has no live write site in this repo and never fires — `verify_fix_attempt` is the informal retry-note the PM actually emits; see `event-schemas.md`).
+   - `verify_fix_start`: count verify-fix rounds opened per orchestration (round-boundary event, mechanically emitted by `bin/_lib/pm-emit-state-watcher.js` from task YAML `round_history`). `verify_fix_pass`/`verify_fix_fail`/`verify_fix_oscillation` give the round outcome distribution for the same rounds. `verify_fix_attempt` is a legacy/historical-only slug (never code-emitted; 19 PM hand-authored progress notes from v2.3.18 dogfooding, frozen) — do not treat it as a live signal, see `event-schemas.md`.
 
    Skip orchestrations that have no `orchestration_start` event in the returned set.
 
@@ -356,7 +356,7 @@ The user wants to see aggregate performance analytics across orchestration histo
    - Total patterns applied across all orchestrations.
    - Average patterns applied per orchestration (total applied / number of orchestrations that had at least one pattern_applied event).
    - Most frequently applied patterns (top 5 by count, using the pattern `name` or `pattern` field from the event).
-   - Correction effectiveness: count correction-type patterns that were applied and where no `verify_fix_attempt` event occurred for the same issue/agent in the same orchestration. These are estimated re-occurrences prevented.
+   - Correction effectiveness: count correction-type patterns that were applied and where no `verify_fix_fail` or `verify_fix_oscillation` event occurred for the same issue/agent in the same orchestration (i.e. any round that did open converged cleanly). These are estimated re-occurrences prevented.
 
    **Count new patterns**: From the pattern files, count how many have a `last_applied` (or `last_seen`) timestamp within the last 5 orchestrations (by comparing against `orchestration_start` timestamps from the most recent 5 history directories).
 

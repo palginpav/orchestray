@@ -60,6 +60,13 @@
  * Kill switches: `ORCHESTRAY_BEHAVIOR_DIFF_DISABLED=1`,
  * `behavior_diff_gate.enabled: false`, `behavior_diff_gate.block: false`
  * (telemetry only), `ORCHESTRAY_FIXTURE_HARVEST=0` (stop collecting).
+ *
+ * ## Declaring an intentional delta
+ *
+ * A commit body line `Behavior-Change: <script> <reason>` (script = the full
+ * repo-relative path, e.g. `bin/foo.js`; reason mandatory) marks that
+ * script's delta as declared for every commit in `base..HEAD`, excluding it
+ * from `blocked`. See `parseDeclarations`/`loadDeclarations`.
  */
 
 const { execFileSync } = require('child_process');
@@ -369,6 +376,73 @@ function git(cwd, args) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Behavior-Change declarations
+// ---------------------------------------------------------------------------
+
+/** One or more whitespace chars, used to split the trailer's script token from its reason. */
+const WS_RE = /\s/;
+
+/**
+ * Parse `Behavior-Change: <script> <reason>` trailers out of commit body text.
+ *
+ * Matching is by the EXACT repo-relative script path (e.g. `bin/foo.js`), not
+ * a bare basename — accepting a basename would let a declaration for
+ * `bin/a/foo.js` silently also cover an unrelated `bin/b/foo.js`. The caller
+ * (`run()`) matches `declared.get(delta.script)` verbatim.
+ *
+ * A trailer with no reason (or a reason that is only whitespace) is NOT a
+ * valid declaration — it is collected in `malformed` so the caller can warn
+ * rather than silently accept or silently drop it.
+ *
+ * @param {string} body — one or more commit bodies concatenated by `%B`.
+ * @returns {{declared: Map<string, string[]>, malformed: string[]}}
+ */
+function parseDeclarations(body) {
+  const declared = new Map();
+  const malformed = [];
+  for (const rawLine of String(body || '').split('\n')) {
+    const line = rawLine.trim();
+    if (!line.startsWith('Behavior-Change:')) continue;
+    const rest = line.slice('Behavior-Change:'.length).trim();
+    const sp = rest.search(WS_RE);
+    const script = sp === -1 ? rest : rest.slice(0, sp);
+    const reason = sp === -1 ? '' : rest.slice(sp).trim();
+    if (!script || !reason) { malformed.push(line); continue; }
+    if (!declared.has(script)) declared.set(script, []);
+    declared.get(script).push(reason);
+  }
+  return { declared, malformed };
+}
+
+/**
+ * Behavior-Change declarations from commit bodies in `base..HEAD`. Fail-open:
+ * an unusable range (no git, base not an ancestor, `base === HEAD` with no
+ * commits between) yields no declarations rather than throwing — a harness
+ * bug here must not be the reason a real delta goes unreported.
+ *
+ * @param {string} repoRoot
+ * @param {string} base
+ * @returns {{declared: Map<string, string[]>, malformed: string[]}}
+ */
+function loadDeclarations(repoRoot, base) {
+  let body;
+  try {
+    body = git(repoRoot, ['log', base + '..HEAD', '--format=%B']);
+  } catch (_e) {
+    return { declared: new Map(), malformed: [] };
+  }
+  return parseDeclarations(body);
+}
+
+/** Declarations naming a script with no matching delta — a typo'd path or a delta that vanished. */
+function markUnmatchedDeclarations(report, declarations) {
+  for (const script of declarations.declared.keys()) {
+    const s = report.scripts.find((x) => x.script === script);
+    if (!s || s.deltas.length === 0) report.unmatched_declarations.push(script);
+  }
+}
+
 /**
  * Changed `bin/*.js` scripts relative to `base`, including untracked.
  *
@@ -437,11 +511,16 @@ function createBaselineWorktree(repoRoot, base) {
 // ---------------------------------------------------------------------------
 
 /**
- * Full replay across the changed scripts.
+ * Full replay across the changed scripts. `delta_count` (and thus `blocked`)
+ * excludes deltas covered by a `Behavior-Change:` trailer in `base..HEAD`;
+ * those are counted separately in `declared_delta_count` and marked
+ * `declared: true` on their `scripts[]` entry — see `parseDeclarations`.
  *
  * @param {object} [opts]
  * @returns {{schema_version:number, base:string, scripts:object[], delta_count:number,
- *            uncovered_count:number, coverage:object, blocked:boolean, ramp:object}}
+ *            declared_delta_count:number, uncovered_count:number, coverage:object,
+ *            blocked:boolean, unmatched_declarations:string[],
+ *            malformed_declarations:string[], ramp:object}}
  */
 function run(opts) {
   const options = opts || {};
@@ -451,6 +530,7 @@ function run(opts) {
 
   const only = options.only && options.only.length ? options.only : null;
   const scripts = only || changedScripts(repoRoot, base);
+  const declarations = options.declarations || loadDeclarations(repoRoot, base);
 
   const report = {
     schema_version: SCHEMA_VERSION,
@@ -458,13 +538,19 @@ function run(opts) {
     generated_at: new Date().toISOString(),
     scripts: [],
     delta_count: 0,
+    declared_delta_count: 0,
     uncovered_count: 0,
     coverage: coverage(repoRoot, { maxFixtures: cfg.max_fixtures_per_script }),
     blocked: false,
+    unmatched_declarations: [],
+    malformed_declarations: declarations.malformed,
     ramp: { threshold: rampThreshold(cfg), count: null, state: 'not_applicable' },
   };
 
-  if (scripts.length === 0) return report;
+  if (scripts.length === 0) {
+    markUnmatchedDeclarations(report, declarations);
+    return report;
+  }
 
   let worktree = null;
   try {
@@ -483,14 +569,19 @@ function run(opts) {
         observe: options.observe,
         maxFixtures: cfg.max_fixtures_per_script,
       });
+      const reasons = declarations.declared.get(rel);
+      result.declared = !!(reasons && result.deltas.length > 0);
+      result.declared_reason = result.declared ? reasons.join('; ') : null;
       report.scripts.push(result);
-      report.delta_count += result.deltas.length;
+      if (result.declared) report.declared_delta_count += result.deltas.length;
+      else report.delta_count += result.deltas.length;
       if (result.uncovered) report.uncovered_count++;
     }
   } finally {
     worktree.cleanup();
   }
 
+  markUnmatchedDeclarations(report, declarations);
   report.blocked = cfg.block && report.delta_count > 0;
   return report;
 }
@@ -564,6 +655,11 @@ function renderText(report) {
       continue;
     }
     if (s.deltas.length === 0) { lines.push('  [SAME]      ' + s.script + ' (' + s.fixtures + ' fixtures)'); continue; }
+    if (s.declared) {
+      lines.push('  [DECLARED]  ' + s.script + ' — ' + s.deltas.length + ' of ' + s.fixtures +
+        ' fixtures differ — ' + s.declared_reason);
+      continue;
+    }
     lines.push('  [DELTA]     ' + s.script + ' — ' + s.deltas.length + ' of ' + s.fixtures + ' fixtures differ');
     for (const d of s.deltas.slice(0, 5)) {
       lines.push('      ' + d.fixture + ': code ' + d.before.code + '->' + d.after.code +
@@ -572,10 +668,19 @@ function renderText(report) {
           ? ', stderr "' + d.before.stderr_class + '"->"' + d.after.stderr_class + '"' : ''));
     }
   }
+  for (const m of report.malformed_declarations || []) {
+    lines.push('  [WARN]      malformed `Behavior-Change:` trailer (no reason given): ' + m);
+  }
+  for (const s of report.unmatched_declarations || []) {
+    lines.push('  [WARN]      `Behavior-Change:` declared for ' + s + ' but no matching delta was found ' +
+      '(typo\'d path, or the delta no longer exists?)');
+  }
+  const declaredNote = report.declared_delta_count ? ' (' + report.declared_delta_count + ' declared, excluded)' : '';
   lines.push(report.delta_count === 0
-    ? '  result: no behavior deltas'
-    : '  result: ' + report.delta_count + ' behavior delta(s)' +
-      (report.blocked ? ' — declare intentional changes with a `Behavior-Change: <script> <reason>` line in the commit body'
+    ? '  result: no unexplained behavior deltas' + declaredNote
+    : '  result: ' + report.delta_count + ' unexplained behavior delta(s)' + declaredNote +
+      (report.blocked ? ' — declare intentional changes with a `Behavior-Change: <script> <reason>` line in the ' +
+        'commit body (script must be the full repo-relative path, reason mandatory)'
                       : ' (telemetry only — behavior_diff_gate.block is false)'));
   return lines.join('\n');
 }
@@ -654,6 +759,8 @@ module.exports = {
   createBaselineWorktree,
   linkNodeModules,
   materialiseState,
+  parseDeclarations,
+  loadDeclarations,
   loadConfig,
   isDisabled,
   rampThreshold,

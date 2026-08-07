@@ -303,8 +303,23 @@ function emitRollup(cwd, orchestrationId) {
     }
   }
 
+  // `scout_spawn` (the originally-declared type) has never had a production
+  // emitter — `scout_spawn` stays registered (unwired) for the cost-savings
+  // fields below, which have no equivalent elsewhere.
+  //
+  // E2 fix (reviewer finding, superseding the v2.3.19-item-4 `scout_decision`
+  // source): `scout_decision` is itself PM-prose-emitted with no mechanical
+  // tie to whether a haiku-scout spawn actually followed — swapping one
+  // unreliable prose source for another. `agent_start` IS mechanically
+  // emitted (bin/audit-event.js, every SubagentStart hook fire) and its
+  // `agent_type` is the literal `subagent_type` string the PM passed to
+  // Agent() — so filtering for `agent_type === 'haiku-scout'` counts spawns
+  // that actually happened, not spawns the PM merely decided to make.
+  const scoutSpawnStarts = orchEvents.filter(
+    ev => ev.type === 'agent_start' && ev.agent_type === 'haiku-scout'
+  );
+  const scoutSpawnCount  = scoutSpawnStarts.length;
   const scoutSpawnEvents = orchEvents.filter(ev => ev.type === 'scout_spawn');
-  const scoutSpawnCount  = scoutSpawnEvents.length;
   // S-003 (v2.2.0 fix-pass): the prior `Number(x) || 0` short-circuit
   // accepts Infinity/-Infinity, so `Infinity + (-Infinity) = NaN` poisons
   // the running total and JSON.stringify writes `null`. Number.isFinite

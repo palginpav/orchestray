@@ -27,9 +27,9 @@
  *      ROSTER NAME (e.g. "oracle-v2318"), not the `subagent_type` role
  *      ("platform-oracle") that decides tool grants — so `agents/<role>.md`
  *      never resolved. Fixed by reusing the spawn-metadata sidecar resolution
- *      `bin/gate-agent-spawn.js` established for the identical conflation in
- *      W-AC-4 (`resolveCallerAgentTypeFromMeta` / `stripCollisionSuffix`),
- *      rather than a second parallel heuristic.
+ *      established for the identical conflation in W-AC-4
+ *      (`bin/_lib/caller-identity.js`), rather than a second parallel
+ *      heuristic.
  *   2. The agent definition was only ever looked for under `<cwd>/agents/` —
  *      the source-repo dev layout. Real installs put it under
  *      `<cwd>/.claude/agents/` (project install) or `~/.claude/agents/`
@@ -70,10 +70,10 @@ const { validateTranscriptPath } = require('./_lib/path-containment');
 const { readFileBounded }       = require('./_lib/file-read-bounded');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { readHookInputRaw }      = require('./_lib/hook-stdin');
-// Reuse of the established caller-identity resolution (W-AC-4, v2.3.19) —
-// gate-agent-spawn.js is required purely as a library here: its own stdin
-// handling is guarded behind `require.main === module` and never runs.
-const { resolveCallerAgentTypeFromMeta, stripCollisionSuffix } = require('./gate-agent-spawn');
+// Reuse of the established caller-identity resolution (W-AC-4, v2.3.19).
+// Sourced from _lib, not from gate-agent-spawn.js: requiring that hook pulled
+// zod and ~87 other modules into every SubagentStop for two pure functions.
+const { resolveCallerAgentTypeFromMeta, stripCollisionSuffix } = require('./_lib/caller-identity');
 
 const SCHEMA_VERSION = 1;
 const MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024; // 8 MB — generous, telemetry-only

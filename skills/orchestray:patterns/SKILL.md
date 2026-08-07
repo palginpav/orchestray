@@ -57,7 +57,7 @@ The user wants to see the pattern learning dashboard showing what the system has
    - `pattern_applied`: extract `pattern`, `agent`, `confidence`, `category`
    - `orchestration_start`: extract orchestration ID (from directory name), timestamp
    - `orchestration_complete`: extract `status`, `total_cost_usd`
-   - `verify_fix_attempt`: count per orchestration and agent
+   - `verify_fix_start`/`verify_fix_pass`/`verify_fix_fail`/`verify_fix_oscillation`: count per orchestration and agent (live round-boundary quartet; `verify_fix_attempt` is a legacy historical-only slug, never code-emitted — see `event-schemas.md`)
    - `replan`: count per orchestration
    - `pattern_pruned`: extract `name`, `confidence`, `times_applied`, orchestration ID, timestamp
    - `pattern_skip_enriched`: collect into a Map keyed by `pattern_name` (used for health score skip penalty)
@@ -135,7 +135,7 @@ The user wants to see the pattern learning dashboard showing what the system has
    - Find `orchestration_start` event for the timestamp
    - Find all `pattern_applied` events, extract pattern names and categories
    - Find `orchestration_complete` event for status
-   - Count `verify_fix_attempt` events as corrections triggered
+   - Count `verify_fix_start` events as corrections triggered
 
    If no `pattern_applied` events exist in any orchestration:
    ```
@@ -219,7 +219,7 @@ The user wants to see the pattern learning dashboard showing what the system has
 10. **Section 6 -- Estimated Impact**: Show estimated savings from pattern applications.
 
    Calculation:
-   - **Corrections preventing re-occurrence**: Count `pattern_applied` events where category is `correction` or `user-correction`, AND no `verify_fix_attempt` event occurred for the same agent in the same orchestration. Each prevented round estimated at ~$0.15.
+   - **Corrections preventing re-occurrence**: Count `pattern_applied` events where category is `correction` or `user-correction`, AND no `verify_fix_fail` or `verify_fix_oscillation` event occurred for the same agent in the same orchestration. Each prevented round estimated at ~$0.15.
    - **Anti-patterns avoiding known failures**: Count `pattern_applied` events where category is `anti-pattern`, AND no `replan` event occurred in the same orchestration. Each prevented re-plan estimated at ~$0.50.
    - **Routing patterns reducing cost**: Count `pattern_applied` events where category is `routing`. Savings from routing_outcome events using cheaper models vs opus baseline.
 

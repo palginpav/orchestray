@@ -2392,6 +2392,82 @@ function runTokenwrightSelfProbeIfNeeded(cwd, stateDir) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// E3 dark-event triage (v2.3.19 item 2): MCP-allowlist stale-entry check
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Consume the `mcp-allowlist-check-needed` sentinel (written by install.js on
+ * every install) and, if present, check whether `agents/pm.md` frontmatter
+ * `tools:` lists an `mcp__orchestray__<slug>` that no longer exists in
+ * `bin/mcp-server/server.js` TOOL_TABLE. Emits `mcp_allowlist_stale_entry_warn`
+ * per stale slug found (batched into one event, matching the declared shape).
+ *
+ * Both `agents/pm.md` and `server.js` ship with the plugin itself, not the
+ * project, so they are read relative to this script's own install location
+ * (`__dirname`) rather than `cwd` (the project root).
+ *
+ * Kill switch: `ORCHESTRAY_LINT_MCP_ALLOWLIST_PARITY_DISABLED=1` (reuses the
+ * mechanisation's existing kill switch — no new one needed).
+ *
+ * @param {string} cwd
+ * @param {string} stateDir
+ */
+function runMcpAllowlistStaleCheckIfNeeded(cwd, stateDir) {
+  try {
+    const sentinelPath = path.join(stateDir, 'mcp-allowlist-check-needed');
+    if (!existsSilent(sentinelPath)) return;
+
+    const derive = require('./_lib/mcp-tool-allowlist-derive');
+    if (derive.isDisabled()) {
+      try { fs.unlinkSync(sentinelPath); } catch (_e) { /* ignore */ }
+      return;
+    }
+
+    // Test-only fixture injection (mirrors ORCHESTRAY_TEST_EVENTS_PATH in
+    // audit-event-writer.js) — lets tests exercise the full sentinel→parse→
+    // diff→writeEvent→unlink wiring against synthetic server.js/pm.md without
+    // touching the real plugin files, which this function reads from
+    // __dirname (not cwd) by design. Unset in production; no-op then.
+    const pluginRoot = path.resolve(__dirname, '..');
+    const serverPath = process.env.ORCHESTRAY_TEST_MCP_ALLOWLIST_SERVER_PATH ||
+      path.join(pluginRoot, 'bin', 'mcp-server', 'server.js');
+    const pmMdPath = process.env.ORCHESTRAY_TEST_MCP_ALLOWLIST_PM_MD_PATH ||
+      path.join(pluginRoot, 'agents', 'pm.md');
+
+    let serverSrc, pmSrc;
+    try {
+      serverSrc = fs.readFileSync(serverPath, 'utf8');
+      pmSrc     = fs.readFileSync(pmMdPath, 'utf8');
+    } catch (_e) {
+      // Files not found at the resolved plugin root — fail-open, retry next
+      // install. These files ship statically with the plugin, so a read
+      // failure now will only be fixed by a fresh install rewriting the
+      // sentinel; unlink here rather than retrying (and failing) every prompt.
+      try { fs.unlinkSync(sentinelPath); } catch (_e2) { /* ignore */ }
+      return;
+    }
+
+    const tools   = derive.parseToolTable(serverSrc);
+    const pmTools = derive.parsePmAllowlist(pmSrc);
+    const { stale } = derive.diffAllowlist({ tools, pmTools });
+
+    if (stale.length > 0) {
+      try {
+        writeEvent({
+          type: 'mcp_allowlist_stale_entry_warn',
+          schema_version: 1,
+          stale_slugs: stale,
+        }, { cwd });
+      } catch (_e) { /* audit failure is non-fatal */ }
+    }
+
+    try { fs.unlinkSync(sentinelPath); } catch (_e) { /* ignore */ }
+  } catch (_e) {
+    // Fail-open — this check must never block the user prompt.
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Main entry point
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -2428,6 +2504,9 @@ function main() {
       // every install. If present, run the self-probe and delete the sentinel.
       // Honor kill-switch config and env var. Fail-open: never block the prompt.
       runTokenwrightSelfProbeIfNeeded(cwd, stateDir);
+
+      // ── v2.3.19 (E3): MCP-allowlist stale-entry check (once per install) ──
+      runMcpAllowlistStaleCheckIfNeeded(cwd, stateDir);
 
       // ── Session lock: fast-path — once per session ──────────────────────────
       const lockPath = path.join(os.tmpdir(), `orchestray-sweep-${sessionId}.lock`);

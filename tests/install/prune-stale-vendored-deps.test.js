@@ -159,6 +159,56 @@ describe('pruneStaleVendoredDeps (bin/install.js, D2)', () => {
     }
   });
 
+  // F4 regression: a scoped package survives pruning. On disk, a scoped dep
+  // lives at nmDir/@myorg/thing — readdir only ever surfaces the '@myorg'
+  // scope dir as an entry, so a naive allowlist.includes(entry.name) check
+  // against the full '@myorg/thing' allowlist name never matches and the
+  // whole scope (including the allowlisted package) gets deleted.
+  test('a scoped package in the allowlist survives pruning (F4)', () => {
+    const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-prune-scoped-'));
+    try {
+      const nmDir = path.join(targetDir, 'orchestray', 'node_modules');
+      makeVendoredDir(nmDir, 'zod');
+      // Simulate npm's on-disk layout for a scoped package: nmDir/@myorg/thing.
+      fs.mkdirSync(path.join(nmDir, '@myorg', 'thing'), { recursive: true });
+      fs.writeFileSync(
+        path.join(nmDir, '@myorg', 'thing', 'package.json'),
+        JSON.stringify({ name: '@myorg/thing', version: '0.0.0-test' })
+      );
+
+      const result = pruneStaleVendoredDeps(targetDir, ['zod', '@myorg/thing']);
+
+      assert.deepEqual(result.pruned, [], 'the @myorg scope must not be pruned');
+      assert.ok(fs.existsSync(path.join(nmDir, '@myorg', 'thing', 'package.json')),
+        'the allowlisted scoped package must survive');
+    } finally {
+      fs.rmSync(targetDir, { recursive: true, force: true });
+    }
+  });
+
+  // F5 regression: a directory whose name merely starts with the characters
+  // '..' (no traversal component) must not be treated as an escape attempt
+  // and skipped from pruning — it fails safe today (over-rejects, never
+  // deletes it), but the check should be correct-by-construction rather than
+  // accidentally safe.
+  test('a directory literally named "..hidden" is pruned like any other stale dir (F5)', () => {
+    const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-prune-dotdot-name-'));
+    try {
+      const nmDir = path.join(targetDir, 'orchestray', 'node_modules');
+      makeVendoredDir(nmDir, 'zod');
+      makeVendoredDir(nmDir, '..hidden');
+
+      const result = pruneStaleVendoredDeps(targetDir, ['zod']);
+
+      assert.deepEqual(result.pruned, ['..hidden'],
+        '"..hidden" is a plain subdirectory name, not a traversal — it must be prunable like any stale dir');
+      assert.ok(!fs.existsSync(path.join(nmDir, '..hidden')), '"..hidden" should be gone');
+      assert.ok(fs.existsSync(path.join(nmDir, 'zod')), 'zod must survive');
+    } finally {
+      fs.rmSync(targetDir, { recursive: true, force: true });
+    }
+  });
+
 });
 
 describe('bin/install.js end-to-end — prunes stale vendored deps on install', () => {

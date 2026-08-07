@@ -537,6 +537,14 @@ function pruneStaleVendoredDeps(targetDir, allowlist) {
   const nmDir = path.join(targetDir, 'orchestray', 'node_modules');
   if (!fs.existsSync(nmDir)) return result;
 
+  // Scoped packages (e.g. '@myorg/thing') live on disk as nmDir/@myorg/thing —
+  // readdir only ever sees the top-level '@myorg' scope dir as an entry, so
+  // the comparison set must be normalized to that same top-level segment or
+  // every scoped allowlist entry is invisible and gets pruned.
+  const allowlistTopLevel = new Set(
+    allowlist.map((name) => (name.startsWith('@') ? name.split('/')[0] : name))
+  );
+
   let nmRealRoot;
   try {
     nmRealRoot = fs.realpathSync(nmDir);
@@ -552,7 +560,7 @@ function pruneStaleVendoredDeps(targetDir, allowlist) {
   }
 
   for (const entry of entries) {
-    if (allowlist.includes(entry.name)) continue;
+    if (allowlistTopLevel.has(entry.name)) continue;
     if (!entry.isDirectory()) continue; // excludes symlinks, files
 
     const entryPath = path.join(nmDir, entry.name);
@@ -563,7 +571,10 @@ function pruneStaleVendoredDeps(targetDir, allowlist) {
       continue; // gone already / unreadable — leave it
     }
     const rel = path.relative(nmRealRoot, realEntryPath);
-    if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+    // rel.startsWith('..') alone false-positives on a literal dir name like
+    // '..hidden' (no traversal, just dots in the name) — only a bare '..' or
+    // a '../'-prefixed rel actually escapes nmRealRoot.
+    if (rel === '' || rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) {
       // Resolves outside node_modules/ — never follow it out to delete.
       continue;
     }
@@ -976,7 +987,9 @@ function install(targetDir) {
   // which removes anything present that isn't in this list — e.g. ajv and
   // its transitive deps, left behind by installs predating v2.3.8. Adding a
   // future vendored dep only requires updating this array (plus its own
-  // copy block, since each dep may need its own copy filter).
+  // copy block, since each dep may need its own copy filter). Scoped
+  // packages (e.g. '@myorg/thing') go in by their full name — prune
+  // normalizes to the top-level scope segment for comparison.
   const VENDORED_ZOD_NAME = 'zod';
   const VENDORED_TREE_SITTER_NAME = 'web-tree-sitter';
   const VENDORED_DEP_NAMES = [VENDORED_ZOD_NAME, VENDORED_TREE_SITTER_NAME];
@@ -1404,21 +1417,24 @@ function install(targetDir) {
   } catch (_e) { /* fail-open per install posture */ }
   // === end v2.2.21 W1-T2 ===
 
-  // write a sentinel so the first UserPromptSubmit after this install
-  // triggers the tokenwright self-probe (post-upgrade-sweep.js picks this up).
-  // The sentinel lives in .orchestray/state/ which is project-local; stateDir
-  // was already created above by the config seed step (mkdirSync recursive).
+  // write sentinels so the first UserPromptSubmit after this install triggers
+  // deferred checks (post-upgrade-sweep.js picks these up). Both live in
+  // .orchestray/state/, which is project-local; stateDir was already created
+  // above by the config seed step (mkdirSync recursive).
+  //   - tokenwright-self-probe-needed: triggers the tokenwright self-probe (v2.2.6).
+  //   - mcp-allowlist-check-needed: triggers the MCP-allowlist stale-entry
+  //     check (v2.3.19 item 2) — pm.md's `tools:` frontmatter and server.js's
+  //     TOOL_TABLE both ship with the plugin, so checking once per install
+  //     (not per project) is the right cadence.
   try {
-    const orchStateDir226 = path.join(process.cwd(), '.orchestray', 'state');
-    fs.mkdirSync(orchStateDir226, { recursive: true });
-    const selfProbeSentinel = path.join(orchStateDir226, 'tokenwright-self-probe-needed');
+    const orchStateDir = path.join(process.cwd(), '.orchestray', 'state');
+    fs.mkdirSync(orchStateDir, { recursive: true });
     const pkg = require('../package.json');
-    fs.writeFileSync(
-      selfProbeSentinel,
-      JSON.stringify({ created: new Date().toISOString(), version: pkg.version }) + '\n',
-      'utf8'
-    );
-  } catch (_e) { /* tolerate — probe is best-effort */ }
+    const sentinelBody = JSON.stringify({ created: new Date().toISOString(), version: pkg.version }) + '\n';
+    for (const sentinelName of ['tokenwright-self-probe-needed', 'mcp-allowlist-check-needed']) {
+      fs.writeFileSync(path.join(orchStateDir, sentinelName), sentinelBody, 'utf8');
+    }
+  } catch (_e) { /* tolerate — both checks are best-effort */ }
 
   // === v2.2.21 W2-T8: federation banner cleanup ===
   // The legacy `if (VERSION.startsWith('2.1.') ...)` federation banner that

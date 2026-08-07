@@ -916,7 +916,13 @@ function handle(event) {
         // prompt text (e.g. the user resubmits "continue") still collide —
         // narrowing ttlMs below shrinks that exposure window but cannot
         // eliminate it.
-        const promptText = (event && typeof event.prompt === 'string') ? event.prompt : '';
+        // E7 fix: a constant '' fallback made every prompt-less turn hash to
+        // the SAME discriminator, so they'd collide inside the 2s window and
+        // suppress each other — the guard failing toward silence. A fresh
+        // UUID per missing-prompt turn makes each one unique instead, so the
+        // guard fails toward firing (matching this module's failure
+        // direction elsewhere) rather than toward suppression.
+        const promptText = (event && typeof event.prompt === 'string') ? event.prompt : crypto.randomUUID();
         const turnDiscriminator = crypto.createHash('sha256').update(promptText).digest('hex').slice(0, 16);
         const dedupKey = oid + ':' + turnDiscriminator + ':block_a';
         const guard = requireGuard({

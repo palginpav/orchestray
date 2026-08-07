@@ -612,7 +612,6 @@ describe('emitRollup — S-003 Infinity/NaN guard on scout_estimated_savings_usd
       assert.equal(result.written, true);
 
       const row = readRollupRows(tmpDir)[0];
-      assert.equal(row.scout_spawn_count, 3);
       // Without the Number.isFinite guard, this total would be NaN (which
       // JSON.stringify writes as null) — a silent telemetry corruption.
       assert.equal(row.scout_estimated_savings_usd_total, 0.005,
@@ -652,6 +651,66 @@ describe('emitRollup — S-003 Infinity/NaN guard on scout_estimated_savings_usd
       assert.equal(row.scout_estimated_savings_usd_total, 0.012,
         'NaN input must be ignored (was already handled by `|| 0` short-circuit, ' +
         'but Number.isFinite makes the contract explicit)');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// E2 fix (reviewer finding, supersedes v2.3.19 item 4): scout_spawn_count is
+// sourced from agent_start rows with agent_type=haiku-scout (mechanically
+// emitted on every SubagentStart), not scout_decision (PM-prose-emitted,
+// no mechanical tie to whether a spawn actually followed the decision).
+// ---------------------------------------------------------------------------
+
+describe('emitRollup — scout_spawn_count sourced from agent_start', () => {
+
+  test('counts agent_start rows with agent_type=haiku-scout', () => {
+    const tmpDir = makeTmpDir();
+
+    writeMetrics(tmpDir, [
+      makeSpawnRow('orch-scout-1', 'developer', 1000, 400, 0, 0.010),
+    ]);
+    writeEvents(tmpDir, [
+      makeCompleteEvent('orch-scout-1'),
+      { type: 'agent_start', orchestration_id: 'orch-scout-1', timestamp: new Date().toISOString(), agent_id: 'agent-1', agent_type: 'haiku-scout', session_id: 'sess-1' },
+      { type: 'agent_start', orchestration_id: 'orch-scout-1', timestamp: new Date().toISOString(), agent_id: 'agent-2', agent_type: 'haiku-scout', session_id: 'sess-1' },
+      // A scout_decision without a matching spawn must NOT count — this is
+      // exactly the drift E2 fixes (decision made but spawn never happened).
+      { type: 'scout_decision', orchestration_id: 'orch-scout-1', timestamp: new Date().toISOString(), decision: 'scout_spawn_required' },
+      // Other agent_type spawns must NOT count toward scout_spawn_count.
+      { type: 'agent_start', orchestration_id: 'orch-scout-1', timestamp: new Date().toISOString(), agent_id: 'agent-3', agent_type: 'developer', session_id: 'sess-1' },
+    ]);
+
+    try {
+      const result = emitRollup(tmpDir, 'orch-scout-1');
+      assert.equal(result.written, true);
+
+      const row = readRollupRows(tmpDir)[0];
+      assert.equal(row.scout_spawn_count, 2);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('zero haiku-scout agent_start rows yields scout_spawn_count 0, not a crash', () => {
+    const tmpDir = makeTmpDir();
+
+    writeMetrics(tmpDir, [
+      makeSpawnRow('orch-scout-2', 'developer', 1000, 400, 0, 0.010),
+    ]);
+    writeEvents(tmpDir, [
+      makeCompleteEvent('orch-scout-2'),
+    ]);
+
+    try {
+      const result = emitRollup(tmpDir, 'orch-scout-2');
+      assert.equal(result.written, true);
+
+      const row = readRollupRows(tmpDir)[0];
+      assert.equal(row.scout_spawn_count, 0);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

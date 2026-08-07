@@ -48,7 +48,7 @@ The user wants to extract reusable patterns from a completed orchestration.
    - **decomposition:** Task breakdown strategies from task-graph.md combined with orchestration outcome. Success with zero re-plans = positive pattern. Re-plans present = examine what changed for potential anti-pattern.
    - **routing:** Look for `routing_outcome` events where the chosen model completed without escalation = routing pattern. Escalation needed = anti-pattern.
    - **specialization:** Look for `dynamic_agent_spawn` + `specialist_saved` events where the agent succeeded = specialization pattern.
-   - **anti-pattern:** Look for `replan` events, `verify_fix_attempt` events (the `reason` field describes what stalled a round and why), `escalation` events = what went wrong and why.
+   - **anti-pattern:** Look for `replan` events, `verify_fix_fail`/`verify_fix_oscillation` events (round/error-count fields describe what failed to converge), `escalation` events = what went wrong and why. `verify_fix_attempt` (a legacy historical-only slug, never code-emitted — see `event-schemas.md`) may supply a free-text `reason` on older orchestrations if present, but is not a live signal to rely on.
    - **user-correction:** Direct user corrections captured during or after orchestration, or via manual `/orchestray:learn correct` command.
 
    **Skip extraction when:**

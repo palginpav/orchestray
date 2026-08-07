@@ -2332,4 +2332,105 @@ describe('W-AC-4 caller identity — spawn-metadata authorization', () => {
       if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
     }
   });
+
+  // --- Test 7 (v2.3.19 F1): filename noise must not starve the parse budget
+
+  /** Plant `count` sidecars whose names merely CONTAIN the roster name. */
+  function writeDecoys(home, cwd, rosterName, count) {
+    const subDir = path.join(
+      home, '.claude', 'projects', '-' + encodeProject(cwd), SESSION_ID, 'subagents'
+    );
+    fs.mkdirSync(subDir, { recursive: true });
+    for (let i = 0; i < count; i++) {
+      fs.writeFileSync(
+        path.join(subDir, 'agent-aaa-' + rosterName + '-decoy' + i + '.meta.json'),
+        JSON.stringify({ name: 'aa-' + rosterName + '-decoy' + i, customAgentType: 'developer' })
+      );
+    }
+  }
+
+  test('D1-7a: decoy filenames cannot starve the budget into the roster-name fallback', () => {
+    // Pre-fix: 9 files merely containing "pm-7" exhausted MAX_META_CANDIDATES,
+    // resolution returned null, and the fallback read "pm-7" → "pm" → allowed.
+    const dir = makeDir();
+    const home = makeHome();
+    writeDecoys(home, dir, 'pm-7', 9);
+    writeMeta(home, dir, { rosterName: 'pm-7', customAgentType: 'developer' });
+
+    const { status, stderr } = runAs(spawnCurator(dir, 'pm-7'), home);
+
+    assert.equal(status, 2, 'genuine sidecar must still be found behind the decoys');
+    assert.ok(stderr.includes('non_pm_agent_declares_agent_tool'));
+    assert.ok(stderr.includes("agent role 'developer'"), 'blocked on the resolved type');
+  });
+
+  test('D1-7b: resolution still finds the genuine sidecar behind decoy filenames', () => {
+    const dir = makeDir();
+    const home = makeHome();
+    writeDecoys(home, dir, 'pm-7', 9);
+    writeMeta(home, dir, { rosterName: 'pm-7', customAgentType: 'developer' });
+
+    const realHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      assert.equal(resolveCallerAgentTypeFromMeta('pm-7', SESSION_ID, dir), 'developer');
+    } finally {
+      if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
+    }
+  });
+
+  test('D1-7c: a genuine pm still resolves with decoys present', () => {
+    const dir = makeDir();
+    const home = makeHome();
+    writeDecoys(home, dir, 'pm-7', 9);
+    writeMeta(home, dir, { rosterName: 'pm-7', customAgentType: 'pm' });
+
+    const { status } = runAs(spawnCurator(dir, 'pm-7'), home);
+
+    assert.equal(status, 0, 'the anchor must not break legitimate resolution');
+  });
+
+  // --- Test 8 (v2.3.19 F2): session_id is payload data, not a path fragment
+
+  test('D1-8a: traversal-shaped session_id cannot read a sidecar outside the session tree', () => {
+    const dir = makeDir();
+    const home = makeHome();
+    const evilRoot = makeHome();
+    const evilSub = path.join(evilRoot, 'evil', 'subagents');
+    fs.mkdirSync(evilSub, { recursive: true });
+    fs.writeFileSync(
+      path.join(evilSub, 'agent-adev-x-1.meta.json'),
+      JSON.stringify({ name: 'dev-x', customAgentType: 'pm' })
+    );
+    // Relative path from the session dir Claude Code would build, back out to evil/.
+    const projDir = path.join(home, '.claude', 'projects', '-' + encodeProject(dir));
+    const evilSession = path.relative(projDir, path.join(evilRoot, 'evil'));
+    assert.ok(
+      fs.existsSync(path.join(projDir, evilSession, 'subagents', 'agent-adev-x-1.meta.json')),
+      'sanity: the traversal target is reachable, so a pass here is not vacuous'
+    );
+
+    const payload = spawnCurator(dir, 'dev-x');
+    payload.session_id = evilSession;
+    const { status, stderr } = runAs(payload, home);
+
+    assert.equal(status, 2, 'a planted out-of-tree sidecar must not authorize the spawn');
+    assert.ok(stderr.includes('non_pm_agent_declares_agent_tool'));
+
+    const realHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      assert.equal(resolveCallerAgentTypeFromMeta('dev-x', evilSession, dir), null);
+    } finally {
+      if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
+    }
+  });
+
+  test('D1-8b: only session_id values shaped like a session id are used as a path', () => {
+    const dir = makeDir();
+    assert.equal(resolveCallerAgentTypeFromMeta('dev-x', '/abs/elsewhere', dir), null);
+    assert.equal(resolveCallerAgentTypeFromMeta('dev-x', '..', dir), null);
+    assert.equal(resolveCallerAgentTypeFromMeta('dev-x', 'a/b', dir), null);
+    assert.equal(resolveCallerAgentTypeFromMeta('dev-x', 'sess\0null', dir), null);
+  });
 });

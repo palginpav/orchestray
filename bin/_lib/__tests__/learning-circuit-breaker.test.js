@@ -299,21 +299,30 @@ describe('checkAndIncrement — window rolling', () => {
   test('count resets after window expires', () => {
     const scope = 'window_scope';
     const max = 3;
-    const shortWindow = 10; // 10ms window
+    // A real short window here would race the fill loop's wall-clock time
+    // under full-suite scheduling load (each checkAndIncrement does sync fs +
+    // lock I/O, so 3 calls can exceed a few ms of real time) — that caused an
+    // intermittent full-suite-only flake where the window rolled mid-fill and
+    // the "tripped" assertion below saw allowed:true. Use a window long enough
+    // that the fill phase can never race it, and simulate expiry entirely via
+    // the windowStart rewrite below instead of a real elapsed-time window.
+    const window = 24 * 60 * 60 * 1000;
 
     // Fill to max
     for (let i = 0; i < max; i++) {
-      checkAndIncrement(opts(scope, max, shortWindow));
+      checkAndIncrement(opts(scope, max, window));
     }
-    const tripped = checkAndIncrement(opts(scope, max, shortWindow));
+    const tripped = checkAndIncrement(opts(scope, max, window));
     assert.equal(tripped.allowed, false);
 
     // We can't easily test time-based rolling in sync tests without mocking.
     // The window rolling logic is unit-tested by verifying the counter state.
     const cPath = _counterPath(tmpDir, scope);
-    // Manually set the windowStart to the past to simulate expiry.
+    // Manually set windowStart to well past the window boundary (window + 60s
+    // margin) so expiry is unambiguous regardless of scheduling delay between
+    // this write and the checkAndIncrement call below.
     const state = JSON.parse(fs.readFileSync(cPath, 'utf8'));
-    state.windowStart = new Date(Date.now() - shortWindow * 2).toISOString();
+    state.windowStart = new Date(Date.now() - window - 60_000).toISOString();
     state.trippedAt = null;
     state.count = max; // Still at max but window should roll
     fs.writeFileSync(cPath, JSON.stringify(state), 'utf8');
@@ -323,7 +332,7 @@ describe('checkAndIncrement — window rolling', () => {
     try { fs.unlinkSync(sPath); } catch (_e) {}
 
     // With window expired, count should reset to 0 and then increment to 1
-    const result = checkAndIncrement(opts(scope, max, shortWindow));
+    const result = checkAndIncrement(opts(scope, max, window));
     assert.equal(result.allowed, true, 'should allow after window expiry');
     assert.equal(result.count, 1, 'count should restart at 1 after window roll');
   });

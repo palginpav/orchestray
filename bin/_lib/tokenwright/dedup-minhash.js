@@ -23,8 +23,13 @@
  *      fraction of identical rows.
  *   4. If similarity >= threshold, mark the later block dropped.
  *
- * NEVER touches sections classified `preserve`. The hooked-up caller
- * (inject-tokenwright.js) feeds only `dedup-eligible` sections in.
+ * NEVER touches sections classified `preserve`. Callers are expected to feed
+ * only `dedup-eligible` sections through the compare loop.
+ *
+ * NOT wired into any hook as of v2.3.18 — the safe-l1 revival was closed
+ * permanently (see .orchestray/kb/decisions/l1-compression-revival-backlog.md).
+ * This module is exercised only by self-probe.js's install-integrity check
+ * and by its own unit tests; inject-tokenwright.js never calls it.
  */
 
 const SIGNATURE_ROWS = 64;

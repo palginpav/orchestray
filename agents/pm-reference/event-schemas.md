@@ -1041,6 +1041,17 @@ Field notes:
 Cross-references: `pm.md §23` (decision rule), `haiku-routing.md §23a`
 (Class B), `cost-prediction.md §31a` (savings math + promotion gate).
 
+> **E3 dark-event triage (v2.3.19).** `scout_spawn` has never had a production
+> emitter — this declare predates `scout_decision` (below), which the PM's
+> Section 23 rule actually emits on every routing evaluation. `scout_spawn`
+> remains registered (dark) for its cost-savings fields, which `scout_decision`
+> has no equivalent for; it is not deprecated because a future emitter could
+> still populate `scout_estimated_savings_usd_total` in the orchestration
+> rollup. `bin/emit-orchestration-rollup.js`'s `scout_spawn_count` field
+> is now computed from `scout_decision` rows where
+> `decision === 'scout_spawn_required'` (the real, firing signal), not from
+> this type — see the `scout_decision` field notes below.
+
 **Promotion gate:** the v2.2.1 release is gated on ≥ 100 `scout_spawn`
 events showing (a) cache-read ratio ≥ 30% on repeated invocations within
 5-min and (b) mean `scout_estimated_savings_usd` > 0. See
@@ -4631,6 +4642,14 @@ Field notes:
 
 ### `schema_shadow_hit` event
 
+**NEVER IMPLEMENTED — retired v2.3.19 (E3 dark-event triage).** No `bin/`
+emitter and no prose instruction in `agents/pm.md` or any
+`agents/pm-reference/*.md` — unlike the verify-fix/replan prose-only cases,
+there is no manual-emit instruction to backstop here at all; the concept has
+no implementation anywhere, mechanical or prose. `schema_get_call` (the
+sibling event for the underlying MCP lookup) IS wired and fires normally.
+Schema retained for backward-compat documentation only.
+
 Emitted when the PM consults the event-schema shadow and finds the event type.
 Indicates the shadow served its purpose and a full `event-schemas.md` load was
 avoided for this event type.
@@ -4654,6 +4673,10 @@ Field notes:
 ---
 
 ### `schema_shadow_miss` event
+
+**NEVER IMPLEMENTED — retired v2.3.19 (E3 dark-event triage).** Same finding
+as `schema_shadow_hit` above — no `bin/` emitter, no prose instruction
+anywhere. Schema retained for backward-compat documentation only.
 
 Emitted when the PM consults the event-schema shadow and does NOT find the event
 type — falling through to load the full `event-schemas.md`. Triggers a miss
@@ -5027,6 +5050,12 @@ Kill switches: `ORCHESTRAY_DISABLE_DEMAND_GATE=1`, `config.feature_demand_gate.e
 ---
 
 ### `feature_quarantine_active` event
+
+**NEVER IMPLEMENTED — retired v2.3.19 (E3 dark-event triage).** Stale pre-rename
+doc name; the real emitter uses `feature_quarantine_applied` (not dark, not this
+type). No code anywhere emits `feature_quarantine_active`. Schema retained
+(rather than removed) so historical `events.jsonl` rows using this exact type
+name, if any exist from before the rename, remain readable.
 
 Emitted when an opt-in or auto quarantine takes effect for a gate. In v2.1.14, this is
 emitted when gate-telemetry.js applies a quarantine overlay (gate in quarantine_candidates).
@@ -5988,12 +6017,24 @@ Field notes:
 
 ### `verify_fix_attempt` event
 
-Emitted by the PM as an informal progress note when a verify-fix round
-is retried mid-loop after an interruption (e.g. a respawned agent hit
-`maxTurns`) — distinct from the `verify_fix_start/pass/fail/oscillation`
-quartet above, which mark round boundaries. Registered v2.3.18 W1d
-(D6/FN-34 follow-up) to close a coverage gap: the type was observed
-live in `events.jsonl` with no schema declaration.
+**Status (v2.3.19): historical-only, no code emitter.** Intended as an
+informal progress note when a verify-fix round is retried mid-loop after
+an interruption (e.g. a respawned agent hit `maxTurns`) — distinct from
+the `verify_fix_start/pass/fail/oscillation` quartet above, which mark
+round boundaries and are now all mechanically emitted by
+`bin/_lib/pm-emit-state-watcher.js`. Registered v2.3.18 W1d (D6/FN-34
+follow-up) to close a coverage gap: the type was observed live in
+`events.jsonl` with no schema declaration. As of v2.3.19, no site in
+`bin/` emits it and no new emitter is planned — every observed row
+(19 as of this audit) was hand-written by the PM under `event`/`ts`
+field names, not `type`/`timestamp` (see Source note below), so it is
+invisible to `type`-keyed schema validation. Consumers (analytics/
+report/learn/patterns skills, `history_query_events.js`) have been
+repointed to the live quartet for anything treated as a current signal;
+this slug is retained in the `EVENT_TYPES` enum (as
+`ENUM_PHANTOM_EXCLUSIONS`, see `anti-pattern-event-types-enum-parity.
+test.js`) only so historical filters against pre-v2.3.19 archives
+remain valid.
 
 ```json
 {
@@ -6009,9 +6050,9 @@ live in `events.jsonl` with no schema declaration.
 Field notes:
 - `reason`: free-text one-liner describing the interruption and retry
   plan (e.g. maxTurns hit, respawn parameters).
-- Source: PM, direct append (not `ox events append`) — the two observed
-  live emits (v2.3.18 dogfooding) used `event`/`ts` in place of
-  `type`/`timestamp`; `extractObservedTypes()` in
+- Source: PM, direct append (not `ox events append`) — all observed
+  live emits (v2.3.18 dogfooding, 19 rows as of v2.3.19) used `event`/`ts`
+  in place of `type`/`timestamp`; `extractObservedTypes()` in
   `tests/schema-emit-coverage.test.js` already falls back to `row.event`
   for exactly this reason. The canonical shape above is what future
   emitters should target; `type`/`timestamp` are what this document
@@ -6764,6 +6805,13 @@ Field notes:
 
 ### `housekeeper_pending_queued` event
 
+**NEVER IMPLEMENTED — retired v2.3.19 (E3 dark-event triage).** Doc named the
+wrong file/type: `bin/spawn-housekeeper-on-trigger.js` emits
+`housekeeper_trigger_debounced` and `spawn_requested` (both declared below/
+elsewhere), never `housekeeper_pending_queued`. Confirmed by direct read — no
+`housekeeper_pending_queued` string appears anywhere in `bin/`. Schema retained
+for backward-compat documentation only.
+
 Emitted by `bin/spawn-housekeeper-on-trigger.js` (PostToolUse) when a KB write or schema edit triggers a queued housekeeper run.
 
 ```json
@@ -7507,6 +7555,25 @@ Field notes:
 
 ### `repo_map_threshold_drift` event
 
+**NEVER IMPLEMENTED — library deleted v2.3.19 (E3 dark-event triage).**
+`bin/_lib/repo-map-drift-detector.js#detectDrift(cwd)` was fully built and
+unit-tested but had zero production callers ("called from periodic
+validation" below was aspirational). Wiring it as designed was rejected, not
+just deferred: its single `cwd` param conflates the plugin's static
+`agents/pm.md` prose (fixed per plugin version, lives under the plugin
+install root) with the project's `.orchestray/config.json` override (fixed
+per project root) — two different roots in any install where the plugin is
+not installed inside the project being orchestrated (the common case). A
+naive call site would either silently never find `agents/pm.md` under a
+random project cwd (looks wired, never actually fires) or false-positive on
+legitimate per-project config overrides if made to read across two roots.
+This is an architecture-level gap, not a missing call site — recommend
+redesigning to accept separate `{ pluginRoot, projectRoot }` params (and
+deciding whether this is a runtime per-project check or a repo-maintainer
+self-check) before re-attempting. `loadRepoMapThresholds()` in
+`numeric-thresholds.js` remains live and is unaffected. Schema retained for
+backward-compat documentation only.
+
 Emitted by `bin/_lib/repo-map-drift-detector.js` (called from periodic validation) when a numeric threshold cited in pm.md / phase-*.md prose disagrees with `.orchestray/config.json` `repo_map_thresholds.*`.
 
 ```json
@@ -8224,6 +8291,13 @@ Field notes:
 
 ### `contracts_merge_base_unresolved` event
 
+**NEVER IMPLEMENTED — retired v2.3.19 (E3 dark-event triage).** Planned v2.2.13
+feature ("merge-base enforcement with hard-fail exit code 2 is planned for
+v2.2.13" per `bin/validate-task-contracts.js:112`), never implemented — the
+repo is now v2.3.19. Unresolved merge-base cases fall back to a `result:
+'skip'` detail string (`merge_base_unavailable`), not an event emission.
+Schema retained for backward-compat documentation only.
+
 Emitted by `bin/validate-task-contracts.js` (W3-1) when the contracts validator
 cannot resolve a merge base branch reference in a task's contract definition.
 
@@ -8356,6 +8430,44 @@ Field notes:
 
 ---
 
+### `context_size_hint_computed` event
+
+Emitted by `bin/preflight-spawn-budget.js` (v2.3.18 compute-and-warn fallback)
+when a subagent spawn arrives without a `context_size_hint` and the
+compute-fallback path is enabled (default): the hook estimates a hint from
+the prompt body / agent-definition file size and lets the spawn proceed
+(warn, not block). Registered v2.3.19 FN-34 follow-up — the type was
+observed live in `events.jsonl` with no schema declaration.
+
+```json
+{
+  "type": "context_size_hint_computed",
+  "version": 1,
+  "schema_version": 1,
+  "orchestration_id": "orch-20260101T000000Z-example",
+  "subagent_type": "developer",
+  "system": 4236,
+  "tier2": 0,
+  "handoff": 1253
+}
+```
+
+Field notes:
+- `subagent_type`: the agent role spawned without an explicit hint.
+- `system` / `tier2` / `handoff`: the estimated component sizes (tokens) that
+  sum to the computed budget check input.
+- Emit call uses `event_type` (legacy field name) rather than `type`; the
+  audit gateway's `withAutofill()` mirrors `event_type` <-> `type` on every
+  write (`bin/_lib/audit-event-writer.js`), so live rows carry BOTH keys —
+  this is the general legacy-compat mirror, not something specific to this
+  event. `parseEventSchemas` / `extractObservedTypes` key off `type`.
+- `schema_version`: always 1 (v2.3.18 baseline).
+
+Kill switch: `ORCHESTRAY_CONTEXT_SIZE_HINT_COMPUTE_DISABLED=1` (env), or
+`context_size_hint_compute.enabled: false` in `.orchestray/config.json`.
+
+---
+
 ### `curator_tombstone_decision_recorded` event
 
 Emitted by `bin/audit-on-orch-complete.js` (W3-2) at orchestration close to record
@@ -8385,6 +8497,11 @@ Field notes:
 
 ### `event_type_attempt` event
 
+**NEVER IMPLEMENTED — retired v2.3.19 (E3 dark-event triage).** Doc-example
+literal name from the B5 rename-cycle design write-up, never wired to a real
+emitter. Zero occurrences in `bin/`. Schema retained for backward-compat
+documentation only.
+
 Emitted during the rename-cycle Wave-2 stage when an event is attempted under its
 pre-rename name, recording the original event type before the alias resolution step.
 Part of the `*_failed` → `*_attempt`/`*_result` rename-cycle infrastructure (B5 fix).
@@ -8406,6 +8523,10 @@ Field notes:
 ---
 
 ### `event_type_result` event
+
+**NEVER IMPLEMENTED — retired v2.3.19 (E3 dark-event triage).** Same finding as
+`event_type_attempt` above — doc-example literal name, zero occurrences in
+`bin/`. Schema retained for backward-compat documentation only.
 
 Emitted during the rename-cycle Wave-2 stage after an event has been resolved through
 the alias table, recording the outcome of the rename-cycle resolution step. Pairs with
@@ -9669,36 +9790,42 @@ Kill switch: none — observability.
 
 ---
 
-### `install_stale_hook_pruned` event
+### Degraded-journal kind — install_stale_hook_pruned (E3 dark-event triage, v2.3.19)
 
-> Coordinated declare with W8b FN-16. The emitter lives in `bin/install.js`
-> at the stale-hook prune branch; W8b wires the emit. This declare lands here
-> so the schema is in place at the time emission begins.
+> **Re-classified v2.3.19 (E3).** Recorded as a `degraded.jsonl` kind, not an
+> `events.jsonl` event-type. Activation-ratio rollups that scan `events.jsonl` will
+> not see these rows. Schema-shadow validators must NOT count this slug toward
+> declared-but-unobserved telemetry. `mcp__orchestray__schema_get` and the
+> tier2-index will NOT resolve this slug — that is expected, not a gap.
+> The previous `### \`install_stale_hook_pruned\` event`
+> heading (and its `"type": "install_stale_hook_pruned"` JSON example) is retired —
+> it never matched the real emitter, which has always written via `recordDegradation`
+> to `.orchestray/state/degraded.jsonl` with field `kind`, not `type`.
 
-Emitted by `bin/install.js` when a stale hook script (no longer in canonical
-`hooks/hooks.json`) is pruned from the global install dir or removed from
-`~/.claude/settings.json`. One row per pruned script.
+Recorded by `bin/install.js` when a stale hook script (no longer in canonical
+`hooks/hooks.json`) is pruned from `~/.claude/settings.json` during an in-place
+upgrade. One row per pruned `(event, matcher, basename)` triple.
 
-```json
-{
-  "type": "install_stale_hook_pruned",
-  "version": 1,
-  "timestamp": "ISO 8601",
-  "script_basename": "string",
-  "settings_path": "string",
-  "removed_from_settings": false,
-  "removed_from_install_dir": false
-}
-```
+Sample record (degraded.jsonl):
 
-Field notes:
-- `script_basename`: The hook script name that was pruned.
-- `settings_path`: Repo-relative or absolute path of the settings.json edited.
-- `removed_from_settings` / `removed_from_install_dir`: Per-target booleans.
+    {
+      "kind": "install_stale_hook_pruned",
+      "severity": "info",
+      "detail": {
+        "event": "PreToolUse",
+        "matcher": "Agent|Explore|Task",
+        "basename": "some-removed-script.js",
+        "reason": "file_missing | no_longer_canonical",
+        "schema_version": 1,
+        "dedup_key": "install_stale_hook_pruned|<event>|<matcher>|<basename>"
+      }
+    }
 
-Emitted from: `bin/install.js` (W8b FN-16 emit site).
+Required detail fields: `event` (string), `matcher` (string|null), `basename` (string), `reason` (`'file_missing'|'no_longer_canonical'`), `schema_version` (1), `dedup_key` (string).
 
-Kill switch: `ORCHESTRAY_INSTALL_PRUNE_GATE_DISABLED=1`.
+Recorded from: `bin/install.js` (stale-hook prune branch, install-time) via `recordDegradation`.
+
+Kill switch: `ORCHESTRAY_INSTALL_PRUNE_GATE_DISABLED=1` (default ON; opt-out skips the whole prune sweep, no record written).
 
 ---
 
@@ -9732,33 +9859,39 @@ Kill switch: `ORCHESTRAY_MCP_AUDIT_CWD_RESOLUTION_FALLBACK_DISABLED=1` (per cons
 
 ---
 
-### `install_hook_args_updated` event
+### Degraded-journal kind — install_hook_args_updated (E3 dark-event triage, v2.3.19)
 
-> Coordinated declare with W8b FN-14. The emitter lives in `bin/install.js`
-> at the args-update branch (line ~1494); W8b wires the emit. This declare
-> closes the W8b ANO-3 follow-up (the prior W8c FN-33 declare batch did not
-> include this slug; finisher picked it up in-scope per
-> `feedback_no_close_out_deferral.md`).
+> **Re-classified v2.3.19 (E3).** Recorded as a `degraded.jsonl` kind, not an
+> `events.jsonl` event-type. Activation-ratio rollups that scan `events.jsonl` will
+> not see these rows. Schema-shadow validators must NOT count this slug toward
+> declared-but-unobserved telemetry. `mcp__orchestray__schema_get` and the
+> tier2-index will NOT resolve this slug — that is expected, not a gap.
+> The previous `### \`install_hook_args_updated\` event`
+> heading (and its `"type": "install_hook_args_updated"` JSON example) is retired —
+> it never matched the real emitter, which has always written via `recordDegradation`
+> to `.orchestray/state/degraded.jsonl` with field `kind`, not `type`.
 
-Emitted by `bin/install.js` when an in-place upgrade detects a same-script
+Recorded by `bin/install.js` when an in-place upgrade detects a same-script
 hook entry whose args-tail differs from canonical. The hook's path prefix is
 preserved (the user's `node <homedir>/.../script.js` is sacrosanct), but the
 args tail is rewritten to match canonical. Hooks marked
 `command_managed: true` opt out of the rewrite. One row per updated hook.
 
-```json
-{
-  "type": "install_hook_args_updated",
-  "version": 1,
-  "timestamp": "ISO 8601",
-  "event": "string",
-  "matcher": "string|null",
-  "basename": "string",
-  "old_command": "string (truncated to 240 chars)",
-  "new_command": "string (truncated to 240 chars)",
-  "dedup_key": "install_hook_args_updated|<event>|<matcher>|<basename>"
-}
-```
+Sample record (degraded.jsonl):
+
+    {
+      "kind": "install_hook_args_updated",
+      "severity": "info",
+      "detail": {
+        "event": "SubagentStart",
+        "matcher": null,
+        "basename": "calibrate-role-budgets.js",
+        "old_command": "string (truncated to 240 chars)",
+        "new_command": "string (truncated to 240 chars)",
+        "schema_version": 1,
+        "dedup_key": "install_hook_args_updated|<event>|<matcher>|<basename>"
+      }
+    }
 
 Field notes:
 - `event`: The hook event block (e.g., `Stop`, `SubagentStop`, `PreToolUse`).
@@ -9768,6 +9901,10 @@ Field notes:
   for log-line discipline. Useful for operator audit of the args-drift fix.
 - `dedup_key`: Per-(event,matcher,basename) uniqueness key — collapses
   duplicate emits across re-installs of the same drift case.
+
+Recorded from: `bin/install.js` (args-update pass, install-time) via `recordDegradation`.
+
+Kill switch: none — the args-update pass runs unconditionally on every in-place upgrade (per-hook opt-out via `command_managed: true`).
 
 Emitted from: `bin/install.js` `mergeHooks` arg-update pass (W8b FN-14).
 
@@ -10483,8 +10620,10 @@ over ≥ 10 orchestrations. Exit 0 always.
 
 Field notes:
 - `enforcement`: always `"advisory"` in v2.3.18.
-- Correlate against `replan` and `verify_fix_attempt` on the same orchestration.
-  If high-coupling waves do not re-plan more often, the seam half does not
+- Correlate against `replan` and `verify_fix_fail` / `verify_fix_oscillation` on
+  the same orchestration. (Do NOT use `verify_fix_attempt` — it is historical-only,
+  frozen at 19 hand-authored rows with no emitter, so it cannot move with future
+  data.) If high-coupling waves do not re-plan more often, the seam half does not
   predict conflict and should be dropped rather than promoted.
 
 Emitted from: `bin/validate-task-contracts.js`.
@@ -10772,9 +10911,14 @@ Field notes:
 - `stale_slugs`: the list of pm.md `mcp__orchestray__*` slugs absent from
   TOOL_TABLE. Always at least one entry; the event is suppressed when empty.
 
-Emitted from: `bin/_lib/mcp-tool-allowlist-derive.js` (consumed via
-`bin/__tests__/anti-pattern-mcp-allowlist-parity.test.js` and any post-upgrade
-sweep step that wires it).
+Emitted from: `bin/post-upgrade-sweep.js#runMcpAllowlistStaleCheckIfNeeded`
+(wired v2.3.19, E3 dark-event triage item 2), gated by an install-time
+sentinel (`.orchestray/state/mcp-allowlist-check-needed`, written by
+`bin/install.js` on every install). Runs once per install, not once per
+prompt — `agents/pm.md` and `bin/mcp-server/server.js` are plugin files, so a
+stale entry can only appear when the plugin itself changes. Also consumed via
+`bin/__tests__/anti-pattern-mcp-allowlist-parity.test.js` (hard-block, CI-time
+parity gate; this event is warn-only, runtime).
 
 Kill switch: `ORCHESTRAY_LINT_MCP_ALLOWLIST_PARITY_DISABLED=1`.
 

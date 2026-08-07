@@ -29,7 +29,27 @@
  *   pm_count + backstop_count >= 2  AND  backstop_count / (pm_count + backstop_count) > 0.5
  *
  * The "≥ 2 events seen" floor avoids alarming on an orchestration that
- * happens to produce a single backstop emit.
+ * happens to produce a single backstop emit. It structurally CANNOT catch a
+ * type that emits zero times, or one whose few real rows are shaped wrong —
+ * see the two v2.3.21 additions below, which close that gap without
+ * touching the floor (lowering it globally would false-positive on every
+ * event type that is legitimately rare, e.g. `custom_agents_skipped` in an
+ * orchestration with no invalid custom-agent files).
+ *
+ * v2.3.21 item 1: `checkStateCancelCompleteness` (in pm-emit-state-watcher.js)
+ * reconstructs `state_cancel_aborted` directly from the archived-directory
+ * ground truth — a dedicated completeness check, same shape as
+ * `checkOrchRoiPresence`/`checkOversizedInputCompleteness` below, because
+ * this event fires at most once per orchestration and can never reach the
+ * ratio floor's "≥ 2" requirement even in principle.
+ *
+ * v2.3.21 item 2: `scanMisshapenEmits` catches the "event: instead of type:"
+ * failure mode surfaced by `verify_fix_attempt` — every one of its 19
+ * historical PM-hand-written rows used the wrong field name, so they are
+ * invisible to `tallyEvents()`'s `evt.type` lookup regardless of the floor.
+ * A single misshapen row is unambiguous proof of the bug (no well-formed
+ * emitter ever produces an `event:` key), so this scan needs no floor at
+ * all — it fires on count >= 1.
  *
  * Kill switch
  * -----------
@@ -51,7 +71,15 @@ const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 // B6: ROI presence check — logic lives in pm-emit-state-watcher for
 // co-location with the other watcher rules. We import and call it here
 // so audit-pm-emit-coverage participates in the orch-close fan-out.
-const { checkOrchRoiPresence, checkReplanBudget } = require('./_lib/pm-emit-state-watcher');
+// v2.3.20: item 2 (oversized-input completeness) and item 4 (dynamic-target
+// zero-emission detector) join the same fan-out, same rationale.
+const {
+  checkOrchRoiPresence,
+  checkReplanBudget,
+  checkOversizedInputCompleteness,
+  checkStateCancelCompleteness,
+  checkDynamicTargetZeroEmission,
+} = require('./_lib/pm-emit-state-watcher');
 
 const WATCHED_EVENT_TYPES = [
   'tier2_invoked',
@@ -68,10 +96,25 @@ const WATCHED_EVENT_TYPES = [
   'custom_agents_skipped',
   // v2.3.14: oversized-input map-reduce protocol events, emitted by the PM /
   // synthesizer subagent during oversized-input-mode.md (OI.5/OI.6/OI.8), not on
-  // PM state writes, so coverage-script rot-detection is the mechanical backstop.
+  // PM state writes. checkOversizedInputCompleteness (below) is the real
+  // backstop; this ratio scan still watches for PARTIAL rot once it fires.
   'oversized_map_dispatched',
   'oversized_slice_skipped',
   'oversized_synthesis_complete',
+  // v2.3.20: the dynamic-eventType WATCH_TARGETS family (B1 + item 1 below).
+  // Included so tallyEvents() has real counts for checkDynamicTargetZeroEmission
+  // to read — without an entry here, tallyCounts[type] is undefined and the
+  // zero-emission check would misread "not tallied" as "confirmed zero".
+  'verify_fix_pass',
+  'verify_fix_fail',
+  'verify_fix_oscillation',
+  'replan',
+  // v2.3.21 item 2: no code emitter exists yet and its historical rows all
+  // used the wrong field name (event: not type:), so they're invisible to
+  // this ratio check regardless of this list — see scanMisshapenEmits.
+  // Tracked here anyway so a future field-name fix gets ratio-based
+  // partial-rot coverage the same way the other prose-only types do.
+  'verify_fix_attempt',
 ];
 
 const FLOOR_TOTAL_EVENTS = 2;     // require at least 2 emits before alarming
@@ -156,6 +199,66 @@ function tallyEvents(cwd, orchId) {
   return counts;
 }
 
+/**
+ * v2.3.21 item 2: scan for PM-prose rows shaped `{event: "x", ...}` instead
+ * of the canonical `{type: "x", ...}` — structurally invisible to
+ * `tallyEvents()` since `evt.type` is undefined for them. Emits
+ * `pm_emit_prose_rotting` (reusing the existing schema, no new event type
+ * registered) with `wrong_field_shape: true` so operators can tell this
+ * apart from ordinary ratio rot.
+ *
+ * Idempotent: a prior `wrong_field_shape` flag for the same event_type is
+ * itself a well-shaped row (written via writeEvent), so it's visible on the
+ * next scan and suppresses re-emission — no lock file needed.
+ */
+function scanMisshapenEmits(cwd, orchId) {
+  if (process.env.ORCHESTRAY_MISSHAPEN_EMIT_SCAN_DISABLED === '1') return;
+  if (!orchId) return;
+
+  const archivePath = path.join(cwd, '.orchestray', 'history', orchId, 'events.jsonl');
+  const livePath    = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
+  const lines = fs.existsSync(archivePath) ? readJsonlLines(archivePath) : readJsonlLines(livePath);
+
+  const counts         = {}; // event-name -> count of misshapen rows
+  const alreadyFlagged = new Set();
+
+  for (const l of lines) {
+    const trimmed = l.trim();
+    if (!trimmed) continue;
+    let evt;
+    try { evt = JSON.parse(trimmed); }
+    catch (_e) { continue; }
+    if (!evt || typeof evt !== 'object') continue;
+    if (orchId && evt.orchestration_id && evt.orchestration_id !== orchId) continue;
+
+    if (evt.type === 'pm_emit_prose_rotting' && evt.wrong_field_shape === true) {
+      alreadyFlagged.add(evt.event_type);
+      continue;
+    }
+    if (evt.type) continue; // well-shaped row — not our concern here
+    if (typeof evt.event === 'string' && evt.event) {
+      counts[evt.event] = (counts[evt.event] || 0) + 1;
+    }
+  }
+
+  for (const eventName of Object.keys(counts)) {
+    if (alreadyFlagged.has(eventName)) continue;
+    try {
+      writeEvent({
+        version:           1,
+        type:              'pm_emit_prose_rotting',
+        event_type:        eventName,
+        pm_count:          0,
+        backstop_count:    0,
+        ratio:             1,
+        zero_emission:     true,
+        wrong_field_shape: true,
+        misshapen_count:   counts[eventName],
+      }, { cwd });
+    } catch (_e) { /* fail-open */ }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -199,6 +302,29 @@ function main() {
   // W2-5: emit replan_budget_exceeded when w_item_redo_requested count exceeds budget.
   try { checkReplanBudget(cwd, orchId, readJsonlLines); }
   catch (_e) { /* fail-open */ }
+
+  // v2.3.20 item 2: reconstruct missing oversized-input protocol events.
+  try { checkOversizedInputCompleteness(cwd, orchId, readJsonlLines); }
+  catch (_e) { /* fail-open */ }
+
+  // v2.3.21 item 1: reconstruct state_cancel_aborted when the archived
+  // directory exists but the manual emit was skipped.
+  try { checkStateCancelCompleteness(cwd, orchId, readJsonlLines); }
+  catch (_e) { /* fail-open */ }
+
+  // v2.3.21 item 2: flag PM-prose rows shaped `event:` instead of `type:` —
+  // invisible to the ratio check above regardless of its floor.
+  try { scanMisshapenEmits(cwd, orchId); }
+  catch (_e) { /* fail-open */ }
+
+  // v2.3.20 item 4: catch dynamic-target types that resolved a trigger but
+  // produced zero real events — the class the ratio floor above can't see.
+  // Re-tally after checkOversizedInputCompleteness/checkOrchRoiPresence may
+  // have appended new rows, so this reads the freshest count.
+  try {
+    const freshCounts = tallyEvents(cwd, orchId);
+    checkDynamicTargetZeroEmission(cwd, orchId, freshCounts);
+  } catch (_e) { /* fail-open */ }
 }
 
 // Always emit the continue envelope so the Stop hook chain is well-formed.

@@ -149,7 +149,7 @@ Rendering rules:
 - If `model_used` is null: show `[inherited]`; if model field absent entirely, omit the bracket annotation.
 - If `routing_outcome` exists for this agent and `escalated` is true: append `[{model_used}, escalated from {escalated_from}]` instead.
 - Parallel group (2+ agents): use `┬─` for first, `├─` for middle, `┴─` for last. Sequential (1 agent): use `┌─` / `└─`.
-- Annotate `replan` and `verify_fix_attempt` events inline at their `T+{N}s` offset, indented with `│  [{event_type}] {detail}`. (`verify_fix_fail` is a defined type with no live write site — it never fires, so it is omitted here.)
+- Annotate `replan` and the `verify_fix_start`/`verify_fix_pass`/`verify_fix_fail`/`verify_fix_oscillation` round-boundary events inline at their `T+{N}s` offset, indented with `│  [{event_type}] {detail}`. (`verify_fix_attempt` is a legacy historical-only slug, never code-emitted, and is omitted here.)
 - Outcome preview: take first 80 characters of `last_message_preview`, stripping any leading `## Result Summary` header line. Truncate with `...` if longer than 80 characters. Omit entirely if `last_message_preview` is null or empty.
 - Cap each timeline line at 120 characters; truncate with `...` if needed.
 
@@ -171,7 +171,7 @@ Compute and display the following:
 
 **Parallelism ratio** — total wall-clock seconds where 2+ agents ran simultaneously divided by total orchestration duration, expressed as a percentage. If 0%: show `Sequential (no parallel execution)` or omit if the information is obvious from the timeline.
 
-**Verify-fix rounds** — count `verify_fix_attempt` events and list involved agent types. Omit this row if count is 0.
+**Verify-fix rounds** — count `verify_fix_start` events and list involved agent types. Omit this row if count is 0.
 
 **Replan events** — count `replan` events and list reasons from the `reason` field. If zero, show "No replanning required (plan was stable)."
 

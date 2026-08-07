@@ -406,20 +406,23 @@ function checkBehaviorDiffGate(root) {
   if (report.scripts.length === 0) {
     return { pass: true, note: `no bin/*.js changes since ${baseTag} — nothing to replay` };
   }
+  const declaredNote = report.declared_delta_count
+    ? ` (${report.declared_delta_count} declared via \`Behavior-Change:\` trailer, excluded)` : '';
   if (!report.blocked) {
     return {
       pass: true,
       note: report.delta_count === 0
-        ? `no behavior deltas since ${baseTag} (${report.scripts.length} script(s) replayed)`
-        : `${report.delta_count} behavior delta(s) since ${baseTag} — telemetry only (behavior_diff_gate.block is false)`,
+        ? `no unexplained behavior deltas since ${baseTag} (${report.scripts.length} script(s) replayed)${declaredNote}`
+        : `${report.delta_count} behavior delta(s) since ${baseTag} — telemetry only (behavior_diff_gate.block is false)${declaredNote}`,
     };
   }
 
-  const flagged = report.scripts.filter((s) => s.deltas.length > 0).map((s) => s.script);
+  const flagged = report.scripts.filter((s) => s.deltas.length > 0 && !s.declared).map((s) => s.script);
   return {
     pass: false,
-    note: `${report.delta_count} unexplained behavior delta(s) since ${baseTag} in: ${flagged.join(', ')} — ` +
-      `run \`node bin/_tools/behavior-diff.js --base ${baseTag}\` for detail, or set behavior_diff_gate.block: false to demote to telemetry.`,
+    note: `${report.delta_count} unexplained behavior delta(s) since ${baseTag} in: ${flagged.join(', ')}${declaredNote} — ` +
+      `run \`node bin/_tools/behavior-diff.js --base ${baseTag}\` for detail, declare intentional ones with a ` +
+      `\`Behavior-Change: <script> <reason>\` commit body trailer, or set behavior_diff_gate.block: false to demote to telemetry.`,
   };
 }
 

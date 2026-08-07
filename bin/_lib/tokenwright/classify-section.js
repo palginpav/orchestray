@@ -42,10 +42,11 @@ const DEFAULT_PRESERVE_HEADINGS = Object.freeze([
   '## Context from Previous Agent',
 ]);
 
-// Inert placeholder — schema-level reservation, intentionally produces 0 dedup matches
-// in production. v2.2.20 audit (n=477) found 0/477 prompts matched any of these headings.
-// DO NOT remove: Layer-2 Haiku scoring may reuse the constant; removing triggers a five-test
-// rewrite for zero behavioural benefit. See .orchestray/kb/artifacts/v2220-l1-revival-design.md §3.
+// CLOSED — will not be revived. Two independent audits (v2.2.20, n=477; and the
+// closure task, n=69 fresh production prompts) both found 0 matches against any of
+// these headings. See .orchestray/kb/decisions/l1-compression-revival-backlog.md for
+// the final decision and evidence. Kept only because deleting it forces a five-test
+// rewrite for zero behavioural benefit — it is inert, not "reserved for later".
 const DEDUP_ELIGIBLE_HEADINGS = Object.freeze([
   '## Prior Reviewer Findings',
   '## Prior Findings',

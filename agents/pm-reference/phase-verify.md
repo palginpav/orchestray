@@ -305,28 +305,27 @@ verify_fix:
 
 **g. Audit logging:**
 
-For each round, append events to `.orchestray/audit/events.jsonl` using `ox events append`.
-The **`verify_fix_start` event** is **also** emitted automatically by
-`bin/pm-emit-state-watcher.js` (PostToolUse hook) every time you update the
-`verify_fix.round_history` block in `.orchestray/state/tasks/<task-N>.md` —
-the watcher synthesises round/error_count from the latest YAML entry. If you
-emit it manually below, the watcher detects the paired emit within 30 s and
-skips the backstop. **`verify_fix_pass` and `verify_fix_fail` are NOT
-auto-backstopped** — those still require the explicit `ox events append`
-calls below. (v2.2.9 B-8; belt-and-braces prose retained for v2.2.9, full
-auto-coverage candidate in v2.2.10.)
+All three verify-fix-loop lifecycle events below are auto-backstopped by
+`bin/pm-emit-state-watcher.js` (PostToolUse hook) every time you update
+`.orchestray/state/tasks/<task-N>.md` — manual `ox events append` is
+optional in every case. If you emit one yourself, the watcher detects the
+paired emit within 30 s and skips the backstop; if you don't, the backstop
+fires on your behalf so the audit trail never goes dark. (v2.2.9 B-8 added
+`verify_fix_start`; v2.3.19 item 2 fixed `verify_fix_pass`/`verify_fix_fail`
+reachability — both target the same `state/tasks/*.md` write and now run
+independently instead of one starving the other.)
 
 - **Round start (auto-backstopped via watcher; manual emit optional):**
   ```bash
   ox events append --type=verify_fix_start --task-id=<task-N> --extra='{"round":1,"error_count":3}'
   ```
 
-- **Round pass (loop exits successfully) — manual emit REQUIRED:**
+- **Round pass (loop exits successfully) — auto-backstopped via watcher; manual emit optional:**
   ```bash
   ox events append --type=verify_fix_pass --task-id=<task-N> --extra='{"round":2,"rounds_total":2}'
   ```
 
-- **Round fail (cap reached) — manual emit REQUIRED:**
+- **Round fail (cap reached) — auto-backstopped via watcher; manual emit optional:**
   ```bash
   ox events append --type=verify_fix_fail --task-id=<task-N> --extra='{"round":3,"remaining_errors":2}'
   ```
@@ -367,7 +366,12 @@ fixed issues with the instruction "MUST remain fixed."
 round N-1, this may indicate an oscillation pattern (fixing one issue reintroduces
 another). When detected:
 
-1. Log a warning to the audit trail:
+1. Log a warning to the audit trail. This event is also auto-backstopped by
+   `bin/pm-emit-state-watcher.js` (v2.3.20 item 1) from the same
+   `state/tasks/<task-N>.md` write that drives round start/pass/fail above —
+   it fires whenever the two most recent `round_history` entries show
+   non-decreasing errors, so manual emit is optional (paired-emit dedup
+   applies as above):
    ```bash
    ox events append --type=verify_fix_oscillation --task-id=<task-N> --extra='{"round":2,"errors_current":3,"errors_previous":2}'
    ```

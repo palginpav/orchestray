@@ -159,3 +159,34 @@ test('compose-block-a: a genuine same-turn dual-install race is still caught (re
   const dfe = events.find(e => e.type === 'hook_double_fire_detected' && e.guard_name === 'compose-block-a');
   assert.ok(dfe, 'hook_double_fire_detected must be emitted for the genuine race');
 });
+
+// ---------------------------------------------------------------------------
+// E7 (reviewer finding): promptText fell back to a constant '' when
+// event.prompt was absent, so every prompt-less turn hashed to the SAME
+// turnDiscriminator and collided inside the 2s TTL window — the guard
+// failing toward suppression instead of toward firing. Fixed by falling
+// back to crypto.randomUUID() per turn instead.
+// ---------------------------------------------------------------------------
+
+test('compose-block-a: two distinct prompt-less turns (event.prompt absent) do not collide on a constant discriminator', (t) => {
+  const orchId = 'orch-cba-turn-noprompt-' + Date.now();
+  const dir  = makeProject(t, orchId);
+  const instA = materializeInstall(path.join(dir, '.install-a'));
+  const instB = materializeInstall(path.join(dir, '.install-b'));
+
+  const sessionId = 'sess-no-prompt';
+
+  // No `prompt` field at all — event.prompt is undefined, exercising the
+  // fallback branch.
+  const r1 = runCompose(instA, dir, { session_id: sessionId });
+  assert.equal(r1.status, 0, 'turn 1 (install A) must exit 0; stderr=' + r1.stderr);
+  assert.ok(hasAdditionalContext(r1), 'turn 1 (first fire, uncontested) must emit additionalContext');
+
+  const r2 = runCompose(instB, dir, { session_id: sessionId });
+  assert.equal(r2.status, 0, 'turn 2 (install B) must exit 0; stderr=' + r2.stderr);
+  assert.ok(
+    hasAdditionalContext(r2),
+    'a second, genuinely distinct prompt-less turn must NOT collide with the first on a ' +
+    'constant \'\' discriminator — each missing-prompt turn must get a unique fallback'
+  );
+});

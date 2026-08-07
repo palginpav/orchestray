@@ -3,6 +3,36 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.19] - 2026-08-07
+
+**Orchestray 2.3.19 fixes a security hole in the gate that decides which agents may spawn other agents, and repairs a large class of features that were documented but silently doing nothing. Most visibly, the verify-fix and re-planning sections of `/orchestray:analytics` and `/orchestray:report` had been empty for every orchestration ever run, and the scout count in every orchestration summary always said zero.**
+
+### Security
+
+- **Closed a way to slip past the gate that decides which agents are allowed to spawn other agents.** An agent could get itself approved by the gate — when it should have been blocked — by planting enough decoy files that the gate gave up looking for the real record of who the caller was and fell back to a name the caller picks itself. The gate now looks the caller up precisely instead of by loose match, so decoys can't crowd out the real answer. Confirmed exploitable before the fix, with a regression test to keep it closed. The gate also now validates the session identifier it is handed before using it to build a file path.
+
+### Fixed
+
+- **`/orchestray:analytics` and `/orchestray:report` no longer show empty verify-fix and re-planning sections.** Several kinds of internal activity record were documented as being written, but never actually were — writing them depended on the assistant remembering to do it by hand every time, and it didn't. They're now recorded automatically, so these sections have real content going forward. (They will be empty for orchestrations that ran before this release, since the data was never captured.)
+- **The scout count in every orchestration summary now reports the real number.** It previously said zero on every run, even when scouts had done substantial work.
+- **One internal activity record had been reporting a wrong value on every single occurrence.** Now correct.
+- **Two features had been fully built but never connected to anything.** One is now wired up and working; the other was removed rather than left as decoration.
+- **The self-check that is supposed to catch exactly this kind of "documented but never actually happens" decay had a blind spot: it could only notice something that happened rarely, not something that never happened at all.** That is what let the problems above go unnoticed. The blind spot is closed, so the next feature that quietly stops working gets flagged instead of drifting for months.
+- **Installing Orchestray could delete a bundled dependency it had just installed.** This only affected dependencies published under a scoped name (`@scope/name`), and Orchestray currently ships none — so no user has hit this. It's fixed at the source rather than left as a trap for whoever adds the first scoped dependency.
+- **Fixed two tests that failed intermittently under load.** Both were fixed at the actual cause rather than by relaxing what they check. One was a speed budget being measured while ~1,900 other tests competed for the processor — the code comfortably meets its 200 ms budget at 65 ms, but measured 219 ms under that contention.
+
+### Changed
+
+- **Agent completions are noticeably cheaper.** Every subagent finishing its work was paying about 40 ms of unnecessary setup, even with the feature that needed it switched off. That's down from roughly 50 ms to 9.5 ms per completion.
+
+### Not in this release
+
+- **A long-deferred prompt-compression feature is now formally closed rather than left pending.** It was measured against 546 real prompts across two independent audits and matched zero of them, both times. The decision and the evidence are recorded so it isn't reopened without new data.
+
+### Under the hood
+
+- Documentation corrections where the written description contradicted the actual code — including internal notes that pointed a future analysis at a data series that can never grow.
+
 ## [2.3.18] - 2026-08-07
 
 **Orchestray 2.3.18 is a reliability and hardening release: a security fix closes a local write primitive that could silence every hook on a dual-install machine, a new Claim–Evidence Ledger checks agents' own claims against what they actually did during the session, and a long list of dual-install, audit-log, and cost-tracking bugs are fixed.**

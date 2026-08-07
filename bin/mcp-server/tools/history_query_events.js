@@ -29,8 +29,11 @@ const EVENT_TYPES = [
   'elicitation_answered',
   'routing_outcome',
   'replan',
-  'verify_fix_attempt',
+  'verify_fix_start',
+  'verify_fix_pass',
   'verify_fix_fail',
+  'verify_fix_oscillation',
+  'verify_fix_attempt',
   'mcp_tool_call',
   'mcp_resource_read',
 ];

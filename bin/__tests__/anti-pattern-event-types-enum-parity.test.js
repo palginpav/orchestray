@@ -89,9 +89,11 @@ const ENUM_PHANTOM_EXCLUSIONS = new Set([
   // before the rename.
   'orchestration_end',
 
-  // `verify_fix_attempt` was an early stage 2 event-name; the live emitters
-  // use `verify_fix_start` / `verify_fix_pass` / `verify_fix_fail`. Kept so
-  // historical filters remain valid.
+  // `verify_fix_attempt` was an early stage 2 event-name, never code-emitted;
+  // the live round-boundary quartet is `verify_fix_start` / `verify_fix_pass` /
+  // `verify_fix_fail` / `verify_fix_oscillation` (all four are now mechanically
+  // emitted by bin/_lib/pm-emit-state-watcher.js and separately declared in
+  // EVENT_TYPES). Kept so historical filters remain valid.
   'verify_fix_attempt',
 ]);
 

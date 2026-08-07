@@ -197,4 +197,39 @@ describe('FN-34 — emit coverage: observed types must be declared in schema', (
     assert.equal(observedFromEmpty.size, 0, 'empty JSONL must yield zero observed types');
   });
 
+  // FN-34 follow-up (v2.3.19): a row written via `writeEvent()` always carries
+  // both `type` and `event_type` (audit-event-writer.js `withAutofill()`
+  // mirrors legacy <-> canonical field names). A row with NEITHER — only a
+  // bare `event` key — means it bypassed the audit gateway entirely (a raw
+  // hand-append). Such rows are invisible to every `type`-keyed consumer.
+  // FN-31 already lints the *doc* for `"type":` vs `"event":`; this is the
+  // runtime-row counterpart, catching the class of bug that made
+  // `verify_fix_attempt`'s historical rows unqueryable (see event-schemas.md).
+  test('Test 4 (runtime field-name lint): no non-legacy row relies solely on a bare `event` key', () => {
+    const KNOWN_LEGACY_BARE_EVENT_SLUGS = new Set([
+      'verify_fix_attempt', // pre-v2.3.19 PM hand-append; see event-schemas.md "Status" note
+    ]);
+
+    const rows = readLastNLines(EVENTS_JSONL, 200);
+    const offenders = new Set();
+    for (const row of rows) {
+      const hasCanonical = typeof row.type === 'string' || typeof row.event_type === 'string';
+      if (hasCanonical) continue;
+      const bareType = row.event;
+      if (typeof bareType === 'string' && !KNOWN_LEGACY_BARE_EVENT_SLUGS.has(bareType)) {
+        offenders.add(bareType);
+      }
+    }
+
+    assert.equal(
+      offenders.size,
+      0,
+      `${offenders.size} event type(s) observed with only a bare "event" key ` +
+      `(no "type"/"event_type"), making them invisible to type-keyed queries:\n` +
+      [...offenders].map(t => `  "${t}"`).join('\n') +
+      '\nRoute the emit site through writeEvent() (bin/_lib/audit-event-writer.js), ' +
+      'or add to KNOWN_LEGACY_BARE_EVENT_SLUGS with a documented reason.'
+    );
+  });
+
 });
