@@ -1784,7 +1784,10 @@ function mergeHooks(targetDir) {
       //
       // Skipped when entry has `command_managed:true` (user-edited hook).
       // Emits one stderr advisory line per actual update.
-      for (const entry of (settings.hooks[event] || [])) {
+      // Documented kill switch: leave drifted args untouched until the next
+      // intentional install.
+      const argsUpdateDisabled = process.env.ORCHESTRAY_INSTALL_ARGS_UPDATE_DISABLED === '1';
+      for (const entry of (argsUpdateDisabled ? [] : (settings.hooks[event] || []))) {
         if (entry.matcher !== entry.matcher) continue; // (kept for static analysis; never trips)
         for (const existing of (entry.hooks || [])) {
           if (existing.command_managed === true) continue;

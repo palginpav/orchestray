@@ -67,6 +67,7 @@ const STAT_TTL_MS = 100;
  * @param {{ prior_mtime: number, new_mtime: number|null, cause: string, error_code?: string, schema_event_count?: number }} payload
  */
 function _emitCacheInvalidation(payload) {
+  if (process.env.ORCHESTRAY_SCHEMA_CACHE_EMIT_DISABLED === '1') return; // documented kill switch
   try {
     const evt = Object.assign(
       { type: 'schema_cache_invalidated', ts: new Date().toISOString(), version: 1 },

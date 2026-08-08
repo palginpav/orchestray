@@ -122,6 +122,11 @@ if (require.main === module) {
 
     const cwd = resolveSafeCwd(event.cwd);
     const mcpEnforcement = loadMcpEnforcement(cwd);
+    // Env twin of mcp_enforcement.global_kill_switch, documented in event-schemas.md.
+    // The config file is unreachable mid-session once this gate starts blocking.
+    if (process.env.ORCHESTRAY_MCP_CHECKPOINT_GATE_DISABLED === '1') {
+      mcpEnforcement.global_kill_switch = true;
+    }
 
     // Global kill switch — short-circuits before ANY 2.0.12 check. Routing.jsonl
     // (2.0.11) validation still runs on known dispatches. D5 property.
@@ -204,7 +209,7 @@ if (require.main === module) {
     //   No emergency fail-open override exists by design (fail-closed is the
     //   security requirement; master switch is the only opt-out).
     // -----------------------------------------------------------------------
-    if (toolName === 'Agent') {
+    if (toolName === 'Agent' && process.env.ORCHESTRAY_DISABLE_CUSTOM_AGENTS !== '1') {
       try {
         const gateToolInput = event.tool_input || {};
         const gateSubagentType = gateToolInput.subagent_type || '';

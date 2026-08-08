@@ -7194,7 +7194,8 @@ declaring `Agent(...)` in its tools allowlist is neither `pm` nor
 
 Field notes:
 - Hard-block: exit 2 with reason `non_pm_agent_declares_agent_tool`.
-- Kill switch: `ORCHESTRAY_NON_PM_AGENT_BLOCK_DISABLED=1`.
+- Kill switch: `ORCHESTRAY_NON_PM_AGENT_GATE_DISABLED=1` (this is the name the
+  gate actually reads; `ORCHESTRAY_NON_PM_AGENT_BLOCK_DISABLED` never existed).
 
 ### `audit_event_autofilled` event
 
@@ -9982,7 +9983,8 @@ Field notes:
 
 Emitted from: `bin/gate-agent-spawn.js`.
 
-Kill switch: `ORCHESTRAY_MCP_CHECKPOINT_GATE_DISABLED=1` (existing).
+Kill switch: `ORCHESTRAY_MCP_CHECKPOINT_GATE_DISABLED=1`, the env twin of
+`mcp_enforcement.global_kill_switch` in `.orchestray/config.json`.
 
 ---
 
@@ -12406,12 +12408,12 @@ Field notes:
 - `symlinks_errors` (optional): number of symlink operations that failed; individual errors are logged to stderr.
 - All symlink fields are emitted via `safeEmit(skipValidation:true)` and are optional — consumers should treat absence as zero.
 - Only emitted when `count > 0`. When the directory is absent or empty, no event is emitted.
-- Kill switch: `ORCHESTRAY_CUSTOM_AGENTS_DISABLED=1` — discovery is skipped entirely.
+- Kill switch: `ORCHESTRAY_DISABLE_CUSTOM_AGENTS=1` — discovery is skipped entirely.
 
 ### `custom_agents_skipped`
 
 Emitted by `bin/discover-custom-agents.js` when discovery is explicitly skipped due to a kill
-switch (`ORCHESTRAY_CUSTOM_AGENTS_DISABLED=1` or `custom_agents.enabled: false` in config).
+switch (`ORCHESTRAY_DISABLE_CUSTOM_AGENTS=1` or `custom_agents.enabled: false` in config).
 
 ```json
 {
@@ -12471,7 +12473,7 @@ Field notes:
 - Hard-block: exit 2, `permissionDecision: "deny"`.
 - Stderr message includes the exact path the user must create to register the agent:
   `~/.claude/orchestray/custom-agents/<name>.md`.
-- Kill switch: `ORCHESTRAY_CUSTOM_AGENTS_GATE_DISABLED=1` — degrades to fail-open (unknown types allowed).
+- Kill switch: `ORCHESTRAY_DISABLE_CUSTOM_AGENTS=1` — degrades to fail-open (unknown types allowed).
 - The event is emitted BEFORE the stdout deny envelope is written.
 
 ---

@@ -128,9 +128,12 @@ function getProjectRoot() {
     // Fall through to Step 3 instead of silent-trust.
   }
 
-  // Step 3: cwd walk-up.
-  const found = walkUpFor(process.cwd(), '.orchestray');
-  if (found) return found;
+  // Step 3: cwd walk-up. The documented kill switch disables it so audit rows
+  // cannot be misrouted into whichever project the cwd happens to sit in.
+  if (process.env.ORCHESTRAY_MCP_AUDIT_CWD_RESOLUTION_FALLBACK_DISABLED !== '1') {
+    const found = walkUpFor(process.cwd(), '.orchestray');
+    if (found) return found;
+  }
 
   // Step 4: plugin-manifest hint. Final fallback before throw.
   try {
