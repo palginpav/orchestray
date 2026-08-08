@@ -703,6 +703,40 @@ describe('v2.3.21 item 1 — state_cancel_aborted backstop', () => {
     // from archivedDir/events.jsonl (which no code path ever creates — that check
     // reported constant-false on every real cancellation before the fix).
     assert.equal(backstop[0].events_jsonl_preserved, true);
+    // Defect 1: every sibling emit in this file stamps version:1 explicitly
+    // (grep confirms 20/20 other writeEvent calls do); state_cancel_aborted
+    // was the lone exception, a schema-conformance gap on a never-fired event.
+    assert.equal(backstop[0].version, 1, 'state_cancel_aborted must carry version:1 like every sibling emit');
+  });
+
+  test('defect 2 pin: archived_to keeps the doubled orch- prefix — collapsing it on either side would break discovery', () => {
+    // orchId already starts with "orch-" per bin/ox.js, and the PM's own
+    // clean-abort prose (tier1-orchestration-rare.md step 2) literally
+    // substitutes the full orchId into ".orchestray/history/orch-<id>-cancelled/",
+    // so both the writer (PM's manual mv) and the reader (this check) agree on
+    // the doubled "orch-orch-..." form. This is NOT a bug — do not "fix" it.
+    const dir = makeRepo();
+    const doubledDir = path.join(dir, '.orchestray', 'history', 'orch-' + ORCH_ID + '-cancelled');
+    fs.mkdirSync(doubledDir, { recursive: true });
+
+    const r = runCoverage(dir);
+    assert.equal(r.status, 0);
+    const events   = readEvents(dir);
+    const backstop = events.filter(e => e.type === 'state_cancel_aborted' && e.source === 'state_watcher_backstop');
+    assert.equal(backstop.length, 1, 'the real (doubled-prefix) archive dir must be discovered');
+    assert.equal(backstop[0].archived_to, '.orchestray/history/orch-' + ORCH_ID + '-cancelled');
+
+    // Negative control: a "corrected" single-prefix dir (what a well-meaning
+    // fix might rename it to) is a DIFFERENT path the check does not look for.
+    // Demonstrates that collapsing the prefix on one side silently breaks
+    // discovery rather than "fixing" anything.
+    const dir2 = makeRepo();
+    const singlePrefixDir = path.join(dir2, '.orchestray', 'history', ORCH_ID + '-cancelled');
+    fs.mkdirSync(singlePrefixDir, { recursive: true });
+    const r2 = runCoverage(dir2);
+    assert.equal(r2.status, 0);
+    const backstop2 = readEvents(dir2).filter(e => e.type === 'state_cancel_aborted');
+    assert.equal(backstop2.length, 0, 'single-prefix dir is invisible to the check — proves the doubling is load-bearing');
   });
 
   test('E1 regression: live audit log absent at check time → events_jsonl_preserved is honestly false, not hardcoded', () => {
@@ -894,6 +928,72 @@ describe('E5 — oversized_* backstop rows carry explicit orchestration_id/times
     for (const t of ['oversized_map_dispatched', 'oversized_slice_skipped', 'oversized_synthesis_complete']) {
       assert.ok(!byType[t], `${t} must not appear in the autofill-sample counter — explicit fields make autofill a no-op`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Defect 3: oversized_map_dispatched/_slice_skipped/_synthesis_complete were
+// unreachable for real-world detections because their only backstop
+// (checkOversizedInputCompleteness) required an active orchestration marker,
+// but 15/15 measured oversized_input_detected rows on this machine carry no
+// orchestration_id — detection happens on UserPromptSubmit, before/without
+// any orchestration ever starting. Fix: key the reconciliation on the
+// oversized-buffer artifact write (the one real file-write signal in the
+// map/synthesis protocol) via the PostToolUse watcher, independent of orchId.
+// ---------------------------------------------------------------------------
+
+describe('defect 3 — oversized_* backstop reachable without an active orchestration', () => {
+  function makeRepoNoOrch() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'v229-oversized-noorch-'));
+    fs.mkdirSync(path.join(dir, '.orchestray', 'audit'), { recursive: true });
+    fs.mkdirSync(path.join(dir, '.orchestray', 'state'), { recursive: true });
+    fs.mkdirSync(path.join(dir, '.orchestray', 'kb', 'artifacts'), { recursive: true });
+    fs.mkdirSync(path.join(dir, '.orchestray', 'history'), { recursive: true });
+    // Deliberately NO current-orchestration.json marker.
+    return dir;
+  }
+
+  test('buffer-artifact write with no orchestration marker still reconstructs the three events, tagged orchestration_id="unknown"', () => {
+    const dir = makeRepoNoOrch();
+
+    appendEvent(dir, {
+      version: 1, type: 'oversized_input_detected', timestamp: new Date().toISOString(),
+      orchestration_id: 'unknown', corpus_id: 'deadbeef0001', trigger: 'file',
+      total_bytes: 1600000, est_tokens: 400000, natural_slices: 2,
+      mode: 'hierarchical', threshold_bytes: 1572864,
+    });
+
+    const bufferRel = '.orchestray/kb/artifacts/oversized-buffer-deadbeef0001.md';
+    fs.writeFileSync(path.join(dir, bufferRel), '# kept\noi-deadbeef0001-slice-0\n');
+
+    const r = runWatcher(dir, makeEditPayload(dir, bufferRel));
+    assert.equal(r.status, 0, `watcher exit=${r.status} stderr=${r.stderr}`);
+
+    const events = readEvents(dir);
+    const rows = events.filter(e => e.source === 'state_watcher_backstop' &&
+      ['oversized_map_dispatched', 'oversized_slice_skipped', 'oversized_synthesis_complete'].includes(e.type));
+    assert.ok(rows.length >= 2, 'expects at least dispatched + one skipped-slice row with no orchestration active');
+    for (const row of rows) {
+      assert.equal(row.orchestration_id, 'unknown', `${row.type} must use the established 'unknown' sentinel, not be omitted`);
+    }
+  });
+
+  test('kill switch (ORCHESTRAY_OVERSIZED_WATCHER_DISABLED) silences the no-orchestration reconciliation too', () => {
+    const dir = makeRepoNoOrch();
+    appendEvent(dir, {
+      version: 1, type: 'oversized_input_detected', timestamp: new Date().toISOString(),
+      orchestration_id: 'unknown', corpus_id: 'deadbeef0002', trigger: 'file',
+      total_bytes: 1600000, est_tokens: 400000, natural_slices: 1,
+      mode: 'direct', threshold_bytes: 1572864,
+    });
+    const bufferRel = '.orchestray/kb/artifacts/oversized-buffer-deadbeef0002.md';
+    fs.writeFileSync(path.join(dir, bufferRel), '# kept\n');
+
+    const r = runWatcher(dir, makeEditPayload(dir, bufferRel), { ORCHESTRAY_OVERSIZED_WATCHER_DISABLED: '1' });
+    assert.equal(r.status, 0);
+    const rows = readEvents(dir).filter(e => e.source === 'state_watcher_backstop' &&
+      e.type.startsWith('oversized_'));
+    assert.equal(rows.length, 0, 'kill switch must silence the no-orchestration reconciliation path too');
   });
 });
 

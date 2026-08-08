@@ -172,7 +172,8 @@ const UNCOVERED_ALLOWLIST = Object.freeze([
   { script: 'validate-task-completion',     event: 'TaskCompleted',  reason: 'event-not-yet-observed' },
   { script: 'worktree-create',              event: 'WorktreeCreate', reason: 'event-not-yet-observed' },
   { script: 'worktree-remove',              event: 'WorktreeRemove', reason: 'event-not-yet-observed' },
-  { script: 'emit-schema-redirect-followed', event: 'PostToolUse',   reason: 'event-not-yet-observed' },
+  // emit-schema-redirect-followed|PostToolUse retired 2026-08-08: a real capture
+  // landed during normal use, which is how gaps are meant to close.
   { script: 'validate-companion-files',     event: 'SessionStart',   reason: 'event-not-yet-observed' },
 ]);
 

@@ -960,6 +960,21 @@ function processEdit(event, opts) {
   }
   relPath = relPath.split(path.sep).join('/');
 
+  // Defect 3: oversized_map_dispatched/_slice_skipped/_synthesis_complete
+  // were unreachable for real detections — their only backstop
+  // (checkOversizedInputCompleteness, orch-close-gated below) requires a live
+  // orchestration marker, but real oversized-input detections happen on
+  // UserPromptSubmit, almost always before/without any orchestration ever
+  // starting. The buffer-artifact write (OI.6 step 2 — the one real
+  // file-write signal in the map/synthesis protocol) fires either way, so
+  // key the reconciliation on it directly instead of waiting for orch-close.
+  // Runs ahead of (and independent of) the WATCH_TARGETS/orchId gates below —
+  // this is not one of the 4 prose-emit targets they cover.
+  if (!isDisabled(cwd) && /^\.orchestray\/kb\/artifacts\/oversized-buffer-[^/]+\.md$/.test(relPath)) {
+    try { checkOversizedInputCompleteness(cwd, resolveOrchId(cwd) || 'unknown', opts.readLines); }
+    catch (_e) { /* fail-open */ }
+  }
+
   // v2.3.19: find ALL matching targets, not just the first. A single write
   // can carry more than one independent lifecycle signal (see W2.3.19
   // triage item 2 — `task_verify_fix_round` and `task_verify_fix_outcome`
@@ -1386,6 +1401,10 @@ function checkStateCancelCompleteness(cwd, orchId, readLines) {
   if (process.env.ORCHESTRAY_CANCEL_ABORT_WATCHER_DISABLED === '1') return;
   if (!orchId) return;
 
+  // Doubled "orch-orch-..." prefix is intentional and load-bearing, not a bug:
+  // orchId already starts with "orch-" (bin/ox.js), and the PM's clean-abort
+  // prose (tier1-orchestration-rare.md step 2) literally substitutes the full
+  // orchId into this template — writer and reader agree. Do not "correct" it.
   const archivedToRel = '.orchestray/history/orch-' + orchId + '-cancelled';
   const archivedDir   = path.join(cwd, archivedToRel);
   if (!fs.existsSync(archivedDir)) return; // never cancelled — nothing to reconstruct
@@ -1421,6 +1440,7 @@ function checkStateCancelCompleteness(cwd, orchId, readLines) {
 
   try {
     writeEvent({
+      version:                1, // defect 1: every sibling emit in this file stamps version:1 explicitly
       type:                   'state_cancel_aborted',
       orchestration_id:       orchId,
       archived_to:            archivedToRel,
