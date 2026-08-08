@@ -3,6 +3,29 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.20] - 2026-08-08
+
+**Orchestray 2.3.20 changes how Orchestray decides which of its learned patterns are worth keeping. Orchestray builds a library of patterns from past work and prunes or retires them based on how often they get used — but that count was populated by the assistant remembering to report it by hand. Across all history it recorded 26 uses against 6,945 "skipped" notes, a 0.4% rate, leaving 37 of 44 patterns sitting at zero uses regardless of how good they actually were. Usage is now inferred from evidence instead: which patterns were put in front of an agent, which ones the agent said it used and why, and whether that work succeeded.**
+
+### Changed
+
+- **Pattern usage is now measured, not self-reported.** The single "times used" number is split into three: how often a pattern was offered to an agent, how often an agent actually applied it, and how often applying it went wrong. Being shown a pattern and using it are different facts, and the pruning and retirement rules had been treating them as one.
+- **Pattern *offer* counts are accurate as of this release.** A pattern showing zero offers from here on is genuinely never reaching agents — worth investigating rather than pruning.
+- **Application credit is deliberately conservative, and counts start low.** A pattern is credited only when the evidence supports it: it was genuinely shown to that specific agent, the agent explained in its own words what it used, and the work succeeded. Nothing is backfilled and nothing is guessed. Counts will therefore look small at first and grow. That is the intended behaviour — an inflated count retires good patterns and protects bad ones, which is exactly what the old number did.
+- **Agents are now asked to report which offered patterns they used and which they rejected.** Missing those sections does not block anything in this release, so existing custom agents keep working unchanged; when the sections are present, their contents are checked.
+
+### Fixed
+
+- **The evidence system described above shipped in a state where it had never once run.** Nine separate defects, each hidden behind the one above it, and every one invisible to a fully passing test suite — because the tests fed it input shapes the real system never produces. They were found by running it for real. Among them: the part that records which patterns were shown to an agent looked for the agent's identity in the wrong place, so every record came out anonymous and could never be matched to anything later; the part that records what an agent said it used was listening at a moment in an agent's lifecycle that carries no agent output at all, so it could never see the one thing it existed to read; patterns were handed to agents as a short reference they had no way to open, so an agent that could not read a pattern recorded it as *rejected* — filing confidently wrong data rather than none, and counting against good patterns; and agents naming a pattern were copying the name written inside the pattern file, which is not the identifier the counter credits. They were being faithful and the system was showing them the wrong string. Patterns now arrive as full readable text with the correct identifier to quote.
+- **Upgrading left a stale copy of any relocated internal check running alongside its replacement.** This happened silently, on every machine, on every upgrade — and the stale copy kept running against input it could not interpret, corrupting the very measurements used to decide whether to switch newer checks on. Upgrades now retire the old copy when a check moves.
+- **The pattern-corpus curator could not be started at all.** Its only supported entry point was blocked by an unrelated safety check, so AI curation of the pattern library was unreachable. Also fixed: the curator's documented emergency rollback would have left it with no definition at all, because the file it rolls back to was never included in the install.
+- **A setting was renamed in the configuration schema while the code still read the old name.** Both sides now agree, and configurations still using the old name keep their existing behaviour.
+- **Two internal rules that must always agree were maintained in two places and had drifted apart**, so the same input could be accepted in one path and rejected in the other. They are now defined once, with a check that blocks a third copy from appearing.
+
+### Under the hood
+
+- Running Orchestray's installer inside a source checkout and then running the test suite no longer trips a self-check that was reading its marker file from the wrong one of two similar locations.
+
 ## [2.3.19] - 2026-08-07
 
 **Orchestray 2.3.19 fixes a security hole in the gate that decides which agents may spawn other agents, and repairs a large class of features that were documented but silently doing nothing. Most visibly, the verify-fix and re-planning sections of `/orchestray:analytics` and `/orchestray:report` had been empty for every orchestration ever run, and the scout count in every orchestration summary always said zero.**

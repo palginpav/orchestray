@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/orchestray.svg)](https://www.npmjs.com/package/orchestray)
 [![npm downloads](https://img.shields.io/npm/dw/orchestray.svg)](https://www.npmjs.com/package/orchestray)
-[![Socket Badge](https://badge.socket.dev/npm/package/orchestray/2.3.19)](https://socket.dev/npm/package/orchestray)
+[![Socket Badge](https://badge.socket.dev/npm/package/orchestray/2.3.20)](https://socket.dev/npm/package/orchestray)
 [![License](https://img.shields.io/npm/l/orchestray.svg)](https://github.com/palginpav/orchestray/blob/master/LICENSE)
 [![Node](https://img.shields.io/node/v/orchestray.svg)](https://nodejs.org)
 
@@ -68,7 +68,7 @@ That's it. Orchestray scores complexity, decomposes the task, routes agents, run
 | `/orchestray:loop` | Iterate-until primitive for tasks that need repeated adjustment |
 | `/orchestray:rollback` | Restore workspace to a pre-spawn snapshot |
 | `/orchestray:analytics` | Cost breakdown, pattern dashboard, health signals; `--firing-audit` runs the hook-firing self-audit on demand |
-| `/orchestray:patterns` | Pattern effectiveness dashboard |
+| `/orchestray:patterns` | Pattern effectiveness dashboard — since v2.3.20 usage is inferred from evidence and split into offered / applied / contradicted |
 | `/orchestray:learn [id]` | Extract patterns; `curate` to AI-curate; `list --proposed` to review auto-proposals |
 | `/orchestray:specialists` | Manage persistent specialist agents |
 | `/orchestray:workflows` | Manage custom YAML workflow definitions |
