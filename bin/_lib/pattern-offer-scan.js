@@ -40,6 +40,13 @@
  * the ambient catalog — it is the stronger, PM-authored signal.
  */
 
+const fs = require('node:fs');
+// Ack-side frontmatter-name fallback only (resolveOfferedSlug) — the offer
+// scan above (scanOffers) stays pure/I/O-free. Both deps already avoid zod
+// (see CATEGORY_PREFIXES comment on why that matters on this hot path).
+const { resolvePatternFile } = require('./pattern-file-resolve');
+const { parseFrontmatter } = require('./frontmatter-parse');
+
 // Slug shape matches the pattern corpus filename convention (lowercase
 // alphanum + hyphen) and bin/_lib/cite-label-scanner.js's URL_RE.
 const CURATED_URL_RE = /@orchestray:pattern:\/\/([a-z0-9][a-z0-9-]*)/g;
@@ -267,23 +274,74 @@ const CATEGORY_PREFIXES = [
   'roi',
 ];
 
+// slug -> frontmatter `name` (or null once resolved absent) — process-lifetime
+// cache, since a hook run may resolve the same offered slug more than once
+// (patterns_used and patterns_rejected both call resolveOfferedSlug).
+const frontmatterNameCache = new Map();
+
+/**
+ * `name:` frontmatter of an offered pattern file, or null (missing file,
+ * missing field, unreadable). Bounded to `slug` — never lists a directory or
+ * follows anything outside the three resolution tiers pattern-file-resolve.js
+ * already defines, so this can only read a file the caller already offered.
+ *
+ * @param {string} cwd
+ * @param {string} slug
+ * @returns {string|null}
+ */
+function offeredSlugFrontmatterName(cwd, slug) {
+  if (frontmatterNameCache.has(cwd + ' ' + slug)) return frontmatterNameCache.get(cwd + ' ' + slug);
+  let name = null;
+  try {
+    const file = resolvePatternFile(cwd, slug);
+    if (file) {
+      const parsed = parseFrontmatter(fs.readFileSync(file, 'utf8'));
+      if (parsed && typeof parsed.frontmatter.name === 'string') name = parsed.frontmatter.name.trim();
+    }
+  } catch (_e) { /* fail open — treat as no match */ }
+  frontmatterNameCache.set(cwd + ' ' + slug, name);
+  return name;
+}
+
 /**
  * Map a slug an agent acknowledged onto one of the slugs it was offered.
  *
  * Agents drop the category prefix in practice — a live payload named
  * `verification-shares-blind-spot` for the offered
- * `anti-pattern-verification-shares-blind-spot`. Exact match wins; otherwise a
- * bare name resolves only when exactly one offered slug is that name behind a
- * known category prefix. Two candidates (e.g. `routing-x` and `roi-x` both
- * offered) is a genuine ambiguity: the raw name is returned unchanged so it
- * fails the offered-set intersection and is treated as unacknowledged, rather
- * than crediting a pattern the agent never named.
+ * `anti-pattern-verification-shares-blind-spot`. Corpus convention is
+ * slug === category + '-' + name, which covers 104/108 patterns (see
+ * .orchestray/kb/decisions/pattern-ack-slug-fidelity-limit.md). Four local
+ * outliers shorten the filename, so that reduction alone misses them —
+ * `anti-pattern-regex-false-positives.md` declares `name: regex-false-positive-check`,
+ * which no prefix concatenation reproduces.
+ *
+ * Resolution order:
+ *   1. Exact match (case-insensitive) — wins immediately.
+ *   2. Category-prefix reconstruction — `category + '-' + name` against every
+ *      offered slug.
+ *   3. (only when `cwd` is given) The offered pattern's OWN frontmatter
+ *      `name:` field, read from its file. Still bounded to the offered
+ *      closed set — this reads only files already in `offeredSlugs`, never
+ *      the wider corpus, so it cannot credit a pattern that was never
+ *      offered. No fuzzy/edit-distance matching: it is exact-string
+ *      comparison against a value the pattern file itself declares.
+ *
+ * Candidates from (2) and (3) are pooled into one set. Two or more distinct
+ * offered slugs matching (e.g. `routing-x` and `roi-x` both offered under
+ * bare name `x`, or a prefix-path hit plus an unrelated frontmatter-name hit)
+ * is a genuine ambiguity: the raw name is returned unchanged so it fails the
+ * offered-set intersection and is treated as unacknowledged, rather than
+ * crediting a pattern the agent never named. Renaming a pattern's `name:`
+ * field later than the ack was written re-runs this same lookup at ack time,
+ * so it can only ever match what the file says NOW — a race with the corpus
+ * editor, not a stale-cache risk.
  *
  * @param {*} raw
  * @param {string[]} offeredSlugs
+ * @param {string} [cwd] - when given, enables the frontmatter-name fallback
  * @returns {string} the canonical offered slug, or the trimmed input unchanged
  */
-function resolveOfferedSlug(raw, offeredSlugs) {
+function resolveOfferedSlug(raw, offeredSlugs, cwd) {
   const name = typeof raw === 'string' ? raw.trim() : '';
   if (!name) return name;
   const offered = Array.isArray(offeredSlugs) ? offeredSlugs : [];
@@ -293,13 +351,22 @@ function resolveOfferedSlug(raw, offeredSlugs) {
     if (typeof s === 'string' && s.toLowerCase() === lower) return s;
   }
 
-  const candidates = [];
+  const candidates = new Set();
   for (const s of offered) {
     if (typeof s !== 'string') continue;
     const sl = s.toLowerCase();
-    if (CATEGORY_PREFIXES.some((p) => sl === p + '-' + lower)) candidates.push(s);
+    if (CATEGORY_PREFIXES.some((p) => sl === p + '-' + lower)) candidates.add(s);
   }
-  return candidates.length === 1 ? candidates[0] : name;
+
+  if (cwd) {
+    for (const s of offered) {
+      if (typeof s !== 'string') continue;
+      const fmName = offeredSlugFrontmatterName(cwd, s);
+      if (fmName && fmName.toLowerCase() === lower) candidates.add(s);
+    }
+  }
+
+  return candidates.size === 1 ? [...candidates][0] : name;
 }
 
 module.exports = {
@@ -307,5 +374,8 @@ module.exports = {
   resolveOfferedSlug,
   CATEGORY_PREFIXES,
   // Internals exported for unit tests — not a stable contract.
-  _internal: { extractGroundingBlock, scanCurated, scanToonCatalog, scanJsonMatches, isInsideQuotedSpan },
+  _internal: {
+    extractGroundingBlock, scanCurated, scanToonCatalog, scanJsonMatches, isInsideQuotedSpan,
+    offeredSlugFrontmatterName,
+  },
 };

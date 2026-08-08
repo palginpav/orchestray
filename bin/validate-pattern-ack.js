@@ -226,7 +226,9 @@ function extractResult(event) {
  *     `{"name": "verification-shares-blind-spot", "how": "…"}`).
  *   - the identifier is resolved against `offered` by
  *     pattern-offer-scan.js#resolveOfferedSlug, which restores a dropped
- *     category prefix only when that is unambiguous.
+ *     category prefix, or (when that reduction doesn't reproduce the slug)
+ *     matches the offered pattern's own frontmatter `name:` field — both
+ *     only when unambiguous.
  *   - the prose key name is flexible — see
  *     handoff-contract-text.js#resolvePatternAckProse — because array
  *     membership already encodes used-vs-rejected; an entry under
@@ -250,22 +252,25 @@ function extractResult(event) {
  * @param {*} arr
  * @param {string} proseKey - 'how' or 'why'
  * @param {string[]} offered - curated slugs offered to this spawn
+ * @param {string} [cwd] - enables the frontmatter-name fallback in
+ *   resolveOfferedSlug for the 4 corpus outliers where slug !=
+ *   category + '-' + name (see pattern-offer-scan.js#resolveOfferedSlug).
  * @returns {Array<{slug: string, [k: string]: number|boolean}>}
  */
-function normalizeAckEntries(arr, proseKey, offered) {
+function normalizeAckEntries(arr, proseKey, offered, cwd) {
   if (!Array.isArray(arr)) return [];
   const out = [];
   const lenKey = proseKey + '_len';
   const validKey = proseKey + '_valid';
   for (const e of arr) {
     if (typeof e === 'string' && e.trim()) {
-      out.push({ slug: resolveOfferedSlug(e, offered), [lenKey]: 0, [validKey]: false });
+      out.push({ slug: resolveOfferedSlug(e, offered, cwd), [lenKey]: 0, [validKey]: false });
     } else if (e && typeof e === 'object') {
       const raw = [e.slug, e.name].find((v) => typeof v === 'string' && v.trim());
       if (!raw) continue;
       const len = resolvePatternAckProse(e, proseKey).length;
       out.push({
-        slug: resolveOfferedSlug(raw, offered),
+        slug: resolveOfferedSlug(raw, offered, cwd),
         [lenKey]: len,
         [validKey]: isPatternAckProseLenValid(len),
       });
@@ -389,8 +394,8 @@ function run(event, cwd) {
   let usedSlugs, rejectedSlugs, usedEntries, rejectedEntries;
 
   if (hasStructuredAck) {
-    usedEntries    = normalizeAckEntries(patternsUsedRaw, 'how', offered);
-    rejectedEntries = normalizeAckEntries(patternsRejectedRaw, 'why', offered);
+    usedEntries    = normalizeAckEntries(patternsUsedRaw, 'how', offered, cwd);
+    rejectedEntries = normalizeAckEntries(patternsRejectedRaw, 'why', offered, cwd);
     usedSlugs     = usedEntries.map(e => e.slug);
     rejectedSlugs = rejectedEntries.map(e => e.slug);
   } else {

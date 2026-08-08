@@ -297,6 +297,54 @@ test('e2e: a real PreToolUse:Agent offer joins a real SubagentStop ack on (sessi
 });
 
 // ---------------------------------------------------------------------------
+// Corpus outlier — slug filename shortened, category+name reduction misses it
+// (.orchestray/kb/decisions/pattern-ack-slug-fidelity-limit.md). The offered
+// pattern's own frontmatter `name:` is the fallback.
+// ---------------------------------------------------------------------------
+
+test('e2e: an ack naming the frontmatter `name` of a shortened-filename outlier ' +
+     '(anti-pattern-regex-false-positives / name: regex-false-positive-check) still credits', () => {
+  setup();
+  try {
+    writeOrchMarker(ORCH_ID);
+    const patternsDir = path.join(tmpDir, '.orchestray', 'patterns');
+    fs.mkdirSync(patternsDir, { recursive: true });
+    // Real corpus frontmatter shape (.orchestray/patterns/anti-pattern-regex-false-positives.md) —
+    // category + '-' + name ('anti-pattern-regex-false-positive-check') does NOT reduce to the slug.
+    fs.writeFileSync(
+      path.join(patternsDir, 'anti-pattern-regex-false-positives.md'),
+      '---\nname: regex-false-positive-check\ncategory: anti-pattern\nconfidence: 0.6\n---\n# regex false positive check\n'
+    );
+
+    const toolUseId = 'toolu_01J39P95yRDBkU51umwnZTc0';
+    const prompt = 'W4 — tighten the lookahead regex.\n' +
+      'Apply @orchestray:pattern://anti-pattern-regex-false-positives [core] conf 0.6.';
+
+    runScript(OFFER_SCRIPT, preToolUsePayload({ prompt, toolUseId }));
+
+    const { events, acks } = runHook(subagentStopPayload({
+      lastAssistantMessage: structuredResultText({
+        summary: 'tightened the alternation',
+        patternsUsed: [{ name: 'regex-false-positive-check', how: 'tested each lookahead alternative independently before merging' }],
+        patternsRejected: [],
+      }),
+    }));
+
+    const captured = events.filter((e) => e.type === 'pattern_ack_captured');
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].coverage_complete, true,
+      'the frontmatter-name ack must resolve to the offered slug, not fall through as uncovered');
+    assert.deepEqual(captured[0].used_slugs, ['anti-pattern-regex-false-positives'],
+      'credit lands on the offered slug, not the frontmatter name the agent wrote');
+    assert.equal(events.filter((e) => e.type === 'pattern_application_withheld').length, 0);
+
+    assert.equal(acks.length, 1);
+    assert.equal(acks[0].used[0].slug, 'anti-pattern-regex-false-positives');
+    assert.ok(acks[0].used[0].how_len > 0);
+  } finally { teardown(); }
+});
+
+// ---------------------------------------------------------------------------
 // Join negatives — an ack must not attach to an offer that is not its own
 // ---------------------------------------------------------------------------
 
@@ -686,5 +734,87 @@ describe('resolveOfferedSlug (unit)', () => {
   test('CATEGORY_PREFIXES stays in parity with schemas/pattern.schema.js CATEGORIES', () => {
     const { CATEGORIES } = require(path.resolve(__dirname, '..', '..', 'schemas', 'pattern.schema.js'));
     assert.deepEqual([...CATEGORY_PREFIXES].sort(), [...CATEGORIES].sort());
+  });
+
+  describe('frontmatter-name fallback (cwd-bounded)', () => {
+    function writePattern(dir, slug, frontmatterName) {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, slug + '.md'), '---\nname: ' + frontmatterName + '\ncategory: anti-pattern\n---\n# ' + slug + '\n');
+    }
+
+    test('no cwd → prefix reduction still misses the outlier, name returned unchanged', () => {
+      setup();
+      try {
+        const patternsDir = path.join(tmpDir, '.orchestray', 'patterns');
+        writePattern(patternsDir, 'anti-pattern-regex-false-positives', 'regex-false-positive-check');
+        assert.equal(
+          resolveOfferedSlug('regex-false-positive-check', ['anti-pattern-regex-false-positives']),
+          'regex-false-positive-check',
+          'without cwd the fallback must not fire — same behaviour as before this change'
+        );
+      } finally { teardown(); }
+    });
+
+    test('with cwd → resolves via the offered pattern\'s own frontmatter `name:`', () => {
+      setup();
+      try {
+        const patternsDir = path.join(tmpDir, '.orchestray', 'patterns');
+        writePattern(patternsDir, 'anti-pattern-regex-false-positives', 'regex-false-positive-check');
+        assert.equal(
+          resolveOfferedSlug('regex-false-positive-check', ['anti-pattern-regex-false-positives'], tmpDir),
+          'anti-pattern-regex-false-positives'
+        );
+      } finally { teardown(); }
+    });
+
+    test('a name only found on a slug outside the offered set is never read, and never resolves', () => {
+      setup();
+      try {
+        const patternsDir = path.join(tmpDir, '.orchestray', 'patterns');
+        writePattern(patternsDir, 'anti-pattern-not-offered', 'unoffered-pattern-name');
+        assert.equal(
+          resolveOfferedSlug('unoffered-pattern-name', ['anti-pattern-regex-false-positives'], tmpDir),
+          'unoffered-pattern-name',
+          'the file exists on disk but is not in the offered set, so it must not be considered'
+        );
+      } finally { teardown(); }
+    });
+
+    test('two offered slugs whose frontmatter share the same `name` → ambiguous, unresolved', () => {
+      setup();
+      try {
+        const patternsDir = path.join(tmpDir, '.orchestray', 'patterns');
+        writePattern(patternsDir, 'anti-pattern-a', 'shared-name');
+        writePattern(patternsDir, 'anti-pattern-b', 'shared-name');
+        const resolved = resolveOfferedSlug('shared-name', ['anti-pattern-a', 'anti-pattern-b'], tmpDir);
+        assert.equal(resolved, 'shared-name');
+        assert.equal(['anti-pattern-a', 'anti-pattern-b'].includes(resolved), false,
+          'two frontmatter-name candidates must leave the ack unmatched, never guessed');
+      } finally { teardown(); }
+    });
+
+    test('a prefix-path hit and a frontmatter-name hit resolving to the SAME slug is not ambiguous', () => {
+      setup();
+      try {
+        const patternsDir = path.join(tmpDir, '.orchestray', 'patterns');
+        // slug reduces cleanly (category + '-' + name) AND its own frontmatter
+        // `name` happens to be the identical string — both mechanisms agree.
+        writePattern(patternsDir, 'anti-pattern-shared-name', 'shared-name');
+        assert.equal(
+          resolveOfferedSlug('shared-name', ['anti-pattern-shared-name'], tmpDir),
+          'anti-pattern-shared-name'
+        );
+      } finally { teardown(); }
+    });
+
+    test('missing pattern file on disk → fallback fails open, name returned unchanged', () => {
+      setup();
+      try {
+        assert.equal(
+          resolveOfferedSlug('nonexistent-name', ['anti-pattern-nonexistent-file'], tmpDir),
+          'nonexistent-name'
+        );
+      } finally { teardown(); }
+    });
   });
 });
