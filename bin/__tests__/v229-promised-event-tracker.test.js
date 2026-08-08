@@ -96,6 +96,22 @@ function writeArchiveFire(dir, orchId, eventType) {
   fs.writeFileSync(path.join(archDir, 'events.jsonl'), line + '\n');
 }
 
+/** Write a fire into a rotated generation of the live log (events.N.jsonl). */
+function writeRotatedFire(dir, gen, eventType) {
+  const line = JSON.stringify({
+    type:      eventType,
+    version:   1,
+    timestamp: '2026-04-28T00:00:00.000Z',
+  });
+  fs.writeFileSync(path.join(dir, '.orchestray', 'audit', `events.${gen}.jsonl`), line + '\n');
+}
+
+function readDarkState(dir) {
+  const file = path.join(dir, '.orchestray', 'state', 'promised-event-dark-state.last-run.json');
+  if (!fs.existsSync(file)) return null;
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
 function runScript(repoDir, env = {}) {
   return spawnSync('node', [SCRIPT], {
     cwd: repoDir,
@@ -249,5 +265,55 @@ describe('v2.2.9 F3 — audit-promised-events.js', () => {
     const events = readEvents(dir);
     const dark = events.filter((e) => e.type === 'event_promised_but_dark');
     assert.equal(dark.length, 0, '<= 7-day registrations must not alarm');
+  });
+
+  // v2.3.21 — rotated-generation scanning + fresh dark-state snapshot.
+  test('a fire recorded only in a rotated generation (events.N.jsonl) cancels the dark alarm', () => {
+    const dir = makeRepo();
+    writeShadow(dir, { events: { my_dark_event: { v: 1, r: 1, o: 0 } } });
+    writeRegistry(dir, ['my_dark_event'], eightDaysAgoIso());
+    writeRotatedFire(dir, 1, 'my_dark_event'); // fire lives only in events.1.jsonl
+
+    const r = runScript(dir);
+    assert.equal(r.status, 0, `run exit=${r.status} stderr=${r.stderr}`);
+
+    const dark = readEvents(dir).filter((e) => e.type === 'event_promised_but_dark');
+    assert.equal(dark.length, 0, 'a fire in a rotated generation must cancel the alarm');
+
+    const state = readDarkState(dir);
+    assert.deepEqual(state.dark_types, [], 'the fresh-snapshot dark set must not include the type either');
+  });
+
+  test('promised-event-dark-state.last-run.json is overwritten with the current dark set every run', () => {
+    const dir = makeRepo();
+    writeShadow(dir, { events: {
+      my_dark_event:    { v: 1, r: 1, o: 0 },
+      other_dark_event: { v: 1, r: 1, o: 0 },
+    } });
+    writeRegistry(dir, ['my_dark_event', 'other_dark_event'], eightDaysAgoIso());
+
+    const r1 = runScript(dir);
+    assert.equal(r1.status, 0);
+    let state = readDarkState(dir);
+    assert.equal(state.candidate_count, 2);
+    assert.deepEqual(
+      state.dark_types.map((d) => d.event_type).sort(),
+      ['my_dark_event', 'other_dark_event'],
+    );
+
+    // my_dark_event starts firing (recorded in the live log this time). The
+    // debounced events.jsonl ledger from run 1 still holds its old dark row —
+    // that must not leak into the fresh snapshot on run 2.
+    const line = JSON.stringify({ type: 'my_dark_event', version: 1, timestamp: new Date().toISOString() });
+    fs.appendFileSync(path.join(dir, '.orchestray', 'audit', 'events.jsonl'), line + '\n');
+
+    const r2 = runScript(dir);
+    assert.equal(r2.status, 0);
+    state = readDarkState(dir);
+    assert.deepEqual(
+      state.dark_types.map((d) => d.event_type),
+      ['other_dark_event'],
+      'the snapshot must reflect only the current run, not accumulate the old ledger row',
+    );
   });
 });

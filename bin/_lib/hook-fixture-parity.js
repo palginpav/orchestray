@@ -175,6 +175,9 @@ const UNCOVERED_ALLOWLIST = Object.freeze([
   // emit-schema-redirect-followed|PostToolUse retired 2026-08-08: a real capture
   // landed during normal use, which is how gaps are meant to close.
   { script: 'validate-companion-files',     event: 'SessionStart',   reason: 'event-not-yet-observed' },
+  // dark-event-banner|SessionStart: routes through hook-stdin.js (harvest-capable),
+  // just never invoked live yet — same class as validate-companion-files above.
+  { script: 'dark-event-banner',            event: 'SessionStart',   reason: 'event-not-yet-observed' },
 ]);
 
 // The ratchet stop. Lowering this is progress; raising it needs a reviewer.

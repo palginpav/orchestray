@@ -119,6 +119,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/dark-event-banner.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/calibrate-role-budgets.js --emit-cache --if-stale --quiet",
             "timeout": 15
           }

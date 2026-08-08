@@ -7,14 +7,14 @@ argument-hint: "[--verbose|-v] [--deep]"
 
 # Orchestray Doctor
 
-Run 10 probes (11 with `--deep`) against the current Orchestray installation and print a
+Run 11 probes (12 with `--deep`) against the current Orchestray installation and print a
 structured health report. If `$ARGUMENTS` contains `--verbose` or `-v`, emit a
 `## Detail` section after the summary.
 
 ## Setup
 
-If `$ARGUMENTS` contains `--deep`, set `DEEP=true`. The deep probe (P9) runs after P8
-and adds per-file install-integrity verification. Without `--deep`, P9 is skipped and
+If `$ARGUMENTS` contains `--deep`, set `DEEP=true`. The deep probe (P10) runs after P9c
+and adds per-file install-integrity verification. Without `--deep`, P10 is skipped and
 behavior is identical to v2.1.2.
 
 Resolve the **plugin root** and **project root** as follows:
@@ -263,6 +263,44 @@ P9b WARN increments `N_warn`. This probe never FAILs — an empty corpus is a
 
 ---
 
+### P9c: Dark event types (declared, never fired)
+
+`bin/audit-promised-events.js` already computes this signal — an
+`event_promised_but_dark` row per event type that is 7+ days past its first
+declaration in the schema shadow, not `feature_optional`, and has fired zero
+times across the full audit history — but writes it only to events.jsonl. No
+prior surface ever reported it to a human. This probe is that surface.
+
+Skip when `$PROJECT_ROOT/.orchestray/` does not exist.
+
+Run from `$PLUGIN_ROOT`:
+
+```bash
+node bin/dark-event-banner.js --json --cwd "$PROJECT_ROOT"
+```
+
+Parse the stdout JSON: `{darkTypes: [{event_type, days_dark, total_fire_count}, ...], totalDark}`.
+An `{"error": ...}` shape means the probe itself failed to run.
+
+- Output carries an `error` key: status=WARN.
+  Line: `[WARN]  dark-event probe failed: {error} — advisory only, not a broken install`
+- `totalDark == 0`: status=OK.
+  Line: `[OK]    dark events (0 declared types have never fired)`
+- `totalDark > 0`: status=WARN.
+  Line: `[WARN]  {totalDark} declared event type(s) have never fired — worst: {top 3 darkTypes as "type (Nd)", comma-joined} — see /orchestray:doctor --verbose`
+
+In `--verbose` mode, list up to 15 entries of `darkTypes[]` under `## Detail`, one per line:
+`{event_type}  {days_dark}d dark, {total_fire_count} lifetime fires`
+If more than 15, append `(+{N-15} more)`.
+
+P9c WARN increments `N_warn`. This probe never FAILs — like P9b, a nonzero
+count is "worth investigating", not a broken install: some declared types are
+legitimately rare (crash-only paths, admin-triggered actions), and a fresh
+project with no orchestration history yet will read `totalDark: 0` correctly
+rather than false-alarming.
+
+---
+
 ### P10: Install-integrity deep verify (only when `--deep`)
 
 Skip this probe entirely when `DEEP` is not set.
@@ -327,7 +365,7 @@ P10 FAIL increments `N_fail`. P10 WARN increments `N_warn`.
 
 ## Output format
 
-After running all probes (10 without `--deep`, 11 with `--deep`), print:
+After running all probes (11 without `--deep`, 12 with `--deep`), print:
 
 ```
 Orchestray v{VERSION} — health check
@@ -342,13 +380,14 @@ Orchestray v{VERSION} — health check
 {P8 line}
 {P9 line}
 {P9b line}
+{P9c line}
 {P10 line — only when --deep}
 
 {N_total} probes, {N_warn} warning(s), {N_fail} failure(s).{suffix}
 doctor-result-code: {code}
 ```
 
-`N_total` is 10 without `--deep`, 11 with `--deep`.
+`N_total` is 11 without `--deep`, 12 with `--deep`.
 
 Where:
 - `{suffix}` is ` Run with --verbose for details.` when `N_warn + N_fail > 0` and
@@ -374,8 +413,9 @@ Orchestray v2.1.3 — health check
 [OK]    degraded journal clean (0 entries in last 24h)
 [OK]    plugin install coherent (v2.1.3, 162 files tracked)
 [OK]    BDG corpus: 12/14 scripts covered (183 fixtures)
+[OK]    dark events (0 declared types have never fired)
 
-9 probes, 0 warning(s), 0 failure(s).
+10 probes, 0 warning(s), 0 failure(s).
 doctor-result-code: 0
 ```
 
@@ -392,9 +432,10 @@ Orchestray v2.1.3 — health check
 [OK]    degraded journal clean (0 entries in last 24h)
 [OK]    plugin install coherent (v2.1.3, 162 files tracked)
 [OK]    BDG corpus: 12/14 scripts covered (183 fixtures)
+[OK]    dark events (0 declared types have never fired)
 [OK]    install integrity verified (162 files)
 
-10 probes, 0 warning(s), 0 failure(s).
+11 probes, 0 warning(s), 0 failure(s).
 doctor-result-code: 0
 ```
 
@@ -414,5 +455,5 @@ If `$PROJECT_ROOT/.orchestray/` does not exist at all, emit before the probe lis
 ```
 [WARN]  no .orchestray/ directory — run from a project root or run /orchestray:run first
 ```
-Then skip P3, P4, P7, P9b (project-scoped probes) and run P1, P2, P5, P6, P8 only.
+Then skip P3, P4, P7, P9b, P9c (project-scoped probes) and run P1, P2, P5, P6, P8 only.
 Adjust totals accordingly.

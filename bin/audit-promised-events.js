@@ -30,6 +30,12 @@
  *
  *   2. Live `.orchestray/audit/events.jsonl` — current-orchestration window.
  *
+ *   2b. Rotated generations `.orchestray/audit/events.N.jsonl`, written
+ *      in-place by `bin/_lib/jsonl-rotate.js` on a 50MB size trigger — a
+ *      distinct rotation path from the per-orch F2 archives below. A fire
+ *      recorded only in a rotated generation was previously invisible to
+ *      this scan and produced a false dark alarm (v2.3.21 fix).
+ *
  *   3. Per-orch archives `.orchestray/history/<orch>/events.jsonl` (F2). Used
  *      to count fires from prior orchestrations after the live log rotates or
  *      is rotated by `bin/_lib/jsonl-rotate.js`.
@@ -51,6 +57,18 @@
  *      script ran last clobbered the other's format, so `Date.parse()` on a
  *      count value returned NaN and the debounce silently never held. Renamed
  *      to a distinct path to make the collision structurally impossible.
+ *
+ *   6. Fresh-snapshot state `.orchestray/state/promised-event-dark-state.last-run.json`
+ *      (v2.3.21) — `{generated_at, candidate_count, dark_types[], truncated}`,
+ *      fully OVERWRITTEN every run with this run's exact dark set. Unlike the
+ *      `event_promised_but_dark` ledger rows above (which accumulate and are
+ *      debounced to once per 24h per type, so a stale row can outlive the
+ *      condition that produced it), this file never accumulates — it always
+ *      states "as of `generated_at`, these types and no others are dark".
+ *      `bin/dark-event-banner.js` reads this instead of the ledger so its
+ *      headline count can't drift from current reality. This is also the
+ *      caching layer for the banner: the (potentially expensive) corpus scan
+ *      happens here, on orch-complete, not on every SessionStart.
  *
  * Wall-clock budget
  * -----------------
@@ -187,6 +205,32 @@ function saveDebounce(cwd, marker) {
 }
 
 /**
+ * Overwrite the current-dark-set snapshot. Unlike the debounced
+ * `event_promised_but_dark` ledger rows in events.jsonl (which accumulate and
+ * never retract once a type starts firing again), this file is fully
+ * replaced on every run — it always reflects this run's computation, nothing
+ * older. dark-event-banner.js reads this instead of scanning events.jsonl so
+ * "currently dark" never drifts from "was dark at some point in the last 30
+ * days".
+ */
+function saveDarkState(cwd, darkTypes, candidateCount, nowIso, truncated) {
+  const dir  = path.join(cwd, '.orchestray', 'state');
+  const file = path.join(dir, 'promised-event-dark-state.last-run.json');
+  const payload = {
+    generated_at:    nowIso,
+    candidate_count: candidateCount,
+    dark_types:      darkTypes,
+    truncated:       !!truncated,
+  };
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(payload, null, 2), { mode: 0o600 });
+  } catch (e) {
+    process.stderr.write(`audit-promised-events: dark-state save failed: ${e.message}\n`);
+  }
+}
+
+/**
  * Build a map of `event_type -> total_fire_count` by scanning the live audit
  * log + every per-orch archive at `.orchestray/history/<orch>/events.jsonl`.
  *
@@ -244,6 +288,25 @@ function tallyFires(cwd, eventTypes, deadlineMs) {
 
   // 1. live audit log
   scanFile(path.join(cwd, '.orchestray', 'audit', 'events.jsonl'));
+
+  // 1b. rotated generations of the live log (`events.N.jsonl`, written by
+  // bin/_lib/jsonl-rotate.js on a 50MB size trigger). This rotates in place,
+  // independently of the F2 per-orch archive below — a fire that happened
+  // before a rotation lives only here, not in history/. Skipping this source
+  // produced false "never fired" dark rows for anything whose only fire
+  // predated a rotation (measured: 62 wrongly-dark types on this repo).
+  if (Date.now() < deadlineMs) {
+    const auditDir = path.join(cwd, '.orchestray', 'audit');
+    let rotated = [];
+    try {
+      rotated = fs.readdirSync(auditDir);
+    } catch (_e) { /* ENOENT is normal on a fresh repo */ }
+    for (const name of rotated) {
+      if (Date.now() > deadlineMs) break;
+      if (!/^events\.\d+\.jsonl$/.test(name)) continue;
+      scanFile(path.join(auditDir, name));
+    }
+  }
 
   // 2. per-orch archives (F2)
   if (Date.now() < deadlineMs) {
@@ -323,6 +386,7 @@ function main() {
   }
 
   if (candidates.length === 0) {
+    saveDarkState(cwd, [], 0, nowIso, false); // no candidates means nothing can be dark
     if (registryDirty) saveRegistry(cwd, registry);
     return 0;
   }
@@ -341,8 +405,10 @@ function main() {
     }
   }
 
-  // Emit per dark event-type.
+  // Emit per dark event-type, and separately track the FULL current dark set
+  // (independent of the 24h ledger debounce) for the fresh-snapshot file.
   let scannedCount = 0;
+  const darkTypesFresh = [];
   for (const t of candidates) {
     scannedCount++;
     if (Date.now() > deadlineMs) {
@@ -356,7 +422,9 @@ function main() {
     const days = daysSince(firstSeen, startMs);
     if (days <= DARK_THRESHOLD_DAYS) continue;
 
-    if (debouncedSet.has(t)) continue;        // 24h debounce in effect
+    darkTypesFresh.push({ event_type: t, days_dark: days, total_fire_count: 0 });
+
+    if (debouncedSet.has(t)) continue;        // 24h debounce on the LEDGER row only
 
     try {
       writeEvent({
@@ -372,6 +440,8 @@ function main() {
       process.stderr.write(`audit-promised-events: emit ${t} failed: ${e.message}\n`);
     }
   }
+
+  saveDarkState(cwd, darkTypesFresh, candidates.length, nowIso, truncated);
 
   if (truncated) {
     try {
@@ -403,4 +473,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { main };
+module.exports = { main, saveDarkState };
