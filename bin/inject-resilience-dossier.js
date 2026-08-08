@@ -979,6 +979,9 @@ function handleSessionStart(event) {
       trigger: 'SessionStart',
       orchestration_id: dossierOrchId,
       written_at: dossier.written_at || null,
+      // SessionStart does not draw on the post-compact injection budget.
+      ingested_counter_before: null,
+      ingested_counter_after: null,
       bytes_injected: bytesInjected,
       truncated,
     });

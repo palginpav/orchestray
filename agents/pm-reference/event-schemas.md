@@ -2496,19 +2496,18 @@ resolution in curator design `2100c-curator-design-v2.md`).
   "type": "curator_run_complete",
   "orchestration_id": null,
   "run_id": "<curator-run-{ISO8601}>",
-  "actions_applied": {
-    "promote_n": 2,
-    "merge_n": 1,
-    "deprecate_n": 3
-  },
-  "actions_skipped": {
-    "promote_n": 0,
-    "merge_n": 1,
-    "deprecate_n": 0
-  },
+  "actions_applied": { "promote_n": 2, "merge_n": 1, "deprecate_n": 3 },
+  "actions_skipped": { "promote_n": 0, "merge_n": 1, "deprecate_n": 0 },
   "tombstones_written_count": 3
 }
 ```
+
+> **Nested objects go on one line in these examples.** The schema parser reads
+> each `"key": value` line of the fence as a top-level field, so a multi-line
+> nested object promoted its own sub-keys (`promote_n`, `merge_n`, `deprecate_n`)
+> into the required set — fields no emitter can ever put at the top level. Every
+> curator run logged a shape violation for them (6 rows before v2.3.21). The
+> event shape is unchanged; only the formatting of the example is.
 
 **Field notes:**
 - `orchestration_id`: Always `null` — the curator runs as a standalone agent outside
@@ -2956,9 +2955,9 @@ auto-extraction pipeline exits before attempting any extraction. One event per r
   "schema_version": 1,
   "reason": "<reason enum — see below>",
   "orchestration_id": "<current orch id, or absent>",
-  "size_bytes": 10485761,
-  "max_bytes": 10485760,
-  "kept_count": 501
+  "size_bytes": "<int | null — only with events_file_too_large>",
+  "max_bytes": "<int | null — only with events_file_too_large>",
+  "kept_count": "<int | null — only with input_too_large>"
 }
 ```
 
@@ -2977,6 +2976,12 @@ auto-extraction pipeline exits before attempting any extraction. One event per r
 **Optional fields:** `size_bytes` and `max_bytes` appear only with `events_file_too_large`.
 `kept_count` appears only with `input_too_large`. `orchestration_id` is absent for runs
 that exit before the orchestration ID is read.
+
+v2.3.21 reconciliation: the three conditional fields were written as plain ints in the
+example above, so the parser read them as unconditionally required and every
+kill-switch / feature-disabled / circuit-breaker skip logged a shape violation
+(27 rows). The prose was always right; the example now marks them nullable so the
+declaration agrees with it.
 
 ---
 
@@ -3627,18 +3632,20 @@ SubagentStop hook or via `writeDossierSnapshot()` from `pre-compact-archive.js`.
 
 ### `dossier_injected`
 
-Emitted by `bin/inject-resilience-dossier.js` when a post-compact UserPromptSubmit
-successfully injects the dossier as `additionalContext`. Not emitted in shadow mode;
-not emitted when the lock is absent or counter is exhausted.
+Emitted by `bin/inject-resilience-dossier.js` when the dossier is successfully
+injected as `additionalContext`. Two emit paths: post-compact `UserPromptSubmit`
+(counter-consuming) and `SessionStart` (not counter-consuming). Not emitted in
+shadow mode; not emitted when the lock is absent or the counter is exhausted.
 
 ```json
 {
   "timestamp": "<ISO 8601>",
   "type": "dossier_injected",
+  "trigger": "<'SessionStart' | null — absent on the UserPromptSubmit path>",
   "orchestration_id": "<id | null>",
   "written_at": "<ISO 8601 | null>",
-  "ingested_counter_before": <int>,
-  "ingested_counter_after": <int>,
+  "ingested_counter_before": "<int | null — null on the SessionStart path>",
+  "ingested_counter_after": "<int | null — null on the SessionStart path>",
   "bytes_injected": <int>,
   "source_lock": "compact" | "resume" | null,
   "truncated": <boolean>
@@ -3647,6 +3654,11 @@ not emitted when the lock is absent or counter is exhausted.
 
 `truncated: true` means the fenced payload exceeded `resilience.inject_max_bytes` and the
 advisory fallback (scalars + MCP URI pointer) was injected instead of the full dossier.
+
+`ingested_counter_before` / `ingested_counter_after` describe the post-compact
+injection budget. The `SessionStart` path does not draw on that budget and has no
+counter to report, so it emits explicit `null`s — 10 shape violations before
+v2.3.21 came from that path being held to the `UserPromptSubmit` shape.
 
 ### `rehydration_skipped_clean`
 
@@ -3935,15 +3947,22 @@ when an agent's output contains a deferral phrase ("deferred to next release",
   "orchestration_id": "<current orch id | null>",
   "matched_phrase": "<the exact deferral phrase that triggered the block>",
   "context_snippet": "<up to 200 chars surrounding the matched phrase>",
+  "strict": true,
+  "scan_source": "<where the scanned text came from>",
   "session_id": "<session id | null>"
 }
 ```
 
 Field notes:
 - `matched_phrase`: The literal phrase that matched the deferral pattern. Useful for
-  distinguishing intentional "for now" clauses from accidental ones.
+  distinguishing intentional "for now" clauses from accidental ones. Until v2.3.21
+  the emitter wrote this as `phrase`, so all 26 blocks logged a shape violation;
+  the emitter now uses the declared name. Rows written before v2.3.21 carry
+  `phrase` / `context`.
 - `context_snippet`: The surrounding text (up to 200 chars) so operators can judge
   whether the phrase is genuinely deferral language.
+- `strict`: Whether the match came from the strict phrase list (always emitted).
+- `scan_source`: Which text the scan read (transcript vs. hook payload field).
 - Rollback: set `PRE_DONE_ENFORCEMENT=warn` to downgrade to a warning (exit 0).
 
 ---
@@ -7074,7 +7093,7 @@ Emitted by `mcp__orchestray__spawn_agent` when a worker requests a reactive spaw
   "orchestration_id": "...",
   "request_id": "uuid",
   "requester_agent": "developer",
-  "requester_spawn_id": "...",
+  "requester_spawn_id": "<spawn id | null — unknown at the MCP tool>",
   "requested_agent": "security-engineer",
   "justification": "...",
   "max_cost_usd": 0.50
@@ -7082,6 +7101,13 @@ Emitted by `mcp__orchestray__spawn_agent` when a worker requests a reactive spaw
 ```
 
 Field notes:
+- `requester_spawn_id`: nullable. An MCP tool call carries no caller-spawn
+  context — `spawn_agent`'s input schema is `additionalProperties: false` and
+  exposes only `_spawn_depth`, not the caller's spawn id — so the emitter writes
+  `null`. Enrichment, if ever needed, belongs in the `PreToolUse:Agent` hook,
+  which does see the spawning agent. Declaring the field non-nullable produced 29
+  shape violations before v2.3.21 without ever producing a value.
+- `requester_agent`: currently the constant `"worker"` for the same reason.
 - Per-orchestration quota: 5 (configurable via `reactive_spawn.per_orchestration_quota`).
 - Kill switch: `reactive_spawn.enabled: false` or `ORCHESTRAY_DISABLE_REACTIVE_SPAWN=1`.
 
@@ -8217,24 +8243,35 @@ Field notes:
 Emitted by `bin/prefetch-mcp-grounding.js` (PreToolUse:Agent, M1) when grounding
 context is pre-fetched before a subagent spawn and injected into Block A.
 
+**One row per spawn, not per tool.** The hook pre-fetches several MCP tools for a
+single subagent spawn and summarises them in one event; per-tool detail lives in
+the `mcp_tool_call` rows the same hook emits alongside this one.
+
 ```json
 {
   "type": "mcp_grounding_prefetched",
   "version": 1,
   "orchestration_id": "orch-20260101T000000Z-example",
   "timestamp": "2026-01-01T00:00:00.000Z",
-  "agent_id": "subagent-ghi789",
-  "subagent_type": "developer",
-  "tool_name": "mcp__orchestray__kb_search",
-  "result_byte_count": 2048,
+  "role": "developer",
+  "tools_prefetched": ["mcp__orchestray__kb_search", "mcp__orchestray__pattern_find"],
+  "tools_succeeded": ["mcp__orchestray__kb_search"],
   "injected_into_block_a": true
 }
 ```
 
 Field notes:
-- `tool_name`: the MCP tool used for pre-fetch (e.g. `mcp__orchestray__kb_search`).
-- `result_byte_count`: byte size of the pre-fetched result injected into context.
-- `injected_into_block_a`: whether the result was injected into Block A context.
+- `role`: the subagent role this grounding was pre-fetched for.
+- `tools_prefetched`: every MCP tool attempted for this spawn, in attempt order.
+- `tools_succeeded`: the subset that returned usable content; the difference
+  between the two arrays is the failure set (each also produces an
+  `mcp_grounding_prefetch_failed` row).
+- `injected_into_block_a`: whether the fence was injected into Block A context.
+- v2.3.21 reconciliation: this section previously declared a per-tool shape
+  (`agent_id` / `subagent_type` / `tool_name` / `result_byte_count`) that no
+  emitter has ever written — 164 `schema_shape_violation` rows. The emitter's
+  per-spawn summary is the deliberate design (one row instead of N per spawn),
+  so the declaration was corrected to match it rather than the reverse.
 
 ---
 
@@ -9161,19 +9198,28 @@ Captured-at version: v2.2.12.
   "version": 1,
   "timestamp": "ISO 8601",
   "orchestration_id": "orch-xxx",
-  "total_cost_usd": 0.0,
+  "total_cost_usd": "<number | null when not derivable>",
   "agent_count": 0,
-  "files_changed_count": 0,
-  "efficiency_ratio": 0.0,
+  "files_changed_count": "<int | null when not derivable>",
+  "efficiency_ratio": "<number | null when not derivable>",
   "schema_version": 1
 }
 ```
 
+Two emitters, two levels of knowledge (v2.3.21):
+- The **PM's close-phase emit** has the token-cost rollup and the git diff, and
+  fills every field.
+- The **code emitter** (`bin/audit-on-orch-complete.js`) derives everything from
+  `events.jsonl` alone. Cost and the git diff are not in the event log, so it
+  writes `null` — an honest "not measured here", not a `0` that would silently
+  drag down any average computed over these rows. It emits `null` rather than
+  omitting the key so consumers can distinguish "unmeasured" from "old row".
+
 Field notes:
-- `total_cost_usd`: Summed cost of all agent spawns in this orchestration. Sourced from the token-cost rollup pass in `audit-on-orch-complete.js`. Report `0` if cost data is unavailable.
-- `agent_count`: Number of distinct subagent spawns (not counting re-tries) in this orchestration.
-- `files_changed_count`: Files changed across all agent spawns. Sourced from the git diff at orch close. Report `0` if git data is unavailable.
-- `efficiency_ratio`: `files_changed_count / max(total_cost_usd, 0.01)` — files changed per USD spent. A normalised throughput indicator.
+- `total_cost_usd`: Summed cost of all agent spawns in this orchestration. Sourced from the token-cost rollup pass in `audit-on-orch-complete.js`. `null` when cost data is unavailable.
+- `agent_count`: Number of distinct subagent spawns (not counting re-tries) in this orchestration. The code emitter counts distinct `agent_id`s across the orchestration's `agent_stop` rows.
+- `files_changed_count`: Files changed across all agent spawns. Sourced from the git diff at orch close. `null` when git data is unavailable.
+- `efficiency_ratio`: `files_changed_count / max(total_cost_usd, 0.01)` — files changed per USD spent. A normalised throughput indicator; `null` when either input is `null`.
 - `schema_version`: Always `1` (v2.2.12 baseline).
 - Pre-v2.2.12 misses observed: 78 `orchestration_roi_missing` events in the pre-release window; each represents an orch close where this event was absent.
 

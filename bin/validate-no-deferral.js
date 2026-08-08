@@ -247,8 +247,9 @@ function main() {
         timestamp: new Date().toISOString(),
         type: 'no_deferral_block',
         hook: 'validate-no-deferral',
-        phrase: match.phrase,
-        context: match.context,
+        // Declared names (event-schemas.md); pre-v2.3.21 rows use phrase/context.
+        matched_phrase: match.phrase,
+        context_snippet: match.context,
         strict: !!match.strict,
         scan_source: scanSource,
         session_id: event.session_id || null,

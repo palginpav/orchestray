@@ -379,6 +379,9 @@ async function handle(input, context) {
       orchestration_id: orchId,
       request_id: requestId,
       requester_agent: request.requester_agent,
+      // MCP tool calls carry no caller-spawn context; the PreToolUse hook would
+      // have to enrich this. Emit the key so consumers see "unknown", not "absent".
+      requester_spawn_id: null,
       requested_agent: input.agent_type,
       justification: input.justification,
       max_cost_usd: resolvedMaxCostUsd,

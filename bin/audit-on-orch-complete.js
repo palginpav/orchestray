@@ -392,11 +392,12 @@ function computeOrchRoiSignals(eventsPath, orchId) {
   try {
     text = fs.readFileSync(eventsPath, 'utf8');
   } catch (_e) {
-    return { total_events: 0, mcp_tool_call_count: 0, w_items_completed: 0 };
+    return { total_events: 0, mcp_tool_call_count: 0, w_items_completed: 0, agent_count: 0 };
   }
   let total_events = 0;
   let mcp_tool_call_count = 0;
   let w_items_completed = 0;
+  const agentIds = new Set();
   for (const line of text.split('\n')) {
     if (!line) continue;
     try {
@@ -406,9 +407,11 @@ function computeOrchRoiSignals(eventsPath, orchId) {
       const t = evt.type || evt.event_type || '';
       if (t === 'mcp_tool_call') mcp_tool_call_count++;
       if (t === 'task_completed') w_items_completed++;
+      // agent_count = distinct spawns; agent_stop fires once per completed spawn.
+      if (t === 'agent_stop' && evt.agent_id) agentIds.add(evt.agent_id);
     } catch (_e) { /* skip malformed */ }
   }
-  return { total_events, mcp_tool_call_count, w_items_completed };
+  return { total_events, mcp_tool_call_count, w_items_completed, agent_count: agentIds.size };
 }
 
 /**
@@ -429,7 +432,7 @@ function emitOrchestrationRoi(cwd, orchId, eventsPath) {
     const duration_seconds = startedAt
       ? Math.round((Date.now() - new Date(startedAt).getTime()) / 1000)
       : null;
-    const { total_events, mcp_tool_call_count, w_items_completed } =
+    const { total_events, mcp_tool_call_count, w_items_completed, agent_count } =
       computeOrchRoiSignals(eventsPath, orchId);
 
     writeEvent({
@@ -442,7 +445,13 @@ function emitOrchestrationRoi(cwd, orchId, eventsPath) {
       w_items_completed,
       total_events,
       mcp_tool_call_count,
-      total_cost_usd:     null, // not derivable from events alone; PM sets this
+      agent_count,
+      // Cost and the git diff are not in the event log, and efficiency_ratio
+      // derives from both. Null, not 0 — a zero would drag down any average
+      // computed over these rows. The PM's close-phase emit carries the values.
+      total_cost_usd:      null,
+      files_changed_count: null,
+      efficiency_ratio:    null,
     }, { cwd });
   } catch (e) {
     process.stderr.write(

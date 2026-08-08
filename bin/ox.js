@@ -50,6 +50,41 @@ const MAX_EXTRA_LEN = 2048;
 /** Reserved top-level keys that --extra must NOT contain (S03). */
 const EXTRA_RESERVED_KEYS = new Set(['orchestration_id', 'event', 'ts', 'type']);
 
+/**
+ * v2.3.21 — schema-required fields that `ox events append` fills itself.
+ *
+ * `orchestration_start` and `orchestration_complete` have no code emitter on the
+ * hand-append path: the PM types the command, and 26 rows shipped without
+ * `task` / `started_at` / `status` / `completed_at` because remembering them was
+ * a prose obligation. The CLI owns the defaults instead — the schema documents
+ * `task` as nullable and `status` as defaulting to "success", so these are the
+ * declared values, not invented ones. Anything passed in --extra wins.
+ */
+const EVENT_APPEND_DEFAULTS = {
+  orchestration_start:    (now) => ({ task: null, started_at: now }),
+  orchestration_complete: (now) => ({ status: 'success', completed_at: now }),
+};
+
+/**
+ * Fields whose `null` is honest from a code emitter but not from a hand-append.
+ *
+ * `orchestration_roi`'s cost and git-diff fields are nullable in the schema
+ * because `bin/audit-on-orch-complete.js` derives ROI from `events.jsonl` alone
+ * and cannot measure them. The PM can — it holds the token-cost rollup and the
+ * diff — so on this path a missing or null value is a real omission.
+ */
+const EVENT_APPEND_NON_NULL = {
+  orchestration_roi: ['total_cost_usd', 'files_changed_count', 'efficiency_ratio'],
+};
+
+/**
+ * Fields the audit gateway fills in after `ox` hands the event off — autofill
+ * allowlist plus `schema_version`, which the gateway mirrors from `version`.
+ */
+const GATEWAY_AUTOFILLED = new Set([
+  'version', 'schema_version', 'timestamp', 'ts', 'orchestration_id', 'session_id',
+]);
+
 // v2.3.1: canonical agent types imported from single source of truth.
 // Previously a literal Set duplicated in three files; consolidated to prevent
 // privilege-escalation drift (audit-event vs gate disagreeing on membership).
@@ -620,6 +655,35 @@ function cmdRoutingAdd(positionals, flags, dryRun) {
 //           cap --extra at 2048 bytes.
 // --------------------------------------------------------------------------
 
+/**
+ * Warn (never block — audit writes are fail-open) when a hand-appended event is
+ * missing fields its schema declares required and the gateway will not fill.
+ * The gateway logs a `schema_shape_violation` in that case; this puts the same
+ * information in front of the caller at the moment they can still fix it.
+ */
+function warnMissingRequired(cwd, event) {
+  let missing = [];
+  try {
+    const { validateEvent } = require('./_lib/schema-emit-validator');
+    const res = validateEvent(cwd, event);
+    if (res.valid) return;
+    missing = (res.errors || [])
+      .map((e) => (e.match(/missing required field "([^"]+)"/) || [])[1])
+      .filter((f) => f && !GATEWAY_AUTOFILLED.has(f));
+  } catch (_e) {
+    return; // validator unavailable — stay silent, the gateway still degrades safely
+  }
+  for (const f of EVENT_APPEND_NON_NULL[event.type] || []) {
+    if (event[f] === undefined || event[f] === null) missing.push(f);
+  }
+  if (missing.length === 0) return;
+  process.stderr.write(
+    `[orchestray] events append: ${event.type} is missing schema-required field(s): ` +
+    `${[...new Set(missing)].join(', ')} — pass them in --extra ` +
+    `(see agents/pm-reference/event-schemas.md)\n`
+  );
+}
+
 function cmdEventsAppend(positionals, flags, dryRun) {
   // Support --event-type=, --type= (alias), --event_type= (underscore alias).
   const eventType = flags['event-type'] || flags['type'] || flags['event_type'];
@@ -668,13 +732,20 @@ function cmdEventsAppend(positionals, flags, dryRun) {
     }
   }
 
+  const defaults = EVENT_APPEND_DEFAULTS[eventType]
+    ? EVENT_APPEND_DEFAULTS[eventType](now)
+    : {};
+
   const event = {
     timestamp:        now,
     type:             eventType,
     orchestration_id: orchId,  // S03: always from marker
     task_id:          taskId,
+    ...defaults,
     ...extra,
   };
+
+  warnMissingRequired(cwd, event);
 
   if (dryRun) {
     process.stdout.write(`[dry-run] would append to events.jsonl: ${JSON.stringify(event)}\n`);
