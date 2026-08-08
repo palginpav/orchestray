@@ -24,7 +24,7 @@ like "iterate on tests until they pass."
 
 ## Behavior
 
-1. Skill writes `.orchestray/state/loop.json` with the loop config:
+1. Skill writes `.orchestray/state/loop.json` with the loop config and emits `loop_started`:
    ```json
    {
      "enabled": true,

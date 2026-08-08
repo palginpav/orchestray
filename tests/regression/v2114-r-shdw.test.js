@@ -122,9 +122,11 @@ describe('R-SHDW: generator', () => {
     assert.ok(eventTypes.length >= 5, 'shadow must have >= 5 event types, got ' + eventTypes.length);
   });
 
-  test('2. generator output is ≤ 16384 bytes', () => {
+  test('2. generator output is ≤ 18432 bytes', () => {
+    // v2.3.20: cap raised 16384 -> 18432 alongside MAX_SHADOW_BYTES in
+    // bin/regen-schema-shadow.js (event-registry reconciliation).
     const stat = fs.statSync(SHADOW_PATH);
-    assert.ok(stat.size <= 16384, 'shadow file size ' + stat.size + ' exceeds 16384 bytes');
+    assert.ok(stat.size <= 18432, 'shadow file size ' + stat.size + ' exceeds 18432 bytes');
   });
 
   test('3. shadow includes the 4 new R-SHDW event types', () => {

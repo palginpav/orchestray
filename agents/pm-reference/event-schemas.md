@@ -2004,6 +2004,33 @@ Emitted by the PM after executing the clean-abort sequence: renaming the state d
 
 ---
 
+### `stale_state_pruned` event
+
+Emitted by `bin/ox.js` (`state init` and `state complete` verbs) after the
+orchestration-hygiene sweep archives stale runtime-state leftovers
+(`orchestration.md`, `resilience-dossier.json`, orphaned task files) from a
+prior orchestration into `.orchestray/history/`. Advisory telemetry only.
+
+```json
+{
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "stale_state_pruned",
+  "orchestration_id": "<current orch id>",
+  "cleared_tasks": 0,
+  "archived": ["orchestration.md", "resilience-dossier.json"],
+  "trigger": "state_init"
+}
+```
+
+Field notes:
+- `cleared_tasks`: count of orphaned `.orchestray/state/tasks/*.md` files removed.
+- `archived`: names of runtime-state files that were moved to history (may be empty).
+- `trigger`: `"state_init"` (pre-existing stale state found at `state init`) or
+  `"state_complete"` (hygiene sweep run at `state complete`).
+- Source: emitted by `bin/ox.js`.
+
+---
+
 ## Section 23: State GC Events (W5 v2.0.18)
 
 Two events emitted by `bin/state-gc.js` during the `/orchestray:state gc` operation.
@@ -4924,6 +4951,39 @@ Field notes:
 
 ---
 
+### `cache_baseline_refreshed` event
+
+Emitted by `bin/validate-cache-invariant.js` (PreToolUse hook) as the sibling
+of `cache_invariant_broken`, zone1 mode. When `caching.auto_rebaseline_enabled`
+is true and every delta file in the Zone 1 hash mismatch is on the
+user-editable allowlist (e.g. `CLAUDE.md`), the block-a-zones sentinel is
+silently rewritten with the current hash instead of recording a violation —
+this event marks that path. Advisory only.
+
+Schema version: 1
+
+```json
+{
+  "version": 1,
+  "type": "cache_baseline_refreshed",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "zone": "zone1",
+  "expected_hash": "<12-char prefix of the previously-stored hash>",
+  "actual_hash": "<12-char prefix of the freshly recomputed hash>",
+  "delta_files": ["CLAUDE.md"],
+  "reason": "editable_zone1_drift"
+}
+```
+
+Field notes:
+- `zone`: always `"zone1"` — the manifest-mode invariant does not auto-rebaseline.
+- `delta_files`: subset of `AUTO_REBASELINE_ALLOWLIST` that changed since last baseline.
+- `reason`: always `"editable_zone1_drift"` in the current implementation.
+- Source: emitted by `bin/validate-cache-invariant.js`.
+
+---
+
 ### `cache_manifest_bootstrap` event
 
 Emitted by `bin/validate-cache-invariant.js` (PreToolUse hook, v2.2.2)
@@ -5055,11 +5115,14 @@ Kill switches: `ORCHESTRAY_DISABLE_DEMAND_GATE=1`, `config.feature_demand_gate.e
 
 ### `feature_quarantine_active` event
 
-**NEVER IMPLEMENTED — retired v2.3.19 (E3 dark-event triage).** Stale pre-rename
-doc name; the real emitter uses `feature_quarantine_applied` (not dark, not this
-type). No code anywhere emits `feature_quarantine_active`. Schema retained
-(rather than removed) so historical `events.jsonl` rows using this exact type
-name, if any exist from before the rename, remain readable.
+> **deprecated: true** — **status: deprecated** (v2.3.19 E3 dark-event triage;
+> marker added v2.3.20 event-registry reconciliation)
+>
+> **NEVER IMPLEMENTED — retired v2.3.19 (E3 dark-event triage).** Stale pre-rename
+> doc name; the real emitter uses `feature_quarantine_applied` (not dark, not this
+> type). No code anywhere emits `feature_quarantine_active`. Schema retained
+> (rather than removed) so historical `events.jsonl` rows using this exact type
+> name, if any exist from before the rename, remain readable.
 
 Emitted when an opt-in or auto quarantine takes effect for a gate. In v2.1.14, this is
 emitted when gate-telemetry.js applies a quarantine overlay (gate in quarantine_candidates).
@@ -6021,6 +6084,9 @@ Field notes:
 
 ### `verify_fix_attempt` event
 
+> **deprecated: true** — **status: deprecated** (v2.3.19; marker added
+> v2.3.20 event-registry reconciliation)
+
 **Status (v2.3.19): historical-only, no code emitter.** Intended as an
 informal progress note when a verify-fix round is retried mid-loop after
 an interruption (e.g. a respawned agent hit `maxTurns`) — distinct from
@@ -6809,6 +6875,9 @@ Field notes:
 
 ### `housekeeper_pending_queued` event
 
+> **deprecated: true** — **status: deprecated** (v2.3.19 E3 dark-event triage;
+> marker added v2.3.20 event-registry reconciliation)
+
 **NEVER IMPLEMENTED — retired v2.3.19 (E3 dark-event triage).** Doc named the
 wrong file/type: `bin/spawn-housekeeper-on-trigger.js` emits
 `housekeeper_trigger_debounced` and `spawn_requested` (both declared below/
@@ -7163,6 +7232,32 @@ Field notes:
 - Idempotent: skipped silently when `<archive_dir>/.archived` exists.
 - Kill switch: `ORCHESTRAY_ORCH_ARCHIVE_DISABLED=1`.
 - Unblocks downstream: `replay-last-n.sh`, `watch-events.js`, `audit-default-true-flags.js`, `mcp-server/lib/history_scan.js`, `pattern-roi-aggregate.js`, `_lib/archetype-cache.js`, `verify-fix-coverage.js`.
+
+### `events_log_rotated` event
+
+Emitted by `bin/archive-orch-events.js` (`runHousekeeping`, C4 v2.3.10) when
+the live `.orchestray/audit/events.jsonl` exceeds its size threshold and gets
+rolled to `events.jsonl.1` in place of the fresh live log. Emitted into the
+now-empty live log (post-rotation) so the rotation itself is auditable.
+
+```json
+{
+  "type": "events_log_rotated",
+  "version": 1,
+  "timestamp": "ISO 8601",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "rolled_bytes": 23820204,
+  "threshold_bytes": 16777216,
+  "target": "/abs/path/.orchestray/audit/events.jsonl.1"
+}
+```
+
+Field notes:
+- `rolled_bytes`: size in bytes of the pre-rotation live log.
+- `threshold_bytes`: the configured rotation threshold that was exceeded.
+- `target`: absolute path the oversized log was renamed to.
+- Kill switch: `ORCHESTRAY_EVENTS_ROTATE_DISABLED=1`.
+- Source: emitted by `bin/archive-orch-events.js`.
 
 ### `event_promised_but_dark` event
 
@@ -7986,6 +8081,9 @@ Field notes:
 
 ### `agent_mcp_grounding_missing` event
 
+> **deprecated: true** — **status: deprecated** (v2.3.18 W4; marker added
+> v2.3.20 event-registry reconciliation)
+
 **RETIRED in v2.3.18 (W4)** — `bin/validate-mcp-grounding.js` was replaced
 by the Claim–Evidence Ledger (`claim_evidence_*`). Schema retained so
 historical `events.jsonl` rows remain readable.
@@ -8295,6 +8393,9 @@ Field notes:
 
 ### `contracts_merge_base_unresolved` event
 
+> **deprecated: true** — **status: deprecated** (v2.3.19 E3 dark-event triage;
+> marker added v2.3.20 event-registry reconciliation)
+
 **NEVER IMPLEMENTED — retired v2.3.19 (E3 dark-event triage).** Planned v2.2.13
 feature ("merge-base enforcement with hard-fail exit code 2 is planned for
 v2.2.13" per `bin/validate-task-contracts.js:112`), never implemented — the
@@ -8501,6 +8602,9 @@ Field notes:
 
 ### `event_type_attempt` event
 
+> **deprecated: true** — **status: deprecated** (v2.3.19 E3 dark-event triage;
+> marker added v2.3.20 event-registry reconciliation)
+
 **NEVER IMPLEMENTED — retired v2.3.19 (E3 dark-event triage).** Doc-example
 literal name from the B5 rename-cycle design write-up, never wired to a real
 emitter. Zero occurrences in `bin/`. Schema retained for backward-compat
@@ -8527,6 +8631,9 @@ Field notes:
 ---
 
 ### `event_type_result` event
+
+> **deprecated: true** — **status: deprecated** (v2.3.19 E3 dark-event triage;
+> marker added v2.3.20 event-registry reconciliation)
 
 **NEVER IMPLEMENTED — retired v2.3.19 (E3 dark-event triage).** Same finding as
 `event_type_attempt` above — doc-example literal name, zero occurrences in
@@ -9183,6 +9290,9 @@ Emitted from: `bin/inject-context-size-hint.js` (DELETED in v2.2.13 W1 — no ac
 
 ### `deprecated_kill_switch_detected` event
 
+> **deprecated: true** — **status: deprecated** (v2.2.14 G-04; marker added
+> v2.3.20 event-registry reconciliation)
+
 **DORMANT v2.2.14 — declared but no current emitters.** v2.2.14 G-04 fully retired
 `ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED` (the only env var that ever
 triggered this event); both emit sites in `bin/boot-validate-config.js` and
@@ -9215,6 +9325,96 @@ Required fields: `name` (string), `replacement` (string), `retires_in` (string),
 Emitted from: `bin/boot-validate-config.js` (SessionStart); `bin/preflight-spawn-budget.js` (PreToolUse:Agent).
 
 Kill switch: none (the event IS the deprecation signal; suppressing it would defeat the purpose).
+
+---
+
+## v2.2.1 Self-Heal Events
+
+Three events emitted by `bin/v221-self-heal.js`, invoked once from
+`bin/install.js` after every `npm install` of the plugin. Sweeps two
+v2.2.0-era bad-state artifacts (a bare-string `.block-a-zone-caching-disabled`
+cache sentinel and a stale `housekeeper-quarantined` marker) left behind by
+projects upgrading from v2.1.x/v2.2.0. Idempotent per project: a
+`.orchestray/state/.v221-self-heal-done` sentinel makes every subsequent
+install a no-op, so all three events are legitimately dark on any project
+whose one-shot sweep already ran (or that was never on the affected
+versions) — see `feature_optional` note on each. `orchestration_id` on all
+three is always the literal `"install-v221-self-heal"` — this runs outside
+any orchestration.
+
+### `v221_cache_sentinel_cleared` event
+
+Emitted when the stale `.block-a-zone-caching-disabled` sentinel is found and
+removed (skipped when absent or not stale):
+
+```json
+{
+  "version": 1,
+  "timestamp": "<ISO 8601>",
+  "type": "v221_cache_sentinel_cleared",
+  "orchestration_id": "install-v221-self-heal",
+  "file": ".orchestray/state/.block-a-zone-caching-disabled",
+  "previous_body": "<first 256 chars of the removed sentinel's body, or null>"
+}
+```
+
+Field notes:
+- `file`: project-relative path of the sentinel removed.
+- `previous_body`: diagnostic snapshot of the stale sentinel's content, truncated to 256 chars.
+- feature_optional: true (fires at most once per project's lifetime, at install
+  time, only when a v2.1.x/v2.2.0-era bad state exists to clean up; legitimately
+  dark on fresh installs and on any project past its one-shot sweep. Excluded
+  from the F3 promised-event tracker so it does not alarm.)
+- Source: emitted by `bin/v221-self-heal.js` via `bin/install.js`.
+
+---
+
+### `v221_housekeeper_quarantine_cleared` event
+
+Same shape and trigger condition as `v221_cache_sentinel_cleared`, for the
+`housekeeper-quarantined` sentinel:
+
+```json
+{
+  "version": 1,
+  "timestamp": "<ISO 8601>",
+  "type": "v221_housekeeper_quarantine_cleared",
+  "orchestration_id": "install-v221-self-heal",
+  "file": ".orchestray/state/housekeeper-quarantined",
+  "previous_body": "<first 256 chars of the removed sentinel's body, or null>"
+}
+```
+
+Field notes:
+- `file`: project-relative path of the sentinel removed.
+- `previous_body`: diagnostic snapshot of the stale sentinel's content, truncated to 256 chars.
+- feature_optional: true (same rationale as `v221_cache_sentinel_cleared`.
+  Excluded from the F3 promised-event tracker so it does not alarm.)
+- Source: emitted by `bin/v221-self-heal.js` via `bin/install.js`.
+
+---
+
+### `v221_self_heal_complete` event
+
+Fires once per project, unconditionally, at the end of the sweep:
+
+```json
+{
+  "version": 1,
+  "timestamp": "<ISO 8601>",
+  "type": "v221_self_heal_complete",
+  "orchestration_id": "install-v221-self-heal",
+  "cache_sentinel_cleared": false,
+  "housekeeper_quarantine_cleared": false
+}
+```
+
+Field notes:
+- `cache_sentinel_cleared` / `housekeeper_quarantine_cleared`: booleans mirroring
+  whether each sibling `*_cleared` event fired this run.
+- feature_optional: true (fires at most once per project's lifetime, at install
+  time. Excluded from the F3 promised-event tracker so it does not alarm.)
+- Source: emitted by `bin/v221-self-heal.js` via `bin/install.js`.
 
 ---
 

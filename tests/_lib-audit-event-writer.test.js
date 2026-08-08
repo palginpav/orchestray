@@ -143,4 +143,31 @@ describe('audit-event-writer smoke test', () => {
     assert.equal(JSON.parse(stdout.trim()).continue, true);
   });
 
+  // v2.3.20 event-registry reconciliation. This suite's own `smoke_event` /
+  // `no_mode_event` rows are the exact shape that produced 6 rows each of
+  // pollution per archived pre-D7 events.jsonl snapshot in
+  // `.orchestray/history/*` (48 total across 8 archives — frozen there
+  // permanently; D7, v2.3.18 W0, already prevents new pollution). This test
+  // pins that the live PACKAGE_ROOT audit log specifically does not grow
+  // when THIS file's harness runs, tying the generic D7 guard
+  // (`bin/_lib/__tests__/audit-log-test-isolation.test.js`) to the concrete
+  // smoke_event/no_mode_event emit path used above.
+  test('smoke_event / no_mode_event harness writes never reach the live project audit log', () => {
+    const { PACKAGE_ROOT } = require(HELPER)._testHooks;
+    const liveEvents = path.join(PACKAGE_ROOT, '.orchestray', 'audit', 'events.jsonl');
+    const before = fs.existsSync(liveEvents) ? fs.statSync(liveEvents).size : -1;
+
+    const tmpDir = makeTmpDir();
+    try {
+      const payload = JSON.stringify({ cwd: tmpDir, agent_id: 'agent-smoke-d7' });
+      const { status } = runHarness(payload);
+      assert.equal(status, 0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+
+    const after = fs.existsSync(liveEvents) ? fs.statSync(liveEvents).size : -1;
+    assert.equal(after, before, 'the live project audit log must not grow from a smoke_event harness run');
+  });
+
 });
