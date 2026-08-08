@@ -7,7 +7,7 @@ argument-hint: "[--verbose|-v] [--deep]"
 
 # Orchestray Doctor
 
-Run 11 probes (12 with `--deep`) against the current Orchestray installation and print a
+Run 12 probes (13 with `--deep`) against the current Orchestray installation and print a
 structured health report. If `$ARGUMENTS` contains `--verbose` or `-v`, emit a
 `## Detail` section after the summary.
 
@@ -301,6 +301,53 @@ rather than false-alarming.
 
 ---
 
+### P9d: KB decision staleness
+
+`.orchestray/kb/decisions/` is the system of record for outstanding
+blockers. Three files there once sat `**Status: OPEN**` (one `OPEN,
+blocking`) — titled `# OPEN: ...` — for hours after the work was already
+fixed, because nothing checked title against status. This probe is the
+guard: it distinguishes "nothing is open" from "most of this corpus carries
+no status line at all" (both numbers must always be visible — see below),
+and it detects title/status self-contradiction directly.
+
+Skip when `$PROJECT_ROOT/.orchestray/` does not exist.
+
+Run from `$PLUGIN_ROOT`:
+
+```bash
+node bin/_lib/kb-decision-health.js --json --cwd "$PROJECT_ROOT"
+```
+
+Parse the stdout JSON: `{total, withStatus, withoutStatus, openCount,
+openDecisions: [{file, title, statusText, ageHours}, ...],
+contradictions: [{file, title, statusText}, ...]}`.
+
+- `total === 0`: status=OK.
+  Line: `[OK]    KB decisions (no decisions/ directory yet; skipped)`
+- `contradictions.length > 0` (checked first — this is the loud failure):
+  status=FAIL.
+  Line: `[FAIL]  KB decision title/status mismatch: {contradictions[0].file} (title says "{contradictions[0].title}", status says "{contradictions[0].statusText}") — fix the file{, +{N-1} more such mismatch(es) if length > 1}`
+- Else `openCount > 0`: status=WARN.
+  Line: `[WARN]  {openCount} open/blocking KB decision(s) ({withoutStatus}/{total} carry no status line) — oldest: {openDecisions[0].file} ({openDecisions[0].ageHours}h since last edit)`
+- Else (`openCount === 0` and no contradictions): status=OK.
+  Line: `[OK]    KB decisions: 0 open/blocking ({withoutStatus}/{total} carry no status line — legacy, not a failure)`
+
+The `{withoutStatus}/{total}` fragment appears in every non-skip branch,
+including the all-clear one — a reader must never see a bare "0 open" and
+assume the corpus was actually checked.
+
+In `--verbose` mode, append up to 10 entries of `openDecisions[]` (file,
+statusText, ageHours) and all entries of `contradictions[]` under
+`## Detail`.
+
+P9d WARN increments `N_warn`; P9d FAIL increments `N_fail`. Files without a
+status line are never mass-edited or treated as an error — 24 of 32 files in
+this repo's own corpus predate the `**Status:` convention and that is
+expected, not a defect.
+
+---
+
 ### P10: Install-integrity deep verify (only when `--deep`)
 
 Skip this probe entirely when `DEEP` is not set.
@@ -365,7 +412,7 @@ P10 FAIL increments `N_fail`. P10 WARN increments `N_warn`.
 
 ## Output format
 
-After running all probes (11 without `--deep`, 12 with `--deep`), print:
+After running all probes (12 without `--deep`, 13 with `--deep`), print:
 
 ```
 Orchestray v{VERSION} — health check
@@ -381,13 +428,14 @@ Orchestray v{VERSION} — health check
 {P9 line}
 {P9b line}
 {P9c line}
+{P9d line}
 {P10 line — only when --deep}
 
 {N_total} probes, {N_warn} warning(s), {N_fail} failure(s).{suffix}
 doctor-result-code: {code}
 ```
 
-`N_total` is 11 without `--deep`, 12 with `--deep`.
+`N_total` is 12 without `--deep`, 13 with `--deep`.
 
 Where:
 - `{suffix}` is ` Run with --verbose for details.` when `N_warn + N_fail > 0` and
@@ -414,8 +462,9 @@ Orchestray v2.1.3 — health check
 [OK]    plugin install coherent (v2.1.3, 162 files tracked)
 [OK]    BDG corpus: 12/14 scripts covered (183 fixtures)
 [OK]    dark events (0 declared types have never fired)
+[OK]    KB decisions: 0 open/blocking (24/32 carry no status line — legacy, not a failure)
 
-10 probes, 0 warning(s), 0 failure(s).
+11 probes, 0 warning(s), 0 failure(s).
 doctor-result-code: 0
 ```
 
@@ -433,9 +482,10 @@ Orchestray v2.1.3 — health check
 [OK]    plugin install coherent (v2.1.3, 162 files tracked)
 [OK]    BDG corpus: 12/14 scripts covered (183 fixtures)
 [OK]    dark events (0 declared types have never fired)
+[OK]    KB decisions: 0 open/blocking (24/32 carry no status line — legacy, not a failure)
 [OK]    install integrity verified (162 files)
 
-11 probes, 0 warning(s), 0 failure(s).
+12 probes, 0 warning(s), 0 failure(s).
 doctor-result-code: 0
 ```
 
@@ -446,6 +496,7 @@ When `--verbose` or `-v` is present, append a `## Detail` section after the summ
 - **P3 flat keys**: full list of flat keys found (no truncation).
 - **P7 journal**: last 10 journal rows, one per line:
   `{ts}  {kind}  severity={severity}  {JSON.stringify(detail).slice(0, 200)}`
+- **P9d open decisions + contradictions**: as described under P9d above.
 - **Any FAIL probe**: the raw error message and, if available, the first 5 lines of the
   stack trace.
 
@@ -455,5 +506,5 @@ If `$PROJECT_ROOT/.orchestray/` does not exist at all, emit before the probe lis
 ```
 [WARN]  no .orchestray/ directory — run from a project root or run /orchestray:run first
 ```
-Then skip P3, P4, P7, P9b, P9c (project-scoped probes) and run P1, P2, P5, P6, P8 only.
+Then skip P3, P4, P7, P9b, P9c, P9d (project-scoped probes) and run P1, P2, P5, P6, P8 only.
 Adjust totals accordingly.
