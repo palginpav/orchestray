@@ -3,7 +3,7 @@ name: tester
 description: Writes comprehensive tests and develops test strategies. Creates unit
   tests, integration tests, and edge case coverage. Analyzes existing test gaps
   and improves test infrastructure.
-tools: Read, Glob, Grep, Bash, Write, Edit
+tools: Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__schema_get
 model: inherit
 effort: medium
 memory: project

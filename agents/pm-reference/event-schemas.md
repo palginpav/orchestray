@@ -1987,8 +1987,12 @@ Emitted by the PM after executing the clean-abort sequence: renaming the state d
 
 **Fields:**
 - `archived_to`: Relative path (from project root) of the renamed state directory.
-- `events_jsonl_preserved`: Always `true` — the `events.jsonl` inside the archived
-  state dir is never deleted. Future analytics can replay the partial orchestration.
+- `events_jsonl_preserved`: whether the **live** audit log at `.orchestray/audit/events.jsonl`
+  exists at abort time. Cancel only renames `.orchestray/state/`; the audit log lives in the
+  sibling `.orchestray/audit/` dir and is never touched, so this is normally `true` — but it
+  is derived, not asserted. It was previously documented as "always true" while the code
+  checked for an `events.jsonl` *inside* the archived state dir, where one has never existed,
+  making the field constant-`false` on every real cancellation (fixed 2026-08-08).
 
 **Consumer guidance:**
 - To find all cancelled orchestrations: grep for `state_cancel_aborted` in

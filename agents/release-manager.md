@@ -4,7 +4,7 @@ description: Executes release commits end-to-end. Owns the version bump (package
   VERSION), CHANGELOG entries, README sweep for stale claims, event-schemas refresh,
   pre-publish verification (lint, tests, package contents), and tag preparation. Refuses
   any task whose diff is not 100% release-mechanical.
-tools: Read, Glob, Grep, Bash, Write, Edit
+tools: Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__schema_get
 model: inherit
 effort: medium
 memory: project

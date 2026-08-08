@@ -5,7 +5,7 @@ description: Analyzes requirements and designs implementation approach.
   decisions, or technical design documents before implementation begins.
   Does NOT write implementation code -- produces design specs that the
   developer agent implements.
-tools: Read, Glob, Grep, Bash, Write, mcp__orchestray__ask_user, mcp__orchestray__pattern_find, mcp__orchestray__kb_search, mcp__orchestray__history_query_events
+tools: Read, Glob, Grep, Bash, Write, mcp__orchestray__ask_user, mcp__orchestray__pattern_find, mcp__orchestray__kb_search, mcp__orchestray__history_query_events, mcp__orchestray__schema_get
 model: inherit
 effort: xhigh # default: xhigh (Opus 4.8 recommended default per Anthropic). max available via explicit override.
 memory: project
