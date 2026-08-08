@@ -115,9 +115,14 @@ function runHook(payload, cwd) {
 }
 
 describe('validate-task-completion — integration (T15)', () => {
+  // v2.3.21: retargeted from TaskCompleted to SubagentStop. The gate is the
+  // subject here, not the event — and SubagentStop is the only one of the two
+  // registrations with a captured payload contract (579 fixtures), so it is
+  // the only one that may hard-block. TaskCompleted's advisory degrade is
+  // covered by bin/__tests__/v2321-taskcompleted-unverified-contract.test.js.
   test('block path: hard-tier agent with malformed structured result', () => {
     const r = runHook({
-      hook_event_name: 'TaskCompleted',
+      hook_event_name: 'SubagentStop',
       subagent_type: 'developer',
       output: '## Structured Result\n```json\n{"status":"success"}\n```\n',
     });
@@ -132,9 +137,11 @@ describe('validate-task-completion — integration (T15)', () => {
   // v2.2.9 B-2.1: researcher promoted from warn-tier to hard-tier.
   // WARN_TIER is now empty — all known roles are hard-tier. The test is
   // updated to verify researcher now hard-blocks (exit 2) on missing sections.
+  // v2.3.21: retargeted to SubagentStop for the same reason as the block-path
+  // test above — hard-block coverage belongs on the captured event contract.
   test('hard path: researcher (promoted to hard-tier in B-2.1) exits 2 on missing sections', () => {
     const r = runHook({
-      hook_event_name: 'TaskCompleted',
+      hook_event_name: 'SubagentStop',
       subagent_type: 'researcher',
       output: '## Structured Result\n```json\n{"status":"success"}\n```\n',
     });

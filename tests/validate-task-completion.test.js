@@ -214,7 +214,12 @@ describe('validation gate — blocking on missing fields', () => {
 
     try {
       const input = JSON.stringify({
-        hook_event_name: 'TaskCompleted',
+        // v2.3.21: `hook_event_name: 'TaskCompleted'` removed. That event's
+        // payload contract is uncaptured, so every gate here now degrades to
+        // advisory (exit 0) — see
+        // bin/__tests__/v2321-taskcompleted-unverified-contract.test.js. This
+        // test is about DEF-10 (audit-write failure must reach stderr) on the
+        // blocking path, which the unlabelled legacy shape still takes.
         cwd: tmpDir,
         // missing task_id AND task_subject → rejection path → audit-write
       });
@@ -265,16 +270,26 @@ describe('non-TaskCompleted events pass through without validation', () => {
     }
   });
 
-  test('event with hook_event_name === "TaskCompleted" still validates', () => {
+  // v2.3.21: TaskCompleted still validates, but advisory-only — no
+  // TaskCompleted payload has ever been captured, so the gate must not strand
+  // an agent on a contract it has never seen. The finding is still detected,
+  // recorded and printed; only the exit code changed.
+  test('event with hook_event_name === "TaskCompleted" still validates (advisory)', () => {
     const tmpDir = makeTmpDir();
     try {
       const input = JSON.stringify({
         hook_event_name: 'TaskCompleted',
         cwd: tmpDir,
-        // Missing task_id/task_subject → should still exit 2
+        // Missing task_id/task_subject → finding is still raised
       });
-      const { status } = run(input);
-      assert.equal(status, 2, 'TaskCompleted with missing fields must still block');
+      const { status, stderr } = run(input);
+      assert.equal(status, 0, 'unverified event contract must not hard-block');
+      assert.ok(stderr.includes('Task completion rejected'), 'finding must still be reported');
+      assert.ok(stderr.includes('ADVISORY, NOT BLOCKED'), 'degrade must be announced');
+      const events = readEventsJsonl(path.join(tmpDir, '.orchestray', 'audit'));
+      const row = events.find(e => e.type === 'task_validation_failed');
+      assert.ok(row, 'finding must still be emitted');
+      assert.equal(row.enforcement, 'advisory');
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
     }

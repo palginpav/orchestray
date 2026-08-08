@@ -65,6 +65,168 @@ const { readHookInputRaw } = require('./_lib/hook-stdin');
 // none of which included it — see
 // bin/__tests__/anti-pattern-agent-output-fields-parity.test.js.
 const { rawOutputText } = require('./_lib/claim-rules');
+const { isTestContext } = require('./_lib/hook-stdin');
+
+// ---------------------------------------------------------------------------
+// Unverified event contracts (v2.3.21)
+// ---------------------------------------------------------------------------
+//
+// This file is registered on SubagentStop AND TaskCompleted (hooks/hooks.json).
+// Only SubagentStop has ever been captured — 579 fixtures. **No TaskCompleted
+// payload exists anywhere in the corpus** (`hook-fixture-parity.js` carries the
+// `event-not-yet-observed` waiver for exactly this pair), so every field this
+// file reads off one — `agent_type`, `last_assistant_message`, `task_id`,
+// `task_subject` — is a guess. Two never-executed branches followed:
+//
+//   (a) a payload carrying only `teammate_name` yields role=null, and the whole
+//       T15 gate silently no-ops on team completions;
+//   (b) a payload carrying `agent_type` but no raw text hard-blocks an agent
+//       whose Structured Result was perfectly valid.
+//
+// That is v2.3.20 defect class #3 verbatim: precedence correct at its
+// SubagentStop origin, unverified at its TaskCompleted destination. A gate must
+// not hard-block on a contract it has never seen. Until a capture exists,
+// TaskCompleted degrades to ADVISORY — same detection, same audit row (marked
+// `enforcement: 'advisory'`), loud stderr, exit 0. The first real payload is
+// captured to `.orchestray/fixtures/validate-task-completion/` so the eventual
+// tightening is evidence-backed rather than another guess.
+const UNVERIFIED_EVENTS = new Set(['TaskCompleted']);
+
+// Tightening switch: once a TaskCompleted capture exists and the contract is
+// verified, `ORCHESTRAY_UNVERIFIED_EVENT_ADVISORY_DISABLED=1` restores blocking.
+const ENV_ADVISORY_DISABLED = 'ORCHESTRAY_UNVERIFIED_EVENT_ADVISORY_DISABLED';
+// Kill switch for the payload capture below.
+const ENV_CAPTURE_DISABLED  = 'ORCHESTRAY_UNVERIFIED_EVENT_CAPTURE_DISABLED';
+// Test-only force-arm (harvest() refuses to run under the test harness, and so
+// does the capture; this is how the capture itself gets tested).
+const ENV_CAPTURE_FORCE     = 'ORCHESTRAY_UNVERIFIED_EVENT_CAPTURE';
+// Kill switch for the legacy Agent-Teams task_id/task_subject gate.
+const ENV_TEAM_GATE_DISABLED = 'ORCHESTRAY_TEAM_EVENT_GATE_DISABLED';
+
+// Set by armUnverifiedEventGuard(); read by emitAuditEvent to mark rows.
+let ADVISORY_EVENT = null;
+
+/**
+ * True when this hook_event_name's payload contract is uncaptured, so no gate
+ * in this file may hard-block on it.
+ *
+ * @param {string|null} hookEvent
+ * @returns {boolean}
+ */
+function isUnverifiedEvent(hookEvent) {
+  if (!UNVERIFIED_EVENTS.has(hookEvent)) return false;
+  return process.env[ENV_ADVISORY_DISABLED] !== '1';
+}
+
+/**
+ * Mechanical guarantee that nothing in this file blocks an unverified event.
+ *
+ * This file has ~10 independent exit-2 sites across six gates. Enforcing
+ * "check advisory mode first" as prose at each one is how the original defect
+ * got here, so the two channels a Claude Code hook blocks through — exit code 2
+ * and a `{continue:false}` stdout payload — are neutralised at their seam
+ * instead. Armed ONLY when the payload's own `hook_event_name` is in
+ * UNVERIFIED_EVENTS, which is why the 579-capture SubagentStop path is
+ * bit-for-bit unaffected: the guard is never installed on it.
+ *
+ * @param {string|null} hookEvent
+ * @returns {boolean} true when armed
+ */
+function armUnverifiedEventGuard(hookEvent) {
+  if (!isUnverifiedEvent(hookEvent)) return false;
+  ADVISORY_EVENT = hookEvent;
+  const realExit  = process.exit.bind(process);
+  const realWrite = process.stdout.write.bind(process.stdout);
+  let wroteContinuation = false;
+  process.stdout.write = function advisoryWrite(chunk, ...rest) {
+    let out = chunk;
+    wroteContinuation = true;
+    if (typeof chunk === 'string' && chunk.includes('"continue"')) {
+      try {
+        const parsed = JSON.parse(chunk.trim());
+        if (parsed && parsed.continue === false) {
+          out = JSON.stringify({
+            continue:           true,
+            advisory:           true,
+            unverified_event:   hookEvent,
+            would_block_reason: parsed.reason || null,
+          });
+        }
+      } catch (_e) { /* not our continuation payload — pass through */ }
+    }
+    return realWrite(out, ...rest);
+  };
+  process.exit = function advisoryExit(code) {
+    if (code === 2) {
+      process.stderr.write(advisoryBanner(hookEvent));
+      // The legacy team gate exits 2 with no stdout at all; supply the
+      // continuation payload it never had so the degrade is explicit.
+      if (!wroteContinuation) {
+        realWrite(JSON.stringify({ continue: true, advisory: true, unverified_event: hookEvent }));
+      }
+      return realExit(0);
+    }
+    return realExit(code);
+  };
+  return true;
+}
+
+/**
+ * @param {string} hookEvent
+ * @returns {string}
+ */
+function advisoryBanner(hookEvent) {
+  return '[orchestray] validate-task-completion: ADVISORY, NOT BLOCKED — the gate above ' +
+    'would have exited 2, but no ' + hookEvent + ' payload has ever been captured ' +
+    '(0 fixtures), so every field it read is unverified and the finding may be an ' +
+    'artefact of a guessed payload shape. Exiting 0; the agent is not blocked.\n' +
+    'The payload was captured to .orchestray/fixtures/validate-task-completion/ — ' +
+    'once its contract is confirmed, set ' + ENV_ADVISORY_DISABLED + '=1 (or drop ' +
+    hookEvent + ' from UNVERIFIED_EVENTS) to restore blocking.\n';
+}
+
+/**
+ * Persist the first payload of an uncaptured event type as a BDG fixture.
+ *
+ * The shared harvest seam (`hook-stdin.js`) already redacts and writes
+ * `{stdin, state}` fixtures, but stops at 40 files per script — and this
+ * script's directory has been full for some time, which is precisely why the
+ * one payload we most need has never landed. This writes past that cap for
+ * uncaptured event types only, with its own small cap, reusing the shared
+ * redaction so a committed fixture still carries no user content.
+ *
+ * Never throws: capture must not affect the hook.
+ *
+ * @param {object} event
+ * @param {string} cwd
+ * @param {string} hookEvent
+ * @returns {string|null} fixture path when written/present, else null
+ */
+const MAX_UNVERIFIED_CAPTURES = 8;
+function captureUnverifiedPayload(event, cwd, hookEvent) {
+  try {
+    if (process.env[ENV_CAPTURE_DISABLED] === '1') return null;
+    // Synthetic test shapes are the disease, not the cure — never capture them
+    // unless a test explicitly asks (ENV_CAPTURE_FORCE).
+    if (isTestContext() && process.env[ENV_CAPTURE_FORCE] !== '1') return null;
+    const { redact, snapshotState } = require('./_lib/hook-stdin')._internal;
+    const { shapeHash } = require('./_lib/fixture-shape');
+    const prefix = String(hookEvent).toLowerCase() + '-';
+    const dir    = path.join(cwd, '.orchestray', 'fixtures', 'validate-task-completion');
+    const file   = path.join(dir, prefix + shapeHash(event) + '.json');
+    if (fs.existsSync(file)) return file;                       // shape already covered
+    fs.mkdirSync(dir, { recursive: true });
+    const mine = fs.readdirSync(dir).filter((f) => f.startsWith(prefix));
+    if (mine.length >= MAX_UNVERIFIED_CAPTURES) return null;
+    fs.writeFileSync(file, JSON.stringify({
+      stdin: redact(event),
+      state: snapshotState(cwd),
+    }, null, 2), 'utf8');
+    return file;
+  } catch (_e) {
+    return null;                                                // never affects the hook
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Artifact-path fields and placeholder rejection
@@ -839,6 +1001,11 @@ function resolveOrchestrationId(cwd) {
 
 function emitAuditEvent(cwd, record) {
   try {
+    // On an unverified event every gate is advisory — a `*_failed` row here did
+    // NOT block anything, and downstream consumers must be able to tell.
+    if (ADVISORY_EVENT && record && typeof record === 'object') {
+      record = { ...record, enforcement: 'advisory', event_contract: 'unverified' };
+    }
     const auditDir = path.join(cwd, '.orchestray', 'audit');
     fs.mkdirSync(auditDir, { recursive: true });
     try { fs.chmodSync(auditDir, 0o700); } catch (_e) { /* best-effort */ }
@@ -906,6 +1073,17 @@ function main() {
     try { cwd = resolveSafeCwd(event.cwd); }
     catch (_) { cwd = process.cwd(); }
 
+    // ── Unverified event contract (v2.3.21). TaskCompleted has never been
+    // captured, so no gate below may hard-block on it; the guard neutralises
+    // exit-2 and `{continue:false}` for every gate at once. Capture first so
+    // the payload lands even if a gate exits immediately after — and capture
+    // on raw event membership, not isUnverifiedEvent(), so an operator who
+    // tightens early still collects the evidence that justifies tightening.
+    if (UNVERIFIED_EVENTS.has(hookEvent)) {
+      captureUnverifiedPayload(event, cwd, hookEvent);
+      armUnverifiedEventGuard(hookEvent);
+    }
+
     // ── Legacy Agent Teams gate (v2.0.x preserved).
     //
     // Historical behavior: TaskCompleted events that look like Agent-Teams
@@ -934,7 +1112,14 @@ function main() {
     // entirely and go straight to T15 classification.
     const looksLikeTeamEvent = !isSubagentStop && (hasTeamKeys || !hasT15Signals);
 
-    if (looksLikeTeamEvent && (!event.task_id || !event.task_subject)) {
+    // Kill switch (v2.3.21): this gate demands `task_id` + `task_subject` on a
+    // payload shape no capture confirms — `task_subject` has moderate support
+    // (bin/audit-team-event.js reads it), `task_id` none at all. It previously
+    // had no escape hatch of its own: PRE_DONE_ENFORCEMENT=warn downgrades only
+    // the T15 hard tier.
+    const teamGateDisabled = process.env[ENV_TEAM_GATE_DISABLED] === '1';
+
+    if (!teamGateDisabled && looksLikeTeamEvent && (!event.task_id || !event.task_subject)) {
       const reason = !event.task_id && !event.task_subject
         ? 'missing task_id and task_subject'
         : (!event.task_id ? 'missing task_id' : 'missing task_subject');
@@ -951,7 +1136,8 @@ function main() {
       });
       process.stderr.write(
         'Task completion rejected: ' + reason + '. ' +
-        'Ensure task has proper identification before marking complete.\n'
+        'Ensure task has proper identification before marking complete. ' +
+        'Kill switch: ' + ENV_TEAM_GATE_DISABLED + '=1\n'
       );
       process.exit(2);
     }
@@ -959,6 +1145,31 @@ function main() {
     // ── v2.1.9 T15 pre-done checklist (I-12).
     const agentRole = identifyAgentRole(event);
     const structuredResult = extractStructuredResult(event);
+
+    // Branch (a), v2.3.21: on a team completion the only role-ish field may be
+    // `teammate_name`, which identifyAgentRole deliberately ignores — so the
+    // entire T15 gate below no-ops. A gate that quietly does nothing is the
+    // failure mode this release cycle is about; make it observable instead.
+    if (!agentRole && UNVERIFIED_EVENTS.has(hookEvent)) {
+      emitAuditEvent(cwd, {
+        version:          1,
+        timestamp:        new Date().toISOString(),
+        type:             'task_completion_warn',
+        hook:             'validate-task-completion',
+        orchestration_id: resolveOrchestrationId(cwd),
+        reason:           'agent role not identifiable — T15 handoff-contract gate did not run',
+        reason_code:      'agent_role_unidentified',
+        hook_event_name:  hookEvent,
+        payload_keys:     Object.keys(event).sort(),
+        session_id:       event.session_id || null,
+      });
+      process.stderr.write(
+        '[orchestray] validate-task-completion: T15 gate SKIPPED on this ' + hookEvent +
+        ' — no agent role in the payload (keys: ' + Object.keys(event).sort().join(', ') + '). ' +
+        'identifyAgentRole reads subagent_type/agent_type/agent_role/role; teammate_name is ' +
+        'excluded by design. The handoff contract was NOT enforced for this completion.\n'
+      );
+    }
 
     // ── P1-05 (v2.2.17): Multiple Structured Result block detector.
     // Hard exit 2 when multiple blocks detected (promoted from warn-only in v2.2.15).
@@ -1416,6 +1627,13 @@ module.exports = {
   isValidPatternAckEntry,
   patternAckFieldsEnforced,
   PATTERN_ACK_FIELDS,
+  // v2.3.21: unverified event contracts (TaskCompleted degrade-to-advisory)
+  isUnverifiedEvent,
+  captureUnverifiedPayload,
+  UNVERIFIED_EVENTS,
+  ENV_ADVISORY_DISABLED,
+  ENV_CAPTURE_DISABLED,
+  ENV_TEAM_GATE_DISABLED,
 };
 
 if (require.main === module) {
