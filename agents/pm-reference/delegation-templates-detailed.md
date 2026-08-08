@@ -233,45 +233,65 @@ report this in your result rather than silently violating the invariant.
 
 ## Pattern Citations
 
-**Pattern-body elision on repeat citation (CiteCache, v2.1.8).** When
-`context_compression_v218.cite_cache` is true (default), within a single orchestration
-the **first** delegation that cites a pattern receives the full body. **Subsequent**
-delegations citing the same pattern receive a cached marker instead.
+**Rendered by a hook, not by you (v2.3.20).** Write the bare
+`@orchestray:pattern://<slug>` citation; `bin/render-pattern-citations.js`
+(`PreToolUse:Agent`) resolves it and appends the `## Patterns Applied` block below. Do NOT
+paste pattern bodies into a delegation prompt by hand. See phase-decomp.md §22b.
 
-Use `bin/_lib/pattern-citation-render.js` to render citations. It handles the full-body
-vs. cached rendering and records the seen-set via `bin/_lib/pattern-seen-set.js`.
+**Every citation carries the body.** Subagents do not share a context window, so a
+body-less cite is a dead link to the receiving agent — that is how a live tester came to
+file a `patterns_rejected` entry reading "pattern file not found in codebase" for a pattern
+that exists in two tiers.
 
-**Reviewer exception:** reviewer delegations ALWAYS include full pattern bodies regardless
-of cache state. This is enforced in `renderCitation()` (agentType === 'reviewer' bypasses
-the cache check). A reviewer receiving a `[CACHED]` cite is a bug — see agent-common-protocol.md.
+**CiteCache (v2.1.8, narrowed).** When `context_compression_v218.cite_cache` is true
+(default), the second and later delegations citing the same slug in one orchestration get a
+`[CACHED — loaded by <agent>, hash <h6>]` provenance annotation **in addition to** the body.
+Set `false` to drop the annotation and its seen-set I/O.
 
-**Config:** `context_compression_v218.cite_cache: true` (default). Set `false` to disable
-(every delegation gets full bodies).
+**Reviewer exception:** reviewer delegations never carry the `[CACHED]` annotation
+(`renderCitation()` returns before the cache look-up for `agentType === 'reviewer'`).
 
 **Seen-set cleared:** on `orchestration_complete` (hook: `collect-agent-metrics.js` calls
 `clearForOrch(orchId)` from `pattern-seen-set.js`).
 
-### Full-body rendering (first cite or reviewer)
+### First cite (or reviewer)
 
 ```
 ## Patterns Applied
 
+<echo-the-slug-verbatim instruction>
+
 - @orchestray:pattern://<slug>     [local]     conf 0.85, applied 3x
+  slug: <slug>
+  source_file: .orchestray/patterns/<slug>.md
 
 <full pattern body here>
 
 - @orchestray:pattern://<slug>     [shared]    conf 0.72, applied 7x, from my-other-project
+  slug: <slug>
+  source_file: /home/<user>/.orchestray/shared/patterns/<slug>.md
 
 <full pattern body here>
 ```
 
-### Cached rendering (subsequent cite, non-reviewer)
+The `slug:` line is the identifier the ack contract matches on, exactly. It is separated
+from prose so an agent can copy it into `patterns_used` / `patterns_rejected` without
+re-deriving it — a live ack echoed the pattern file's frontmatter `name:` instead and lost
+the credit. The hook strips frontmatter from the rendered body for the same reason.
+
+### Cached cite (subsequent cite, non-reviewer)
 
 ```
 ## Patterns Applied
 
+<echo-the-slug-verbatim instruction>
+
 - @orchestray:pattern://<slug>     [local]     conf 0.85, applied 3x
+  slug: <slug>
+  source_file: .orchestray/patterns/<slug>.md
   [CACHED — loaded by developer, hash a1b2c3]
+
+<full pattern body here>
 ```
 
 ### Label derivation
@@ -279,6 +299,7 @@ the cache check). A reviewer receiving a `[CACHED]` cite is a bug — see agent-
 | `source` field | `promoted_is_own` | Label |
 |---|---|---|
 | `"local"` | n/a | `[local]` |
+| `"team"` | n/a | `[team]` |
 | `"shared"` | `false` or absent | `[shared]` |
 | `"shared"` | `true` | `[shared, own]` |
 

@@ -44,6 +44,11 @@ const fs                 = require('node:fs');
 const path               = require('node:path');
 
 const { RAW_OUTPUT_FIELDS, rawOutputText } = require('../_lib/claim-rules');
+const {
+  PATTERN_ACK_PROSE_MIN_LEN,
+  PATTERN_ACK_PROSE_MAX_LEN,
+  isPatternAckProseLenValid,
+} = require('../_lib/handoff-contract-text');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
@@ -54,6 +59,15 @@ const SCANNED_FILES = [
   'bin/validate-pattern-ack.js',
   'bin/validate-task-completion.js',
   'bin/audit-housekeeper-action.js',
+];
+
+// The two sites that validate a patterns_used/patterns_rejected entry's
+// prose length: the T15 blocking gate (isValidPatternAckEntry) and the
+// advisory ledger writer (normalizeAckEntries). bin/_lib/handoff-contract-text.js
+// is the canonical owner of the 10/300 bounds and is deliberately excluded.
+const ACK_BOUNDS_SCANNED_FILES = [
+  'bin/validate-pattern-ack.js',
+  'bin/validate-task-completion.js',
 ];
 
 // ---------------------------------------------------------------------------
@@ -92,6 +106,29 @@ const PAIR_RE = new RegExp(
  */
 function findPrivateFieldLists(src) {
   const matches = src.match(new RegExp(PAIR_RE.source, 'g'));
+  return matches || [];
+}
+
+// Signature of a hand-rolled pattern-ack prose-length bound: a comparison
+// against the min (10) near a comparison against the max (300), either
+// order — the shape of `len >= 10 && len <= 300`, the exact literal
+// isValidPatternAckEntry carried until 2026-08-08, when both it and
+// normalizeAckEntries moved to handoff-contract-text.js#isPatternAckProseLenValid.
+// A private re-declaration recreates the gap that fix closed: the ledger and
+// the gate silently disagreeing on what length is valid.
+const ACK_BOUNDS_MIN = String(PATTERN_ACK_PROSE_MIN_LEN);
+const ACK_BOUNDS_MAX = String(PATTERN_ACK_PROSE_MAX_LEN);
+const ACK_BOUNDS_PAIR_RE = new RegExp(
+  '[<>]=?\\s*' + ACK_BOUNDS_MIN + '\\b[\\s\\S]{0,80}[<>]=?\\s*' + ACK_BOUNDS_MAX + '\\b|' +
+  '[<>]=?\\s*' + ACK_BOUNDS_MAX + '\\b[\\s\\S]{0,80}[<>]=?\\s*' + ACK_BOUNDS_MIN + '\\b'
+);
+
+/**
+ * @param {string} src - already comment-stripped
+ * @returns {string[]} matched snippets, empty when clean
+ */
+function findPrivateProseBounds(src) {
+  const matches = src.match(new RegExp(ACK_BOUNDS_PAIR_RE.source, 'g'));
   return matches || [];
 }
 
@@ -187,5 +224,86 @@ describe('agent-output-fields-parity: synthetic fixtures', () => {
   test('edge: unrelated array with only one matching field is not flagged', () => {
     const src = "const x = [event.result, event.status, event.session_id];";
     assert.strictEqual(findPrivateFieldLists(src).length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pattern-ack prose-length bound parity (2026-08-08 recurrence guard).
+//
+// bin/validate-task-completion.js#isValidPatternAckEntry (the blocking T15
+// gate) enforced 10..300 chars; bin/validate-pattern-ack.js#normalizeAckEntries
+// (the advisory ledger writer) recorded a length but enforced nothing — the
+// ledger could accept entries the gate would reject. Same drift shape as the
+// agent-output field-precedence defect above, fixed the same way: one
+// definition (handoff-contract-text.js#isPatternAckProseLenValid), two
+// consumers.
+// ---------------------------------------------------------------------------
+
+describe('agent-output-fields-parity: pattern-ack prose-length bounds, real source', () => {
+  test('handoff-contract-text.js bounds are still 10..300', () => {
+    assert.strictEqual(PATTERN_ACK_PROSE_MIN_LEN, 10);
+    assert.strictEqual(PATTERN_ACK_PROSE_MAX_LEN, 300);
+  });
+
+  test('isPatternAckProseLenValid matches the boundary exactly (9 invalid, 10/300 valid, 301 invalid)', () => {
+    assert.strictEqual(isPatternAckProseLenValid(9), false);
+    assert.strictEqual(isPatternAckProseLenValid(10), true);
+    assert.strictEqual(isPatternAckProseLenValid(300), true);
+    assert.strictEqual(isPatternAckProseLenValid(301), false);
+  });
+
+  for (const rel of ACK_BOUNDS_SCANNED_FILES) {
+    test(rel + ': no private pattern-ack prose-length bound', () => {
+      const abs = path.join(REPO_ROOT, rel);
+      assert.ok(fs.existsSync(abs), rel + ' must exist');
+      const src = stripComments(fs.readFileSync(abs, 'utf8'));
+      const found = findPrivateProseBounds(src);
+      assert.deepStrictEqual(
+        found,
+        [],
+        rel + ' re-declares the 10/300 prose-length bound privately instead of using ' +
+        'handoff-contract-text.js#isPatternAckProseLenValid: ' + JSON.stringify(found)
+      );
+    });
+  }
+});
+
+describe('agent-output-fields-parity: pattern-ack prose-length bounds, synthetic fixtures', () => {
+  test('positive: `>=`/`<=` literal re-declaration is caught', () => {
+    const src = 'function isValid(len) { return len >= 10 && len <= 300; }';
+    assert.strictEqual(findPrivateProseBounds(src).length, 1);
+  });
+
+  test('positive: reversed order (max checked first) is caught', () => {
+    const src = 'const ok = len <= 300 && len >= 10;';
+    assert.strictEqual(findPrivateProseBounds(src).length, 1);
+  });
+
+  test('positive: strict `<`/`>` comparison shape is caught', () => {
+    const src = 'if (len < 10 || len > 300) return false;';
+    assert.strictEqual(findPrivateProseBounds(src).length, 1);
+  });
+
+  test('negative: calling the shared predicate is not flagged', () => {
+    const src = "const ok = isPatternAckProseLenValid(resolvePatternAckProse(e, proseKey).length);";
+    assert.strictEqual(findPrivateProseBounds(src).length, 0);
+  });
+
+  test('negative: a lone comparison against one bound is not flagged', () => {
+    const src = 'if (retries > 10) return false;';
+    assert.strictEqual(findPrivateProseBounds(src).length, 0);
+  });
+
+  test('negative: prose describing the bound in a comment is stripped first', () => {
+    const src = [
+      '// old rule was len >= 10 && len <= 300',
+      'const ok = isPatternAckProseLenValid(len);',
+    ].join('\n');
+    assert.strictEqual(findPrivateProseBounds(stripComments(src)).length, 0);
+  });
+
+  test('edge: unrelated numeric comparisons with no comparison operator on one side are not flagged', () => {
+    const src = "const label = '10-300 char how/why';";
+    assert.strictEqual(findPrivateProseBounds(src).length, 0);
   });
 });

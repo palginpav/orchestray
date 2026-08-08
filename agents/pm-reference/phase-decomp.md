@@ -351,14 +351,44 @@ Pre-conditions use the same contract types but are checked before execution, not
 Run BEFORE Section 13. **Retrieval:** call `mcp__orchestray__pattern_find` with the
 current task summary, the `agent_role` of the primary specialist the task will spawn,
 a best-effort `file_globs` guess of the files the task will touch, `max_results: 5`,
-and `min_confidence: 0.5`. Inject the returned pattern URIs into the decomposition
-prompt as `@orchestray:pattern://<slug>` attachments. Patterns are **ADVISORY** --
+and `min_confidence: 0.5`. Cite the patterns you keep as
+`@orchestray:pattern://<slug>` in the delegation prompt — the URI alone is enough,
+because a hook resolves it (see **Citation resolution** below). Patterns are **ADVISORY** --
 read the `match_reasons` field on each result and discard any that look wrong. **Team
 patterns:** `pattern_find` reads `.orchestray/patterns/` only; to merge in
 `.orchestray/team-patterns/*.md` (see `agents/pm-reference/team-config.md` §33B for merge order),
 glob them separately and combine client-side after the MCP call returns.
 
 > **Timing:** the obligation below MUST happen before the first `Agent()` spawn in the orchestration.
+
+**Citation resolution (mechanical — do not hand-write pattern bodies).** A
+`PreToolUse:Agent` hook, `bin/render-pattern-citations.js`, scans every spawn prompt for
+`@orchestray:pattern://<slug>`, resolves each slug across the three tiers, and appends a
+`## Patterns Applied` block carrying the pattern's text, an explicit `slug: <exact>` line,
+and its `source_file:` path. Consequences for you:
+
+- Writing the bare URI is sufficient and preferred. Do NOT paste pattern bodies into the
+  prompt yourself — the hook does it, and a hand-pasted body is what drifts.
+- The `[tier] conf X, applied Nx` label is still worth writing (it is what
+  `record-pattern-offers.js` reads a confidence from), but the hook re-derives the label
+  from the pattern file regardless.
+- The hook runs AFTER `record-pattern-offers.js` in the same hooks.json block, so the offer
+  ledger keeps describing what you authored. `shape_detected: "uri_only"` from v2.3.20 on
+  means "PM cited by URI and the hook resolved it", not "the agent got a dead link".
+- It renders curated citations only — ambient `pattern_find` catalog rows inside the
+  `<mcp-grounding>` fence are not expanded. If you want an agent to have a pattern's text,
+  cite it.
+- Fail-open: an unresolvable slug, unreadable file, or any hook error leaves the prompt
+  untouched (the agent sees the bare URI) and never blocks the spawn.
+- Kill switches: `ORCHESTRAY_PATTERN_CITATION_RENDER_DISABLED=1`, or
+  `pattern_evidence.enabled: false`.
+
+**Slug fidelity.** The rendered block instructs the agent to echo the `slug:` value verbatim
+into `patterns_used` / `patterns_rejected`, and the hook strips each pattern's frontmatter so
+its `name:` field cannot be mistaken for the identifier — a live ack echoed
+`regex-false-positive-check` (the `name:` inside `anti-pattern-regex-false-positives.md`) and
+lost the credit under §5.1 closed-set matching. Ack matching stays exact; nothing is fuzzy-
+matched, so a slug you cite in a mangled form is a slug that cannot be credited.
 
 **Application record — v2.3.19 evidence design §6.3.** `times_applied` is no longer
 discharged by a PM tool call — it is recorded from observed evidence at

@@ -89,6 +89,27 @@ function resolvePatternAckProse(entry, proseKey) {
 }
 
 /**
+ * Prose-length bounds for one patterns_used/patterns_rejected entry (§4.2).
+ * Single source for both bin/validate-task-completion.js#isValidPatternAckEntry
+ * (blocking T15 gate) and bin/validate-pattern-ack.js#normalizeAckEntries
+ * (advisory ledger writer) — each used to carry its own copy of `10`/`300`,
+ * and only the gate's copy was ever wired to actually reject on it, so the
+ * ledger recorded lengths the gate would have rejected (2026-08-08 review;
+ * same drift shape resolvePatternAckProse above already fixed once for the
+ * prose-key name).
+ */
+const PATTERN_ACK_PROSE_MIN_LEN = 10;
+const PATTERN_ACK_PROSE_MAX_LEN = 300;
+
+/**
+ * @param {number} len
+ * @returns {boolean}
+ */
+function isPatternAckProseLenValid(len) {
+  return typeof len === 'number' && len >= PATTERN_ACK_PROSE_MIN_LEN && len <= PATTERN_ACK_PROSE_MAX_LEN;
+}
+
+/**
  * Verbatim Section 12.a contract suffix appended by inject-output-shape.js
  * to every Agent() spawn prompt with a non-`none` output-shape category.
  *
@@ -113,4 +134,7 @@ module.exports = {
   HANDOFF_CONTRACT_SUFFIX,
   HANDOFF_REQUIRED_SECTIONS,
   resolvePatternAckProse,
+  PATTERN_ACK_PROSE_MIN_LEN,
+  PATTERN_ACK_PROSE_MAX_LEN,
+  isPatternAckProseLenValid,
 };

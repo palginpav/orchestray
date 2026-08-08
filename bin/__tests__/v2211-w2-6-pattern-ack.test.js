@@ -574,6 +574,7 @@ describe('normalizeAckEntries (unit)', () => {
     assert.equal(out.length, 1);
     assert.equal(out[0].slug, 'anti-pattern-verification-shares-blind-spot');
     assert.ok(out[0].why_len > 0);
+    assert.equal(out[0].why_valid, true);
   });
 
   test('`slug` wins when both keys are present', () => {
@@ -584,7 +585,7 @@ describe('normalizeAckEntries (unit)', () => {
 
   test('bare string entries still resolve (advisory hook tolerates what T15 rejects)', () => {
     const out = mod.normalizeAckEntries(['verification-shares-blind-spot'], 'how', offered);
-    assert.deepEqual(out, [{ slug: 'anti-pattern-verification-shares-blind-spot', how_len: 0 }]);
+    assert.deepEqual(out, [{ slug: 'anti-pattern-verification-shares-blind-spot', how_len: 0, how_valid: false }]);
   });
 
   test('entries with neither slug nor name are dropped, not thrown on', () => {
@@ -615,6 +616,40 @@ describe('normalizeAckEntries (unit)', () => {
       [{ slug: 'decomposition-multi-pass-review' }], 'why', offered);
     assert.equal(out.length, 1);
     assert.equal(out[0].why_len, 0, 'no prose anywhere must still normalize to length 0');
+    assert.equal(out[0].why_valid, false);
+  });
+
+  // Length-bound parity with the T15 gate (bin/validate-task-completion.js
+  // #isValidPatternAckEntry) — both consumers now call the same
+  // handoff-contract-text.js#isPatternAckProseLenValid predicate.
+  describe('*_valid length-bound parity with the T15 gate', () => {
+    test('below the 10-char minimum: recorded, flagged invalid', () => {
+      const out = mod.normalizeAckEntries(
+        [{ slug: 'decomposition-multi-pass-review', how: 'x'.repeat(9) }], 'how', offered);
+      assert.equal(out[0].how_len, 9);
+      assert.equal(out[0].how_valid, false);
+    });
+
+    test('exactly the 10-char minimum: valid', () => {
+      const out = mod.normalizeAckEntries(
+        [{ slug: 'decomposition-multi-pass-review', how: 'x'.repeat(10) }], 'how', offered);
+      assert.equal(out[0].how_len, 10);
+      assert.equal(out[0].how_valid, true);
+    });
+
+    test('exactly the 300-char maximum: valid', () => {
+      const out = mod.normalizeAckEntries(
+        [{ slug: 'decomposition-multi-pass-review', how: 'x'.repeat(300) }], 'how', offered);
+      assert.equal(out[0].how_len, 300);
+      assert.equal(out[0].how_valid, true);
+    });
+
+    test('over the 300-char maximum: recorded UNCAPPED (not truncated), flagged invalid', () => {
+      const out = mod.normalizeAckEntries(
+        [{ slug: 'decomposition-multi-pass-review', how: 'x'.repeat(301) }], 'how', offered);
+      assert.equal(out[0].how_len, 301, 'the true length is preserved — this is a length-only row, no prose text to truncate');
+      assert.equal(out[0].how_valid, false, 'still flagged so the ledger and the T15 gate never silently disagree');
+    });
   });
 });
 

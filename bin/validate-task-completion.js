@@ -55,7 +55,7 @@ const { validateCrossField } = require('./_lib/t15-cross-field');
 // prose resolver bin/validate-pattern-ack.js's normalizeAckEntries calls —
 // see that module's docstring — so the blocking gate here and the advisory
 // ledger there agree on what counts as prose under either accepted key.
-const { HANDOFF_REQUIRED_SECTIONS, resolvePatternAckProse } = require('./_lib/handoff-contract-text');
+const { HANDOFF_REQUIRED_SECTIONS, resolvePatternAckProse, isPatternAckProseLenValid } = require('./_lib/handoff-contract-text');
 // shared path-containment guard for artifact-body reads.
 const { validateTranscriptPath } = require('./_lib/path-containment');
 const { readHookInputRaw } = require('./_lib/hook-stdin');
@@ -536,9 +536,13 @@ const PATTERN_ACK_FIELDS = { patterns_used: 'how', patterns_rejected: 'why' };
 
 /**
  * One patterns_used/patterns_rejected entry: { slug, <proseKey> }, prose
- * 10..300 chars. This is the mechanical fix for the 6,945:26 self-report
- * gradient (times-applied-undercount-diagnosis.md) — a bare string or an
- * empty-prose entry can no longer discharge the per-pattern obligation.
+ * length bounded by isPatternAckProseLenValid (handoff-contract-text.js —
+ * the same bounds bin/validate-pattern-ack.js#normalizeAckEntries checks, so
+ * the blocking gate here and the advisory ledger there never disagree on
+ * what length is valid). This is the mechanical fix for the 6,945:26
+ * self-report gradient (times-applied-undercount-diagnosis.md) — a bare
+ * string or an empty-prose entry can no longer discharge the per-pattern
+ * obligation.
  *
  * Prose is resolved via resolvePatternAckProse (accepts the preferred
  * proseKey plus how/why/reason/rationale) rather than reading entry[proseKey]
@@ -552,8 +556,7 @@ const PATTERN_ACK_FIELDS = { patterns_used: 'how', patterns_rejected: 'why' };
 function isValidPatternAckEntry(entry, proseKey) {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
   if (typeof entry.slug !== 'string' || entry.slug.trim().length === 0) return false;
-  const len = resolvePatternAckProse(entry, proseKey).length;
-  return len >= 10 && len <= 300;
+  return isPatternAckProseLenValid(resolvePatternAckProse(entry, proseKey).length);
 }
 
 /**

@@ -115,11 +115,12 @@ const { readHookInputRaw } = require('./_lib/hook-stdin');
 const { peekOrchestrationId } = require('./_lib/peek-orchestration-id');
 const { findOfferRowForAgent, stopAgentName, appendAck } = require('./_lib/pattern-evidence-ledger');
 const { resolveOfferedSlug } = require('./_lib/pattern-offer-scan');
-// Shared prose resolver — see handoff-contract-text.js#resolvePatternAckProse
-// docstring. Same function bin/validate-task-completion.js's
-// isValidPatternAckEntry calls, so the advisory ledger and the blocking gate
-// can never disagree on what counts as prose.
-const { resolvePatternAckProse } = require('./_lib/handoff-contract-text');
+// Shared prose resolver and length bounds — see handoff-contract-text.js
+// #resolvePatternAckProse / #isPatternAckProseLenValid docstrings. Same
+// functions bin/validate-task-completion.js's isValidPatternAckEntry calls,
+// so the advisory ledger and the blocking gate can never disagree on what
+// counts as prose or how long it must be.
+const { resolvePatternAckProse, isPatternAckProseLenValid } = require('./_lib/handoff-contract-text');
 // Canonical raw-output field precedence — see claim-rules.js RAW_OUTPUT_FIELDS
 // docstring. Recurrence guard: bin/__tests__/anti-pattern-agent-output-fields-parity.test.js.
 const { rawOutputText } = require('./_lib/claim-rules');
@@ -215,8 +216,8 @@ function extractResult(event) {
 
 /**
  * Normalise a patterns_used/patterns_rejected array into
- * { slug, <proseKey>_len }[]. Tolerates the malformed shapes
- * bin/validate-task-completion.js's entry-shape check rejects (bare
+ * { slug, <proseKey>_len, <proseKey>_valid }[]. Tolerates the malformed
+ * shapes bin/validate-task-completion.js's entry-shape check rejects (bare
  * strings, missing prose) — this hook is advisory-only and must not throw
  * on input the blocking validator would have already caught.
  *
@@ -232,24 +233,41 @@ function extractResult(event) {
  *     `patterns_rejected` carrying `how` instead of `why` is still a
  *     rejection with real reasoning, not an empty one.
  *
+ * `<proseKey>_valid` (2026-08-08): the length bound
+ * (isPatternAckProseLenValid) is now the same one the T15 gate enforces, but
+ * this hook records rather than rejects. The row already stores a length,
+ * not the prose text itself, so there is nothing to truncate; an over-length
+ * `how` is weak evidence of a real application (the agent said more than
+ * required), not of a fake one, so dropping the row would discard real
+ * signal for a violation direction that isn't the suspicious one.
+ * Under-length (including the 0-length no-prose case) is the direction that
+ * actually indicates a missing/fabricated ack, and Phase 3
+ * (pattern-credit-compute.js's own `min_how_length` gate) already declines
+ * credit for it. Either way the row is kept and flagged, never dropped —
+ * this hook is advisory, so silently discarding evidence here would just
+ * hide the disagreement instead of surfacing it.
+ *
  * @param {*} arr
  * @param {string} proseKey - 'how' or 'why'
  * @param {string[]} offered - curated slugs offered to this spawn
- * @returns {Array<{slug: string, [k: string]: number}>}
+ * @returns {Array<{slug: string, [k: string]: number|boolean}>}
  */
 function normalizeAckEntries(arr, proseKey, offered) {
   if (!Array.isArray(arr)) return [];
   const out = [];
   const lenKey = proseKey + '_len';
+  const validKey = proseKey + '_valid';
   for (const e of arr) {
     if (typeof e === 'string' && e.trim()) {
-      out.push({ slug: resolveOfferedSlug(e, offered), [lenKey]: 0 });
+      out.push({ slug: resolveOfferedSlug(e, offered), [lenKey]: 0, [validKey]: false });
     } else if (e && typeof e === 'object') {
       const raw = [e.slug, e.name].find((v) => typeof v === 'string' && v.trim());
       if (!raw) continue;
+      const len = resolvePatternAckProse(e, proseKey).length;
       out.push({
         slug: resolveOfferedSlug(raw, offered),
-        [lenKey]: resolvePatternAckProse(e, proseKey).length,
+        [lenKey]: len,
+        [validKey]: isPatternAckProseLenValid(len),
       });
     }
   }
@@ -275,8 +293,11 @@ function slugsAcknowledgedByText(slugs, haystack) {
 // shared bin/_lib/pattern-evidence-ledger.js#appendAck (fail-open — see
 // module docstring there):
 //   { timestamp, orchestration_id, spawn_id, agent_role, task_id,
-//     source: "structured_result", used: [{slug, how_len}],
-//     rejected: [{slug, why_len}], agent_status }
+//     source: "structured_result", used: [{slug, how_len, how_valid}],
+//     rejected: [{slug, why_len, why_valid}], agent_status }
+// `*_valid` is additive (2026-08-08) — consumers reading only `*_len`
+// (e.g. bin/_lib/pattern-credit-compute.js's own min_how_length gate) are
+// unaffected.
 // Same file bin/mcp-server/tools/pattern_record_application.js writes
 // self-report rows to (.orchestray/state/pattern-acks.jsonl).
 // ---------------------------------------------------------------------------

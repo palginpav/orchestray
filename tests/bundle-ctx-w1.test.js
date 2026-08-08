@@ -243,8 +243,11 @@ describe('CiteCache — pattern-citation-render', () => {
 
     assert.ok(second.includes('[CACHED'), 'second cite has [CACHED] marker');
     assert.ok(second.includes('loaded by developer'), 'identifies the first agent');
-    // Full body must NOT be repeated
-    assert.ok(!second.includes('Full pattern body here.'), 'full body absent on second cite');
+    // Body-omission assertion inverted: spec criterion #12 assumed the second
+    // agent had already loaded the body, but subagents do not share a context
+    // window — omitting it handed a dead link (kb/decisions/
+    // pattern-citation-uri-without-body.md). [CACHED] is now provenance only.
+    assert.ok(second.includes('Full pattern body here.'), 'body still shipped on cached cite');
   });
 
   // Spec criterion #12: [CACHED] marker contains hash (h6)

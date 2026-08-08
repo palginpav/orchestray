@@ -355,6 +355,11 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/record-pattern-offers.js",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/render-pattern-citations.js",
+            "timeout": 5
           }
         ]
       },
