@@ -288,9 +288,22 @@ The user wants to see the pattern learning dashboard showing what the system has
 
 13. **Single Pattern Detail View** (when a pattern name was provided in arguments):
 
-    Find the pattern file matching the provided name (match against the `name` frontmatter field, case-insensitive). If not found, show "Pattern '{name}' not found. Run `/orchestray:patterns` to see all available patterns." and stop.
+    Resolve the argument against the patterns loaded in step 2 using `resolvePatternRef` from
+    `bin/_lib/pattern-ref-resolve.js` — it accepts either identifier (slug or the `name`
+    frontmatter field, case-insensitive) and reports ambiguity instead of guessing:
+    ```
+    node -e "const {resolvePatternRef} = require('./bin/_lib/pattern-ref-resolve'); console.log(JSON.stringify(resolvePatternRef(process.argv[1], JSON.parse(process.argv[2]))))" "<ref>" "<patterns-json>"
+    ```
+    where `<patterns-json>` is the array of loaded patterns from step 2 as-is — `pattern_find`
+    matches carry `slug` + `category` (no `name`), which is sufficient: the resolver derives
+    `name` from `slug` + `category` per the corpus invariant (slug === category + '-' + name)
+    when an explicit `name` field isn't present.
 
-    Read the full pattern file content. Search event history for `pattern_applied` events matching this pattern name.
+    - `status: 'not_found'` — show "Pattern '{ref}' not found. Run `/orchestray:patterns` to see all available patterns." and stop.
+    - `status: 'ambiguous'` — show "'{ref}' matches multiple patterns: {slug list}. Use the full slug to disambiguate." and stop. Do not guess.
+    - `status: 'found'` — use `pattern.slug` to read the pattern file and proceed below.
+
+    Read the full pattern file content. Search event history for `pattern_applied` events matching this pattern's slug.
 
     Compute the health score for this pattern using `computeHealth` from
     `bin/_lib/pattern-health.js`, passing the pattern's data and any

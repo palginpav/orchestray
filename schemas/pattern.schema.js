@@ -10,7 +10,10 @@
  *
  * Authoritative field list (from surveying `.orchestray/patterns/*.md` on
  * the v2.1.12 codebase):
- *   - name               : required, kebab-case basename (matches filename)
+ *   - name               : required, kebab-case. Corpus invariant (enforced by
+ *                          tests/schemas/pattern-slug-name-parity.test.js, not
+ *                          by this schema — it has no filename context):
+ *                          filename stem (slug) === category + '-' + name.
  *   - category           : required, enum — see CATEGORIES below
  *   - confidence         : required, number in [0, 1]
  *   - description        : required, string
