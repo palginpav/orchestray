@@ -51,6 +51,32 @@
  * emitter ever produces an `event:` key), so this scan needs no floor at
  * all — it fires on count >= 1.
  *
+ * v2.3.22: the v2.3.21 scan shipped with two defects that together kept it
+ * silent against 46 real misshapen rows found live on 2026-08-08:
+ *   1. File selection preferred the per-orch archive
+ *      (`.orchestray/history/<orchId>/events.jsonl`) whenever it existed,
+ *      reading the live log only as a fallback. archive-orch-events.js
+ *      freezes that archive with an idempotent marker and never re-runs, so
+ *      any row appended to the live log afterward — or any row belonging to
+ *      an orchestration that never became "current" during this scan's
+ *      lifetime — was structurally unreachable.
+ *   2. The scan (and `main()` itself) required a currently-active
+ *      orchestration and filtered rows to that orchestration_id. Misshapen
+ *      rows from an already-completed orchestration are, by definition,
+ *      never "current" again — so once an orchestration ended, its rows
+ *      left the scan's field of view permanently. This explains all 46 real
+ *      rows: they belong to 8 orchestrations, none of them active today.
+ * Fix: `computeMisshapenEmits` scans the live log plus rotated generations
+ * (`events.N.jsonl`) unconditionally, across every orchestration_id, and
+ * `main()` runs it regardless of whether an orchestration is active.
+ * `.orchestray/history/**` is deliberately excluded — archives are
+ * filter-and-COPY (see archive-orch-events.js), so folding them in would
+ * recount every already-archived misshapen row a second time (the
+ * documented ~3.4x duplication also called out by
+ * bin/validate-task-completion.js's pattern_ack_captured note). A boolean
+ * "did this ever fire" check can tolerate that; an exact `misshapen_count`
+ * cannot.
+ *
  * Kill switch
  * -----------
  *   ORCHESTRAY_PM_EMIT_WATCHER_DISABLED=1 — same as the watcher itself
@@ -200,46 +226,96 @@ function tallyEvents(cwd, orchId) {
 }
 
 /**
- * v2.3.21 item 2: scan for PM-prose rows shaped `{event: "x", ...}` instead
- * of the canonical `{type: "x", ...}` — structurally invisible to
- * `tallyEvents()` since `evt.type` is undefined for them. Emits
- * `pm_emit_prose_rotting` (reusing the existing schema, no new event type
- * registered) with `wrong_field_shape: true` so operators can tell this
- * apart from ordinary ratio rot.
- *
- * Idempotent: a prior `wrong_field_shape` flag for the same event_type is
- * itself a well-shaped row (written via writeEvent), so it's visible on the
- * next scan and suppresses re-emission — no lock file needed.
+ * List the live log plus its rotated generations (`events.N.jsonl`, written
+ * by bin/_lib/jsonl-rotate.js) — same source set audit-promised-events.js
+ * uses for total_fire_count, minus history/ (see the v2.3.22 header note on
+ * why archives are excluded here: they'd duplicate rows already counted).
  */
-function scanMisshapenEmits(cwd, orchId) {
-  if (process.env.ORCHESTRAY_MISSHAPEN_EMIT_SCAN_DISABLED === '1') return;
-  if (!orchId) return;
+function liveLogSources(cwd) {
+  const auditDir = path.join(cwd, '.orchestray', 'audit');
+  const sources  = [path.join(auditDir, 'events.jsonl')];
+  let entries = [];
+  try { entries = fs.readdirSync(auditDir); } catch (_e) { /* ENOENT is normal on a fresh repo */ }
+  for (const name of entries) {
+    if (/^events\.\d+\.jsonl$/.test(name)) sources.push(path.join(auditDir, name));
+  }
+  return sources;
+}
 
-  const archivePath = path.join(cwd, '.orchestray', 'history', orchId, 'events.jsonl');
-  const livePath    = path.join(cwd, '.orchestray', 'audit', 'events.jsonl');
-  const lines = fs.existsSync(archivePath) ? readJsonlLines(archivePath) : readJsonlLines(livePath);
-
+/**
+ * Scan the live log (+ rotated generations) for rows shaped
+ * `{event: "x", ...}` instead of the canonical `{type: "x", ...}` —
+ * structurally invisible to `tallyEvents()` since `evt.type` is undefined
+ * for them. Global across every orchestration_id: a misshapen row belonging
+ * to an already-completed orchestration is exactly the class this exists to
+ * catch (see v2.3.22 header note).
+ *
+ * Idempotency is also global: a prior `wrong_field_shape` flag for an
+ * event_type, from ANY orchestration, suppresses re-emission — no lock file
+ * needed since the flag row itself is well-shaped and visible on rescan.
+ *
+ * @returns {{counts: Object<string,number>, alreadyFlagged: Set<string>}}
+ */
+function computeMisshapenEmits(cwd) {
   const counts         = {}; // event-name -> count of misshapen rows
   const alreadyFlagged = new Set();
 
-  for (const l of lines) {
-    const trimmed = l.trim();
-    if (!trimmed) continue;
-    let evt;
-    try { evt = JSON.parse(trimmed); }
-    catch (_e) { continue; }
-    if (!evt || typeof evt !== 'object') continue;
-    if (orchId && evt.orchestration_id && evt.orchestration_id !== orchId) continue;
+  for (const filePath of liveLogSources(cwd)) {
+    for (const l of readJsonlLines(filePath)) {
+      const trimmed = l.trim();
+      if (!trimmed) continue;
+      let evt;
+      try { evt = JSON.parse(trimmed); }
+      catch (_e) { continue; }
+      if (!evt || typeof evt !== 'object') continue;
 
-    if (evt.type === 'pm_emit_prose_rotting' && evt.wrong_field_shape === true) {
-      alreadyFlagged.add(evt.event_type);
-      continue;
-    }
-    if (evt.type) continue; // well-shaped row — not our concern here
-    if (typeof evt.event === 'string' && evt.event) {
-      counts[evt.event] = (counts[evt.event] || 0) + 1;
+      if (evt.type === 'pm_emit_prose_rotting' && evt.wrong_field_shape === true) {
+        alreadyFlagged.add(evt.event_type);
+        continue;
+      }
+      if (evt.type) continue; // well-shaped row — not our concern here
+      if (typeof evt.event === 'string' && evt.event) {
+        counts[evt.event] = (counts[evt.event] || 0) + 1;
+      }
     }
   }
+
+  return { counts, alreadyFlagged };
+}
+
+/**
+ * Overwrite the misshapen-emit snapshot dark-event-banner.js reads at
+ * SessionStart. Same full-overwrite contract as
+ * promised-event-dark-state.last-run.json (audit-promised-events.js) —
+ * always the current picture, never an accumulating log, so the banner's
+ * SessionStart cost stays a single cheap file read regardless of corpus
+ * size or how many times this scan has run.
+ */
+function writeMisshapenSnapshot(cwd, counts) {
+  const statePath = path.join(cwd, '.orchestray', 'state', 'misshapen-emit-state.last-run.json');
+  const types = Object.keys(counts)
+    .map((name) => ({ event_name: name, count: counts[name] }))
+    .sort((a, b) => b.count - a.count || a.event_name.localeCompare(b.event_name));
+  const payload = {
+    generated_at:     new Date().toISOString(),
+    misshapen_types:  types,
+    total_misshapen:  types.reduce((sum, t) => sum + t.count, 0),
+  };
+  try {
+    const dir = path.dirname(statePath);
+    fs.mkdirSync(dir, { recursive: true });
+    const tmp = statePath + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, statePath);
+  } catch (_e) { /* fail-open */ }
+}
+
+function scanMisshapenEmits(cwd) {
+  if (process.env.ORCHESTRAY_MISSHAPEN_EMIT_SCAN_DISABLED === '1') return;
+
+  const { counts, alreadyFlagged } = computeMisshapenEmits(cwd);
+
+  writeMisshapenSnapshot(cwd, counts);
 
   for (const eventName of Object.keys(counts)) {
     if (alreadyFlagged.has(eventName)) continue;
@@ -267,6 +343,15 @@ function main() {
   if (isDisabled()) return;
 
   const cwd = resolveSafeCwd();
+
+  // v2.3.22: global rot check, independent of whether an orchestration is
+  // currently active — see the header note on why the old orchId-gated
+  // placement structurally missed every already-completed orchestration.
+  try { scanMisshapenEmits(cwd); }
+  catch (e) {
+    process.stderr.write('[audit-pm-emit-coverage] misshapen scan failed: ' + e.message + '\n');
+  }
+
   const orchId = resolveOrchId(cwd);
   if (!orchId) return;
 
@@ -312,11 +397,6 @@ function main() {
   try { checkStateCancelCompleteness(cwd, orchId, readJsonlLines); }
   catch (_e) { /* fail-open */ }
 
-  // v2.3.21 item 2: flag PM-prose rows shaped `event:` instead of `type:` —
-  // invisible to the ratio check above regardless of its floor.
-  try { scanMisshapenEmits(cwd, orchId); }
-  catch (_e) { /* fail-open */ }
-
   // v2.3.20 item 4: catch dynamic-target types that resolved a trigger but
   // produced zero real events — the class the ratio floor above can't see.
   // Re-tally after checkOversizedInputCompleteness/checkOrchRoiPresence may
@@ -327,12 +407,22 @@ function main() {
   } catch (_e) { /* fail-open */ }
 }
 
-// Always emit the continue envelope so the Stop hook chain is well-formed.
-process.stdout.write(JSON.stringify({ continue: true }));
+if (require.main === module) {
+  // Always emit the continue envelope so the Stop hook chain is well-formed.
+  process.stdout.write(JSON.stringify({ continue: true }));
 
-try { main(); }
-catch (e) {
-  process.stderr.write('[audit-pm-emit-coverage] uncaught: ' + (e && e.message) + '\n');
+  try { main(); }
+  catch (e) {
+    process.stderr.write('[audit-pm-emit-coverage] uncaught: ' + (e && e.message) + '\n');
+  }
+
+  process.exit(0);
 }
 
-process.exit(0);
+module.exports = {
+  main,
+  computeMisshapenEmits,
+  scanMisshapenEmits,
+  tallyEvents,
+  WATCHED_EVENT_TYPES,
+};

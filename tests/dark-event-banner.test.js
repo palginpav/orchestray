@@ -80,6 +80,21 @@ function darkEntry(eventType, daysDark, totalFireCount = 0) {
   return { event_type: eventType, days_dark: daysDark, total_fire_count: totalFireCount };
 }
 
+/** Write the fresh misshapen-emit snapshot audit-pm-emit-coverage.js produces. */
+function writeMisshapenState(dir, types, { generatedAt } = {}) {
+  const file = path.join(dir, '.orchestray', 'state', 'misshapen-emit-state.last-run.json');
+  fs.writeFileSync(file, JSON.stringify({
+    generated_at:     generatedAt || new Date().toISOString(),
+    misshapen_types:  types,
+    total_misshapen:  types.reduce((sum, t) => sum + t.count, 0),
+  }, null, 2));
+}
+
+/** Build a misshapen_types entry as audit-pm-emit-coverage.js emits it. */
+function misshapenEntry(eventName, count) {
+  return { event_name: eventName, count };
+}
+
 function runHook(dir, extraEnv = {}, sessionId) {
   const payload = JSON.stringify({ cwd: dir, session_id: sessionId });
   return spawnSync(process.execPath, [SCRIPT], {
@@ -176,6 +191,50 @@ describe('computeDarkEvents', () => {
   });
 });
 
+// ── computeMisshapenSnapshot (pure function) ────────────────────────────────
+
+describe('computeMisshapenSnapshot', () => {
+  test('empty when the snapshot file is absent', () => {
+    const { computeMisshapenSnapshot } = require(SCRIPT);
+    const dir = makeDir();
+    const result = computeMisshapenSnapshot(dir, Date.now());
+    assert.deepEqual(result.types, []);
+    assert.equal(result.total, 0);
+  });
+
+  test('reads misshapen_types from the fresh snapshot', () => {
+    const { computeMisshapenSnapshot } = require(SCRIPT);
+    const dir = makeDir();
+    writeMisshapenState(dir, [misshapenEntry('task_completed', 30), misshapenEntry('verify_fix_attempt', 5)]);
+    const result = computeMisshapenSnapshot(dir, Date.now());
+    assert.equal(result.total, 35);
+    assert.deepEqual(result.types, [
+      { event_name: 'task_completed', count: 30 },
+      { event_name: 'verify_fix_attempt', count: 5 },
+    ]);
+  });
+
+  test('drops the whole snapshot when generated_at is stale (>30 days old)', () => {
+    const { computeMisshapenSnapshot } = require(SCRIPT);
+    const dir = makeDir();
+    const staleTs = new Date(Date.now() - 31 * 86400000).toISOString();
+    writeMisshapenState(dir, [misshapenEntry('old_type', 10)], { generatedAt: staleTs });
+    const result = computeMisshapenSnapshot(dir, Date.now());
+    assert.equal(result.total, 0, 'a stale snapshot must not count as currently misshapen');
+  });
+
+  test('ignores malformed snapshot content', () => {
+    const { computeMisshapenSnapshot } = require(SCRIPT);
+    const dir = makeDir();
+    fs.writeFileSync(
+      path.join(dir, '.orchestray', 'state', 'misshapen-emit-state.last-run.json'),
+      'not json at all',
+    );
+    const result = computeMisshapenSnapshot(dir, Date.now());
+    assert.equal(result.total, 0);
+  });
+});
+
 // ── SessionStart banner ─────────────────────────────────────────────────────
 
 describe('dark-event-banner: SessionStart advisory', () => {
@@ -215,12 +274,52 @@ describe('dark-event-banner: SessionStart advisory', () => {
     assert.ok(!result.stderr.includes('type_e'), 'named list must be capped, not enumerate every type');
   });
 
+  test('prints a single banner combining dark-event and misshapen-emit signals, not two', () => {
+    const dir = makeDir();
+    writeState(dir, [darkEntry('some_dark_type', 20)]);
+    writeMisshapenState(dir, [misshapenEntry('task_completed', 30), misshapenEntry('orchestration_start', 8)]);
+    const result = runHook(dir, {}, freshSessionId());
+    assert.equal(result.status, 0);
+    const bannerLines = result.stderr.split('\n').filter((l) => l.startsWith('[orchestray]'));
+    assert.equal(bannerLines.length, 1, 'must be exactly one banner line, not a second competing advisory');
+    assert.ok(bannerLines[0].includes('never fired'), 'dark-event clause must be present');
+    assert.ok(bannerLines[0].includes('38 audit row(s) are misshapen'), 'misshapen clause must be present with the right total');
+    assert.ok(bannerLines[0].includes('2 type(s)'), 'misshapen clause must report the distinct type count');
+  });
+
+  test('banners on misshapen rows alone, with no dark types present', () => {
+    const dir = makeDir();
+    writeState(dir, []);
+    writeMisshapenState(dir, [misshapenEntry('verify_fix_attempt', 5)]);
+    const result = runHook(dir, {}, freshSessionId());
+    assert.equal(result.status, 0);
+    assert.ok(result.stderr.includes('5 audit row(s) are misshapen'), 'misshapen-only signal must still banner');
+    assert.ok(!result.stderr.includes('never fired'), 'no dark-event clause when totalDark is 0');
+  });
+
+  test('no banner when neither dark types nor misshapen rows are present', () => {
+    const dir = makeDir();
+    writeState(dir, []);
+    writeMisshapenState(dir, []);
+    const result = runHook(dir, {}, freshSessionId());
+    assert.equal(result.status, 0);
+    assert.ok(!result.stderr.includes('[orchestray]'), 'silent when both signals are empty');
+  });
+
   test('ORCHESTRAY_DARK_EVENT_BANNER_DISABLED=1 suppresses the banner', () => {
     const dir = makeDir();
     writeState(dir, [darkEntry('some_type', 20)]);
     const result = runHook(dir, { ORCHESTRAY_DARK_EVENT_BANNER_DISABLED: '1' }, freshSessionId());
     assert.equal(result.status, 0);
     assert.ok(!result.stderr.includes('never fired'), 'kill switch must suppress banner');
+  });
+
+  test('ORCHESTRAY_DARK_EVENT_BANNER_DISABLED=1 also suppresses the misshapen clause', () => {
+    const dir = makeDir();
+    writeMisshapenState(dir, [misshapenEntry('task_completed', 30)]);
+    const result = runHook(dir, { ORCHESTRAY_DARK_EVENT_BANNER_DISABLED: '1' }, freshSessionId());
+    assert.equal(result.status, 0);
+    assert.ok(!result.stderr.includes('misshapen'), 'kill switch must suppress the whole banner, not just half of it');
   });
 
   test('session-scoped: same session_id only banners once', () => {
@@ -253,5 +352,27 @@ describe('dark-event-banner: --json CLI mode', () => {
     writeState(dir, [darkEntry('json_probe_type2', 15)]);
     const result = runJson(dir);
     assert.ok(!result.stderr.includes('never fired'), '--json mode is a data surface, not the advisory');
+  });
+
+  test('includes misshapenEmits alongside darkTypes for doctor to parse', () => {
+    const dir = makeDir();
+    writeState(dir, [darkEntry('json_probe_type3', 15)]);
+    writeMisshapenState(dir, [misshapenEntry('task_completed', 30), misshapenEntry('orchestration_start', 8)]);
+    const result = runJson(dir);
+    assert.equal(result.status, 0);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.totalDark, 1, 'existing darkTypes/totalDark shape must be preserved');
+    assert.equal(parsed.misshapenEmits.total, 38);
+    assert.deepEqual(parsed.misshapenEmits.types, [
+      { event_name: 'task_completed', count: 30 },
+      { event_name: 'orchestration_start', count: 8 },
+    ]);
+  });
+
+  test('misshapenEmits is empty when no snapshot exists yet', () => {
+    const dir = makeDir();
+    const result = runJson(dir);
+    const parsed = JSON.parse(result.stdout);
+    assert.deepEqual(parsed.misshapenEmits, { types: [], total: 0 });
   });
 });

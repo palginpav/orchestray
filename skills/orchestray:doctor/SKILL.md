@@ -7,7 +7,7 @@ argument-hint: "[--verbose|-v] [--deep]"
 
 # Orchestray Doctor
 
-Run 12 probes (13 with `--deep`) against the current Orchestray installation and print a
+Run 13 probes (14 with `--deep`) against the current Orchestray installation and print a
 structured health report. If `$ARGUMENTS` contains `--verbose` or `-v`, emit a
 `## Detail` section after the summary.
 
@@ -298,6 +298,35 @@ count is "worth investigating", not a broken install: some declared types are
 legitimately rare (crash-only paths, admin-triggered actions), and a fresh
 project with no orchestration history yet will read `totalDark: 0` correctly
 rather than false-alarming.
+
+---
+
+### P9c2: Misshapen audit rows (`event:` instead of `type:`)
+
+`bin/audit-pm-emit-coverage.js`'s `scanMisshapenEmits()` catches audit rows
+hand-written with a bare `event:` key instead of `type:` — invisible to every
+consumer that keys on `evt.type`, including P9c above. It overwrites
+`.orchestray/state/misshapen-emit-state.last-run.json` on every PM Stop and
+folds the signal into the SAME `dark-event-banner.js --json` output P9c
+already parses (no second subprocess call — reuse the JSON captured for P9c).
+
+Skip when `$PROJECT_ROOT/.orchestray/` does not exist (same as P9c; this
+reuses P9c's invocation).
+
+Parse `misshapenEmits: {types: [{event_name, count}, ...], total}` from the
+same stdout JSON.
+
+- `misshapenEmits.total == 0`: status=OK.
+  Line: `[OK]    misshapen audit rows (0 rows shaped "event:" instead of "type:")`
+- `misshapenEmits.total > 0`: status=WARN.
+  Line: `[WARN]  {misshapenEmits.total} audit row(s) shaped "event:" not "type:" across {misshapenEmits.types.length} type(s) — worst: {top 3 types as "event_name (Ncount)", comma-joined} — see /orchestray:doctor --verbose`
+
+In `--verbose` mode, list every entry of `misshapenEmits.types[]` under
+`## Detail`, one per line: `{event_name}  {count} misshapen row(s)`.
+
+P9c2 WARN increments `N_warn`. This probe never FAILs — the rows are
+historical evidence, not corruption; `scanMisshapenEmits()` never mutates or
+deletes them (see `.orchestray/kb/decisions/bare-event-key-hand-appends.md`).
 
 ---
 

@@ -54,16 +54,26 @@
  * corpus is 331 types or 3,000. The full list is one `/orchestray:doctor`
  * away, not stuffed into a login banner.
  *
+ * v2.3.22: also folds in the misshapen-emit signal from
+ * audit-pm-emit-coverage.js's scanMisshapenEmits() — audit rows written
+ * with `event:` instead of `type:`, invisible to every `evt.type` consumer.
+ * That scanner writes its own fresh snapshot
+ * (`.orchestray/state/misshapen-emit-state.last-run.json`) on the same
+ * full-overwrite contract as the dark-event snapshot. Deliberately reusing
+ * THIS banner rather than adding a second one: a competing session-start
+ * advisory is how banners become noise (see that script's header).
+ *
  * Two modes
  * ---------
  *   1. Hook mode (default): reads a SessionStart hook payload from stdin,
  *      emits a one-time-per-session stderr banner (tmpdir sentinel lock,
  *      same convention as feature-quarantine-banner.js) when dark types
- *      exist. Always writes {continue:true} to stdout.
+ *      and/or misshapen rows exist. Always writes {continue:true} to stdout.
  *   2. `--json [--cwd <path>]`: prints the full computeDarkEvents() result
- *      as JSON to stdout, no session lock, no stdin read. This is the
- *      surface /orchestray:doctor's dark-event probe consumes (same pattern
- *      as `_tools/behavior-diff.js --coverage --json` for P9b).
+ *      plus `misshapenEmits` as JSON to stdout, no session lock, no stdin
+ *      read. This is the surface /orchestray:doctor's P9c/P9c2 probes
+ *      consume (same pattern as `_tools/behavior-diff.js --coverage --json`
+ *      for P9b).
  *
  * Kill switch
  * -----------
@@ -141,16 +151,71 @@ function computeDarkEvents(cwd, nowMs) {
   return { darkTypes, totalDark: darkTypes.length };
 }
 
-/** Format the session banner line. Returns null when nothing to say. */
-function formatBanner(result) {
-  if (result.totalDark === 0) return null;
-  const worst = result.darkTypes.slice(0, TOP_N_NAMED)
-    .map(d => `${d.event_type} ${d.days_dark}d`)
-    .join(', ');
-  return (
-    `[orchestray] ${result.totalDark} declared event type(s) have never fired ` +
-    `(worst: ${worst}). Run \`/orchestray:doctor\` for the full list.\n`
-  );
+/**
+ * Read the misshapen-emit snapshot audit-pm-emit-coverage.js's
+ * scanMisshapenEmits() overwrites on every run. Same fresh-snapshot +
+ * staleness-drop contract as computeDarkEvents() (see module header).
+ *
+ * @returns {{types: Array<{event_name:string, count:number}>, total: number}}
+ */
+function computeMisshapenSnapshot(cwd, nowMs) {
+  const EMPTY = { types: [], total: 0 };
+  const statePath = path.join(cwd, '.orchestray', 'state', 'misshapen-emit-state.last-run.json');
+
+  let raw;
+  try {
+    raw = fs.readFileSync(statePath, 'utf8');
+  } catch (_e) {
+    return EMPTY; // no snapshot yet (scanner hasn't run)
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_e) {
+    return EMPTY; // malformed — fail-open to silence
+  }
+  if (!parsed || !Array.isArray(parsed.misshapen_types)) return EMPTY;
+
+  const generatedMs = Date.parse(parsed.generated_at);
+  if (isNaN(generatedMs) || (nowMs - generatedMs) > STALE_AFTER_MS) return EMPTY;
+
+  const types = parsed.misshapen_types
+    .filter((d) => d && typeof d.event_name === 'string')
+    .map((d) => ({ event_name: d.event_name, count: typeof d.count === 'number' ? d.count : 0 }));
+
+  const total = typeof parsed.total_misshapen === 'number'
+    ? parsed.total_misshapen
+    : types.reduce((sum, t) => sum + t.count, 0);
+
+  return { types, total };
+}
+
+/**
+ * Format the session banner line. Returns null when there is nothing to
+ * say. Folds dark-event and misshapen-emit signals into a single banner —
+ * see the v2.3.22 header note on why a second competing advisory is not
+ * added instead.
+ */
+function formatBanner(result, misshapen) {
+  const clauses = [];
+
+  if (result.totalDark > 0) {
+    const worst = result.darkTypes.slice(0, TOP_N_NAMED)
+      .map(d => `${d.event_type} ${d.days_dark}d`)
+      .join(', ');
+    clauses.push(`${result.totalDark} declared event type(s) have never fired (worst: ${worst})`);
+  }
+
+  if (misshapen && misshapen.total > 0) {
+    clauses.push(
+      `${misshapen.total} audit row(s) are misshapen ("event:" not "type:") ` +
+      `across ${misshapen.types.length} type(s)`,
+    );
+  }
+
+  if (clauses.length === 0) return null;
+  return `[orchestray] ${clauses.join('. ')}. Run \`/orchestray:doctor\` for the full list.\n`;
 }
 
 // ---------------------------------------------------------------------------
@@ -165,8 +230,10 @@ function handle(event) {
     }
 
     const cwd = resolveSafeCwd(event && event.cwd);
-    const result = computeDarkEvents(cwd, Date.now());
-    const banner = formatBanner(result);
+    const nowMs = Date.now();
+    const result     = computeDarkEvents(cwd, nowMs);
+    const misshapen  = computeMisshapenSnapshot(cwd, nowMs);
+    const banner = formatBanner(result, misshapen);
     if (!banner) {
       process.stdout.write(CONTINUE_RESPONSE);
       return;
@@ -206,8 +273,11 @@ function runJsonMode(argv) {
   let cwd = process.cwd();
   const cwdIdx = argv.indexOf('--cwd');
   if (cwdIdx !== -1 && argv[cwdIdx + 1]) cwd = argv[cwdIdx + 1];
-  const result = computeDarkEvents(resolveSafeCwd(cwd), Date.now());
-  process.stdout.write(JSON.stringify(result));
+  const resolvedCwd = resolveSafeCwd(cwd);
+  const nowMs = Date.now();
+  const result    = computeDarkEvents(resolvedCwd, nowMs);
+  const misshapen = computeMisshapenSnapshot(resolvedCwd, nowMs);
+  process.stdout.write(JSON.stringify(Object.assign({}, result, { misshapenEmits: misshapen })));
 }
 
 // ---------------------------------------------------------------------------
@@ -244,4 +314,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { handle, computeDarkEvents, formatBanner };
+module.exports = { handle, computeDarkEvents, computeMisshapenSnapshot, formatBanner };
