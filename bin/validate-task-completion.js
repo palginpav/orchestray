@@ -51,11 +51,20 @@ const { loadHandoffBodyCapConfig } = require('./_lib/config-schema');
 const { validateCrossField } = require('./_lib/t15-cross-field');
 // Fix #7: REQUIRED_SECTIONS shares its source with the C2 hook's
 // HANDOFF_CONTRACT_SUFFIX so the agent-side prompt and the hook-side
-// enforcement can never drift apart.
-const { HANDOFF_REQUIRED_SECTIONS } = require('./_lib/handoff-contract-text');
+// enforcement can never drift apart. resolvePatternAckProse is the same
+// prose resolver bin/validate-pattern-ack.js's normalizeAckEntries calls —
+// see that module's docstring — so the blocking gate here and the advisory
+// ledger there agree on what counts as prose under either accepted key.
+const { HANDOFF_REQUIRED_SECTIONS, resolvePatternAckProse } = require('./_lib/handoff-contract-text');
 // shared path-containment guard for artifact-body reads.
 const { validateTranscriptPath } = require('./_lib/path-containment');
 const { readHookInputRaw } = require('./_lib/hook-stdin');
+// Canonical raw-output field precedence (last_assistant_message first — the
+// only field a live payload actually sets, v2.3.19 W1). This file previously
+// carried four private copies of the same result/output/agent_output list,
+// none of which included it — see
+// bin/__tests__/anti-pattern-agent-output-fields-parity.test.js.
+const { rawOutputText } = require('./_lib/claim-rules');
 
 // ---------------------------------------------------------------------------
 // Artifact-path fields and placeholder rejection
@@ -479,8 +488,7 @@ function extractStructuredResult(event) {
   if (direct && typeof direct === 'object') return direct;
 
   // Try to find the ```json block under "## Structured Result" in the raw text.
-  const raw = [event.result, event.output, event.agent_output]
-    .find(v => typeof v === 'string' && v.length > 0);
+  const raw = rawOutputText(event);
   if (typeof raw !== 'string' || raw.length === 0) return null;
 
   // Restrict scan to the last 64 KB of the output.
@@ -532,6 +540,11 @@ const PATTERN_ACK_FIELDS = { patterns_used: 'how', patterns_rejected: 'why' };
  * gradient (times-applied-undercount-diagnosis.md) — a bare string or an
  * empty-prose entry can no longer discharge the per-pattern obligation.
  *
+ * Prose is resolved via resolvePatternAckProse (accepts the preferred
+ * proseKey plus how/why/reason/rationale) rather than reading entry[proseKey]
+ * directly — array membership already encodes used-vs-rejected, so an entry
+ * under `patterns_rejected` carrying `how` must not be treated as prose-less.
+ *
  * @param {*} entry
  * @param {string} proseKey
  * @returns {boolean}
@@ -539,30 +552,48 @@ const PATTERN_ACK_FIELDS = { patterns_used: 'how', patterns_rejected: 'why' };
 function isValidPatternAckEntry(entry, proseKey) {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
   if (typeof entry.slug !== 'string' || entry.slug.trim().length === 0) return false;
-  const prose = entry[proseKey];
-  if (typeof prose !== 'string') return false;
-  const len = prose.trim().length;
+  const len = resolvePatternAckProse(entry, proseKey).length;
   return len >= 10 && len <= 300;
 }
 
 /**
  * Grace gate for patterns_used/patterns_rejected PRESENCE (not shape).
  *
- * Default OFF: field ABSENCE does not (yet) block. HANDOFF_REQUIRED_SECTIONS
- * lists both fields unconditionally (handoff-contract-text.js), so every new
- * spawn prompt already asks for them — but agents in flight when this
- * shipped, and any custom/drop-in agent definitions, cannot see the updated
- * prompt and must not be blocked by a field they were never told about.
+ * Default OFF. Scope check (2026-08-08 review, before flipping this default
+ * was considered): this validator only ever runs for roles in HARD_TIER
+ * (~line 346) — a keyset byte-identical to output-shape.js's
+ * ROLE_CATEGORY_MAP. Any custom or drop-in agent definition (subagent_type
+ * not one of those 14) never reaches validateStructuredResult at all, flag
+ * or no flag — verified against every agent file under ~/.claude/agents/
+ * and .claude/agents/ on the reference machine (20 distinct non-HARD_TIER
+ * role names, zero exposure). So "agents in flight / drop-ins get stranded"
+ * is not a risk for that population; it was never checked in the first
+ * place. The one real gap: inject-output-shape.js appends the
+ * patterns_used/patterns_rejected ask to every HARD_TIER spawn prompt only
+ * when `output_shape.enabled` is true (default) — a HARD_TIER spawn made
+ * while output_shape is disabled gets no ask but would still be blocked
+ * here if this flag were on. That's the actual stranding seam, not
+ * third-party agents.
  * ENTRY SHAPE, when the fields ARE present, is always enforced regardless of
  * this switch (see validateStructuredResult) — that check costs nothing
  * against the existing test corpus, since no pre-existing payload ever
  * included these keys.
  *
  * This is a time-bounded ramp, not a permanent bypass (pattern-application-
- * evidence-design.md §4.2 back-compat note): flip
- * `pattern_evidence.enforce_ack_fields` to `true` once adoption is visible in
- * the `pattern_ack_captured` / `coverage_complete` telemetry
- * (validate-pattern-ack.js) across a representative window of orchestrations.
+ * evidence-design.md §4.2 back-compat note). Concrete flip condition —
+ * compute this, don't eyeball it:
+ *   Event:     pattern_ack_captured, in .orchestray/audit/events.jsonl only
+ *              (NOT .orchestray/history/**, which holds ~3.4x-inflated
+ *              archived copies — see times-applied-undercount-diagnosis.md).
+ *   Metric:    share of events with ack_source="structured_fields" (agent
+ *              supplied the fields itself) vs. "legacy_text_scan" (fallback).
+ *   Threshold: >= 95%, over the most recent 50 pattern_ack_captured events
+ *              (or all available if fewer than 50).
+ *   Command:
+ *     f=.orchestray/audit/events.jsonl
+ *     t=$(grep -c '"type":"pattern_ack_captured"' "$f")
+ *     s=$(grep '"type":"pattern_ack_captured"' "$f" | grep -c '"ack_source":"structured_fields"')
+ *     echo "$s / $t"
  *
  * Kill switch: ORCHESTRAY_T15_PATTERN_ACK_FIELDS_ENFORCED=1|0 overrides config.
  *
@@ -929,8 +960,7 @@ function main() {
     // ── P1-05 (v2.2.17): Multiple Structured Result block detector.
     // Hard exit 2 when multiple blocks detected (promoted from warn-only in v2.2.15).
     try {
-      const rawAgentTextForP105 = [event.result, event.output, event.agent_output]
-        .find(v => typeof v === 'string' && v.length > 0) || '';
+      const rawAgentTextForP105 = rawOutputText(event) || '';
       if (rawAgentTextForP105) {
         const { multipleBlocks, count: srCount } = detectMultipleStructuredResultBlocks(rawAgentTextForP105);
         if (multipleBlocks) {
@@ -972,8 +1002,7 @@ function main() {
     try {
       const ESCALATION_TARGETED = new Set(['developer', 'refactorer', 'security-engineer']);
       if (agentRole && ESCALATION_TARGETED.has(agentRole)) {
-        const rawText = [event.result, event.output, event.agent_output]
-          .find(v => typeof v === 'string' && v.length > 0) || '';
+        const rawText = rawOutputText(event) || '';
         const hint = detectEscalationHint(rawText, structuredResult);
         if (hint) {
           emitAuditEvent(cwd, {
@@ -1099,7 +1128,7 @@ function main() {
             '`patterns_used`, `patterns_rejected`.\n' +
             (check.missing.some((k) => PATTERN_ACK_FIELDS[k])
               ? '`patterns_used`/`patterns_rejected` must be arrays; each entry needs `slug` plus ' +
-                'a 10-300 char `how`/`why`. One entry per pattern offered to this spawn.\n'
+                'a 10-300 char `how`/`why` (or `reason`/`rationale`). One entry per pattern offered to this spawn.\n'
               : '') +
             'Example fix:\n' +
             '  ```json\n' +
@@ -1170,8 +1199,7 @@ function main() {
       // precedence. Applies role-specific required fields, enums, regex, sections,
       // and `files_changed_implies` cross-checks from `bin/_lib/role-schemas.js`.
       if (agentRole && !isRoleHardDisabled(agentRole, process.env)) {
-        const rawAgentText = [event.result, event.output, event.agent_output]
-          .find(v => typeof v === 'string' && v.length > 0) || '';
+        const rawAgentText = rawOutputText(event) || '';
         const violations = validateRoleSchema(agentRole, structuredResult, rawAgentText);
         if (violations.length > 0) {
           emitAuditEvent(cwd, {

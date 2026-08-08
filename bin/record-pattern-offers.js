@@ -40,7 +40,7 @@ const { MAX_INPUT_BYTES }    = require('./_lib/constants');
 const { readHookInputRaw }   = require('./_lib/hook-stdin');
 const { peekOrchestrationId } = require('./_lib/peek-orchestration-id');
 const { scanOffers }         = require('./_lib/pattern-offer-scan');
-const { appendOffer }        = require('./_lib/pattern-evidence-ledger');
+const { appendOffer, spawnAgentName } = require('./_lib/pattern-evidence-ledger');
 const paths                  = require('./mcp-server/lib/paths');
 
 const SCHEMA_VERSION = 1;
@@ -113,6 +113,25 @@ function resolveTaskId(toolInput) {
 }
 
 // ---------------------------------------------------------------------------
+// Spawn-id resolution — same bug class and fix as validate-reviewer-git-diff.js
+// resolveSpawnId() (v2.3.18): a real PreToolUse:Agent payload carries the
+// unique-per-spawn id as the TOP-LEVEL `tool_use_id`, never as
+// `tool_input.agent_id`/`tool_input.spawn_id` — those fields don't exist on
+// the wire. The tool_input fallbacks are kept only for a caller that does
+// supply them (none observed in production); without event.tool_use_id this
+// always resolved to null, which is why every offer row shipped unattributed.
+// ---------------------------------------------------------------------------
+
+function resolveSpawnId(event, toolInput) {
+  return (
+    (typeof event.tool_use_id === 'string' && event.tool_use_id) ||
+    (toolInput && toolInput.agent_id) ||
+    (toolInput && toolInput.spawn_id) ||
+    null
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -147,14 +166,15 @@ function main() {
     if (!evidenceEnabled(cwd)) return;
 
     try {
-      run(toolInput, cwd);
+      run(event, cwd);
     } catch (_e) {
       // Fail-open — never propagate to crash.
     }
   });
 }
 
-function run(toolInput, cwd) {
+function run(event, cwd) {
+  const toolInput = event.tool_input || {};
   const exists = makeSlugResolver(cwd);
   const scan = scanOffers(toolInput.prompt, exists);
 
@@ -164,16 +184,23 @@ function run(toolInput, cwd) {
 
   const timestamp = new Date().toISOString();
   const orchestrationId = peekOrchestrationId(cwd) || 'unknown';
-  const spawnId = toolInput.agent_id || toolInput.spawn_id || null;
+  const spawnId = resolveSpawnId(event, toolInput);
   const agentRole = typeof toolInput.subagent_type === 'string' ? toolInput.subagent_type : null;
   const taskId = resolveTaskId(toolInput);
 
   const slugsCurated = scan.offers.filter((o) => o.offer_kind === 'curated').map((o) => o.slug);
   const slugsAmbient = scan.offers.filter((o) => o.offer_kind === 'ambient').map((o) => o.slug);
 
+  // session_id + agent_name ARE the Phase-2 join key (pattern-evidence-ledger.js
+  // #findOfferRowForAgent) — SubagentStop carries no tool_use_id, so spawn_id
+  // alone cannot be joined from there. spawn_id stays on the row: Phase 3
+  // (pattern-credit-compute.js) keys its caps on it, and Phase 2 copies it from
+  // the row it matched onto the ack row, so that join is untouched.
   appendOffer(cwd, {
     timestamp,
     orchestration_id: orchestrationId,
+    session_id: typeof event.session_id === 'string' ? event.session_id : null,
+    agent_name: spawnAgentName(toolInput) || null,
     spawn_id: spawnId,
     agent_role: agentRole,
     task_id: taskId,

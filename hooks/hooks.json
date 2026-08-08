@@ -489,16 +489,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-pattern-ack.js",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "Agent",
-        "hooks": [
-          {
-            "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-commit-handoff.js",
             "timeout": 10
           }
@@ -777,6 +767,15 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-claim-evidence.js",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-pattern-ack.js",
             "timeout": 10
           }
         ]

@@ -1778,6 +1778,78 @@ describe('v2023-W3: §22b warn-mode — once-per-orchestration advisory', () => 
       '22c-POLARITY: block message must point at pattern_record_skip_reason');
   });
 
+  test('22c-GATE-MODE-1: pattern_evidence.gate_mode alone drives §22c, independent of the ' +
+       'legacy pattern_record_application default', () => {
+    // writeEnforceAllConfig leaves pattern_record_application unset, so it defaults to
+    // 'hook-strict' (DEFAULT_MCP_ENFORCEMENT). If gate_mode had no observable effect,
+    // the legacy default would still block this spawn. Setting gate_mode:'allow'
+    // must override that default and let the spawn through.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-22c-gatemode1-'));
+    cleanup.push(dir);
+    const orchId = 'orch-22c-gatemode1';
+    writeOrch(dir, orchId);
+    writeRoutingFile22b(dir, orchId);
+
+    const orchDir = path.join(dir, '.orchestray');
+    fs.mkdirSync(orchDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(orchDir, 'config.json'),
+      JSON.stringify({
+        mcp_enforcement: {
+          global_kill_switch: false,
+          pattern_find: 'hook', kb_search: 'hook', history_find_similar_tasks: 'hook',
+        },
+        pattern_evidence: { gate_mode: 'allow' },
+      })
+    );
+    // No pattern_record_skip_reason record for this orch — would block under hook-strict.
+
+    const result = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Execute task' },
+    });
+
+    assert.equal(result.status, 0,
+      '22c-GATE-MODE-1: pattern_evidence.gate_mode:"allow" must skip §22c even though the ' +
+      'legacy pattern_record_application default is hook-strict');
+  });
+
+  test('22c-GATE-MODE-2: pattern_evidence.gate_mode overrides an explicit legacy ' +
+       'pattern_record_application value in either direction', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-22c-gatemode2-'));
+    cleanup.push(dir);
+    const orchId = 'orch-22c-gatemode2';
+    writeOrch(dir, orchId);
+    writeRoutingFile22b(dir, orchId);
+
+    const orchDir = path.join(dir, '.orchestray');
+    fs.mkdirSync(orchDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(orchDir, 'config.json'),
+      JSON.stringify({
+        mcp_enforcement: {
+          global_kill_switch: false,
+          pattern_find: 'hook', kb_search: 'hook', history_find_similar_tasks: 'hook',
+          // Legacy key explicitly says "don't enforce" — gate_mode must win anyway.
+          pattern_record_application: 'allow',
+        },
+        pattern_evidence: { gate_mode: 'hook-strict' },
+      })
+    );
+
+    const result = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Execute task' },
+    });
+
+    assert.equal(result.status, 2,
+      '22c-GATE-MODE-2: gate_mode:"hook-strict" must block even though the legacy key is "allow"');
+    assert.match(result.stderr, /§22c|pattern_record_skip_reason/,
+      '22c-GATE-MODE-2: block message must appear in stderr');
+  });
+
   test('22b-T4: spawn is allowed even when gate fires (no exit 2 in warn-mode)', () => {
     // Belt-and-suspenders: explicitly verify that warn-mode never blocks.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-22b-t4-'));

@@ -4,23 +4,24 @@
 /**
  * v2211-w2-6-pattern-ack.test.js — validate-pattern-ack.js tests.
  *
- * Rewritten twice. Original v2.2.11 W2-6 tests covered the legacy
- * architect-only, text-scan, `{matches: [...]}` full-mode-shaped fixture.
- * First rewrite (v2.3.19 Phase 2, design §4.2) generalized past-architect
- * and added structured-fields coverage, but derived the offered set from a
- * `<mcp-grounding>` fence embedded in the prompt — which only 4 of 15 roles
- * ever receive (RV-2 Issue 2). This rewrite drops all grounding-block
- * fixtures: the offered set now comes from a Phase-1 offer-ledger row
- * (.orchestray/state/pattern-offers.jsonl, the file bin/record-pattern-offers.js
- * writes), exactly as the hook itself now reads it. Coverage:
- *   - the ledger-lookup fix itself (curatedOfferedSlugs, and the RV-2
- *     reproduction: a developer spawn with a curated offer row and no
- *     patterns_used/rejected must now produce events, where it previously
- *     produced none),
- *   - ambient offers do NOT drive the coverage check (design §5.4 priority),
- *   - patterns_used/patterns_rejected coverage (the structured-fields path),
- *   - the pattern-acks.jsonl ledger row,
- *   - the pattern_ack_captured / pattern_application_withheld events.
+ * Rewritten three times. The last rewrite is the one that matters: every
+ * fixture here is now built from a payload CAPTURED FROM THE EVENT THE HOOK
+ * IS REGISTERED ON, because each earlier fixture generation encoded a payload
+ * shape that does not exist and therefore tested a world where the code works:
+ *
+ *   gen 1  `{matches: [...]}` full-mode grounding fixtures — a shape
+ *          pattern_find stopped returning at the R-CAT-DEFAULT switch.
+ *   gen 2  `tool_response` as a STRING containing a Structured Result — no
+ *          real payload has ever set that.
+ *   gen 3  `tool_name: 'Agent'` + `tool_input` + `last_assistant_message` on
+ *          one object — half a PostToolUse:Agent payload, half a SubagentStop
+ *          one. It passed while production recorded 0 ack rows from 6 offers,
+ *          because PostToolUse:Agent (where the hook was registered) carries
+ *          no agent output at all.
+ *
+ * The two builders below are the observed key sets, and `shape guards` fails
+ * if either drifts back toward a fiction. See
+ * .orchestray/kb/decisions/pattern-ack-wired-to-wrong-hook-event.md.
  */
 
 const { test, describe } = require('node:test');
@@ -31,9 +32,13 @@ const os   = require('node:os');
 const { spawnSync } = require('node:child_process');
 
 const mod = require('../validate-pattern-ack.js');
+const { resolveOfferedSlug, CATEGORY_PREFIXES } = require('../_lib/pattern-offer-scan.js');
 const SCRIPT = path.resolve(__dirname, '..', 'validate-pattern-ack.js');
+const OFFER_SCRIPT = path.resolve(__dirname, '..', 'record-pattern-offers.js');
 
-const ORCH_ID = 'orch-test-1';
+const ORCH_ID    = 'orch-test-1';
+const SESSION_ID = 'bed562d5-1f0e-4f2a-9c31-2b7a5e0d4c11';
+const AGENT_NAME = 'dev-pe4-registry';
 
 let tmpDir;
 
@@ -48,12 +53,77 @@ function teardown() {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Captured payload builders — key sets verified against live 2026-08-08 runs
 // ---------------------------------------------------------------------------
 
-/** Marks ORCH_ID as the active orchestration — mirrors what a real run's
- * orchestration-state writer leaves behind, and what record-pattern-offers.js
- * reads via peekOrchestrationId() when it wrote the offer row under test. */
+/**
+ * PreToolUse:Agent. `agent_type` here is the CALLER's type; the spawned
+ * agent's roster name is `tool_input.name`. The per-spawn id is the top-level
+ * `tool_use_id` — nothing under tool_input carries one.
+ */
+function preToolUsePayload({ agentName = AGENT_NAME, prompt, toolUseId = 'toolu_01J39P95yRDBkU51umwnZTbZ',
+                             subagentType = 'developer', sessionId = SESSION_ID } = {}) {
+  return {
+    session_id: sessionId,
+    transcript_path: path.join(tmpDir, 'transcript.jsonl'),
+    cwd: tmpDir,
+    prompt_id: 'prompt-abc',
+    permission_mode: 'acceptEdits',
+    agent_type: 'pm',
+    effort: 'high',
+    hook_event_name: 'PreToolUse',
+    tool_name: 'Agent',
+    tool_input: {
+      description: 'W3 rewire ack capture',
+      prompt,
+      subagent_type: subagentType,
+      model: 'opus',
+      run_in_background: false,
+      name: agentName,
+    },
+    tool_use_id: toolUseId,
+  };
+}
+
+/**
+ * SubagentStop. `agent_type` is the STOPPED agent's roster name (not the
+ * caller's, not its subagent_type), `agent_id` is `a<roster>-<hash>`, and
+ * `last_assistant_message` is the only field carrying the agent's output.
+ * There is no tool_use_id, no tool_input and no tool_response.
+ */
+function subagentStopPayload({ agentName = AGENT_NAME, lastAssistantMessage = '',
+                               sessionId = SESSION_ID } = {}) {
+  return {
+    session_id: sessionId,
+    transcript_path: path.join(tmpDir, 'transcript.jsonl'),
+    cwd: tmpDir,
+    prompt_id: 'prompt-abc',
+    permission_mode: 'acceptEdits',
+    agent_id: 'a' + agentName + '-5d7d77c3ef4f1359',
+    agent_type: agentName,
+    effort: 'high',
+    hook_event_name: 'SubagentStop',
+    stop_hook_active: false,
+    agent_transcript_path: path.join(tmpDir, 'agent-transcript.jsonl'),
+    last_assistant_message: lastAssistantMessage,
+    background_tasks: [],
+    session_crons: [],
+  };
+}
+
+/** A `## Structured Result` block as an agent emits it, wrapped in prose. */
+function structuredResultText({ summary = 'ok', patternsUsed, patternsRejected, status = 'success' } = {}) {
+  const sr = { status, summary, files_changed: [], files_read: [], issues: [], assumptions: [] };
+  if (patternsUsed !== undefined) sr.patterns_used = patternsUsed;
+  if (patternsRejected !== undefined) sr.patterns_rejected = patternsRejected;
+  return ['Some reasoning.', '', '## Structured Result', '```json', JSON.stringify(sr), '```'].join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Ledger helpers
+// ---------------------------------------------------------------------------
+
+/** Marks ORCH_ID as the active orchestration — what peekOrchestrationId reads. */
 function writeOrchMarker(orchId) {
   fs.writeFileSync(
     path.join(tmpDir, '.orchestray', 'audit', 'current-orchestration.json'),
@@ -61,10 +131,14 @@ function writeOrchMarker(orchId) {
   );
 }
 
-function offerRow({ orchestrationId = ORCH_ID, spawnId = 'spawn-test-001', agentRole = 'developer', taskId = 'W1', offers }) {
+/** An offer row exactly as bin/record-pattern-offers.js writes one. */
+function offerRow({ orchestrationId = ORCH_ID, sessionId = SESSION_ID, agentName = AGENT_NAME,
+                    spawnId = 'toolu_test_001', agentRole = 'developer', taskId = 'W1', offers }) {
   return {
     timestamp: '2026-08-07T09:00:00.000Z',
     orchestration_id: orchestrationId,
+    session_id: sessionId,
+    agent_name: agentName,
     spawn_id: spawnId,
     agent_role: agentRole,
     task_id: taskId,
@@ -74,91 +148,242 @@ function offerRow({ orchestrationId = ORCH_ID, spawnId = 'spawn-test-001', agent
   };
 }
 
-/** Seeds the Phase-1 offer ledger exactly as bin/record-pattern-offers.js would. */
 function writeOfferRows(rows) {
   const offersPath = path.join(tmpDir, '.orchestray', 'state', 'pattern-offers.jsonl');
-  const lines = rows.map((r) => JSON.stringify(r)).join('\n') + '\n';
-  fs.appendFileSync(offersPath, lines);
+  fs.appendFileSync(offersPath, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
 }
 
-function buildPayload({
-  summary = '', role = 'developer', patternsUsed, patternsRejected, spawnId = 'spawn-test-001',
-} = {}) {
-  const sr = { status: 'success', summary, files_changed: [], files_read: [], issues: [], assumptions: [] };
-  if (patternsUsed !== undefined) sr.patterns_used = patternsUsed;
-  if (patternsRejected !== undefined) sr.patterns_rejected = patternsRejected;
+function readJsonl(p) {
+  if (!fs.existsSync(p)) return [];
+  const out = [];
+  for (const line of fs.readFileSync(p, 'utf8').split('\n').filter(Boolean)) {
+    try { out.push(JSON.parse(line)); } catch (_) {}
+  }
+  return out;
+}
 
-  const toolResponse = ['Some reasoning.', '', '## Structured Result', '```json', JSON.stringify(sr), '```'].join('\n');
-
-  return {
-    tool_name: 'Agent',
-    tool_input: { subagent_type: role, prompt: 'Do the task.', agent_id: spawnId },
-    tool_response: toolResponse,
-    cwd: tmpDir,
-  };
+function runScript(script, payload, extraEnv) {
+  const result = spawnSync(process.execPath, [script], {
+    input: JSON.stringify(payload),
+    encoding: 'utf8',
+    env: Object.assign({}, process.env, extraEnv || {}),
+  });
+  if (result.error) throw result.error;
+  let stdout = {};
+  try { stdout = JSON.parse(result.stdout || '{}'); } catch (_) {}
+  return { stdout, stderr: result.stderr || '' };
 }
 
 function runHook(payload, extraEnv) {
-  const env = Object.assign({}, process.env, extraEnv || {});
-  const result = spawnSync(process.execPath, [SCRIPT], {
-    input: JSON.stringify(payload),
-    encoding: 'utf8',
-    env,
-  });
+  const { stdout, stderr } = runScript(SCRIPT, payload, extraEnv);
+  return {
+    stdout,
+    stderr,
+    events: readJsonl(path.join(tmpDir, '.orchestray', 'audit', 'events.jsonl')),
+    acks:   readJsonl(path.join(tmpDir, '.orchestray', 'state', 'pattern-acks.jsonl')),
+    offers: readJsonl(path.join(tmpDir, '.orchestray', 'state', 'pattern-offers.jsonl')),
+  };
+}
 
-  if (result.error) throw result.error;
-
-  let stdout = {};
-  try { stdout = JSON.parse(result.stdout || '{}'); } catch (_) {}
-
-  const eventsPath = path.join(tmpDir, '.orchestray', 'audit', 'events.jsonl');
-  const events = [];
-  if (fs.existsSync(eventsPath)) {
-    for (const line of fs.readFileSync(eventsPath, 'utf8').split('\n').filter(Boolean)) {
-      try { events.push(JSON.parse(line)); } catch (_) {}
-    }
-  }
-
-  const ackPath = path.join(tmpDir, '.orchestray', 'state', 'pattern-acks.jsonl');
-  const acks = [];
-  if (fs.existsSync(ackPath)) {
-    for (const line of fs.readFileSync(ackPath, 'utf8').split('\n').filter(Boolean)) {
-      try { acks.push(JSON.parse(line)); } catch (_) {}
-    }
-  }
-
-  return { stdout, events, acks };
+/** Seeds one curated offer + runs the hook with a Structured Result. */
+function seedAndRun({ offers, patternsUsed, patternsRejected, summary = 'ok', agentName = AGENT_NAME,
+                      stopSessionId = SESSION_ID, stopAgentName: stopName, env } = {}) {
+  writeOrchMarker(ORCH_ID);
+  writeOfferRows([offerRow({ agentName, offers })]);
+  return runHook(subagentStopPayload({
+    agentName: stopName || agentName,
+    sessionId: stopSessionId,
+    lastAssistantMessage: structuredResultText({ summary, patternsUsed, patternsRejected }),
+  }), env);
 }
 
 // ---------------------------------------------------------------------------
-// RV-2 Issue 2 — the reproduction from the review, run against the fix
+// Shape guards — the regression that all three fixture generations needed
 // ---------------------------------------------------------------------------
 
-test('RV-2 repro: developer spawn with a curated offer row and no patterns_used/rejected ' +
-     'now produces events and (via the legacy scan) a coverage-gap signal — was silently zero', () => {
+describe('shape guards', () => {
+  test('the SubagentStop fixture carries the captured key set and nothing invented', () => {
+    setup();
+    try {
+      const p = subagentStopPayload({ lastAssistantMessage: 'x' });
+      assert.deepEqual(Object.keys(p).sort(), [
+        'agent_id', 'agent_transcript_path', 'agent_type', 'background_tasks', 'cwd', 'effort',
+        'hook_event_name', 'last_assistant_message', 'permission_mode', 'prompt_id', 'session_crons',
+        'session_id', 'stop_hook_active', 'transcript_path',
+      ].sort());
+      assert.equal('tool_response' in p, false, 'SubagentStop has no tool_response — the gen-2 fiction');
+      assert.equal('tool_use_id' in p, false, 'SubagentStop has no tool_use_id — this is why the join key changed');
+      assert.equal('tool_input' in p, false, 'SubagentStop has no tool_input — the gen-3 fiction');
+    } finally { teardown(); }
+  });
+
+  test('the PreToolUse fixture carries the captured key set and no agent output', () => {
+    setup();
+    try {
+      const p = preToolUsePayload({ prompt: 'x' });
+      assert.deepEqual(Object.keys(p).sort(), [
+        'agent_type', 'cwd', 'effort', 'hook_event_name', 'permission_mode', 'prompt_id',
+        'session_id', 'tool_input', 'tool_name', 'tool_use_id', 'transcript_path',
+      ].sort());
+      assert.equal('last_assistant_message' in p, false, 'output does not exist yet at spawn time');
+      assert.deepEqual(Object.keys(p.tool_input).sort(), [
+        'description', 'model', 'name', 'prompt', 'run_in_background', 'subagent_type',
+      ]);
+      assert.equal('agent_id' in p.tool_input, false);
+      assert.equal('spawn_id' in p.tool_input, false);
+    } finally { teardown(); }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE acceptance test — real offer payload joins a real ack payload end to end
+// ---------------------------------------------------------------------------
+
+test('e2e: a real PreToolUse:Agent offer joins a real SubagentStop ack on (session_id, agent name) ' +
+     'and produces ack_source=structured_fields plus an ack row carrying the offer row\'s spawn_id', () => {
   setup();
   try {
     writeOrchMarker(ORCH_ID);
-    writeOfferRows([offerRow({
-      spawnId: 'spawn-dev-1',
-      offers: [{ slug: 'decomposition-audit-fix-verify-cycle', offer_kind: 'curated', confidence: 0.9 }],
-    })]);
-    const payload = buildPayload({ role: 'developer', spawnId: 'spawn-dev-1', summary: 'did it' });
-    const { events, acks } = runHook(payload);
+    const patternsDir = path.join(tmpDir, '.orchestray', 'patterns');
+    fs.mkdirSync(patternsDir, { recursive: true });
+    for (const slug of ['decomposition-multi-pass-review', 'anti-pattern-verification-shares-blind-spot']) {
+      fs.writeFileSync(path.join(patternsDir, slug + '.md'), '---\nslug: ' + slug + '\nconfidence: 0.8\n---\n# ' + slug + '\n');
+    }
+
+    const toolUseId = 'toolu_01J39P95yRDBkU51umwnZTbZ';
+    const prompt = [
+      'W3 — rewire the ack capture.',
+      'Apply @orchestray:pattern://decomposition-multi-pass-review [core] conf 0.8.',
+      'Avoid @orchestray:pattern://anti-pattern-verification-shares-blind-spot [core] conf 0.7.',
+    ].join('\n');
+
+    // Phase 1, unmodified script, real payload.
+    runScript(OFFER_SCRIPT, preToolUsePayload({ prompt, toolUseId }));
+
+    // Phase 2, unmodified script, real payload. The rejected entry uses the
+    // live-observed malformed shape: key `name`, category prefix dropped.
+    const { events, acks, offers } = runHook(subagentStopPayload({
+      lastAssistantMessage: structuredResultText({
+        summary: 'rewired it',
+        patternsUsed: [{ slug: 'decomposition-multi-pass-review', how: 'drove the three-pass audit split' }],
+        patternsRejected: [{ name: 'verification-shares-blind-spot', why: 'the verifier here is a separate hook' }],
+      }),
+    }));
+
+    assert.equal(offers.length, 1, 'Phase 1 must have written exactly one offer row');
+    assert.equal(offers[0].spawn_id, toolUseId);
+    assert.equal(offers[0].session_id, SESSION_ID, 'offer producer must write the join key');
+    assert.equal(offers[0].agent_name, AGENT_NAME, 'offer producer must write the join key');
 
     const captured = events.filter((e) => e.type === 'pattern_ack_captured');
-    assert.equal(captured.length, 1, 'pattern_ack_captured must fire for a non-architect role now');
-    assert.equal(captured[0].ack_source, 'legacy_text_scan', 'no patterns_used/rejected fields → legacy fallback');
-    const withheld = events.filter((e) => e.type === 'pattern_application_withheld');
-    assert.equal(withheld.length, 1, 'the offered curated slug was never acknowledged');
-    assert.equal(withheld[0].slug, 'decomposition-audit-fix-verify-cycle');
-    // Legacy-scan path never writes to the Phase-3 join ledger (unreliable signal) — documented, not a gap.
-    assert.equal(acks.length, 0);
+    assert.equal(captured.length, 1, 'the ack must find the offer row across the two real payloads');
+    assert.equal(captured[0].ack_source, 'structured_fields');
+    assert.equal(captured[0].coverage_complete, true, 'both offered slugs were dispositioned');
+    assert.deepEqual(captured[0].used_slugs, ['decomposition-multi-pass-review']);
+    assert.deepEqual(captured[0].rejected_slugs, ['anti-pattern-verification-shares-blind-spot'],
+      'the bare `name` must resolve back to the offered slug');
+    assert.equal(events.filter((e) => e.type === 'pattern_application_withheld').length, 0);
+
+    assert.equal(acks.length, 1, 'the structured-fields path must write the Phase-3 join row');
+    assert.equal(acks[0].spawn_id, offers[0].spawn_id,
+      'the ack row must carry the offer row spawn_id — this is what Phase 3 joins on');
+    assert.equal(acks[0].orchestration_id, ORCH_ID);
+    assert.equal(acks[0].agent_role, 'developer', 'agent_role comes off the offer row (SubagentStop has no subagent_type)');
+    assert.equal(acks[0].task_id, 'W3');
+    assert.equal(acks[0].source, 'structured_result');
+    assert.ok(acks[0].used[0].how_len > 0);
+    assert.ok(acks[0].rejected[0].why_len > 0);
   } finally { teardown(); }
 });
 
 // ---------------------------------------------------------------------------
-// Role generalization — any subagent_type with a curated offer row is checked
+// Join negatives — an ack must not attach to an offer that is not its own
+// ---------------------------------------------------------------------------
+
+describe('join', () => {
+  test('different session_id → no join, no check', () => {
+    setup();
+    try {
+      const { events } = seedAndRun({
+        offers: [{ slug: 'decompose-parallel', offer_kind: 'curated', confidence: 0.8 }],
+        stopSessionId: 'some-other-session',
+        summary: 'irrelevant',
+      });
+      assert.equal(events.length, 0, 'a sibling session must not leak its offers');
+    } finally { teardown(); }
+  });
+
+  test('different agent name → no join, no check', () => {
+    setup();
+    try {
+      const { events } = seedAndRun({
+        offers: [{ slug: 'decompose-parallel', offer_kind: 'curated', confidence: 0.8 }],
+        agentName: 'dev-other',
+        stopAgentName: 'dev-mine',
+        summary: 'irrelevant',
+      });
+      assert.equal(events.length, 0, 'a sibling spawn must not leak its offers');
+    } finally { teardown(); }
+  });
+
+  test('runtime collision suffix (requested `foo`, registered `foo-2`) still joins', () => {
+    setup();
+    try {
+      const { events } = seedAndRun({
+        offers: [{ slug: 'decompose-parallel', offer_kind: 'curated', confidence: 0.8 }],
+        agentName: 'curate-runner',
+        stopAgentName: 'curate-runner-2',
+        patternsUsed: [{ slug: 'decompose-parallel', how: 'drove the task split across three agents' }],
+        patternsRejected: [],
+      });
+      const captured = events.filter((e) => e.type === 'pattern_ack_captured');
+      assert.equal(captured.length, 1, 'auto-suffixing a roster name must not break the join');
+      assert.equal(captured[0].coverage_complete, true);
+    } finally { teardown(); }
+  });
+
+  test('two rows share a base name → suffix fallback refuses to guess', () => {
+    setup();
+    try {
+      writeOrchMarker(ORCH_ID);
+      writeOfferRows([
+        offerRow({ agentName: 'curate-runner', spawnId: 'toolu_a', offers: [{ slug: 'a', offer_kind: 'curated', confidence: 0.8 }] }),
+        offerRow({ agentName: 'curate-runner-2', spawnId: 'toolu_b', offers: [{ slug: 'b', offer_kind: 'curated', confidence: 0.8 }] }),
+      ]);
+      const { events } = runHook(subagentStopPayload({
+        agentName: 'curate-runner-3',
+        lastAssistantMessage: structuredResultText({ summary: 'ok' }),
+      }));
+      assert.equal(events.length, 0, 'ambiguous base name must be left unjoined, not guessed');
+    } finally { teardown(); }
+  });
+
+  test('no offer row at all → no check, 0 emits (safe-on-missing)', () => {
+    setup();
+    try {
+      writeOrchMarker(ORCH_ID);
+      const { stdout, events } = runHook(subagentStopPayload({
+        lastAssistantMessage: structuredResultText({ summary: 'nothing offered' }),
+      }));
+      assert.deepEqual(stdout, { continue: true });
+      assert.equal(events.length, 0);
+    } finally { teardown(); }
+  });
+
+  test('non-SubagentStop payload is ignored even with a matching offer row', () => {
+    setup();
+    try {
+      writeOrchMarker(ORCH_ID);
+      writeOfferRows([offerRow({ offers: [{ slug: 'decompose-parallel', offer_kind: 'curated', confidence: 0.8 }] })]);
+      const stop = subagentStopPayload({ lastAssistantMessage: structuredResultText({ summary: 'ok' }) });
+      const { events } = runHook(Object.assign({}, stop, { hook_event_name: 'PostToolUse' }));
+      assert.equal(events.length, 0, 'only the event this hook is registered on may drive a check');
+    } finally { teardown(); }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Coverage semantics
 // ---------------------------------------------------------------------------
 
 describe('role generalization', () => {
@@ -171,14 +396,15 @@ describe('role generalization', () => {
           agentRole: role,
           offers: [{ slug: 'decompose-parallel', offer_kind: 'curated', confidence: 0.8 }],
         })]);
-        const payload = buildPayload({
-          role,
-          patternsUsed: [{ slug: 'decompose-parallel', how: 'drove the task split across three agents' }],
-          patternsRejected: [],
-        });
-        const { events } = runHook(payload);
+        const { events } = runHook(subagentStopPayload({
+          lastAssistantMessage: structuredResultText({
+            patternsUsed: [{ slug: 'decompose-parallel', how: 'drove the task split across three agents' }],
+            patternsRejected: [],
+          }),
+        }));
         const captured = events.filter((e) => e.type === 'pattern_ack_captured');
         assert.equal(captured.length, 1);
+        assert.equal(captured[0].agent_role, role, 'role is read off the offer row');
         assert.equal(captured[0].coverage_complete, true);
         assert.equal(events.filter((e) => e.type === 'pattern_application_withheld').length, 0);
       } finally { teardown(); }
@@ -186,151 +412,106 @@ describe('role generalization', () => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// Ambient offers must not drive the coverage check (design §5.4 priority)
-// ---------------------------------------------------------------------------
-
 test('ambient-only offer row → no check at all (curated is the only signal this hook reasons about)', () => {
   setup();
   try {
-    writeOrchMarker(ORCH_ID);
-    writeOfferRows([offerRow({
+    const { stdout, events } = seedAndRun({
       offers: [{ slug: 'ambient-only-slug', offer_kind: 'ambient', confidence: 0.75 }],
-    })]);
-    const payload = buildPayload({ summary: 'Design completed without any pattern references.' });
-    const { stdout, events } = runHook(payload);
+      summary: 'Design completed without any pattern references.',
+    });
     assert.deepEqual(stdout, { continue: true });
-    assert.equal(events.filter((e) => e.type === 'pattern_ack_captured').length, 0);
-    assert.equal(events.filter((e) => e.type === 'pattern_application_withheld').length, 0);
+    assert.equal(events.length, 0);
   } finally { teardown(); }
 });
 
 test('mixed offer row (curated + ambient) → only the curated slug enters the offered set', () => {
   setup();
   try {
-    writeOrchMarker(ORCH_ID);
-    writeOfferRows([offerRow({
+    const { events } = seedAndRun({
       offers: [
         { slug: 'curated-slug', offer_kind: 'curated', confidence: 0.9 },
         { slug: 'ambient-slug', offer_kind: 'ambient', confidence: 0.6 },
       ],
-    })]);
-    const payload = buildPayload({ summary: 'no mentions' });
-    const { events } = runHook(payload);
+      summary: 'no mentions',
+    });
     const withheld = events.filter((e) => e.type === 'pattern_application_withheld');
-    assert.equal(withheld.length, 1, 'only the curated slug should be tracked as offered');
+    assert.equal(withheld.length, 1);
     assert.equal(withheld[0].slug, 'curated-slug');
   } finally { teardown(); }
 });
 
-// ---------------------------------------------------------------------------
-// No offer row → safe-on-missing (generalized: no grounding-block dependency)
-// ---------------------------------------------------------------------------
-
-test('no offer-ledger row for this spawn_id → no check, 0 emits (safe-on-missing)', () => {
+test('no patterns_used/patterns_rejected → legacy text scan, and NO ack row (unreliable signal)', () => {
   setup();
   try {
-    writeOrchMarker(ORCH_ID);
-    // No writeOfferRows() call at all.
-    const payload = buildPayload({ summary: 'nothing offered' });
-    const { stdout, events } = runHook(payload);
-    assert.deepEqual(stdout, { continue: true });
-    assert.equal(events.length, 0);
+    const { events, acks } = seedAndRun({
+      offers: [{ slug: 'decomposition-audit-fix-verify-cycle', offer_kind: 'curated', confidence: 0.9 }],
+      summary: 'did it',
+    });
+    const captured = events.filter((e) => e.type === 'pattern_ack_captured');
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].ack_source, 'legacy_text_scan');
+    const withheld = events.filter((e) => e.type === 'pattern_application_withheld');
+    assert.equal(withheld.length, 1);
+    assert.equal(withheld[0].slug, 'decomposition-audit-fix-verify-cycle');
+    assert.equal(acks.length, 0, 'the legacy path must never feed the Phase-3 join');
   } finally { teardown(); }
 });
 
-test('offer row exists but for a different spawn_id → not joined, no check', () => {
+test('structured fields: full coverage (1 used, 1 rejected) → ack row with both dispositions', () => {
   setup();
   try {
-    writeOrchMarker(ORCH_ID);
-    writeOfferRows([offerRow({
-      spawnId: 'spawn-other',
-      offers: [{ slug: 'decompose-parallel', offer_kind: 'curated', confidence: 0.8 }],
-    })]);
-    const payload = buildPayload({ spawnId: 'spawn-test-001', summary: 'irrelevant' });
-    const { events } = runHook(payload);
-    assert.equal(events.length, 0, 'offers belonging to a sibling spawn must not leak into this one');
-  } finally { teardown(); }
-});
-
-// ---------------------------------------------------------------------------
-// Structured-fields path — patterns_used/patterns_rejected coverage (§4.2)
-// ---------------------------------------------------------------------------
-
-test('structured fields: full coverage (1 used, 1 rejected) → coverage_complete=true, no withheld', () => {
-  setup();
-  try {
-    writeOrchMarker(ORCH_ID);
-    writeOfferRows([offerRow({
+    const { events, acks } = seedAndRun({
       offers: [
         { slug: 'decompose-parallel', offer_kind: 'curated', confidence: 0.8 },
         { slug: 'event-schema-declare', offer_kind: 'curated', confidence: 0.9 },
       ],
-    })]);
-    const payload = buildPayload({
-      summary: 'ok',
       patternsUsed: [{ slug: 'decompose-parallel', how: 'drove the task split across three agents' }],
       patternsRejected: [{ slug: 'event-schema-declare', why: 'no new event types in this change' }],
     });
-    const { events, acks } = runHook(payload);
-    const captured = events.filter((e) => e.type === 'pattern_ack_captured');
-    assert.equal(captured.length, 1);
-    assert.equal(captured[0].coverage_complete, true);
-    assert.equal(captured[0].ack_source, 'structured_fields');
-    assert.deepEqual(captured[0].used_slugs.sort(), ['decompose-parallel']);
-    assert.deepEqual(captured[0].rejected_slugs.sort(), ['event-schema-declare']);
+    const captured = events.filter((e) => e.type === 'pattern_ack_captured')[0];
+    assert.equal(captured.coverage_complete, true);
+    assert.equal(captured.ack_source, 'structured_fields');
+    assert.deepEqual(captured.used_slugs, ['decompose-parallel']);
+    assert.deepEqual(captured.rejected_slugs, ['event-schema-declare']);
     assert.equal(events.filter((e) => e.type === 'pattern_application_withheld').length, 0);
 
-    assert.equal(acks.length, 1, 'structured-fields path must write an ack ledger row');
-    assert.equal(acks[0].orchestration_id, ORCH_ID);
-    assert.equal(acks[0].source, 'structured_result');
-    assert.equal(acks[0].used.length, 1);
+    assert.equal(acks.length, 1);
     assert.equal(acks[0].used[0].slug, 'decompose-parallel');
     assert.ok(acks[0].used[0].how_len > 0);
-    assert.equal(acks[0].rejected.length, 1);
     assert.ok(acks[0].rejected[0].why_len > 0);
   } finally { teardown(); }
 });
 
-test('structured fields: symmetry rule violated (only 1 of 2 offered slugs covered) → 1 withheld', () => {
+test('structured fields: only 1 of 2 offered slugs covered → 1 withheld', () => {
   setup();
   try {
-    writeOrchMarker(ORCH_ID);
-    writeOfferRows([offerRow({
+    const { events } = seedAndRun({
       offers: [
         { slug: 'decompose-parallel', offer_kind: 'curated', confidence: 0.8 },
         { slug: 'event-schema-declare', offer_kind: 'curated', confidence: 0.9 },
       ],
-    })]);
-    const payload = buildPayload({
-      summary: 'ok',
       patternsUsed: [{ slug: 'decompose-parallel', how: 'drove the task split across three agents' }],
       patternsRejected: [],
     });
-    const { events } = runHook(payload);
-    const captured = events.filter((e) => e.type === 'pattern_ack_captured')[0];
-    assert.equal(captured.coverage_complete, false);
+    assert.equal(events.filter((e) => e.type === 'pattern_ack_captured')[0].coverage_complete, false);
     const withheld = events.filter((e) => e.type === 'pattern_application_withheld');
     assert.equal(withheld.length, 1);
     assert.equal(withheld[0].slug, 'event-schema-declare');
   } finally { teardown(); }
 });
 
-test('structured fields: legacy text-scan fallback is NOT used when patterns_used/rejected are present ' +
-     'even if empty (an agent that legitimately used nothing)', () => {
+test('structured fields present but empty → still the structured path (an agent that used nothing)', () => {
   setup();
   try {
-    writeOrchMarker(ORCH_ID);
-    writeOfferRows([offerRow({ offers: [{ slug: 'decompose-parallel', offer_kind: 'curated', confidence: 0.8 }] })]);
-    const payload = buildPayload({
+    const { events } = seedAndRun({
+      offers: [{ slug: 'decompose-parallel', offer_kind: 'curated', confidence: 0.8 }],
       summary: 'mentions decompose-parallel by name but explicitly rejected it below',
       patternsUsed: [],
       patternsRejected: [{ slug: 'decompose-parallel', why: 'considered but not a fit for this task shape' }],
     });
-    const { events } = runHook(payload);
     const captured = events.filter((e) => e.type === 'pattern_ack_captured')[0];
     assert.equal(captured.ack_source, 'structured_fields');
-    assert.equal(captured.coverage_complete, true, 'explicit rejection must count even though the summary also mentions the slug');
+    assert.equal(captured.coverage_complete, true);
     assert.deepEqual(captured.used_slugs, []);
   } finally { teardown(); }
 });
@@ -342,12 +523,13 @@ test('structured fields: legacy text-scan fallback is NOT used when patterns_use
 test('kill switch ORCHESTRAY_PATTERN_ACK_CHECK_DISABLED=1 → 0 emits', () => {
   setup();
   try {
-    writeOrchMarker(ORCH_ID);
-    writeOfferRows([offerRow({ offers: [{ slug: 'decompose-parallel', offer_kind: 'curated', confidence: 0.85 }] })]);
-    const payload = buildPayload({ summary: 'Design with no slug reference.' });
-    const { stdout, events } = runHook(payload, { ORCHESTRAY_PATTERN_ACK_CHECK_DISABLED: '1' });
+    const { stdout, events } = seedAndRun({
+      offers: [{ slug: 'decompose-parallel', offer_kind: 'curated', confidence: 0.85 }],
+      summary: 'Design with no slug reference.',
+      env: { ORCHESTRAY_PATTERN_ACK_CHECK_DISABLED: '1' },
+    });
     assert.deepEqual(stdout, { continue: true });
-    assert.equal(events.length, 0, 'kill switch must suppress all events');
+    assert.equal(events.length, 0);
   } finally { teardown(); }
 });
 
@@ -364,38 +546,110 @@ test('schema validation: architect_pattern_ack_missing is retained in the shadow
 });
 
 // ---------------------------------------------------------------------------
-// curatedOfferedSlugs — direct unit coverage of the fixed join
+// Unit coverage — offered-set extraction, ack-entry shapes, slug resolution
 // ---------------------------------------------------------------------------
 
-describe('curatedOfferedSlugs (unit)', () => {
-  test('no spawnId → [] without reading the ledger', () => {
-    setup();
-    try {
-      assert.deepEqual(mod.curatedOfferedSlugs(tmpDir, ORCH_ID, null), []);
-    } finally { teardown(); }
+describe('curatedSlugsFromRow (unit)', () => {
+  test('null row → []', () => {
+    assert.deepEqual(mod.curatedSlugsFromRow(null), []);
   });
 
-  test('unions curated slugs across multiple rows for the same spawn_id (retry case), excludes ambient', () => {
-    setup();
-    try {
-      writeOfferRows([
-        offerRow({ offers: [{ slug: 'a', offer_kind: 'curated', confidence: 0.8 }] }),
-        offerRow({ offers: [
-          { slug: 'a', offer_kind: 'curated', confidence: 0.8 },
-          { slug: 'b', offer_kind: 'curated', confidence: 0.7 },
-          { slug: 'c', offer_kind: 'ambient', confidence: 0.9 },
-        ] }),
-      ]);
-      const slugs = mod.curatedOfferedSlugs(tmpDir, ORCH_ID, 'spawn-test-001').sort();
-      assert.deepEqual(slugs, ['a', 'b']);
-    } finally { teardown(); }
+  test('dedupes curated slugs and drops ambient ones', () => {
+    const slugs = mod.curatedSlugsFromRow({ offers: [
+      { slug: 'a', offer_kind: 'curated' },
+      { slug: 'a', offer_kind: 'curated' },
+      { slug: 'b', offer_kind: 'curated' },
+      { slug: 'c', offer_kind: 'ambient' },
+    ] }).sort();
+    assert.deepEqual(slugs, ['a', 'b']);
+  });
+});
+
+describe('normalizeAckEntries (unit)', () => {
+  const offered = ['anti-pattern-verification-shares-blind-spot', 'decomposition-multi-pass-review'];
+
+  test('accepts `name` as an alias for `slug` and restores the dropped prefix', () => {
+    const out = mod.normalizeAckEntries(
+      [{ name: 'verification-shares-blind-spot', why: 'the verifier is a separate hook here' }], 'why', offered);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].slug, 'anti-pattern-verification-shares-blind-spot');
+    assert.ok(out[0].why_len > 0);
   });
 
-  test('rows for a different orchestration_id are not joined', () => {
-    setup();
-    try {
-      writeOfferRows([offerRow({ orchestrationId: 'orch-other', offers: [{ slug: 'a', offer_kind: 'curated', confidence: 0.8 }] })]);
-      assert.deepEqual(mod.curatedOfferedSlugs(tmpDir, ORCH_ID, 'spawn-test-001'), []);
-    } finally { teardown(); }
+  test('`slug` wins when both keys are present', () => {
+    const out = mod.normalizeAckEntries(
+      [{ slug: 'decomposition-multi-pass-review', name: 'verification-shares-blind-spot', how: 'drove the split' }], 'how', offered);
+    assert.equal(out[0].slug, 'decomposition-multi-pass-review');
+  });
+
+  test('bare string entries still resolve (advisory hook tolerates what T15 rejects)', () => {
+    const out = mod.normalizeAckEntries(['verification-shares-blind-spot'], 'how', offered);
+    assert.deepEqual(out, [{ slug: 'anti-pattern-verification-shares-blind-spot', how_len: 0 }]);
+  });
+
+  test('entries with neither slug nor name are dropped, not thrown on', () => {
+    assert.deepEqual(mod.normalizeAckEntries([{ how: 'no identifier at all' }, null, 42], 'how', offered), []);
+  });
+
+  // Prose-key flexibility: array membership (patterns_used vs
+  // patterns_rejected) already encodes the semantics, so the exact prose
+  // key must not gate whether reasoning is recorded.
+  test('a patterns_rejected entry carrying `how` still records a non-zero why_len', () => {
+    const out = mod.normalizeAckEntries(
+      [{ slug: 'decomposition-multi-pass-review', how: 'directly analogous but not the same shape here' }],
+      'why', offered);
+    assert.equal(out.length, 1);
+    assert.ok(out[0].why_len > 0, 'prose under `how` must not be discarded when normalizing patterns_rejected');
+  });
+
+  test('a patterns_used entry carrying `why` still records a non-zero how_len', () => {
+    const out = mod.normalizeAckEntries(
+      [{ slug: 'decomposition-multi-pass-review', why: 'this is why it applied, written under the wrong key' }],
+      'how', offered);
+    assert.equal(out.length, 1);
+    assert.ok(out[0].how_len > 0, 'prose under `why` must not be discarded when normalizing patterns_used');
+  });
+
+  test('an entry with genuinely no prose under any accepted key stays at len 0', () => {
+    const out = mod.normalizeAckEntries(
+      [{ slug: 'decomposition-multi-pass-review' }], 'why', offered);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].why_len, 0, 'no prose anywhere must still normalize to length 0');
+  });
+});
+
+describe('resolveOfferedSlug (unit)', () => {
+  test('exact match wins and returns the offered spelling', () => {
+    assert.equal(resolveOfferedSlug('Decomposition-Multi-Pass-Review', ['decomposition-multi-pass-review']),
+      'decomposition-multi-pass-review');
+  });
+
+  test('a bare name resolves when exactly one offered slug carries a category prefix', () => {
+    assert.equal(resolveOfferedSlug('verification-shares-blind-spot', ['anti-pattern-verification-shares-blind-spot']),
+      'anti-pattern-verification-shares-blind-spot');
+  });
+
+  test('an ambiguous bare name is returned unchanged — never guessed', () => {
+    const offered = ['routing-model-tiering', 'roi-model-tiering'];
+    assert.equal(resolveOfferedSlug('model-tiering', offered), 'model-tiering',
+      'two prefixed candidates must leave the name unmatched');
+    assert.equal(offered.includes(resolveOfferedSlug('model-tiering', offered)), false,
+      'an unmatched name must fail the offered-set intersection, i.e. count as unacknowledged');
+  });
+
+  test('an unrelated name is returned unchanged', () => {
+    assert.equal(resolveOfferedSlug('something-else', ['decomposition-multi-pass-review']), 'something-else');
+  });
+
+  test('non-string and empty input are safe', () => {
+    assert.equal(resolveOfferedSlug(null, ['a']), '');
+    assert.equal(resolveOfferedSlug('   ', ['a']), '');
+  });
+
+  // The prefix list is copied out of schemas/pattern.schema.js rather than
+  // imported (zod on a SubagentStop hot path). This is the guard on that copy.
+  test('CATEGORY_PREFIXES stays in parity with schemas/pattern.schema.js CATEGORIES', () => {
+    const { CATEGORIES } = require(path.resolve(__dirname, '..', '..', 'schemas', 'pattern.schema.js'));
+    assert.deepEqual([...CATEGORY_PREFIXES].sort(), [...CATEGORIES].sort());
   });
 });

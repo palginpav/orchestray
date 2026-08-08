@@ -117,19 +117,23 @@ const mcpEnforcementSchema = z.object({
   pattern_find: perToolPolicy.optional(),
   kb_search: perToolPolicy.optional(),
   history_find_similar_tasks: perToolPolicy.optional(),
-  // DEPRECATED (v2.3.19 evidence design §6.2): pattern_record_application no
-  // longer gates anything — the postDecompTools gate narrowed to
-  // pattern_record_skip_reason only (§6.1), since times_applied is now
-  // discharged by evidence (§4.3), not by this MCP call. Kept schema-valid so
-  // existing configs don't fail validation; back-compat alias merge (old key
-  // value folds into pattern_record_skip_reason when the new key is absent,
-  // taking the stricter of the two, logged once as config_key_renamed) is
-  // runtime-loader work in bin/_lib/config-schema.js::loadMcpEnforcement, not
-  // in this validation-only schema — see this delegation's structured result.
+  // v2.3.19 evidence design §6.1: the postDecompTools checkpoint-row check
+  // narrowed to pattern_record_skip_reason only, since times_applied is now
+  // discharged by evidence (§4.3), not by this MCP call. This key still has a
+  // live runtime consumer, though: gate-agent-spawn.js reads it as a legacy
+  // fallback for pattern_evidence.gate_mode (see below) when that key is
+  // unset, so existing operator configs keep their current behavior. An
+  // earlier revision planned to fold this value into
+  // .pattern_record_skip_reason directly (§6.2); that was tried and reverted
+  // — pattern_record_skip_reason already means "how is a call to THAT tool
+  // enforced" and carries an independent value in shipped configs, so reusing
+  // it would silently reinterpret it. See
+  // .orchestray/kb/decisions/mcp-enforcement-rename-seam.md.
   pattern_record_application: perToolPolicy.optional(),
-  // Canonical key for the skip-reason gate (§6.1/§6.2). Shipped default
-  // hook-strict per feedback_default_on_shipping.md; current shipped configs
-  // may still carry "allow" until the loader migration above lands.
+  // Real per-tool meaning: "how is a call to the pattern_record_skip_reason
+  // MCP tool enforced" — NOT the §22c gate's mode (that's
+  // pattern_evidence.gate_mode above). No runtime consumer for this specific
+  // meaning yet.
   pattern_record_skip_reason: perToolPolicy.optional(),
   cost_budget_check: perToolPolicy.optional(),
   kb_write: perToolPolicy.optional(),
@@ -620,6 +624,15 @@ const tokenwrightSchema = z.object({
 const patternEvidenceSchema = z.object({
   enabled: z.boolean().optional(),
   commit: z.boolean().optional(),
+  // Own key for the §22c second-spawn gate's enforcement mode — deliberately
+  // NOT mcp_enforcement.pattern_record_application/.pattern_record_skip_reason.
+  // Those are real MCP tool names in the mcp_enforcement.<tool> namespace
+  // ("how is a call to THIS tool enforced") and already carry independent
+  // meaning in shipped configs; reusing either as this gate's mode was tried
+  // and reverted (see .orchestray/kb/decisions/mcp-enforcement-rename-seam.md).
+  // Falls back to mcp_enforcement.pattern_record_application when unset —
+  // see bin/gate-agent-spawn.js::loadPatternEvidenceGateMode.
+  gate_mode: perToolPolicy.optional(),
   // Time-bounded ramp flag read by bin/validate-task-completion.js
   // (patternAckFieldsEnforced) — see that function's docstring. Not in the
   // §11 interface contract's default block (added post-landing, ramp-only).

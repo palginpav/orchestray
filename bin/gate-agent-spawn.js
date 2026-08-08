@@ -52,6 +52,39 @@ function isValidModel(model) {
   return VALID_TIERS.some(tier => m.includes(tier));
 }
 
+const VALID_PATTERN_EVIDENCE_GATE_MODES = new Set(['hook', 'hook-warn', 'hook-strict', 'prompt', 'allow']);
+
+/**
+ * Resolve the §22c second-spawn gate's enforcement mode.
+ *
+ * Canonical key: `pattern_evidence.gate_mode` — kept out of the
+ * `mcp_enforcement.<tool>` namespace on purpose, since `pattern_record_application`
+ * and `pattern_record_skip_reason` are both real MCP tool names there ("how is a
+ * call to THIS tool enforced") and already carry independent meaning in shipped
+ * configs. See .orchestray/kb/decisions/mcp-enforcement-rename-seam.md.
+ *
+ * Falls back to `mcp_enforcement.pattern_record_application` (already merged with
+ * defaults in `mcpEnforcement`) when `gate_mode` is unset, so configs written
+ * before this key existed keep behaving exactly as they do today.
+ *
+ * @param {string} cwd
+ * @param {object} mcpEnforcement - merged mcp_enforcement block (already defaulted)
+ * @returns {string} one of 'hook' | 'hook-warn' | 'hook-strict' | 'prompt' | 'allow'
+ */
+function loadPatternEvidenceGateMode(cwd, mcpEnforcement) {
+  try {
+    const configPath = path.join(cwd, '.orchestray', 'config.json');
+    const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const gateMode = parsed && parsed.pattern_evidence && parsed.pattern_evidence.gate_mode;
+    if (typeof gateMode === 'string' && VALID_PATTERN_EVIDENCE_GATE_MODES.has(gateMode)) {
+      return gateMode;
+    }
+  } catch (_e) {
+    // Missing/unreadable/malformed config.json — fall through to the legacy key.
+  }
+  return mcpEnforcement.pattern_record_application;
+}
+
 // v2.2.9 B-5.3: gate stdin reader behind require.main check so test imports
 // of helper exports (computeGroupBoundaryViolation, parseTaskGraphGroups,
 // compareGroupOrder) don't block on stdin.
@@ -1286,14 +1319,13 @@ if (require.main === module) {
     // Kill switch short-circuit retained. First-spawn carve-out: if routing.jsonl is absent,
     // this is the pre-decomposition window — skip this gate entirely.
     //
-    // NOTE: the config key read below is still named
-    // `mcp_enforcement.pattern_record_application` for this narrowing — the
-    // §6.2 rename to `.pattern_record_skip_reason` (with back-compat alias)
-    // touches schemas/config.schema.js and is out of scope for this change;
-    // it is a deferred fast-follow (see this task's Structured Result).
+    // Enforcement mode: pattern_evidence.gate_mode, falling back to the legacy
+    // mcp_enforcement.pattern_record_application when unset — see
+    // loadPatternEvidenceGateMode above and
+    // .orchestray/kb/decisions/mcp-enforcement-rename-seam.md.
     if (mcpEnforcement.global_kill_switch !== true) {
       try {
-        const praEnforcement = mcpEnforcement.pattern_record_application;
+        const praEnforcement = loadPatternEvidenceGateMode(cwd, mcpEnforcement);
         // Only enforce when mode is 'hook-warn' or 'hook-strict'. 'hook', 'prompt', 'allow' skip.
         if (praEnforcement === 'hook-warn' || praEnforcement === 'hook-strict') {
           // First-spawn carve-out: routing.jsonl must exist for this to be a second-or-later spawn.
@@ -1406,7 +1438,7 @@ if (require.main === module) {
                         'requires no PM call — call mcp__orchestray__pattern_record_skip_reason with a ' +
                         'skip_category for every offered pattern you did not cite before the next spawn. ' +
                         'Emergency override: set mcp_enforcement.global_kill_switch=true or ' +
-                        'mcp_enforcement.pattern_record_application to "allow".';
+                        'pattern_evidence.gate_mode to "allow".';
                       process.stderr.write(hookStrictMsg + '\n');
                       // F14: emit structured hookSpecificOutput JSON on stdout so Claude Code
                       // can surface a machine-readable denial reason (mirrors context-shield.js).
@@ -1426,7 +1458,7 @@ if (require.main === module) {
                         '. Application is recorded from evidence and requires no PM call — call ' +
                         'mcp__orchestray__pattern_record_skip_reason with a skip_category for every ' +
                         'offered pattern you did not cite. To upgrade to blocking enforcement, set ' +
-                        'mcp_enforcement.pattern_record_application to "hook-strict".\n'
+                        'pattern_evidence.gate_mode to "hook-strict".\n'
                       );
                       // Fall through to allow (exit 0 below)
                     }

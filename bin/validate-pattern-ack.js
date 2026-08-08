@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * validate-pattern-ack.js — PostToolUse:Agent hook.
+ * validate-pattern-ack.js — SubagentStop hook.
  *
  * pattern-application-evidence-design.md §4.2 (v2.3.19 Phase 2 — "capturing
  * it"). Originally v2.2.11 W2-6, architect-only. Rewritten twice: first for
@@ -26,6 +26,45 @@
  *      substring-scan heuristic only when an agent's payload predates those
  *      fields (grace window, same rationale as validate-task-completion.js).
  *
+ * Fourth rewrite (2026-08-08, same day, same root shape one level up): this
+ * hook was registered at **PostToolUse:Agent**, which fires when an agent is
+ * DISPATCHED. Its `tool_response` is dispatch metadata (status, prompt,
+ * teammate_id, agent_id, model, tmux_*, …) — no field carries agent output,
+ * because the output does not exist yet. So `rawOutputText` found nothing,
+ * `hasStructuredAck` was permanently false, every ack read
+ * `legacy_text_scan`, and `appendAck` (correctly gated on the structured
+ * path) never wrote. Observed live: 6 offers, 3 pattern_ack_captured, 0 ack
+ * rows, 0 credits. See
+ * .orchestray/kb/decisions/pattern-ack-wired-to-wrong-hook-event.md.
+ *
+ * It now runs at **SubagentStop**, the event that carries
+ * `last_assistant_message` — the same event bin/_lib/claim-rules.js consumes,
+ * which is why the field-precedence table it shares was right about the field
+ * and wrong about where the file was mounted.
+ *
+ * Consequence for the join: SubagentStop has no `tool_use_id`, so the offer
+ * ledger cannot be keyed on it from here. The key is now the composite
+ * (session_id, agent roster name) — the only pair both payloads carry. Both
+ * sides of it are defined once, in bin/_lib/pattern-evidence-ledger.js
+ * (spawnAgentName / stopAgentName / findOfferRowForAgent); this file only
+ * calls them. The matched offer row then supplies spawn_id, agent_role and
+ * task_id for the emitted events and the ack row, so Phase 3's spawn_id-keyed
+ * join (bin/_lib/pattern-credit-compute.js) is unchanged by this move.
+ *
+ * Third rewrite (2026-08-08): `extractResult`'s raw-text lookup was its own
+ * ad-hoc list (tool_response, then output, then result, then agent_output)
+ * — a private copy of the field-precedence table `bin/_lib/claim-rules.js` already
+ * fixed once (v2.3.19 W1) after discovering `last_assistant_message` is the
+ * only field a live PostToolUse:Agent/SubagentStop payload ever sets. This
+ * file's private list never included it, so `hasStructuredAck` was always
+ * false in production and every ack fell through to `legacy_text_scan` —
+ * identical failure shape to the bug W1 fixed in validate-claim-evidence.js,
+ * recurring here because the fix lived in one file instead of one function.
+ * Now sourced from `claim-rules.js#rawOutputText` (single definition, four
+ * call sites) with a parity guard —
+ * bin/__tests__/anti-pattern-agent-output-fields-parity.test.js — that fails
+ * if any file re-declares the field list privately.
+ *
  * RV-2 Issue 2 fix: this hook no longer parses `tool_input.prompt` or the
  * `<mcp-grounding>` fence at all. It reads the "offered" set from the Phase-1
  * offer ledger (bin/_lib/pattern-evidence-ledger.js, written by
@@ -41,11 +80,11 @@
  * carry (RV-2 Issue 5) — bin/_lib/pattern-offer-scan.js is now the only one.
  *
  * Behaviour:
- *   1. Triggers on any Agent() spawn that carries an offered pattern (any
- *      subagent_type — see reason 2 above).
- *   2. Reads curated-offer slugs for this spawn_id from the Phase-1 ledger
- *      (`.orchestray/state/pattern-offers.jsonl`) — the offer set this
- *      validator reasons about.
+ *   1. Triggers on any subagent completion (any subagent_type — see reason 2
+ *      above) whose spawn carried an offered pattern.
+ *   2. Reads curated-offer slugs for this agent from the Phase-1 ledger
+ *      (`.orchestray/state/pattern-offers.jsonl`), joined on
+ *      (session_id, agent name) — the offer set this validator reasons about.
  *   3. Reads the agent's patterns_used/patterns_rejected from its Structured
  *      Result and computes per-slug coverage against the offered set.
  *   4. Emits `pattern_ack_captured` (always, when ≥1 pattern was offered)
@@ -57,14 +96,15 @@
  *      present (not appended for the legacy text-scan fallback — that signal
  *      is too unreliable to feed the §4.3 Phase 3 commit join).
  *
- * Fail-open contract (unchanged):
- *   - No curated offer row for this spawn_id → no check → no event (safe).
- *   - Any internal error → exit 0 (never blocks a spawn).
+ * Fail-open contract (unchanged in substance, now guarding a stop rather than
+ * a spawn — a crash here must never strand a subagent's completed work):
+ *   - No curated offer row joinable to this agent → no check → no event (safe).
+ *   - Any internal error → exit 0 (never blocks the stop).
  *   - Kill switch: ORCHESTRAY_PATTERN_ACK_CHECK_DISABLED=1 → exit 0.
  *
  * Default-on per feedback_default_on_shipping.md.
  *
- * Input:  Claude Code PostToolUse:Agent JSON payload on stdin
+ * Input:  Claude Code SubagentStop JSON payload on stdin
  * Output: { continue: true } on stdout always; exit 0 always
  */
 
@@ -73,7 +113,16 @@ const { writeEvent }     = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { readHookInputRaw } = require('./_lib/hook-stdin');
 const { peekOrchestrationId } = require('./_lib/peek-orchestration-id');
-const { readOffersForOrch, appendAck } = require('./_lib/pattern-evidence-ledger');
+const { findOfferRowForAgent, stopAgentName, appendAck } = require('./_lib/pattern-evidence-ledger');
+const { resolveOfferedSlug } = require('./_lib/pattern-offer-scan');
+// Shared prose resolver — see handoff-contract-text.js#resolvePatternAckProse
+// docstring. Same function bin/validate-task-completion.js's
+// isValidPatternAckEntry calls, so the advisory ledger and the blocking gate
+// can never disagree on what counts as prose.
+const { resolvePatternAckProse } = require('./_lib/handoff-contract-text');
+// Canonical raw-output field precedence — see claim-rules.js RAW_OUTPUT_FIELDS
+// docstring. Recurrence guard: bin/__tests__/anti-pattern-agent-output-fields-parity.test.js.
+const { rawOutputText } = require('./_lib/claim-rules');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -88,26 +137,18 @@ const SCHEMA_VERSION = 1;
 // ---------------------------------------------------------------------------
 
 /**
- * Curated slugs offered to this spawn, per the Phase-1 offer ledger
- * (.orchestray/state/pattern-offers.jsonl). Ambient offers are excluded —
+ * Curated slugs on one Phase-1 offer row. Ambient offers are excluded —
  * design §5.4: not application-eligible by default, so they must not carry
- * the ack-coverage obligation either. Normally 0 or 1 ledger row exists per
- * spawn_id; multiple rows (e.g. a retried spawn) are unioned defensively.
+ * the ack-coverage obligation either.
  *
- * @param {string} cwd
- * @param {string} orchId
- * @param {string|null} spawnId
+ * @param {object|null} row
  * @returns {string[]}
  */
-function curatedOfferedSlugs(cwd, orchId, spawnId) {
-  if (!spawnId) return [];
-  const rows = readOffersForOrch(cwd, orchId).filter((r) => r && r.spawn_id === spawnId);
+function curatedSlugsFromRow(row) {
+  if (!row || !Array.isArray(row.offers)) return [];
   const slugs = new Set();
-  for (const row of rows) {
-    if (!Array.isArray(row.offers)) continue;
-    for (const o of row.offers) {
-      if (o && o.offer_kind === 'curated' && typeof o.slug === 'string' && o.slug) slugs.add(o.slug);
-    }
+  for (const o of row.offers) {
+    if (o && o.offer_kind === 'curated' && typeof o.slug === 'string' && o.slug) slugs.add(o.slug);
   }
   return Array.from(slugs);
 }
@@ -117,25 +158,23 @@ function curatedOfferedSlugs(cwd, orchId, spawnId) {
 // ---------------------------------------------------------------------------
 
 /**
- * Extract the spawned agent's Structured Result from the PostToolUse hook
+ * Extract the stopped agent's Structured Result from the SubagentStop hook
  * payload.
  *
- * PostToolUse:Agent payload fields (as observed in sibling validators):
- *   event.tool_response  — the agent's raw text output
- *   event.output         — alternative key (some CC versions)
- *   event.result         — alternative key
+ * Raw text is resolved via claim-rules.js#rawOutputText — the canonical
+ * `last_assistant_message` > `result` > `output` > `agent_output` precedence
+ * (v2.3.19 W1). `last_assistant_message` is the field a live SubagentStop
+ * payload sets; `tool_response` is not in the list because it is a
+ * different-shaped field on other PostToolUse hooks (see
+ * bin/validate-commit-handoff.js) and, on PostToolUse:Agent, dispatch
+ * metadata with no output in it at all.
  *
  * @param {object} event
  * @returns {{ summary: string, filesChangedText: string, status: string|null,
  *             patternsUsedRaw: *, patternsRejectedRaw: * }}
  */
 function extractResult(event) {
-  const raw = [
-    event.tool_response,
-    event.output,
-    event.result,
-    event.agent_output,
-  ].find(v => typeof v === 'string' && v.length > 0) || '';
+  const raw = rawOutputText(event) || '';
 
   const empty = {
     summary: '', filesChangedText: '', status: null,
@@ -181,19 +220,37 @@ function extractResult(event) {
  * strings, missing prose) — this hook is advisory-only and must not throw
  * on input the blocking validator would have already caught.
  *
+ * Three tolerances, all from live payloads:
+ *   - `name` is accepted as an alias for `slug` (observed:
+ *     `{"name": "verification-shares-blind-spot", "how": "…"}`).
+ *   - the identifier is resolved against `offered` by
+ *     pattern-offer-scan.js#resolveOfferedSlug, which restores a dropped
+ *     category prefix only when that is unambiguous.
+ *   - the prose key name is flexible — see
+ *     handoff-contract-text.js#resolvePatternAckProse — because array
+ *     membership already encodes used-vs-rejected; an entry under
+ *     `patterns_rejected` carrying `how` instead of `why` is still a
+ *     rejection with real reasoning, not an empty one.
+ *
  * @param {*} arr
  * @param {string} proseKey - 'how' or 'why'
+ * @param {string[]} offered - curated slugs offered to this spawn
  * @returns {Array<{slug: string, [k: string]: number}>}
  */
-function normalizeAckEntries(arr, proseKey) {
+function normalizeAckEntries(arr, proseKey, offered) {
   if (!Array.isArray(arr)) return [];
   const out = [];
+  const lenKey = proseKey + '_len';
   for (const e of arr) {
     if (typeof e === 'string' && e.trim()) {
-      out.push({ slug: e.trim(), [proseKey + '_len']: 0 });
-    } else if (e && typeof e === 'object' && typeof e.slug === 'string' && e.slug.trim()) {
-      const prose = e[proseKey];
-      out.push({ slug: e.slug.trim(), [proseKey + '_len']: typeof prose === 'string' ? prose.trim().length : 0 });
+      out.push({ slug: resolveOfferedSlug(e, offered), [lenKey]: 0 });
+    } else if (e && typeof e === 'object') {
+      const raw = [e.slug, e.name].find((v) => typeof v === 'string' && v.trim());
+      if (!raw) continue;
+      out.push({
+        slug: resolveOfferedSlug(raw, offered),
+        [lenKey]: resolvePatternAckProse(e, proseKey).length,
+      });
     }
   }
   return out;
@@ -227,15 +284,17 @@ function slugsAcknowledgedByText(slugs, haystack) {
 // ---------------------------------------------------------------------------
 
 /**
- * Any Agent() spawn with a subagent_type qualifies now (was architect-only).
- * Developers and testers are where patterns most often shape work — see
- * module header reason 2.
+ * Any subagent completion qualifies (was architect-only, then any Agent()
+ * spawn). The role filter is gone entirely: the offer ledger decides whether
+ * there is anything to check, and it is written for every spawn — see module
+ * header reason 2 and the RV-2 Issue 2 note.
+ *
+ * SubagentStop is asserted explicitly so a payload from another event cannot
+ * reach run() and be mis-joined; hooks.json registers this file once, at
+ * SubagentStop, and this guard is what makes that registration load-bearing.
  */
-function isAgentSpawn(event) {
-  if (!event) return false;
-  if ((event.tool_name || '') !== 'Agent') return false;
-  const subtype = (event.tool_input && event.tool_input.subagent_type) || '';
-  return typeof subtype === 'string' && subtype.length > 0;
+function isSubagentStop(event) {
+  return !!event && (event.hook_event_name || '') === 'SubagentStop';
 }
 
 // ---------------------------------------------------------------------------
@@ -263,7 +322,7 @@ function main() {
       return;
     }
 
-    if (!isAgentSpawn(event)) return;
+    if (!isSubagentStop(event)) return;
 
     let cwd;
     try {
@@ -281,19 +340,26 @@ function main() {
 }
 
 function run(event, cwd) {
-  const agentRole = (event.tool_input && event.tool_input.subagent_type) || null;
-  const taskId     = (event.tool_input && event.tool_input.task_id) || null;
-  const spawnId    = (event.tool_input && event.tool_input.agent_id)
-    || (event.tool_input && event.tool_input.spawn_id)
-    || null;
+  // Join: (session_id, agent roster name). SubagentStop carries no
+  // tool_use_id, so spawn_id cannot be resolved from the payload — it comes
+  // off the matched offer row instead, which keeps every downstream consumer
+  // (events, ack row, Phase 3 caps) keyed exactly as before.
+  const agentName = stopAgentName(event);
+  if (!agentName) return;
 
   // Same fallback record-pattern-offers.js uses (peekOrchestrationId(cwd) ||
-  // 'unknown') — both phases must resolve the identical join key even when
-  // no orchestration marker file exists (e.g. a solo, non-orchestrated spawn).
-  const orchId  = peekOrchestrationId(cwd) || 'unknown';
-  const offered = curatedOfferedSlugs(cwd, orchId, spawnId);
-  // No curated offer for this spawn_id → no check (safe-on-missing contract).
+  // 'unknown') — both phases must resolve the identical orchestration id even
+  // when no orchestration marker file exists (e.g. a solo, non-orchestrated
+  // spawn).
+  const orchId   = peekOrchestrationId(cwd) || 'unknown';
+  const offerRow = findOfferRowForAgent(cwd, orchId, event.session_id, agentName);
+  const offered  = curatedSlugsFromRow(offerRow);
+  // No curated offer joinable to this agent → no check (safe-on-missing).
   if (offered.length === 0) return;
+
+  const spawnId   = offerRow.spawn_id || null;
+  const agentRole = offerRow.agent_role || null;
+  const taskId    = offerRow.task_id || null;
 
   const { summary, filesChangedText, status, patternsUsedRaw, patternsRejectedRaw } = extractResult(event);
   const hasStructuredAck = Array.isArray(patternsUsedRaw) || Array.isArray(patternsRejectedRaw);
@@ -302,8 +368,8 @@ function run(event, cwd) {
   let usedSlugs, rejectedSlugs, usedEntries, rejectedEntries;
 
   if (hasStructuredAck) {
-    usedEntries    = normalizeAckEntries(patternsUsedRaw, 'how');
-    rejectedEntries = normalizeAckEntries(patternsRejectedRaw, 'why');
+    usedEntries    = normalizeAckEntries(patternsUsedRaw, 'how', offered);
+    rejectedEntries = normalizeAckEntries(patternsRejectedRaw, 'why', offered);
     usedSlugs     = usedEntries.map(e => e.slug);
     rejectedSlugs = rejectedEntries.map(e => e.slug);
   } else {
@@ -380,11 +446,11 @@ function run(event, cwd) {
 }
 
 module.exports = {
-  curatedOfferedSlugs,
+  curatedSlugsFromRow,
   normalizeAckEntries,
   slugsAcknowledgedByText,
   extractResult,
-  isAgentSpawn,
+  isSubagentStop,
   run,
 };
 

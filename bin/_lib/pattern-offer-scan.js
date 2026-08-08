@@ -249,8 +249,63 @@ function scanOffers(promptText, exists) {
   return { offers, shape_detected, unresolved_slugs };
 }
 
+// ---------------------------------------------------------------------------
+// Ack-side slug resolution
+// ---------------------------------------------------------------------------
+
+// Corpus slugs are `<category>-<name>`. Mirrors schemas/pattern.schema.js
+// CATEGORIES — copied rather than imported because that module pulls zod onto
+// a SubagentStop hot path (caller-identity.js header: ~87 modules, ~45 ms).
+// Parity guard: bin/__tests__/v2211-w2-6-pattern-ack.test.js.
+const CATEGORY_PREFIXES = [
+  'decomposition',
+  'routing',
+  'specialization',
+  'anti-pattern',
+  'design-preference',
+  'user-correction',
+  'roi',
+];
+
+/**
+ * Map a slug an agent acknowledged onto one of the slugs it was offered.
+ *
+ * Agents drop the category prefix in practice — a live payload named
+ * `verification-shares-blind-spot` for the offered
+ * `anti-pattern-verification-shares-blind-spot`. Exact match wins; otherwise a
+ * bare name resolves only when exactly one offered slug is that name behind a
+ * known category prefix. Two candidates (e.g. `routing-x` and `roi-x` both
+ * offered) is a genuine ambiguity: the raw name is returned unchanged so it
+ * fails the offered-set intersection and is treated as unacknowledged, rather
+ * than crediting a pattern the agent never named.
+ *
+ * @param {*} raw
+ * @param {string[]} offeredSlugs
+ * @returns {string} the canonical offered slug, or the trimmed input unchanged
+ */
+function resolveOfferedSlug(raw, offeredSlugs) {
+  const name = typeof raw === 'string' ? raw.trim() : '';
+  if (!name) return name;
+  const offered = Array.isArray(offeredSlugs) ? offeredSlugs : [];
+  const lower = name.toLowerCase();
+
+  for (const s of offered) {
+    if (typeof s === 'string' && s.toLowerCase() === lower) return s;
+  }
+
+  const candidates = [];
+  for (const s of offered) {
+    if (typeof s !== 'string') continue;
+    const sl = s.toLowerCase();
+    if (CATEGORY_PREFIXES.some((p) => sl === p + '-' + lower)) candidates.push(s);
+  }
+  return candidates.length === 1 ? candidates[0] : name;
+}
+
 module.exports = {
   scanOffers,
+  resolveOfferedSlug,
+  CATEGORY_PREFIXES,
   // Internals exported for unit tests — not a stable contract.
   _internal: { extractGroundingBlock, scanCurated, scanToonCatalog, scanJsonMatches, isInsideQuotedSpan },
 };

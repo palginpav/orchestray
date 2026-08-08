@@ -13,6 +13,11 @@
  *   5. Kill switch ORCHESTRAY_PATTERN_EVIDENCE_DISABLED=1 → 0 emits.
  *   6. Non-Agent tool_name → no-op.
  *   7. task_id / spawn_id / agent_role resolved onto both the ledger row and the event.
+ *   8. Real observed PreToolUse:Agent shape (top-level tool_use_id, no
+ *      agent_id/spawn_id anywhere) → non-null spawn_id (regression: fixtures
+ *      used to inject tool_input.agent_id, a field production never sends,
+ *      which hid a bug where every real offer row shipped spawn_id: null).
+ *   9. tool_use_id absent, tool_input.agent_id present → fallback still resolves.
  *
  * Runner: node --require ./tests/helpers/setup.js --test bin/__tests__/record-pattern-offers.test.js
  */
@@ -80,12 +85,18 @@ function runHook(payload, extraEnv) {
   return { stdout, events, offerRows };
 }
 
-function buildPayload({ prompt, toolName = 'Agent', extraToolInput = {} }) {
-  return {
+// Real PreToolUse:Agent shape: tool_use_id is top-level, never inside
+// tool_input, and tool_input carries no agent_id/spawn_id. Defaulting
+// toolUseId here (rather than omitting it) keeps TC-1..TC-6 realistic
+// without each having to opt in; pass toolUseId: null to test its absence.
+function buildPayload({ prompt, toolName = 'Agent', extraToolInput = {}, toolUseId = 'toolu_test_001' }) {
+  const payload = {
     tool_name: toolName,
-    tool_input: Object.assign({ subagent_type: 'developer', prompt, agent_id: 'spawn-001' }, extraToolInput),
+    tool_input: Object.assign({ subagent_type: 'developer', prompt }, extraToolInput),
     cwd: tmpDir,
   };
+  if (toolUseId !== null) payload.tool_use_id = toolUseId;
+  return payload;
 }
 
 // ---------------------------------------------------------------------------
@@ -178,16 +189,84 @@ test('TC-7: task_id/spawn_id/agent_role resolved onto the ledger row and event',
   writePatternFile('foo-bar');
   const payload = buildPayload({
     prompt: 'Use @orchestray:pattern://foo-bar here.',
-    extraToolInput: { task_id: 'W7', agent_id: 'spawn-xyz', subagent_type: 'tester' },
+    extraToolInput: { task_id: 'W7', subagent_type: 'tester' },
+    toolUseId: 'toolu_w7_xyz',
   });
   const { events, offerRows } = runHook(payload);
 
   assert.equal(offerRows[0].task_id, 'W7');
-  assert.equal(offerRows[0].spawn_id, 'spawn-xyz');
+  assert.equal(offerRows[0].spawn_id, 'toolu_w7_xyz');
   assert.equal(offerRows[0].agent_role, 'tester');
 
   const offered = events.find((e) => e.type === 'pattern_offered');
   assert.equal(offered.task_id, 'W7');
-  assert.equal(offered.spawn_id, 'spawn-xyz');
+  assert.equal(offered.spawn_id, 'toolu_w7_xyz');
   assert.equal(offered.agent_role, 'tester');
+});
+
+test('TC-8: real observed shape (top-level tool_use_id, no agent_id/spawn_id anywhere) → non-null spawn_id', () => {
+  // Regression for the producer bug: prior code read toolInput.agent_id/
+  // spawn_id, fields a real PreToolUse:Agent payload never carries, so
+  // spawn_id was always null. This fixture has neither — only the fields
+  // Claude Code actually sends.
+  writePatternFile('foo-bar');
+  const payload = {
+    tool_name: 'Agent',
+    tool_input: { subagent_type: 'developer', prompt: 'Use @orchestray:pattern://foo-bar here.', model: 'sonnet' },
+    tool_use_id: 'toolu_real_shape_001',
+    session_id: 'sess-1',
+    cwd: tmpDir,
+  };
+  const { offerRows } = runHook(payload);
+
+  assert.equal(offerRows.length, 1);
+  assert.equal(offerRows[0].spawn_id, 'toolu_real_shape_001');
+  assert.notEqual(offerRows[0].spawn_id, null);
+});
+
+// The Phase-2 consumer runs at SubagentStop, which carries neither
+// tool_use_id nor tool_input — it joins on (session_id, agent roster name).
+// If this row stops carrying that pair, every ack silently stops joining, so
+// these assertions are the producer half of the contract in
+// bin/_lib/pattern-evidence-ledger.js#findOfferRowForAgent.
+test('TC-10: join key (session_id, agent_name) is written onto the ledger row', () => {
+  writePatternFile('foo-bar');
+  const { offerRows } = runHook({
+    tool_name: 'Agent',
+    tool_input: {
+      subagent_type: 'developer',
+      prompt: 'Use @orchestray:pattern://foo-bar here.',
+      name: 'Dev-PE4-Registry',
+    },
+    tool_use_id: 'toolu_join_key_001',
+    session_id: 'sess-join-1',
+    cwd: tmpDir,
+  });
+
+  assert.equal(offerRows[0].session_id, 'sess-join-1');
+  assert.equal(offerRows[0].agent_name, 'dev-pe4-registry', 'the roster name is normalized so the two phases cannot drift on casing');
+});
+
+test('TC-11: no tool_input.name → agent_name falls back to subagent_type (how the runtime names it)', () => {
+  writePatternFile('foo-bar');
+  const { offerRows } = runHook({
+    tool_name: 'Agent',
+    tool_input: { subagent_type: 'architect', prompt: 'Use @orchestray:pattern://foo-bar here.' },
+    tool_use_id: 'toolu_join_key_002',
+    session_id: 'sess-join-2',
+    cwd: tmpDir,
+  });
+
+  assert.equal(offerRows[0].agent_name, 'architect');
+});
+
+test('TC-9: tool_use_id absent, tool_input.agent_id present → fallback resolves', () => {
+  writePatternFile('foo-bar');
+  const payload = buildPayload({
+    prompt: 'Use @orchestray:pattern://foo-bar here.',
+    extraToolInput: { agent_id: 'legacy-spawn-9' },
+    toolUseId: null,
+  });
+  const { offerRows } = runHook(payload);
+  assert.equal(offerRows[0].spawn_id, 'legacy-spawn-9');
 });

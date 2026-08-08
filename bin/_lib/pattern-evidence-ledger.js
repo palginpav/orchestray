@@ -10,7 +10,9 @@
  * (bin/commit-pattern-applications.js, orch-close) consume the rest of this
  * API — appendAck(), readOffersForOrch(), readAcksForOrch(), appendJournal().
  * This module's exports ARE that contract; treat every signature here as
- * load-bearing for work that has not landed yet.
+ * load-bearing for work that has not landed yet. That includes the Phase-1↔2
+ * join key — spawnAgentName/stopAgentName/findOfferRowForAgent at the bottom
+ * of this file are the single definition of how an ack finds its offer.
  *
  * NOT included here: `computeCredits` (design §11 lists it in this file,
  * but it is a pure join over offers/acks/orchEvents/config implementing the
@@ -37,6 +39,7 @@
 const fs   = require('fs');
 const path = require('path');
 const { atomicAppendJsonl, MAX_JSONL_READ_BYTES } = require('./atomic-append');
+const { stripCollisionSuffix } = require('./caller-identity');
 
 const OFFERS_REL  = path.join('.orchestray', 'state', 'pattern-offers.jsonl');
 const ACKS_REL    = path.join('.orchestray', 'state', 'pattern-acks.jsonl');
@@ -135,12 +138,109 @@ function readAcksForOrch(cwd, orchId) {
   return readJsonlLines(acksPath(cwd)).filter((r) => r && r.orchestration_id === orchId);
 }
 
+// ---------------------------------------------------------------------------
+// The offer↔ack join key. BOTH sides resolve it here, in this one file.
+//
+// Phase 1 runs at PreToolUse:Agent, Phase 2 at SubagentStop, and those two
+// payloads share exactly two values: `session_id` and the agent's ROSTER NAME.
+// They do NOT share an id — PreToolUse has `tool_use_id`, SubagentStop has no
+// such field, and the two `agent_id`s that do exist are differently shaped
+// (`dev-d1-gate@session-bed562d5` at PostToolUse vs `adev-pe4-registry-<hash>`
+// at SubagentStop). Hence the composite key.
+//
+// The roster name is unique per session because Claude Code auto-suffixes a
+// colliding registration (`curate-runner` → `curate-runner-2`; see
+// caller-identity.js#stripCollisionSuffix, which exists to undo exactly that).
+// The suffix is applied by the runtime AFTER Phase 1 has already recorded the
+// requested name, so the stop-side lookup must tolerate it — see
+// findOfferRowForAgent.
+//
+// This subsystem has shipped two identifier disagreements between its phases
+// already. Co-locating both resolvers is the mechanical fix: a change to one
+// side cannot land without the other side moving with it.
+// ---------------------------------------------------------------------------
+
+/** Key parts are compared case-/whitespace-insensitively; non-strings are ''. */
+function normKeyPart(v) {
+  return typeof v === 'string' ? v.trim().toLowerCase() : '';
+}
+
+/**
+ * Producer side (PreToolUse:Agent): the roster name this spawn was requested
+ * under. `tool_input.name` is the Agent Teams roster name; absent it, the
+ * runtime names the agent after its `subagent_type`.
+ *
+ * Returns the NORMALIZED name — that is what goes on the ledger row, so the
+ * two sides cannot drift on casing.
+ *
+ * @param {object} toolInput
+ * @returns {string} '' when unresolvable
+ */
+function spawnAgentName(toolInput) {
+  if (!toolInput || typeof toolInput !== 'object') return '';
+  return normKeyPart(toolInput.name) || normKeyPart(toolInput.subagent_type);
+}
+
+/**
+ * Consumer side (SubagentStop): `event.agent_type` is the roster name of the
+ * agent that just stopped — NOT its subagent_type, and not the caller's type
+ * the way the identically-named field reads at PreToolUse (caller-identity.js
+ * header, verified against 55/55 live sidecars).
+ *
+ * @param {object} event
+ * @returns {string} '' when unresolvable
+ */
+function stopAgentName(event) {
+  if (!event || typeof event !== 'object') return '';
+  return normKeyPart(event.agent_type);
+}
+
+/**
+ * Offer row for the agent that just stopped, or null.
+ *
+ * Match order:
+ *   1. Exact (session_id, agent_name). Multiple hits are the retry/duplicate
+ *      case — same requested name, so the most recent offer set is in force.
+ *   2. No exact hit → compare with the collision suffix stripped from both
+ *      sides, which repairs "requested `foo`, registered `foo-2`". Accepted
+ *      only when exactly one row matches: two rows under one base name is a
+ *      genuine ambiguity, and guessing would attribute a sibling spawn's
+ *      offers to this agent.
+ *
+ * Known bound: a name reused SEQUENTIALLY inside one orchestration+session
+ * (the first agent already deregistered, so the runtime does not suffix) makes
+ * both spawns share a key; rule 1 gives the stop the newer offer set. Blast
+ * radius is a coverage warning computed against the wrong offer set — the §5
+ * per-slug and per-orchestration credit caps are unaffected.
+ *
+ * @param {string} cwd
+ * @param {string} orchId
+ * @param {string} sessionId
+ * @param {string} agentName - already normalized (stopAgentName/spawnAgentName)
+ * @returns {object|null}
+ */
+function findOfferRowForAgent(cwd, orchId, sessionId, agentName) {
+  if (!agentName) return null;
+  const sess = normKeyPart(sessionId);
+  const rows = readOffersForOrch(cwd, orchId).filter((r) => normKeyPart(r.session_id) === sess);
+
+  const exact = rows.filter((r) => normKeyPart(r.agent_name) === agentName);
+  if (exact.length > 0) return exact[exact.length - 1];
+
+  const base = normKeyPart(stripCollisionSuffix(agentName));
+  const stripped = rows.filter((r) => normKeyPart(stripCollisionSuffix(r.agent_name)) === base);
+  return stripped.length === 1 ? stripped[0] : null;
+}
+
 module.exports = {
   appendOffer,
   appendAck,
   appendJournal,
   readOffersForOrch,
   readAcksForOrch,
+  spawnAgentName,
+  stopAgentName,
+  findOfferRowForAgent,
   // Path resolvers exported for tests and for the orch-close archive sweep
   // (design §10.1 — these two files move into .orchestray/history/<orch-id>/
   // alongside sibling operational state, same as mcp-checkpoint.jsonl).

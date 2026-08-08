@@ -1561,7 +1561,13 @@ function mergeHooks(targetDir) {
   // canonicalCommandByBasename: basename → canonical full command template
   // (with ${CLAUDE_PLUGIN_ROOT}/bin/ unexpanded — we expand per-install below).
   const canonicalCommandByBasename = new Map();
-  for (const entries of Object.values(orchestrayHooks)) {
+  // FN-16b: the flat set above only answers "is this script canonical
+  // ANYWHERE" — it can't see a script that stayed canonical but moved to a
+  // different (event, matcher), e.g. validate-pattern-ack.js re-registered
+  // from PostToolUse:Agent to SubagentStop. Track full triples so the prune
+  // sweep below can catch same-script-different-event stragglers too.
+  const canonicalEventBasenames = new Set();
+  for (const [ev, entries] of Object.entries(orchestrayHooks)) {
     if (!Array.isArray(entries)) continue;
     for (const entry of entries) {
       for (const h of (entry.hooks || [])) {
@@ -1571,6 +1577,7 @@ function mergeHooks(targetDir) {
         const scriptName = m[1];
         const base = path.basename(scriptName);
         canonicalBasenames.add(base);
+        canonicalEventBasenames.add(ev + ' ' + (entry.matcher || '') + ' ' + base);
         if (!canonicalCommandByBasename.has(base)) {
           canonicalCommandByBasename.set(base, { scriptName, rest: m[2] });
         }
@@ -1631,10 +1638,21 @@ function mergeHooks(targetDir) {
           // canonicalKnown so test fixtures with empty canonical hooks.json
           // can still drive missing-file-only assertions.
           const noLongerCanonical = canonicalKnown && !fileMissing && !canonicalBasenames.has(base);
-          if (fileMissing || noLongerCanonical) {
+          // Reason 3 (FN-16b): script is still canonical somewhere, but not
+          // under THIS (event, matcher) — it moved (e.g. validate-pattern-ack.js
+          // re-registered from PostToolUse:Agent to SubagentStop). The flat
+          // canonicalBasenames check above is event-agnostic and can't see this,
+          // so a same-script-different-event registration would otherwise
+          // survive every upgrade and double-fire alongside the correct one.
+          const eventMoved = canonicalKnown && !fileMissing && !noLongerCanonical &&
+            !canonicalEventBasenames.has(event + ' ' + (entry.matcher || '') + ' ' + base);
+          if (fileMissing || noLongerCanonical || eventMoved) {
             entry.hooks.splice(j, 1);
             pruned++;
-            prunedDetails.push({ event, matcher: entry.matcher || null, basename: base, reason: fileMissing ? 'file_missing' : 'no_longer_canonical' });
+            prunedDetails.push({
+              event, matcher: entry.matcher || null, basename: base,
+              reason: fileMissing ? 'file_missing' : (noLongerCanonical ? 'no_longer_canonical' : 'event_moved'),
+            });
             // Reason 2 only: also remove the stale script file from the install
             // dir so future SessionStart fires don't trip schema-shadow miss
             // counters via undeclared writeEvent calls.

@@ -53,6 +53,26 @@ describe('isValidPatternAckEntry', () => {
   test('rejects empty-string prose (the other cheap-null-action shape)', () => {
     assert.equal(mod.isValidPatternAckEntry({ slug: 'foo', how: '' }, 'how'), false);
   });
+
+  // Prose-key flexibility (resolvePatternAckProse): array membership already
+  // encodes used-vs-rejected, so the exact prose key name must not gate
+  // validity — only the presence of real 10-300 char prose does.
+  test('a patterns_rejected-shaped entry carrying `how` still validates against proseKey "why"', () => {
+    assert.equal(
+      mod.isValidPatternAckEntry({ slug: 'foo', how: 'analogous but not the same shape as this bug' }, 'why'),
+      true);
+  });
+
+  test('a patterns_used-shaped entry carrying `why` still validates against proseKey "how"', () => {
+    assert.equal(
+      mod.isValidPatternAckEntry({ slug: 'foo', why: 'it changed the decomposition in this specific way' }, 'how'),
+      true);
+  });
+
+  test('an entry with no prose under any accepted key remains invalid', () => {
+    assert.equal(mod.isValidPatternAckEntry({ slug: 'foo' }, 'how'), false);
+    assert.equal(mod.isValidPatternAckEntry({ slug: 'foo', unrelated_field: 'x'.repeat(20) }, 'why'), false);
+  });
 });
 
 describe('validateStructuredResult — patterns_used/patterns_rejected', () => {
@@ -148,6 +168,26 @@ describe('patternAckFieldsEnforced', () => {
   });
 });
 
+// Structural guard for the enforce_ack_fields exposure analysis (see
+// patternAckFieldsEnforced docstring): HARD_TIER must stay a subset of
+// output-shape.js's ROLE_CATEGORY_MAP, or a role could be blocked here for
+// a field inject-output-shape.js never asked it for.
+describe('HARD_TIER / ROLE_CATEGORY_MAP coupling', () => {
+  const { ROLE_CATEGORY_MAP, EXCLUDED_ROLES } = require('../_lib/output-shape.js');
+
+  test('every HARD_TIER role has an output-shape category (always gets the ask)', () => {
+    for (const role of mod.HARD_TIER) {
+      assert.ok(
+        Object.prototype.hasOwnProperty.call(ROLE_CATEGORY_MAP, role),
+        `${role} is in HARD_TIER but missing from ROLE_CATEGORY_MAP — ` +
+        'inject-output-shape.js would never append the patterns_used/patterns_rejected ' +
+        'ask to its spawn prompt, so enforce_ack_fields=true would strand it.'
+      );
+      assert.ok(!EXCLUDED_ROLES.has(role), `${role} is in both HARD_TIER and EXCLUDED_ROLES`);
+    }
+  });
+});
+
 function runHook(payload, cwd) {
   const tmp = cwd || fs.mkdtempSync(path.join(os.tmpdir(), 'vtc-ack-hook-'));
   const res = spawnSync('node', [HOOK], {
@@ -171,6 +211,32 @@ describe('validate-task-completion — integration: pattern-ack grace + enforcem
     });
     assert.equal(r.status, 0, 'in-flight/legacy agents must not be broken by the new fields');
     fs.rmSync(r.tmp, { recursive: true, force: true });
+  });
+
+  test('SubagentStop: enforced mode accepts a patterns_rejected entry carrying `how` instead of `why`', () => {
+    // Reproduces the production loss: a real rejection with substantive
+    // reasoning written under `how` must not be blocked as prose-less.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vtc-ack-prose-flex-'));
+    fs.mkdirSync(path.join(tmp, '.orchestray'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, '.orchestray', 'config.json'),
+      JSON.stringify({ pattern_evidence: { enforce_ack_fields: true } })
+    );
+    const r = runHook({
+      hook_event_name: 'SubagentStop',
+      subagent_type: 'developer',
+      output: '## Structured Result\n```json\n' + JSON.stringify({
+        status: 'success', summary: 'ok', files_changed: [], files_read: [], issues: [], assumptions: [],
+        self_check_passed: true, tests_added_or_existing: true,
+        patterns_used: [],
+        patterns_rejected: [{
+          slug: 'anti-pattern-half-shipped-enum',
+          how: 'Directly analogous but not the same shape: this bug is a canonical-set staleness gap',
+        }],
+      }) + '\n```\n',
+    }, tmp);
+    assert.equal(r.status, 0, 'prose under `how` inside patterns_rejected must satisfy the 10-300 char rule');
+    fs.rmSync(tmp, { recursive: true, force: true });
   });
 
   test('SubagentStop: malformed patterns_used blocks even during grace', () => {
