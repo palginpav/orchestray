@@ -63,6 +63,19 @@
  * THIS banner rather than adding a second one: a competing session-start
  * advisory is how banners become noise (see that script's header).
  *
+ * v2.3.23: also folds in the recent-diagnostics signal from
+ * bin/_lib/recent-diagnostics.js — diagnostic-shaped event types
+ * (*_warn/*_blocked/*_failed/*_missing/*_violation/*_detected/*_gap/
+ * *_orphaned/*_stale/*_drift) that HAVE fired in the last 24h, ranked by
+ * actionability rather than volume. Unlike the two signals above, this one
+ * has no cadence-job cache to read (see that module's header for why) — it
+ * does a single byte-capped tail read of events.jsonl instead. Folded into
+ * the SAME banner and the same `--json` payload for the same reason: a
+ * third competing advisory is exactly the noise this banner exists to
+ * avoid, and the line is restructured (two physical lines, one
+ * `[orchestray]`-prefixed header) rather than growing a third run-on
+ * clause — see formatBanner() below.
+ *
  * Two modes
  * ---------
  *   1. Hook mode (default): reads a SessionStart hook payload from stdin,
@@ -92,6 +105,7 @@ const os   = require('os');
 const { resolveSafeCwd }  = require('./_lib/resolve-project-cwd');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { readHookInputRaw } = require('./_lib/hook-stdin');
+const { computeRecentDiagnostics } = require('./_lib/recent-diagnostics');
 
 const CONTINUE_RESPONSE      = JSON.stringify({ continue: true });
 const STALE_AFTER_MS         = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -192,30 +206,55 @@ function computeMisshapenSnapshot(cwd, nowMs) {
 }
 
 /**
- * Format the session banner line. Returns null when there is nothing to
- * say. Folds dark-event and misshapen-emit signals into a single banner —
- * see the v2.3.22 header note on why a second competing advisory is not
- * added instead.
+ * Format the session banner. Returns null when there is nothing to say.
+ * Folds all three signals (dark-event, misshapen-emit, recent-diagnostics)
+ * into ONE banner rather than a fourth competing advisory — see the
+ * v2.3.22/v2.3.23 header notes. Two physical lines, not three run-on
+ * clauses crammed into one: line 1 is the "declared but quiet" header
+ * (dark + misshapen, unchanged wording from v2.3.22), line 2 is the "fired
+ * recently, ranked by actionability" signal plus the doctor pointer. Only
+ * line 1 (when present) carries the `[orchestray]` prefix — same
+ * one-header-line convention feature-quarantine-banner.js already uses for
+ * its own two-line advisory.
  */
-function formatBanner(result, misshapen) {
-  const clauses = [];
+function formatBanner(result, misshapen, recent) {
+  const headerClauses = [];
 
   if (result.totalDark > 0) {
     const worst = result.darkTypes.slice(0, TOP_N_NAMED)
       .map(d => `${d.event_type} ${d.days_dark}d`)
       .join(', ');
-    clauses.push(`${result.totalDark} declared event type(s) have never fired (worst: ${worst})`);
+    headerClauses.push(`${result.totalDark} declared event type(s) have never fired (worst: ${worst})`);
   }
 
   if (misshapen && misshapen.total > 0) {
-    clauses.push(
+    headerClauses.push(
       `${misshapen.total} audit row(s) are misshapen ("event:" not "type:") ` +
       `across ${misshapen.types.length} type(s)`,
     );
   }
 
-  if (clauses.length === 0) return null;
-  return `[orchestray] ${clauses.join('. ')}. Run \`/orchestray:doctor\` for the full list.\n`;
+  let recentClause = null;
+  if (recent && recent.totalMatched > 0) {
+    const top = recent.ranked.slice(0, TOP_N_NAMED)
+      .map(d => `${d.event_type} (${d.count})`)
+      .join(', ');
+    // windowTruncated: the tail cap didn't reach back the full window on a
+    // high-volume log — say so rather than silently under-reporting (see
+    // recent-diagnostics.js header).
+    const truncatedNote = recent.windowTruncated ? ', window truncated by log volume' : '';
+    recentClause = `${recent.totalMatched} diagnostic-shaped event(s) fired in the last ${recent.windowHours}h${truncatedNote} — top: ${top}`;
+  }
+
+  if (headerClauses.length === 0 && !recentClause) return null;
+
+  const line1 = headerClauses.length > 0 ? `[orchestray] ${headerClauses.join('. ')}.` : null;
+  const line2Body = recentClause
+    ? `${recentClause}. Run \`/orchestray:doctor\` for the full list.`
+    : 'Run `/orchestray:doctor` for the full list.';
+  const line2 = line1 ? line2Body : `[orchestray] ${line2Body}`;
+
+  return line1 ? `${line1}\n${line2}\n` : `${line2}\n`;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,7 +272,8 @@ function handle(event) {
     const nowMs = Date.now();
     const result     = computeDarkEvents(cwd, nowMs);
     const misshapen  = computeMisshapenSnapshot(cwd, nowMs);
-    const banner = formatBanner(result, misshapen);
+    const recent     = computeRecentDiagnostics(cwd, nowMs);
+    const banner = formatBanner(result, misshapen, recent);
     if (!banner) {
       process.stdout.write(CONTINUE_RESPONSE);
       return;
@@ -277,7 +317,8 @@ function runJsonMode(argv) {
   const nowMs = Date.now();
   const result    = computeDarkEvents(resolvedCwd, nowMs);
   const misshapen = computeMisshapenSnapshot(resolvedCwd, nowMs);
-  process.stdout.write(JSON.stringify(Object.assign({}, result, { misshapenEmits: misshapen })));
+  const recent    = computeRecentDiagnostics(resolvedCwd, nowMs);
+  process.stdout.write(JSON.stringify(Object.assign({}, result, { misshapenEmits: misshapen, recentDiagnostics: recent })));
 }
 
 // ---------------------------------------------------------------------------

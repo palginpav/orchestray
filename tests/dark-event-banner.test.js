@@ -95,6 +95,19 @@ function misshapenEntry(eventName, count) {
   return { event_name: eventName, count };
 }
 
+/** Append diagnostic-shaped rows to the live events.jsonl the banner tail-reads. */
+function writeDiagnosticEvents(dir, rows) {
+  const auditDir = path.join(dir, '.orchestray', 'audit');
+  fs.mkdirSync(auditDir, { recursive: true });
+  const text = rows.map((r) => JSON.stringify(r)).join('\n') + '\n';
+  fs.writeFileSync(path.join(auditDir, 'events.jsonl'), text);
+}
+
+/** Build an events.jsonl row `nowMs - msAgo` old. */
+function diagEvent(type, msAgo, nowMs = Date.now()) {
+  return { type, timestamp: new Date(nowMs - msAgo).toISOString() };
+}
+
 function runHook(dir, extraEnv = {}, sessionId) {
   const payload = JSON.stringify({ cwd: dir, session_id: sessionId });
   return spawnSync(process.execPath, [SCRIPT], {
@@ -322,6 +335,71 @@ describe('dark-event-banner: SessionStart advisory', () => {
     assert.ok(!result.stderr.includes('misshapen'), 'kill switch must suppress the whole banner, not just half of it');
   });
 
+  test('banners on recent diagnostic-shaped events alone, naming the worst offenders', () => {
+    const dir = makeDir();
+    writeDiagnosticEvents(dir, [
+      diagEvent('git_destructive_blocked', 1000),
+      diagEvent('schema_shape_violation', 1000),
+      diagEvent('orchestration_start', 1000), // not diagnostic-shaped, must not count
+    ]);
+    const result = runHook(dir, {}, freshSessionId());
+    assert.equal(result.status, 0);
+    assert.ok(result.stderr.includes('diagnostic-shaped event'), 'recent-diagnostics clause must appear');
+    assert.ok(result.stderr.includes('git_destructive_blocked'), 'tier-1 offender must be named');
+    assert.ok(result.stderr.includes('last 24h'), 'window must be stated');
+    assert.ok(result.stderr.includes('/orchestray:doctor'), 'must still point to doctor');
+  });
+
+  test('recent-diagnostics ranking outranks a higher-volume, lower-tier type', () => {
+    const dir = makeDir();
+    const rows = [];
+    for (let i = 0; i < 5; i++) rows.push(diagEvent('schema_shape_violation', 1000));
+    rows.push(diagEvent('git_destructive_blocked', 1000));
+    writeDiagnosticEvents(dir, rows);
+    const result = runHook(dir, {}, freshSessionId());
+    const line = result.stderr.split('\n').find((l) => l.includes('diagnostic-shaped event'));
+    assert.ok(line, 'recent-diagnostics line must be present');
+    const blockedIdx = line.indexOf('git_destructive_blocked');
+    const violationIdx = line.indexOf('schema_shape_violation');
+    assert.ok(blockedIdx !== -1 && violationIdx !== -1, 'both types must be named (only 2 distinct types fired)');
+    assert.ok(blockedIdx < violationIdx, 'tier-1 blocked (1 fire) must rank above tier-2 violation (5 fires)');
+  });
+
+  test('no recent-diagnostics clause when nothing diagnostic-shaped fired', () => {
+    const dir = makeDir();
+    writeDiagnosticEvents(dir, [diagEvent('orchestration_start', 1000)]);
+    const result = runHook(dir, {}, freshSessionId());
+    assert.ok(!result.stderr.includes('diagnostic-shaped event'), 'silent when nothing diagnostic-shaped fired');
+  });
+
+  test('recent-diagnostics excludes events older than the 24h window', () => {
+    const dir = makeDir();
+    writeDiagnosticEvents(dir, [diagEvent('git_destructive_blocked', 30 * 3600 * 1000)]);
+    const result = runHook(dir, {}, freshSessionId());
+    assert.ok(!result.stderr.includes('diagnostic-shaped event'), 'a 30h-old firing must fall outside a 24h window');
+  });
+
+  test('ORCHESTRAY_DARK_EVENT_BANNER_DISABLED=1 also suppresses the recent-diagnostics clause', () => {
+    const dir = makeDir();
+    writeDiagnosticEvents(dir, [diagEvent('git_destructive_blocked', 1000)]);
+    const result = runHook(dir, { ORCHESTRAY_DARK_EVENT_BANNER_DISABLED: '1' }, freshSessionId());
+    assert.equal(result.status, 0);
+    assert.ok(!result.stderr.includes('diagnostic-shaped'), 'kill switch must suppress the recent-diagnostics clause too');
+  });
+
+  test('prints still exactly one banner header line when all three signals fire together', () => {
+    const dir = makeDir();
+    writeState(dir, [darkEntry('some_dark_type', 20)]);
+    writeMisshapenState(dir, [misshapenEntry('task_completed', 30)]);
+    writeDiagnosticEvents(dir, [diagEvent('git_destructive_blocked', 1000)]);
+    const result = runHook(dir, {}, freshSessionId());
+    const bannerLines = result.stderr.split('\n').filter((l) => l.startsWith('[orchestray]'));
+    assert.equal(bannerLines.length, 1, 'must stay one banner header line even with three signals present');
+    assert.ok(result.stderr.includes('never fired'), 'dark-event clause must still be present');
+    assert.ok(result.stderr.includes('misshapen'), 'misshapen clause must still be present');
+    assert.ok(result.stderr.includes('diagnostic-shaped event'), 'recent-diagnostics clause must still be present');
+  });
+
   test('session-scoped: same session_id only banners once', () => {
     const dir = makeDir();
     writeState(dir, [darkEntry('repeat_type', 20)]);
@@ -374,5 +452,30 @@ describe('dark-event-banner: --json CLI mode', () => {
     const result = runJson(dir);
     const parsed = JSON.parse(result.stdout);
     assert.deepEqual(parsed.misshapenEmits, { types: [], total: 0 });
+  });
+
+  test('includes recentDiagnostics ranked by tier, alongside darkTypes and misshapenEmits', () => {
+    const dir = makeDir();
+    writeState(dir, [darkEntry('json_probe_type4', 15)]);
+    writeDiagnosticEvents(dir, [
+      diagEvent('schema_shape_violation', 1000),
+      diagEvent('git_destructive_blocked', 1000),
+    ]);
+    const result = runJson(dir);
+    assert.equal(result.status, 0);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.recentDiagnostics.totalMatched, 2);
+    assert.equal(parsed.recentDiagnostics.windowHours, 24);
+    assert.deepEqual(parsed.recentDiagnostics.ranked.map((r) => r.event_type), [
+      'git_destructive_blocked',
+      'schema_shape_violation',
+    ]);
+  });
+
+  test('recentDiagnostics is empty when no audit log exists yet', () => {
+    const dir = makeDir();
+    const result = runJson(dir);
+    const parsed = JSON.parse(result.stdout);
+    assert.deepEqual(parsed.recentDiagnostics, { totalMatched: 0, ranked: [], windowHours: 24, windowTruncated: false });
   });
 });

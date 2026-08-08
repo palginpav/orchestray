@@ -7,7 +7,7 @@ argument-hint: "[--verbose|-v] [--deep]"
 
 # Orchestray Doctor
 
-Run 13 probes (14 with `--deep`) against the current Orchestray installation and print a
+Run 14 probes (15 with `--deep`) against the current Orchestray installation and print a
 structured health report. If `$ARGUMENTS` contains `--verbose` or `-v`, emit a
 `## Detail` section after the summary.
 
@@ -330,6 +330,46 @@ deletes them (see `.orchestray/kb/decisions/bare-event-key-hand-appends.md`).
 
 ---
 
+### P9c3: Recent diagnostic-shaped events (fired, not never-fired)
+
+P9c and P9c2 report event types that have declared but never fired, or that
+fired misshapen. Neither says anything about the 37 diagnostic-shaped types
+(`*_warn`, `*_blocked`, `*_failed`, `*_missing`, `*_violation`, `*_detected`,
+`*_gap`, `*_orphaned`, `*_stale`, `*_drift`) that HAVE fired — the more
+urgent half of the picture, and previously surfaced nowhere. This probe
+reads `recentDiagnostics` from the SAME `dark-event-banner.js --json`
+invocation P9c/P9c2 already parse (still one subprocess call).
+
+Skip when `$PROJECT_ROOT/.orchestray/` does not exist (same as P9c/P9c2).
+
+Parse `recentDiagnostics: {totalMatched, windowHours, windowTruncated,
+ranked: [{event_type, count, tier}, ...]}` from the same stdout JSON.
+`ranked` is pre-sorted by actionability: tier 1 (`*_blocked`/`*_failed` — an
+enforcement action fired or something outright failed) outranks tier 2
+(`*_missing`/`*_orphaned`/`*_violation`) which outranks tier 3
+(`*_gap`/`*_stale`/`*_drift`/`*_detected`/`*_warn`), and within a tier, higher
+in-window count ranks first. This is why a single firing of
+`git_destructive_blocked` can rank above twenty firings of
+`schema_shape_violation` — tier beats volume.
+
+- `totalMatched == 0`: status=OK.
+  Line: `[OK]    recent diagnostics (0 diagnostic-shaped events in the last {windowHours}h)`
+- `totalMatched > 0`: status=WARN.
+  Line: `[WARN]  {totalMatched} diagnostic-shaped event(s) fired in the last {windowHours}h{, window truncated by log volume if windowTruncated} — top: {top 3 ranked as "event_type (Ncount)", comma-joined} — see /orchestray:doctor --verbose`
+
+In `--verbose` mode, list up to 15 entries of `ranked[]` under `## Detail`,
+one per line: `{event_type}  tier {tier}, {count} fire(s) in the last
+{windowHours}h`. If more than 15, append `(+{N-15} more)`. If
+`windowTruncated` is true, also append a line noting the tail-read cap may
+have cut off older-but-still-in-window rows on a high-volume log.
+
+P9c3 WARN increments `N_warn`. This probe never FAILs — like P9c/P9c2, a
+nonzero count is "worth a look", not a broken install: some diagnostic types
+fire routinely by design (e.g. a guard rail tripping as intended), and a
+quiet 24h window correctly reads `totalMatched: 0`.
+
+---
+
 ### P9d: KB decision staleness
 
 `.orchestray/kb/decisions/` is the system of record for outstanding
@@ -441,7 +481,7 @@ P10 FAIL increments `N_fail`. P10 WARN increments `N_warn`.
 
 ## Output format
 
-After running all probes (12 without `--deep`, 13 with `--deep`), print:
+After running all probes (14 without `--deep`, 15 with `--deep`), print:
 
 ```
 Orchestray v{VERSION} — health check
@@ -457,6 +497,8 @@ Orchestray v{VERSION} — health check
 {P9 line}
 {P9b line}
 {P9c line}
+{P9c2 line}
+{P9c3 line}
 {P9d line}
 {P10 line — only when --deep}
 
@@ -464,7 +506,7 @@ Orchestray v{VERSION} — health check
 doctor-result-code: {code}
 ```
 
-`N_total` is 12 without `--deep`, 13 with `--deep`.
+`N_total` is 14 without `--deep`, 15 with `--deep`.
 
 Where:
 - `{suffix}` is ` Run with --verbose for details.` when `N_warn + N_fail > 0` and
@@ -491,9 +533,11 @@ Orchestray v2.1.3 — health check
 [OK]    plugin install coherent (v2.1.3, 162 files tracked)
 [OK]    BDG corpus: 12/14 scripts covered (183 fixtures)
 [OK]    dark events (0 declared types have never fired)
+[OK]    misshapen audit rows (0 rows shaped "event:" instead of "type:")
+[OK]    recent diagnostics (0 diagnostic-shaped events in the last 24h)
 [OK]    KB decisions: 0 open/blocking (24/32 carry no status line — legacy, not a failure)
 
-11 probes, 0 warning(s), 0 failure(s).
+14 probes, 0 warning(s), 0 failure(s).
 doctor-result-code: 0
 ```
 
@@ -511,10 +555,12 @@ Orchestray v2.1.3 — health check
 [OK]    plugin install coherent (v2.1.3, 162 files tracked)
 [OK]    BDG corpus: 12/14 scripts covered (183 fixtures)
 [OK]    dark events (0 declared types have never fired)
+[OK]    misshapen audit rows (0 rows shaped "event:" instead of "type:")
+[OK]    recent diagnostics (0 diagnostic-shaped events in the last 24h)
 [OK]    KB decisions: 0 open/blocking (24/32 carry no status line — legacy, not a failure)
 [OK]    install integrity verified (162 files)
 
-12 probes, 0 warning(s), 0 failure(s).
+15 probes, 0 warning(s), 0 failure(s).
 doctor-result-code: 0
 ```
 
@@ -535,5 +581,5 @@ If `$PROJECT_ROOT/.orchestray/` does not exist at all, emit before the probe lis
 ```
 [WARN]  no .orchestray/ directory — run from a project root or run /orchestray:run first
 ```
-Then skip P3, P4, P7, P9b, P9c, P9d (project-scoped probes) and run P1, P2, P5, P6, P8 only.
+Then skip P3, P4, P7, P9b, P9c, P9c2, P9c3, P9d (project-scoped probes) and run P1, P2, P5, P6, P8 only.
 Adjust totals accordingly.
