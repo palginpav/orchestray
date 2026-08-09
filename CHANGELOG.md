@@ -3,6 +3,18 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.22] - 2026-08-09
+
+**Orchestray 2.3.22 fixes a regression introduced in 2.3.21: a fresh install never received the instructions Orchestray needs to resume an in-progress orchestration after Claude Code automatically compacts a long session. It also adds automatic cleanup of files an older version installed that the current version no longer ships.**
+
+### Fixed
+
+- **A fresh install of Orchestray 2.3.21 silently missed the "resume after compaction" instructions.** The installer is supposed to add a short section to your project's Claude instructions so an in-flight orchestration can pick back up after Claude Code compacts a long session — but the file it read that section from stopped shipping in 2.3.21, so the step quietly did nothing and left nothing behind. If you installed fresh at 2.3.21, that section was missing; this release restores it on your next install. If you upgraded from 2.3.20, you already had it and were never affected.
+
+### Added
+
+- **Upgrading now cleans up after itself.** If an older version installed a file that the version you're upgrading to no longer ships, the installer now removes it — but only when it's byte-for-byte what was originally installed. Anything you've edited yourself is left alone and reported, never silently deleted. Opt out with `install_orphan_prune.enabled: false` in `.orchestray/config.json` if you'd rather manage this yourself.
+
 ## [2.3.21] - 2026-08-09
 
 **Orchestray 2.3.21 is a "things documented as working that silently were not" release: emergency kill switches that had no effect when set, event-log rows written by hand that were invisible to every dashboard, and a diagnostics banner that only ever reported the empty half of the picture. All are closed, with the recording pipeline itself hardened against a rare timing gap that could otherwise lose data.**

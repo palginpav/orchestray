@@ -655,6 +655,14 @@ const patternEvidenceSchema = z.object({
   never_offered_window_orchestrations: z.number().int().min(1).optional(),
 }).passthrough();
 
+// v2.3.22: install_orphan_prune — kill switch for bin/install.js's orphan
+// pruning (pruneOrphanedFiles in bin/_lib/install-manifest.js). Ships
+// default-on per feedback_default_on_shipping.md. Mirrored env override:
+// ORCHESTRAY_INSTALL_ORPHAN_PRUNE_DISABLED=1.
+const installOrphanPruneSchema = z.object({
+  enabled: z.boolean().optional(),
+}).passthrough();
+
 // ---------------------------------------------------------------------------
 // Top-level schema
 // ---------------------------------------------------------------------------
@@ -808,6 +816,8 @@ const configSchema = z.object({
   tokenwright: tokenwrightSchema.optional(),
   // v2.3.19: pattern_evidence — evidence-based pattern-application counting.
   pattern_evidence: patternEvidenceSchema.optional(),
+  // v2.3.22: install_orphan_prune — orphan-file pruning kill switch (bin/install.js).
+  install_orphan_prune: installOrphanPruneSchema.optional(),
 }).passthrough(); // R-CONFIG-DRIFT (W9) owns unknown-key warnings; this schema tolerates them.
 
 module.exports = {
@@ -857,4 +867,6 @@ module.exports = {
   blockAZoneCachingSchema,
   // v2.3.19: evidence-based pattern-application counting.
   patternEvidenceSchema,
+  // v2.3.22: orphan-file pruning kill switch.
+  installOrphanPruneSchema,
 };

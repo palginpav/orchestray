@@ -10238,6 +10238,83 @@ intentional install.
 
 ---
 
+### Degraded-journal kind — install_orphan_pruned (v2.3.22)
+
+> Recorded as a `degraded.jsonl` kind, not an `events.jsonl` event-type —
+> same classification as the neighboring `install_stale_hook_pruned` /
+> `install_hook_args_updated` kinds above. Activation-ratio rollups that
+> scan `events.jsonl` will not see these rows. `mcp__orchestray__schema_get`
+> and the tier2-index will NOT resolve this slug — that is expected.
+
+Recorded by `bin/install.js` when a file tracked by the PREVIOUS install's
+manifest is absent from THIS install's tracked-file set (e.g.
+`orchestray/CLAUDE.md`, shipped in v2.3.20 and dropped from `package.json`'s
+`files` in v2.3.21 — left behind by every upgrade since, because nothing
+swept it) and its on-disk content still matches the hash the previous
+manifest recorded. One row per pruned file.
+
+Sample record (degraded.jsonl):
+
+    {
+      "kind": "install_orphan_pruned",
+      "severity": "info",
+      "detail": {
+        "path": "orchestray/CLAUDE.md",
+        "schema_version": 1,
+        "dedup_key": "install_orphan_pruned|orchestray/CLAUDE.md"
+      }
+    }
+
+Required detail fields: `path` (string, target-relative), `schema_version` (1), `dedup_key` (string).
+
+Recorded from: `bin/install.js` (orphan-prune step, install-time) via `recordDegradation`, backed by `pruneOrphanedFiles` in `bin/_lib/install-manifest.js`.
+
+Kill switch: `ORCHESTRAY_INSTALL_ORPHAN_PRUNE_DISABLED=1`, or `install_orphan_prune.enabled: false` in `.orchestray/config.json` (default ON — opt-out skips the whole prune sweep, no record written).
+
+---
+
+### Degraded-journal kind — install_orphan_prune_skipped (v2.3.22)
+
+> Recorded as a `degraded.jsonl` kind, not an `events.jsonl` event-type — see
+> the classification note on `install_orphan_pruned` immediately above.
+
+Recorded by `bin/install.js` for every orphaned file (present in the
+PREVIOUS install's manifest, absent from THIS install's tracked-file set)
+that was **not** deleted. Covers the cases where auto-deletion would be
+unsafe: the on-disk file no longer matches its recorded hash (user edited
+it), the previous manifest recorded no hash for it, the candidate path fails
+the install-root/`..`-segment safety check, or the unlink itself failed.
+
+Sample record (degraded.jsonl):
+
+    {
+      "kind": "install_orphan_prune_skipped",
+      "severity": "warn",
+      "detail": {
+        "path": "orchestray/CLAUDE.md",
+        "reason": "hash_mismatch",
+        "schema_version": 1,
+        "dedup_key": "install_orphan_prune_skipped|orchestray/CLAUDE.md",
+        "error_code": "EACCES"
+      }
+    }
+
+Field notes:
+- `reason`: one of `hash_mismatch` (file modified since install — kept),
+  `no_recorded_hash` (previous manifest had no hash for this path — kept),
+  `unsafe_path` (candidate failed the install-root containment / `..`-segment
+  check — kept), `unlink_error` (delete attempt failed — kept).
+- `error_code`: only present for `reason: unlink_error`; the filesystem
+  error code (e.g. `EACCES`).
+
+Required detail fields: `path` (string), `reason` (string enum above), `schema_version` (1), `dedup_key` (string). Optional: `error_code`.
+
+Recorded from: `bin/install.js` (orphan-prune step, install-time) via `recordDegradation`, backed by `pruneOrphanedFiles` in `bin/_lib/install-manifest.js`.
+
+Kill switch: same as `install_orphan_pruned` above — `ORCHESTRAY_INSTALL_ORPHAN_PRUNE_DISABLED=1` or `install_orphan_prune.enabled: false` disables the whole sweep, so no rows of either kind are written.
+
+---
+
 ## Mechanical-enforcement gates (v2.2.15)
 
 The W8d wave wired four PreToolUse:Agent / SubagentStop / SessionStart hooks

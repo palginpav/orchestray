@@ -236,6 +236,11 @@ const KNOWN_TOP_LEVEL_KEYS = Object.freeze([
   // live by bin/validate-task-completion.js (enforce_ack_fields ramp flag) —
   // absent from this list would trip drift detection on that flag today.
   'pattern_evidence',
+
+  // install_orphan_prune (v2.3.22) — orphan-file pruning kill switch, read
+  // by bin/install.js isOrphanPruneDisabled(). Mirrors installOrphanPruneSchema
+  // in schemas/config.schema.js.
+  'install_orphan_prune',
 ]);
 
 /**

@@ -172,6 +172,7 @@ All plugin-loader features ship default-on and have a kill switch. Setting the m
 | Dual-install divergence auto-heal (v2.2.18) | `dual_install.autoheal_enabled: false` | `ORCHESTRAY_DUAL_INSTALL_AUTOHEAL_DISABLED=1` | default-on |
 | Install chmod hardening (v2.2.21) | — | `ORCHESTRAY_INSTALL_CHMOD_DISABLED=1` | default-on |
 | Install-time hook reorder auto-fix (v2.2.13) | — | `ORCHESTRAY_INSTALL_HOOK_REORDER_DISABLED=1` | default-on |
+| Orphaned-file pruning on upgrade (v2.3.22) | `install_orphan_prune.enabled: false` | `ORCHESTRAY_INSTALL_ORPHAN_PRUNE_DISABLED=1` | default-on |
 | Schema mtime-based cache invalidation (v2.2.18) | — | `ORCHESTRAY_SCHEMA_CACHE_INVALIDATION_DISABLED=1` | default-on |
 
 ## 9. Lints & static checks

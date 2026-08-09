@@ -8,7 +8,7 @@ const os = require('os');
 const path = require('path');
 
 const { recordDegradation } = require('./_lib/degraded-journal');
-const { computeManifest }  = require('./_lib/install-manifest');
+const { computeManifest, pruneOrphanedFiles } = require('./_lib/install-manifest');
 
 const VERSION = require('../package.json').version;
 const REPO = 'https://github.com/palginpav/orchestray';
@@ -475,6 +475,53 @@ function readPreviousVersion(targetDir) {
   } catch (_e) {
     // File absent on fresh installs — not an error.
     return null;
+  }
+}
+
+/**
+ * Read and parse the PREVIOUS install's manifest.json, BEFORE this install
+ * overwrites it. Feeds `pruneOrphanedFiles` (v2.3.22) so orphaned files can
+ * be diffed against the version that actually shipped them.
+ *
+ * @param {string} targetDir  The Claude config directory (e.g. ~/.claude).
+ * @returns {object|null}     Parsed manifest, or null on any error (absent,
+ *                            unparseable, fresh install). Fail-safe: the
+ *                            caller treats null as "skip pruning".
+ */
+function readPreviousManifest(targetDir) {
+  try {
+    return JSON.parse(
+      fs.readFileSync(path.join(targetDir, 'orchestray', 'manifest.json'), 'utf8')
+    );
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
+ * v2.3.22: kill switch for orphan-file pruning (pruneOrphanedFiles).
+ * Env var takes precedence; falls back to `.orchestray/config.json`'s
+ * `install_orphan_prune.enabled` (default true — ships default-on per
+ * feedback_default_on_shipping.md). Mirrors the read style already used by
+ * `_maybeCreateSharedFederationDirs` — best-effort, fails open to "enabled"
+ * on any read/parse error so a malformed config never silently disables a
+ * safety feature by accident.
+ *
+ * @param {string} projectRoot  process.cwd() — where `.orchestray/config.json` lives.
+ * @returns {boolean}           true = pruning disabled.
+ */
+function isOrphanPruneDisabled(projectRoot) {
+  if (process.env.ORCHESTRAY_INSTALL_ORPHAN_PRUNE_DISABLED === '1') return true;
+  try {
+    const configFilePath = path.join(projectRoot, '.orchestray', 'config.json');
+    if (!fs.existsSync(configFilePath)) return false;
+    const parsed = JSON.parse(fs.readFileSync(configFilePath, 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+    const section = parsed.install_orphan_prune;
+    if (!section || typeof section !== 'object' || Array.isArray(section)) return false;
+    return section.enabled === false;
+  } catch (_e) {
+    return false; // malformed config — fail open (feature stays enabled)
   }
 }
 
@@ -1205,26 +1252,31 @@ function install(targetDir) {
     track(path.join('orchestray', 'settings.json'));
   }
 
-  // 6. Copy CLAUDE.md to orchestray/ for reference
-  const claudeMdSrc = path.join(pkgRoot, 'CLAUDE.md');
-  if (fs.existsSync(claudeMdSrc)) {
-    fs.copyFileSync(claudeMdSrc, path.join(targetDir, 'orchestray', 'CLAUDE.md'));
-    track(path.join('orchestray', 'CLAUDE.md'));
-  }
-
-  // 6a. SB2: Merge the load-bearing ## Compact Instructions section from the
-  // package CLAUDE.md into the user's project-level CLAUDE.md (process.cwd()/CLAUDE.md).
-  // This is idempotent: skipped if the marker string is already present.
-  // If no CLAUDE.md exists it is created with only this section.
-  // CLAUDE.md is gitignored in this repo so it would never reach fresh installs
-  // via npm — this step ensures the compaction-preserve paragraph is always present.
-  _mergeCompactInstructionsIntoCLAUDEmd(claudeMdSrc, process.cwd());
+  // 6. SB2: Merge the load-bearing ## Compact Instructions section into the user's
+  // project-level CLAUDE.md (process.cwd()/CLAUDE.md). Idempotent: skipped if the
+  // marker string is already present; creates the file if absent.
+  //
+  // v2.3.22: sourced from the shipped assets/ copy. Previously this read the package
+  // root CLAUDE.md, which is gitignored here and stopped being published in v2.3.21 —
+  // existsSync then failed and the merge silently no-opped, so fresh npm installs got
+  // no post-compact recovery contract. The repo CLAUDE.md is no longer copied into the
+  // install directory at all; only this one section ships.
+  const compactSrc = path.join(pkgRoot, 'assets', 'compact-instructions.md');
+  const legacyClaudeMdSrc = path.join(pkgRoot, 'CLAUDE.md'); // pre-2.3.22 fallback
+  _mergeCompactInstructionsIntoCLAUDEmd(
+    fs.existsSync(compactSrc) ? compactSrc : legacyClaudeMdSrc,
+    process.cwd()
+  );
 
   // 7. Write version file.
   // R2-B-1 fix: capture previous version BEFORE overwriting — readPreviousVersion
   // reads this same file, so it must be called first or it will return the new
   // VERSION value, making previous_version === version in the upgrade sentinel.
   const prevVersion = readPreviousVersion(targetDir);
+  // v2.3.22: capture the previous manifest for orphan pruning below, for the
+  // same reason — it must be read before manifest.json gets overwritten
+  // (step 8), or the diff would compare this version against itself.
+  const prevManifestForPrune = readPreviousManifest(targetDir);
   fs.writeFileSync(path.join(targetDir, 'orchestray', 'VERSION'), VERSION + '\n');
   track(path.join('orchestray', 'VERSION'));
 
@@ -1336,6 +1388,73 @@ function install(targetDir) {
       `    This indicates a partial or corrupted copy. Re-run the installer.\n`
     );
     process.exit(1);
+  }
+
+  // 8b (v2.3.22): prune files this install no longer ships but the previous
+  // install did — e.g. orchestray/CLAUDE.md, dropped from package.json's
+  // `files` in v2.3.21 and left behind by every upgrade since (nothing swept
+  // it). Only deletes candidates whose on-disk hash still matches what the
+  // previous manifest recorded at install time; anything the user touched
+  // is reported and left alone. Diffs against prevManifestForPrune (read in
+  // step 7, before manifest.json is overwritten below).
+  const orphanPruneDisabled = isOrphanPruneDisabled(process.cwd());
+  if (!orphanPruneDisabled) {
+    const pruneResult = pruneOrphanedFiles(targetDir, prevManifestForPrune, trackedFiles);
+
+    if (pruneResult.deleted.length > 0) {
+      say(
+        `  \x1b[32m✓\x1b[0m Pruned ${pruneResult.deleted.length} orphaned file` +
+        (pruneResult.deleted.length === 1 ? '' : 's') +
+        ` no longer shipped by this version.`
+      );
+      for (const relPath of pruneResult.deleted) {
+        try {
+          recordDegradation({
+            kind: 'install_orphan_pruned',
+            severity: 'info',
+            projectRoot: process.cwd(),
+            detail: {
+              path: relPath,
+              schema_version: 1,
+              dedup_key: 'install_orphan_pruned|' + relPath,
+            },
+          });
+        } catch (_e) { /* fail-open */ }
+      }
+    }
+
+    // Only hash_mismatch / no_recorded_hash represent "kept because it looks
+    // user-modified" — surface those on stderr. unsafe_path / unlink_error
+    // are unexpected-edge-case territory; still journaled below, but silent
+    // on stdout/stderr so a healthy install stays quiet.
+    const modifiedKept = pruneResult.skipped.filter(
+      (s) => s.reason === 'hash_mismatch' || s.reason === 'no_recorded_hash'
+    );
+    if (modifiedKept.length > 0) {
+      say(
+        `  \x1b[33m⚠\x1b[0m Kept ${modifiedKept.length} orphaned file` +
+        (modifiedKept.length === 1 ? '' : 's') +
+        ` no longer shipped by this version but modified since install — not auto-pruned.`
+      );
+    }
+    for (const s of pruneResult.skipped) {
+      try {
+        recordDegradation({
+          kind: 'install_orphan_prune_skipped',
+          severity: 'warn',
+          projectRoot: process.cwd(),
+          detail: Object.assign(
+            {
+              path: s.path,
+              reason: s.reason,
+              schema_version: 1,
+              dedup_key: 'install_orphan_prune_skipped|' + s.path,
+            },
+            s.error_code ? { error_code: s.error_code } : {}
+          ),
+        });
+      } catch (_e) { /* fail-open */ }
+    }
   }
 
   const manifest = {

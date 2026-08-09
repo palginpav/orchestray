@@ -340,11 +340,134 @@ function _journalOnce(dedupKey, fn) {
   try { fn(); } catch (_e) { /* swallow — journal failure must not block boot */ }
 }
 
+// ---------------------------------------------------------------------------
+// Orphan pruning (v2.3.22)
+// ---------------------------------------------------------------------------
+//
+// A file tracked by manifest N can stop being tracked by manifest N+1 (e.g.
+// a file dropped from package.json's `files`). Nothing removed it from disk
+// on upgrade until this — it just sat there as stale cruft forever. See the
+// CLAUDE.md orphan case: v2.3.20 shipped orchestray/CLAUDE.md, v2.3.21 didn't,
+// and an in-place upgrade left the v2.3.20 copy behind.
+//
+// Off-limits regardless of what a (possibly stale or hand-edited) previous
+// manifest claims to have tracked — install.js never writes these via
+// track(), so a legitimate manifest never lists them, but a corrupted one
+// might. Vendored deps have their own sweep (pruneStaleVendoredDeps in
+// bin/install.js); custom-agents/ is user content.
+const _PRUNE_OFF_LIMITS_PREFIXES = [
+  'orchestray' + path.sep + 'custom-agents' + path.sep,
+  'orchestray' + path.sep + 'node_modules' + path.sep,
+];
+
+/**
+ * True iff `relPath` is safe to treat as a prune candidate under `targetReal`
+ * (an already-resolved absolute directory).
+ *
+ * @param {string} targetReal  path.resolve(targetDir) — resolved once by the caller.
+ * @param {string} relPath     Target-relative path from a manifest's `files` array.
+ */
+function _isPruneSafePath(targetReal, relPath) {
+  if (typeof relPath !== 'string' || relPath.length === 0) return false;
+  if (path.isAbsolute(relPath)) return false;
+  // Reject any `..` path segment — no traversal above targetDir. Mirrors the
+  // segment-based check in pruneStaleVendoredDeps (bin/install.js) rather
+  // than a bare rel.startsWith('..') string test, which would false-positive
+  // on a literal directory name like `..hidden`.
+  const segments = relPath.split(/[\\/]/);
+  if (segments.some((seg) => seg === '..')) return false;
+
+  const normalized = segments.join(path.sep);
+  if (_PRUNE_OFF_LIMITS_PREFIXES.some((prefix) => normalized.startsWith(prefix))) return false;
+
+  const resolved = path.resolve(targetReal, relPath);
+  return resolved === targetReal || resolved.startsWith(targetReal + path.sep);
+}
+
+/**
+ * Delete files this install no longer tracks but the PREVIOUS install did —
+ * only when the on-disk file is byte-identical to what was recorded at
+ * install time (i.e., untouched by the user since).
+ *
+ * Never throws. Fail-safe on every axis: an absent, unparseable, or legacy
+ * (schema 1, no `files_hashes`) previous manifest is a no-op. A candidate
+ * whose hash doesn't match (user-modified), has no recorded hash, resolves
+ * outside `targetDir`, or fails to unlink is reported via `skipped`, never
+ * deleted. A candidate already gone from disk (ENOENT) is silently ignored
+ * — there's nothing to prune.
+ *
+ * @param {string} targetDir              The Claude config directory (e.g. ~/.claude).
+ * @param {object|null} prevManifest      Parsed manifest.json from the PREVIOUS
+ *                                        install, read BEFORE this install
+ *                                        overwrites it. null/malformed -> no-op.
+ * @param {Set<string>|string[]} currentFiles  Target-relative paths THIS
+ *                                        install just wrote (its `files` list).
+ * @returns {{
+ *   deleted: string[],
+ *   skipped: Array<{ path: string, reason: 'hash_mismatch'|'no_recorded_hash'|'unsafe_path'|'unlink_error', error_code?: string }>,
+ * }}
+ */
+function pruneOrphanedFiles(targetDir, prevManifest, currentFiles) {
+  const result = { deleted: [], skipped: [] };
+
+  if (!prevManifest || typeof prevManifest !== 'object' || Array.isArray(prevManifest)) return result;
+  if (prevManifest.manifest_schema !== 2 || !Array.isArray(prevManifest.files)) return result;
+
+  const filesHashes = (prevManifest.files_hashes &&
+    typeof prevManifest.files_hashes === 'object' &&
+    !Array.isArray(prevManifest.files_hashes)) ? prevManifest.files_hashes : {};
+
+  const currentSet = currentFiles instanceof Set ? currentFiles : new Set(currentFiles);
+  const targetReal = path.resolve(targetDir);
+
+  for (const relPath of prevManifest.files) {
+    if (typeof relPath !== 'string' || relPath.length === 0) continue;
+    if (currentSet.has(relPath)) continue; // still shipped by this version
+
+    if (!_isPruneSafePath(targetReal, relPath)) {
+      result.skipped.push({ path: relPath, reason: 'unsafe_path' });
+      continue;
+    }
+
+    const absPath = path.join(targetDir, relPath);
+    const expectedHash = filesHashes[relPath];
+    if (typeof expectedHash !== 'string' || expectedHash.length === 0) {
+      result.skipped.push({ path: relPath, reason: 'no_recorded_hash' });
+      continue;
+    }
+
+    let actualHash;
+    try {
+      actualHash = _hashFile(absPath);
+    } catch (e) {
+      if (e && e.code === 'ENOENT') continue; // already gone — nothing to prune
+      result.skipped.push({ path: relPath, reason: 'unlink_error', error_code: (e && e.code) || 'UNKNOWN' });
+      continue;
+    }
+
+    if (actualHash !== expectedHash) {
+      result.skipped.push({ path: relPath, reason: 'hash_mismatch' });
+      continue;
+    }
+
+    try {
+      fs.unlinkSync(absPath);
+      result.deleted.push(relPath);
+    } catch (e) {
+      result.skipped.push({ path: relPath, reason: 'unlink_error', error_code: (e && e.code) || 'UNKNOWN' });
+    }
+  }
+
+  return result;
+}
+
 module.exports = {
   computeManifest,
   verifyManifest,
   verifyManifestOnBoot,
+  pruneOrphanedFiles,
   // Exported for tests only:
   _hashFile,
   _readManifest,
+  _isPruneSafePath,
 };
