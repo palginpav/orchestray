@@ -10,6 +10,11 @@
  *
  * Prevents future drift between the canonical CLAUDE.md command list
  * and the user-facing README discovery surface.
+ *
+ * CLAUDE.md is developer-local (gitignored), so it does not exist on a fresh
+ * clone or in CI. The CLAUDE.md-dependent assertions skip in that case rather
+ * than fail — the drift guard still runs on any working tree that has the file,
+ * which is where drift is actually introduced. README assertions always run.
  */
 
 const { test, describe } = require('node:test');
@@ -43,6 +48,14 @@ function findMainWorktreeRoot() {
 const MAIN_ROOT = findMainWorktreeRoot();
 const CLAUDE_MD = path.join(MAIN_ROOT, 'CLAUDE.md');
 const README_MD = path.join(REPO_ROOT, 'README.md');
+
+// CLAUDE.md is developer-local and gitignored, so it is absent on a fresh
+// clone and in CI. Parity is still worth asserting wherever it DOES exist —
+// skip rather than fail so the suite stays green on a clean checkout.
+const HAS_CLAUDE_MD = fs.existsSync(CLAUDE_MD);
+const SKIP_NO_CLAUDE_MD = HAS_CLAUDE_MD
+  ? false
+  : 'CLAUDE.md is developer-local (gitignored) and absent here — parity check not applicable';
 
 /**
  * Extract the base command slug from a `/orchestray:X ...` string.
@@ -110,12 +123,11 @@ function parseReadmeCommands(content) {
 
 describe('readme-key-commands-parity (F-01 / F-16)', () => {
 
-  test('CLAUDE.md and README.md both exist', () => {
-    assert.ok(fs.existsSync(CLAUDE_MD), `CLAUDE.md not found at ${CLAUDE_MD}`);
+  test('README.md exists', () => {
     assert.ok(fs.existsSync(README_MD), `README.md not found at ${README_MD}`);
   });
 
-  test('CLAUDE.md lists at least 10 /orchestray:* commands', () => {
+  test('CLAUDE.md lists at least 10 /orchestray:* commands', { skip: SKIP_NO_CLAUDE_MD }, () => {
     const content = fs.readFileSync(CLAUDE_MD, 'utf8');
     const slugs = parseClaudeMdCommands(content);
     assert.ok(
@@ -133,7 +145,7 @@ describe('readme-key-commands-parity (F-01 / F-16)', () => {
     );
   });
 
-  test('every /orchestray:* command in CLAUDE.md appears in README Key commands', () => {
+  test('every /orchestray:* command in CLAUDE.md appears in README Key commands', { skip: SKIP_NO_CLAUDE_MD }, () => {
     const claudeContent = fs.readFileSync(CLAUDE_MD, 'utf8');
     const readmeContent = fs.readFileSync(README_MD, 'utf8');
 

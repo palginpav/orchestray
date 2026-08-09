@@ -7884,6 +7884,69 @@ Field notes:
 Kill switch: `ORCHESTRAY_PM_EMIT_WATCHER_DISABLED=1`. Schema stability:
 additive-only.
 
+### `bare_event_key_repaired` event
+
+Emitted by `bin/_lib/normalize-bare-event-rows.js`'s `repairBareEventRows()` when it
+backfills one or more audit rows shaped `{event: "x", ...}` into `{type: "x", ...}` in
+`.orchestray/audit/events.jsonl`. Wired into the same SessionStart path as
+`dark-event-banner.js`, ahead of that banner's misshapen-emit read, so a repair this
+session shows up in the same session's banner. Fires once per repair run that actually
+changes the file — never on a no-op run, which is what makes a second run idempotent.
+
+```json
+{
+  "version": 1,
+  "type": "bare_event_key_repaired",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id>",
+  "repaired_count": 46,
+  "malformed_skipped": 0,
+  "both_keys_skipped": 11,
+  "backup_path": ".orchestray/audit/events.jsonl.bak-1786213359319"
+}
+```
+
+Field notes:
+- `repaired_count`: number of rows whose bare `event` key was renamed to `type`.
+- `malformed_skipped`: number of unparseable JSONL lines left untouched.
+- `both_keys_skipped`: number of rows carrying BOTH `event` and `type` (never
+  guessed at, left unchanged — see `bare_event_key_both_present` below).
+- `backup_path`: absolute path to the timestamped backup taken before the rewrite.
+
+Kill switch: `ORCHESTRAY_BARE_EVENT_REPAIR_DISABLED=1` (env) or
+`bare_event_key_repair.enabled: false` in `.orchestray/config.json`. Schema
+stability: additive-only.
+
+### `bare_event_key_both_present` event
+
+Emitted by the same repair when it finds a row carrying BOTH `event` and `type`
+keys. Never rewritten — which key is authoritative cannot be inferred (e.g.
+`hook_chain_drift_detected.event` is a legitimate payload field naming the hook
+lifecycle event that drifted, not a duplicate of `type`). Deduped per entry in
+`event_types`: once a type has been reported, it is not reported again, so a
+permanent, legitimate both-keys row does not flood the log every session — see
+`alreadyReportedBothKeysTypes` in the same module.
+
+```json
+{
+  "version": 1,
+  "type": "bare_event_key_both_present",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id>",
+  "count": 11,
+  "event_types": ["hook_chain_drift_detected"]
+}
+```
+
+Field notes:
+- `count`: total number of both-keys rows found in this scan (not only the
+  newly-reported ones).
+- `event_types`: the subset of distinct `type` values among those rows that have
+  not been reported in a prior `bare_event_key_both_present` row.
+
+Kill switch: same as `bare_event_key_repaired` above. Schema stability:
+additive-only.
+
 ### `t15_role_schema_violation` event
 
 Emitted by `bin/validate-task-completion.js` when an agent's Structured Result is
@@ -12840,3 +12903,97 @@ Field notes:
 - `corpus_size`: total pattern count at emission time, for computing a fraction.
 
 ---
+
+## v2.3.21 additions (fixes 2 and 3 — undeclared event types)
+
+Two event types that were already emitted in production but never declared here,
+tripping `tests/schema-emit-coverage.test.js` (FN-34) and, for the first one, the
+`schema_unknown_type_warn` 3-strike miss counter on every emission.
+
+### `pattern_ack_fields_autoflip` event
+
+Emitted by `bin/check-ack-fields-readiness.js`'s `performFlip()` when the
+`pattern_evidence.enforce_ack_fields` grace-gate readiness condition is met
+(>= 50 `pattern_ack_captured` events in the live log, >= 95% of the most recent 50
+carrying `ack_source: "structured_fields"`) and the auto-flip mutates
+`.orchestray/config.json` to set `pattern_evidence.enforce_ack_fields: true`. Fires
+at most once ever per project (a sentinel file prevents re-evaluation after a
+successful flip) — see that script's header for the full condition and the
+`ORCHESTRAY_T15_ACK_FIELDS_AUTOFLIP_DISABLED` / `pattern_evidence.ack_fields_autoflip_enabled`
+kill switches.
+
+```json
+{
+  "version": 1,
+  "type": "pattern_ack_fields_autoflip",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id>",
+  "previous_value": false,
+  "new_value": true,
+  "measured_share": 0.98,
+  "measured_count": 50,
+  "required_share": 0.95,
+  "required_count": 50,
+  "reason": "ack_fields_readiness_condition_met"
+}
+```
+
+Required: `previous_value`, `new_value`, `measured_share`, `measured_count`,
+`required_share`, `required_count`, `reason`.
+
+Field notes:
+- `previous_value` / `new_value`: always `false` / `true` in this release — the
+  flip is one-directional (there is no auto-revert; reverting is a manual config
+  edit or the `ORCHESTRAY_T15_PATTERN_ACK_FIELDS_ENFORCED=0` escape hatch).
+- `measured_share` / `measured_count`: the structured-fields ratio and window size
+  that satisfied the readiness condition at flip time.
+- `required_share` / `required_count`: the threshold constants at flip time
+  (`REQUIRED_SHARE = 0.95`, `REQUIRED_WINDOW = 50`), recorded so a later constant
+  change doesn't retroactively make an old flip's row look wrong.
+- `reason`: always `"ack_fields_readiness_condition_met"` in this release —
+  reserved as an enum for a possible future manual-flip variant.
+
+Kill switch: `ORCHESTRAY_T15_ACK_FIELDS_AUTOFLIP_DISABLED=1` (env) or
+`pattern_evidence.ack_fields_autoflip_enabled: false` in `.orchestray/config.json`
+disables the auto-flip only — the readiness evaluation itself still runs and still
+reports via `formatProgressLine`. Schema stability: additive-only.
+
+---
+
+### `reviewer_git_diff_auto_injected` event
+
+Emitted by `bin/validate-reviewer-git-diff.js` (`PreToolUse:Agent`, v2.3.18 W3 Q2)
+when a reviewer spawn prompt is missing the required `## Git Diff` section
+(`delegation-templates.md:113`) and the hook successfully auto-injects one computed
+via `git diff HEAD` / `git diff` before allowing the spawn through, instead of
+blocking it. Sibling to `reviewer_git_diff_section_missing` (fired first, on the
+same missing-section detection) and `reviewer_git_diff_audit_mode_accepted`
+(fired instead of either when the prompt already carries an audit-mode marker).
+
+```json
+{
+  "type": "reviewer_git_diff_auto_injected",
+  "version": 1,
+  "schema_version": 1,
+  "spawn_id": "subagent-abc123",
+  "source": "full",
+  "bytes": 4096,
+  "timestamp": "2026-01-01T00:00:00.000Z"
+}
+```
+
+Required: `spawn_id`, `source`, `bytes`.
+
+Field notes:
+- `spawn_id`: agent_id or task_id from the spawn payload; null if unavailable.
+- `source`: which `computeGitDiffInjection` branch produced the injected body —
+  `empty` (clean tree, no diff), `full` (whole diff fit under the char cap),
+  `stat_overflow` (diff too large, `git diff --stat` used instead), or
+  `full_truncated` (diff too large and even `--stat` failed, so the full diff was
+  hard-truncated).
+- `bytes`: `Buffer.byteLength` of the injected `## Git Diff` body, UTF-8.
+- `schema_version`: always `1` in this release.
+- Non-blocking: the spawn proceeds with the updated prompt. Kill switch:
+  `ORCHESTRAY_REVIEWER_GIT_DIFF_AUTOINJECT_DISABLED=1` (env) or
+  `reviewer_git_diff_autoinject.enabled: false` (config) disables auto-inject
+  entirely, reverting to the pre-v2.3.18 straight block-on-missing behavior.

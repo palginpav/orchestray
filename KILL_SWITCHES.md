@@ -1,6 +1,6 @@
 # Kill switches
 
-Reference for every Orchestray feature-level kill switch: ~80 entries across 10 categories.
+Reference for every Orchestray feature-level kill switch: ~105 entries across 10 categories.
 Set in `.orchestray/config.json` or as env vars. **No session restart required for any of them.**
 
 When to use a kill switch:

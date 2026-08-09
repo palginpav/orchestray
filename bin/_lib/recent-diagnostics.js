@@ -23,8 +23,8 @@
  * lose), and matches the mental model doctor already trained operators on.
  * A type that fired 20 times three weeks ago and is quiet now correctly
  * disappears from this surface — see dual_install_divergence_detected in the
- * v2.3.22 corpus survey (48 lifetime fires, 0 in the last 24h, condition
- * since resolved). Reporting lifetime totals would announce 1,200+ stale
+ * corpus survey (48 lifetime fires, 0 in the last 24h, condition since
+ * resolved). Reporting lifetime totals would announce 1,200+ stale
  * problems and be ignored immediately; that is the failure mode this module
  * exists to avoid.
  *

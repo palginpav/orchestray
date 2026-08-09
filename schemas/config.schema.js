@@ -637,6 +637,11 @@ const patternEvidenceSchema = z.object({
   // (patternAckFieldsEnforced) — see that function's docstring. Not in the
   // §11 interface contract's default block (added post-landing, ramp-only).
   enforce_ack_fields: z.boolean().optional(),
+  // Kill switch for bin/check-ack-fields-readiness.js's auto-flip of the
+  // above. Default true (auto-flip runs); set false to let the readiness
+  // condition be measured/reported without ever mutating enforce_ack_fields.
+  // Mirrored env override: ORCHESTRAY_T15_ACK_FIELDS_AUTOFLIP_DISABLED=1.
+  ack_fields_autoflip_enabled: z.boolean().optional(),
   max_credits_per_orchestration: z.number().int().min(0).optional(),
   max_self_report_per_orchestration: z.number().int().min(0).optional(),
   min_how_length: z.number().int().min(0).optional(),

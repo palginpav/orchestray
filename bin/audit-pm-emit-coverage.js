@@ -51,8 +51,9 @@
  * emitter ever produces an `event:` key), so this scan needs no floor at
  * all — it fires on count >= 1.
  *
- * v2.3.22: the v2.3.21 scan shipped with two defects that together kept it
- * silent against 46 real misshapen rows found live on 2026-08-08:
+ * Design note: an early draft of this scan stayed silent against 46 real
+ * misshapen rows found live on 2026-08-08, for two reasons that together
+ * defeated it:
  *   1. File selection preferred the per-orch archive
  *      (`.orchestray/history/<orchId>/events.jsonl`) whenever it existed,
  *      reading the live log only as a fallback. archive-orch-events.js
@@ -66,12 +67,12 @@
  *      never "current" again — so once an orchestration ended, its rows
  *      left the scan's field of view permanently. This explains all 46 real
  *      rows: they belong to 8 orchestrations, none of them active today.
- * Fix: `computeMisshapenEmits` scans the live log plus rotated generations
- * (`events.N.jsonl`) unconditionally, across every orchestration_id, and
- * `main()` runs it regardless of whether an orchestration is active.
- * `.orchestray/history/**` is deliberately excluded — archives are
- * filter-and-COPY (see archive-orch-events.js), so folding them in would
- * recount every already-archived misshapen row a second time (the
+ * `computeMisshapenEmits` instead scans the live log plus rotated
+ * generations (`events.N.jsonl`) unconditionally, across every
+ * orchestration_id, and `main()` runs it regardless of whether an
+ * orchestration is active. `.orchestray/history/**` is deliberately excluded
+ * — archives are filter-and-COPY (see archive-orch-events.js), so folding
+ * them in would recount every already-archived misshapen row a second time (the
  * documented ~3.4x duplication also called out by
  * bin/validate-task-completion.js's pattern_ack_captured note). A boolean
  * "did this ever fire" check can tolerate that; an exact `misshapen_count`
@@ -228,7 +229,7 @@ function tallyEvents(cwd, orchId) {
 /**
  * List the live log plus its rotated generations (`events.N.jsonl`, written
  * by bin/_lib/jsonl-rotate.js) — same source set audit-promised-events.js
- * uses for total_fire_count, minus history/ (see the v2.3.22 header note on
+ * uses for total_fire_count, minus history/ (see the design note above on
  * why archives are excluded here: they'd duplicate rows already counted).
  */
 function liveLogSources(cwd) {
@@ -248,7 +249,7 @@ function liveLogSources(cwd) {
  * structurally invisible to `tallyEvents()` since `evt.type` is undefined
  * for them. Global across every orchestration_id: a misshapen row belonging
  * to an already-completed orchestration is exactly the class this exists to
- * catch (see v2.3.22 header note).
+ * catch (see the design note above).
  *
  * Idempotency is also global: a prior `wrong_field_shape` flag for an
  * event_type, from ANY orchestration, suppresses re-emission — no lock file
@@ -344,9 +345,9 @@ function main() {
 
   const cwd = resolveSafeCwd();
 
-  // v2.3.22: global rot check, independent of whether an orchestration is
-  // currently active — see the header note on why the old orchId-gated
-  // placement structurally missed every already-completed orchestration.
+  // Global rot check, independent of whether an orchestration is currently
+  // active — see the design note above on why an orchId-gated placement
+  // structurally missed every already-completed orchestration.
   try { scanMisshapenEmits(cwd); }
   catch (e) {
     process.stderr.write('[audit-pm-emit-coverage] misshapen scan failed: ' + e.message + '\n');

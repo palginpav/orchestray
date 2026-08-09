@@ -3,9 +3,9 @@
 
 /**
  * v2321-misshapen-emit-scan.test.js — rot-detector-for-the-rot-detector.
- * (v2.3.22, fixing the two defects named in the misshapen-emit scanner:
- * archive-preferred file selection blinds it to live-only rows, and the
- * detection never reaches a human.)
+ * Covers the two defects named in the misshapen-emit scanner's design note
+ * (bin/audit-pm-emit-coverage.js): archive-preferred file selection blinds
+ * it to live-only rows, and the detection never reaches a human.
  *
  * Runner: cd /home/palgin/orchestray && npm test -- --testPathPattern=v2321-misshapen-emit-scan
  * or:     node --require ./tests/helpers/setup.js --test bin/__tests__/v2321-misshapen-emit-scan.test.js

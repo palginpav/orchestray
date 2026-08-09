@@ -3,6 +3,33 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.21] - 2026-08-09
+
+**Orchestray 2.3.21 is a "things documented as working that silently were not" release: emergency kill switches that had no effect when set, event-log rows written by hand that were invisible to every dashboard, and a diagnostics banner that only ever reported the empty half of the picture. All are closed, with the recording pipeline itself hardened against a rare timing gap that could otherwise lose data.**
+
+### Added
+
+- **The session-start banner (and `/orchestray:doctor`) now also reports what's actually gone wrong in the last 24 hours** — warnings, blocked actions, failures — not just which event types have never fired at all. It's ranked by severity and points you at `doctor` for the full list, so a genuinely new problem doesn't get lost in months of stale history.
+- **A new one-time notice appears when Orchestray automatically turns on stricter pattern-usage enforcement once there's enough evidence to trust it.** You don't need to watch for or flip this yourself; it graduates on its own and tells you when it does, with the usual opt-out switch if you'd rather revert.
+
+### Fixed
+
+- **Several documented emergency kill switches did nothing when set.** The clearest case: the documented switch for bypassing the gate that blocks non-PM agents from spawning other agents named a variable that never existed anywhere in the code — only the gate's own error message had the real name. That and three similar cases are corrected, and a background check now runs continuously so a newly-documented switch without matching code is caught immediately instead of shipping silently broken again.
+- **Audit-log rows written by hand instead of through the normal recording path could end up invisible to every dashboard and report.** 46 such rows already in the log were found and repaired (with a backup taken first); new ones are now repaired automatically on session start, and a case Orchestray can't safely resolve on its own is reported instead of guessed at.
+- **A rare timing gap in that same automatic repair could silently drop log rows that were written at the exact moment the repair ran** (up to 1,829 rows lost in testing before this fix). The repair now waits for the log to go quiet before finishing, closing the window.
+- **Several event types were being logged with a shape that didn't match their own documented schema** — some records were missing fields the schema said were required, and a couple of event types Orchestray genuinely does emit in normal use had never been declared at all, which could trigger spurious "unknown event" warnings. Both sides now agree.
+- **A pattern that an agent names exactly the way the pattern's own file names itself is now credited correctly.** Previously, an agent could apply a pattern, explain its reasoning correctly, and still get no credit for it because the system was matching against a different identifier than the one the pattern shows the agent.
+- **A handful of internal knowledge-base decision records could stay marked "open" long after the underlying issue had actually been fixed**, misleading anyone checking what was still outstanding. Corrected, with a check that now catches this drift going forward.
+- **A stale internal schema index shipped at the tip of the repo** — on a fresh clone, every schema lookup would have returned an outdated result until the first edit regenerated it. Regenerated and now current.
+- **The completion gate that checks an agent's final report could silently skip its own check, or block a completion it should have let through, for a class of completion Orchestray had never actually validated against real data.** Every gate on that path now degrades to a warning instead of a hard failure in that specific case, so a mis-detection can't stop your work while it's being tightened up with real examples.
+- **The developer, reviewer, tester, debugger, architect, refactorer, and release-manager agents can now actually look up an event's documented shape when asked to.** They were previously told to use a specific lookup tool that only existed for a couple of other roles, so they had no way to check at all.
+- **Diagnostics for the large-file "oversized input" mode now record correctly for the normal case where that mode runs outside a full orchestration** — previously the bookkeeping only ran inside an orchestration, so it silently never fired for the far more common standalone case.
+
+### Under the hood
+
+- Internal version-tracking notes in a few files that had drifted ahead of the actual release number are back in sync.
+- A developer-only README consistency check now skips cleanly instead of failing when the file it depends on (a gitignored, local-only file) isn't present, so the test suite stays green on a fresh clone or in CI.
+
 ## [2.3.20] - 2026-08-08
 
 **Orchestray 2.3.20 changes how Orchestray decides which of its learned patterns are worth keeping. Orchestray builds a library of patterns from past work and prunes or retires them based on how often they get used — but that count was populated by the assistant remembering to report it by hand. Across all history it recorded 26 uses against 6,945 "skipped" notes, a 0.4% rate, leaving 37 of 44 patterns sitting at zero uses regardless of how good they actually were. Usage is now inferred from evidence instead: which patterns were put in front of an agent, which ones the agent said it used and why, and whether that work succeeded.**

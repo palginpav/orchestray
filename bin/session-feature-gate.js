@@ -20,6 +20,12 @@
  *   4. With `--dry-run`, the script lists candidates as JSON to stdout and
  *      makes no state changes (config and sentinel both untouched).
  *
+ * This is also the SessionStart entry point that drives the UNRELATED
+ * `pattern_evidence.enforce_ack_fields` auto-flip (bin/check-ack-fields-
+ * readiness.js) — piggybacked here rather than as a new hooks.json entry
+ * since this script already runs once per session. See that file for the
+ * flip condition, kill switches, and one-time banner/sentinel contract.
+ *
  * Usage:
  *   node bin/session-feature-gate.js [--cwd /path] [--dry-run]
  *
@@ -46,6 +52,11 @@ const {
   getEligibleGateSlugs,
   WIRED_EMITTER_PROTOCOLS,
 }                               = require('./_lib/feature-demand-tracker');
+// bin/check-ack-fields-readiness.js: unrelated to feature_demand_gate, but
+// this script is the existing SessionStart hook entry point, so it's the
+// cheapest place to run the ack-fields auto-flip check once per session
+// without adding a new hooks.json registration (see that file's docstring).
+const { maybeAutoFlip: maybeAutoFlipAckFields, formatProgressLine: formatAckFieldsProgress } = require('./check-ack-fields-readiness');
 
 // ---------------------------------------------------------------------------
 // Migration banner — verbatim from v2.1.15 CHANGELOG migration note for
@@ -267,6 +278,19 @@ function main(argv) {
   try {
     const { cwd: cwdArg, dryRun } = parseArgs(argv);
     const cwd = resolveSafeCwd(cwdArg);
+
+    // Ack-fields readiness auto-flip (unrelated to feature_demand_gate below —
+    // deliberately NOT gated behind the ORCHESTRAY_DISABLE_DEMAND_GATE / gate
+    // disabled checks that follow, since those switches are scoped to a
+    // different feature). Cheap: bounded tail read, capped at 50 events.
+    if (!dryRun) {
+      try {
+        const ackResult = maybeAutoFlipAckFields(cwd);
+        if (!ackResult.flipped && ackResult.reason === 'not_ready' && ackResult.evaluation) {
+          process.stderr.write('[orchestray] ' + formatAckFieldsProgress(ackResult.evaluation) + '\n');
+        }
+      } catch (_e) { /* fail-open — never blocks the session */ }
+    }
 
     // Kill switches.
     if (process.env.ORCHESTRAY_DISABLE_DEMAND_GATE === '1') {

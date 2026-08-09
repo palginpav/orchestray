@@ -746,7 +746,9 @@ function isValidPatternAckEntry(entry, proseKey) {
  *
  * This is a time-bounded ramp, not a permanent bypass (pattern-application-
  * evidence-design.md §4.2 back-compat note). Concrete flip condition —
- * compute this, don't eyeball it:
+ * mechanically evaluated and acted on by bin/check-ack-fields-readiness.js
+ * (invoked every session from bin/session-feature-gate.js's SessionStart
+ * hook — no human has to remember to run it or to flip this by hand):
  *   Event:     pattern_ack_captured, in .orchestray/audit/events.jsonl only
  *              (NOT .orchestray/history/**, which holds ~3.4x-inflated
  *              archived copies — see times-applied-undercount-diagnosis.md).
@@ -754,11 +756,12 @@ function isValidPatternAckEntry(entry, proseKey) {
  *              supplied the fields itself) vs. "legacy_text_scan" (fallback).
  *   Threshold: >= 95%, over the most recent 50 pattern_ack_captured events
  *              (or all available if fewer than 50).
- *   Command:
- *     f=.orchestray/audit/events.jsonl
- *     t=$(grep -c '"type":"pattern_ack_captured"' "$f")
- *     s=$(grep '"type":"pattern_ack_captured"' "$f" | grep -c '"ack_source":"structured_fields"')
- *     echo "$s / $t"
+ * Progress toward the threshold: `node bin/check-ack-fields-readiness.js
+ * [--json]`. When the condition is met, that script flips
+ * `pattern_evidence.enforce_ack_fields` to `true` itself (one-time stderr
+ * banner + `.orchestray/state/.ack-fields-autoflip-done` sentinel +
+ * `pattern_ack_fields_autoflip` audit event) — see its docstring for the
+ * auto-flip's own kill switches.
  *
  * Kill switch: ORCHESTRAY_T15_PATTERN_ACK_FIELDS_ENFORCED=1|0 overrides config.
  *

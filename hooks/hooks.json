@@ -120,7 +120,7 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/dark-event-banner.js",
-            "timeout": 5
+            "timeout": 10
           }
         ]
       },

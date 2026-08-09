@@ -54,17 +54,21 @@
  * corpus is 331 types or 3,000. The full list is one `/orchestray:doctor`
  * away, not stuffed into a login banner.
  *
- * v2.3.22: also folds in the misshapen-emit signal from
- * audit-pm-emit-coverage.js's scanMisshapenEmits() — audit rows written
- * with `event:` instead of `type:`, invisible to every `evt.type` consumer.
- * That scanner writes its own fresh snapshot
- * (`.orchestray/state/misshapen-emit-state.last-run.json`) on the same
- * full-overwrite contract as the dark-event snapshot. Deliberately reusing
- * THIS banner rather than adding a second one: a competing session-start
- * advisory is how banners become noise (see that script's header).
+ * v2.3.21 additions: this banner also folds in two more signals besides the
+ * dark-event one above, plus a repair step, rather than opening competing
+ * SessionStart advisories.
  *
- * v2.3.23: also folds in the recent-diagnostics signal from
- * bin/_lib/recent-diagnostics.js — diagnostic-shaped event types
+ * Item 1 — misshapen-emit signal: folds in audit-pm-emit-coverage.js's
+ * scanMisshapenEmits() — audit rows written with `event:` instead of
+ * `type:`, invisible to every `evt.type` consumer. That scanner writes its
+ * own fresh snapshot (`.orchestray/state/misshapen-emit-state.last-run.json`)
+ * on the same full-overwrite contract as the dark-event snapshot.
+ * Deliberately reusing THIS banner rather than adding a second one: a
+ * competing session-start advisory is how banners become noise (see that
+ * script's header).
+ *
+ * Item 2 — recent-diagnostics signal: folds in bin/_lib/recent-diagnostics.js
+ * — diagnostic-shaped event types
  * (*_warn/*_blocked/*_failed/*_missing/*_violation/*_detected/*_gap/
  * *_orphaned/*_stale/*_drift) that HAVE fired in the last 24h, ranked by
  * actionability rather than volume. Unlike the two signals above, this one
@@ -75,6 +79,22 @@
  * avoid, and the line is restructured (two physical lines, one
  * `[orchestray]`-prefixed header) rather than growing a third run-on
  * clause — see formatBanner() below.
+ *
+ * Item 3 — misshapen-emit repair: hook mode also REPAIRS the misshapen-emit
+ * class it reports on (item 1), via
+ * `bin/_lib/normalize-bare-event-rows.js`'s `repairBareEventRows()` — called
+ * at the top of `handle()`, ahead of the misshapen snapshot read, so a
+ * repair this session is reflected in the same session's banner. This
+ * script was already the one declared SessionStart consumer wired to
+ * misshapen-emit reporting; adding the repair call here (rather than a new
+ * hooks.json entry pointing at the lib directly) keeps it inside an already-
+ * declared `(script, event)` pair instead of opening a fresh
+ * fixture-coverage gap in bin/_lib/hook-fixture-parity.js. The repair has
+ * its own independent kill switch and runs even when
+ * `ORCHESTRAY_DARK_EVENT_BANNER_DISABLED=1` mutes the banner's own display —
+ * see normalize-bare-event-rows.js's header for why the two must not be
+ * coupled. `--json` mode does NOT call the repair: doctor probes stay
+ * read-only.
  *
  * Two modes
  * ---------
@@ -106,6 +126,7 @@ const { resolveSafeCwd }  = require('./_lib/resolve-project-cwd');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { readHookInputRaw } = require('./_lib/hook-stdin');
 const { computeRecentDiagnostics } = require('./_lib/recent-diagnostics');
+const { repairBareEventRows } = require('./_lib/normalize-bare-event-rows');
 
 const CONTINUE_RESPONSE      = JSON.stringify({ continue: true });
 const STALE_AFTER_MS         = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -208,10 +229,10 @@ function computeMisshapenSnapshot(cwd, nowMs) {
 /**
  * Format the session banner. Returns null when there is nothing to say.
  * Folds all three signals (dark-event, misshapen-emit, recent-diagnostics)
- * into ONE banner rather than a fourth competing advisory — see the
- * v2.3.22/v2.3.23 header notes. Two physical lines, not three run-on
+ * into ONE banner rather than a fourth competing advisory — see the header
+ * note's items 1-2 above. Two physical lines, not three run-on
  * clauses crammed into one: line 1 is the "declared but quiet" header
- * (dark + misshapen, unchanged wording from v2.3.22), line 2 is the "fired
+ * (dark + misshapen, wording from item 1 above), line 2 is the "fired
  * recently, ranked by actionability" signal plus the doctor pointer. Only
  * line 1 (when present) carries the `[orchestray]` prefix — same
  * one-header-line convention feature-quarantine-banner.js already uses for
@@ -263,12 +284,22 @@ function formatBanner(result, misshapen, recent) {
 
 function handle(event) {
   try {
+    const cwd = resolveSafeCwd(event && event.cwd);
+
+    // Item 3 (header note above): repair bare-`event`-key audit rows
+    // (bin/_lib/normalize-bare-event-rows.js) before reading the misshapen
+    // snapshot below, so this same session's banner (and doctor --json)
+    // reflect post-repair reality. Runs ahead of the banner's OWN kill
+    // switch below on purpose — muting the banner's display must not
+    // silently disable the mechanical repair too. The repair has its own
+    // independent kill switch (env + config — see that module's header).
+    try { repairBareEventRows(cwd); } catch (_e) { /* fail-open */ }
+
     if (process.env.ORCHESTRAY_DARK_EVENT_BANNER_DISABLED === '1') {
       process.stdout.write(CONTINUE_RESPONSE);
       return;
     }
 
-    const cwd = resolveSafeCwd(event && event.cwd);
     const nowMs = Date.now();
     const result     = computeDarkEvents(cwd, nowMs);
     const misshapen  = computeMisshapenSnapshot(cwd, nowMs);
