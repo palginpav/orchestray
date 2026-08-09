@@ -1265,7 +1265,7 @@ function main() {
           session_id: event.session_id || null,
         });
         const frozenHint = agentRole === 'orchestray-housekeeper'
-          ? ' tools list is FROZEN at [Read, Glob].'
+          ? ' tools list is FROZEN at [Read, Glob, mcp__orchestray__history_query_events].'
           : ' tools list (frozen).';
         process.stderr.write(
           '[orchestray] validate-task-completion: read-only contract violation: ' +

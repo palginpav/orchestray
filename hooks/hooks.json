@@ -391,6 +391,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/warn-ungranted-tool-mention.js",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [

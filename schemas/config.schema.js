@@ -306,10 +306,21 @@ const curatorSchema = z.object({
   diff_enabled: z.boolean().optional(),
   diff_cutoff_days: z.number().int().min(1).optional(),
   diff_forced_full_every: z.number().int().min(1).optional(),
+  // v2.3.23 — kill switch for the curator_run_complete auto-emission on
+  // close_run (bin/mcp-server/tools/curator_tombstone.js). Distinct from
+  // `enabled`, which gates the whole tool; this gates the audit row only —
+  // run.lock release and idempotency bookkeeping still happen when false.
+  run_complete_emit_enabled: z.boolean().optional(),
 }).passthrough();
 
 const auditSchema = z.object({
   max_events_bytes_for_scan: z.number().int().positive().nullable().optional(),
+  // v2.3.23 — sweep of .orchestray/audit/events.jsonl.bak-* leftovers.
+  // See bin/_lib/audit-backup-sweep.js.
+  backup_sweep: z.object({
+    enabled: z.boolean().optional(),
+    retain_count: z.number().int().min(0).optional(),
+  }).passthrough().optional(),
 }).passthrough();
 
 const shieldSchema = z.object({
@@ -604,6 +615,14 @@ const toolGrantShortfallSchema = z.object({
   enabled: z.boolean().optional(),
 }).passthrough();
 
+// v2.3.23: ungranted_tool_mention — advisory-only detector for a delegation
+// prompt naming an mcp__orchestray__* tool the target agent's tools:
+// frontmatter does not grant. Loaded by bin/warn-ungranted-tool-mention.js
+// isDisabled(). Never blocks — `enabled` is the only key the hook reads.
+const ungrantedToolMentionSchema = z.object({
+  enabled: z.boolean().optional(),
+}).passthrough();
+
 // v2.3.18 (W1f carryover): tokenwright — bootstrap-estimator kill switch.
 // `l1_compression_enabled` was retired along with the dead L1 compression
 // pipeline (0/477 production prompts ever matched it, v2.2.20 audit);
@@ -812,6 +831,8 @@ const configSchema = z.object({
   behavior_diff_gate: behaviorDiffGateSchema.optional(),
   // v2.3.18 W3: tool-grant-shortfall telemetry detector config.
   tool_grant_shortfall: toolGrantShortfallSchema.optional(),
+  // v2.3.23: ungranted-tool-mention delegation-prompt advisory config.
+  ungranted_tool_mention: ungrantedToolMentionSchema.optional(),
   // v2.3.18 (W1f carryover): tokenwright bootstrap-estimator config.
   tokenwright: tokenwrightSchema.optional(),
   // v2.3.19: pattern_evidence — evidence-based pattern-application counting.

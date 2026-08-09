@@ -30,15 +30,16 @@
  *
  *   2. Live `.orchestray/audit/events.jsonl` — current-orchestration window.
  *
- *   2b. Rotated generations `.orchestray/audit/events.N.jsonl`, written
- *      in-place by `bin/_lib/jsonl-rotate.js` on a 50MB size trigger — a
- *      distinct rotation path from the per-orch F2 archives below. A fire
- *      recorded only in a rotated generation was previously invisible to
- *      this scan and produced a false dark alarm (v2.3.21 fix).
+ *   2b. Rotated generations `.orchestray/audit/events.jsonl.N`, written
+ *      in-place by `bin/archive-orch-events.js`'s `rotateLiveEvents()` at
+ *      `ROTATE_THRESHOLD_BYTES` (16 MiB) — a distinct rotation path from the
+ *      per-orch F2 archives below. A fire recorded only in a rotated
+ *      generation was previously invisible to this scan and produced a
+ *      false dark alarm (v2.3.21 fix).
  *
  *   3. Per-orch archives `.orchestray/history/<orch>/events.jsonl` (F2). Used
- *      to count fires from prior orchestrations after the live log rotates or
- *      is rotated by `bin/_lib/jsonl-rotate.js`.
+ *      to count fires from prior orchestrations after the live log has been
+ *      rotated by `bin/archive-orch-events.js`.
  *
  *   4. Tracker registry `.orchestray/state/promised-event-registry.json` —
  *      tracker-managed `{event_type: first_seen_iso}` map. Updated on every
@@ -289,8 +290,9 @@ function tallyFires(cwd, eventTypes, deadlineMs) {
   // 1. live audit log
   scanFile(path.join(cwd, '.orchestray', 'audit', 'events.jsonl'));
 
-  // 1b. rotated generations of the live log (`events.N.jsonl`, written by
-  // bin/_lib/jsonl-rotate.js on a 50MB size trigger). This rotates in place,
+  // 1b. rotated generations of the live log (`events.jsonl.N`, written by
+  // bin/archive-orch-events.js's rotateLiveEvents() at ROTATE_THRESHOLD_BYTES,
+  // 16 MiB). This rotates in place,
   // independently of the F2 per-orch archive below — a fire that happened
   // before a rotation lives only here, not in history/. Skipping this source
   // produced false "never fired" dark rows for anything whose only fire

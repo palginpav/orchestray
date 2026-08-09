@@ -2040,8 +2040,11 @@ that to the user — exactly once per run, never noisily.
 
 **Trigger condition (checked at SessionStart and after each orchestration completes):**
 
-1. Read the most-recent `auto_extract_staged` event from `.orchestray/audit/events.jsonl`
-   where `orchestration_id` matches the current session's completed orchestration.
+1. Call `mcp__orchestray__history_query_events` with
+   `{ orchestration_ids: [<completed orchestration_id>], event_types: ["auto_extract_staged"],
+   limit: 1 }` and take the most-recent returned event. Do NOT `Read`
+   `.orchestray/audit/events.jsonl` directly — it is a shared, growing file and this tool
+   exists specifically to replace that pattern.
 2. If no such event exists, or `proposal_count === 0`, skip entirely — nothing to surface.
 3. If `shadow === true` in the event, skip — shadow-mode runs are silent to humans.
 4. Check for sentinel `.orchestray/state/pm-auto-extract-notice-sent-{session_id}.flag`.

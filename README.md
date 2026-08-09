@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/orchestray.svg)](https://www.npmjs.com/package/orchestray)
 [![npm downloads](https://img.shields.io/npm/dw/orchestray.svg)](https://www.npmjs.com/package/orchestray)
-[![Socket Badge](https://badge.socket.dev/npm/package/orchestray/2.3.22)](https://socket.dev/npm/package/orchestray)
+[![Socket Badge](https://badge.socket.dev/npm/package/orchestray/2.3.23)](https://socket.dev/npm/package/orchestray)
 [![License](https://img.shields.io/npm/l/orchestray.svg)](https://github.com/palginpav/orchestray/blob/master/LICENSE)
 [![Node](https://img.shields.io/node/v/orchestray.svg)](https://nodejs.org)
 
@@ -278,7 +278,7 @@ Kill switches: `oversized_input.enabled: false` in `.orchestray/config.json`, or
 
 ## Kill switches
 
-Orchestray ships ~105 feature-level kill switches (config keys + env vars) for emergency rollback or selective opt-out. The full reference lives in [`KILL_SWITCHES.md`](./KILL_SWITCHES.md), grouped into 10 categories (orchestration core, hooks & gates, reviewer, tokenwright, dossier, telemetry, MCP, install, lints, worktree). No session restart required for any of them.
+Orchestray ships ~110 feature-level kill switches (config keys + env vars) for emergency rollback or selective opt-out. The full reference lives in [`KILL_SWITCHES.md`](./KILL_SWITCHES.md), grouped into 10 categories (orchestration core, hooks & gates, reviewer, tokenwright, dossier, telemetry, MCP, install, lints, worktree). No session restart required for any of them.
 
 ## Requirements
 

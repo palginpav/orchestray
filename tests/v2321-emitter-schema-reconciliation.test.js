@@ -25,7 +25,8 @@
  *   6. dossier_injected          — bin/inject-resilience-dossier.js (both sites)
  *   7. orchestration_start       — bin/ox.js `events append` (PM hand-append path)
  *   8. orchestration_complete    — bin/ox.js `events append` (PM hand-append path)
- *   9. curator_run_complete      — no code emitter; schema example self-validation
+ *   9. curator_run_complete      — bin/mcp-server/tools/curator_tombstone.js close_run
+ *                                  (v2.3.23; schema example self-validation)
  */
 
 const { test, describe } = require('node:test');
@@ -291,8 +292,11 @@ describe('v2.3.21 — emitter/schema shape reconciliation', () => {
   test('9. curator_run_complete — the schema example validates against its own schema', () => {
     const tmpDir = makeTmpRepo();
     try {
-      // No code emitter: the curator agent hand-writes this row from the
-      // documented example, so the example itself is the contract under test.
+      // v2.3.23: emitted by curator_tombstone.js's close_run action (called
+      // from curate-runner's deterministic protocol) — the curator agent
+      // itself never had a viable write path, see
+      // .orchestray/kb/decisions/curator-run-complete-emission-gap.md. The
+      // documented example is still the contract under test.
       const rows = emitThroughGateway(tmpDir, {
         type: 'curator_run_complete',
         run_id: 'curator-run-2026-01-01T00:00:00Z',
@@ -300,6 +304,9 @@ describe('v2.3.21 — emitter/schema shape reconciliation', () => {
         actions_applied: { promote_n: 2, merge_n: 1, deprecate_n: 3 },
         actions_skipped: { promote_n: 0, merge_n: 1, deprecate_n: 0 },
         tombstones_written_count: 3,
+        dry_run: false,
+        reconciliation: { repaired: 0, flagged: 0 },
+        stamps: { applied: 3, skipped: 0, failed: 0 },
       });
       assertNoShapeViolation(rows, 'curator_run_complete');
     } finally {

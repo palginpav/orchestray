@@ -28,12 +28,16 @@ const HOUSEKEEPER_PATH = path.join(REPO_ROOT, 'agents', 'orchestray-housekeeper.
 const BASELINE_PATH = path.join(REPO_ROOT, 'bin', '_lib', '_housekeeper-baseline.js');
 const VALIDATE_PATH = path.join(REPO_ROOT, 'bin', 'validate-task-completion.js');
 
-// The literal expected `tools:` line for v2.2.0 ship. STRICTER than scout
-// (no Grep). Editing this constant is a binding contract: it must move
-// in lockstep with `BASELINE_TOOLS_LINE` in `_housekeeper-baseline.js`
-// AND the agent file frontmatter, in a commit tagged
-// `[housekeeper-tools-extension]`.
-const EXPECTED_TOOLS_LINE = 'tools: [Read, Glob]';
+// The literal expected `tools:` line. STRICTER than scout (no Grep).
+// Editing this constant is a binding contract: it must move in lockstep
+// with `BASELINE_TOOLS_LINE` in `_housekeeper-baseline.js` AND the agent
+// file frontmatter, in a commit tagged `[housekeeper-tools-extension]`.
+//
+// Amended 2026-08-09 (v2.3.23 Item 4, R-EVT-ROTATE): Clause 1 grants exactly
+// one narrowly-scoped, read-only MCP tool (history_query_events) so op class
+// 3 can stop Reading the live events.jsonl. Edit/Write/Bash/Grep remain
+// forbidden — Clause 2 (below) is unchanged.
+const EXPECTED_TOOLS_LINE = 'tools: [Read, Glob, mcp__orchestray__history_query_events]';
 const HOUSEKEEPER_FORBIDDEN_TOOLS = ['Edit', 'Write', 'Bash', 'Grep'];
 
 const PLACEHOLDER_SHA = 'REPLACE_DURING_IMPL_COMMIT_64HEX';
@@ -69,14 +73,16 @@ describe('P3.3 — orchestray-housekeeper agent file frozen baseline', () => {
       JSON.stringify(BASELINE_AGENT_SHA));
   });
 
-  test('BASELINE_TOOLS_LINE literally equals "tools: [Read, Glob]"', () => {
+  test('BASELINE_TOOLS_LINE literally equals "tools: [Read, Glob, mcp__orchestray__history_query_events]"', () => {
     const { BASELINE_TOOLS_LINE } = require(BASELINE_PATH);
     assert.equal(BASELINE_TOOLS_LINE, EXPECTED_TOOLS_LINE,
-      'BASELINE_TOOLS_LINE drifted from the locked-scope D-5 Clause 1 contract.\n' +
+      'BASELINE_TOOLS_LINE drifted from the locked-scope D-5 Clause 1 contract\n' +
+      '(as amended by v2.3.23 Item 4).\n' +
       '  Expected: ' + JSON.stringify(EXPECTED_TOOLS_LINE) + '\n' +
       '  Actual:   ' + JSON.stringify(BASELINE_TOOLS_LINE) + '\n' +
-      'Housekeeper tools are FROZEN at [Read, Glob] in v2.2.0 — STRICTER than\n' +
-      'the scout. Promotion requires an explicit commit tagged\n' +
+      'Housekeeper tools are FROZEN at [Read, Glob, history_query_events] as of\n' +
+      'v2.3.23 — still STRICTER than the scout (no Grep, no other MCP tools).\n' +
+      'Further promotion requires an explicit commit tagged\n' +
       '[housekeeper-tools-extension] updating both this constant and the\n' +
       'agent file. See agents/pm-reference/cost-prediction.md §32.');
     // Guard against accidental scout-equality
@@ -113,13 +119,14 @@ describe('P3.3 — orchestray-housekeeper agent file frozen baseline', () => {
       'the same commit (tagged [housekeeper-tools-extension]).');
   });
 
-  test('frontmatter shape: tools: [Read, Glob] inside YAML block', () => {
+  test('frontmatter shape: tools: [Read, Glob, mcp__orchestray__history_query_events] inside YAML block', () => {
     const body = fs.readFileSync(HOUSEKEEPER_PATH, 'utf8');
     const fmMatch = body.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     assert.ok(fmMatch, 'agents/orchestray-housekeeper.md must start with YAML frontmatter');
     const fm = fmMatch[1];
-    assert.match(fm, /\ntools: \[Read, Glob\]\n/,
-      'frontmatter must contain the literal line `tools: [Read, Glob]`');
+    assert.match(fm, /\ntools: \[Read, Glob, mcp__orchestray__history_query_events\]\n/,
+      'frontmatter must contain the literal line `tools: [Read, Glob, ' +
+      'mcp__orchestray__history_query_events]`');
   });
 
   test('runtime READ_ONLY_AGENT_FORBIDDEN_TOOLS map includes orchestray-housekeeper with strict set', () => {

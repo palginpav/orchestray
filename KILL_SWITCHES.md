@@ -73,6 +73,7 @@ Within each category, entries are sorted case-insensitive alphabetically by feat
 | Schema-shadow safety net (event-type validation) | — | `ORCHESTRAY_DISABLE_SCHEMA_SHADOW=1` | default-on |
 | SessionStart hook-chain drift validator (v2.2.13) | — | `ORCHESTRAY_HOOK_ORDER_VALIDATION_DISABLED=1` | default-on |
 | T15 acceptance rubric gate (v2.2.21) | — | `ORCHESTRAY_T15_ACCEPTANCE_RUBRIC_DISABLED=1` | default-on |
+| Ungranted-tool-mention delegation-prompt advisory (v2.3.23) — warns when a delegation prompt names an `mcp__orchestray__*` tool the target agent's `tools:` frontmatter does not grant; never blocks the spawn | `ungranted_tool_mention.enabled: false` | `ORCHESTRAY_UNGRANTED_TOOL_WARN_DISABLED=1` | default-on |
 
 ## 3. Reviewer-specific
 
@@ -109,7 +110,9 @@ Within each category, entries are sorted case-insensitive alphabetically by feat
 | `*_failed` rename-cycle alias emit (v2.2.11) | — | `ORCHESTRAY_RENAME_CYCLE_ALIAS_DISABLED=1` | default-on |
 | Archive must-copy checklist validator | — | `ORCHESTRAY_ARCHIVE_VALIDATION_DISABLED=1` | default-on |
 | Archive validation success-path emit (v2.2.12) | — | `ORCHESTRAY_ARCHIVE_VALIDATION_SUCCESS_EMIT_DISABLED=1` | default-on |
+| Audit backup sweep (v2.3.23) — retires old `events.jsonl.bak-*` backup leftovers, keeping the N most recent | `audit.backup_sweep.enabled: false` (`retain_count` to change N, default 3) | `ORCHESTRAY_AUDIT_BACKUP_SWEEP_DISABLED=1` | default-on |
 | Autofill-threshold fail-loud | — | `ORCHESTRAY_AUTOFILL_THRESHOLD_DISABLED=1` | default-on |
+| Curator run-complete emit (v2.3.23) — `close_run`'s `curator_run_complete` audit-event emission only; run.lock release and idempotency bookkeeping still happen when disabled | `curator.run_complete_emit_enabled: false` | `ORCHESTRAY_CURATOR_RUN_COMPLETE_DISABLED=1` | default-on |
 | Decision-recorder: agent spawn (v2.2.11) | — | `ORCHESTRAY_DR_AGENT_SPAWN_DISABLED=1` | default-on |
 | Decision-recorder: ask_user calls (v2.2.11) | — | `ORCHESTRAY_DR_ASK_USER_DISABLED=1` | default-on |
 | Decision-recorder: curator tombstone (v2.2.11) | — | `ORCHESTRAY_DR_CURATOR_TOMBSTONE_DISABLED=1` | default-on |

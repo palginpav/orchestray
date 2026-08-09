@@ -3,6 +3,26 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.23] - 2026-08-09
+
+**Orchestray 2.3.23 continues the "documented as working that silently wasn't" theme: the pattern curator can now actually record that a run finished, a lock it took on every run is released promptly instead of blocking your next curation attempt, agents no longer read the multi-megabyte audit log directly, and a check that was supposed to enforce that rule during development was never actually running. Nothing here changes anything you configure — it's all correctness and observability.**
+
+### Fixed
+
+- **A pattern curation run now reliably records that it finished.** The completion record used to depend on the curator's AI agent writing it by hand into a large log file it had no practical way to edit, so runs that succeeded still showed up incomplete in the audit trail. It's now written automatically at the end of every run — including dry runs and runs with nothing to do — independent of what the curator agent itself does.
+- **Running a curation run right after a successful one could fail with "curator already running"** for up to ten minutes, even though nothing was actually running. The internal lock taken at the start of a run was previously only released when a run failed; a normal successful run held onto it until it expired on its own. It's released immediately now.
+- **Two internal instructions told the assistant to read the entire audit log file directly instead of using the lookup tool built for exactly that purpose** — a file that can grow past 10 MB. Both are fixed, and a check now runs on every test pass across every agent's instructions so this can't quietly resurface; it immediately caught two more instances doing the same thing that nobody had noticed.
+- **A check meant to enforce that all audit-log writes go through the one correct code path was documented as running during development, but nothing actually invoked it.** It's now wired into the test suite, so it can catch what it was always supposed to catch.
+
+### Added
+
+- **Orchestray now warns when it asks an AI agent to use a tool that agent was never given permission to use.** Previously this failed silently — the agent would just fall back to doing something else — and nothing recorded that it had happened.
+
+### Under the hood
+
+- Old backup copies of the audit log, left behind by an earlier repair, are now cleaned up automatically instead of accumulating indefinitely.
+- Corrected internal documentation and code comments that misdescribed how the audit log rotates; the misdescription had already led to a wrong diagnosis of a problem that turned out not to exist. The rotation behavior itself was reviewed as part of this and is correctly sized already, so it was deliberately left unchanged.
+
 ## [2.3.22] - 2026-08-09
 
 **Orchestray 2.3.22 fixes a regression introduced in 2.3.21: a fresh install never received the instructions Orchestray needs to resume an in-progress orchestration after Claude Code automatically compacts a long session. It also adds automatic cleanup of files an older version installed that the current version no longer ships.**

@@ -6,7 +6,8 @@
  * THE single emit path for `.orchestray/audit/events.jsonl`. Every production
  * write to that file MUST flow through `writeEvent()`. Direct
  * `atomicAppendJsonl(eventsPath, ...)` calls are forbidden — the migration
- * audit script `bin/_tools/audit-emit-sites.js` enforces this at dev-time.
+ * audit script `bin/_tools/audit-emit-sites.js` enforces this at dev-time,
+ * wired into `npm test` (v2.3.23) via `tests/regression/v2323-audit-emit-sites-gate.test.js`.
  *
  * Contract:
  *   - Validates the event payload against `agents/pm-reference/event-schemas.md`

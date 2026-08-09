@@ -1063,8 +1063,13 @@ Each agent is instructed to return results in this format:
 
 **Cost budget check (after every agent completes):**
 - Read `.orchestray/config.json` for `max_cost_usd`. If null or absent, skip this check.
-- Read `.orchestray/audit/events.jsonl`, sum `estimated_cost_usd` from all `agent_stop`
-  events for the current orchestration_id.
+- Call `mcp__orchestray__history_query_events` with
+  `{ orchestration_ids: [<current orchestration_id>], event_types: ["agent_stop"],
+  limit: 500 }` and sum `estimated_cost_usd` across the returned `events`. Do NOT `Read`
+  `.orchestray/audit/events.jsonl` directly — it is a shared, growing file and this tool
+  exists specifically to replace that pattern. If the response's `total_matching` exceeds
+  its `returned` count (more than 500 agent_stop rows in one orchestration should not
+  happen in practice), page with `offset` in a loop rather than falling back to `Read`.
 - If total exceeds `max_cost_usd`:
   - If mid-parallel-group: finish the current group first (don't interrupt running agents).
   - Then pause and inform the user:

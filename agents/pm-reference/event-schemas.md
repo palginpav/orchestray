@@ -2481,14 +2481,24 @@ reserved for v2.2+ per the note above. The `source` field is always present in v
 
 ### `curator_run_complete`
 
-Emitted by the pattern curator agent (B8) at the end of each curation run, after all
-promote / merge / deprecate actions have been attempted. B8 wires the emitter; this
-section documents the schema only.
+Emitted by the deterministic `curate-runner` dispatcher at the end of each
+`/orchestray:learn curate` invocation, after reconciliation and stamp-apply have run
+(or been skipped on `--dry-run`).
 
-**Emission:** B8 writes this event to `.orchestray/audit/events.jsonl` as its final
-action before returning its structured result. The event is skipped if the curator
-exits early due to a federation-absent gate (graceful degradation — see W2 F03
-resolution in curator design `2100c-curator-design-v2.md`).
+**Emission (mechanism changed in v2.3.23):** originally specified as the curator
+agent's own "final action" (writing the row itself via `Edit`/`Write`), but that path
+was never mechanically viable — the curator agent has no MCP verb that can append an
+audit event, and `Edit`-ing the live 10+ MB `events.jsonl` requires a `Read` of the
+whole file first, which is impractical at that size. As of v2.3.23, `curate-runner`
+calls `mcp__orchestray__curator_tombstone` with `action: "close_run"` as a mandatory
+step in its own protocol — independent of whether the curator agent cooperates — and
+that tool auto-emits this event, the same mechanism `start_run` and `write` already
+use for `curator_run_start` / `curator_action_*`. `close_run` fires whenever
+`start_run` (curate-runner's Step 5) was reached, INCLUDING `--dry-run` runs and runs
+where the curator agent itself failed or was never spawned (e.g. the `--diff`
+zero-dirty short-circuit) — see `dry_run` below. It does NOT fire for the
+early-refusal paths (D1 violation, `curator.enabled: false`, empty corpus) where
+`start_run` was never called — there is no run to close.
 
 ```json
 {
@@ -2498,7 +2508,10 @@ resolution in curator design `2100c-curator-design-v2.md`).
   "run_id": "<curator-run-{ISO8601}>",
   "actions_applied": { "promote_n": 2, "merge_n": 1, "deprecate_n": 3 },
   "actions_skipped": { "promote_n": 0, "merge_n": 1, "deprecate_n": 0 },
-  "tombstones_written_count": 3
+  "tombstones_written_count": 3,
+  "dry_run": false,
+  "reconciliation": null,
+  "stamps": null
 }
 ```
 
@@ -2536,6 +2549,17 @@ resolution in curator design `2100c-curator-design-v2.md`).
   (promote + merge + deprecate). For a deprecate action, each deprecated pattern
   produces one row. For merge actions, each input pattern produces one row. For
   promote actions, each promoted pattern produces one row.
+- `dry_run` (added v2.3.23): `true` when this run was invoked with `--dry-run`
+  (curator wrote proposals only; nothing was actually applied, so every count in
+  `actions_applied` is `0`). `false` for a normal apply run. Always present — a real
+  boolean, not the optional/nullable convention used for the two fields below.
+- `reconciliation` (optional, added v2.3.23): `{ "repaired": N, "flagged": N }` —
+  counts from the post-run reconciliation pass (curate-runner Step 9). `null` when
+  reconciliation did not run, i.e. `dry_run: true` runs and the `--diff` zero-dirty
+  short-circuit (curator never spawned).
+- `stamps` (optional, added v2.3.23): `{ "applied": N, "skipped": N, "failed": N }` —
+  counts from the recently-curated stamp-apply pass (curate-runner Step 10). `null`
+  under the same conditions as `reconciliation`.
 
 **Consumer guidance:**
 - Use `run_id` to correlate `curator_run_complete` with its associated
@@ -2545,6 +2569,8 @@ resolution in curator design `2100c-curator-design-v2.md`).
   `type: "curator_run_complete"` and take the latest by `timestamp`.
 - Tombstones are project-local at `.orchestray/curator/tombstones.jsonl` and power
   the `undo-last` / `undo <action-id>` rollback commands.
+- Filter on `dry_run: false` for adoption/promotion-rate analytics — `dry_run: true`
+  rows are previews and never mutated the pattern corpus.
 
 **Schema stability:** additive only. Consumers that do not recognise this event type
 should ignore it. New fields will only be added as optional.
@@ -13074,3 +13100,61 @@ Field notes:
   `ORCHESTRAY_REVIEWER_GIT_DIFF_AUTOINJECT_DISABLED=1` (env) or
   `reviewer_git_diff_autoinject.enabled: false` (config) disables auto-inject
   entirely, reverting to the pre-v2.3.18 straight block-on-missing behavior.
+
+---
+
+## v2.3.23 additions (Guard: prompts naming ungranted tools)
+
+### `ungranted_tool_mention_warn` event
+
+Emitted by `bin/warn-ungranted-tool-mention.js` (`PreToolUse:Agent`, advisory
+only — never blocks) when a delegation prompt names an `mcp__orchestray__*`
+tool the target agent's `tools:` frontmatter does not grant. Fixes the real
+incident where a PM instructed an `architect` spawn to call
+`mcp__orchestray__kb_write` — `architect` does not have that tool, the spawn
+silently fell back to raw `Write`, and nothing detected it until a human read
+the transcript.
+
+```json
+{
+  "version": 1,
+  "schema_version": 1,
+  "type": "ungranted_tool_mention_warn",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "orchestration_id": "orch-abc123",
+  "agent_type": "architect",
+  "ungranted_tools": ["mcp__orchestray__kb_write"],
+  "reason": "delegation prompt names a tool the target agent tools: frontmatter does not grant"
+}
+```
+
+Required: `version`, `schema_version`, `type`, `timestamp`, `orchestration_id`,
+`agent_type`, `ungranted_tools`, `reason`.
+
+Field notes:
+- `agent_type`: the `subagent_type` value from the `Agent()` tool call.
+- `ungranted_tools`: every `mcp__orchestray__*` token found in a non-negated
+  line of the prompt that is absent from the agent's declared `tools:`
+  frontmatter. One event per spawn, not one per tool.
+- `orchestration_id`: `"unknown"` when no current-orchestration.json is
+  resolvable (not a validation failure — the field is still always present).
+- Negation handling: a line containing "do not", "does not", "did not", "must
+  not", "cannot", "can't", "never", "should not", "won't", or "will not"
+  (case-insensitive) is excluded from token extraction — covers the common
+  case of a prompt explaining what an agent must NOT call. Does NOT catch a
+  line narrating the PM's own subsequent action ("I will then call
+  mcp__orchestray__X") — that reads identically to an instruction to the
+  spawned agent and is not excluded. Accepted residual false-positive risk;
+  speaker attribution from prose would need real NLU.
+- Fail-open: unreadable/missing agent definition file and unknown
+  `subagent_type` (dynamic specialists have no static file) both produce no
+  event, not a guessed one — declared tools are unknowable in that case, same
+  precedent as `tool_grant_shortfall`'s `resolveAgentDefinitionPath`.
+- Agent definition lookup order: project install (`<cwd>/.claude/agents/`) >
+  project-legacy (`<cwd>/agents/`, source-repo dev layout) > user/global
+  (`~/.claude/agents/`) > plugin-legacy (`~/.claude/orchestray/agents/`).
+- `tools:` frontmatter parsing tolerates both the flat comma form
+  (`tools: a, b`) and the YAML flow-sequence form (`tools: [a, b]`).
+- Kill switch: `ORCHESTRAY_UNGRANTED_TOOL_WARN_DISABLED=1` (env) or
+  `ungranted_tool_mention.enabled: false` (config). Advisory only — the spawn
+  is never blocked regardless of kill-switch state.

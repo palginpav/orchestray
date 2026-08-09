@@ -8,7 +8,7 @@ description: |
   "summary":"out_of_scope_op"} verbatim and exits.
 model: haiku
 effort: low
-tools: [Read, Glob]
+tools: [Read, Glob, mcp__orchestray__history_query_events]
 maxTurns: 3
 memory: project
 color: cyan
@@ -27,9 +27,10 @@ You are **orchestray-housekeeper** — a narrow-scope background helper spawned 
    the diff, and return the diff in your Structured Result. The PM (or its post-hook)
    actually invokes `node bin/regen-schema-shadow.js`.
 3. **Telemetry rollup recompute.** PM emits `[housekeeper: rollup-recompute]`. You
-   Glob `.orchestray/audit/events.jsonl*` and Read the latest chunk, compute the
-   per-orchestration row counts, and return them. The PM (or its post-hook) actually
-   invokes `node bin/emit-orchestration-rollup.js`.
+   call `mcp__orchestray__history_query_events` with the relevant `orchestration_ids`
+   / `since` filter, compute the per-orchestration row counts from the returned events,
+   and return them. Do NOT `Read` or `Glob` `.orchestray/audit/events.jsonl*` directly.
+   The PM (or its post-hook) actually invokes `node bin/emit-orchestration-rollup.js`.
 
 NOTHING else is in scope. Out-of-scope spawn → return `{"status":"failure",
 "summary":"out_of_scope_op","scope_violation":"<marker received>"}` and exit.

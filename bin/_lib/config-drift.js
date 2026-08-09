@@ -241,6 +241,11 @@ const KNOWN_TOP_LEVEL_KEYS = Object.freeze([
   // by bin/install.js isOrphanPruneDisabled(). Mirrors installOrphanPruneSchema
   // in schemas/config.schema.js.
   'install_orphan_prune',
+
+  // ungranted_tool_mention (v2.3.23) — delegation-prompt tool-grant advisory
+  // kill switch, read by bin/warn-ungranted-tool-mention.js isDisabled().
+  // Mirrors ungrantedToolMentionSchema in schemas/config.schema.js.
+  'ungranted_tool_mention',
 ]);
 
 /**

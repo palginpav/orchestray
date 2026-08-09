@@ -16,7 +16,8 @@
  *   1. `curator.enabled` gate — reject ALL actions when the config key is false.
  *   2. `run.lock` concurrency guard on `start_run` — atomic EEXIST check.
  *   3. Audit event emission — emits `curator_run_start`, `curator_action_promoted`,
- *      `curator_action_merged`, and `curator_action_deprecated` per event-schemas.md §44.
+ *      `curator_action_merged`, `curator_action_deprecated`, and (v2.3.23)
+ *      `curator_run_complete` per event-schemas.md §44.
  *
  * Resolves: C1a F01 (dead-code), C1a F04 (run.lock), C1a F07 (fsync+rename),
  *           C1c #3 (phantom curator-lib.js), C1c #4 (no CLI entry),
@@ -24,6 +25,19 @@
  *
  * F1 (v2.1.0) — see .orchestray/kb/artifacts/2100-c1-bugs.md and
  * .orchestray/kb/artifacts/2100-c1-dead-code.md.
+ *
+ * `close_run` (v2.3.23) — the curator agent's own §8 instruction to append
+ * `curator_run_complete` as its "final action" was never mechanically viable:
+ * the curator has no MCP verb that can append an audit event, and `Edit`-ing
+ * the live 10+ MB `events.jsonl` requires reading the whole file first. See
+ * .orchestray/kb/decisions/curator-run-complete-emission-gap.md. `close_run` is
+ * called by `agents/curate-runner.md`'s deterministic protocol (a mandatory
+ * step, not left to the curator LLM's discretion) after reconciliation and
+ * stamp-apply. It also fixes a pre-existing lock leak: `handler_start_run`
+ * acquires `run.lock`, but before this change only `undo_last`/`clear`
+ * released it — a normal successful run never did, leaving the lock held
+ * until its 10-minute staleness window expired. `close_run` now releases it
+ * unconditionally, mirroring `undo_last`/`clear`.
  */
 
 const fs   = require('node:fs');
@@ -61,10 +75,36 @@ const ACTION_ENUM = deepFreeze([
   'undo_by_id',  // Reverse a single action by action_id.
   'clear',       // Hard-delete all tombstones (active + archive).
   'list',        // Read tombstones for display / dry-run.
+  'close_run',   // End-of-run: emit curator_run_complete, release run.lock.
 ]);
 
 /** run.lock stale threshold: 10 minutes in milliseconds. */
 const LOCK_STALE_MS = 10 * 60 * 1000;
+
+/**
+ * close_run kill switch (v2.3.23) — env + config, matching the project's
+ * established convention (e.g. ORCHESTRAY_BARE_EVENT_REPAIR_DISABLED /
+ * bare_event_key_repair.enabled). Scoped to the completion EMISSION only —
+ * distinct from `curator.enabled`, which gates the whole tool. Even when
+ * disabled, close_run still releases run.lock and honours its idempotency
+ * marker (mechanical lifecycle cleanup is not something an observability
+ * kill switch should hold hostage); it just skips writing the audit row.
+ * Default-on per feedback_default_on_shipping.md; fail-open to enabled on
+ * any read/parse error.
+ */
+const ENV_RUN_COMPLETE_DISABLED = 'ORCHESTRAY_CURATOR_RUN_COMPLETE_DISABLED';
+
+function isRunCompleteEmitDisabled(projectRoot) {
+  if (process.env[ENV_RUN_COMPLETE_DISABLED] === '1') return true;
+  try {
+    const raw = fs.readFileSync(path.join(projectRoot, '.orchestray', 'config.json'), 'utf8');
+    const cfg = JSON.parse(raw);
+    if (cfg && cfg.curator && cfg.curator.run_complete_emit_enabled === false) {
+      return true;
+    }
+  } catch (_e) { /* fail-open: default-on */ }
+  return false;
+}
 
 // ---------------------------------------------------------------------------
 // Input schema
@@ -82,7 +122,8 @@ const INPUT_SCHEMA = deepFreeze({
         'Dispatcher key. "start_run" begins a new curator run (must be called first). ' +
         '"write" appends one tombstone row before a destructive action. ' +
         '"undo_last" reverses the most-recent run. "undo_by_id" reverses one action. ' +
-        '"clear" hard-deletes all tombstone history. "list" returns current tombstones.',
+        '"clear" hard-deletes all tombstone history. "list" returns current tombstones. ' +
+        '"close_run" ends a run: emits curator_run_complete and releases run.lock.',
     },
     run_id: {
       type: 'string',
@@ -115,6 +156,16 @@ const INPUT_SCHEMA = deepFreeze({
         'One of: curator_action_promoted, curator_action_merged, curator_action_deprecated. ' +
         'When omitted the event is derived from the tombstone action field.',
     },
+    summary: {
+      type: 'string',
+      description:
+        'JSON-serialised run summary. Required for "close_run". Shape: ' +
+        '{ actions_applied: {promote_n,merge_n,deprecate_n}, ' +
+        'actions_skipped: {promote_n,merge_n,deprecate_n}, tombstones_written_count, ' +
+        'dry_run: boolean, reconciliation?: {repaired,flagged}, ' +
+        'stamps?: {applied,skipped,failed} }. Missing counters default to 0; ' +
+        'omitted reconciliation/stamps are recorded as null (per event-schemas.md).',
+    },
   },
 });
 
@@ -127,10 +178,10 @@ const definition = deepFreeze({
   description:
     'Tombstone management for the pattern curator agent. ' +
     'Provides atomic write, keep-last-N retention, undo-last, undo-by-id, ' +
-    'clear, and list operations over .orchestray/curator/tombstones.jsonl. ' +
+    'clear, list, and close_run operations over .orchestray/curator/tombstones.jsonl. ' +
     'All writes are atomic (tmp+rename). ' +
     'Gated on curator.enabled config key — returns an error when curator is disabled. ' +
-    'Emits curator audit events (curator_run_start, curator_action_*) automatically.',
+    'Emits curator audit events (curator_run_start, curator_action_*, curator_run_complete) automatically.',
   inputSchema: INPUT_SCHEMA,
 });
 
@@ -471,6 +522,128 @@ function handler_list(input, context) {
 }
 
 // ---------------------------------------------------------------------------
+// close_run helpers
+// ---------------------------------------------------------------------------
+
+/** Coerce to a non-negative integer, defaulting to 0 for anything else. */
+function nonNegInt(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+}
+
+function normalizeActionCounts(obj) {
+  return {
+    promote_n:   nonNegInt(obj && obj.promote_n),
+    merge_n:     nonNegInt(obj && obj.merge_n),
+    deprecate_n: nonNegInt(obj && obj.deprecate_n),
+  };
+}
+
+/**
+ * Absolute path to the idempotency marker for a given run_id. Created with
+ * O_EXCL (same atomic-create idiom as acquireLock above) so two close_run
+ * calls for the same run_id — e.g. a retried curate-runner step — emit
+ * curator_run_complete at most once.
+ *
+ * @param {string} projectRoot
+ * @param {string} runId
+ * @returns {string}
+ */
+function closedMarkerPath(projectRoot, runId) {
+  // Sanitize runId for filesystem safety — it's caller-supplied.
+  const safe = String(runId).replace(/[^a-zA-Z0-9_.-]/g, '_');
+  return path.join(projectRoot, '.orchestray', 'curator', 'closed', safe + '.marker');
+}
+
+/**
+ * handler_close_run — end-of-run lifecycle action (v2.3.23).
+ *
+ * Called by agents/curate-runner.md's deterministic protocol (not left to
+ * the curator LLM's discretion — see file header). Always releases run.lock
+ * (fixing the pre-v2.3.23 leak where a normal successful run never did) and,
+ * unless the kill switch is set, emits curator_run_complete exactly once per
+ * run_id via an atomic marker-file guard.
+ *
+ * @param {object} input
+ * @param {object} context
+ * @returns {object} toolSuccess or toolError
+ */
+function handler_close_run(input, context) {
+  if (!input.run_id || typeof input.run_id !== 'string') {
+    return toolError('curator_tombstone/close_run: run_id is required');
+  }
+  if (!input.summary || typeof input.summary !== 'string') {
+    return toolError('curator_tombstone/close_run: summary (JSON string) is required');
+  }
+
+  let summaryObj;
+  try {
+    summaryObj = JSON.parse(input.summary);
+  } catch (err) {
+    return toolError('curator_tombstone/close_run: summary is not valid JSON: ' + (err && err.message));
+  }
+  if (!summaryObj || typeof summaryObj !== 'object' || Array.isArray(summaryObj)) {
+    return toolError('curator_tombstone/close_run: summary must be a JSON object');
+  }
+
+  const projectRoot = (context && context.projectRoot) || process.cwd();
+
+  // Always release run.lock, regardless of the emit kill switch or
+  // idempotency outcome below — closing a run is a real lifecycle event,
+  // not just an observability signal. Fail-open (releaseLock already is).
+  releaseLock(projectRoot);
+
+  // Idempotency guard: atomic marker create. EEXIST means this run_id was
+  // already closed — skip re-emission rather than double-count the run.
+  const markerPath = closedMarkerPath(projectRoot, input.run_id);
+  let alreadyClosed = false;
+  try {
+    fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+    const fd = fs.openSync(markerPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL);
+    fs.writeSync(fd, new Date().toISOString());
+    fs.closeSync(fd);
+  } catch (err) {
+    if (err && err.code === 'EEXIST') {
+      alreadyClosed = true;
+    }
+    // Any other marker-write failure (e.g. permissions): fall through and
+    // still emit — best-effort observability beats losing the signal, and
+    // idempotency is a nice-to-have here, not a correctness requirement.
+  }
+
+  if (alreadyClosed) {
+    return toolSuccess({ ok: true, run_id: input.run_id, already_closed: true });
+  }
+
+  if (isRunCompleteEmitDisabled(projectRoot)) {
+    return toolSuccess({ ok: true, run_id: input.run_id, already_closed: false, emitted: false });
+  }
+
+  const eventFields = {
+    orchestration_id: null,
+    run_id: input.run_id,
+    actions_applied: normalizeActionCounts(summaryObj.actions_applied),
+    actions_skipped: normalizeActionCounts(summaryObj.actions_skipped),
+    tombstones_written_count: nonNegInt(summaryObj.tombstones_written_count),
+    dry_run: summaryObj.dry_run === true,
+    reconciliation: (summaryObj.reconciliation && typeof summaryObj.reconciliation === 'object')
+      ? { repaired: nonNegInt(summaryObj.reconciliation.repaired), flagged: nonNegInt(summaryObj.reconciliation.flagged) }
+      : null,
+    stamps: (summaryObj.stamps && typeof summaryObj.stamps === 'object')
+      ? {
+          applied: nonNegInt(summaryObj.stamps.applied),
+          skipped: nonNegInt(summaryObj.stamps.skipped),
+          failed:  nonNegInt(summaryObj.stamps.failed),
+        }
+      : null,
+  };
+
+  emitCuratorEvent('curator_run_complete', eventFields);
+
+  return toolSuccess({ ok: true, run_id: input.run_id, already_closed: false, emitted: true });
+}
+
+// ---------------------------------------------------------------------------
 // Dispatcher map
 // ---------------------------------------------------------------------------
 
@@ -481,6 +654,7 @@ const ACTION_HANDLERS = {
   undo_by_id: handler_undo_by_id,
   clear:      handler_clear,
   list:       handler_list,
+  close_run:  handler_close_run,
 };
 
 // ---------------------------------------------------------------------------

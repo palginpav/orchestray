@@ -1,7 +1,7 @@
 ---
 name: curate-runner
 description: Dispatcher for `/orchestray:learn curate`. Sets up the tombstone run, builds the duplicate-detect shortlist, spawns the curator agent, runs reconciliation and stamp-apply, and reports the final summary. Invoked ONLY by the PM in response to an explicit `/orchestray:learn curate` user command — exists to bridge the PM's curator-spawn lockout (directive D1) without re-opening the auto-trigger hole.
-tools: Read, Glob, Grep, Bash, Write, Edit, Agent(curator)
+tools: Read, Glob, Grep, Bash, Write, Edit, Agent(curator), mcp__orchestray__curator_tombstone
 model: sonnet
 effort: medium
 memory: project
@@ -110,6 +110,13 @@ If `--diff` is set, follow the H6 protocol from
 (emit the journal entry, exit with `"Curate --diff: 0 patterns changed"`),
 and write the diff-set file. Capture `dirtySetPath` for the curator prompt.
 
+**Before the zero-dirty exit, call `close_run` (Step 10.5's protocol) first.**
+Step 5 already ran `start_run` and holds `run.lock`, and the curator is never
+spawned in this path — without an explicit `close_run` call here the lock
+would leak and no `curator_run_complete` would ever be recorded for this run.
+Use all-zero counts, `dry_run: false` (this is not a dry-run — there was
+simply nothing to evaluate), and omit `reconciliation`/`stamps`.
+
 ### Step 8: Spawn curator agent
 Construct the curator delegation prompt with these fields and spawn via
 `Agent(subagent_type="curator", model="sonnet", maxTurns=65, ...)`. Required
@@ -163,6 +170,74 @@ Run via Bash:
 Stamp failures are non-fatal — capture
 `"Stamps: N applied, M skipped, K failed."` for the summary.
 
+### Step 10.5: Close the run (mandatory — mechanical, not curator-agent-dependent)
+
+Call `mcp__orchestray__curator_tombstone` directly — you are granted this tool
+for exactly this step:
+
+```
+mcp__orchestray__curator_tombstone({
+  "action": "close_run",
+  "run_id": "<run_id from Step 5>",
+  "summary": "<JSON-serialised run summary — shape below>"
+})
+```
+
+**This is what makes `curator_run_complete` actually land in `events.jsonl`.**
+The curator agent's own instruction to append that event as its "final
+action" is not mechanically reachable: it has no MCP verb that can append an
+audit event, and `Edit`-ing the 10+ MB live log requires reading the whole
+file first. Do not rely on the curator agent to do this — always call
+`close_run` yourself.
+
+**Fires whenever Step 5 (`start_run`) ran** — including `--dry-run` runs, the
+`--diff` zero-dirty short-circuit (Step 7 — call it there, before that early
+exit), and runs where the curator agent returned `failure`. A run that failed
+still held `run.lock` and still needs it released and its completion
+recorded, even with all-zero counts. Does **not** fire for the Step 1-4
+early-refusal paths (D1 violation, `curator.enabled: false`, empty corpus,
+`--diff`/`--apply` conflict) — no `run_id` exists yet in those cases, so
+there is no run to close.
+
+**`summary` shape:**
+```json
+{
+  "actions_applied":  { "promote_n": 0, "merge_n": 0, "deprecate_n": 0 },
+  "actions_skipped":  { "promote_n": 0, "merge_n": 0, "deprecate_n": 0 },
+  "tombstones_written_count": 0,
+  "dry_run": false,
+  "reconciliation": { "repaired": 0, "flagged": 0 },
+  "stamps": { "applied": 0, "skipped": 0, "failed": 0 }
+}
+```
+
+- **Normal apply run:** count `actions_applied`/`actions_skipped` from the
+  curator's `actions[]` — the same counting you already do for Step 12's
+  human summary line. `tombstones_written_count` is the total tombstone rows
+  the curator wrote this run (cross-check with `list` if needed).
+  `reconciliation` comes from Step 9's report:
+  `{repaired: report.repaired.length, flagged: report.flagged.length}`.
+  `stamps` comes from Step 10's summary:
+  `{applied: stamped.length, skipped: skipped.length, failed: failed.length}`.
+- **`--dry-run`:** `actions_applied`, `actions_skipped`, and
+  `tombstones_written_count` are all `0` (nothing was actually written);
+  `dry_run: true`; omit `reconciliation` and `stamps` entirely — Steps 9/10
+  did not run, and the tool records omitted fields as `null` rather than a
+  misleading `0`.
+- **`--diff` zero-dirty short-circuit (Step 7):** same all-zero shape as
+  `--dry-run`, but `dry_run: false` — this genuinely wasn't a dry-run, there
+  was simply nothing to evaluate.
+- **Curator returned `failure`:** use whatever partial counts are actually
+  known (typically all zero, since a tombstone write only happens on a
+  successful action); `dry_run` reflects the real flag for this invocation.
+
+A `close_run` failure (`isError: true`) is itself non-fatal to the overall
+run — log
+`"Warning: close_run failed: <error>. curator_run_complete was not recorded for this run; run.lock may still be held."`
+and continue to Step 11/12. It does not change the `status` computed in
+Step 13, but DO mention it in the summary so a human can investigate
+`run.lock` manually if needed.
+
 ### Step 11: `--diff` rollup event (only if `--diff`)
 Emit the `curator_diff_rollup` event to
 `<cwd>/.orchestray/audit/events.jsonl` per the schema in SKILL.md step 4c.
@@ -209,8 +284,8 @@ arrays alongside.
 
 ## Cost expectations
 
-- Step 5 / 6 / 7 / 9 / 10 / 11 are deterministic Bash + Node helpers — sub-second,
-  near-zero cost.
+- Step 5 / 6 / 7 / 9 / 10 / 10.5 / 11 are deterministic Bash/Node/MCP-tool
+  helpers — sub-second, near-zero cost.
 - Step 8 (curator) is the dominant cost — ~$0.10–$0.15 per run at typical
   corpus sizes (30–60 patterns) per the curator design's cost model.
 - Your own LLM cost should be a small constant (~$0.02) for orchestration
@@ -225,7 +300,8 @@ arrays alongside.
 | `--diff` + `--apply` together | Report incompatibility, exit `partial`. |
 | Empty corpus | Report empty-corpus message, exit `partial`. |
 | H3 pre-filter throws | Use fallback shortlist, journal degradation, continue. |
-| Diff zero-dirty | Report happy-path message, skip curator spawn entirely, exit `success`. |
-| Curator returns `failure` | Forward verbatim, append summary, exit `failure`. No retry. |
+| Diff zero-dirty | Call `close_run` (Step 10.5, all-zero counts), report happy-path message, skip curator spawn entirely, exit `success`. |
+| Curator returns `failure` | Forward verbatim, append summary, still call `close_run` (Step 10.5), exit `failure`. No retry. |
 | Reconciliation errors | Warn, continue, exit `partial`. |
 | Stamp-apply errors | Warn, continue, exit `partial`. |
+| `close_run` (Step 10.5) fails | Warn in summary, continue to Steps 11/12. Does not change `status` on its own. |

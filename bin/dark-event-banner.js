@@ -96,6 +96,13 @@
  * coupled. `--json` mode does NOT call the repair: doctor probes stay
  * read-only.
  *
+ * Item 4 (v2.3.23) — audit backup sweep: same slot, same reasoning. The repair
+ * above is what CREATES `events.jsonl.bak-*` files; `bin/_lib/audit-backup-sweep.js`'s
+ * `sweepAuditBackups()` retires the old ones (keep-last-N) so they don't
+ * accumulate. Own kill switch, runs independently of the banner's display
+ * switch, silent (no stdout/stderr output either way) — this is pure
+ * housekeeping, not something worth a banner line.
+ *
  * Two modes
  * ---------
  *   1. Hook mode (default): reads a SessionStart hook payload from stdin,
@@ -127,6 +134,7 @@ const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { readHookInputRaw } = require('./_lib/hook-stdin');
 const { computeRecentDiagnostics } = require('./_lib/recent-diagnostics');
 const { repairBareEventRows } = require('./_lib/normalize-bare-event-rows');
+const { sweepAuditBackups } = require('./_lib/audit-backup-sweep');
 
 const CONTINUE_RESPONSE      = JSON.stringify({ continue: true });
 const STALE_AFTER_MS         = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -294,6 +302,11 @@ function handle(event) {
     // silently disable the mechanical repair too. The repair has its own
     // independent kill switch (env + config — see that module's header).
     try { repairBareEventRows(cwd); } catch (_e) { /* fail-open */ }
+
+    // Item 4 (header note above): sweep old events.jsonl.bak-* leftovers the
+    // repair above creates. Independent kill switch; runs regardless of the
+    // banner's own display switch below (see that module's header).
+    try { sweepAuditBackups(cwd); } catch (_e) { /* fail-open */ }
 
     if (process.env.ORCHESTRAY_DARK_EVENT_BANNER_DISABLED === '1') {
       process.stdout.write(CONTINUE_RESPONSE);

@@ -95,7 +95,10 @@ owns this gate; reviewers confirm the criteria are met before sign-off.
 
 The v2.2.0 P3.3 design introduces the `orchestray-housekeeper` subagent for
 three narrow-scope background ops (KB-write verification, schema-shadow regen
-diff, telemetry rollup recompute). Tools FROZEN at `[Read, Glob]` ONLY.
+diff, telemetry rollup recompute). Tools FROZEN at
+`[Read, Glob, mcp__orchestray__history_query_events]` — the single MCP grant
+was added in v2.3.23 (R-EVT-ROTATE) so telemetry rollup recompute could stop
+reading the live `events.jsonl` directly; see "v2.3.23 amendment" below.
 
 ### Per-call cost components
 
@@ -135,6 +138,18 @@ list (e.g., adds Grep) MUST satisfy ALL FOUR:
    — the new expected `tools:` line. The test fails immediately on the first
    run after the merge if this is forgotten.
 
+### v2.3.23 amendment (out-of-band grant, criteria 1-2 not satisfied)
+
+The `mcp__orchestray__history_query_events` grant landed via an explicit,
+user-locked v2.3.23 scope decision
+(`.orchestray/kb/decisions/v2323-events-rotation-read-ceiling.md`), not via
+the organic promotion gate above — criteria 1 (60 days zero drift) and 2
+(100 clean `housekeeper_action` events) were not evaluated for this specific
+change. Criteria 3 and 4 (tagged commit, updated baseline + test row) were
+followed. The grant is narrowly scoped to one read-only MCP query tool;
+`Edit`/`Write`/`Bash`/`Grep` remain forbidden. Flagged here so a future
+reader does not assume the four-criteria gate was cleared in full.
+
 ### Reverse path (rollback)
 
 If post-extension telemetry shows `housekeeper_forbidden_tool_blocked`
@@ -146,7 +161,7 @@ a previous known-good baseline. The same atomicity rules apply.
 
 | Layer | Surface | Effect |
 |---|---|---|
-| (a) frontmatter | `tools: [Read, Glob]` in `agents/orchestray-housekeeper.md` | Declarative whitelist. |
+| (a) frontmatter | `tools: [Read, Glob, mcp__orchestray__history_query_events]` in `agents/orchestray-housekeeper.md` | Declarative whitelist. |
 | (b) runtime | `bin/validate-task-completion.js` `READ_ONLY_AGENT_FORBIDDEN_TOOLS` map | Exit-2 + `housekeeper_forbidden_tool_blocked` event on `Edit`/`Write`/`Bash`/`Grep`. |
 | (c) CI | `bin/__tests__/p33-housekeeper-whitelist-frozen.test.js` byte-equality vs `BASELINE_TOOLS_LINE` | Test fails on any unsanctioned mutation. |
 

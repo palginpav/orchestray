@@ -108,13 +108,20 @@ background ops the PM would otherwise do inline at Opus rates:
   Marker: `[housekeeper: write <abs-path>]`.
 - **Schema-shadow regen diff.** Compares `event-schemas.md` against
   `event-schemas.shadow.json`. Marker: `[housekeeper: regen-schema-shadow]`.
-- **Telemetry rollup recompute.** Reads `events.jsonl` chunks, returns row
-  counts. Marker: `[housekeeper: rollup-recompute]`.
+- **Telemetry rollup recompute.** Calls `mcp__orchestray__history_query_events`
+  (v2.3.23 R-EVT-ROTATE — was Glob+Read on the live `events.jsonl`, banned
+  per `.orchestray/kb/decisions/v2323-events-rotation-read-ceiling.md`),
+  returns per-orchestration row counts. Marker: `[housekeeper: rollup-recompute]`.
 
-### Tool whitelist (FROZEN — Clause 1 of locked scope D-5)
+### Tool whitelist (FROZEN — Clause 1 of locked scope D-5, amended v2.3.23)
 
-`tools: [Read, Glob]` — strictly tighter than the scout's `[Read, Glob, Grep]`.
-Three-layer enforcement: frontmatter declarative (a), runtime exit-2 rejection
+`tools: [Read, Glob, mcp__orchestray__history_query_events]` — still strictly
+tighter than the scout's `[Read, Glob, Grep]` (no Grep, no other MCP tool).
+The single MCP grant was added in v2.3.23 [housekeeper-tools-extension] so op
+class 3 could stop reading the live audit log directly; it bypassed the
+v2.2.1+ organic promotion criteria below by explicit, user-locked scope
+decision rather than accumulated operational evidence. Three-layer
+enforcement unchanged: frontmatter declarative (a), runtime exit-2 rejection
 in `bin/validate-task-completion.js` (b), CI test
 `p33-housekeeper-whitelist-frozen.test.js` byte-equality vs baseline (c).
 

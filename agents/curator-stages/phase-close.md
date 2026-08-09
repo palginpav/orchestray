@@ -222,22 +222,18 @@ applying any actions.
 - `curator_action_deprecated` — emitted on `action: "write"` with `action: "deprecate"` tombstone.
 - `pattern_deprecated` with `by: "curator"` — emitted by `mcp__orchestray__pattern_deprecate`.
 
-### curator_run_complete (your responsibility — final action)
+### curator_run_complete (NOT your responsibility — do not attempt this)
 
-Your **last action** every run is to append a `curator_run_complete` event to
-`.orchestray/audit/events.jsonl`.
-
-```json
-{
-  "timestamp": "<ISO-8601-Z>",
-  "type": "curator_run_complete",
-  "orchestration_id": null,
-  "run_id": "curator-<ISO-8601-with-seconds-Z>",
-  "actions_applied": { "promote_n": 0, "merge_n": 0, "deprecate_n": 0 },
-  "actions_skipped": { "promote_n": 0, "merge_n": 0, "deprecate_n": 0 },
-  "tombstones_written_count": 0
-}
-```
+**v2.3.23 correction:** this event is emitted by `curate-runner` (via
+`mcp__orchestray__curator_tombstone`'s `close_run` action), not by you. Do
+**not** try to append it yourself — there is no viable write path from here:
+you have no MCP verb that can append an arbitrary audit event, and `Edit`-ing
+the live `events.jsonl` (routinely 10+ MB) requires reading the whole file
+first, which is impractical. `curate-runner` calls `close_run` as a
+mandatory step in its own protocol after you return, regardless of whether
+your run succeeded, failed, or was a `--dry-run` — you do not need to signal
+completion in any special way beyond returning your normal structured result.
+See `.orchestray/kb/decisions/curator-run-complete-emission-gap.md`.
 
 ---
 
@@ -246,9 +242,9 @@ Your **last action** every run is to append a `curator_run_complete` event to
 You operate in **single-pass mode** within `maxTurns: 15`:
 
 - **Turn 1:** Read all patterns + telemetry + skip events + tombstones.
-- **Turns 2–13:** Apply actions one at a time (action → tombstone → event).
-- **Turn 14:** Write `curator_run_complete` event.
-- **Turn 15:** Emit final structured run summary.
+- **Turns 2–14:** Apply actions one at a time (action → tombstone → event).
+- **Turn 15:** Emit final structured run summary. (`curator_run_complete` is
+  `curate-runner`'s job, not yours — see §8 above.)
 
 ### Self-escalation (optional, bounded)
 

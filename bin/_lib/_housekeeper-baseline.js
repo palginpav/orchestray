@@ -18,10 +18,20 @@
 // for F-005 (line 24 prose now lists Grep alongside Edit/Write/Bash) and to add
 // `housekeeper_savings_usd` to the Structured Result schema (S-002 telemetry
 // extraction). tools: line is UNCHANGED — Clause 1 holds.
-const BASELINE_AGENT_SHA = 'a8d45e3b4e86d61653b14bd0e23220086da290131f7fcda4b9174fe940df596e';
+//
+// Regenerated 2026-08-09 [housekeeper-tools-extension] for v2.3.23 Item 4: op
+// class 3 (rollup recompute) must call mcp__orchestray__history_query_events
+// instead of Glob+Read on the live events.jsonl (R-EVT-ROTATE). Clause 1 is
+// amended, not lifted — the grant is exactly one narrowly-scoped, read-only
+// MCP query tool; Edit/Write/Bash/Grep remain forbidden (Clause 2 unchanged).
+// This bypasses the v2.2.1+ organic promotion criteria (60 days zero drift,
+// 100 clean housekeeper_action events) in agents/pm-reference/haiku-routing.md
+// §23f — those criteria govern discovery-driven broadening, not an explicit,
+// user-locked scope requirement. Flagged for PM/architect confirmation.
+const BASELINE_AGENT_SHA = '09830effc516707f55ac7a5e0fe56f01ce504e765464bc0e03903b8d3821b329';
 
 // Exact line, including the 'tools: ' prefix and the bracket-list. Must be
 // byte-identical to the line in the agent file. Newline is NOT included.
-const BASELINE_TOOLS_LINE = 'tools: [Read, Glob]';
+const BASELINE_TOOLS_LINE = 'tools: [Read, Glob, mcp__orchestray__history_query_events]';
 
 module.exports = { BASELINE_AGENT_SHA, BASELINE_TOOLS_LINE };

@@ -132,7 +132,8 @@ function emitRollup(cwd, orchestrationId) {
     return { written: false, reason: 'already_emitted' };
   }
 
-  // Read source files (50 MB cap each — matches jsonl-rotate default).
+  // Read source files (50 MB cap each — an independent defensive cap, not
+  // derived from either file's actual rotation threshold).
   const MAX_READ = 50 * 1024 * 1024;
   const metricsPath = path.join(metricsDir, 'agent_metrics.jsonl');
   const eventsPath  = path.join(auditDir,   'events.jsonl');

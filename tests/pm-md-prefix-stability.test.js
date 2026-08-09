@@ -136,9 +136,9 @@ describe('agents/pm.md Block A hash stability', () => {
     }
 
     // Normal mode: compare against the inline pinned value.
-    // v2.3.18 W2: repinned after Section 12 gained the Parallelizability Shape
-    // Check subsection (decomposition gate on task shape, not score alone).
-    const PINNED_BLOCK_A_HASH = '5fabcdd4119cea10';
+    // v2.3.23 Item 4: repinned after the Cost budget check's Read instruction
+    // was replaced with a history_query_events call (R-EVT-ROTATE).
+    const PINNED_BLOCK_A_HASH = '7b3daffc30638331';
 
     assert.equal(
       actualHash,
