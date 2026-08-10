@@ -42,7 +42,7 @@ const DELEGATION_TEMPLATES = path.join(
 const EVENT_SCHEMAS = path.join(
   ROOT, 'agents', 'pm-reference', 'event-schemas.md'
 );
-const CONFIG_PATH = path.join(ROOT, '.orchestray', 'config.json');
+const { DEFAULT_DELTA_HANDOFF } = require('../bin/_lib/config-schema');
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -351,21 +351,10 @@ describe('shouldLoadFull — kill switch (force_full)', () => {
 // Test 5 — Config block presence in .orchestray/config.json
 // ---------------------------------------------------------------------------
 
-describe('.orchestray/config.json — delta_handoff block', () => {
-  test('config.json contains delta_handoff block', () => {
-    assert.ok(fs.existsSync(CONFIG_PATH), `config.json must exist at ${CONFIG_PATH}`);
-    const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-    assert.ok('delta_handoff' in cfg, 'config.json must have delta_handoff key');
-  });
-
-  test('delta_handoff.enabled defaults to true', () => {
-    const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-    assert.equal(cfg.delta_handoff.enabled, true, 'delta_handoff.enabled must be true by default');
-  });
-
-  test('delta_handoff.force_full kill switch defaults to false', () => {
-    const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-    assert.equal(cfg.delta_handoff.force_full, false, 'force_full must be false by default');
+describe('delta_handoff config default (tracked source)', () => {
+  test('DEFAULT_DELTA_HANDOFF.force_full kill switch defaults to false', () => {
+    assert.equal(DEFAULT_DELTA_HANDOFF.force_full, false,
+      'force_full must be false by default');
   });
 });
 

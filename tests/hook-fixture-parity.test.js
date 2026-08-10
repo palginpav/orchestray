@@ -33,8 +33,18 @@ const allowKey     = (a) => a.script + '|' + a.event;
 const allowSet     = new Set(P.UNCOVERED_ALLOWLIST.map(allowKey));
 const describePair = (p) => p.script + '.js @ ' + p.event + (p.matcher ? '[' + p.matcher + ']' : '');
 
+// Corpus-dependent assertions only — the rest of this file's tests are
+// either pure (hooks.json/EVENT_SHAPES/UNCOVERED_ALLOWLIST structure) or
+// degrade gracefully (loop over an empty corpus, assert nothing). Only
+// these two actually require a non-empty corpus to hold.
+const HAS_FIXTURE_CORPUS = corpus.size > 0;
+const SKIP_NO_FIXTURES = HAS_FIXTURE_CORPUS ? false :
+  '.orchestray/fixtures/ is harvested local telemetry (ORCHESTRAY_FIXTURE_HARVEST=1), ' +
+  'accumulated from real hook invocations during actual product usage. It is gitignored ' +
+  'and never shipped — a fresh clone or CI checkout has no history to harvest from.';
+
 describe('hook fixture parity — declared consumers vs captured payloads', () => {
-  test('the fixture corpus is loadable and non-trivial', () => {
+  test('the fixture corpus is loadable and non-trivial', { skip: SKIP_NO_FIXTURES }, () => {
     assert.ok(corpus.size > 0, 'no fixture directories under .orchestray/fixtures');
     const bad = [];
     let total = 0;
@@ -54,17 +64,20 @@ describe('hook fixture parity — declared consumers vs captured payloads', () =
   });
 
   // Rollout: an anti-growth ledger, not a mute button. A NEW gap fails here.
-  test('every uncovered (script, event, matcher) pair is a known, frozen gap', () => {
-    const uncovered = P.uncoveredPairs(repoRoot, corpus);
-    const novel = uncovered.filter((p) => !allowSet.has(allowKey(p)));
-    assert.deepEqual(
-      novel.map(describePair), [],
-      'new fixture-parity gap(s). Either capture a real payload for this event ' +
-      '(ORCHESTRAY_FIXTURE_HARVEST=1) or add an entry to UNCOVERED_ALLOWLIST in ' +
-      'bin/_lib/hook-fixture-parity.js and raise FROZEN_UNCOVERED_COUNT — the ' +
-      'latter needs a reviewer.'
-    );
-  });
+  // With an empty corpus every declared pair is "uncovered" — not a real
+  // parity gap, just the absence of the corpus itself (see test above).
+  test('every uncovered (script, event, matcher) pair is a known, frozen gap',
+    { skip: SKIP_NO_FIXTURES }, () => {
+      const uncovered = P.uncoveredPairs(repoRoot, corpus);
+      const novel = uncovered.filter((p) => !allowSet.has(allowKey(p)));
+      assert.deepEqual(
+        novel.map(describePair), [],
+        'new fixture-parity gap(s). Either capture a real payload for this event ' +
+        '(ORCHESTRAY_FIXTURE_HARVEST=1) or add an entry to UNCOVERED_ALLOWLIST in ' +
+        'bin/_lib/hook-fixture-parity.js and raise FROZEN_UNCOVERED_COUNT — the ' +
+        'latter needs a reviewer.'
+      );
+    });
 
   test('the known-gap ledger cannot grow', () => {
     assert.ok(

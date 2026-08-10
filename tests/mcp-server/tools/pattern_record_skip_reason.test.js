@@ -221,6 +221,13 @@ describe('AC4(c) — missing orchestration_id is rejected', () => {
 // AC4(d): tool appears in the fresh-install enable map with default true
 // ---------------------------------------------------------------------------
 
+const CONFIG_PATH = path.resolve(__dirname, '../../../.orchestray/config.json');
+const HAS_SEEDED_CONFIG = fs.existsSync(CONFIG_PATH);
+const SKIP_NO_CONFIG = HAS_SEEDED_CONFIG ? false :
+  '.orchestray/config.json is generated at install time and gitignored — absent on a ' +
+  'fresh clone/CI. The tracked-source guarantee is covered by the sibling test above ' +
+  '(bin/install.js FRESH_INSTALL_MCP_TOOLS_ENABLED).';
+
 describe('AC4(d) — fresh-install enable map includes pattern_record_skip_reason: true', () => {
 
   test('bin/install.js FRESH_INSTALL_MCP_TOOLS_ENABLED includes pattern_record_skip_reason: true', () => {
@@ -242,18 +249,17 @@ describe('AC4(d) — fresh-install enable map includes pattern_record_skip_reaso
     assert.equal(match[1], 'true', 'pattern_record_skip_reason must default to true');
   });
 
-  test('.orchestray/config.json mcp_server.tools includes pattern_record_skip_reason: true', () => {
-    const configPath = path.resolve(__dirname, '../../../.orchestray/config.json');
-    assert.ok(fs.existsSync(configPath), '.orchestray/config.json must exist');
-    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    assert.ok(config.mcp_server, 'config must have mcp_server block');
-    assert.ok(config.mcp_server.tools, 'config.mcp_server must have tools block');
-    assert.equal(
-      config.mcp_server.tools.pattern_record_skip_reason,
-      true,
-      'pattern_record_skip_reason must be true in mcp_server.tools'
-    );
-  });
+  test('.orchestray/config.json mcp_server.tools includes pattern_record_skip_reason: true',
+    { skip: SKIP_NO_CONFIG }, () => {
+      const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      assert.ok(config.mcp_server, 'config must have mcp_server block');
+      assert.ok(config.mcp_server.tools, 'config.mcp_server must have tools block');
+      assert.equal(
+        config.mcp_server.tools.pattern_record_skip_reason,
+        true,
+        'pattern_record_skip_reason must be true in mcp_server.tools'
+      );
+    });
 
 });
 

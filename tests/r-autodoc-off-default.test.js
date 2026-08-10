@@ -35,7 +35,11 @@ const AUTODOC_DOC = path.join(ROOT, 'agents', 'pm-reference', 'auto-documenter.m
 
 describe('R-AUTODOC-OFF — repo config default', () => {
   test('.orchestray/config.json sets auto_document to false (or omits it; default-off)', () => {
-    assert.ok(fs.existsSync(CONFIG_PATH), 'repo config.json must exist for this test');
+    if (!fs.existsSync(CONFIG_PATH)) {
+      // No local .orchestray/config.json (fresh clone / CI, pre-install). The
+      // durable guarantee is covered below by the bin/install.js seed-absence check.
+      return;
+    }
     const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
     // Per R-AUTODOC-OFF, the explicit value must be `false` if present at all.
     // An explicit `true` here would silently re-enable auto-doc spawn for the

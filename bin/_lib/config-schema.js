@@ -4725,7 +4725,23 @@ function loadCachingConfig(cwd) {
 
 // -- role_budgets -------------------------------------------------------------
 
-const DEFAULT_ROLE_BUDGETS = Object.freeze({});
+const DEFAULT_ROLE_BUDGETS = Object.freeze({
+  pm:                  Object.freeze({ budget_tokens: 80000, source: 'fallback_model_tier_thin_telemetry', calibrated_at: '2026-04-25' }),
+  architect:           Object.freeze({ budget_tokens: 70000, source: 'fallback_model_tier_thin_telemetry', calibrated_at: '2026-04-25' }),
+  developer:           Object.freeze({ budget_tokens: 60000, source: 'fallback_model_tier_thin_telemetry', calibrated_at: '2026-04-25' }),
+  refactorer:          Object.freeze({ budget_tokens: 60000, source: 'fallback_model_tier_thin_telemetry', calibrated_at: '2026-04-25' }),
+  reviewer:            Object.freeze({ budget_tokens: 50000, source: 'fallback_model_tier_thin_telemetry', calibrated_at: '2026-04-25' }),
+  debugger:            Object.freeze({ budget_tokens: 50000, source: 'fallback_model_tier_thin_telemetry', calibrated_at: '2026-04-25' }),
+  tester:              Object.freeze({ budget_tokens: 50000, source: 'fallback_model_tier_thin_telemetry', calibrated_at: '2026-04-25' }),
+  documenter:          Object.freeze({ budget_tokens: 40000, source: 'fallback_model_tier_thin_telemetry', calibrated_at: '2026-04-25' }),
+  inventor:            Object.freeze({ budget_tokens: 70000, source: 'fallback_model_tier_thin_telemetry', calibrated_at: '2026-04-25' }),
+  researcher:          Object.freeze({ budget_tokens: 50000, source: 'fallback_model_tier_thin_telemetry', calibrated_at: '2026-04-25' }),
+  'security-engineer': Object.freeze({ budget_tokens: 50000, source: 'fallback_model_tier_thin_telemetry', calibrated_at: '2026-04-25' }),
+  'release-manager':   Object.freeze({ budget_tokens: 40000, source: 'fallback_model_tier_thin_telemetry', calibrated_at: '2026-04-25' }),
+  'ux-critic':         Object.freeze({ budget_tokens: 40000, source: 'fallback_model_tier_thin_telemetry', calibrated_at: '2026-04-25' }),
+  'project-intent':    Object.freeze({ budget_tokens: 20000, source: 'fallback_model_tier_thin_telemetry', calibrated_at: '2026-04-25' }),
+  'platform-oracle':   Object.freeze({ budget_tokens: 30000, source: 'fallback_model_tier_thin_telemetry', calibrated_at: '2026-04-25' }),
+});
 
 /**
  * Load the `role_budgets` top-level config section.

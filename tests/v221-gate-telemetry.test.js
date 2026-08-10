@@ -13,9 +13,9 @@
  *      "caching.block_z.enabled".
  *   3. Quarantined namespace → forced into gates_false regardless of value.
  *   4. Legacy `enable_*` keys still appear correctly.
- *   5. REGRESSION: load the actual shipped `.orchestray/config.json`
- *      from /home/palgin/orchestray/ and assert all 8 known v2.2.0 gates
- *      appear somewhere in gates_true ∪ gates_false.
+ *   5. REGRESSION: build a literal fixture config carrying all 8 known
+ *      v2.2.0 gates and assert they appear somewhere in gates_true ∪
+ *      gates_false.
  */
 
 const { test, describe } = require('node:test');
@@ -27,7 +27,6 @@ const { spawnSync } = require('node:child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const HOOK      = path.join(REPO_ROOT, 'bin', 'gate-telemetry.js');
-const REAL_CONFIG = path.join(REPO_ROOT, '.orchestray', 'config.json');
 
 // `bin/gate-telemetry.js` registers stdin listeners at top-level (it is
 // designed to run as a one-shot hook, not be require()d), so the test
@@ -261,10 +260,21 @@ describe('B3 — walkNamespacedGates unit behaviour', () => {
   });
 });
 
-describe('B3.5 — REGRESSION: shipped .orchestray/config.json carries all 8 v2.2.0 gates', () => {
+const B35_FIXTURE_CONFIG = Object.freeze({
+  audit: { round_archive: { enabled: true } },
+  caching: { block_z: { enabled: true }, engineered_breakpoints: { enabled: true } },
+  event_schemas: { full_load_disabled: true },
+  haiku_routing: { enabled: true, housekeeper_enabled: true },
+  output_shape: { enabled: true },
+  pm_protocol: { delegation_delta: { enabled: true } },
+});
+
+describe('B3.5 — REGRESSION: fixture config carries all 8 v2.2.0 gates', () => {
   // The 8 gates the W4 task spec named explicitly. After the v2.2.1
   // namespaced walker, all 8 must appear somewhere in gates_true ∪
-  // gates_false when the hook runs against the shipped config.json.
+  // gates_false when the hook runs against a config carrying them —
+  // a literal fixture, not this maintainer's local .orchestray/config.json
+  // (which is gitignored, absent on a fresh clone/CI, and never shipped).
   const REQUIRED_GATES = [
     'audit.round_archive.enabled',
     'caching.block_z.enabled',
@@ -276,13 +286,8 @@ describe('B3.5 — REGRESSION: shipped .orchestray/config.json carries all 8 v2.
     'pm_protocol.delegation_delta.enabled',
   ];
 
-  test('all 8 named gates appear in gates_true ∪ gates_false against shipped config.json', () => {
-    // Run the walker (in a child process to avoid the stdin-listener
-    // hang) directly against the shipped config — the walker is pure.
-    const raw = fs.readFileSync(REAL_CONFIG, 'utf8');
-    const cfg = JSON.parse(raw);
-
-    const gates = walkInChild(cfg);
+  test('all 8 named gates appear in gates_true ∪ gates_false against the fixture config', () => {
+    const gates = walkInChild(B35_FIXTURE_CONFIG);
     const paths = new Set(gates.map(g => g.path));
 
     const missing = REQUIRED_GATES.filter(g => !paths.has(g));
@@ -292,13 +297,9 @@ describe('B3.5 — REGRESSION: shipped .orchestray/config.json carries all 8 v2.
       JSON.stringify([...paths].sort()));
   });
 
-  test('end-to-end: hook against shipped config produces a feature_gate_eval event with all 8 named gates', () => {
-    // Copy the shipped config into a sandbox so we don't pollute the real
-    // .orchestray/audit/events.jsonl with a test-driven event.
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'v221-gate-tel-real-'));
+  test('end-to-end: hook against fixture config produces a feature_gate_eval event with all 8 named gates', () => {
+    const dir = makeSandbox(B35_FIXTURE_CONFIG);
     try {
-      fs.mkdirSync(path.join(dir, '.orchestray', 'audit'), { recursive: true });
-      fs.copyFileSync(REAL_CONFIG, path.join(dir, '.orchestray', 'config.json'));
       const r = runHook(dir);
       assert.equal(r.status, 0);
       const ev = readGateEvent(dir);

@@ -28,6 +28,7 @@ const ROOT = path.resolve(__dirname, '..');
 const PM_REF_DIR = path.join(ROOT, 'agents', 'pm-reference');
 const PM_MD = path.join(ROOT, 'agents', 'pm.md');
 const CONFIG_PATH = path.join(ROOT, '.orchestray', 'config.json');
+const { DEFAULT_PHASE_SLICE_LOADING } = require('../bin/_lib/config-schema');
 
 const SLICE_FILES = [
   'phase-contract.md',
@@ -295,11 +296,8 @@ describe('Test 6: kill switch (W5 F-05)', () => {
     );
   });
 
-  test('config has phase_slice_loading block with default enabled=true', () => {
-    const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-    assert.ok(cfg.phase_slice_loading,
-      'config must have phase_slice_loading block');
-    assert.equal(cfg.phase_slice_loading.enabled, true,
+  test('DEFAULT_PHASE_SLICE_LOADING.enabled defaults to true', () => {
+    assert.equal(DEFAULT_PHASE_SLICE_LOADING.enabled, true,
       'phase_slice_loading.enabled must default to true');
   });
 

@@ -3,6 +3,20 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.25] - 2026-08-10
+
+**Orchestray 2.3.25 continues the "things documented as working that silently weren't" theme: the per-agent spawn-size limit has had nothing to compare against on any machine that never ran its own calibration step, for nine releases. It's fixed, plus the resumed-session edge case in last release's restart notice, and `npm test` now passes cleanly on a fresh clone.**
+
+### Fixed
+
+- **Per-agent spawn-size limits have never actually been enforced on a fresh install.** Orchestray is supposed to warn when it hands an agent more context than that role is budgeted for, but the built-in comparison table it fell back on shipped completely empty — so on any machine that had never separately run the calibration step, there was nothing to compare against and every spawn passed unchecked, silently, with no error or warning to notice. This has been true since the feature first shipped, nine releases ago. All 15 agent roles now have real default budgets, and a test now fails loudly if that table is ever emptied again.
+- **The upgrade restart notice could go silent again on a resumed session.** Last release's fix worked out your session's start time from the first entry in your session transcript — correct for a brand-new session, but on a *resumed* one that's the original session's start from days earlier, so the notice wrongly concluded you'd already restarted and said nothing. It now records its own marker at the moment the current session actually begins.
+
+### Under the hood
+
+- `npm test` now passes cleanly on a freshly cloned copy of the repository. A contributor running the test suite immediately after cloning previously saw 46 failures, all caused by tests that checked locally-generated files instead of the tracked defaults those files are generated from. Most were rewritten to check the tracked source directly — stronger than before, since they now catch a regression in the shipped defaults as well as holding on a clean checkout. A handful that genuinely need live runtime data now skip with a stated reason instead of failing; four tests for a one-off internal document that can never exist on another clone were removed outright rather than left permanently skipped.
+- Added an internal verification helper for contributors working on Orchestray's own source — not published to npm. It exists because one long working session produced around 30 false "this is broken" findings, every one traced to a hand-written search pattern too narrow for a form the codebase legitimately uses elsewhere.
+
 ## [2.3.24] - 2026-08-10
 
 **Orchestray 2.3.24 continues finding places where Orchestray silently didn't do what it claimed, this time by checking what the system logged about itself. The installer's own hook-ordering fix never actually settled down, the "restart Claude Code" upgrade notice could silently never appear, and Orchestray's own test runs had been quietly writing into the same log used to spot real operational problems. All three are fixed, and a new opt-in command lets you repair older archived run history that an earlier fix couldn't reach.**

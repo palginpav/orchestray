@@ -24,7 +24,6 @@ const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
 
 const ROOT = path.resolve(__dirname, '..');
-const CONFIG_PATH = path.join(ROOT, '.orchestray', 'config.json');
 const EVENT_SCHEMAS = path.join(ROOT, 'agents', 'pm-reference', 'event-schemas.md');
 const PREFLIGHT_SCRIPT = path.join(ROOT, 'bin', 'preflight-spawn-budget.js');
 const CALIBRATE_SCRIPT = path.join(ROOT, 'bin', 'calibrate-role-budgets.js');
@@ -45,18 +44,39 @@ const REQUIRED_ROLES = [
 const { checkBudget } = require('../bin/preflight-spawn-budget');
 
 // ---------------------------------------------------------------------------
-// Helper: load config
+// Tracked source of truth (config-schema.js), not the gitignored, generated
+// .orchestray/config.json — holds on a fresh clone/CI and catches a
+// config-schema.js regression the generated file cannot.
 // ---------------------------------------------------------------------------
-function loadConfig() {
-  return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+const { DEFAULT_ROLE_BUDGETS, DEFAULT_BUDGET_ENFORCEMENT } = require('../bin/_lib/config-schema');
+function baseConfig() {
+  return {
+    role_budgets: DEFAULT_ROLE_BUDGETS,
+    budget_enforcement: Object.assign({}, DEFAULT_BUDGET_ENFORCEMENT),
+  };
 }
+
+// ---------------------------------------------------------------------------
+// DEFAULT_ROLE_BUDGETS must never silently regress to empty — an empty table
+// makes checkBudget fail-open for every role (see config-schema.js history:
+// it shipped as Object.freeze({}) for 9 releases before this test existed).
+// ---------------------------------------------------------------------------
+describe('DEFAULT_ROLE_BUDGETS — fails loudly, never silently empty', () => {
+  test('is non-empty and covers every role the enforcement path can see', () => {
+    assert.ok(Object.keys(DEFAULT_ROLE_BUDGETS).length > 0,
+      'DEFAULT_ROLE_BUDGETS must not be empty — an empty table silently fail-opens R-BUDGET for every role');
+    const missing = REQUIRED_ROLES.filter(role => !DEFAULT_ROLE_BUDGETS[role]);
+    assert.deepEqual(missing, [],
+      `DEFAULT_ROLE_BUDGETS missing role_budgets entries: ${missing.join(', ')}`);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Test 1: All required roles have explicit budget entries in config.json
 // ---------------------------------------------------------------------------
 describe('config.json role_budgets', () => {
   test('all required roles present with explicit entries', () => {
-    const config = loadConfig();
+    const config = baseConfig();
     assert.ok(config.role_budgets, 'role_budgets block must exist in config.json');
 
     const missingRoles = REQUIRED_ROLES.filter(role => !config.role_budgets[role]);
@@ -68,7 +88,7 @@ describe('config.json role_budgets', () => {
   });
 
   test('every budget entry has source: "fallback_model_tier_thin_telemetry"', () => {
-    const config = loadConfig();
+    const config = baseConfig();
     const badEntries = REQUIRED_ROLES.filter(role => {
       const entry = config.role_budgets[role];
       return !entry || entry.source !== 'fallback_model_tier_thin_telemetry';
@@ -81,7 +101,7 @@ describe('config.json role_budgets', () => {
   });
 
   test('every budget entry has a positive budget_tokens value', () => {
-    const config = loadConfig();
+    const config = baseConfig();
     const badEntries = REQUIRED_ROLES.filter(role => {
       const entry = config.role_budgets[role];
       return !entry || typeof entry.budget_tokens !== 'number' || entry.budget_tokens <= 0;
@@ -99,7 +119,7 @@ describe('config.json role_budgets', () => {
 // ---------------------------------------------------------------------------
 describe('checkBudget — soft-enforce (warn-only default)', () => {
   test('returns warn action when computed size exceeds budget (hard_block not set)', () => {
-    const config = loadConfig();
+    const config = baseConfig();
     // developer budget is 60K; pass 70K to trigger the warn
     const result = checkBudget('developer', 70000, config);
     assert.equal(result.action, 'warn', 'Expected warn action, not block');
@@ -109,7 +129,7 @@ describe('checkBudget — soft-enforce (warn-only default)', () => {
   });
 
   test('returns ok action when computed size is within budget', () => {
-    const config = loadConfig();
+    const config = baseConfig();
     const result = checkBudget('developer', 10000, config);
     assert.equal(result.action, 'ok', 'Expected ok action when under budget');
   });
@@ -120,7 +140,7 @@ describe('checkBudget — soft-enforce (warn-only default)', () => {
 // ---------------------------------------------------------------------------
 describe('checkBudget — hard-block opt-in', () => {
   test('blocks (exit-2 signal) when hard_block is true and over budget', () => {
-    const config = loadConfig();
+    const config = baseConfig();
     // Clone config and set hard_block to true for this test
     const hardConfig = JSON.parse(JSON.stringify(config));
     hardConfig.budget_enforcement = { enabled: true, hard_block: true };
@@ -129,7 +149,7 @@ describe('checkBudget — hard-block opt-in', () => {
   });
 
   test('does NOT block when hard_block is true but under budget', () => {
-    const config = loadConfig();
+    const config = baseConfig();
     const hardConfig = JSON.parse(JSON.stringify(config));
     hardConfig.budget_enforcement = { enabled: true, hard_block: true };
     const result = checkBudget('developer', 5000, hardConfig);
@@ -142,7 +162,7 @@ describe('checkBudget — hard-block opt-in', () => {
 // ---------------------------------------------------------------------------
 describe('checkBudget — kill switch', () => {
   test('returns ok (disabled) when budget_enforcement.enabled is false', () => {
-    const config = loadConfig();
+    const config = baseConfig();
     const disabledConfig = JSON.parse(JSON.stringify(config));
     disabledConfig.budget_enforcement = { enabled: false, hard_block: true };
     // Even 99999999 tokens should pass when disabled
@@ -168,7 +188,7 @@ describe('checkBudget — fail-open', () => {
   });
 
   test('returns ok when role is unknown (not in role_budgets)', () => {
-    const config = loadConfig();
+    const config = baseConfig();
     const result = checkBudget('unknown-role-xyz', 99999999, config);
     assert.equal(result.action, 'ok', 'Expected fail-open when role not found');
     assert.equal(result.reason, 'fail_open');
