@@ -89,11 +89,16 @@ const UPGRADE_SENTINEL_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
  *
  * Fail-open: any I/O error is swallowed. Never blocks the user prompt.
  *
- * detectSessionStartMs() returning null (transcript missing/unreadable, or
- * no timestamped line found — see session-detect.js for the full policy
- * rationale) is treated as "assume the session predates the install", i.e.
- * routed into Case C below rather than Case B. Detection failure must never
- * suppress a warning that was actually owed.
+ * detectSessionStartMs() returning null (v2.3.25: no session-start marker
+ * recorded for this session_id — unwritten yet, pruned, or corrupt file; see
+ * session-detect.js for the full policy rationale) is treated as "assume the
+ * session predates the install", i.e. routed into Case C below rather than
+ * Case B. Detection failure must never suppress a warning that was actually
+ * owed. This policy is unchanged from v2.3.24, but null is now rare (rather
+ * than common) and the cases where it does occur — a session whose
+ * SessionStart hook never ran or crashed before writing the marker —
+ * correlate with genuinely predating the install, so fail-loud remains the
+ * correct default here as well as a cheaper one.
  *
  * @param {string|null} sessionId - Sanitized session id from the hook payload.
  * @param {string}      cwd       - Absolute project directory path.

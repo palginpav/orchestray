@@ -13,12 +13,22 @@
  *   Case D (malformed): sentinel lacks installed_at_ms → silent cleanup
  *   Idempotency: Case C fired twice in same session   → second call silent
  *
+ * v2.3.25: session-start detection switched from transcript-content inference
+ * to an explicit session-start marker written by the SessionStart hook (see
+ * bin/_lib/session-detect.js). `makeSessionStartMarker()` below writes that
+ * marker directly under the fake project dir's .orchestray/state/, standing
+ * in for "the SessionStart hook already ran for this session" without
+ * needing to spawn it. This suite also carries the v2.3.25 regression test:
+ * a resumed session whose transcript begins many days in the past must NOT
+ * be treated as predating a recent install, because detection no longer
+ * reads the transcript at all.
+ *
  * Isolation strategy: ORCHESTRAY_TEST_SENTINEL_PATH is set per test to a
  * unique tmpfile, keeping each test's sentinel completely independent of the
  * real ~/.claude/ sentinel and of other parallel test suites.
  *
  * Session IDs must match /^[0-9a-f-]{1,36}$/i (hex + hyphens, max 36 chars)
- * to pass session-detect.js validation so the transcript lookup succeeds.
+ * to pass session-detect.js validation.
  */
 
 const { test, describe, afterEach } = require('node:test');
@@ -79,24 +89,48 @@ function writeSentinel(sentinelPath, content) {
 }
 
 /**
- * Create a fake transcript JSONL file so detectSessionStartMs returns a
- * controlled value, mirroring the real shape session-detect.js scans:
- * a few untimestamped preamble lines, then a line carrying `timestamp`.
- *
- * mtime is deliberately set hours AFTER sessionStartMs, so any test using
- * this helper would fail if detection regressed to reading mtime instead of
- * content — that regression is exactly the v2.3.24 bug this suite guards.
- *
- * Session IDs must match /^[0-9a-f-]{1,36}$/i to pass session-detect.js
- * validation (hex + hyphens, max 36 chars).
+ * Write a session-start marker directly under the fake project's
+ * .orchestray/state/, mirroring what the SessionStart hook
+ * (reset-context-telemetry.js → session-detect.js:writeSessionStartMarker)
+ * records at the top of every session. detectSessionStartMs() reads this
+ * file, so this controls its return value without needing to spawn the
+ * SessionStart hook.
  *
  * @param {string} projectDir     Absolute path to the fake project.
  * @param {string} sessionId      Session identifier (hex UUID format).
  * @param {number} sessionStartMs Desired detected session-start time.
  */
-function makeTranscript(projectDir, sessionId, sessionStartMs) {
-  // Encode cwd the same way session-detect.js does:
-  //   /home/user/proj  →  -home-user-proj
+function makeSessionStartMarker(projectDir, sessionId, sessionStartMs) {
+  const stateDir = path.join(projectDir, '.orchestray', 'state');
+  fs.mkdirSync(stateDir, { recursive: true });
+  const markerFile = path.join(stateDir, 'session-start-markers.json');
+
+  let data = { schema_version: 1, sessions: {} };
+  try {
+    const parsed = JSON.parse(fs.readFileSync(markerFile, 'utf8'));
+    if (parsed && typeof parsed === 'object' && parsed.sessions && typeof parsed.sessions === 'object') {
+      data = parsed;
+    }
+  } catch (_e) { /* fresh file */ }
+
+  data.sessions[sessionId] = {
+    started_at_ms: sessionStartMs,
+    started_at: new Date(sessionStartMs).toISOString(),
+  };
+  fs.writeFileSync(markerFile, JSON.stringify(data, null, 2) + '\n', 'utf8');
+}
+
+/**
+ * Write a fake transcript JSONL file whose first timestamped line is
+ * `firstTimestampMs`, mirroring the pre-v2.3.25 shape session-detect.js used
+ * to scan. Only used by the v2.3.25 regression test below, to prove
+ * detection no longer reads it.
+ *
+ * @param {string} projectDir      Absolute path to the fake project.
+ * @param {string} sessionId       Session identifier (hex UUID format).
+ * @param {number} firstTimestampMs
+ */
+function makeStaleTranscript(projectDir, sessionId, firstTimestampMs) {
   const encoded = '-' + projectDir.replace(/^\//, '').replace(/\//g, '-');
   const transcriptDir = path.join(HOME, '.claude', 'projects', encoded);
   fs.mkdirSync(transcriptDir, { recursive: true });
@@ -105,15 +139,9 @@ function makeTranscript(projectDir, sessionId, sessionStartMs) {
   const lines = [
     JSON.stringify({ type: 'last-prompt', leafUuid: 'x', sessionId }),
     JSON.stringify({ type: 'agent-setting', agentSetting: 'pm', sessionId }),
-    JSON.stringify({ type: 'mode', mode: 'normal', sessionId }),
-    JSON.stringify({ type: 'permission-mode', permissionMode: 'default', sessionId }),
-    JSON.stringify({ type: 'attachment', timestamp: new Date(sessionStartMs).toISOString(), sessionId }),
+    JSON.stringify({ type: 'attachment', timestamp: new Date(firstTimestampMs).toISOString(), sessionId }),
   ];
   fs.writeFileSync(transcriptPath, lines.join('\n') + '\n', 'utf8');
-  // mtime = well after sessionStartMs (the file keeps being appended to for
-  // the life of a real session) — proves detection reads content, not mtime.
-  const farFutureSec = (sessionStartMs + 6 * 60 * 60 * 1000) / 1000;
-  fs.utimesSync(transcriptPath, farFutureSec, farFutureSec);
 }
 
 /** Build the per-session marker path for a given sessionId. */
@@ -205,7 +233,7 @@ describe('v2.0.22 emitUpgradePendingWarning state machine', () => {
 
     // Session started AFTER install: sessionStartMs > installedAtMs.
     const sessionStartMs = installedAtMs + 1000;
-    makeTranscript(dir, sessionId, sessionStartMs);
+    makeSessionStartMarker(dir, sessionId, sessionStartMs);
 
     const { stderr } = run(sessionId, dir, sentinelPath);
 
@@ -238,7 +266,7 @@ describe('v2.0.22 emitUpgradePendingWarning state machine', () => {
       previous_version: '2.0.21',
     });
 
-    makeTranscript(dir, sessionId, sessionStartMs);
+    makeSessionStartMarker(dir, sessionId, sessionStartMs);
 
     // Ensure per-session marker absent before the run.
     try { fs.unlinkSync(markerPath(sessionId)); } catch (_e) {}
@@ -336,7 +364,7 @@ describe('v2.0.22 emitUpgradePendingWarning state machine', () => {
       previous_version: '2.0.21',
     });
 
-    makeTranscript(dir, sessionId, sessionStartMs);
+    makeSessionStartMarker(dir, sessionId, sessionStartMs);
 
     // Ensure marker absent before first run.
     try { fs.unlinkSync(markerPath(sessionId)); } catch (_e) {}
@@ -375,50 +403,109 @@ describe('v2.0.22 emitUpgradePendingWarning state machine', () => {
     );
   });
 
-  // ── v2.3.24 regression: mtime-based detection silently swallowed Case C ──
+  // ── v2.3.25 regression: resumed session with an ancient transcript ───────
 
-  test('v2.3.24 regression: long-open session predating install still warns even though transcript mtime is very fresh', () => {
+  test('v2.3.25 regression: a resumed session whose transcript begins 16 days ago is NOT treated as predating a recent install', () => {
     const dir = makeProjectDir();
     const sessionId = 'aaaa-bbbb-cccc-dddd-0007';
     const sentinelPath = makeSentinelPath();
 
-    // Session truly started 45 minutes ago; the install happened 15 minutes
-    // ago, so the session predates the install (Case C — must warn). Under
-    // the old mtime-based detection, the transcript's mtime tracks the last
-    // append — which for an open session is close to "now" — making
-    // `sessionStartMs >= installedAtMs` spuriously TRUE and routing this
-    // into Case B (silent, no warning). This is the exact bug: an install
-    // performed while a session was open never told the user to restart.
-    const sessionStartMs = Date.now() - 45 * 60 * 1000;
-    const installedAtMs  = Date.now() - 15 * 60 * 1000;
+    // Reproduces the exact reported scenario: transcript's first timestamped
+    // line is 16 days old (inherited from the original session a --resume
+    // grew out of), but the SessionStart hook just fired for THIS resumed
+    // session and recorded a marker a few seconds ago — after the install.
+    const sixteenDaysAgoMs = Date.now() - 16 * 24 * 60 * 60 * 1000;
+    const installedAtMs    = Date.now() - 5 * 60 * 1000; // installed 5 min ago
+    const sessionStartMs   = Date.now() - 30 * 1000;     // resumed 30s ago (postdates install)
 
     writeSentinel(sentinelPath, {
       schema_version: 2,
       installed_at: new Date(installedAtMs).toISOString(),
       installed_at_ms: installedAtMs,
-      version: '2.3.24',
-      previous_version: '2.3.23',
+      version: '2.3.25',
+      previous_version: '2.3.24',
     });
 
-    makeTranscript(dir, sessionId, sessionStartMs);
-    // Overwrite mtime to right now — the append-heavy, actively-open-session
-    // case that broke the old detector (mtime >= installedAtMs).
-    const nowSec = Date.now() / 1000;
-    const encoded = '-' + dir.replace(/^\//, '').replace(/\//g, '-');
-    const transcriptPath = path.join(HOME, '.claude', 'projects', encoded, sessionId + '.jsonl');
-    fs.utimesSync(transcriptPath, nowSec, nowSec);
+    // The stale transcript exists on disk (as it would for a real resume)
+    // but must play no role in detection any more.
+    makeStaleTranscript(dir, sessionId, sixteenDaysAgoMs);
+    makeSessionStartMarker(dir, sessionId, sessionStartMs);
 
+    const { stderr } = run(sessionId, dir, sentinelPath);
+
+    // Under the v2.3.24 transcript-content detector this would resolve to
+    // sixteenDaysAgoMs < installedAtMs → Case C (persist + warn), which is
+    // the exact bug: a user who already restarted keeps getting told to.
+    assert.ok(
+      !stderr.includes('[orchestray]'),
+      'no warning expected — a resumed session must not be judged by its inherited transcript history: got ' + stderr
+    );
+    assert.ok(
+      !fs.existsSync(sentinelPath),
+      'sentinel must be cleared (Case B) once the marker shows this session postdates the install'
+    );
+  });
+
+  // ── v2.3.25: no marker for this session → fail-loud fallback (Case C) ────
+
+  test('v2.3.25: no session-start marker recorded → treated as predating the install (fail-loud fallback)', () => {
+    const dir = makeProjectDir();
+    const sessionId = 'aaaa-bbbb-cccc-dddd-0009';
+    const sentinelPath = makeSentinelPath();
+
+    const installedAtMs = Date.now() - 60 * 60 * 1000;
+    writeSentinel(sentinelPath, {
+      schema_version: 2,
+      installed_at: new Date(installedAtMs).toISOString(),
+      installed_at_ms: installedAtMs,
+      version: '2.3.25',
+      previous_version: '2.3.24',
+    });
+
+    // Deliberately do NOT write a session-start marker for this session_id —
+    // simulates a marker that was never written (e.g. the SessionStart hook
+    // crashed before reaching writeSessionStartMarker).
     try { fs.unlinkSync(markerPath(sessionId)); } catch (_e) {}
 
     const { stderr } = run(sessionId, dir, sentinelPath);
 
     assert.ok(
       stderr.includes('[orchestray]') && stderr.includes('one-time reminder'),
-      'warning must fire despite fresh transcript mtime — got: ' + stderr
+      'no-marker fallback must still warn (fail-loud policy) — got: ' + stderr
     );
     assert.ok(
       fs.existsSync(sentinelPath),
-      'sentinel must survive Case C (only Case B deletes it)'
+      'sentinel must survive the fail-loud fallback (only Case B deletes it)'
+    );
+  });
+
+  // ── v2.3.25: a marker for a different session_id must not be used ────────
+
+  test('v2.3.25: a marker recorded for a different session_id is not used for this session', () => {
+    const dir = makeProjectDir();
+    const otherSessionId = 'aaaa-bbbb-cccc-dddd-000aaaaa';
+    const sessionId = 'aaaa-bbbb-cccc-dddd-000a';
+    const sentinelPath = makeSentinelPath();
+
+    const installedAtMs = Date.now() - 60 * 60 * 1000;
+    writeSentinel(sentinelPath, {
+      schema_version: 2,
+      installed_at: new Date(installedAtMs).toISOString(),
+      installed_at_ms: installedAtMs,
+      version: '2.3.25',
+      previous_version: '2.3.24',
+    });
+
+    // Marker for a DIFFERENT session postdates the install — must not leak
+    // into this session's detection.
+    makeSessionStartMarker(dir, otherSessionId, Date.now());
+    try { fs.unlinkSync(markerPath(sessionId)); } catch (_e) {}
+
+    const { stderr } = run(sessionId, dir, sentinelPath);
+
+    assert.ok(
+      stderr.includes('[orchestray]'),
+      'this session has no marker of its own — must still warn (fail-loud), got: ' + stderr
     );
   });
 
@@ -445,7 +532,7 @@ describe('v2.0.22 emitUpgradePendingWarning state machine', () => {
       previous_version: '2.3.23',
     });
 
-    makeTranscript(dir, sessionId, sessionStartMs);
+    makeSessionStartMarker(dir, sessionId, sessionStartMs);
     try { fs.unlinkSync(markerPath(sessionId)); } catch (_e) {}
 
     const { stderr } = run(sessionId, dir, sentinelPath);

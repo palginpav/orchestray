@@ -4,16 +4,20 @@
 /**
  * Tests for bin/_lib/session-detect.js
  *
- * Covers:
- *   A. file exists, first lines lack timestamps → returns the first
- *      timestamped line's time, NOT mtime (v2.3.24 content-based fix)
- *   B. file missing  → returns null
- *   C. malformed sessionId (non-string, empty, bad chars) → returns null
- *   D. path traversal attempt in sessionId  → returns null safely
- *   E. relative projectDir → returns null
- *   F. empty projectDir   → returns null
- *   G. encodeCwd helper   → correct encoding of absolute paths
- *   H. no timestamped line anywhere in the transcript → returns null
+ * v2.3.25: session-detect.js switched from transcript-content inference to
+ * an explicit session-start marker written by the SessionStart hook. Covers:
+ *
+ *   A. writeSessionStartMarker + detectSessionStartMs round-trip
+ *   B. detectSessionStartMs returns the marker's timestamp for a matching
+ *      session_id
+ *   C. no marker for this session_id → null (fallback policy)
+ *   D. marker for a DIFFERENT session_id is not used → null
+ *   E. malformed/corrupt marker file → null, never throws
+ *   F. malformed sessionId (non-string, empty, bad chars) → null
+ *   G. path traversal attempt in sessionId → null safely
+ *   H. relative / empty / null projectDir → null
+ *   I. writeSessionStartMarker fails open on invalid inputs (no-op, no throw)
+ *   J. writeSessionStartMarker prunes entries older than the TTL
  */
 
 const { test, describe } = require('node:test');
@@ -24,117 +28,188 @@ const path = require('node:path');
 
 const {
   detectSessionStartMs,
-  encodeCwd,
+  writeSessionStartMarker,
 } = require('../../bin/_lib/session-detect.js');
 
 // ---------------------------------------------------------------------------
-// Helpers: build fake transcript trees and return the encoded project dir.
+// Helpers
 // ---------------------------------------------------------------------------
 
-/** A transcript with no timestamped line at all (only session-start preamble). */
-function makeUntimestampedTranscript(sessionId, projectDir) {
-  const encoded = encodeCwd(projectDir);
-  const transcriptDir = path.join(os.homedir(), '.claude', 'projects', encoded);
-  const transcriptFile = path.join(transcriptDir, sessionId + '.jsonl');
-  fs.mkdirSync(transcriptDir, { recursive: true });
-  const lines = [
-    { type: 'last-prompt', leafUuid: 'x', sessionId },
-    { type: 'agent-setting', agentSetting: 'pm', sessionId },
-    { type: 'mode', mode: 'normal', sessionId },
-    { type: 'permission-mode', permissionMode: 'default', sessionId },
-  ];
-  fs.writeFileSync(transcriptFile, lines.map(l => JSON.stringify(l)).join('\n') + '\n', 'utf8');
-  return { transcriptFile, transcriptDir };
+function makeProjectDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'orch-session-detect-'));
 }
 
-/**
- * A realistic transcript: untimestamped preamble lines (mirroring real
- * Claude Code output — last-prompt, agent-setting, mode, permission-mode)
- * followed by a line carrying `timestamp`. mtime is set far AFTER
- * timestampMs to prove detection reads content, not mtime — the exact
- * v2.3.24 regression.
- */
-function makeRealisticTranscript(sessionId, projectDir, timestampMs) {
-  const encoded = encodeCwd(projectDir);
-  const transcriptDir = path.join(os.homedir(), '.claude', 'projects', encoded);
-  const transcriptFile = path.join(transcriptDir, sessionId + '.jsonl');
-  fs.mkdirSync(transcriptDir, { recursive: true });
-  const lines = [
-    { type: 'last-prompt', leafUuid: 'x', sessionId },
-    { type: 'agent-setting', agentSetting: 'pm', sessionId },
-    { type: 'mode', mode: 'normal', sessionId },
-    { type: 'permission-mode', permissionMode: 'default', sessionId },
-    { type: 'attachment', timestamp: new Date(timestampMs).toISOString(), sessionId },
-  ];
-  fs.writeFileSync(transcriptFile, lines.map(l => JSON.stringify(l)).join('\n') + '\n', 'utf8');
-  const farFutureSec = (timestampMs + 6 * 60 * 60 * 1000) / 1000;
-  fs.utimesSync(transcriptFile, farFutureSec, farFutureSec);
-  return { transcriptFile, transcriptDir };
+function markerFilePath(projectDir) {
+  return path.join(projectDir, '.orchestray', 'state', 'session-start-markers.json');
+}
+
+function cleanupDir(dir) {
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) {}
 }
 
 // ---------------------------------------------------------------------------
-// A. File exists, first lines lack timestamps — returns the first
-//    timestamped line's time, not mtime (v2.3.24)
+// A–B. Round-trip: write then detect
 // ---------------------------------------------------------------------------
-describe('detectSessionStartMs — file exists, content-based detection', () => {
-  test('returns the first timestamped line\'s time when preamble lines lack timestamps', () => {
-    const sessionId  = 'aabbccdd-1122-3344-5566-7788aabbccdd';
-    // Use a unique temp project dir so tests don't interfere with each other.
-    const projectDir = '/home/palgin/orchestray-test-session-detect-a';
-    // True session start: 45 minutes ago. mtime (set by the helper) is 6h
-    // AFTER this — if detection fell back to mtime, the assertion below fails.
-    const trueStartMs = Date.now() - 45 * 60 * 1000;
-
-    const { transcriptFile, transcriptDir } = makeRealisticTranscript(sessionId, projectDir, trueStartMs);
+describe('writeSessionStartMarker + detectSessionStartMs — round trip', () => {
+  test('detectSessionStartMs returns the marker time for a matching session_id', () => {
+    const dir = makeProjectDir();
+    const sessionId = 'aabbccdd-1122-3344-5566-7788aabbccdd';
     try {
-      const result = detectSessionStartMs(sessionId, projectDir);
-      assert.ok(typeof result === 'number', 'result should be a number');
-      assert.strictEqual(result, trueStartMs, 'result should equal the embedded timestamp exactly');
+      const before = Date.now();
+      writeSessionStartMarker(dir, sessionId);
+      const after = Date.now();
 
-      // Sanity: prove mtime really was set far away from the true start, so
-      // an mtime-based implementation would have failed this test.
-      const stat = fs.statSync(transcriptFile);
-      assert.ok(Math.abs(stat.mtimeMs - result) > 5 * 60 * 1000, 'mtime must differ from the detected value by more than 5 minutes');
+      const result = detectSessionStartMs(sessionId, dir);
+      assert.ok(typeof result === 'number', 'result should be a number');
+      assert.ok(result >= before && result <= after, 'result should be within the write window');
     } finally {
-      try { fs.rmSync(transcriptDir, { recursive: true, force: true }); } catch (_e) {}
+      cleanupDir(dir);
+    }
+  });
+
+  test('marker file is written under .orchestray/state/session-start-markers.json', () => {
+    const dir = makeProjectDir();
+    const sessionId = 'aabbccdd-1122-3344-5566-7788aabbccde';
+    try {
+      writeSessionStartMarker(dir, sessionId);
+      assert.ok(fs.existsSync(markerFilePath(dir)), 'marker file should exist');
+      const parsed = JSON.parse(fs.readFileSync(markerFilePath(dir), 'utf8'));
+      assert.equal(parsed.schema_version, 1);
+      assert.ok(parsed.sessions[sessionId], 'entry for the session should be present');
+      assert.equal(typeof parsed.sessions[sessionId].started_at_ms, 'number');
+      assert.equal(typeof parsed.sessions[sessionId].started_at, 'string');
+    } finally {
+      cleanupDir(dir);
+    }
+  });
+
+  test('writing a second session preserves the first session\'s entry', () => {
+    const dir = makeProjectDir();
+    const sessionA = 'aaaaaaaa-1111-1111-1111-111111111111';
+    const sessionB = 'bbbbbbbb-2222-2222-2222-222222222222';
+    try {
+      writeSessionStartMarker(dir, sessionA);
+      const startA = detectSessionStartMs(sessionA, dir);
+      writeSessionStartMarker(dir, sessionB);
+
+      assert.equal(detectSessionStartMs(sessionA, dir), startA, 'session A entry should be unchanged');
+      assert.ok(typeof detectSessionStartMs(sessionB, dir) === 'number', 'session B entry should exist');
+    } finally {
+      cleanupDir(dir);
     }
   });
 });
 
 // ---------------------------------------------------------------------------
-// H. No timestamped line anywhere in the transcript — returns null
+// C. No marker for this session — null (fallback policy)
 // ---------------------------------------------------------------------------
-describe('detectSessionStartMs — no timestamped line anywhere', () => {
-  test('returns null when every line lacks a timestamp field', () => {
-    const sessionId  = 'aabbccdd-2233-4455-6677-8899aabbccee';
-    const projectDir = '/home/palgin/orchestray-test-session-detect-h';
-
-    const { transcriptDir } = makeUntimestampedTranscript(sessionId, projectDir);
+describe('detectSessionStartMs — no marker present', () => {
+  test('returns null when the marker file does not exist at all', () => {
+    const dir = makeProjectDir();
+    const sessionId = 'deadbeef-dead-beef-dead-beefdeadbeef';
     try {
-      const result = detectSessionStartMs(sessionId, projectDir);
+      const result = detectSessionStartMs(sessionId, dir);
       assert.strictEqual(result, null);
     } finally {
-      try { fs.rmSync(transcriptDir, { recursive: true, force: true }); } catch (_e) {}
+      cleanupDir(dir);
+    }
+  });
+
+  test('returns null when the marker file exists but has no entry for this session_id', () => {
+    const dir = makeProjectDir();
+    const otherSession = 'aaaaaaaa-0000-0000-0000-000000000000';
+    const missingSession = 'bbbbbbbb-0000-0000-0000-000000000000';
+    try {
+      writeSessionStartMarker(dir, otherSession);
+      const result = detectSessionStartMs(missingSession, dir);
+      assert.strictEqual(result, null);
+    } finally {
+      cleanupDir(dir);
     }
   });
 });
 
 // ---------------------------------------------------------------------------
-// B. File missing — detectSessionStartMs returns null
+// D. Marker for a DIFFERENT session_id is not used
 // ---------------------------------------------------------------------------
-describe('detectSessionStartMs — file missing', () => {
-  test('returns null when transcript JSONL does not exist', () => {
-    const sessionId  = 'deadbeef-dead-beef-dead-beefdeadbeef';
-    // Use a project dir whose encoded transcript directory does not exist.
-    const projectDir = '/home/palgin/orchestray-test-session-detect-b-nonexistent';
-
-    const result = detectSessionStartMs(sessionId, projectDir);
-    assert.strictEqual(result, null);
+describe('detectSessionStartMs — session isolation', () => {
+  test('a marker written for session A is never returned for session B', () => {
+    const dir = makeProjectDir();
+    const sessionA = 'cccccccc-1111-1111-1111-111111111111';
+    const sessionB = 'dddddddd-2222-2222-2222-222222222222';
+    try {
+      writeSessionStartMarker(dir, sessionA);
+      assert.strictEqual(detectSessionStartMs(sessionB, dir), null);
+      assert.ok(typeof detectSessionStartMs(sessionA, dir) === 'number');
+    } finally {
+      cleanupDir(dir);
+    }
   });
 });
 
 // ---------------------------------------------------------------------------
-// C. Malformed sessionId — always null, never throws
+// E. Malformed/corrupt marker file — null, never throws
+// ---------------------------------------------------------------------------
+describe('detectSessionStartMs — corrupt marker file', () => {
+  test('invalid JSON → null, no throw', () => {
+    const dir = makeProjectDir();
+    const sessionId = 'eeeeeeee-1111-1111-1111-111111111111';
+    try {
+      fs.mkdirSync(path.dirname(markerFilePath(dir)), { recursive: true });
+      fs.writeFileSync(markerFilePath(dir), 'not valid json {{{', 'utf8');
+      assert.doesNotThrow(() => detectSessionStartMs(sessionId, dir));
+      assert.strictEqual(detectSessionStartMs(sessionId, dir), null);
+    } finally {
+      cleanupDir(dir);
+    }
+  });
+
+  test('wrong schema_version → null', () => {
+    const dir = makeProjectDir();
+    const sessionId = 'eeeeeeee-2222-2222-2222-222222222222';
+    try {
+      fs.mkdirSync(path.dirname(markerFilePath(dir)), { recursive: true });
+      fs.writeFileSync(markerFilePath(dir), JSON.stringify({
+        schema_version: 999,
+        sessions: { [sessionId]: { started_at_ms: Date.now() } },
+      }), 'utf8');
+      assert.strictEqual(detectSessionStartMs(sessionId, dir), null);
+    } finally {
+      cleanupDir(dir);
+    }
+  });
+
+  test('entry with non-numeric started_at_ms → null', () => {
+    const dir = makeProjectDir();
+    const sessionId = 'eeeeeeee-3333-3333-3333-333333333333';
+    try {
+      fs.mkdirSync(path.dirname(markerFilePath(dir)), { recursive: true });
+      fs.writeFileSync(markerFilePath(dir), JSON.stringify({
+        schema_version: 1,
+        sessions: { [sessionId]: { started_at_ms: 'not-a-number' } },
+      }), 'utf8');
+      assert.strictEqual(detectSessionStartMs(sessionId, dir), null);
+    } finally {
+      cleanupDir(dir);
+    }
+  });
+
+  test('writeSessionStartMarker recovers from a corrupt file by starting fresh', () => {
+    const dir = makeProjectDir();
+    const sessionId = 'eeeeeeee-4444-4444-4444-444444444444';
+    try {
+      fs.mkdirSync(path.dirname(markerFilePath(dir)), { recursive: true });
+      fs.writeFileSync(markerFilePath(dir), 'garbage', 'utf8');
+      assert.doesNotThrow(() => writeSessionStartMarker(dir, sessionId));
+      assert.ok(typeof detectSessionStartMs(sessionId, dir) === 'number');
+    } finally {
+      cleanupDir(dir);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F. Malformed sessionId — always null, never throws
 // ---------------------------------------------------------------------------
 describe('detectSessionStartMs — malformed sessionId', () => {
   const projectDir = '/home/palgin/orchestray';
@@ -167,7 +242,7 @@ describe('detectSessionStartMs — malformed sessionId', () => {
 });
 
 // ---------------------------------------------------------------------------
-// D. Path traversal in sessionId — returns null safely, no fs access
+// G. Path traversal in sessionId — returns null safely, no fs access
 // ---------------------------------------------------------------------------
 describe('detectSessionStartMs — path traversal in sessionId', () => {
   const projectDir = '/home/palgin/orchestray';
@@ -186,7 +261,7 @@ describe('detectSessionStartMs — path traversal in sessionId', () => {
 });
 
 // ---------------------------------------------------------------------------
-// E. Relative projectDir → null (rejected before any fs call)
+// H. Relative / empty / null projectDir → null (rejected before any fs call)
 // ---------------------------------------------------------------------------
 describe('detectSessionStartMs — invalid projectDir', () => {
   const validSession = 'aabbccdd-1122-3344-5566-7788aabbccdd';
@@ -205,26 +280,85 @@ describe('detectSessionStartMs — invalid projectDir', () => {
 });
 
 // ---------------------------------------------------------------------------
-// F–G. encodeCwd helper
+// I. writeSessionStartMarker fails open on invalid inputs
 // ---------------------------------------------------------------------------
-describe('encodeCwd', () => {
-  test('encodes root-level directory', () => {
-    assert.strictEqual(encodeCwd('/home'), '-home');
+describe('writeSessionStartMarker — fails open on invalid inputs', () => {
+  test('relative projectDir → no-op, no throw', () => {
+    assert.doesNotThrow(() => writeSessionStartMarker('relative/path', 'aabbccdd-1122-3344-5566-7788aabbccdd'));
   });
 
-  test('encodes nested path', () => {
-    assert.strictEqual(encodeCwd('/home/palgin/orchestray'), '-home-palgin-orchestray');
+  test('empty projectDir → no-op, no throw', () => {
+    assert.doesNotThrow(() => writeSessionStartMarker('', 'aabbccdd-1122-3344-5566-7788aabbccdd'));
   });
 
-  test('encodes single root slash', () => {
-    assert.strictEqual(encodeCwd('/'), '-');
+  test('null projectDir → no-op, no throw', () => {
+    assert.doesNotThrow(() => writeSessionStartMarker(null, 'aabbccdd-1122-3344-5566-7788aabbccdd'));
   });
 
-  test('matches Claude Code transcript directory naming (known real path)', () => {
-    // Empirically verified: Claude Code uses this encoding for the project path.
-    assert.strictEqual(
-      encodeCwd('/home/palgin/orchestray'),
-      '-home-palgin-orchestray'
-    );
+  test('malformed sessionId → no-op, no throw, no file created', () => {
+    const dir = makeProjectDir();
+    try {
+      writeSessionStartMarker(dir, '../etc/passwd');
+      assert.ok(!fs.existsSync(markerFilePath(dir)), 'no marker file should be created for a rejected session_id');
+    } finally {
+      cleanupDir(dir);
+    }
+  });
+
+  test('null sessionId → no-op, no throw', () => {
+    const dir = makeProjectDir();
+    try {
+      assert.doesNotThrow(() => writeSessionStartMarker(dir, null));
+      assert.ok(!fs.existsSync(markerFilePath(dir)));
+    } finally {
+      cleanupDir(dir);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// J. writeSessionStartMarker prunes stale entries
+// ---------------------------------------------------------------------------
+describe('writeSessionStartMarker — pruning', () => {
+  test('an entry older than the TTL is dropped on the next write', () => {
+    const dir = makeProjectDir();
+    const staleSession = 'ffffffff-1111-1111-1111-111111111111';
+    const freshSession  = 'ffffffff-2222-2222-2222-222222222222';
+    try {
+      fs.mkdirSync(path.dirname(markerFilePath(dir)), { recursive: true });
+      const THIRTY_ONE_DAYS_MS = 31 * 24 * 60 * 60 * 1000;
+      fs.writeFileSync(markerFilePath(dir), JSON.stringify({
+        schema_version: 1,
+        sessions: {
+          [staleSession]: {
+            started_at_ms: Date.now() - THIRTY_ONE_DAYS_MS,
+            started_at: new Date(Date.now() - THIRTY_ONE_DAYS_MS).toISOString(),
+          },
+        },
+      }), 'utf8');
+
+      writeSessionStartMarker(dir, freshSession);
+
+      const parsed = JSON.parse(fs.readFileSync(markerFilePath(dir), 'utf8'));
+      assert.ok(!(staleSession in parsed.sessions), 'stale entry should have been pruned');
+      assert.ok(freshSession in parsed.sessions, 'fresh entry should be present');
+    } finally {
+      cleanupDir(dir);
+    }
+  });
+
+  test('an entry within the TTL survives the next write', () => {
+    const dir = makeProjectDir();
+    const recentSession = 'ffffffff-3333-3333-3333-333333333333';
+    const freshSession   = 'ffffffff-4444-4444-4444-444444444444';
+    try {
+      writeSessionStartMarker(dir, recentSession);
+      writeSessionStartMarker(dir, freshSession);
+
+      assert.ok(typeof detectSessionStartMs(recentSession, dir) === 'number', 'recent entry should survive');
+      assert.ok(typeof detectSessionStartMs(freshSession, dir) === 'number');
+    } finally {
+      cleanupDir(dir);
+    }
   });
 });

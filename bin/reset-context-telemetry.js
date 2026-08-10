@@ -8,6 +8,12 @@
  * a skeleton with the new session_id so the statusline renderer does not show
  * stale counts from a prior session.
  *
+ * v2.3.25: also records the session-start marker (session-detect.js) that
+ * detectSessionStartMs() reads to tell a resumed session's real start time
+ * from the original session it resumed — chosen as the write site because
+ * this hook already fires on every SessionStart (including resumes) and
+ * already extracts `cwd` + `session_id` from the payload for its own reset.
+ *
  * Fail-open contract: any error → log stderr → exit 0 (never block SessionStart).
  * W3 / v2.0.19 Pillar B.
  */
@@ -18,6 +24,7 @@ const path = require('node:path');
 
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { resetCache }     = require('./_lib/context-telemetry-cache');
+const { writeSessionStartMarker } = require('./_lib/session-detect');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { readHookInputRaw } = require('./_lib/hook-stdin');
 
@@ -60,6 +67,7 @@ setImmediate(() => {
     const sessId = event.session_id || null;
 
     resetCache(cwd, sessId);
+    writeSessionStartMarker(cwd, sessId);
     checkUserStatusline();
   } catch (err) {
     process.stderr.write('[orchestray] reset-context-telemetry: error (fail-open): ' + String(err) + '\n');
