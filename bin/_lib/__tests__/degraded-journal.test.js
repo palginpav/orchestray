@@ -615,3 +615,75 @@ describe('D5 — manifest coherence', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// D6 (v2.3.24): 'agent_registry_stale' dropped from PERSISTENT_DEDUP_KINDS.
+//
+// It was listed there but always emitted at severity 'warn', while the
+// persist-dedup gate only covers severity 'info' — the membership could
+// never fire. Resolved by dropping the kind rather than lowering its
+// severity (see comment above PERSISTENT_DEDUP_KINDS in degraded-journal.js).
+// ---------------------------------------------------------------------------
+
+describe('D6 — agent_registry_stale is not persist-dedup-eligible', () => {
+  test('PERSISTENT_DEDUP_KINDS no longer contains agent_registry_stale', () => {
+    const mod = freshModule();
+    assert.strictEqual(mod.PERSISTENT_DEDUP_KINDS.has('agent_registry_stale'), false);
+  });
+
+  test('a warn-severity agent_registry_stale record always appends across process invocations', () => {
+    const mod0 = freshModule();
+    const dir = makeTmpProject();
+    try {
+      const ev = { kind: 'agent_registry_stale', severity: 'warn', detail: { dedup_key: 'x' }, projectRoot: dir };
+      assert.strictEqual(mod0.recordDegradation(ev).appended, true);
+      const mod1 = freshModule(); // simulate a second process: in-process _seen is reset
+      assert.strictEqual(mod1.recordDegradation(ev).appended, true, 'warn is never persist-deduped');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W10 (v2.3.24): every row stamps project_root, even when the caller omits it.
+//
+// A prior purge left ~72 rows in the live journal that nobody could classify:
+// nothing on the row said which repo it came from. Threading projectRoot at
+// call sites fixes where the file is written; this is the second half — what
+// the row itself says, independent of caller diligence.
+// ---------------------------------------------------------------------------
+
+describe('W10 — recordDegradation stamps project_root on every row', () => {
+  test('caller-supplied projectRoot is stamped verbatim on the row', () => {
+    const mod = freshModule();
+    const dir = makeTmpProject();
+    try {
+      mod.recordDegradation({ kind: 'config_load_failed', detail: { dedup_key: 'w10_supplied' }, projectRoot: dir });
+
+      const jp = mod._journalPath(dir);
+      const row = JSON.parse(fs.readFileSync(jp, 'utf8').trim().split('\n')[0]);
+      assert.strictEqual(row.project_root, dir);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a caller that supplies nothing still gets process.cwd() stamped on the row', () => {
+    const mod = freshModule();
+    const dir = makeTmpProject();
+    const cwdBefore = process.cwd();
+    try {
+      process.chdir(dir);
+      // No projectRoot at all — the exact shape of the 14 sites this release fixed.
+      mod.recordDegradation({ kind: 'config_load_failed', detail: { dedup_key: 'w10_omitted' } });
+
+      const jp = mod._journalPath(dir); // dir === process.cwd() here
+      const row = JSON.parse(fs.readFileSync(jp, 'utf8').trim().split('\n')[0]);
+      assert.strictEqual(row.project_root, dir, 'row must carry process.cwd() when caller omits projectRoot');
+    } finally {
+      process.chdir(cwdBefore);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

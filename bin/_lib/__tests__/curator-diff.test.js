@@ -229,6 +229,7 @@ describe('isDirty', () => {
       cutoffDays: 30,
       now:        new Date(),
       rolledBackIds: new Set(),
+      projectRoot: tmp,
     });
     // Missing body_sha256 → treated as corrupt → stamp_absent
     assert.equal(result.dirty, true);
@@ -318,6 +319,7 @@ describe('computeDirtySet', () => {
       cutoffDays:          30,
       runCounterPath:      counterPath,
       activeTombstonesPath: path.join(curatorDir, 'tombstones.jsonl'),
+      projectRoot: tmp,
     });
 
     assert.equal(result.corpus_size, 3);
@@ -343,6 +345,7 @@ describe('computeDirtySet', () => {
       cutoffDays:          30,
       runCounterPath:      counterPath,
       activeTombstonesPath: path.join(curatorDir, 'tombstones.jsonl'),
+      projectRoot: tmp,
     });
 
     assert.equal(result.corpus_size, 2);
@@ -360,6 +363,7 @@ describe('computeDirtySet', () => {
       cutoffDays:          30,
       runCounterPath:      counterPath,
       activeTombstonesPath: path.join(curatorDir, 'tombstones.jsonl'),
+      projectRoot: tmp,
     });
 
     assert.equal(result.corpus_size, 0);
@@ -386,6 +390,7 @@ describe('computeDirtySet', () => {
       cutoffDays:          30,
       runCounterPath:      counterPath,
       activeTombstonesPath: path.join(curatorDir, 'tombstones.jsonl'),
+      projectRoot: tmp,
     });
 
     // bar.md: stamp is fresh, body matches → clean
@@ -410,6 +415,7 @@ describe('computeDirtySet', () => {
       cutoffDays:          30,
       runCounterPath:      counterPath,
       activeTombstonesPath: path.join(curatorDir, 'tombstones.jsonl'),
+      projectRoot: tmp,
     });
 
     assert.equal(result.forced_full, true, 'should be forced full on 10th run');
@@ -452,6 +458,7 @@ describe('computeDirtySet', () => {
       cutoffDays:          30,
       runCounterPath:      counterPath,
       activeTombstonesPath: tombstonesPath,
+      projectRoot: tmp,
     });
 
     assert.equal(result.dirty.length, 1);
@@ -475,6 +482,7 @@ describe('computeDirtySet', () => {
       forcedFullEvery:      5,
       runCounterPath:       counterPath,
       activeTombstonesPath: path.join(curatorDir, 'tombstones.jsonl'),
+      projectRoot: tmp,
     });
 
     assert.equal(result.forced_full, true, 'should be forced full at run 5 when every=5');
@@ -500,6 +508,7 @@ describe('computeDirtySet', () => {
       forcedFullEvery:      5,
       runCounterPath:       counterPath,
       activeTombstonesPath: path.join(curatorDir, 'tombstones.jsonl'),
+      projectRoot: tmp,
     });
 
     assert.equal(result.forced_full, false, 'run 4 should not be forced full when every=5');

@@ -83,8 +83,11 @@ test('non-eligible info kind appends across invocations', () => {
 
 test('kill switch disables persistent dedup', () => {
   const root = mkProject();
+  // v2.3.24: 'agent_registry_stale' is no longer PERSISTENT_DEDUP_KINDS-eligible
+  // (it is emitted at 'warn', which the dedup gate never covers) — use an
+  // eligible kind so this test actually exercises the kill switch.
   const ev = {
-    kind: 'agent_registry_stale',
+    kind: 'kb_refs_sweep_file_oversize',
     severity: 'info',
     detail: { n: 1 },
     projectRoot: root,

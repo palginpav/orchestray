@@ -47,7 +47,7 @@ describe('SEC-04 — _loadKbSlugs size cap (10 MiB)', () => {
     fs.writeFileSync(indexPath, oversize);
 
     const { _loadKbSlugs } = freshSweep();
-    const result = _loadKbSlugs(kbDir);
+    const result = _loadKbSlugs(kbDir, kbDir);
     assert.equal(result, null,
       'oversize index.json must return null (fail-open, not throw)');
   });
@@ -63,7 +63,7 @@ describe('SEC-04 — _loadKbSlugs size cap (10 MiB)', () => {
     }), 'utf8');
 
     const { _loadKbSlugs } = freshSweep();
-    const result = _loadKbSlugs(kbDir);
+    const result = _loadKbSlugs(kbDir, kbDir);
     assert.ok(result instanceof Set, 'normal index.json must return a Set');
     assert.ok(result.has('my-pattern-one'));
     assert.ok(result.has('my-pattern-two'));
@@ -74,7 +74,7 @@ describe('SEC-04 — _loadKbSlugs size cap (10 MiB)', () => {
     const kbDir = mkKbDir();
     // No index.json created.
     const { _loadKbSlugs } = freshSweep();
-    const result = _loadKbSlugs(kbDir);
+    const result = _loadKbSlugs(kbDir, kbDir);
     assert.equal(result, null, 'missing index.json must return null');
   });
 });
@@ -91,7 +91,7 @@ describe('SEC-04 — _loadSlugIgnoreFile size cap (1 MiB)', () => {
     fs.writeFileSync(ignorePath, oversize);
 
     const { _loadSlugIgnoreFile } = freshSweep();
-    const result = _loadSlugIgnoreFile(kbDir);
+    const result = _loadSlugIgnoreFile(kbDir, kbDir);
     assert.deepEqual(result, [],
       'oversize slug-ignore.txt must return [] (fail-open)');
   });
@@ -112,7 +112,7 @@ describe('SEC-04 — _loadSlugIgnoreFile size cap (1 MiB)', () => {
     fs.writeFileSync(ignorePath, buf);
 
     const { _loadSlugIgnoreFile } = freshSweep();
-    const result = _loadSlugIgnoreFile(kbDir);
+    const result = _loadSlugIgnoreFile(kbDir, kbDir);
     // Must not throw and must contain the valid slug that was written.
     assert.ok(Array.isArray(result), 'must return an array');
     assert.ok(result.includes('foo-bar-baz'), 'must include the valid slug');
@@ -122,7 +122,7 @@ describe('SEC-04 — _loadSlugIgnoreFile size cap (1 MiB)', () => {
     const kbDir = mkKbDir();
     // No slug-ignore.txt file created.
     const { _loadSlugIgnoreFile } = freshSweep();
-    const result = _loadSlugIgnoreFile(kbDir);
+    const result = _loadSlugIgnoreFile(kbDir, kbDir);
     assert.deepEqual(result, [], 'missing file must return []');
   });
 
@@ -138,7 +138,7 @@ describe('SEC-04 — _loadSlugIgnoreFile size cap (1 MiB)', () => {
     ].join('\n'), 'utf8');
 
     const { _loadSlugIgnoreFile } = freshSweep();
-    const result = _loadSlugIgnoreFile(kbDir);
+    const result = _loadSlugIgnoreFile(kbDir, kbDir);
     assert.ok(result.includes('foo-bar-baz'));
     assert.ok(result.includes('another-slug'));
     assert.ok(!result.includes('INVALID-UPPERCASE'));

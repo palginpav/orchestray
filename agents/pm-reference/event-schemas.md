@@ -42,6 +42,8 @@ plugin_install_rejected / plugin_manifest_divergence — plugin rejection events
 plugin_sensitive_arg_detected / plugin_capability_inconsistency / plugin_dangerous_name / plugin_response_injection_suspected — plugin defense-in-depth observations (v2.3.0 W-EVT-1)
 plugin_notify_failed / plugin_flag_write_failed — plugin list-changed notification failures (v2.3.0 W-EVT-1)
 plugin_tools_truncated / plugin_dry_run / plugin_consent_revoked — reserved for Wave 4 (v2.3.0 W-EVT-1)
+bare_event_archive_repaired — archive-scoped bare-event-key repair, one-shot opt-in (v2.3.24)
+curator_stamp_backfilled — backfilled recently_curated promote stamps for shared-tier patterns (v2.3.24)
 
 END CONDITIONAL-LOAD NOTICE -->
 
@@ -2574,6 +2576,47 @@ early-refusal paths (D1 violation, `curator.enabled: false`, empty corpus) where
 
 **Schema stability:** additive only. Consumers that do not recognise this event type
 should ignore it. New fields will only be added as optional.
+
+---
+
+### `curator_stamp_backfilled` event
+
+Emitted by `bin/_lib/curator-recently-curated.js`'s `backfillPromoteStamps()`
+when it writes a `recently_curated_action: promote` stamp for a local pattern
+that is verifiably present in the shared tier
+(`~/.orchestray/shared/patterns/<filename>`) but never received one — see
+`.orchestray/kb/decisions/v2324-curate-followups.md` §Item 1. Derives ONLY from
+shared-tier file presence, never from similarity or inference; never overwrites
+an existing stamp of any action. Invoked via
+`node bin/curator-backfill-stamps.js` (one-shot, not wired into any hook).
+
+```json
+{
+  "version": 1,
+  "type": "curator_stamp_backfilled",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id>",
+  "count": 5,
+  "slugs": ["anti-pattern-half-shipped-enum"],
+  "dry_run": false
+}
+```
+
+Field notes:
+- `count`: number of local patterns that received a backfilled stamp this run.
+- `slugs`: filenames (without `.md`) of the backfilled patterns, capped at 20.
+- `dry_run`: `true` when invoked with `--dry-run` (nothing written; `count`
+  reflects what WOULD have been backfilled).
+
+Provenance: a backfilled stamp is distinguishable from one earned in a real
+curator run — `recently_curated_action_id` and `recently_curated_run_id` carry
+a `backfill-` prefix (a real curator run never produces that prefix), and
+`recently_curated_why` explicitly states `"backfilled: ..."`. See
+`bin/_lib/curator-recently-curated.js`'s `BACKFILL_RUN_ID` /
+`BACKFILL_ACTION_ID_PREFIX` constants.
+
+Kill switch: none — this is a manual, one-shot, opt-in CLI operation with no
+automatic trigger to disable. Schema stability: additive-only.
 
 ---
 
@@ -7972,6 +8015,59 @@ Field notes:
 
 Kill switch: same as `bare_event_key_repaired` above. Schema stability:
 additive-only.
+
+### `bare_event_archive_repaired` event
+
+Emitted by `bin/_lib/normalize-bare-event-rows.js`'s `repairArchiveBareEventRows()` —
+the ARCHIVE-scoped sibling of `repairBareEventRows()` above. Unlike the live-log
+repair, this does NOT run automatically at SessionStart: it is a one-shot,
+opt-in maintenance operation invoked via `node bin/repair-bare-event-archive.js`
+(see that file's header). Repairs bare-`event`-key rows across every
+`.orchestray/history/<run-id>/events.jsonl` archive, reusing the same
+`classifyLine` / `normalizeEventsFile` primitives, backup-before-write, and
+malformed/both-keys leave-alone rules as the live repair. Fires once per
+invocation that changes at least one archive file — never on a dry run and
+never when nothing needed repair.
+
+```json
+{
+  "version": 1,
+  "type": "bare_event_archive_repaired",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id>",
+  "files_scanned": 223,
+  "files_changed": 210,
+  "rows_repaired": 974,
+  "rows_malformed": 3,
+  "rows_both_keys": 0,
+  "verification_failures": 0,
+  "dry_run": false,
+  "report_path": "<path to per-file markdown report, or null if the report write failed — optional>"
+}
+```
+
+Field notes:
+- `files_scanned`: total archive `events.jsonl` files discovered under
+  `.orchestray/history/`.
+- `files_changed`: subset of `files_scanned` that actually had a bare-`event`
+  row (backed up + rewritten).
+- `rows_repaired`: total bare-`event` rows renamed to `type` across all files.
+- `rows_malformed`: total unparseable JSONL lines found across all files (left
+  untouched, counted for visibility only).
+- `rows_both_keys`: total rows carrying BOTH `event` and `type` found across
+  all files (left untouched — same leave-alone rule as the live repair).
+- `verification_failures`: count of changed files whose post-write
+  verification (row count unchanged; every non-backfill line byte-identical to
+  the pre-repair backup) did NOT pass. Should always be `0` — a non-zero value
+  means the repair halted early and the run is incomplete.
+- `report_path`: project-relative path to a markdown report listing per-file
+  counts, written to `.orchestray/kb/artifacts/`. `null` if the report write
+  itself failed (the repair results are still valid — only the report is
+  best-effort).
+
+Kill switch: `ORCHESTRAY_BARE_EVENT_ARCHIVE_REPAIR_DISABLED=1` (env) or
+`bare_event_key_archive_repair.enabled: false` in `.orchestray/config.json`.
+Never auto-invoked. Schema stability: additive-only.
 
 ### `t15_role_schema_violation` event
 

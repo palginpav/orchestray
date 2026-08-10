@@ -25,6 +25,11 @@
  *   - Strip is idempotent: no-op on files without stamp keys.
  *   - All writes are atomic (tmp + rename).
  *
+ * v2.3.24: `backfillPromoteStamps()` — a separate, opt-in one-shot repair for
+ * local patterns present in the shared tier that never received the stamp
+ * above (the curator has no tool to backfill a stamp for an action it did
+ * not itself take). See that function's own docstring below.
+ *
  * No new npm dependencies — stdlib only.
  */
 
@@ -451,15 +456,188 @@ function applyStampsForRun(runId, options) {
   return { stamped, skipped, failed };
 }
 
+// ---------------------------------------------------------------------------
+// backfillPromoteStamps — v2.3.24 stamp backfill for shared-tier patterns
+// ---------------------------------------------------------------------------
+//
+// Fixes: five local patterns promoted to the shared tier on 2026-04-17/18
+// never received their local `recently_curated_action: promote` stamp
+// (the curator has no tool to backfill a stamp for an action it did not
+// itself take, and correctly declined to act). `--diff` mode computes its
+// dirty set from these stamps, so an unstamped-but-actually-clean pattern
+// is permanently dirty. See
+// `.orchestray/kb/decisions/v2324-curate-followups.md` §Item 1.
+//
+// Derivation is STRICTLY from verifiable shared-tier presence — a local
+// pattern file whose exact filename also exists under the shared patterns
+// directory (`getSharedPatternsDir()`), and nothing else. No similarity, no
+// frontmatter-name matching, no inference. A pattern with ANY existing stamp
+// (of any action — promote, merge, deprecate, evaluated) is left alone; this
+// only fills the "never stamped at all" gap, never overwrites real curator
+// history.
+//
+// Provenance is distinguishable from a stamp earned in a real curator run:
+//   - `action_id` / `run_id` carry a `backfill-` prefix a real curator run
+//     never produces (real run_ids are shaped `curator-run-<ISO8601>`).
+//   - `why` explicitly states "backfilled: ...".
+// This matters for `isDirty`'s rollback-touched check (curator-diff.js) —
+// a fabricated action_id must never collide with a real tombstone's
+// action_id, and the `backfill-` prefix guarantees that.
+
+const BACKFILL_RUN_ID            = 'backfill-v2.3.24';
+const BACKFILL_ACTION_ID_PREFIX  = 'backfill-';
+const BACKFILL_WHY               = 'backfilled: pattern present in shared tier with no local promote stamp';
+
+/**
+ * Backfill a `recently_curated_action: promote` stamp for every local
+ * pattern that is verifiably present in the shared tier but has never
+ * received ANY local stamp. One-shot, opt-in — call explicitly (CLI:
+ * `node bin/curator-backfill-stamps.js`); not wired into any hook.
+ *
+ * @param {{projectRoot?: string, dryRun?: boolean}} [options]
+ * @returns {{
+ *   backfilled: string[],  // filenames (with .md) that received a stamp
+ *   skipped:    string[],  // filenames not touched (no shared match, or already stamped)
+ *   failed:     Array<{slug: string, error: string}>,
+ * }}
+ */
+function backfillPromoteStamps(options) {
+  options = options || {};
+  const projectRoot = options.projectRoot || process.cwd();
+  const dryRun       = !!options.dryRun;
+
+  const backfilled = [];
+  const skipped     = [];
+  const failed      = [];
+
+  const patternsDir = path.join(projectRoot, '.orchestray', 'patterns');
+  let localFiles;
+  try {
+    localFiles = fs.readdirSync(patternsDir).filter((f) => f.endsWith('.md'));
+  } catch (_e) {
+    return { backfilled, skipped, failed }; // no local patterns dir — nothing to backfill
+  }
+
+  // getSharedPatternsDir() returns null when federation is disabled — in
+  // that case there is no shared tier to verify presence against at all, so
+  // nothing can be safely backfilled (fail-closed: absence of a shared tier
+  // is NOT evidence a pattern was promoted).
+  let sharedPatternsDir;
+  try {
+    sharedPatternsDir = require('../mcp-server/lib/paths.js').getSharedPatternsDir();
+  } catch (_e) {
+    sharedPatternsDir = null;
+  }
+  if (!sharedPatternsDir) {
+    return { backfilled, skipped, failed };
+  }
+
+  let computeBodyHash = null;
+  try {
+    computeBodyHash = require('./curator-diff.js').computeBodyHash;
+  } catch (_e) { /* body hash is best-effort; stamp is still written without it */ }
+
+  let recordDegradation = null;
+  try {
+    recordDegradation = require('./degraded-journal.js').recordDegradation;
+  } catch (_e) { /* degraded journal is best-effort */ }
+
+  const now = new Date().toISOString();
+
+  for (const filename of localFiles) {
+    const absPath = path.join(patternsDir, filename);
+
+    // Verifiable shared-tier presence: exact same filename on the shared side.
+    let sharedExists = false;
+    try {
+      sharedExists = fs.existsSync(path.join(sharedPatternsDir, filename));
+    } catch (_e) {
+      sharedExists = false;
+    }
+    if (!sharedExists) {
+      skipped.push(filename);
+      continue;
+    }
+
+    // Never clobber an existing stamp of ANY action — this only fills the
+    // "no stamp at all" gap.
+    let existing;
+    try {
+      existing = readStamp(absPath);
+    } catch (_e) {
+      existing = null;
+    }
+    if (existing !== null) {
+      skipped.push(filename);
+      continue;
+    }
+
+    let bodyHash = '';
+    if (computeBodyHash) {
+      try { bodyHash = computeBodyHash(absPath) || ''; } catch (_e) { /* leave blank on failure */ }
+    }
+
+    if (dryRun) {
+      backfilled.push(filename);
+      continue;
+    }
+
+    const stamp = {
+      at:          now,
+      action:      'promote',
+      action_id:   BACKFILL_ACTION_ID_PREFIX + filename.replace(/\.md$/, ''),
+      run_id:      BACKFILL_RUN_ID,
+      why:         BACKFILL_WHY,
+      body_sha256: bodyHash,
+    };
+
+    const result = writeStamp(absPath, stamp);
+    if (result.ok) {
+      backfilled.push(filename);
+    } else {
+      failed.push({ slug: filename, error: result.error });
+      if (recordDegradation) {
+        try {
+          recordDegradation({
+            kind:     'curator_stamp_backfill_failed',
+            severity: 'warn',
+            detail:   { slug: filename, error: result.error },
+            projectRoot,
+          });
+        } catch (_e) {}
+      }
+    }
+  }
+
+  if (!dryRun && backfilled.length > 0) {
+    try {
+      const { writeEvent } = require('./audit-event-writer.js');
+      writeEvent({
+        version: 1,
+        type:    'curator_stamp_backfilled',
+        count:   backfilled.length,
+        slugs:   backfilled.slice(0, 20).map((f) => f.replace(/\.md$/, '')),
+        dry_run: dryRun,
+      }, { cwd: projectRoot });
+    } catch (_e) { /* fail-open — audit visibility must not block the backfill */ }
+  }
+
+  return { backfilled, skipped, failed };
+}
+
 module.exports = {
   writeStamp,
   readStamp,
   stripRecentlyCurated,
   applyStampsForRun,
+  backfillPromoteStamps,
   // Exported for tests.
   _internal: {
     normaliseWhy,
     STAMP_KEYS,
     MAX_WHY_LENGTH,
+    BACKFILL_RUN_ID,
+    BACKFILL_ACTION_ID_PREFIX,
+    BACKFILL_WHY,
   },
 };

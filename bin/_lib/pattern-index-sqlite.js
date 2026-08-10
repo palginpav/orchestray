@@ -51,9 +51,10 @@ const UNAVAILABLE = Symbol('FTS5_BACKEND_UNAVAILABLE');
  * available. Returns a db handle or throws if neither runtime loads.
  *
  * @param {string} dbPath
+ * @param {string} [projectRoot]
  * @returns {object} db handle
  */
-function _openDb(dbPath) {
+function _openDb(dbPath, projectRoot) {
   // Prefer node:sqlite (Node 22.5+, zero additional deps).
   try {
     const { DatabaseSync } = require('node:sqlite');
@@ -80,6 +81,7 @@ function _openDb(dbPath) {
       node_version: process.versions.node,
       dedup_key: 'fts5_backend_unavailable',
     },
+    projectRoot,
   });
   throw new Error('No SQLite runtime available');
 }
@@ -121,10 +123,13 @@ const _dbCache = new Map();
 /**
  * Get or open the db for dbPath. Returns a db handle.
  * Throws if neither SQLite runtime is available.
+ *
+ * @param {string} dbPath
+ * @param {string} [projectRoot]
  */
-function _getDb(dbPath) {
+function _getDb(dbPath, projectRoot) {
   if (_dbCache.has(dbPath)) return _dbCache.get(dbPath);
-  const db = _openDb(dbPath);
+  const db = _openDb(dbPath, projectRoot);
   migration001.run(db);
   _dbCache.set(dbPath, db);
   return db;
@@ -422,7 +427,7 @@ function searchPatterns(query, opts) {
   const dbExistedBefore = fs.existsSync(dbPath);
   const dbMtimeBefore = dbExistedBefore ? _dbMtime(dbPath) : 0;
 
-  const db = _getDb(dbPath);
+  const db = _getDb(dbPath, projectRoot);
 
   // Rebuild if:
   //  (a) db did not exist before this call (fresh install), OR

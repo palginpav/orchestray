@@ -5,13 +5,15 @@
  * Tests for bin/_lib/session-detect.js
  *
  * Covers:
- *   A. file exists   → returns mtimeMs (a positive number)
+ *   A. file exists, first lines lack timestamps → returns the first
+ *      timestamped line's time, NOT mtime (v2.3.24 content-based fix)
  *   B. file missing  → returns null
  *   C. malformed sessionId (non-string, empty, bad chars) → returns null
  *   D. path traversal attempt in sessionId  → returns null safely
  *   E. relative projectDir → returns null
  *   F. empty projectDir   → returns null
  *   G. encodeCwd helper   → correct encoding of absolute paths
+ *   H. no timestamped line anywhere in the transcript → returns null
  */
 
 const { test, describe } = require('node:test');
@@ -26,34 +28,91 @@ const {
 } = require('../../bin/_lib/session-detect.js');
 
 // ---------------------------------------------------------------------------
-// Helper: build a fake transcript tree and return the encoded project dir.
+// Helpers: build fake transcript trees and return the encoded project dir.
 // ---------------------------------------------------------------------------
-function makeFakeTranscript(sessionId, projectDir) {
+
+/** A transcript with no timestamped line at all (only session-start preamble). */
+function makeUntimestampedTranscript(sessionId, projectDir) {
   const encoded = encodeCwd(projectDir);
   const transcriptDir = path.join(os.homedir(), '.claude', 'projects', encoded);
   const transcriptFile = path.join(transcriptDir, sessionId + '.jsonl');
   fs.mkdirSync(transcriptDir, { recursive: true });
-  fs.writeFileSync(transcriptFile, '{"type":"ping"}\n', 'utf8');
+  const lines = [
+    { type: 'last-prompt', leafUuid: 'x', sessionId },
+    { type: 'agent-setting', agentSetting: 'pm', sessionId },
+    { type: 'mode', mode: 'normal', sessionId },
+    { type: 'permission-mode', permissionMode: 'default', sessionId },
+  ];
+  fs.writeFileSync(transcriptFile, lines.map(l => JSON.stringify(l)).join('\n') + '\n', 'utf8');
+  return { transcriptFile, transcriptDir };
+}
+
+/**
+ * A realistic transcript: untimestamped preamble lines (mirroring real
+ * Claude Code output — last-prompt, agent-setting, mode, permission-mode)
+ * followed by a line carrying `timestamp`. mtime is set far AFTER
+ * timestampMs to prove detection reads content, not mtime — the exact
+ * v2.3.24 regression.
+ */
+function makeRealisticTranscript(sessionId, projectDir, timestampMs) {
+  const encoded = encodeCwd(projectDir);
+  const transcriptDir = path.join(os.homedir(), '.claude', 'projects', encoded);
+  const transcriptFile = path.join(transcriptDir, sessionId + '.jsonl');
+  fs.mkdirSync(transcriptDir, { recursive: true });
+  const lines = [
+    { type: 'last-prompt', leafUuid: 'x', sessionId },
+    { type: 'agent-setting', agentSetting: 'pm', sessionId },
+    { type: 'mode', mode: 'normal', sessionId },
+    { type: 'permission-mode', permissionMode: 'default', sessionId },
+    { type: 'attachment', timestamp: new Date(timestampMs).toISOString(), sessionId },
+  ];
+  fs.writeFileSync(transcriptFile, lines.map(l => JSON.stringify(l)).join('\n') + '\n', 'utf8');
+  const farFutureSec = (timestampMs + 6 * 60 * 60 * 1000) / 1000;
+  fs.utimesSync(transcriptFile, farFutureSec, farFutureSec);
   return { transcriptFile, transcriptDir };
 }
 
 // ---------------------------------------------------------------------------
-// A. File exists — detectSessionStartMs returns a positive number (mtimeMs)
+// A. File exists, first lines lack timestamps — returns the first
+//    timestamped line's time, not mtime (v2.3.24)
 // ---------------------------------------------------------------------------
-describe('detectSessionStartMs — file exists', () => {
-  test('returns mtimeMs when transcript JSONL is present', () => {
+describe('detectSessionStartMs — file exists, content-based detection', () => {
+  test('returns the first timestamped line\'s time when preamble lines lack timestamps', () => {
     const sessionId  = 'aabbccdd-1122-3344-5566-7788aabbccdd';
     // Use a unique temp project dir so tests don't interfere with each other.
     const projectDir = '/home/palgin/orchestray-test-session-detect-a';
+    // True session start: 45 minutes ago. mtime (set by the helper) is 6h
+    // AFTER this — if detection fell back to mtime, the assertion below fails.
+    const trueStartMs = Date.now() - 45 * 60 * 1000;
 
-    const { transcriptFile, transcriptDir } = makeFakeTranscript(sessionId, projectDir);
+    const { transcriptFile, transcriptDir } = makeRealisticTranscript(sessionId, projectDir, trueStartMs);
     try {
       const result = detectSessionStartMs(sessionId, projectDir);
       assert.ok(typeof result === 'number', 'result should be a number');
-      assert.ok(result > 0, 'result should be a positive mtime');
-      // Sanity: should be close to the actual mtime of the file we just wrote.
+      assert.strictEqual(result, trueStartMs, 'result should equal the embedded timestamp exactly');
+
+      // Sanity: prove mtime really was set far away from the true start, so
+      // an mtime-based implementation would have failed this test.
       const stat = fs.statSync(transcriptFile);
-      assert.strictEqual(result, stat.mtimeMs);
+      assert.ok(Math.abs(stat.mtimeMs - result) > 5 * 60 * 1000, 'mtime must differ from the detected value by more than 5 minutes');
+    } finally {
+      try { fs.rmSync(transcriptDir, { recursive: true, force: true }); } catch (_e) {}
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// H. No timestamped line anywhere in the transcript — returns null
+// ---------------------------------------------------------------------------
+describe('detectSessionStartMs — no timestamped line anywhere', () => {
+  test('returns null when every line lacks a timestamp field', () => {
+    const sessionId  = 'aabbccdd-2233-4455-6677-8899aabbccee';
+    const projectDir = '/home/palgin/orchestray-test-session-detect-h';
+
+    const { transcriptDir } = makeUntimestampedTranscript(sessionId, projectDir);
+    try {
+      const result = detectSessionStartMs(sessionId, projectDir);
+      assert.strictEqual(result, null);
     } finally {
       try { fs.rmSync(transcriptDir, { recursive: true, force: true }); } catch (_e) {}
     }

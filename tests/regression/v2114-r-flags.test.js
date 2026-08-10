@@ -161,18 +161,21 @@ function runSweepForNudge(projectDir, sentinelPath, sessionId) {
 
   fs.mkdirSync(path.join(projectDir, '.orchestray', 'state'), { recursive: true });
 
-  // Make the session appear to predate the install by creating a transcript
-  // with a mtime well before installedAtMs. We write it to /tmp to avoid
-  // touching ~/.claude.
+  // Make the session appear to predate the install by giving the transcript
+  // a timestamped line 60 seconds before installedAtMs (v2.3.24: detection
+  // reads transcript content, not mtime — see session-detect.js). We write
+  // it to /tmp to avoid touching ~/.claude.
   const encoded = '-' + projectDir.replace(/^\//, '').replace(/\//g, '-');
   const transcriptDir = path.join(os.tmpdir(), 'r-flags-claude', 'projects', encoded);
   fs.mkdirSync(transcriptDir, { recursive: true });
   cleanup.push(path.join(os.tmpdir(), 'r-flags-claude'));
   const transcriptPath = path.join(transcriptDir, sessionId + '.jsonl');
-  fs.writeFileSync(transcriptPath, '{}', 'utf8');
-  // Set mtime to 60 seconds BEFORE install so session predates install.
-  const oldMs = (installedAtMs - 60000) / 1000;
-  fs.utimesSync(transcriptPath, oldMs, oldMs);
+  const sessionStartMs = installedAtMs - 60000;
+  const lines = [
+    JSON.stringify({ type: 'last-prompt', leafUuid: 'x', sessionId }),
+    JSON.stringify({ type: 'attachment', timestamp: new Date(sessionStartMs).toISOString(), sessionId }),
+  ];
+  fs.writeFileSync(transcriptPath, lines.join('\n') + '\n', 'utf8');
 
   // Override HOME so session-detect.js finds our fake transcript.
   const fakeHome = path.join(os.tmpdir(), 'r-flags-claude');

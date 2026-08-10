@@ -52,12 +52,21 @@ const _seen = new Set();
 // Kill switch: ORCHESTRAY_JOURNAL_PERSIST_DEDUP_DISABLED=1 reverts to v2.3.11
 // (in-process dedup only).
 // ---------------------------------------------------------------------------
+// v2.3.24: 'agent_registry_stale' was listed here but is emitted at
+// severity 'warn' (post-upgrade-sweep.js), while the gate below only
+// persist-dedups severity === 'info' — so the membership could never fire.
+// Resolved as: dropped, not lowered to 'info'. Unlike the other kinds here
+// (high-frequency, benign fallback signals where 24h cross-process
+// suppression is the point), agent_registry_stale is a real, actionable
+// warning about a stale agent registry. The per-session marker file in
+// post-upgrade-sweep.js already prevents re-emission within one session;
+// adding 24h cross-process suppression on top would hide the same genuine
+// warning from other sessions open around the same install.
 const PERSISTENT_DEDUP_KINDS = new Set([
   'kb_refs_sweep_malformed_frontmatter',
   'kb_refs_sweep_malformed_summary',
   'kb_refs_sweep_file_oversize',
   'pattern_roi_events_file_oversize',
-  'agent_registry_stale',
 ]);
 const DEDUP_TTL_MS      = 24 * 60 * 60 * 1000; // 24 h
 const DEDUP_MAX_ENTRIES = 2000;
@@ -333,6 +342,10 @@ function recordDegradation(event) {
     const orchId = _resolveOrchId(projectRoot);
 
     // Build the record.
+    // v2.3.24: stamp the resolved root on every row, regardless of whether the
+    // caller supplied one. An unattributed row is otherwise indistinguishable
+    // from a production row — a prior purge left ~72 rows nobody could classify
+    // because there was nothing on the row itself pointing back to a root.
     const rec = {
       schema:           JOURNAL_SCHEMA_VERSION,
       ts:               new Date().toISOString(),
@@ -340,6 +353,7 @@ function recordDegradation(event) {
       severity,
       pid:              process.pid,
       orchestration_id: orchId,
+      project_root:     projectRoot,
       detail,
     };
 

@@ -183,13 +183,14 @@ function isPatternMergeLineage(absPath) {
  *   cutoffDays:       number,
  *   now:              Date,
  *   rolledBackIds:    Set<string>,
+ *   projectRoot?:     string,
  * }} opts
  * @returns {{ dirty: boolean, reason: string }}
  *   reason is one of: "stamp_absent" | "body_hash_drift" | "stale_stamp" |
  *   "rollback_touched" | "merge_lineage" | "clean"
  */
 function isDirty(opts) {
-  const { absPath, cutoffDays, now, rolledBackIds } = opts;
+  const { absPath, cutoffDays, now, rolledBackIds, projectRoot } = opts;
 
   // Signal 1 & "corrupt stamp fallback": readStamp returns null if absent or partial.
   let stamp;
@@ -210,7 +211,7 @@ function isDirty(opts) {
 
   if (!hasAt) {
     // Missing primary stamp key — corrupt.
-    _journalCorrupt(absPath);
+    _journalCorrupt(absPath, projectRoot);
     return { dirty: true, reason: 'stamp_absent' };
   }
 
@@ -219,7 +220,7 @@ function isDirty(opts) {
     const currentHash = computeBodyHash(absPath);
     if (currentHash === null) {
       // Cannot compute hash — treat as dirty (fail-open).
-      _journalHashFailed(absPath);
+      _journalHashFailed(absPath, projectRoot);
       return { dirty: true, reason: 'stamp_absent' };
     }
     if (currentHash !== stamp.body_sha256) {
@@ -227,7 +228,7 @@ function isDirty(opts) {
     }
   } else {
     // No hash in stamp (pre-H6 stamp or partial) — treat as stamp_absent.
-    _journalCorrupt(absPath);
+    _journalCorrupt(absPath, projectRoot);
     return { dirty: true, reason: 'stamp_absent' };
   }
 
@@ -284,15 +285,20 @@ function _sessionId() {
     || ('pid-' + process.pid);
 }
 
-function _sessionSentinelPath() {
+/**
+ * @param {string} [projectRoot] - Threaded from computeDirtySet/isDirty so the
+ *   stray sentinel file lands under the caller's project root, not
+ *   process.cwd() (v2.3.24 Item 3).
+ */
+function _sessionSentinelPath(projectRoot) {
   const sessionSafe = String(_sessionId()).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 64);
   return path.join(
-    process.cwd(),
+    projectRoot || process.cwd(),
     '.orchestray', 'state', '.curator-cursor-reset-' + sessionSafe
   );
 }
 
-function _journalCorrupt(absPath) {
+function _journalCorrupt(absPath, projectRoot) {
   try {
     const slug = path.basename(absPath, '.md');
 
@@ -301,7 +307,7 @@ function _journalCorrupt(absPath) {
     // check the in-process flag (avoids rapid-fire write attempts within a
     // single invocation).
     if (!_cursorResetSignalEmitted) {
-      const sentinel = _sessionSentinelPath();
+      const sentinel = _sessionSentinelPath(projectRoot);
       let alreadyMarked = false;
       try { alreadyMarked = fs.existsSync(sentinel); } catch (_) {}
 
@@ -315,6 +321,7 @@ function _journalCorrupt(absPath) {
               session_id: _sessionId(),
               dedup_key: 'curator_cursor_reset|' + _sessionId(),
             },
+            projectRoot,
           });
           try {
             fs.mkdirSync(path.dirname(sentinel), { recursive: true });
@@ -336,17 +343,19 @@ function _journalCorrupt(absPath) {
       kind:     'curator_diff_cursor_corrupt',
       severity: 'warn',
       detail:   { slug, dedup_key: 'curator_diff_cursor_corrupt|session|' + _sessionId() },
+      projectRoot,
     });
   } catch (_) {}
 }
 
-function _journalHashFailed(absPath) {
+function _journalHashFailed(absPath, projectRoot) {
   try {
     const slug = path.basename(absPath, '.md');
     _degradedJournal().recordDegradation({
       kind:     'curator_diff_hash_compute_failed',
       severity: 'warn',
       detail:   { slug, dedup_key: 'curator_diff_hash_compute_failed|' + slug },
+      projectRoot,
     });
   } catch (_) {}
 }
@@ -369,6 +378,7 @@ const FORCED_FULL_SWEEP_EVERY = 10;
  *   activeTombstonesPath: string,    — absolute path to tombstones.jsonl
  *   now?:                 Date,      — override for tests; defaults to new Date()
  *   forcedFullEvery?:     number,    — curator.diff_forced_full_every (default: 10 constant)
+ *   projectRoot?:         string,    — degraded-journal / sentinel target (default: process.cwd())
  * }} opts
  * @returns {{
  *   dirty:        string[],    — absolute paths of dirty patterns
@@ -393,6 +403,7 @@ function computeDirtySet(opts) {
     forceFull: forcedFull = false,
     now: nowOverride,
     forcedFullEvery,
+    projectRoot,
   } = opts;
 
   const now = nowOverride || new Date();
@@ -440,6 +451,7 @@ function computeDirtySet(opts) {
         kind:     'curator_diff_forced_full_triggered',
         severity: 'info',
         detail:   { run_counter: runCount, dedup_key: 'curator_diff_forced_full|' + runCount },
+        projectRoot,
       });
     } catch (_) {}
   }
@@ -456,7 +468,7 @@ function computeDirtySet(opts) {
 
     let result;
     try {
-      result = isDirty({ absPath, cutoffDays, now, rolledBackIds });
+      result = isDirty({ absPath, cutoffDays, now, rolledBackIds, projectRoot });
     } catch (_) {
       // Unexpected error — fail-open: treat as dirty.
       result = { dirty: true, reason: 'stamp_absent' };

@@ -3,6 +3,30 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.24] - 2026-08-10
+
+**Orchestray 2.3.24 continues finding places where Orchestray silently didn't do what it claimed, this time by checking what the system logged about itself. The installer's own hook-ordering fix never actually settled down, the "restart Claude Code" upgrade notice could silently never appear, and Orchestray's own test runs had been quietly writing into the same log used to spot real operational problems. All three are fixed, and a new opt-in command lets you repair older archived run history that an earlier fix couldn't reach.**
+
+### Fixed
+
+- **The installer's hook-reordering logic never actually finished reordering.** It was supposed to put Orchestray's hooks back in the correct order on install, but a bug made it rewrite the same entry over and over instead — so the hooks kept running in the wrong order, and every install repeated the same pointless correction. Installs now settle into the right order on the first attempt and stay there.
+- **The "restart Claude Code to finish upgrading" notice could silently never show up.** It worked out when your session started from the time of the *most recent* write to your session transcript rather than the actual start — on a long-open session that error could grow past an hour, wrongly concluding you'd already restarted and saying nothing. It's now based on the transcript's actual start time.
+- **Diagnostics recorded during Orchestray's own automated test runs had been quietly mixed into the same log used to track real operational problems.** You wouldn't have seen this directly, but roughly two-thirds of that log's history turned out to be test noise rather than real signal, which could mask genuine issues from anything reading it. Fixed everywhere it could happen, and every entry now records which project it came from, so this can't recur unnoticed.
+- **`/orchestray:learn curate` could occasionally hit an internal snag while closing out a run and silently take a different path than usual.** It now falls back cleanly when that happens, and the run's final summary tells you which path it actually took instead of leaving you to guess.
+
+### Added
+
+- **A new command repairs archived run history that an earlier fix (2.3.21) couldn't reach.** That release corrected malformed rows in your live diagnostics log, but the same kind of malformed row was still present in 974 rows spread across 223 archived runs, invisible to analytics and history lookups. Run `node bin/repair-bare-event-archive.js` from your project root to repair them (`--dry-run` previews first); it's opt-in and does not run automatically.
+
+### Not in this release
+
+- **Why `/orchestray:learn curate` occasionally needs that fallback at all is still unknown.** The direct call fails only sometimes, and the fallback produces the same correct result either way, so nothing is blocked — but the underlying cause hasn't been found yet.
+
+### Under the hood
+
+- A bookkeeping gap meant a handful of learned patterns were re-examined on every incremental curation run instead of being recognized as already handled; a backfill path now closes it.
+- A stale entry in the test suite's own coverage-tracking list was retired now that real coverage exists for it.
+
 ## [2.3.23] - 2026-08-09
 
 **Orchestray 2.3.23 continues the "documented as working that silently wasn't" theme: the pattern curator can now actually record that a run finished, a lock it took on every run is released promptly instead of blocking your next curation attempt, agents no longer read the multi-megabyte audit log directly, and a check that was supposed to enforce that rule during development was never actually running. Nothing here changes anything you configure — it's all correctness and observability.**

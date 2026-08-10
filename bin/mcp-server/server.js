@@ -136,6 +136,8 @@ function loadConfig() {
     if (parsed && typeof parsed === 'object') return parsed;
   } catch (err) {
     logStderr('config load failed: ' + (err && err.message) + ' (using defaults)');
+    let projectRoot;
+    try { projectRoot = paths.getProjectRoot(); } catch (_) { /* fall back to journal default */ }
     recordDegradation({
       kind: 'config_load_failed',
       severity: 'warn',
@@ -144,6 +146,7 @@ function loadConfig() {
         config_path: paths.getConfigPath(),
         dedup_key: 'config_load_failed',
       },
+      projectRoot,
     });
   }
   return {};

@@ -277,6 +277,12 @@ if (require.main === module) {
       processStop(projectRoot);
     } catch (err) {
       try {
+        // Best-effort re-resolve: the try above may have thrown before
+        // projectRoot was assigned.
+        let projectRoot;
+        try {
+          projectRoot = process.env.ORCHESTRAY_PROJECT_ROOT || resolveSafeCwd();
+        } catch { /* fall back to journal default */ }
         recordDegradation({
           kind: 'config_load_failed',
           severity: 'warn',
@@ -284,6 +290,7 @@ if (require.main === module) {
             reason: 'post_orch_stop_uncaught',
             error: err && err.message ? err.message.slice(0, 80) : 'unknown',
           },
+          projectRoot,
         });
       } catch {}
     }

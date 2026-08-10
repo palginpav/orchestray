@@ -144,6 +144,7 @@ function injectRepoMap(params) {
             message: 'first_agent field missing from state row; falling back to full injection',
             dedup_key: 'rmd-fau-' + orchId,
           },
+          projectRoot,
         });
       } catch (_degradationErr) { /* journal write failure must not block fallback */ }
       return '## Repository Map\n\n' + repoMapContent;
@@ -175,6 +176,7 @@ function injectRepoMap(params) {
         kind: 'repo_map_delta_first_emit_failed',
         severity: 'warn',
         detail: { message: err.message, dedup_key: 'rmd-err-' + (params && params.orchId) },
+        projectRoot: params && params.projectRoot,
       });
     } catch (_degradationErr) { /* journal write failure must not block fallback */ }
     return '## Repository Map\n\n' + ((params && params.repoMapContent) || '');
@@ -215,6 +217,7 @@ function _emitFirstFull(orchId, agentType, content, projectRoot) {
       kind: 'repo_map_delta_first_emit_failed',
       severity: 'warn',
       detail: { message: err.message, orchId, dedup_key: 'rmd-first-' + orchId },
+      projectRoot,
     });
     // Fail-open: return full map even if state write failed.
     return '## Repository Map\n\n' + content;

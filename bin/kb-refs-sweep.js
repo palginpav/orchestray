@@ -385,9 +385,11 @@ function _scanFile(filePath, kbSlugs, patSlugs, projectRoot, ignoreList, opts) {
  * Returns null if the index file is missing or malformed.
  *
  * @param {string} kbDir
+ * @param {string} [projectRoot] - Threaded to degraded-journal so the record lands
+ *   under the caller's project root, not process.cwd() (v2.3.24 Item 3).
  * @returns {Set<string>|null}
  */
-function _loadKbSlugs(kbDir) {
+function _loadKbSlugs(kbDir, projectRoot) {
   const indexPath = path.join(kbDir, 'index.json');
   // SEC-04 / LOW-R2-01: use bounded fd-based read to eliminate stat→read TOCTOU.
   const MAX_INDEX_BYTES = 10 * 1024 * 1024;
@@ -399,12 +401,14 @@ function _loadKbSlugs(kbDir) {
           kind: 'file_too_large',
           severity: 'warn',
           detail: { file: indexPath, size_hint: readResult.size_hint, cap_bytes: MAX_INDEX_BYTES },
+          projectRoot,
         });
       } else {
         recordDegradation({
           kind: 'file_read_failed',
           severity: 'warn',
           detail: { file: indexPath, err: readResult.err },
+          projectRoot,
         });
       }
       return null;
@@ -481,9 +485,11 @@ function _loadPatternSlugs(cwd) {
  * Returns an empty array if the file does not exist or cannot be read.
  *
  * @param {string} kbDir - Absolute path to `.orchestray/kb/`.
+ * @param {string} [projectRoot] - Threaded to degraded-journal so the record lands
+ *   under the caller's project root, not process.cwd() (v2.3.24 Item 3).
  * @returns {string[]}
  */
-function _loadSlugIgnoreFile(kbDir) {
+function _loadSlugIgnoreFile(kbDir, projectRoot) {
   const slugShape = /^[a-z][a-z0-9-]{3,40}$/;
   const filePath = path.join(kbDir, 'slug-ignore.txt');
   // SEC-04 / LOW-R2-01: use bounded fd-based read to eliminate stat→read TOCTOU.
@@ -500,6 +506,7 @@ function _loadSlugIgnoreFile(kbDir) {
         kind: 'file_too_large',
         severity: 'warn',
         detail: { file: filePath, size_hint: readResult.size_hint, cap_bytes: MAX_IGNORE_BYTES },
+        projectRoot,
       });
       return [];
     }
@@ -711,7 +718,7 @@ async function runKbRefsSweep(options = {}) {
       cwd = resolveSafeCwd(process.cwd());
     }
   } catch (err) {
-    recordDegradation({ kind: 'kb_refs_sweep_init_error', severity: 'warn', detail: { error: String(err) } });
+    recordDegradation({ kind: 'kb_refs_sweep_init_error', severity: 'warn', detail: { error: String(err) }, projectRoot: options.cwd || process.cwd() });
     return { status: 'skipped', reason: 'error' };
   }
 
@@ -760,7 +767,7 @@ async function runKbRefsSweep(options = {}) {
   }
 
   // Check index.json exists.
-  const kbSlugs = _loadKbSlugs(kbDir);
+  const kbSlugs = _loadKbSlugs(kbDir, cwd);
   if (kbSlugs === null) {
     _emitEvent(cwd, 'kb_refs_sweep_skipped', { reason: 'no_index' });
     return { status: 'skipped', reason: 'no_index' };
@@ -777,7 +784,7 @@ async function runKbRefsSweep(options = {}) {
 
   // Merge ignore list: config value + per-project slug-ignore.txt file.
   // File takes precedence as the per-project escape hatch; config is the JSON-based option.
-  const fileIgnoreSlugs = _loadSlugIgnoreFile(kbDir);
+  const fileIgnoreSlugs = _loadSlugIgnoreFile(kbDir, cwd);
   const mergedIgnoreList = Array.from(new Set([...configIgnoreSlugs, ...fileIgnoreSlugs]));
 
   // Collect all .md files to scan.
@@ -961,7 +968,7 @@ if (require.main === module) {
       process.exit(0);
     })
     .catch((err) => {
-      recordDegradation({ kind: 'kb_refs_sweep_uncaught', severity: 'warn', detail: { error: String(err) } });
+      recordDegradation({ kind: 'kb_refs_sweep_uncaught', severity: 'warn', detail: { error: String(err) }, projectRoot: process.cwd() });
       process.stderr.write('[kb-refs-sweep] uncaught error (fail-open): ' + String(err) + '\n');
       process.exit(0);
     });

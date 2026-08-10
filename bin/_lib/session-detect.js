@@ -6,9 +6,27 @@
  * Theme 1 (v2.0.22): The upgrade-detection state machine needs to compare
  * `installed_at_ms` (from the upgrade sentinel) against the session's start
  * time to decide whether this session predates the install. This module
- * derives the session-start time from the transcript JSONL file mtime at
- * `~/.claude/projects/<encoded-cwd>/<session_id>.jsonl`, which Claude Code
- * creates at the first transcript event (approximately session start).
+ * derives the session-start time from the transcript JSONL file at
+ * `~/.claude/projects/<encoded-cwd>/<session_id>.jsonl`.
+ *
+ * v2.3.24 (fix): this used to return the transcript file's `mtimeMs`. That is
+ * wrong — Claude Code appends to the transcript for the entire session, so
+ * mtime is the time of the LAST write, not the first. The error grows with
+ * session age (measured at 43 minutes on a live ~40-minute session) and made
+ * `sessionStartMs >= installedAtMs` spuriously true for almost any install
+ * performed while a session was open, silently swallowing the upgrade
+ * warning (Case B in post-upgrade-sweep.js) when it should have fired
+ * (Case C). `birthtimeMs` is not a substitute either — on a `--resume`d
+ * session it reports the time the file was first created, which can be many
+ * days before the resumed session's actual start.
+ *
+ * The fix reads transcript CONTENT: Claude Code's first few lines
+ * (`last-prompt`, `agent-setting`, `mode`, `permission-mode`) carry no
+ * `timestamp` field, so this scans forward and returns the timestamp of the
+ * first line that has one — the earliest true timestamp in the transcript.
+ * The scan is bounded to HEAD_SCAN_BYTES since that timestamp is always near
+ * the top of the file; this also caps the cost on multi-hundred-MB
+ * transcripts from long-running sessions.
  *
  * Exports:
  *   detectSessionStartMs(sessionId, projectDir) → number | null
@@ -18,6 +36,11 @@
 const fs   = require('fs');
 const os   = require('os');
 const path = require('path');
+
+// First timestamped line is always within the first few hundred bytes
+// (observed: line 5 of a real transcript); 64 KB is generous headroom while
+// still bounding the read on pathologically large transcript files.
+const HEAD_SCAN_BYTES = 64 * 1024;
 
 /**
  * Regex for a valid Claude Code session ID.
@@ -45,13 +68,21 @@ function encodeCwd(cwd) {
 }
 
 /**
- * Return the mtime (in milliseconds since Unix epoch) of the transcript JSONL
- * file for a given session, or null if the file cannot be read.
+ * Return the time (in milliseconds since Unix epoch) of the EARLIEST
+ * timestamped line in a session's transcript JSONL, or null when it cannot
+ * be determined.
  *
- * The transcript file is created by Claude Code at the first event of the
- * session, so its mtime is a reliable proxy for session-start time (within
- * seconds). When null is returned the caller should fall back to the legacy
- * same-session warning behavior.
+ * Null policy (deliberate, v2.3.24): callers must treat null as "assume the
+ * session predates the install" (fail loud → warn). Before this fix, null
+ * was the common case for any long-running session (mtime keeps moving, but
+ * a stat() failure was rare) — a graceful fallback. Now that detection reads
+ * real transcript content, null is rare: it only happens when the transcript
+ * is missing/unreadable, or — pathologically — every line within the scan
+ * window lacks a timestamp. In both cases we cannot rule out that the
+ * session predates the install, and understating the reminder recreates the
+ * exact silent-failure class this fix removes. Overstating it costs the
+ * user one redundant, non-blocking stderr line; understating it costs a
+ * stale agent registry the user never finds out about. Keep fail-loud.
  *
  * Input validation rejects:
  *   - non-string or empty sessionId / projectDir
@@ -62,7 +93,8 @@ function encodeCwd(cwd) {
  * @param {string} projectDir  Absolute path to the project directory (cwd of
  *                             the Claude Code process), used to locate the
  *                             correct per-project transcript directory.
- * @returns {number|null}      mtimeMs of the transcript file, or null.
+ * @returns {number|null}      ms epoch of the first timestamped transcript
+ *                             line, or null.
  */
 function detectSessionStartMs(sessionId, projectDir) {
   // --- Input validation (must happen before any fs call) ---
@@ -87,13 +119,52 @@ function detectSessionStartMs(sessionId, projectDir) {
     os.homedir(), '.claude', 'projects', encoded, sessionId + '.jsonl'
   );
 
+  let content;
   try {
-    return fs.statSync(transcriptPath).mtimeMs;
+    const stat = fs.statSync(transcriptPath);
+    if (stat.size === 0) return null;
+    if (stat.size <= HEAD_SCAN_BYTES) {
+      content = fs.readFileSync(transcriptPath, 'utf8');
+    } else {
+      const fd = fs.openSync(transcriptPath, 'r');
+      const buf = Buffer.alloc(HEAD_SCAN_BYTES);
+      let bytesRead = 0;
+      try {
+        bytesRead = fs.readSync(fd, buf, 0, HEAD_SCAN_BYTES, 0);
+      } finally {
+        fs.closeSync(fd);
+      }
+      content = buf.slice(0, bytesRead).toString('utf8');
+    }
   } catch (_e) {
     // File absent, unreadable, or Claude Code changed transcript location.
-    // Caller falls back to legacy behavior — never block on detection failure.
+    // Caller falls back to fail-loud null handling — never block on
+    // detection failure.
     return null;
   }
+
+  // Session-start preamble lines (last-prompt, agent-setting, mode,
+  // permission-mode) carry no timestamp; scan forward for the first line
+  // that does. A tail-cut line at the end of a bounded head read is expected
+  // and simply fails JSON.parse — skip it.
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let entry;
+    try {
+      entry = JSON.parse(trimmed);
+    } catch (_e) {
+      continue;
+    }
+    if (!entry || typeof entry !== 'object') continue;
+    const ts = entry.timestamp || (entry.message && entry.message.timestamp);
+    if (typeof ts !== 'string') continue;
+    const ms = Date.parse(ts);
+    if (!Number.isNaN(ms)) return ms;
+  }
+
+  // No timestamped line within the scan window.
+  return null;
 }
 
 module.exports = { detectSessionStartMs, encodeCwd };

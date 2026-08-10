@@ -835,6 +835,12 @@ if (require.main === module) {
     } catch (err) {
       // Top-level fail-open — never block PreCompact.
       try {
+        // Best-effort re-resolve: the try above may have thrown before
+        // projectRoot was assigned.
+        let projectRoot;
+        try {
+          projectRoot = process.env.ORCHESTRAY_PROJECT_ROOT || resolveSafeCwd();
+        } catch { /* fall back to journal default */ }
         recordDegradation({
           kind: 'config_load_failed',
           severity: 'warn',
@@ -842,6 +848,7 @@ if (require.main === module) {
             reason: 'post_orchestration_extract_uncaught',
             error: err && err.message ? err.message.slice(0, 80) : 'unknown',
           },
+          projectRoot,
         });
       } catch (_e) {
         // Absolute last resort.

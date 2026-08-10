@@ -2130,6 +2130,7 @@ function loadFederationConfig(cwd) {
           keys: Object.keys(parsed).filter(k => k.startsWith('federation.')),
           dedup_key: 'flat_federation_keys_accepted',
         },
+        projectRoot: cwd,
       });
     }
     const flatObj = {};
@@ -2349,6 +2350,7 @@ function loadCuratorConfig(cwd) {
           keys: Object.keys(parsed).filter(k => k.startsWith('curator.')),
           dedup_key: 'flat_curator_keys_accepted',
         },
+        projectRoot: cwd,
       });
     }
     const flatObj = {};
@@ -2632,6 +2634,7 @@ function loadRetrievalConfig(cwd) {
               error:       'unknown scorer name in retrieval.shadow_scorers',
               dedup_key:   'shadow_scorer_failed_' + name,
             },
+            projectRoot: cwd,
           });
         } catch (_) { /* swallow */ }
       }

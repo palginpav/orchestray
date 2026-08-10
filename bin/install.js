@@ -2140,11 +2140,28 @@ function mergeHooks(targetDir) {
     for (const event of Object.keys(orchestrayHooks)) {
       const liveEntries      = settings.hooks[event] || [];
       const canonicalEntries = orchestrayHooks[event] || [];
+
+      // v2.3.24 Item 1 fix: hooks.json defines MANY canonical entries sharing
+      // one matcher (e.g. 12 SubagentStop entries, all matcher:undefined),
+      // but the append phase above merges same-matcher entries into a SINGLE
+      // live entry. Comparing/reordering per-canEntry against that one live
+      // entry made every canEntry resolve to the same target and clobber it
+      // in turn — the loop never converged, and each install just moved a
+      // different hook to the front. Group canonical entries by matcher
+      // first and build one merged ordered basename list per group, so
+      // comparison/reorder happens at the same (event, matcher) granularity
+      // the live settings actually use.
+      const groupsByMatcher = new Map(); // matcher -> merged canonical basenames[]
       for (const canEntry of canonicalEntries) {
-        const liveEntry = liveEntries.find(e => e.matcher === canEntry.matcher);
+        const names = (canEntry.hooks || []).map(hookBasename2).filter(Boolean);
+        if (!groupsByMatcher.has(canEntry.matcher)) groupsByMatcher.set(canEntry.matcher, []);
+        groupsByMatcher.get(canEntry.matcher).push(...names);
+      }
+
+      for (const [matcher, canBasenames] of groupsByMatcher) {
+        const liveEntry = liveEntries.find(e => e.matcher === matcher);
         if (!liveEntry) continue;
 
-        const canBasenames  = (canEntry.hooks || []).map(hookBasename2).filter(Boolean);
         const ourLive       = (liveEntry.hooks || []).filter(isOurs);
         const ourLiveNames  = ourLive.map(hookBasename2).filter(Boolean);
         // Already canonical — skip.
@@ -2169,7 +2186,7 @@ function mergeHooks(targetDir) {
             projectRoot: process.cwd(),
             detail: {
               event,
-              matcher:              canEntry.matcher || null,
+              matcher:              matcher || null,
               peer_basenames:       (liveEntry.hooks || []).filter(h => !isOurs(h)).map(hookBasename2).filter(Boolean),
               orchestray_basenames: ourLiveNames,
               live_basenames:       liveBasenames,
@@ -2177,7 +2194,7 @@ function mergeHooks(targetDir) {
             },
           });
           process.stderr.write(
-            `[orchestray:install] Cannot auto-reorder ${event}:${canEntry.matcher || '*'} hooks: ` +
+            `[orchestray:install] Cannot auto-reorder ${event}:${matcher || '*'} hooks: ` +
             `your settings.json has non-orchestray hooks mixed between orchestray hooks, and ` +
             `auto-reorder could break that arrangement. Run '/orchestray:status hooks' to see ` +
             `the current vs. expected order, then move orchestray hooks to run before (or after) ` +
@@ -2218,7 +2235,7 @@ function mergeHooks(targetDir) {
             projectRoot: process.cwd(),
             detail: {
               event,
-              matcher:             canEntry.matcher || null,
+              matcher:             matcher || null,
               before_hash:         crypto.createHash('sha256').update(before).digest('hex').slice(0, 12),
               after_hash:          crypto.createHash('sha256').update(after).digest('hex').slice(0, 12),
               before_basenames:    liveBasenames,

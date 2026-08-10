@@ -89,6 +89,12 @@ const UPGRADE_SENTINEL_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
  *
  * Fail-open: any I/O error is swallowed. Never blocks the user prompt.
  *
+ * detectSessionStartMs() returning null (transcript missing/unreadable, or
+ * no timestamped line found — see session-detect.js for the full policy
+ * rationale) is treated as "assume the session predates the install", i.e.
+ * routed into Case C below rather than Case B. Detection failure must never
+ * suppress a warning that was actually owed.
+ *
  * @param {string|null} sessionId - Sanitized session id from the hook payload.
  * @param {string}      cwd       - Absolute project directory path.
  */
@@ -198,6 +204,7 @@ function emitUpgradePendingWarning(sessionId, cwd) {
     recordDegradation({
       kind: 'agent_registry_stale',
       severity: 'warn',
+      projectRoot: cwd,
       detail: {
         installed_at: data.installed_at,
         session_started: sessionStartMs ? new Date(sessionStartMs).toISOString() : null,

@@ -54,6 +54,26 @@
  *      backfills anything, and `bare_event_key_both_present` when it finds
  *      the leave-alone case, so both outcomes are visible in events.jsonl
  *      rather than only in a return value nobody reads.
+ *   4. `repairArchiveBareEventRows(cwd, opts)` — v2.3.24: the ARCHIVE-scoped
+ *      sibling of (3). Measured 2026-08-10: 974 bare-`event` rows across 223
+ *      archived `.orchestray/history/<run-id>/events.jsonl` files — 21x the
+ *      live log's own count — invisible to every history-reading consumer
+ *      (analytics, ROI aggregation, `history_query_events`) the same way the
+ *      live rows were invisible before v2.3.21. "Frozen history" was a
+ *      defensible scoping decision for the automatic repair (3), but leaves
+ *      the defect present in the majority of its instances — see
+ *      `.orchestray/kb/decisions/v2324-curate-followups.md`. This function
+ *      reuses `normalizeEventsFile` per-file (same conservative rules: both-
+ *      keys rows and malformed lines are never touched) and additionally
+ *      runs `_verifyRepairedFile` on every changed file — an INDEPENDENT
+ *      post-write check (re-classifies the pre-repair backup and asserts
+ *      every non-backfill line is byte-identical, every backfill line
+ *      matches `classifyLine`'s own output, and the row count is unchanged)
+ *      before moving to the next file. Unlike (3): NOT automatic (no
+ *      SessionStart wiring — see the CLI entry `bin/repair-bare-event-archive.js`),
+ *      and NOT high-water-mark cached (archives are, by definition, frozen —
+ *      a file that was clean stays clean; the negligible plumbing cost isn't
+ *      worth carrying across a one-shot maintenance script).
  *
  *      High-water-mark fast path (v2.3.21): a full `normalizeEventsFile`
  *      pass reads and re-writes the ENTIRE file even when nothing changes
@@ -798,6 +818,307 @@ function repairBareEventRows(cwd, opts) {
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Archive repair (v2.3.24) — one-shot, opt-in, NOT wired into any hook.
+// See module header note 4 and bin/repair-bare-event-archive.js (CLI entry).
+// ---------------------------------------------------------------------------
+
+const HISTORY_DIR_REL_PATH = path.join('.orchestray', 'history');
+const ARCHIVE_ENV_DISABLED = 'ORCHESTRAY_BARE_EVENT_ARCHIVE_REPAIR_DISABLED';
+const ARCHIVE_REPORT_DIR_REL_PATH = path.join('.orchestray', 'kb', 'artifacts');
+
+/**
+ * Kill switch for the archive repair — deliberately a SEPARATE flag from
+ * `isRepairDisabled` (the live-log one): disabling the automatic live repair
+ * should not silently disable the one-shot archive maintenance op, and vice
+ * versa. Same fail-open-to-enabled contract.
+ *
+ * @param {string} cwd
+ * @returns {boolean}
+ */
+function isArchiveRepairDisabled(cwd) {
+  if (process.env[ARCHIVE_ENV_DISABLED] === '1') return true;
+  try {
+    const raw = fs.readFileSync(path.join(cwd, '.orchestray', 'config.json'), 'utf8');
+    const cfg = JSON.parse(raw);
+    if (cfg && cfg.bare_event_key_archive_repair && cfg.bare_event_key_archive_repair.enabled === false) {
+      return true;
+    }
+  } catch (_e) { /* fail-open: default-on */ }
+  return false;
+}
+
+/**
+ * Discover every archived events.jsonl under `.orchestray/history/`. The
+ * layout observed across all 223 existing archives is a flat one level deep
+ * — `.orchestray/history/<run-dir>/events.jsonl`, no rotated
+ * `events.N.jsonl` generations inside a run dir — so this is a non-recursive
+ * scan (stdlib only, no glob dependency).
+ *
+ * @param {string} cwd
+ * @returns {string[]} absolute paths, sorted for deterministic report order.
+ */
+function discoverArchiveEventFiles(cwd) {
+  const historyDir = path.join(cwd, HISTORY_DIR_REL_PATH);
+  let entries;
+  try {
+    entries = fs.readdirSync(historyDir, { withFileTypes: true });
+  } catch (_e) {
+    return []; // no history dir — nothing to repair
+  }
+  const found = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const candidate = path.join(historyDir, entry.name, 'events.jsonl');
+    try {
+      if (fs.statSync(candidate).isFile()) found.push(candidate);
+    } catch (_e) { /* no events.jsonl in this run dir — skip */ }
+  }
+  found.sort();
+  return found;
+}
+
+/**
+ * Split file content into JSONL lines the same way normalizeEventsFile does:
+ * a trailing empty string caused by a final `\n` is dropped; a genuinely
+ * non-newline-terminated final line (crash-shape file) is kept as a real row.
+ *
+ * @param {string} text
+ * @returns {string[]}
+ */
+function _splitJsonlLines(text) {
+  if (text.length === 0) return [];
+  const lines = text.split('\n');
+  if (lines.length > 0 && lines[lines.length - 1] === '' && text.endsWith('\n')) {
+    lines.pop();
+  }
+  return lines;
+}
+
+/**
+ * Independent post-write verification for ONE repaired archive file —
+ * deliberately does not trust normalizeEventsFile's own bookkeeping. Re-reads
+ * the backup taken before the rewrite, re-classifies every line with the
+ * same pure `classifyLine` the rewrite used, and asserts:
+ *   - row count is identical between backup and repaired file;
+ *   - every line NOT classified `backfill` is byte-identical to the backup
+ *     (proves malformed/both-keys/unchanged rows were truly left alone);
+ *   - every line classified `backfill` matches `classifyLine`'s own rename
+ *     output exactly.
+ *
+ * This is what lets the caller "verify a sample of repaired files parses and
+ * retains its original row count" — invoked for every changed file, not a
+ * sample, since the marginal cost is small next to the risk (see the
+ * module's Task A header note: this rewrites the majority of the project's
+ * historical audit data).
+ *
+ * @param {string} backupPath
+ * @param {string} repairedPath
+ * @returns {{ ok: true, rows: number } | { ok: false, reason: string, line?: number, expected?: number, actual?: number }}
+ */
+function _verifyRepairedFile(backupPath, repairedPath) {
+  let backupText, repairedText;
+  try {
+    backupText = fs.readFileSync(backupPath, 'utf8');
+    repairedText = fs.readFileSync(repairedPath, 'utf8');
+  } catch (e) {
+    return { ok: false, reason: 'read_failed: ' + (e && e.message ? e.message : e) };
+  }
+
+  const backupLines = _splitJsonlLines(backupText);
+  const repairedLines = _splitJsonlLines(repairedText);
+
+  if (backupLines.length !== repairedLines.length) {
+    return {
+      ok: false,
+      reason: 'row_count_mismatch',
+      expected: backupLines.length,
+      actual: repairedLines.length,
+    };
+  }
+
+  for (let i = 0; i < backupLines.length; i++) {
+    const plan = classifyLine(backupLines[i]);
+    const expectedLine = plan.kind === 'backfill' ? plan.line : backupLines[i];
+    if (repairedLines[i] !== expectedLine) {
+      return { ok: false, reason: 'line_mismatch', line: i + 1 };
+    }
+  }
+
+  return { ok: true, rows: backupLines.length };
+}
+
+/**
+ * Write a per-file markdown report of an archive repair run to
+ * `.orchestray/kb/artifacts/`, matching `bin/kb-refs-sweep.js`'s existing
+ * convention of landing one-shot sweep reports there. Best-effort — a
+ * failed write does not affect the repair itself, only the report's
+ * durability (the caller already has the same data in its return value).
+ *
+ * @param {string} cwd
+ * @param {Array<object>} perFile
+ * @param {object} aggregate
+ * @returns {string|null} project-relative report path, or null on failure
+ */
+function _writeArchiveRepairReport(cwd, perFile, aggregate) {
+  try {
+    const dir = path.join(cwd, ARCHIVE_REPORT_DIR_REL_PATH);
+    fs.mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const relPath = path.join('.orchestray', 'kb', 'artifacts', `bare-event-archive-repair-${stamp}.md`);
+    const absPath = path.join(cwd, relPath);
+
+    const lines = [];
+    lines.push('# Bare-event-key archive repair report');
+    lines.push('');
+    lines.push(`Run at: ${new Date().toISOString()}`);
+    lines.push('');
+    lines.push(`- files scanned: ${aggregate.filesScanned}`);
+    lines.push(`- files changed: ${aggregate.filesChanged}`);
+    lines.push(`- rows repaired: ${aggregate.rowsRepaired}`);
+    lines.push(`- rows malformed (left untouched): ${aggregate.rowsMalformed}`);
+    lines.push(`- rows both-keys (left untouched): ${aggregate.rowsBothKeys}`);
+    lines.push(`- verification failures: ${aggregate.verificationFailures}`);
+    lines.push('');
+    lines.push('| file | existed | changed | backfilled | both_keys | malformed | total_lines | verified |');
+    lines.push('|---|---|---|---|---|---|---|---|');
+    for (const f of perFile) {
+      lines.push(
+        `| ${f.relPath} | ${f.existed} | ${f.changed} | ${f.backfilled} | ${f.bothKeysCount} | ` +
+        `${f.malformedCount} | ${f.totalLines} | ${f.verified === null ? 'n/a' : f.verified} |`
+      );
+    }
+    lines.push('');
+
+    fs.writeFileSync(absPath, lines.join('\n'), 'utf8');
+    return relPath;
+  } catch (_e) {
+    return null; // report is best-effort — never let it fail the repair
+  }
+}
+
+/**
+ * Repair bare-`event`-key rows across every archived
+ * `.orchestray/history/<run-id>/events.jsonl`. One-shot, opt-in — call this
+ * explicitly (CLI: `bin/repair-bare-event-archive.js`); it is never invoked
+ * automatically. Halts on the FIRST verification failure rather than
+ * continuing to mutate further files with a repair pass that has just proven
+ * it disagrees with its own classifier on at least one file — every file
+ * already processed keeps its backup regardless.
+ *
+ * @param {string} cwd
+ * @param {{dryRun?: boolean, chunkBytes?: number}} [opts]
+ * @returns {{
+ *   ran: boolean, disabled: boolean, error: string|null,
+ *   filesScanned: number, filesChanged: number, rowsRepaired: number,
+ *   rowsMalformed: number, rowsBothKeys: number, verificationFailures: number,
+ *   halted: boolean, perFile: Array<object>, reportPath: string|null,
+ * }}
+ */
+function repairArchiveBareEventRows(cwd, opts) {
+  opts = opts || {};
+  const dryRun = !!opts.dryRun;
+
+  const result = {
+    ran: false, disabled: false, error: null,
+    filesScanned: 0, filesChanged: 0, rowsRepaired: 0,
+    rowsMalformed: 0, rowsBothKeys: 0, verificationFailures: 0,
+    halted: false, perFile: [], reportPath: null,
+  };
+
+  if (isArchiveRepairDisabled(cwd)) {
+    result.disabled = true;
+    return result;
+  }
+
+  let files;
+  try {
+    files = discoverArchiveEventFiles(cwd);
+  } catch (e) {
+    result.error = String(e && e.message ? e.message : e);
+    return result;
+  }
+
+  result.filesScanned = files.length;
+
+  for (const filePath of files) {
+    const relPath = path.relative(cwd, filePath);
+    let summary;
+    try {
+      summary = normalizeEventsFile(filePath, { dryRun, chunkBytes: opts.chunkBytes });
+    } catch (e) {
+      result.error = 'normalize failed for ' + relPath + ': ' + (e && e.message ? e.message : e);
+      result.halted = true;
+      break;
+    }
+
+    result.rowsMalformed += summary.malformedCount;
+    result.rowsBothKeys += summary.bothKeysCount;
+
+    const fileRow = {
+      relPath,
+      existed: summary.existed,
+      changed: summary.changed,
+      backfilled: summary.backfilled,
+      bothKeysCount: summary.bothKeysCount,
+      malformedCount: summary.malformedCount,
+      totalLines: summary.totalLines,
+      verified: null,
+    };
+
+    if (summary.changed) {
+      result.filesChanged++;
+      result.rowsRepaired += summary.backfilled;
+
+      if (!dryRun && summary.backupPath) {
+        const verification = _verifyRepairedFile(summary.backupPath, filePath);
+        fileRow.verified = verification.ok;
+        if (!verification.ok) {
+          result.verificationFailures++;
+          result.perFile.push(fileRow);
+          result.error = 'verification failed for ' + relPath + ': ' + JSON.stringify(verification);
+          result.halted = true;
+          break;
+        }
+      }
+    }
+
+    result.perFile.push(fileRow);
+  }
+
+  result.ran = true;
+
+  const aggregate = {
+    filesScanned: result.filesScanned,
+    filesChanged: result.filesChanged,
+    rowsRepaired: result.rowsRepaired,
+    rowsMalformed: result.rowsMalformed,
+    rowsBothKeys: result.rowsBothKeys,
+    verificationFailures: result.verificationFailures,
+  };
+
+  if (!dryRun && result.filesChanged > 0) {
+    result.reportPath = _writeArchiveRepairReport(cwd, result.perFile, aggregate);
+
+    try {
+      writeEvent({
+        version: 1,
+        type: 'bare_event_archive_repaired',
+        files_scanned: result.filesScanned,
+        files_changed: result.filesChanged,
+        rows_repaired: result.rowsRepaired,
+        rows_malformed: result.rowsMalformed,
+        rows_both_keys: result.rowsBothKeys,
+        verification_failures: result.verificationFailures,
+        dry_run: dryRun,
+        report_path: result.reportPath,
+      }, { cwd });
+    } catch (_e) { /* fail-open */ }
+  }
+
+  return result;
+}
+
 module.exports = {
   classifyLine,
   normalizeEventsFile,
@@ -814,6 +1135,14 @@ module.exports = {
   QUIESCENT_IDLE_MS,
   MAX_QUIESCENCE_WAIT_MS,
   MAX_FAST_PATH_DELTA_BYTES,
+  // v2.3.24 archive repair — one-shot, opt-in (see bin/repair-bare-event-archive.js).
+  repairArchiveBareEventRows,
+  isArchiveRepairDisabled,
+  discoverArchiveEventFiles,
+  HISTORY_DIR_REL_PATH,
+  ARCHIVE_ENV_DISABLED,
+  // Exported for direct unit testing.
+  _verifyRepairedFile,
 };
 
 // ---------------------------------------------------------------------------

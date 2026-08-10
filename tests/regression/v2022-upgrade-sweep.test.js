@@ -80,16 +80,21 @@ function writeSentinel(sentinelPath, content) {
 
 /**
  * Create a fake transcript JSONL file so detectSessionStartMs returns a
- * controlled mtime.
+ * controlled value, mirroring the real shape session-detect.js scans:
+ * a few untimestamped preamble lines, then a line carrying `timestamp`.
+ *
+ * mtime is deliberately set hours AFTER sessionStartMs, so any test using
+ * this helper would fail if detection regressed to reading mtime instead of
+ * content — that regression is exactly the v2.3.24 bug this suite guards.
  *
  * Session IDs must match /^[0-9a-f-]{1,36}$/i to pass session-detect.js
  * validation (hex + hyphens, max 36 chars).
  *
- * @param {string} projectDir  Absolute path to the fake project.
- * @param {string} sessionId   Session identifier (hex UUID format).
- * @param {number} mtimeMs     Desired mtime for the transcript file.
+ * @param {string} projectDir     Absolute path to the fake project.
+ * @param {string} sessionId      Session identifier (hex UUID format).
+ * @param {number} sessionStartMs Desired detected session-start time.
  */
-function makeTranscript(projectDir, sessionId, mtimeMs) {
+function makeTranscript(projectDir, sessionId, sessionStartMs) {
   // Encode cwd the same way session-detect.js does:
   //   /home/user/proj  →  -home-user-proj
   const encoded = '-' + projectDir.replace(/^\//, '').replace(/\//g, '-');
@@ -97,9 +102,18 @@ function makeTranscript(projectDir, sessionId, mtimeMs) {
   fs.mkdirSync(transcriptDir, { recursive: true });
   dirsToRemove.push(transcriptDir);
   const transcriptPath = path.join(transcriptDir, sessionId + '.jsonl');
-  fs.writeFileSync(transcriptPath, '{}', 'utf8');
-  const mtimeSec = mtimeMs / 1000;
-  fs.utimesSync(transcriptPath, mtimeSec, mtimeSec);
+  const lines = [
+    JSON.stringify({ type: 'last-prompt', leafUuid: 'x', sessionId }),
+    JSON.stringify({ type: 'agent-setting', agentSetting: 'pm', sessionId }),
+    JSON.stringify({ type: 'mode', mode: 'normal', sessionId }),
+    JSON.stringify({ type: 'permission-mode', permissionMode: 'default', sessionId }),
+    JSON.stringify({ type: 'attachment', timestamp: new Date(sessionStartMs).toISOString(), sessionId }),
+  ];
+  fs.writeFileSync(transcriptPath, lines.join('\n') + '\n', 'utf8');
+  // mtime = well after sessionStartMs (the file keeps being appended to for
+  // the life of a real session) — proves detection reads content, not mtime.
+  const farFutureSec = (sessionStartMs + 6 * 60 * 60 * 1000) / 1000;
+  fs.utimesSync(transcriptPath, farFutureSec, farFutureSec);
 }
 
 /** Build the per-session marker path for a given sessionId. */
@@ -358,6 +372,102 @@ describe('v2.0.22 emitUpgradePendingWarning state machine', () => {
     assert.ok(
       !second.stderr.includes('[orchestray]'),
       'second run must be silent (per-session marker present) — got: ' + second.stderr
+    );
+  });
+
+  // ── v2.3.24 regression: mtime-based detection silently swallowed Case C ──
+
+  test('v2.3.24 regression: long-open session predating install still warns even though transcript mtime is very fresh', () => {
+    const dir = makeProjectDir();
+    const sessionId = 'aaaa-bbbb-cccc-dddd-0007';
+    const sentinelPath = makeSentinelPath();
+
+    // Session truly started 45 minutes ago; the install happened 15 minutes
+    // ago, so the session predates the install (Case C — must warn). Under
+    // the old mtime-based detection, the transcript's mtime tracks the last
+    // append — which for an open session is close to "now" — making
+    // `sessionStartMs >= installedAtMs` spuriously TRUE and routing this
+    // into Case B (silent, no warning). This is the exact bug: an install
+    // performed while a session was open never told the user to restart.
+    const sessionStartMs = Date.now() - 45 * 60 * 1000;
+    const installedAtMs  = Date.now() - 15 * 60 * 1000;
+
+    writeSentinel(sentinelPath, {
+      schema_version: 2,
+      installed_at: new Date(installedAtMs).toISOString(),
+      installed_at_ms: installedAtMs,
+      version: '2.3.24',
+      previous_version: '2.3.23',
+    });
+
+    makeTranscript(dir, sessionId, sessionStartMs);
+    // Overwrite mtime to right now — the append-heavy, actively-open-session
+    // case that broke the old detector (mtime >= installedAtMs).
+    const nowSec = Date.now() / 1000;
+    const encoded = '-' + dir.replace(/^\//, '').replace(/\//g, '-');
+    const transcriptPath = path.join(HOME, '.claude', 'projects', encoded, sessionId + '.jsonl');
+    fs.utimesSync(transcriptPath, nowSec, nowSec);
+
+    try { fs.unlinkSync(markerPath(sessionId)); } catch (_e) {}
+
+    const { stderr } = run(sessionId, dir, sentinelPath);
+
+    assert.ok(
+      stderr.includes('[orchestray]') && stderr.includes('one-time reminder'),
+      'warning must fire despite fresh transcript mtime — got: ' + stderr
+    );
+    assert.ok(
+      fs.existsSync(sentinelPath),
+      'sentinel must survive Case C (only Case B deletes it)'
+    );
+  });
+
+  // ── v2.3.24 leak fix: recordDegradation() must honour the caller's cwd ───
+
+  test('v2.3.24 leak fix: Case C writes the degraded journal under the given projectRoot, not process.cwd()', () => {
+    const dir = makeProjectDir();
+    const sessionId = 'aaaa-bbbb-cccc-dddd-0008';
+    const sentinelPath = makeSentinelPath();
+
+    const repoJournalPath = path.join(path.resolve(__dirname, '..', '..'), '.orchestray', 'state', 'degraded.jsonl');
+    const repoJournalBefore = fs.existsSync(repoJournalPath)
+      ? fs.readFileSync(repoJournalPath, 'utf8')
+      : null;
+
+    const sessionStartMs = Date.now() - 2 * 60 * 60 * 1000;
+    const installedAtMs  = Date.now() - 1 * 60 * 60 * 1000;
+
+    writeSentinel(sentinelPath, {
+      schema_version: 2,
+      installed_at: new Date(installedAtMs).toISOString(),
+      installed_at_ms: installedAtMs,
+      version: '2.3.24',
+      previous_version: '2.3.23',
+    });
+
+    makeTranscript(dir, sessionId, sessionStartMs);
+    try { fs.unlinkSync(markerPath(sessionId)); } catch (_e) {}
+
+    const { stderr } = run(sessionId, dir, sentinelPath);
+    assert.ok(stderr.includes('[orchestray]'), 'sanity: Case C warning must fire — got: ' + stderr);
+
+    // The record must land under the isolated project dir passed as cwd...
+    const isolatedJournalPath = path.join(dir, '.orchestray', 'state', 'degraded.jsonl');
+    assert.ok(fs.existsSync(isolatedJournalPath), 'degraded.jsonl must be written under the given projectRoot');
+    const rows = fs.readFileSync(isolatedJournalPath, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+    assert.ok(
+      rows.some(r => r.kind === 'agent_registry_stale' && r.detail && r.detail.dedup_key === 'agent_registry_stale|' + sessionId),
+      'isolated journal must contain the agent_registry_stale record for this session'
+    );
+
+    // ...and NOT under this repo's real operational journal (the leak).
+    const repoJournalAfter = fs.existsSync(repoJournalPath)
+      ? fs.readFileSync(repoJournalPath, 'utf8')
+      : null;
+    assert.equal(
+      repoJournalAfter,
+      repoJournalBefore,
+      'this repo\'s real degraded.jsonl must be untouched — recordDegradation() leaked to process.cwd()'
     );
   });
 

@@ -314,6 +314,7 @@ function generateSketch(params) {
         kind: 'spec_sketch_parse_failed',
         severity: 'warn',
         detail: { reason: 'diff split failed', agentType, taskId },
+        projectRoot,
       });
       return { sketch: null, fallback: true, budgetExceeded: false };
     }
@@ -442,6 +443,7 @@ function generateSketch(params) {
         kind: 'spec_sketch_parse_failed',
         severity: 'warn',
         detail: { message: err.message, dedup_key: 'sketch-error-' + (params && params.taskId) },
+        projectRoot: params && params.projectRoot,
       });
     } catch (_) {}
     return { sketch: null, fallback: true, budgetExceeded: false };

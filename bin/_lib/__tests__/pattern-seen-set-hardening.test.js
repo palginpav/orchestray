@@ -31,7 +31,7 @@ describe('pattern-seen-set — fail-open on corrupt file', () => {
     fs.writeFileSync(file, 'NOT JSON\n{"orch_id":"o1","slug":"s1","first_agent":"x","body_hash":"abc","ts":"t"}\nAGAIN BAD\n', 'utf8');
 
     // _readRows is exported for tests; expect it to salvage the one valid row.
-    const rows = mod._readRows(file);
+    const rows = mod._readRows(file, root);
     assert.equal(rows.length, 1);
     assert.equal(rows[0].slug, 's1');
     fs.rmSync(root, { recursive: true, force: true });
@@ -75,7 +75,7 @@ describe('pattern-seen-set — oversize truncation', () => {
     assert.ok(beforeStat.size > mod.MAX_FILE_BYTES, 'fixture must exceed cap');
 
     // First read triggers truncation side-effect.
-    const rows = mod._readRows(file);
+    const rows = mod._readRows(file, root);
     assert.deepEqual(rows, []);
 
     // File must now be ≤ ~5 MB (and > 0).

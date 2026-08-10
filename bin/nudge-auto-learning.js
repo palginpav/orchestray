@@ -127,6 +127,12 @@ if (require.main === module) {
       runNudge(projectRoot);
     } catch (err) {
       try {
+        // Best-effort re-resolve: the try above may have thrown before
+        // projectRoot was assigned.
+        let projectRoot;
+        try {
+          projectRoot = process.env.ORCHESTRAY_PROJECT_ROOT || resolveSafeCwd();
+        } catch { /* fall back to journal default */ }
         recordDegradation({
           kind: 'config_load_failed',
           severity: 'warn',
@@ -134,6 +140,7 @@ if (require.main === module) {
             reason: 'nudge_auto_learning_uncaught',
             error: err && err.message ? err.message.slice(0, 80) : 'unknown',
           },
+          projectRoot,
         });
       } catch {}
     }

@@ -1,7 +1,7 @@
 ---
 name: curate-runner
 description: Dispatcher for `/orchestray:learn curate`. Sets up the tombstone run, builds the duplicate-detect shortlist, spawns the curator agent, runs reconciliation and stamp-apply, and reports the final summary. Invoked ONLY by the PM in response to an explicit `/orchestray:learn curate` user command — exists to bridge the PM's curator-spawn lockout (directive D1) without re-opening the auto-trigger hole.
-tools: Read, Glob, Grep, Bash, Write, Edit, Agent(curator), mcp__orchestray__curator_tombstone
+tools: Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__curator_tombstone, Agent(curator)
 model: sonnet
 effort: medium
 memory: project
@@ -173,7 +173,23 @@ Stamp failures are non-fatal — capture
 ### Step 10.5: Close the run (mandatory — mechanical, not curator-agent-dependent)
 
 Call `mcp__orchestray__curator_tombstone` directly — you are granted this tool
-for exactly this step:
+for exactly this step.
+
+**If the tool call fails with "No such tool available"** (observed 2026-08-10; the call
+never reaches the MCP layer, so this is not a server error), fall back to invoking the
+same handler in-process — it is the identical code path the MCP server dispatches to:
+
+```js
+require('<repo>/bin/mcp-server/tools/curator_tombstone.js')
+  .handle({ action: 'close_run', run_id, summary }, { projectRoot });
+```
+
+Then **say so explicitly in your run summary** — a run that closed via the fallback must
+not read as one that closed over MCP. Do not silently substitute. The success signature
+to verify either way: a `curator_run_complete` row carrying this `run_id`, and
+`.orchestray/curator/run.lock` released.
+
+The call shape: 
 
 ```
 mcp__orchestray__curator_tombstone({

@@ -62,9 +62,11 @@ function computeBodyHash(body) {
  * kind so operators can distinguish corruption from growth.
  *
  * @param {string} filePath
+ * @param {string} [projectRoot] - Threaded to degraded-journal so the record lands
+ *   under the caller's project root, not process.cwd() (v2.3.24 Item 3).
  * @returns {Array<{orch_id:string, slug:string, first_agent:string, body_hash:string, ts:string}>}
  */
-function _readRows(filePath) {
+function _readRows(filePath, projectRoot) {
   let stat;
   try {
     stat = fs.statSync(filePath);
@@ -75,6 +77,7 @@ function _readRows(filePath) {
         kind: 'pattern_seen_set_corrupt',
         severity: 'warn',
         detail: { message: String(err.message || err).slice(0, 200), dedup_key: 'stat-' + filePath },
+        projectRoot,
       });
     } catch (_) { /* last resort */ }
     return [];
@@ -90,6 +93,7 @@ function _readRows(filePath) {
           cap_bytes: MAX_FILE_BYTES,
           dedup_key: 'oversize-' + filePath,
         },
+        projectRoot,
       });
     } catch (_) { /* last resort */ }
     // Attempt in-place truncation — best effort; fail-open on write failure.
@@ -108,6 +112,7 @@ function _readRows(filePath) {
         kind: 'pattern_seen_set_recovered',
         severity: 'warn',
         detail: { message: String(err.message || err).slice(0, 200), dedup_key: 'read-' + filePath },
+        projectRoot,
       });
     } catch (_) { /* last resort */ }
     return [];
@@ -130,6 +135,7 @@ function _readRows(filePath) {
         kind: 'pattern_seen_set_recovered',
         severity: 'warn',
         detail: { parse_errors: parseErrors, dedup_key: 'parse-' + filePath },
+        projectRoot,
       });
     } catch (_) { /* last resort */ }
   }
@@ -185,7 +191,7 @@ function recordSeen(orchId, slug, body, agentType, projectRoot) {
     const filePath = _seenSetPath(projectRoot);
 
     // Check if already recorded (idempotent).
-    const existing = _readRows(filePath);
+    const existing = _readRows(filePath, projectRoot);
     for (const row of existing) {
       if (row.orch_id === orchId && row.slug === slug) {
         return { recorded: false };
@@ -221,6 +227,7 @@ function recordSeen(orchId, slug, body, agentType, projectRoot) {
               phase: 'pre-write',
               dedup_key: 'oversize-pre-write-' + filePath,
             },
+            projectRoot,
           });
         } catch (_) { /* ignore */ }
         try { _truncateToTarget(filePath, TRUNCATE_TARGET_BYTES); } catch (_) { /* fail-open */ }
@@ -240,6 +247,7 @@ function recordSeen(orchId, slug, body, agentType, projectRoot) {
       kind: 'pattern_seen_set_write_failed',
       severity: 'warn',
       detail: { message: err.message, slug, orchId, dedup_key: 'write-' + orchId + '-' + slug },
+      projectRoot,
     });
     return { recorded: false };
   }
@@ -256,7 +264,7 @@ function recordSeen(orchId, slug, body, agentType, projectRoot) {
 function isSeenInOrch(orchId, slug, projectRoot) {
   try {
     const filePath = _seenSetPath(projectRoot);
-    const rows = _readRows(filePath);
+    const rows = _readRows(filePath, projectRoot);
     for (const row of rows) {
       if (row.orch_id === orchId && row.slug === slug) {
         return {
@@ -284,7 +292,7 @@ function isSeenInOrch(orchId, slug, projectRoot) {
 function clearForOrch(orchId, projectRoot) {
   try {
     const filePath = _seenSetPath(projectRoot);
-    const rows = _readRows(filePath);
+    const rows = _readRows(filePath, projectRoot);
     const remaining = rows.filter(r => r.orch_id !== orchId);
     if (remaining.length === rows.length) return { cleared: false };
 
