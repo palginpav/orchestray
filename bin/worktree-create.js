@@ -243,6 +243,34 @@ if (!result || result.status !== 0) {
   process.exit(1);
 }
 
+// P2 (v2.3.26 W15): record creation-time baseline so later tooling can
+// detect a worktree that has drifted from the main tree. Cheap and
+// best-effort — two extra git calls against an already-open repo, both
+// swallowed on error so a baseline-recording hiccup never fails creation.
+// Written only on the actual-creation path (not the twin-idempotent reuse
+// exits above) — the worktree didn't change, so there is nothing new to
+// baseline.
+try {
+  const headResult = spawnSync('git', ['-C', projectRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+  const mainStatus = spawnSync('git', ['-C', projectRoot, 'status', '--porcelain'], { encoding: 'utf8' });
+  const uncommittedCount = mainStatus.status === 0
+    ? (mainStatus.stdout || '').split('\n').filter(l => l.trim().length > 0).length
+    : null;
+
+  const metaDir = path.join(projectRoot, '.orchestray', 'state', 'worktree-meta');
+  fs.mkdirSync(metaDir, { recursive: true });
+  const metaPath = path.join(metaDir, agentName + '.json');
+  fs.writeFileSync(metaPath, JSON.stringify({
+    agent_name: agentName,
+    worktree_path: worktreePath,
+    created_at: new Date().toISOString(),
+    main_tree_head_at_creation: headResult.status === 0 ? headResult.stdout.trim() : null,
+    main_tree_uncommitted_count_at_creation: uncommittedCount,
+  }) + '\n', 'utf8');
+} catch (_e) {
+  logStderr(`WARN: could not record creation-time baseline: ${_e && _e.message ? _e.message : _e}`);
+}
+
 // Output worktree path on stdout — Claude Code's worktree contract.
 // Single line, plain text, no JSON wrapping (avoids downstream Orchestray scripts
 // confusing JSON output for a directory prefix in auto-commit-worktree).

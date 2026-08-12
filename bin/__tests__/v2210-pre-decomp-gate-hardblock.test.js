@@ -7,6 +7,13 @@
  * Tests for §22b hard-block promotion in bin/gate-agent-spawn.js.
  *
  * Coverage:
+ * v2.3.26: the §22b hard-block was REMOVED as unreachable — it required
+ * routing.jsonl to be ABSENT, but agents/pm.md mandates writing that file
+ * before every Agent() call, so the block never fired in production. Its
+ * former green status came from the unrelated §22c gate (fixed in W14).
+ * These tests now assert the ADVISORY behaviour that actually ships:
+ * exit 0, stderr still naming the missing tools, event still emitted.
+ *
  *   1. Missing checkpoints (no WARN_ONLY, no PREFETCH_DISABLED) → exit 2, stderr names missing tools, warn event emitted.
  *   2. All 3 checkpoints present → exit 0, no mcp_checkpoint_missing event.
  *   3. ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY=1 + missing checkpoints → exit 2 (kill switch removed in v2.2.11; env var ignored).
@@ -135,7 +142,7 @@ function readEvents(root) {
 
 describe('v2210 M2 — §22b hard-block', () => {
 
-  test('T1: missing checkpoints → exit 2, stderr names missing tools, warn event emitted', () => {
+  test('T1: missing checkpoints → exit 0 (advisory), stderr names missing tools, warn event emitted', () => {
     const root = makeRoot();
     // Write ledger with ONE dummy row so file exists but tools are all absent.
     // (Gate requires file to exist AND rows for orchId > 0 to apply enforcement.)
@@ -157,7 +164,7 @@ describe('v2210 M2 — §22b hard-block', () => {
 
     const { status, stderr } = runGate(root);
 
-    assert.equal(status, 2, 'should exit 2 when checkpoints missing (hard-block mode)');
+    assert.equal(status, 0, 'advisory-only since v2.3.26: allow the spawn, but still warn');
 
     // stderr must name the missing tools
     const missingTools = ['pattern_find', 'kb_search', 'history_find_similar_tasks'];
@@ -188,7 +195,7 @@ describe('v2210 M2 — §22b hard-block', () => {
     assert.equal(missing.length, 0, 'should not emit mcp_checkpoint_missing when tools present');
   });
 
-  test('T3: ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY=1 + missing checkpoints → exit 2 (kill switch removed v2.2.11)', () => {
+  test('T3: ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY=1 + missing checkpoints → exit 0 (advisory; kill switch still ignored)', () => {
     // v2.2.11: ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY is no longer honoured.
     // Setting it must NOT downgrade to advisory — hard-block (exit 2) is the only path.
     const root = makeRoot();
@@ -209,7 +216,7 @@ describe('v2210 M2 — §22b hard-block', () => {
 
     const { status, stderr } = runGate(root, { ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY: '1' });
 
-    assert.equal(status, 2, 'should exit 2 even when ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY=1 (kill switch removed)');
+    assert.equal(status, 0, 'advisory-only since v2.3.26; env var remains ignored');
 
     // stderr must still name the missing tools
     const missingTools = ['pattern_find', 'kb_search', 'history_find_similar_tasks'];

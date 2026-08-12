@@ -7,7 +7,9 @@
  * Layer (c) of the three-layer tool-whitelist enforcement (P2.2 §4): a
  * drift-detector that fails CI on any byte-level mutation of the
  * `agents/haiku-scout.md` `tools:` line OR a reordering that loses the
- * shape `^---\n[...]\ntools: [Read, Glob, Grep]\n[...]^---`.
+ * shape `^---\n[...]\ntools: [Read]\n[...]^---`. Grep and Glob were removed
+ * from the frontmatter allow-list (confirmed unavailable to subagents by
+ * direct invocation) while Glob was kept for read-only recon.
  *
  * Per `feedback_explore_agent_readonly.md`: drift on a read-only role's
  * tool list MUST be observable. Promotion to a wider whitelist requires
@@ -24,7 +26,11 @@ const path = require('node:path');
 
 const SCOUT_PATH = path.resolve(__dirname, '..', '..', 'agents', 'haiku-scout.md');
 const VALIDATE_PATH = path.resolve(__dirname, '..', 'validate-task-completion.js');
-const FROZEN_TOOLS_LINE = 'tools: [Read, Glob, Grep]';
+// v2.3.26: Glob removed too — it is unavailable in this environment for every
+// agent regardless of declaration (verified by invocation). Flow-form `tools: [...]`
+// escaped the earlier flat-form sweeps; see verify.js's own catalogue of read
+// shapes that defeat naive greps.
+const FROZEN_TOOLS_LINE = 'tools: [Read]';
 // F-012 (v2.2.0 fix-pass): the runtime forbidden-list MUST be the strict
 // complement of the frontmatter allow-list. Frontmatter (layer a) +
 // runtime rejection (layer b) + this byte-equality check (layer c) are the
@@ -54,14 +60,14 @@ describe('P2.2 — agent file tools-line byte-equality (drift detector)', () => 
       'in the same commit. See feedback_explore_agent_readonly.md.');
   });
 
-  test('frontmatter shape: tools: [Read, Glob, Grep] inside YAML block', () => {
+  test('frontmatter shape: tools: [Read] inside YAML block', () => {
     const body = fs.readFileSync(SCOUT_PATH, 'utf8');
     // Locate the leading `---` and the next `---` to bound the frontmatter.
     const fmMatch = body.match(/^---\n([\s\S]*?)\n---/);
     assert.ok(fmMatch, 'agents/haiku-scout.md must start with YAML frontmatter');
     const fm = fmMatch[1];
-    assert.match(fm, /\ntools: \[Read, Glob, Grep\]\n/,
-      'frontmatter must contain the literal line `tools: [Read, Glob, Grep]`');
+    assert.match(fm, /\ntools: \[Read\]\n/,
+      'frontmatter must contain the literal line `tools: [Read]`');
   });
 
   // F-012 (v2.2.0 fix-pass): cross-check that the runtime SCOUT_FORBIDDEN_TOOLS

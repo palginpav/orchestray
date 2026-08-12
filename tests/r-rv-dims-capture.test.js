@@ -139,7 +139,7 @@ describe('R-RV-DIMS-CAPTURE (a) — field present when staged', () => {
       const startEv = events.find((e) => e.type === 'agent_start');
       assert.ok(startEv, 'must emit agent_start');
       assert.equal(startEv.agent_type, 'reviewer');
-      assert.equal(startEv.version, 2, 'agent_start v2 schema');
+      assert.equal(startEv.version, 3, 'agent_start v3 schema (v2.3.26 W4 task_id/roster_name bump)');
       assert.deepStrictEqual(
         startEv.review_dimensions,
         ['documentation'],

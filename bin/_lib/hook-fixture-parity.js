@@ -139,7 +139,17 @@ const EVENT_SHAPES = Object.freeze({
   // cross-check in the test suite enforces that pairing both ways.
   TaskCompleted:  { required: [], forbidden: [], types: {}, evidence: { n: 0 } },
   TaskCreated:    { required: [], forbidden: [], types: {}, evidence: { n: 0 } },
-  WorktreeCreate: { required: [], forbidden: [], types: {}, evidence: { n: 0 } },
+  // Derived from the first real capture (v2.3.26). Single sample, so `required` is
+  // held to true discriminators only — `agent_type` + `name` are what distinguish a
+  // WorktreeCreate payload; `prompt_id`/`transcript_path` are present but not asserted
+  // on n=1 evidence. `forbidden` is the tool/message field set no lifecycle event
+  // carries. Precedent for shaping at n=1: SessionEnd and TeammateIdle.
+  WorktreeCreate: {
+    required:  ['session_id', 'cwd', 'agent_type', 'name'],
+    forbidden: ['tool_name', 'tool_input', 'tool_response', 'tool_use_id', 'duration_ms', 'last_assistant_message', 'prompt', 'stop_hook_active'],
+    types:     { agent_type: 'string', name: 'string' },
+    evidence:  { n: 1 },
+  },
   WorktreeRemove: { required: [], forbidden: [], types: {}, evidence: { n: 0 } },
 });
 
@@ -162,6 +172,13 @@ const EVENT_SHAPES = Object.freeze({
  *                           runs have simply never triggered the event.
  */
 const UNCOVERED_ALLOWLIST = Object.freeze([
+  // v2.3.26 (W2/W4): register-agent-spawn.js is a brand-new script this
+  // release. It DOES route stdin through the harvest seam (readHookInputRaw),
+  // so this is event-not-yet-observed, not no-harvest-seam -- expected to
+  // retire organically once real PreToolUse[Agent|Explore|Task] and
+  // SubagentStart spawns are captured during normal use.
+  { script: 'register-agent-spawn',         event: 'PreToolUse',     reason: 'event-not-yet-observed' },
+  { script: 'register-agent-spawn',         event: 'SubagentStart',  reason: 'event-not-yet-observed' },
   { script: 'audit-team-event',             event: 'TaskCreated',    reason: 'no-harvest-seam' },
   { script: 'boot-validate-config',         event: 'SessionStart',   reason: 'no-harvest-seam' },
   { script: 'calibrate-role-budgets',       event: 'SessionStart',   reason: 'no-harvest-seam' },
@@ -170,7 +187,20 @@ const UNCOVERED_ALLOWLIST = Object.freeze([
   { script: 'session-feature-gate',         event: 'SessionStart',   reason: 'no-harvest-seam' },
   { script: 'collect-agent-metrics',        event: 'TaskCompleted',  reason: 'event-not-yet-observed' },
   { script: 'validate-task-completion',     event: 'TaskCompleted',  reason: 'event-not-yet-observed' },
-  { script: 'worktree-create',              event: 'WorktreeCreate', reason: 'event-not-yet-observed' },
+  // worktree-create|WorktreeCreate retired 2026-08-12 (v2.3.26): a real capture landed
+  // during normal use — verified via stdin.hook_event_name === 'WorktreeCreate', the
+  // same field uncoveredPairs() reads. This is the ratchet closing a gap as designed.
+  // Retained, but NOT because no capture is possible — the PM deleted a real one.
+  //
+  // During v2.3.26 W15 a genuine WorktreeRemove capture landed here. The PM inspected it,
+  // checked for `hook_event_name` at the TOP level of the fixture, found none, and
+  // concluded it was synthetic — then deleted it. That check was wrong: every fixture in
+  // this corpus is `{stdin, state}` and the event lives at `stdin.hook_event_name`, which
+  // is exactly where uncoveredPairs() reads it (see below). 0 of 2219 fixtures carry the
+  // field at top level; the probe could not have succeeded for any file.
+  //
+  // The waiver is therefore accurate *today* (no capture exists) but only as a result of
+  // that deletion. It will retire itself the next time a real WorktreeRemove fires.
   { script: 'worktree-remove',              event: 'WorktreeRemove', reason: 'event-not-yet-observed' },
   // emit-schema-redirect-followed|PostToolUse retired 2026-08-08: a real capture
   // landed during normal use, which is how gaps are meant to close.

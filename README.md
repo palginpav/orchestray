@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/orchestray.svg)](https://www.npmjs.com/package/orchestray)
 [![npm downloads](https://img.shields.io/npm/dw/orchestray.svg)](https://www.npmjs.com/package/orchestray)
-[![Socket Badge](https://badge.socket.dev/npm/package/orchestray/2.3.25)](https://socket.dev/npm/package/orchestray)
+[![Socket Badge](https://badge.socket.dev/npm/package/orchestray/2.3.26)](https://socket.dev/npm/package/orchestray)
 [![License](https://img.shields.io/npm/l/orchestray.svg)](https://github.com/palginpav/orchestray/blob/master/LICENSE)
 [![Node](https://img.shields.io/node/v/orchestray.svg)](https://nodejs.org)
 
@@ -78,6 +78,7 @@ That's it. Orchestray scores complexity, decomposes the task, routes agents, run
 | `/orchestray:feature` | Inspect or wake quarantined feature gates |
 | `/orchestray:plugin [status\|list\|approve\|disable\|reload]` | Manage MCP plugins: list discovered plugins, approve/disable one, check lifecycle state |
 | `/orchestray:doctor` | Health probes; `--deep` for install-integrity check |
+| `/orchestray:agents [--all] [N]` | List agents from the lifecycle registry — model, cost (resolved vs. estimated), status, start/stop; read-only, no stop/dismiss/restart |
 
 ### Recovery / debugging
 

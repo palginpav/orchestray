@@ -22,6 +22,9 @@
 const writeAuditEvent = require('./_lib/audit-event-writer');
 const { readCache }   = require('./_lib/context-telemetry-cache');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
+const { readRegistry, matchPendingSpawn, deriveRosterName } = require('./_lib/agent-registry');
+const { loadAgentLifecycleConfig } = require('./_lib/config-schema');
+const { resolveOrchestrationId: peekOrchIdForRegistry } = require('./_lib/audit-event-writer');
 
 // v2.3.1: canonical agent set imported from single source of truth.
 // Previously a literal Set duplicated in three files; consolidated to prevent
@@ -98,6 +101,47 @@ function peekStagedReviewDimensions(cwd) {
   }
 }
 
+/**
+ * W2/W4 (v2.3.26) master kill switch. Fail-open on config error (feature
+ * stays ON — default-on per project convention).
+ *
+ * @param {string} cwd
+ * @returns {boolean}
+ */
+function agentLifecycleDisabled(cwd) {
+  if (process.env.ORCHESTRAY_DISABLE_AGENT_LIFECYCLE === '1') return true;
+  if (process.env.ORCHESTRAY_AGENT_REGISTRY_DISABLED === '1') return true;
+  try {
+    const cfg = loadAgentLifecycleConfig(cwd);
+    if (cfg && cfg.enabled === false) return true;
+  } catch (_e) { /* fail-open */ }
+  return false;
+}
+
+/**
+ * W2/W4 §4.5: peek (never consume — `register-agent-spawn.js start`, which
+ * runs later in the same SubagentStart hook group, is the sole consumer of
+ * the pending `registered` row) the task_id staged at PreToolUse via the
+ * same FIFO 5s-TTL rule the registry fold uses.
+ *
+ * @param {object} payload
+ * @returns {{task_id: string|null, roster_name: string|null}}
+ */
+function peekRegistryFields(payload) {
+  try {
+    const cwd = resolveSafeCwd(payload.cwd);
+    const orchestrationId = peekOrchIdForRegistry(cwd);
+    const { pending } = readRegistry(cwd, { orchestrationId });
+    const matched = matchPendingSpawn(pending, { agentType: payload.agent_type || null, nowMs: Date.now() });
+    return {
+      task_id: matched ? (matched.task_id || null) : null,
+      roster_name: deriveRosterName(payload.agent_id || null),
+    };
+  } catch (_e) {
+    return { task_id: null, roster_name: null };
+  }
+}
+
 writeAuditEvent({
   type: 'agent_start',
   extraFieldsPicker: (payload) => {
@@ -116,6 +160,16 @@ writeAuditEvent({
       const cwd = resolveSafeCwd(payload.cwd);
       const dims = peekStagedReviewDimensions(cwd);
       if (dims !== null) fields.review_dimensions = dims;
+    }
+    // W2/W4 (v2.3.26): additive fields only — version 2 -> 3. Nothing
+    // renamed or removed. Gated on the master kill switch: disabled leaves
+    // the field set identical to pre-change output (version stays 2).
+    const cwdForLifecycle = resolveSafeCwd(payload.cwd);
+    if (!agentLifecycleDisabled(cwdForLifecycle)) {
+      fields.version = 3;
+      const registryFields = peekRegistryFields(payload);
+      fields.task_id = registryFields.task_id;
+      fields.roster_name = registryFields.roster_name;
     }
     return fields;
   },

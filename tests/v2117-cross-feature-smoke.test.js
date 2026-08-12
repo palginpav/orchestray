@@ -358,12 +358,14 @@ describe('v2.1.17 cross-feature — schema shadow integrity', () => {
       'shadow currently lacks archetype_cache_miss due to W10-found header parse bug');
   });
 
-  test('agent_start in shadow advertises v: 2 (R-RV-DIMS-CAPTURE bump)', () => {
+  test('agent_start in shadow advertises v: 3 (R-RV-DIMS-CAPTURE + v2.3.26 W4 task_id/roster_name bump)', () => {
     const parsed = JSON.parse(fs.readFileSync(SHADOW_PATH, 'utf8'));
     assert.ok('agent_start' in parsed, 'shadow must include agent_start');
     // The shadow records {v: <version>, r: <required count>, o: <optional count>}.
-    assert.equal(parsed.agent_start.v, 2,
-      `agent_start.v must be 2 post-R-RV-DIMS-CAPTURE; got ${parsed.agent_start.v}`);
+    // v2.3.26 (W4) bumped agent_start v2 -> v3 with additive task_id/roster_name
+    // fields (see agents/pm-reference/event-schemas.md agent_start changelog).
+    assert.equal(parsed.agent_start.v, 3,
+      `agent_start.v must be 3 post-v2.3.26 W4; got ${parsed.agent_start.v}`);
     // Optional count must be ≥ 1 (review_dimensions is the new optional).
     assert.ok(parsed.agent_start.o >= 1,
       `agent_start.o must reflect at least one optional field; got ${parsed.agent_start.o}`);

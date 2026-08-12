@@ -1189,31 +1189,35 @@ describe('routing.jsonl validation', () => {
     assert.equal(stderr, '');
   });
 
-  test('malformed routing.jsonl — all garbage lines skipped, hook blocks spawn (no entry)', () => {
+  test('malformed routing.jsonl — all garbage lines skipped, auto-seeds and allows (no entry)', () => {
     // Design contract: readRoutingEntries silently skips malformed JSON
     // lines and returns []. findRoutingEntry on [] returns null. The hook
-    // then blocks the spawn with "no routing entry". This is the CORRECT
-    // behavior — a corrupted routing file must not silently permit
-    // unrouted spawns, and must not crash the hook. The outer try/catch
-    // around findRoutingEntry exists to handle unexpected exceptions
-    // (permission errors, etc.) and is NOT exercised by malformed JSON.
+    // must exit cleanly (not crash) on a corrupted routing.jsonl.
     //
-    // Recovery for operators: delete the corrupted routing.jsonl to fall
-    // back to model-validity-only checking (the existence check will
-    // return false and the hook falls through).
+    // D7 (v2.0.16): the miss path is routing_gate.auto_seed_on_miss, which
+    // defaults to true — a missing entry self-heals by synthesizing one and
+    // ALLOWING the spawn (soft-warn), not by hard-blocking. This test
+    // previously asserted exit 2, which happened to pass only because the
+    // §22c post-decomposition gate was independently (and, pre-W14,
+    // unconditionally) blocking every spawn once routing.jsonl existed —
+    // masking what this test actually claimed to verify. W14 scoped §22c to
+    // only fire when a pattern was genuinely offered this orchestration
+    // (none is, here), which removes that masking and surfaces the real
+    // auto-seed-and-allow behavior.
     const dir = makeDir({ withOrch: true });
     const stateDir = path.join(dir, '.orchestray', 'state');
     fs.mkdirSync(stateDir, { recursive: true });
     fs.writeFileSync(path.join(stateDir, 'routing.jsonl'), '{{{garbage content}}}\nnot json at all\n');
 
-    const { status } = run({
+    const { status, stderr } = run({
       tool_name: 'Agent',
       cwd: dir,
       tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Fix auth' },
     });
-    // Hook must exit cleanly (not crash) — and blocks (exit 2, no entry).
+    // Hook must exit cleanly (not crash) — and auto-seed + allow (no entry, default config).
     assert.notEqual(status, null, 'hook must exit cleanly, not crash');
-    assert.equal(status, 2, 'all-garbage routing.jsonl skips every line; findRoutingEntry returns null; hook blocks');
+    assert.equal(status, 0, 'all-garbage routing.jsonl skips every line; findRoutingEntry returns null; auto_seed_on_miss default allows the spawn');
+    assert.match(stderr, /auto-seed/, 'stderr must explain the auto-seed self-heal');
   });
 
 });
@@ -1308,7 +1312,7 @@ describe('2013-W3: mcp_checkpoint_missing event emission', () => {
 
     // v2.2.10 M2: hard-block is now the default when routing.jsonl is absent.
     // Obsoleted: prior test expected exit 0 (warn-only default from v2.0.23).
-    assert.equal(status, 2, 'W3-T1: hard-block — gate must exit 2 on genuine absence (M2 v2.2.10)');
+    assert.equal(status, 0, 'W3-T1: advisory since v2.3.26 — allow spawn; the event below is the real assertion');
 
     // Event must be written (for observability; warn_mode: false in hard-block mode)
     const events = readEvents(dir);
@@ -1495,6 +1499,35 @@ describe('v2023-W3: §22b warn-mode — once-per-orchestration advisory', () => 
     );
   }
 
+  /**
+   * W14: write a pattern-offers.jsonl row so the §22c gate's offered-pattern
+   * guard sees "something was offered this orchestration" — required for the
+   * gate to enforce anything at all. Tests that exercise the genuine
+   * blocking path (a pattern was offered, no skip reason recorded) must call
+   * this; tests that exercise the vacuous/empty-corpus case must NOT.
+   */
+  function writePatternOfferRow(dir, orchId) {
+    const stateDir = path.join(dir, '.orchestray', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const offersPath = path.join(stateDir, 'pattern-offers.jsonl');
+    const existing = fs.existsSync(offersPath) ? fs.readFileSync(offersPath, 'utf8') : '';
+    fs.writeFileSync(
+      offersPath,
+      existing + JSON.stringify({
+        timestamp: new Date().toISOString(),
+        orchestration_id: orchId,
+        session_id: 's1',
+        agent_name: 'developer',
+        spawn_id: 'tu-test',
+        agent_role: 'developer',
+        task_id: 'task-1',
+        offers: [{ slug: 'test-pattern', offer_kind: 'curated' }],
+        shape_detected: 'curated',
+        unresolved_slugs: [],
+      }) + '\n'
+    );
+  }
+
   test('22b-T1: gate miss emits advisory and exits 0 (spawn allowed)', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-22b-t1-'));
     cleanup.push(dir);
@@ -1618,7 +1651,11 @@ describe('v2023-W3: §22b warn-mode — once-per-orchestration advisory', () => 
     assert.match(second.stderr, /v2\.0\.23/, '22b-T3: second orch must emit its own advisory');
   });
 
-  test('22b-T5: §22b hard-blocks first spawn when checkpoints missing; §22c hard-blocks post-routing spawn', () => {
+  // v2.3.26: §22b no longer hard-blocks (its block was unreachable — see
+  // bin/gate-agent-spawn.js). §22c still blocks, but now only when a pattern was
+  // actually offered (W14). This test still earns its place: it proves §22b's
+  // advisory fires exactly once and §22c's carve-out ordering is intact.
+  test('22b-T5: §22b advises on first spawn when checkpoints missing; §22c carve-out then activates', () => {
     // v2.2.11: ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY removed — §22b always hard-blocks.
     // Setup: pattern_record_application: 'hook-strict' (matches DEFAULT_MCP_ENFORCEMENT).
     // First spawn: routing.jsonl absent → §22c first-spawn carve-out skips §22c.
@@ -1676,7 +1713,7 @@ describe('v2023-W3: §22b warn-mode — once-per-orchestration advisory', () => 
       tool_input: { subagent_type: 'developer', model: 'sonnet', description: 'Decompose task' },
     });
 
-    assert.equal(first.status, 2, '22b-T5: first spawn must be hard-blocked by §22b (exit 2) — warn-only kill switch removed');
+    assert.equal(first.status, 0, '22b-T5: §22b is advisory since v2.3.26 — spawn allowed; the advisory and the single event below are the real assertions');
     assert.match(first.stderr, /BLOCKED|kb_search|missing/,
       '22b-T5: §22b block message must appear in stderr naming missing tools');
 
@@ -1725,6 +1762,8 @@ describe('v2023-W3: §22b warn-mode — once-per-orchestration advisory', () => 
 
     // Simulate PM decomposing: write routing.jsonl → §22c activates on next spawn
     writeRoutingFile22b(dir, orchId);
+    // W14: §22c only enforces when a pattern was actually offered this orch.
+    writePatternOfferRow(dir, orchId);
 
     // ── Second spawn ─────────────────────────────────────────────────────────
     // §22b is satisfied now; pattern_record_application NOT called → §22c must hard-block
@@ -1752,6 +1791,8 @@ describe('v2023-W3: §22b warn-mode — once-per-orchestration advisory', () => 
     writeOrch(dir, orchId);
     writeEnforceAllConfig(dir);
     writeRoutingFile22b(dir, orchId);
+    // W14: §22c only enforces when a pattern was actually offered this orch.
+    writePatternOfferRow(dir, orchId);
 
     const stateDir = path.join(dir, '.orchestray', 'state');
     fs.mkdirSync(stateDir, { recursive: true });
@@ -1822,6 +1863,8 @@ describe('v2023-W3: §22b warn-mode — once-per-orchestration advisory', () => 
     const orchId = 'orch-22c-gatemode2';
     writeOrch(dir, orchId);
     writeRoutingFile22b(dir, orchId);
+    // W14: §22c only enforces when a pattern was actually offered this orch.
+    writePatternOfferRow(dir, orchId);
 
     const orchDir = path.join(dir, '.orchestray');
     fs.mkdirSync(orchDir, { recursive: true });

@@ -4,7 +4,7 @@ description: Systematic code transformation specialist -- restructures existing 
   improved quality, performance, and maintainability without changing external behavior.
   Use when a task involves refactoring, restructuring, extracting modules, renaming across
   codebase, reducing duplication, or migrating patterns. Does NOT add new features.
-tools: Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__schema_get
+tools: Read, Bash, Write, Edit, mcp__orchestray__schema_get
 model: inherit
 effort: medium
 memory: project

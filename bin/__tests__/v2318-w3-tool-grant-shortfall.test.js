@@ -52,15 +52,35 @@ function writeAgentDef(dir, role, tools) {
   );
 }
 
-function runHookSync(payload, cwd) {
+function runHookSync(payload, cwd, extraEnv) {
   const r = cp.spawnSync(NODE, [HOOK_PATH], {
     input: JSON.stringify(payload),
     cwd,
     encoding: 'utf8',
     timeout: 10000,
-    env: Object.assign({}, process.env),
+    env: Object.assign({}, process.env, extraEnv || {}),
   });
   return { status: r.status, stdout: r.stdout, stderr: r.stderr };
+}
+
+/** Encode a project root the way Claude Code names its cache dir. */
+function encodeProject(root) {
+  return root.replace(/^\//, '').replace(/\//g, '-');
+}
+
+/**
+ * Write a spawn-metadata sidecar exactly as Claude Code does, mirroring the
+ * fixture helper in tests/gate-agent-spawn.test.js (same sidecar shape).
+ */
+function writeMeta(home, cwd, { rosterName, customAgentType, sessionId }) {
+  const subDir = path.join(
+    home, '.claude', 'projects', '-' + encodeProject(cwd), sessionId, 'subagents'
+  );
+  fs.mkdirSync(subDir, { recursive: true });
+  const file = path.join(subDir, 'agent-a' + rosterName + '-c528d894081a8347.meta.json');
+  fs.writeFileSync(file, JSON.stringify({
+    agentType: rosterName, name: rosterName, customAgentType,
+  }));
 }
 
 describe('tool_grant_shortfall detection', () => {
@@ -90,6 +110,66 @@ describe('tool_grant_shortfall detection', () => {
     assert.equal(events[0].agent_role, 'platform-oracle');
     assert.deepEqual(events[0].declared_but_unused, ['WebFetch']);
     assert.equal(events[0].substituted_via, 'bash_curl');
+    // W12: Bash+curl substitution is positive evidence of a real capability
+    // gap, not just idle non-use.
+    assert.equal(events[0].confidence, 'workaround_observed');
+    // W12: no spawn-metadata sidecar exists in this fixture, so identity
+    // came from the roster-name fallback, not the runtime-authoritative one
+    // — and the event must say so rather than presenting both as equal.
+    assert.equal(events[0].agent_role_source, 'roster_fallback');
+  });
+
+  test('declared WebFetch unused with no substitution evidence → ambiguous_unused, not implied certainty', () => {
+    writeAgentDef(dir, 'platform-oracle', ['Read', 'Bash', 'WebFetch']);
+    const transcriptPath = writeTranscript(dir, 'transcript.jsonl', [
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: '/foo' } }] } },
+    ]);
+    const payload = {
+      hook_event_name: 'SubagentStop',
+      subagent_type: 'platform-oracle',
+      agent_id: 'agent-ambiguous',
+      cwd: dir,
+      agent_transcript_path: transcriptPath,
+    };
+    const { status } = runHookSync(payload, dir);
+    assert.equal(status, 0);
+    const events = readEvents(dir).filter(e => e.type === 'tool_grant_shortfall');
+    assert.equal(events.length, 1);
+    assert.equal(events[0].substituted_via, null);
+    // W12: without a curl substitution, the transcript genuinely cannot
+    // distinguish "didn't need it" from "couldn't have it" — the event
+    // must say so explicitly rather than reporting a bare shortfall.
+    assert.equal(events[0].confidence, 'ambiguous_unused');
+  });
+
+  test('spawn-metadata sidecar present → agent_role_source is sidecar (authoritative), not roster_fallback', () => {
+    writeAgentDef(dir, 'platform-oracle', ['Read', 'Bash', 'WebFetch']);
+    const transcriptPath = writeTranscript(dir, 'transcript.jsonl', [
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'curl https://x' } }] } },
+    ]);
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'v2318-w3-home-'));
+    const sessionId = 'sess-w12-sidecar';
+    // Roster name deliberately differs from the real role — only the
+    // sidecar's customAgentType should be trusted for identity.
+    writeMeta(home, dir, { rosterName: 'oracle-v2318', customAgentType: 'platform-oracle', sessionId });
+    const payload = {
+      hook_event_name: 'SubagentStop',
+      subagent_type: 'oracle-v2318',
+      session_id: sessionId,
+      agent_id: 'agent-sidecar',
+      cwd: dir,
+      agent_transcript_path: transcriptPath,
+    };
+    try {
+      const { status } = runHookSync(payload, dir, { HOME: home });
+      assert.equal(status, 0);
+      const events = readEvents(dir).filter(e => e.type === 'tool_grant_shortfall');
+      assert.equal(events.length, 1);
+      assert.equal(events[0].agent_role, 'platform-oracle');
+      assert.equal(events[0].agent_role_source, 'sidecar');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test('declared WebFetch WAS used → no shortfall event', () => {

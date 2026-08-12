@@ -6,7 +6,7 @@ description: Surveys existing external approaches to a stated goal under stated 
   inventing. Does NOT write implementation code, does NOT produce design docs with interface
   contracts, does NOT search the project codebase as a primary activity. Output is a ranked
   comparison table with sources, fit-scores, and a next-agent recommendation.
-tools: Read, Glob, Grep, Bash, Write, WebFetch, WebSearch, mcp__orchestray__pattern_find, mcp__orchestray__kb_search, mcp__orchestray__ask_user
+tools: Read, Bash, Write, WebFetch, WebSearch, mcp__orchestray__pattern_find, mcp__orchestray__kb_search, mcp__orchestray__ask_user
 model: inherit
 effort: medium
 memory: project

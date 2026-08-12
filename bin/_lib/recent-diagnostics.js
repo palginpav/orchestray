@@ -101,8 +101,15 @@ const RECENT_WINDOW_HOURS_DEFAULT = 24;
 const TAIL_CAP_BYTES_DEFAULT = 512 * 1024; // 512 KiB — see header for sizing rationale
 
 const TIER1_SUFFIXES = ['_blocked', '_failed'];
-const TIER2_SUFFIXES = ['_missing', '_orphaned', '_violation'];
-const TIER3_SUFFIXES = ['_gap', '_stale', '_drift', '_detected', '_warn'];
+// v2.3.26 W15: `_unmerged` added so `worktree_changes_unmerged` surfaces. Tier 2
+// (not 3) because it names work that exists only in a worktree — actionable now,
+// and unrecoverable if the worktree is later removed.
+const TIER2_SUFFIXES = ['_missing', '_orphaned', '_violation', '_unmerged'];
+// v2.3.26 W11: `_shortfall` added so `tool_grant_shortfall` — which fired 10
+// times and was never surfaced anywhere a human looks (see
+// bin/detect-tool-grant-shortfall.js) — rides this existing, already-tested
+// pipeline instead of a fourth competing SessionStart/doctor advisory.
+const TIER3_SUFFIXES = ['_gap', '_stale', '_drift', '_detected', '_warn', '_shortfall'];
 const DIAGNOSTIC_SUFFIXES = TIER1_SUFFIXES.concat(TIER2_SUFFIXES, TIER3_SUFFIXES);
 
 /** @param {string} type @returns {boolean} */

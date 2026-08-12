@@ -54,6 +54,39 @@ function _isAgentTeamsEnabled(cwd) {
 // reassignment check and let the teammate stop cleanly. Per T13 audit I7.
 const MAX_SIZE = 1_048_576;
 
+// Pending-task detection (v2.3.26 W5). The `- [ ]` / `status: pending` forms
+// below are the H2-spec format documented in phase-decomp.md's "Task Graph
+// Format" -- kept for forward compatibility, but 0 of 88 historical
+// task-graph.md files under .orchestray/history/ actually use it. Real
+// generated graphs use a markdown table (W/Task ID column), an H2-H4 heading
+// per task (`### T1 —`, `## Task 1:`), or a bold task-id bullet
+// (`- **T1** owner: ...`). These three patterns together cover 87/88 (98.9%)
+// of the historical corpus; the one residual miss is an ASCII tree-diagram
+// format inside a fenced code block with no ID-shaped line start.
+const CHECKBOX_UNCHECKED_RE = /^\s*-\s*\[ \]/m;
+const STATUS_PENDING_RE = /^status:\s*(pending|not started)/mi;
+const TABLE_ROW_RE = /^\s*\|\s*([A-Za-z][A-Za-z0-9_.-]{0,8})\s*\|/m;
+const TABLE_SEP_RE = /^\s*\|[\s:-]*-[\s:|-]*\|/m;
+const HEADING_TASKID_RE = /^#{2,4}\s+(Task\s+\d+|[A-Z]{1,4}-?\d+)\b/mi;
+const BOLD_TASKID_RE = /\*\*([A-Z]{1,4}-?\d+)\b/m;
+const BARE_TASKID_LINE_RE = /^[│├└─\s]*([A-Z]{1,4}\d+[a-z]?)\s*[(→]/m;
+
+/**
+ * Does `taskGraphText` show evidence of pending (not-yet-complete) work?
+ * Checks the documented legacy forms first, then the real generated-table/
+ * heading/bold-bullet forms. A task-graph with no recognizable task marker
+ * at all (e.g. absent, empty, or only completion prose) reports no pending
+ * work -- see the module doc comment above for measured coverage.
+ */
+function _hasPendingTasks(taskGraphText) {
+  return CHECKBOX_UNCHECKED_RE.test(taskGraphText) ||
+    STATUS_PENDING_RE.test(taskGraphText) ||
+    (TABLE_ROW_RE.test(taskGraphText) && TABLE_SEP_RE.test(taskGraphText)) ||
+    HEADING_TASKID_RE.test(taskGraphText) ||
+    BOLD_TASKID_RE.test(taskGraphText) ||
+    BARE_TASKID_LINE_RE.test(taskGraphText);
+}
+
 let input = '';
 input = readHookInputRaw();
 if (input.length > MAX_INPUT_BYTES) {
@@ -122,15 +155,7 @@ setImmediate(() => {
         process.exit(0);
       }
       const taskGraph = fs.readFileSync(taskGraphPath, 'utf8');
-      // Require line-leading matches so stray checkbox-shaped markdown inside
-      // descriptions or code blocks cannot wedge the team forever.
-      const hasPendingTasks = taskGraph.split('\n').some(line => {
-        const trimmed = line.trimStart();
-        return trimmed.startsWith('- [ ]') ||
-          /^status:\s*(pending|not started)/i.test(trimmed);
-      });
-
-      if (hasPendingTasks) {
+      if (_hasPendingTasks(taskGraph)) {
         process.stdout.write(JSON.stringify({ continue: false }));
         process.stderr.write(
           'Unassigned tasks remain in the orchestration. ' +
@@ -151,4 +176,4 @@ setImmediate(() => {
 });
 
 // Export for tests.
-module.exports = { _isAgentTeamsEnabled };
+module.exports = { _isAgentTeamsEnabled, _hasPendingTasks };

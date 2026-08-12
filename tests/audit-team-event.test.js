@@ -8,7 +8,7 @@
  * Must ALWAYS exit 0 and write { continue: true }.
  */
 
-const { test, describe } = require('node:test');
+const { test, describe, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
@@ -17,12 +17,25 @@ const os = require('node:os');
 
 const SCRIPT = path.resolve(__dirname, '../bin/audit-team-event.js');
 
-function run(stdinData) {
-  const result = spawnSync(process.execPath, [SCRIPT], {
+// Every test below passes `cwd` inside the JSON stdin payload, which the
+// script uses directly -- except the one test (below) that deliberately
+// omits it to exercise the process.cwd() fallback. Without an explicit
+// spawnSync `cwd`, that fallback resolves to THIS test file's own cwd
+// (the real repo root under `node --test`), silently writing fixture rows
+// into the real .orchestray/audit/events.jsonl. Defaulting every spawned
+// child's OS-level cwd to an isolated temp dir closes that leak for the
+// one test that hits it today and for any future test that forgets to set
+// `cwd` in its payload.
+const DEFAULT_RUN_CWD = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestray-audit-team-run-cwd-'));
+after(() => { try { fs.rmSync(DEFAULT_RUN_CWD, { recursive: true, force: true }); } catch (_e) {} });
+
+function run(stdinData, opts) {
+  const result = spawnSync(process.execPath, [SCRIPT], Object.assign({
     input: stdinData,
     encoding: 'utf8',
     timeout: 5000,
-  });
+    cwd: DEFAULT_RUN_CWD,
+  }, opts));
   return {
     stdout: result.stdout || '',
     stderr: result.stderr || '',
@@ -519,13 +532,26 @@ describe('cwd field handling', () => {
   });
 
   test('falls back to process.cwd() when cwd is not in event', () => {
+    // Own isolated dir (not DEFAULT_RUN_CWD) so this test can assert the
+    // fallback write actually landed here, proving isolation rather than
+    // just hoping for it.
+    const fallbackCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestray-audit-team-fallback-'));
     const input = JSON.stringify({
       task_id: 'task-no-cwd',
       task_subject: 'No cwd field',
     });
-    const { stdout, status } = run(input);
-    assert.equal(status, 0);
-    assert.equal(parseOutput(stdout).continue, true);
+    try {
+      const { stdout, status } = run(input, { cwd: fallbackCwd });
+      assert.equal(status, 0);
+      assert.equal(parseOutput(stdout).continue, true);
+
+      const events = readEventsJsonl(path.join(fallbackCwd, '.orchestray', 'audit'));
+      assert.equal(events.length, 1,
+        'process.cwd() fallback should write under the spawned process cwd, not the real repo');
+      assert.equal(events[0].task_id, 'task-no-cwd');
+    } finally {
+      fs.rmSync(fallbackCwd, { recursive: true });
+    }
   });
 
 });

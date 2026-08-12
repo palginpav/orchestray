@@ -9,7 +9,7 @@ description: |
 model: haiku
 effort: low
 maxTurns: 5
-tools: [Read, Glob, Grep]
+tools: [Read]
 memory: project
 color: cyan
 ---

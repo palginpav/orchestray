@@ -3,7 +3,7 @@ name: documenter
 description: Creates and maintains project documentation. Writes READMEs, API
   references, inline documentation, changelogs, and architectural decision records.
   Reads code and design docs to produce clear documentation for different audiences.
-tools: Read, Glob, Grep, Bash, Write, Edit
+tools: Read, Bash, Write, Edit
 model: inherit
 effort: low
 memory: project

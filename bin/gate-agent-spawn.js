@@ -30,7 +30,10 @@ const path = require('path');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { getRoutingFilePath, findRoutingEntry, readRoutingEntries } = require('./_lib/routing-lookup');
-const { loadMcpEnforcement, loadRoutingGateConfig, loadAntiPatternGateConfig, loadPatternDecayConfig } = require('./_lib/config-schema');
+const {
+  loadMcpEnforcement, loadRoutingGateConfig, loadAntiPatternGateConfig, loadPatternDecayConfig,
+  VALID_PATTERN_EVIDENCE_GATE_MODES: VALID_PATTERN_EVIDENCE_GATE_MODES_ARR,
+} = require('./_lib/config-schema');
 const {
   REQUIRED_PRE_DECOMPOSITION_TOOLS,
   getCheckpointFilePath,
@@ -44,6 +47,8 @@ const { readCache: readCustomAgentsCache } = require('./_lib/custom-agents');
 const { CANONICAL_AGENTS } = require('./_lib/canonical-agents');
 const { readHookInputRaw } = require('./_lib/hook-stdin');
 const { stripCollisionSuffix, resolveCallerAgentTypeFromMeta } = require('./_lib/caller-identity');
+const { readOffersForOrch } = require('./_lib/pattern-evidence-ledger');
+const { extractSpawnTaskId } = require('./_lib/spawn-task-id');
 
 const VALID_TIERS = ['fable', 'haiku', 'sonnet', 'opus'];
 
@@ -52,16 +57,21 @@ function isValidModel(model) {
   return VALID_TIERS.some(tier => m.includes(tier));
 }
 
-const VALID_PATTERN_EVIDENCE_GATE_MODES = new Set(['hook', 'hook-warn', 'hook-strict', 'prompt', 'allow']);
+// W14: single source of truth is _lib/config-schema.js's
+// VALID_PATTERN_EVIDENCE_GATE_MODES (also used by loadPatternEvidenceConfig
+// there) — imported above and re-wrapped as a Set for O(1) lookup here.
+const VALID_PATTERN_EVIDENCE_GATE_MODES = new Set(VALID_PATTERN_EVIDENCE_GATE_MODES_ARR);
 
 /**
- * Resolve the §22c second-spawn gate's enforcement mode.
+ * Resolve the §22c post-decomposition gate's enforcement mode.
  *
  * Canonical key: `pattern_evidence.gate_mode` — kept out of the
  * `mcp_enforcement.<tool>` namespace on purpose, since `pattern_record_application`
  * and `pattern_record_skip_reason` are both real MCP tool names there ("how is a
  * call to THIS tool enforced") and already carry independent meaning in shipped
- * configs. See .orchestray/kb/decisions/mcp-enforcement-rename-seam.md.
+ * configs. See .orchestray/kb/decisions/mcp-enforcement-rename-seam.md. Declared
+ * (with default and allowed-values validation) in _lib/config-schema.js
+ * loadPatternEvidenceConfig() and documented in CONFIG.md.
  *
  * Falls back to `mcp_enforcement.pattern_record_application` (already merged with
  * defaults in `mcpEnforcement`) when `gate_mode` is unset, so configs written
@@ -674,11 +684,10 @@ if (require.main === module) {
       // Stage 1: routing.jsonl lookup
       // -----------------------------------------------------------------------
       try {
-        let spawnTaskIdForResolve = toolInput.task_id || null;
-        if (!spawnTaskIdForResolve && typeof descRawForResolve === 'string') {
-          const hintMatch = descRawForResolve.match(/^([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)\s/);
-          if (hintMatch) spawnTaskIdForResolve = hintMatch[1];
-        }
+        // W4 (v2.3.26): shared extractor — was a duplicated inline heuristic,
+        // now the single implementation in bin/_lib/spawn-task-id.js so this
+        // and the Stage-2 extraction below cannot drift.
+        const spawnTaskIdForResolve = extractSpawnTaskId(toolInput);
         const routingFileForResolve = getRoutingFilePath(cwd);
         if (fs.existsSync(routingFileForResolve)) {
           const allEntriesForResolve = readRoutingEntries(cwd);
@@ -919,11 +928,8 @@ if (require.main === module) {
         // token of the description when it matches our convention `TASK-ID <rest>`
         // (e.g., "DEV-1 ...", "A1 ...", "T3 ..."). This mirrors how the PM writes
         // task_id in routing.jsonl.
-        let spawnTaskId = toolInput.task_id || null;
-        if (!spawnTaskId && typeof descRaw === 'string') {
-          const m = descRaw.match(/^([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)\s/);
-          if (m) spawnTaskId = m[1];
-        }
+        // W4 (v2.3.26): shared extractor — see Stage-1 note above.
+        const spawnTaskId = extractSpawnTaskId(toolInput);
 
         let entry = null;
         let matchedViaTaskId = false;
@@ -1114,12 +1120,24 @@ if (require.main === module) {
         // where the operator changed the agent's model after decomposition.
         // R-DX1: use effectiveModel (which reflects any auto-resolved value).
         const modelNormalized = VALID_TIERS.find(tier => effectiveModel.toLowerCase().includes(tier));
-        if (modelNormalized !== entry.model) {
+        // v2.3.26: normalize BOTH sides. Previously only the called model was
+        // reduced to a tier while entry.model was compared raw, so a routing
+        // row recording a full model ID ('claude-sonnet-5') never matched the
+        // tier ('sonnet') and hard-blocked every spawn — while printing both
+        // values identically in the error, making it undebuggable. Full model
+        // IDs are a documented, recommended form (CLAUDE.md advises pinning
+        // 'claude-opus-5'), so this blocked operators following our own guidance.
+        const entryModelNormalized = typeof entry.model === 'string'
+          ? (VALID_TIERS.find(tier => entry.model.toLowerCase().includes(tier)) || entry.model)
+          : entry.model;
+        if (modelNormalized !== entryModelNormalized) {
           process.stderr.write(
             '[orchestray] model routing mismatch: routing.jsonl says ' + entry.model +
+            ' (tier: ' + entryModelNormalized + ')' +
             ' for task ' + (entry.task_id || '(unknown)') +
             (matchedViaTaskId ? ' (matched via task_id)' : '') +
-            ' but Agent() was called with model=' + effectiveModel + '. ' +
+            ' but Agent() was called with model=' + effectiveModel +
+            ' (tier: ' + modelNormalized + '). ' +
             'The PM must pass the model recorded at decomposition time. ' +
             'Re-read routing.jsonl.\n'
           );
@@ -1209,12 +1227,25 @@ if (require.main === module) {
                   );
 
                   // v2.2.11: ORCHESTRAY_PRE_DECOMP_GATE_WARN_ONLY kill switch removed.
-                  // Hard-block (exit 2) is the only path when MCP pre-decomp checkpoints
-                  // are missing and routing.jsonl is absent (first-spawn / pre-decomp window).
-                  // ORCHESTRAY_MCP_PREFETCH_DISABLED=1 still downgrades to advisory-only.
-                  // Implicit warn-mode: when routing.jsonl already exists, the orchestration
-                  // is underway — hard-blocking mid-flight spawns would be disruptive, so
-                  // we fall back to advisory-only (preserves backward compatibility with §22b).
+                  // v2.3.26: this gate is ADVISORY-ONLY. The former hard-block path was
+                  // unreachable in production and has been removed.
+                  //
+                  // Why it could never fire: the block required `routing.jsonl` to be
+                  // ABSENT, but agents/pm.md §"Before Spawning: Write routing.jsonl First
+                  // (REQUIRED)" mandates writing that file before every Agent() call, and
+                  // the file is append-only across orchestrations. So routingFileExists was
+                  // always true, useWarnMode was always true, and the block was dead code.
+                  //
+                  // It went unnoticed because its test passed for an unrelated reason: the
+                  // §22c pattern-evidence gate was hard-blocking unconditionally on an empty
+                  // pattern corpus (fixed in W14). Two bugs cancelled out; fixing one exposed
+                  // the other. Enforcement that cannot fire is not enforcement — keeping it
+                  // would be the same "documented as working, silently isn't" defect this
+                  // release removed elsewhere. Telemetry (mcp_checkpoint_missing) is
+                  // unaffected and still carries warn_mode for analysis.
+                  // useWarnMode is still COMPUTED — it distinguishes a pre-decomposition
+                  // spawn from a mid-flight one and that distinction is genuinely useful in
+                  // the mcp_checkpoint_missing event. Only the block it used to gate is gone.
                   const prefetchDisabled = process.env.ORCHESTRAY_MCP_PREFETCH_DISABLED === '1';
                   const routingFileExists = fs.existsSync(routingFile);
                   const useWarnMode = prefetchDisabled || routingFileExists;
@@ -1241,14 +1272,16 @@ if (require.main === module) {
                         "This notice will not repeat for this orchestration.\n"
                       );
                     } else {
-                      // Hard-block mode: emit stderr naming missing tools.
+                      // Pre-decomposition window. Advisory since v2.3.26 — the wording no
+                      // longer claims to have blocked anything, because it does not.
                       process.stderr.write(
-                        "[orchestray v2.2.10] BLOCKED: pre-decomposition MCP checkpoints missing " +
+                        "[orchestray v2.3.26] info: pre-decomposition MCP checkpoints missing " +
                         "for orchestration " + orchId + ". " +
                         "Missing tools: " + missing.join(', ') + ". " +
                         "Call mcp__orchestray__pattern_find, mcp__orchestray__kb_search, and " +
                         "mcp__orchestray__history_find_similar_tasks before spawning agents. " +
-                        "To override: set ORCHESTRAY_MCP_PREFETCH_DISABLED=1.\n"
+                        "Spawn allowed (advisory-only). " +
+                        "This notice will not repeat for this orchestration.\n"
                       );
                     }
                     // Write sentinel so subsequent spawns in the same orch don't re-warn/re-block.
@@ -1280,16 +1313,23 @@ if (require.main === module) {
                       );
                     }
 
-                    // Hard-block: exit 2 to deny spawn, but ONLY in the pre-decomposition
-                    // window (routing.jsonl absent) and only when not in warn mode.
-                    if (!useWarnMode && phaseMismatchTools.length === 0) {
-                      process.stdout.write(JSON.stringify({
-                        type: 'block',
-                        message: '[orchestray] Pre-decomposition MCP checkpoints missing (' +
-                          missing.join(', ') + '). Call the required tools before spawning agents.',
-                      }) + '\n');
-                      process.exit(2);
-                    }
+                    // v2.3.26: the exit-2 hard-block that stood here has been REMOVED.
+                    // Its guard was `!useWarnMode`, i.e. it required routing.jsonl to be
+                    // ABSENT — but agents/pm.md §"Before Spawning: Write routing.jsonl
+                    // First (REQUIRED)" mandates writing that file before every Agent()
+                    // call, and the file is append-only across orchestrations. So the
+                    // branch was unreachable in production and had never fired.
+                    //
+                    // It looked healthy because its test asserted exit 2 and got it — from
+                    // the UNRELATED §22c pattern-evidence gate, which hard-blocked
+                    // unconditionally on an empty pattern corpus until W14 fixed it. Two
+                    // bugs cancelled out; fixing one revealed the other.
+                    //
+                    // The advisory above still fires and mcp_checkpoint_missing is still
+                    // emitted with warn_mode, so nothing observable was lost — only the
+                    // false claim of enforcement. Restoring a block here means first making
+                    // it genuinely reachable and validating it against fresh installs; do
+                    // not simply re-add the exit.
                   }
 
                   // Fall through to allow the spawn (warn mode or phase-mismatch path).
@@ -1310,19 +1350,33 @@ if (require.main === module) {
       }
     }
 
-    // §22c Stage B (v2.0.16): second-spawn post-decomposition gate.
+    // §22c Stage B (v2.0.16): post-decomposition pattern-evidence gate.
     // pattern-application-evidence-design.md §6.1 (v2.3.19 Phase 2 — polarity
-    // flip): after the first Agent() spawn (routing.jsonl exists), check
-    // whether the PM called pattern_record_skip_reason. `times_applied` is
-    // no longer discharged by any PM call — it is committed from evidence
+    // flip): once routing.jsonl exists (a spawn has already been recorded for
+    // this orchestration), check whether the PM called pattern_record_skip_reason
+    // for every pattern that was actually OFFERED to a spawned agent. `times_applied`
+    // is no longer discharged by any PM call — it is committed from evidence
     // (Phase 3, orch close) — so gating on pattern_record_application here
     // would measure nothing. pattern_record_skip_reason remains gated: it is
     // the only channel that records *why* an offered pattern was not cited,
     // which the mechanical path cannot supply and the curator needs for
     // deprecation decisions (times-applied-undercount-diagnosis.md).
     // Enforcement mode: 'hook-warn' = stderr warn + allow; 'hook-strict' = block (exit 2).
-    // Kill switch short-circuit retained. First-spawn carve-out: if routing.jsonl is absent,
-    // this is the pre-decomposition window — skip this gate entirely.
+    // Kill switch short-circuit retained. Carve-out: if routing.jsonl is absent, this
+    // is the pre-decomposition window — skip this gate entirely.
+    //
+    // W14 (v2.3.26 fix): the gate previously required a
+    // pattern_record_skip_reason record unconditionally, with no check for
+    // whether any pattern was ever OFFERED. On a fresh install the pattern
+    // corpus is empty, record-pattern-offers.js has nothing to scan, and the
+    // record requirement was unsatisfiable — the gate fired on the very first
+    // spawn of a brand-new orchestration. Added: an offered-pattern guard —
+    // read pattern-offers.jsonl (bin/_lib/pattern-evidence-ledger.js) for this
+    // orchestration_id; if zero offer rows exist, there is nothing to have
+    // skipped, so the gate has nothing to enforce and falls through to allow
+    // without checking for a skip-reason record. The genuine case (a pattern
+    // WAS offered and no skip reason was recorded) is unaffected — it still
+    // blocks in 'hook-strict' mode exactly as before.
     //
     // Enforcement mode: pattern_evidence.gate_mode, falling back to the legacy
     // mcp_enforcement.pattern_record_application when unset — see
@@ -1333,7 +1387,9 @@ if (require.main === module) {
         const praEnforcement = loadPatternEvidenceGateMode(cwd, mcpEnforcement);
         // Only enforce when mode is 'hook-warn' or 'hook-strict'. 'hook', 'prompt', 'allow' skip.
         if (praEnforcement === 'hook-warn' || praEnforcement === 'hook-strict') {
-          // First-spawn carve-out: routing.jsonl must exist for this to be a second-or-later spawn.
+          // Carve-out: routing.jsonl must exist — otherwise this is the
+          // pre-decomposition window and there is no post-decomposition
+          // protocol to enforce yet.
           if (fs.existsSync(routingFile)) {
             try {
               const orchId = (() => {
@@ -1346,7 +1402,16 @@ if (require.main === module) {
                 }
               })();
 
-              if (orchId) {
+              // W14: offered-pattern guard — nothing to enforce if no pattern
+              // was ever offered to a spawned agent in this orchestration.
+              // readOffersForOrch fails open to [] on any read/parse error,
+              // which correctly resolves to "skip this gate" (never block on
+              // a signal we could not read).
+              const hasAnyOffer = orchId
+                ? readOffersForOrch(cwd, orchId).length > 0
+                : false;
+
+              if (orchId && hasAnyOffer) {
                 const checkpointPath = getCheckpointFilePath(cwd);
                 const rowsForThisOrch = fs.existsSync(checkpointPath)
                   ? findCheckpointsForOrchestration(cwd, orchId)
@@ -1437,7 +1502,8 @@ if (require.main === module) {
                         );
                       }
                       const hookStrictMsg =
-                        '[orchestray] §22c hook-strict: second Agent() spawn blocked — no ' +
+                        '[orchestray] §22c hook-strict: post-decomposition Agent() spawn blocked — a ' +
+                        'pattern was offered this orchestration but no ' +
                         'pattern_record_skip_reason record found for orchestration ' + orchId +
                         ' in post-decomposition window. Application is recorded from evidence and ' +
                         'requires no PM call — call mcp__orchestray__pattern_record_skip_reason with a ' +
@@ -1458,7 +1524,8 @@ if (require.main === module) {
                     } else {
                       // hook-warn: stderr warn + allow
                       process.stderr.write(
-                        '[orchestray] §22c hook-warn: second Agent() spawn — no ' +
+                        '[orchestray] §22c hook-warn: post-decomposition Agent() spawn — a ' +
+                        'pattern was offered this orchestration but no ' +
                         'pattern_record_skip_reason record found for orchestration ' + orchId +
                         '. Application is recorded from evidence and requires no PM call — call ' +
                         'mcp__orchestray__pattern_record_skip_reason with a skip_category for every ' +

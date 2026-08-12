@@ -160,7 +160,15 @@ describe('gate + writer round-trip', () => {
     assert.equal(gateResult.stderr, '');
   });
 
-  test('writer creates only 2 of 3 rows; gate blocks spawn naming the missing tool', () => {
+  // v2.3.26: retitled and re-scoped. This previously asserted a hard block, and
+  // passed only by accident — the exit 2 came from the UNRELATED §22c
+  // pattern-evidence gate, which hard-blocked unconditionally on an empty pattern
+  // corpus (fixed in W14). The mcp-checkpoint gate's own block path required
+  // routing.jsonl to be ABSENT, but agents/pm.md mandates writing that file before
+  // every Agent() call, so it was unreachable in production and has been removed.
+  // The advisory — which is what actually shipped and what operators actually see —
+  // is what this test now verifies.
+  test('writer creates only 2 of 3 rows; gate advises naming the missing tool', () => {
     const orchId = 'orch-int-rtrip-002';
     const { dir } = makeDir({ orchestrationId: orchId });
 
@@ -175,10 +183,12 @@ describe('gate + writer round-trip', () => {
       model: 'sonnet',
       description: 'Build feature',
     });
-    assert.equal(gateResult.status, 2,
-      'Gate must block spawn when history_find_similar_tasks is missing');
+    assert.equal(gateResult.status, 0,
+      'Gate is advisory-only: it must allow the spawn (see comment above — the old ' +
+      'exit-2 assertion was satisfied by an unrelated gate, not this one)');
     assert.match(gateResult.stderr, /history_find_similar_tasks/,
-      'Diagnostic must name the missing tool');
+      'Diagnostic must still name the missing tool — losing the advisory would make ' +
+      'this gate genuinely inert rather than merely non-blocking');
   });
 
   test('writer records orchestration_id correctly; gate sees matching rows', () => {

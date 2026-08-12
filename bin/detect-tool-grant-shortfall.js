@@ -48,6 +48,22 @@
  * platform behaviour or an Orchestray-side spawn-option bug, so this hook
  * NEVER blocks.
  *
+ * v2.3.26 W12 fix — this hook fired correctly but under-specified what it
+ * found:
+ *   1. "declared but unused" cannot by itself distinguish "the agent didn't
+ *      need the tool" (benign) from "the agent couldn't have gotten it"
+ *      (the real defect). Every emitted row now carries `confidence`:
+ *      `'workaround_observed'` when the transcript shows a Bash+curl substitution
+ *      (positive evidence of a workaround), else `'ambiguous_unused'` — said
+ *      explicitly rather than implied away.
+ *   2. Every emitted row now carries `agent_role_source`: `'sidecar'` when
+ *      the role came from Claude Code's own runtime-recorded spawn metadata
+ *      (authoritative), or `'roster_fallback'` when it is a suffix-stripped
+ *      caller-chosen roster name (unverified). This is the same
+ *      identity-resolution ambiguity documented for the model-attribution
+ *      gap (W4, `orch-20260812T-v2326-lifecycle`) — made explicit here
+ *      instead of silently repeating it in a second subsystem.
+ *
  * Kill switch: ORCHESTRAY_TOOL_GRANT_SHORTFALL_DISABLED=1
  * Config key:  tool_grant_shortfall.enabled (default true)
  *
@@ -159,25 +175,51 @@ function loadDeclaredTools(cwd, role) {
 
 /**
  * Resolve the true agent role for a completed spawn, given the SubagentStop
- * payload. `event.agent_type` (and its siblings) carry the caller-chosen
- * ROSTER NAME, not the `subagent_type` that decided the agent's tool grants
- * — see the v2.3.19 W2 header note. Resolution order:
- *   1. Spawn-metadata sidecar (`resolveCallerAgentTypeFromMeta`) — authoritative,
- *      recorded by the Claude Code runtime at spawn time.
- *   2. `stripCollisionSuffix` on the roster name — repairs the common
- *      `<role>-2` auto-suffix case when the sidecar is unreadable.
- * Never throws; returns '' when no usable name is present at all.
+ * payload. Thin wrapper over `resolveAgentRoleWithSource` for callers that
+ * only need the name, not its provenance.
  *
  * @param {object} event
  * @param {string} cwd
  * @returns {string}
  */
 function resolveAgentRole(event, cwd) {
+  return resolveAgentRoleWithSource(event, cwd).role;
+}
+
+/**
+ * Resolve the true agent role for a completed spawn, given the SubagentStop
+ * payload, AND report which source produced it — the W12 identity-confidence
+ * fix. `event.agent_type` (and its siblings) carry the caller-chosen ROSTER
+ * NAME, not the `subagent_type` that decided the agent's tool grants — see
+ * the v2.3.19 W2 header note. Resolution order:
+ *   1. Spawn-metadata sidecar (`resolveCallerAgentTypeFromMeta`) — authoritative,
+ *      recorded by the Claude Code runtime at spawn time. source: 'sidecar'.
+ *   2. `stripCollisionSuffix` on the roster name — repairs the common
+ *      `<role>-2` auto-suffix case when the sidecar is unreadable, but the
+ *      result is still a caller-chosen string, not runtime-verified.
+ *      source: 'roster_fallback'.
+ * Never throws; returns role '' / source 'unresolved' when no usable name is
+ * present at all.
+ *
+ * Consumers care about the distinction because a `tool_grant_shortfall` row
+ * attributed via 'roster_fallback' is a weaker identity claim than one
+ * confirmed via 'sidecar' — the same "one field silently conflates two
+ * different provenances" failure documented for the cost-attribution gap
+ * (W4, `orch-20260812T-v2326-lifecycle`), now made explicit here instead of
+ * repeating it in a second subsystem.
+ *
+ * @param {object} event
+ * @param {string} cwd
+ * @returns {{role: string, source: 'sidecar'|'roster_fallback'|'unresolved'}}
+ */
+function resolveAgentRoleWithSource(event, cwd) {
   const rosterRaw = (
     event.subagent_type || event.agent_type || event.agent_role ||
     (event.tool_input && event.tool_input.subagent_type) || ''
   );
-  if (typeof rosterRaw !== 'string' || !rosterRaw.trim()) return '';
+  if (typeof rosterRaw !== 'string' || !rosterRaw.trim()) {
+    return { role: '', source: 'unresolved' };
+  }
   const roster = rosterRaw.trim();
 
   let resolved = null;
@@ -185,8 +227,15 @@ function resolveAgentRole(event, cwd) {
     resolved = resolveCallerAgentTypeFromMeta(roster, event.session_id, cwd);
   } catch (_e) { resolved = null; }
 
-  const role = resolved || stripCollisionSuffix(roster);
-  return typeof role === 'string' ? role.toLowerCase().trim() : '';
+  if (typeof resolved === 'string' && resolved.trim()) {
+    return { role: resolved.toLowerCase().trim(), source: 'sidecar' };
+  }
+
+  const fallback = stripCollisionSuffix(roster);
+  if (typeof fallback === 'string' && fallback.trim()) {
+    return { role: fallback.toLowerCase().trim(), source: 'roster_fallback' };
+  }
+  return { role: '', source: 'unresolved' };
 }
 
 /**
@@ -255,7 +304,7 @@ function main() {
 
       // cwd (and event.session_id) must be resolved before role resolution —
       // the sidecar lookup keys on both.
-      const role = resolveAgentRole(event, cwd);
+      const { role, source: roleSource } = resolveAgentRoleWithSource(event, cwd);
       if (!role) {
         process.stdout.write(JSON.stringify({ continue: true }));
         process.exit(0);
@@ -298,12 +347,28 @@ function main() {
         return;
       }
 
+      // W12 semantics fix: "declared but unused" alone cannot distinguish
+      // "the agent didn't need the tool" (benign) from "the agent couldn't
+      // have gotten it" (the real defect). A Bash+curl substitution is
+      // evidence the agent compensated for something — but NOT evidence the
+      // tool was absent.
+      //
+      // Worked counter-example (2026-08-12): platform-oracle used curl for
+      // ~3 weeks while WebFetch was available the whole time, because a stale
+      // memory instructed it never to attempt the call. Labelling that
+      // 'confirmed_gap' would have been maximum confidence and wrong — the
+      // behaviour came from a belief, not a capability. Only invocation can
+      // confirm absence, and this hook never invokes anything.
+      const confidence = bashHasCurl ? 'workaround_observed' : 'ambiguous_unused';
+
       try {
         writeEvent({
           version:              SCHEMA_VERSION,
           schema_version:       SCHEMA_VERSION,
           type:                 'tool_grant_shortfall',
           agent_role:           role,
+          agent_role_source:    roleSource, // 'sidecar' (authoritative) | 'roster_fallback' (unverified) — W12 identity fix
+          confidence:           confidence, // 'workaround_observed' | 'ambiguous_unused' — W12 semantics fix
           declared_but_unused:  unusedCritical,
           substituted_via:      bashHasCurl ? 'bash_curl' : null,
           orchestration_id:     resolveOrchId(cwd),
@@ -325,6 +390,7 @@ module.exports = {
   loadDeclaredTools,
   resolveAgentDefinitionPath,
   resolveAgentRole,
+  resolveAgentRoleWithSource,
   scanTranscriptToolUsage,
   isDisabled,
   CAPABILITY_CRITICAL_TOOLS,

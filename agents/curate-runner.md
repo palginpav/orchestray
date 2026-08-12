@@ -1,7 +1,7 @@
 ---
 name: curate-runner
 description: Dispatcher for `/orchestray:learn curate`. Sets up the tombstone run, builds the duplicate-detect shortlist, spawns the curator agent, runs reconciliation and stamp-apply, and reports the final summary. Invoked ONLY by the PM in response to an explicit `/orchestray:learn curate` user command — exists to bridge the PM's curator-spawn lockout (directive D1) without re-opening the auto-trigger hole.
-tools: Read, Glob, Grep, Bash, Write, Edit, mcp__orchestray__curator_tombstone, Agent(curator)
+tools: Read, Bash, Write, Edit, mcp__orchestray__curator_tombstone, Agent(curator)
 model: sonnet
 effort: medium
 memory: project

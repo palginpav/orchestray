@@ -738,19 +738,21 @@ Appended on every `SubagentStart` hook by `bin/audit-event.js`. Records the
 spawn-time identity of an Orchestray subagent for the audit trail. Paired with
 the corresponding `agent_stop` event (joinable on `agent_id`).
 
-**Schema version:** `2` (v2.1.17 — additive bump from `1`; old consumers
+**Schema version:** `3` (v2.3.26 — additive bump from `2`; old consumers
 ignore unknown fields per R-EVENT-NAMING).
 
 ```json
 {
   "type": "agent_start",
-  "version": 2,
+  "version": 3,
   "timestamp": "ISO 8601",
   "orchestration_id": "orch-xxx",
   "agent_id": "agent-xxx",
   "agent_type": "developer",
   "session_id": "uuid",
-  "review_dimensions": "<optional, reviewer-only: \"all\" | string[]>"
+  "review_dimensions": "<optional, reviewer-only: \"all\" | string[]>",
+  "task_id": "<task_id | null>",
+  "roster_name": "<roster name | null>"
 }
 ```
 
@@ -772,12 +774,25 @@ Field notes:
   This field exists to feed the v2.1.18 R-RV-DIMS scoped-by-default flip
   trigger (≥ 60 % of reviewer spawns carry an explicit field) — the analytics
   rollup is in `skills/orchestray:analytics/SKILL.md` Rollup G.
+- `task_id` *(v3)*: The task_id captured from the PreToolUse spawn payload via
+  the agent lifecycle registry (`bin/_lib/agent-registry.js`), peeked (not
+  consumed) at SubagentStart. `null` when the spawn carried no extractable
+  task_id, or when `agent_lifecycle.enabled` is `false` (field omitted
+  entirely in that case — see Schema changelog).
+- `roster_name` *(v3)*: Derived from `agent_id` for named spawns
+  (`a<roster>-<16 hex>` → `<roster>`). `null` for unnamed spawns
+  (`a<16 hex>`). Makes the audit log self-sufficient — a consumer can join
+  start↔stop↔routing without reading the registry.
 
 **Schema changelog:**
 - `v1` (≤ v2.1.16): `agent_id`, `agent_type`, `session_id`. Required fields
   unchanged in v2.
 - `v2` (v2.1.17, R-RV-DIMS-CAPTURE): added optional `review_dimensions`
   (reviewer-only). Additive — no consumer changes required.
+- `v3` (v2.3.26, W4): added `task_id`, `roster_name`. Additive. Gated on
+  `agent_lifecycle.enabled` — with `ORCHESTRAY_DISABLE_AGENT_LIFECYCLE=1` or
+  `agent_lifecycle.enabled: false`, the event reverts to the v2 field set
+  (`version: 2`, no `task_id`/`roster_name`).
 
 ---
 
@@ -787,10 +802,14 @@ Appended when an agent finishes execution (used in audit trail and cost
 tracking). Emitted by `bin/collect-agent-metrics.js` on `SubagentStop` and
 `TaskCompleted` hooks.
 
+**Schema version:** `2` (v2.3.26 — additive bump from `1`; old consumers
+ignore unknown fields per R-EVENT-NAMING). `TaskCompleted`/Teams rows are
+unaffected — the new fields only apply to the `SubagentStop` branch.
+
 ```json
 {
   "type": "agent_stop",
-  "version": 1,
+  "version": 2,
   "timestamp": "ISO 8601",
   "orchestration_id": "orch-xxx",
   "agent_id": "agent-xxx",
@@ -805,7 +824,11 @@ tracking). Emitted by `bin/collect-agent-metrics.js` on `SubagentStop` and
   "transcript_path": "/path/to/transcript.jsonl",
   "model_used": "sonnet|opus|haiku|null|unknown_team_member",
   "turns_used": 12,
-  "files_changed": ["<path | null, optional array parsed from ## Structured Result>"]
+  "files_changed": ["<path | null, optional array parsed from ## Structured Result>"],
+  "task_id": "<task_id | null>",
+  "roster_name": "<roster name | null>",
+  "model_source": "registry|routing_outcome|routing_log_task_id|team_config|unresolved",
+  "lifecycle_registered": true
 }
 ```
 
@@ -819,6 +842,28 @@ Field notes:
 - `model_used = "unknown_team_member"` *(v2.2.0 P1.1)*: explicit label when
   the team-config resolver cannot find a known model. Replaces the prior
   silent default to Sonnet pricing. Paired with `cost_confidence: "estimated"`.
+- `task_id` *(v2)*: The task_id captured in the agent lifecycle registry at
+  PreToolUse (`bin/_lib/agent-registry.js`), looked up by `agent_id` — the one
+  join key with 100% fidelity. `null` when `lifecycle_registered` is `false`
+  or no task_id was extractable at spawn time.
+- `roster_name` *(v2)*: `roster_name` carried from the registry's `running`
+  row for this `agent_id`. `null` for unnamed spawns.
+- `model_source` *(v2)*: Which resolver produced `model_used`, in priority
+  order: `"registry"` (the PreToolUse-captured model, keyed by `agent_id` —
+  the fix for the 135/166 rows whose `agent_type` was a dynamic roster name
+  that could never join `routing_outcome`) → `"routing_outcome"` →
+  `"routing_log_task_id"` → `"team_config"` → `"unresolved"` (total miss;
+  always paired with `cost_confidence: "estimated"`).
+- `lifecycle_registered` *(v2)*: `true` only when this `agent_id` resolved to
+  a `running`/`resumed`/`completed` row in the agent lifecycle registry at
+  stop time — the membership gate (design §0.1/§3.5). `false` for stops whose
+  `agent_id` was never registered (Claude Code's own internal subagents, e.g.
+  the compaction summariser, which fire `SubagentStop` but never
+  `SubagentStart`/`PreToolUse:Agent`). This `agent_stop` row still emits
+  unchanged in the `false` case — no rows are dropped.
+- With `ORCHESTRAY_DISABLE_AGENT_LIFECYCLE=1` (or `ORCHESTRAY_AGENT_REGISTRY_DISABLED=1`,
+  or `agent_lifecycle.enabled: false`), the event reverts to the v1 field set
+  (`version: 1`, no `task_id`/`roster_name`/`model_source`/`lifecycle_registered`).
 
 ---
 
@@ -11547,6 +11592,37 @@ Field notes:
 Emitted from: `bin/auto-commit-worktree-on-subagent-stop.js` (W1, v2.2.18).
 
 Kill switch: `ORCHESTRAY_WORKTREE_AUTO_COMMIT_DISABLED=1`.
+
+---
+
+### `worktree_changes_unmerged` event
+
+Emitted by the WorktreeRemove hook when it re-verifies a worktree's own `git status --porcelain` immediately before removal and finds uncommitted changes — tracked modifications and/or untracked files. The hook SKIPS removal in this case (never destroys the worktree) so the PM can recover the work; this closes a data-loss path where `git worktree remove --force` ran unconditionally on the unsafe assumption that the SubagentStop auto-commit hook (`worktree_auto_commit_emitted`/`worktree_auto_commit_failed`, above) had already committed everything.
+
+```json
+{
+  "type": "worktree_changes_unmerged",
+  "version": 1,
+  "schema_version": 1,
+  "worktree_path": "/repo/.claude/worktrees/agent-afb2aadf57297e722",
+  "agent_name": null,
+  "session_id": null,
+  "changed_paths": ["agent-new-module.js", "src/index.js"],
+  "changed_count": 2
+}
+```
+
+Field notes:
+- `worktree_path`: absolute path of the worktree that was NOT removed.
+- `agent_name` *(optional)*: agent/worktree name from the hook payload. `null` when only `worktree_path` was supplied.
+- `session_id` *(optional)*: Claude Code session ID from the hook payload, when present.
+- `changed_paths`: paths from `git status --porcelain` (both tracked modifications and untracked files), stripped of the 2-char status code. Capped at 50 entries.
+- `changed_count`: total count of changed paths (may exceed `changed_paths.length` when capped).
+- `reason` *(optional)*: `"status_check_failed"` when `git status` itself could not be read (fails toward preservation rather than guessing clean) — `changed_paths` is empty and `changed_count` is 0 on this path.
+
+Emitted from: `bin/worktree-remove.js` (W15, v2.3.26).
+
+Kill switch: none — this is a safety check, not an optional feature.
 
 ---
 

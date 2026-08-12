@@ -173,6 +173,11 @@
           },
           {
             "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/register-agent-spawn.js pre-spawn",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/collect-context-telemetry.js pre-spawn",
             "timeout": 5
           },
@@ -690,6 +695,11 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/audit-event.js",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/register-agent-spawn.js start",
             "timeout": 5
           },
           {

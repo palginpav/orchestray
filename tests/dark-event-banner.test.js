@@ -472,6 +472,24 @@ describe('dark-event-banner: --json CLI mode', () => {
     ]);
   });
 
+  test('W11: tool_grant_shortfall (tier 3, _shortfall suffix) is ranked alongside other diagnostics', () => {
+    const dir = makeDir();
+    writeDiagnosticEvents(dir, [
+      diagEvent('tool_grant_shortfall', 1000),
+      diagEvent('git_destructive_blocked', 1000),
+    ]);
+    const result = runJson(dir);
+    assert.equal(result.status, 0);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.recentDiagnostics.totalMatched, 2);
+    // tier 1 (blocked) outranks tier 3 (shortfall) regardless of count.
+    assert.deepEqual(parsed.recentDiagnostics.ranked.map((r) => r.event_type), [
+      'git_destructive_blocked',
+      'tool_grant_shortfall',
+    ]);
+    assert.equal(parsed.recentDiagnostics.ranked[1].tier, 3);
+  });
+
   test('recentDiagnostics is empty when no audit log exists yet', () => {
     const dir = makeDir();
     const result = runJson(dir);

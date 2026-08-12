@@ -7,12 +7,32 @@ const { atomicAppendJsonl } = require('./_lib/atomic-append');
 const { writeEvent }        = require('./_lib/audit-event-writer');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
-const { loadCostBudgetCheckConfig } = require('./_lib/config-schema');
+const { loadCostBudgetCheckConfig, loadAgentLifecycleConfig } = require('./_lib/config-schema');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { appendJsonlWithRotation } = require('./_lib/jsonl-rotate');
 const { normalizeEvent } = require('./read-event');
 const { resolveTeammateModel } = require('./_lib/team-config-resolve');
 const { requireGuard }   = require('./_lib/double-fire-guard');
+const { readRegistry, appendTransition } = require('./_lib/agent-registry');
+
+/**
+ * W2/W4 (v2.3.26) master kill switch. Fail-open on config error (feature
+ * stays ON — default-on per project convention). When disabled, no registry
+ * lookup/write happens and agent_stop reverts to the pre-change field set
+ * (version 1, no task_id/roster_name/model_source/lifecycle_registered).
+ *
+ * @param {string} cwd
+ * @returns {boolean}
+ */
+function agentLifecycleDisabled(cwd) {
+  if (process.env.ORCHESTRAY_DISABLE_AGENT_LIFECYCLE === '1') return true;
+  if (process.env.ORCHESTRAY_AGENT_REGISTRY_DISABLED === '1') return true;
+  try {
+    const cfg = loadAgentLifecycleConfig(cwd);
+    if (cfg && cfg.enabled === false) return true;
+  } catch (_e) { /* fail-open */ }
+  return false;
+}
 
 // ---------------------------------------------------------------------------
 // P1.1 M0.1 — Variant-C duplicate-emit dedupe (W1 design §1.1).
@@ -551,8 +571,41 @@ setImmediate(() => {
       agentType = recoveredAgentType;
       agentTypeResolvedFrom = 'transcript';
     }
-    let resolvedModel = resolveModelUsed(routingOutcomes, orchestrationId, agentType);
-    let resolvedModelFrom = resolvedModel ? 'routing_outcome' : null;
+    // W2/W4 (v2.3.26): registry lookup — `model` was captured at PreToolUse
+    // (where it actually exists on tool_input.model) and carried forward
+    // keyed by agent_id, the one identifier with 100% fidelity (183/183 on
+    // measurement). This is checked FIRST because the routing_outcome join
+    // below is on (orchestration_id, agent_type), and agent_type here is
+    // often a dynamic roster name (e.g. "dev-w0-hookentry") that can never
+    // match the canonical-role namespace routing_outcome rows carry — see
+    // `.orchestray/kb/artifacts/v2326-lifecycle-design.md` §0.2/§4.
+    //
+    // Phantom rejection (§0.1 / §3.5): a SubagentStop whose agent_id never
+    // reached `running`/`resumed`/`completed` in the registry (Claude Code's
+    // own internal subagents — e.g. the compaction summariser — fire
+    // SubagentStop but never SubagentStart) is out of the registered
+    // population. `lifecycleRegistered` stays false and this agent_stop row
+    // still emits, unchanged in shape apart from the new fields.
+    const agentLifecycleOn = !agentLifecycleDisabled(cwd);
+    let registryRow = null;
+    let lifecycleRegistered = false;
+    if (agentLifecycleOn && !isTeamEvent && event.agent_id) {
+      try {
+        const { byId } = readRegistry(cwd, { orchestrationId });
+        const row = byId.get(event.agent_id);
+        if (row && (row.event === 'running' || row.event === 'resumed' || row.event === 'completed')) {
+          registryRow = row;
+          lifecycleRegistered = true;
+        }
+      } catch (_e) { /* fail-open — registry unreadable, fall through to legacy resolvers */ }
+    }
+
+    let resolvedModel = (registryRow && registryRow.model) ? registryRow.model : null;
+    let resolvedModelFrom = resolvedModel ? 'registry' : null;
+    if (!resolvedModel) {
+      resolvedModel = resolveModelUsed(routingOutcomes, orchestrationId, agentType);
+      resolvedModelFrom = resolvedModel ? 'routing_outcome' : null;
+    }
 
     // D5 (v2.3.18 W1b): task_id is a more reliable correlation key than
     // agent_type for Agent-Teams spawns. routing_outcome events (above) are
@@ -564,7 +617,10 @@ setImmediate(() => {
     // agent_type or an agents/<name>.md filename. task_id is the one key both
     // the PM's routing.jsonl row (written at decomposition, `ox routing add
     // <task_id> ...`) and this event share.
-    const taskId = event.task_id || null;
+    // W4: prefer the task_id captured in the registry at PreToolUse (the
+    // value the PM actually handed to the spawn) over event.task_id, which
+    // the SubagentStop payload never carries in production (Teams-only field).
+    const taskId = (registryRow && registryRow.task_id) || event.task_id || null;
     if (!resolvedModel && taskId) {
       const routingEntry = findRoutingEntryByTaskId(cwd, orchestrationId, taskId);
       if (routingEntry && routingEntry.model) {
@@ -579,6 +635,11 @@ setImmediate(() => {
         resolvedModelFrom = 'agent_frontmatter';
       }
     }
+
+    // W4 §4.4: model_source domain is registry | routing_outcome |
+    // routing_log_task_id | agent_frontmatter | unresolved. A total miss
+    // (null or 'unknown_team_member') falls through to 'unresolved'.
+    const modelSource = resolvedModelFrom || 'unresolved';
 
     // DEF-2: detect escalation by counting routing_outcome events for this
     // (orch_id, agent_type). 2+ means the agent was re-routed mid-run, so the
@@ -692,7 +753,7 @@ setImmediate(() => {
       auditEvent = {
         timestamp: new Date().toISOString(),
         type: 'agent_stop',
-        version: 1,
+        version: agentLifecycleOn ? 2 : 1,
         orchestration_id: orchestrationId,
         agent_id: event.agent_id || null,
         agent_type: agentType,
@@ -713,6 +774,17 @@ setImmediate(() => {
         // field from agent_stop rows to determine which dimension subset to apply.
         files_changed: transcriptFilesChanged,
       };
+      // W2/W4 (v2.3.26): additive fields only — version 1 -> 2. Nothing
+      // renamed or removed; existing consumers read by field name and
+      // ignore unknown fields (R-EVENT-NAMING). Gated on the master kill
+      // switch: with ORCHESTRAY_DISABLE_AGENT_LIFECYCLE=1 the field set is
+      // byte-identical to pre-change output (version stays 1, no new keys).
+      if (agentLifecycleOn) {
+        auditEvent.task_id = taskId;
+        auditEvent.roster_name = (registryRow && registryRow.roster_name) || null;
+        auditEvent.model_source = modelSource;
+        auditEvent.lifecycle_registered = lifecycleRegistered;
+      }
     }
 
     // DEF-2: only attach the note when escalation was actually detected.
@@ -866,6 +938,39 @@ setImmediate(() => {
 
     // Append to events.jsonl via the gateway
     writeEvent(auditEvent, { cwd });
+
+    // W2 §3.5: append a `completed` transition ONLY when this agent_id
+    // already resolved to a registry entry in running/resumed/completed —
+    // the membership gate. A stop for an unregistered agent_id (the phantom
+    // shape: Claude Code's own internal subagents, e.g. the compaction
+    // summariser) writes NOTHING to the registry.
+    if (agentLifecycleOn && !isTeamEvent && lifecycleRegistered && event.agent_id) {
+      try {
+        appendTransition(cwd, {
+          event: 'completed',
+          orchestration_id: orchestrationId,
+          agent_id: event.agent_id,
+          roster_name: (registryRow && registryRow.roster_name) || null,
+          agent_type: agentType,
+          task_id: taskId,
+          model: resolvedModel,
+          effort: (registryRow && registryRow.effort) || null,
+          session_id: event.session_id || null,
+          spawn_key: (registryRow && registryRow.spawn_key) || null,
+          spawn_tool: (registryRow && registryRow.spawn_tool) || null,
+          description: (registryRow && registryRow.description) || null,
+          turns_used: turnsUsed,
+          estimated_cost_usd: estimatedCostUsd,
+          transcript_path: transcriptPath,
+          result_status: null,
+          hold_for_resume: null,
+          resume_count: (registryRow && registryRow.resume_count) || 0,
+          reason: null,
+        });
+      } catch (_registryErr) {
+        // Fail open — registry write must never block the agent_stop write.
+      }
+    }
 
     // Emit per-spawn row to agent_metrics.jsonl (§4.2 S5 measurement surface).
     // Fail-open: any error here must never block the agent stop.

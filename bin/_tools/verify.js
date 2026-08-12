@@ -27,6 +27,7 @@
  * The catalogue (all real, all observed in this session):
  *
  *   1. `const env = process.env; env.NAME` (alias)               — see envSwitchIsRead
+ *  1b. `const env = input.env || {}; env.NAME` (injected env)    — see envSwitchIsRead
  *   2. `tools: [a, b]` YAML flow form                            — see agentGrantsTool
  *   3. digits in a var name (`ORCHESTRAY_T15_ACK_...`)           — see envSwitchIsRead
  *   4. `cold_init_async` (config) vs `opts.coldInitAsync` (code) — see configKeyIsReferenced
@@ -206,6 +207,23 @@ function stripComments(text) {
 }
 
 /**
+ * Resolve the walk root from an opts object, accepting `cwd` as an alias for
+ * `root`. Found via dogfooding: a caller passed `{cwd: <worktree>}` (the more
+ * common option name across this codebase's other functions) to a function
+ * that only reads `opts.root`. The unrecognized key was silently dropped,
+ * `root` fell through to `process.cwd()` of the *running* verify.js process
+ * (usually unrelated to the file under audit), and the result came back
+ * `confident: true` — a fabricated-negative answer built from scanning the
+ * wrong tree entirely, with nothing in the output shape to signal that.
+ *
+ * @param {{root?: string, cwd?: string}} o
+ * @returns {string}
+ */
+function resolveRootOpt(o) {
+  return o.root || o.cwd || process.cwd();
+}
+
+/**
  * Does `root` point to a real, readable directory? Guards every
  * walkFiles-based function against a silent fail-soft-*looking* bug:
  * walkFiles' own readdir try/catch swallows an unreadable root and just
@@ -312,9 +330,22 @@ function splitTopLevel(text) {
  *   - direct dot access:    process.env.NAME
  *   - direct bracket:       process.env['NAME'] / process.env["NAME"]
  *   - alias:                const env = process.env; ... env.NAME
+ *   - injected env param:   const env = input.env || {}; ... env.NAME
  *   - constant indirection: const N = 'NAME'; ... process.env[N]
  * Comment-stripped first (stripComments), so a docstring mention of the
  * exact same text is never counted as a read (failure #6's shape).
+ *
+ * "injected env param" defends a real trap found via dogfooding: functions
+ * are frequently written testable by threading an env map in as
+ * `input.env`/`opts.env` (never touching `process.env` directly inside the
+ * function body) with the actual `process.env` supplied only at the call
+ * site. `const env = input.env || {}` never assigns literal `process.env`,
+ * so the original alias detector (RHS === `process.env` only) missed it —
+ * a confident false negative on exactly the DI pattern this codebase uses
+ * for testability. The RHS pattern below is deliberately narrow: it requires
+ * the chain to end in the literal property `.env` (word-boundary checked, so
+ * `config.envelope` never matches), not "any object assigned to a var named
+ * env" — that broader form would be an unfounded guess.
  *
  * Regexes below match `name` as a literal (escaped), never reconstruct it
  * from a character class — that is what defeats failure #3 (names
@@ -322,12 +353,12 @@ function splitTopLevel(text) {
  * silently dropped by discovery regexes built on `[A-Z_]+`).
  *
  * @param {string} name — exact env var name, e.g. 'ORCHESTRAY_FOO_DISABLED'
- * @param {{root?: string, exclude?: string[]}} [opts]
+ * @param {{root?: string, cwd?: string, exclude?: string[]}} [opts]
  * @returns {{name: string, read: boolean, confident: boolean, evidence: object[], checkedForms: string[]}}
  */
 function envSwitchIsRead(name, opts) {
   const o = opts || {};
-  const root = o.root || process.cwd();
+  const root = resolveRootOpt(o);
   if (typeof name !== 'string' || !name) {
     return { name: String(name || ''), read: false, confident: false, evidence: [], checkedForms: [], reason: 'invalid_name' };
   }
@@ -338,7 +369,7 @@ function envSwitchIsRead(name, opts) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const directDot = new RegExp('process\\.env\\.' + escaped + '(?![A-Za-z0-9_$])', 'g');
   const directBracket = new RegExp('process\\.env\\[\\s*[\'"]' + escaped + '[\'"]\\s*\\]', 'g');
-  const aliasDeclRe = /(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*process\.env\s*(?:;|,|\))/g;
+  const aliasDeclRe = /(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:process\.env|[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\.env)\b(?:\s*\|\|\s*(?:\{\}|process\.env))?\s*(?:;|,|\))/g;
   const indirectionDeclRe = new RegExp(
     "(?:const|let|var)\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s*=\\s*['\"]" + escaped + "['\"]", 'g'
   );
@@ -358,19 +389,21 @@ function envSwitchIsRead(name, opts) {
       evidence.push({ file: rel, line: lineOf(text, m.index), form: 'direct-bracket', snippet: m[0] });
     }
 
-    // Alias: `const X = process.env;` anywhere in the file, then `X.NAME` / X['NAME'] anywhere after.
+    // Alias: `const X = process.env;` or `const X = input.env || {};` anywhere
+    // in the file, then `X.NAME` / X['NAME'] anywhere after.
     aliasDeclRe.lastIndex = 0;
     let am;
     while ((am = aliasDeclRe.exec(text)) !== null) {
       const alias = am[1];
+      const declText = am[0].trim();
       const aliasEsc = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const useDot = new RegExp('\\b' + aliasEsc + '\\.' + escaped + '(?![A-Za-z0-9_$])', 'g');
       const useBracket = new RegExp('\\b' + aliasEsc + '\\[\\s*[\'"]' + escaped + '[\'"]\\s*\\]', 'g');
       for (const m of text.matchAll(useDot)) {
-        evidence.push({ file: rel, line: lineOf(text, m.index), form: 'alias', snippet: alias + ' = process.env; ... ' + m[0] });
+        evidence.push({ file: rel, line: lineOf(text, m.index), form: 'alias', snippet: declText + ' ... ' + m[0] });
       }
       for (const m of text.matchAll(useBracket)) {
-        evidence.push({ file: rel, line: lineOf(text, m.index), form: 'alias-bracket', snippet: alias + ' = process.env; ... ' + m[0] });
+        evidence.push({ file: rel, line: lineOf(text, m.index), form: 'alias-bracket', snippet: declText + ' ... ' + m[0] });
       }
     }
 
@@ -465,7 +498,7 @@ const SCHEMA_TIER2_REL  = path.join('agents', 'pm-reference', 'event-schemas.tie
  */
 function eventTypeIsDeclared(type, opts) {
   const o = opts || {};
-  const root = o.root || process.cwd();
+  const root = resolveRootOpt(o);
 
   // A malformed `type` must never resolve to declaredIn:{false,false,false} —
   // that is byte-identical to a genuine "declared nowhere" result, which is
@@ -544,7 +577,7 @@ function eventTypeIsDeclared(type, opts) {
  */
 function undeclaredEventTypes(types, opts) {
   const o = opts || {};
-  const root = o.root || process.cwd();
+  const root = resolveRootOpt(o);
   // A non-array `types` either throws (`for...of` on a plain object) or —
   // worse — silently succeeds on anything else iterable: a bare string is
   // iterable by character, so `undeclaredEventTypes('abc', ...)` would
@@ -591,7 +624,7 @@ function toCamelCase(snake) {
  */
 function configKeyIsReferenced(key, opts) {
   const o = opts || {};
-  const root = o.root || process.cwd();
+  const root = resolveRootOpt(o);
   if (typeof key !== 'string' || !key) {
     return { key: String(key == null ? '' : key), camelCase: '', referenced: false, confident: false, evidence: [], reason: 'invalid_key' };
   }
@@ -715,7 +748,7 @@ function isTestPath(relPath) {
  */
 function callSitesMissingArg(fnName, argName, opts) {
   const o = opts || {};
-  const root = o.root || process.cwd();
+  const root = resolveRootOpt(o);
   const includeTests = o.includeTests === true;
   if (typeof fnName !== 'string' || !fnName) {
     return {

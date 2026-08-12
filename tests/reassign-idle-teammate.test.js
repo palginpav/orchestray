@@ -16,6 +16,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 
 const SCRIPT = path.resolve(__dirname, '../bin/reassign-idle-teammate.js');
+// NOTE: do not `require(SCRIPT)` -- the module runs its hook body (including
+// `process.exit`) at load time with no `require.main` guard. Every assertion
+// below drives the real behavior through the spawned subprocess instead.
 
 function run(stdinData) {
   const result = spawnSync(process.execPath, [SCRIPT], {
@@ -138,6 +141,77 @@ describe('blocking behavior when pending tasks exist', () => {
       assert.equal(status, 2);
       const out = parseOutput(stdout);
       assert.equal(out.continue, false, 'should output { continue: false } when blocking');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// Real generated task-graph.md formats (v2.3.26 W5)
+//
+// The checkbox/status-line forms above are the H2 spec documented in
+// phase-decomp.md, but 0 of 88 historical task-graph.md files under
+// .orchestray/history/ actually use it -- real generated graphs use a
+// markdown table, an H2-H4 heading, or a bold task-id bullet. Each excerpt
+// below is copied VERBATIM (trimmed) from a real historical orchestration so
+// this test proves detection against genuine PM output, not an assumption
+// about the format. Measured against the full 88-file corpus, this union of
+// patterns detects 87/88 (98.9%); see bin/reassign-idle-teammate.js for the
+// one residual (an ASCII tree-diagram inside a fenced code block).
+// ---------------------------------------------------------------------------
+
+describe('real generated task-graph.md formats (v2.3.26 W5)', () => {
+
+  test('exits 2 for the markdown-table format (verbatim excerpt, 20260430T065712Z-v2213-impl-stale)', () => {
+    const tmpDir = makeTmpDir();
+    writeTaskGraph(tmpDir,
+      '## W-items (from scope-lock)\n\n' +
+      '| W | Title | Agent | Model/Effort | Size | Est. Cost | Depends on |\n' +
+      '|---|-------|-------|--------------|------|-----------|------------|\n' +
+      '| W1 | MERGE-STAGER-INTO-PREFLIGHT (G-01) | developer | sonnet/medium | M | $1.40 | none |\n'
+    );
+
+    try {
+      const input = JSON.stringify({ cwd: tmpDir });
+      const { status } = run(input);
+      assert.equal(status, 2, 'markdown-table task rows must be detected as pending work');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('exits 2 for the H3 em-dash heading format (verbatim excerpt, orch-20260428T091500Z-v226-impl)', () => {
+    const tmpDir = makeTmpDir();
+    writeTaskGraph(tmpDir,
+      '## Group A (parallel — foundation)\n\n' +
+      '### W1 — Schemas (architect, opus)\n' +
+      '- **Owns (write)**:\n' +
+      '  - `agents/pm-reference/event-schemas.md` (append 8 new events)\n'
+    );
+
+    try {
+      const input = JSON.stringify({ cwd: tmpDir });
+      const { status } = run(input);
+      assert.equal(status, 2, 'H3 task-id headings must be detected as pending work');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('exits 2 for the bold task-id bullet format (verbatim excerpt, 1775835804-orch-1775833717-v2011-research)', () => {
+    const tmpDir = makeTmpDir();
+    writeTaskGraph(tmpDir,
+      '## Group 1 (parallel, read-only)\n' +
+      '- **T1** owner: architect. Files: READ-ONLY across whole repo. ' +
+      'Writes: `.orchestray/kb/artifacts/v2011-research-baseline.md`.\n'
+    );
+
+    try {
+      const input = JSON.stringify({ cwd: tmpDir });
+      const { status } = run(input);
+      assert.equal(status, 2, 'bold task-id bullets must be detected as pending work');
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
     }

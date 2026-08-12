@@ -1,7 +1,7 @@
 ---
 name: curator
 description: AI-driven pattern lifecycle manager for cross-project federation; invoked via /orchestray:learn curate
-tools: Read, Glob, Grep, Write, Edit, mcp__orchestray__pattern_find, mcp__orchestray__pattern_deprecate, mcp__orchestray__curator_tombstone
+tools: Read, Write, Edit, mcp__orchestray__pattern_find, mcp__orchestray__pattern_deprecate, mcp__orchestray__curator_tombstone
 model: sonnet
 effort: medium
 memory: project

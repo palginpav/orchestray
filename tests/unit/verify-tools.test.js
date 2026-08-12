@@ -94,6 +94,57 @@ describe('envSwitchIsRead', () => {
     assert.equal(r.read, false);
     assert.equal(r.confident, true);
   });
+
+  // Observed defect (v2.3.26): `{cwd: <worktree>}` was silently dropped
+  // because the function only read `opts.root`, so `root` fell through to
+  // process.cwd() of the running process — a confident:true answer built
+  // from scanning the wrong tree entirely. Fixture is the exact real file
+  // this defect was measured against.
+  test('opts.cwd is honored as an alias for opts.root (real fixture: register-agent-spawn.js)', () => {
+    const root = tmpDir();
+    write(root, 'bin/register-agent-spawn.js', [
+      "function lifecycleDisabled(cwd) {",
+      "  if (process.env.ORCHESTRAY_DISABLE_AGENT_LIFECYCLE === '1') return true;",
+      "  if (process.env.ORCHESTRAY_AGENT_REGISTRY_DISABLED === '1') return true;",
+      "  return false;",
+      "}",
+    ].join('\n'));
+
+    const r = v.envSwitchIsRead('ORCHESTRAY_AGENT_REGISTRY_DISABLED', { cwd: root });
+    assert.equal(r.read, true);
+    assert.equal(r.confident, true);
+    assert.ok(r.evidence.some((e) => e.form === 'direct-dot'));
+  });
+
+  // Observed defect (v2.3.26): the alias detector only matched a literal
+  // `const env = process.env` RHS. The DI pattern `const env = input.env ||
+  // {}` (env injected as a parameter for testability, e.g. shouldSpawnScout
+  // in _haiku-routing-rule.js) was invisible to it — a confident false
+  // negative on the exact class the header documents as a known trap.
+  test('injected-env DI pattern (const env = input.env || {}; env.NAME) is detected (real fixture: _haiku-routing-rule.js)', () => {
+    const root = tmpDir();
+    write(root, 'bin/_lib/_haiku-routing-rule.js', [
+      "function shouldSpawnScout(input) {",
+      "  const args = input.args || {};",
+      "  const env = input.env || {};",
+      "  if (env.ORCHESTRAY_HAIKU_ROUTING_DISABLED === '1') return false;",
+      "  return true;",
+      "}",
+    ].join('\n'));
+
+    const r = v.envSwitchIsRead('ORCHESTRAY_HAIKU_ROUTING_DISABLED', { root });
+    assert.equal(r.read, true);
+    assert.equal(r.confident, true);
+    assert.ok(r.evidence.some((e) => e.form === 'alias' && e.snippet.includes('input.env')));
+  });
+
+  test('a var named env assigned from an unrelated .envelope-like property does not false-positive', () => {
+    const root = tmpDir();
+    write(root, 'n.js', "const env = config.envelope || {};\nif (env.ORCHESTRAY_UNRELATED === '1') {}\n");
+    const r = v.envSwitchIsRead('ORCHESTRAY_UNRELATED', { root });
+    assert.equal(r.read, false);
+    assert.equal(r.confident, true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -697,6 +748,33 @@ describe('fail-soft contract on malformed input', () => {
     for (const [label, fn] of cases) {
       test(label, () => assertFailSoft(call(fn)));
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Performance: a real-repo-shaped four-case envSwitchIsRead probe must stay
+// well under the 45s budget observed to be exceeded pre-fix. DEFAULT_EXCLUDE_DIRS
+// already prunes node_modules/.git/.orchestray/.claude before descending, so a
+// large-but-excluded subtree must not affect wall time.
+// ---------------------------------------------------------------------------
+
+describe('envSwitchIsRead — performance against a repo-shaped tree', () => {
+  test('four-case probe against a root with a large excluded subtree completes well under 45s', () => {
+    const root = tmpDir();
+    write(root, 'bin/real.js', "if (process.env.ORCHESTRAY_PERF_CASE === '1') {}\n");
+    // Simulate a bulky excluded subtree (stand-in for .claude/worktrees/*)
+    // that must be pruned before descent, not walked and then discarded.
+    for (let i = 0; i < 50; i++) {
+      write(root, `.claude/worktrees/agent-${i}/bin/noise.js`, "if (process.env.ORCHESTRAY_PERF_CASE === '1') {}\n".repeat(20));
+      write(root, `node_modules/pkg-${i}/index.js`, 'module.exports = {};\n'.repeat(20));
+    }
+
+    const start = Date.now();
+    for (let i = 0; i < 4; i++) {
+      v.envSwitchIsRead('ORCHESTRAY_PERF_CASE', { root });
+    }
+    const elapsedMs = Date.now() - start;
+    assert.ok(elapsedMs < 45000, `expected < 45000ms, got ${elapsedMs}ms`);
   });
 });
 

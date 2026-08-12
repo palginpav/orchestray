@@ -5,7 +5,7 @@ description: Authoritative answers to platform-knowledge questions about Claude 
   WebFetch, cross-references with installed code, and returns concise factual answers
   with cited URLs. Distinguishes documented stable primitives from experimental or
   community-plugin features.
-tools: Read, Glob, Grep, Bash, Write, WebFetch
+tools: Read, Bash, Write, WebFetch
 model: inherit
 effort: medium
 memory: project

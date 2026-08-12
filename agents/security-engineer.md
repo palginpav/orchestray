@@ -3,7 +3,7 @@ name: security-engineer
 description: Performs shift-left security analysis on designs and implementations.
   Two modes — design threat review (post-architect) and implementation security audit
   (post-developer). Does NOT modify code — identifies vulnerabilities and recommends fixes.
-tools: Read, Glob, Grep, Bash, Write
+tools: Read, Bash, Write
 model: inherit
 effort: high
 memory: project

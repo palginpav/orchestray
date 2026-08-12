@@ -4,7 +4,7 @@ description: Adversarial review of user-facing surfaces. Examines slash commands
   CLI prompts, error messages, statusLine output, README claims, and config keys
   for friction, inconsistency, surprise, and discoverability gaps. Read-only;
   produces a UX findings artifact the developer or PM can act on.
-tools: Read, Glob, Grep, Bash, Write
+tools: Read, Bash, Write
 model: inherit
 effort: medium
 memory: project

@@ -5,7 +5,7 @@ description: First-principles creation specialist -- designs and prototypes nove
   constraints, surveys existing approaches, identifies their limitations, and creates
   custom solutions with working prototypes. Use when the problem needs a new tool rather
   than an existing one.
-tools: Read, Glob, Grep, Bash, Write, Edit
+tools: Read, Bash, Write, Edit
 model: inherit
 effort: xhigh # default: xhigh (Opus 4.8 recommended default per Anthropic). max available via explicit override.
 memory: project

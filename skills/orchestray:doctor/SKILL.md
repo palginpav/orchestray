@@ -333,12 +333,14 @@ deletes them (see `.orchestray/kb/decisions/bare-event-key-hand-appends.md`).
 ### P9c3: Recent diagnostic-shaped events (fired, not never-fired)
 
 P9c and P9c2 report event types that have declared but never fired, or that
-fired misshapen. Neither says anything about the 37 diagnostic-shaped types
+fired misshapen. Neither says anything about the diagnostic-shaped types
 (`*_warn`, `*_blocked`, `*_failed`, `*_missing`, `*_violation`, `*_detected`,
-`*_gap`, `*_orphaned`, `*_stale`, `*_drift`) that HAVE fired — the more
-urgent half of the picture, and previously surfaced nowhere. This probe
-reads `recentDiagnostics` from the SAME `dark-event-banner.js --json`
-invocation P9c/P9c2 already parse (still one subprocess call).
+`*_gap`, `*_orphaned`, `*_stale`, `*_drift`, `*_shortfall`) that HAVE fired —
+the more urgent half of the picture, and previously surfaced nowhere. This
+includes `tool_grant_shortfall` (v2.3.26 W11) — an agent declaring a tool it
+never actually received. This probe reads `recentDiagnostics` from the SAME
+`dark-event-banner.js --json` invocation P9c/P9c2 already parse (still one
+subprocess call).
 
 Skip when `$PROJECT_ROOT/.orchestray/` does not exist (same as P9c/P9c2).
 
@@ -347,8 +349,8 @@ ranked: [{event_type, count, tier}, ...]}` from the same stdout JSON.
 `ranked` is pre-sorted by actionability: tier 1 (`*_blocked`/`*_failed` — an
 enforcement action fired or something outright failed) outranks tier 2
 (`*_missing`/`*_orphaned`/`*_violation`) which outranks tier 3
-(`*_gap`/`*_stale`/`*_drift`/`*_detected`/`*_warn`), and within a tier, higher
-in-window count ranks first. This is why a single firing of
+(`*_gap`/`*_stale`/`*_drift`/`*_detected`/`*_warn`/`*_shortfall`), and within
+a tier, higher in-window count ranks first. This is why a single firing of
 `git_destructive_blocked` can rank above twenty firings of
 `schema_shape_violation` — tier beats volume.
 

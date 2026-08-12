@@ -805,6 +805,86 @@ function loadRoutingGateConfig(cwd) {
 }
 
 // ---------------------------------------------------------------------------
+// pattern_evidence.gate_mode — §22c post-decomposition pattern-evidence gate
+// enforcement mode (W14 v2.3.26 fix). Declared here so the key has a single
+// documented default and validated value set, matching every sibling gate
+// config in this file. bin/gate-agent-spawn.js reads config.json directly
+// (its own loadPatternEvidenceGateMode()) but validates against
+// VALID_PATTERN_EVIDENCE_GATE_MODES exported below so the two cannot drift.
+//
+// Values (same vocabulary as VALID_PER_TOOL_VALUES, kept separate on purpose
+// per .orchestray/kb/decisions/mcp-enforcement-rename-seam.md):
+//   "hook"        — legacy alias for "allow" on this gate; no enforcement.
+//   "hook-warn"   — stderr advisory only, spawn always allowed.
+//   "hook-strict" — blocks the spawn when the genuine case applies (a
+//                   pattern was offered this orchestration and no
+//                   pattern_record_skip_reason was recorded for it).
+//   "prompt"      — gate skipped; enforcement left to agent-prompt discipline.
+//   "allow"       — gate fully skipped.
+//
+// Default here mirrors gate-agent-spawn.js's own fallback chain: when
+// pattern_evidence.gate_mode is unset in config.json, the gate falls back to
+// mcp_enforcement.pattern_record_application, whose default is "hook-strict"
+// (see DEFAULT_MCP_ENFORCEMENT above). The W14 fix is the offered-pattern
+// guard, not a default-mode change: a "hook-strict" gate now only blocks
+// when a pattern was actually offered this orchestration and no
+// pattern_record_skip_reason was recorded — never on an empty corpus.
+// ---------------------------------------------------------------------------
+
+const VALID_PATTERN_EVIDENCE_GATE_MODES = Object.freeze(['hook', 'hook-warn', 'hook-strict', 'prompt', 'allow']);
+
+const DEFAULT_PATTERN_EVIDENCE = Object.freeze({
+  gate_mode: DEFAULT_MCP_ENFORCEMENT.pattern_record_application,
+});
+
+/**
+ * Load and merge the pattern_evidence.gate_mode key from
+ * <cwd>/.orchestray/config.json.
+ *
+ * Fail-open contract: missing/malformed/invalid returns DEFAULT_PATTERN_EVIDENCE.
+ *
+ * @param {string} cwd - Project root directory (absolute path).
+ * @returns {{ gate_mode: string }}
+ */
+function loadPatternEvidenceConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (_) {
+    return Object.assign({}, DEFAULT_PATTERN_EVIDENCE);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return Object.assign({}, DEFAULT_PATTERN_EVIDENCE);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_PATTERN_EVIDENCE);
+  }
+
+  const fromFile = parsed.pattern_evidence;
+  if (!fromFile || typeof fromFile !== 'object' || Array.isArray(fromFile)) {
+    return Object.assign({}, DEFAULT_PATTERN_EVIDENCE);
+  }
+
+  const merged = Object.assign({}, DEFAULT_PATTERN_EVIDENCE, sanitizeConfig(fromFile));
+
+  if (!VALID_PATTERN_EVIDENCE_GATE_MODES.includes(merged.gate_mode)) {
+    logStderr(
+      'pattern_evidence.gate_mode must be one of: ' + VALID_PATTERN_EVIDENCE_GATE_MODES.join(', ') +
+      ' — got ' + JSON.stringify(merged.gate_mode) + '; using default'
+    );
+    merged.gate_mode = DEFAULT_PATTERN_EVIDENCE.gate_mode;
+  }
+
+  return merged;
+}
+
+// ---------------------------------------------------------------------------
 // cost_budget_reserve section defaults and loader (D5 v2.0.16)
 //
 // mcp_server.cost_budget_reserve.ttl_minutes — integer 1..1440, default 30.
@@ -5155,6 +5235,69 @@ function validateOversizedInputConfig(obj) {
   return errors.length === 0 ? { valid: true } : { valid: false, errors };
 }
 
+// -- agent_lifecycle -----------------------------------------------------------
+//
+// W2/W4 (v2.3.26): governs the agent lifecycle registry (spawn -> running ->
+// completed -> dismissed) and model-attribution repair. Mirrors
+// loadDeltaHandoffConfig exactly: read config.json, fail-open to frozen
+// defaults, per-field type check with logStderr on mismatch. Every switch
+// defaults ON per standing project convention — see
+// `.orchestray/kb/artifacts/v2326-lifecycle-design.md` §9.
+
+const DEFAULT_AGENT_LIFECYCLE = Object.freeze({
+  enabled: true,
+  auto_dismiss_completed: true,
+  resume_instead_of_respawn: true,
+  max_concurrent_guard: 20,
+  hold_ttl_minutes: 30,
+  max_resumes_per_agent: 3,
+  max_dismiss_nag: 3,
+  max_resume_body_chars: 4000,
+  registry_max_rows: 2000,
+});
+
+/**
+ * Load the `agent_lifecycle` top-level config section.
+ * Fail-open: returns DEFAULT_AGENT_LIFECYCLE on missing/malformed input.
+ * @param {string} cwd
+ * @returns {typeof DEFAULT_AGENT_LIFECYCLE}
+ */
+function loadAgentLifecycleConfig(cwd) {
+  const configPath = path.join(cwd, '.orchestray', 'config.json');
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (_) {
+    return Object.assign({}, DEFAULT_AGENT_LIFECYCLE);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return Object.assign({}, DEFAULT_AGENT_LIFECYCLE);
+  }
+  const section = parsed.agent_lifecycle;
+  if (!section || typeof section !== 'object' || Array.isArray(section)) {
+    return Object.assign({}, DEFAULT_AGENT_LIFECYCLE);
+  }
+  const merged = Object.assign({}, DEFAULT_AGENT_LIFECYCLE, sanitizeConfig(section));
+  const booleanFields = ['enabled', 'auto_dismiss_completed', 'resume_instead_of_respawn'];
+  for (const field of booleanFields) {
+    if (typeof merged[field] !== 'boolean') {
+      logStderr('agent_lifecycle.' + field + ' must be boolean — using default');
+      merged[field] = DEFAULT_AGENT_LIFECYCLE[field];
+    }
+  }
+  const numericFields = [
+    'max_concurrent_guard', 'hold_ttl_minutes', 'max_resumes_per_agent',
+    'max_dismiss_nag', 'max_resume_body_chars', 'registry_max_rows',
+  ];
+  for (const field of numericFields) {
+    if (typeof merged[field] !== 'number' || !Number.isFinite(merged[field])) {
+      logStderr('agent_lifecycle.' + field + ' must be a number — using default');
+      merged[field] = DEFAULT_AGENT_LIFECYCLE[field];
+    }
+  }
+  return merged;
+}
+
 module.exports = {
   DEFAULT_MCP_ENFORCEMENT,
   loadMcpEnforcement,
@@ -5176,6 +5319,10 @@ module.exports = {
   // routing_gate auto-seed on miss
   DEFAULT_ROUTING_GATE,
   loadRoutingGateConfig,
+  // pattern_evidence.gate_mode — §22c gate enforcement mode
+  VALID_PATTERN_EVIDENCE_GATE_MODES,
+  DEFAULT_PATTERN_EVIDENCE,
+  loadPatternEvidenceConfig,
   // cost_budget_reserve TTL config
   DEFAULT_COST_BUDGET_RESERVE,
   loadCostBudgetReserveConfig,
@@ -5299,4 +5446,7 @@ module.exports = {
   DEFAULT_OVERSIZED_INPUT,
   loadOversizedInputConfig,
   validateOversizedInputConfig,
+  // agent_lifecycle config block (W2/W4 v2.3.26)
+  DEFAULT_AGENT_LIFECYCLE,
+  loadAgentLifecycleConfig,
 };

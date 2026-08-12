@@ -3,6 +3,32 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.26] - 2026-08-12
+
+**Orchestray 2.3.26 was scoped around giving you direct control over running agents — restarting an idle one, stopping one you no longer need — but that turned out to be impossible: the platform tools it would take are disabled for plugins, confirmed by calling them directly from both the orchestrator and a subagent. What the investigation into that gap produced ships instead: cost reporting that was silently guessing at most of what you spent is now accurate, a spawn hard-block that punished exactly the model-pinning style our own docs recommend is gone, and an agent's uncommitted work is no longer silently deleted when its workspace is cleaned up.**
+
+### Added
+
+- **`/orchestray:agents` lists every agent from the lifecycle registry** — model, status, start/stop time, and cost, with cost marked as either resolved (read back from the real spawn) or estimated (a fallback guess). This is what makes the cost-attribution fix above actually visible instead of just fixed under the hood. It is read-only: no stop, dismiss, or restart, because the platform tools that would allow it are disabled for plugins.
+
+### Fixed
+
+- **Cost reporting was guessing at roughly 92% of your spend** (\$838 of \$912 measured in one investigation session). Whenever an agent was spawned with a custom name — something Orchestray itself does routinely — there was no reliable way to look up which model actually ran it, so cost tracking fell back to assuming Sonnet pricing. The model is now recorded at the moment of spawn and read back directly, so totals reflect what actually ran instead of a guess.
+- **Spawning an agent pinned to a full model ID like `claude-opus-5` — the pinning style our own documentation recommends — was silently hard-blocked.** The check compared a normalized model name against a raw one, so they could never match; the error message even printed identical-looking values on both sides, which made the block look like a bug report rather than the cause. Fixed.
+- **A fresh install could hard-block the very first agent spawn.** A safety check meant to require pattern-usage feedback fired even when no pattern had ever been offered — impossible to satisfy on a project with no history yet. It now only applies once a pattern has actually been offered.
+- **Uncommitted work in an agent's own isolated workspace could be silently deleted when that workspace was cleaned up.** Removal assumed a separate hook had already saved any changes first; when that assumption didn't hold, deletion went ahead anyway with no warning. It now re-checks for uncommitted or untracked files immediately before removing the workspace and, if any are found, leaves it in place and reports exactly which files would have been lost instead of destroying them.
+- **Some agents were told, in their own instructions, that they had tools they were never actually given.** Every agent's declared tool list has been reconciled against what it actually receives; two tools removed from the platform entirely (`Glob`, `Grep`) have been stripped from the agent definitions that listed them. One exception: the internal housekeeper agent's tool list is contract-frozen across several drift detectors and still declares `Glob`; it is inert there either way, and is scheduled for the next release rather than unpinned late in this one. Orchestray already had a detector for this class of mismatch running quietly in the background — it's now surfaced in `/orchestray:doctor` instead of only writing to an internal log nobody read.
+
+### Known limitations
+
+- **Direct control over running agents — restarting an idle one, stopping one you don't need — is not in this release**, despite being the goal it was scoped around. The Claude Code tools that would make it possible (`TaskStop`, `SendMessage`, `ListAgents`) are disabled for plugin-spawned agents at the platform level, with no workaround available from inside a plugin — confirmed by calling them directly from both the orchestrator and a subagent. Nothing in this release pretends otherwise. It returns if the platform opens those tools up to plugins.
+
+### Under the hood
+
+- Fixed a detection bug in the (still off-by-default) Agent Teams integration that would have told every idle teammate there was no remaining work, even when there was — the scanner and the task-list generator disagreed on the file format. Agent Teams itself stays off by default this release.
+- A test suite file was writing fixture rows directly into the real operational audit log instead of an isolated one, which made the Teams surface look like it had live activity it didn't. Fixed.
+- The internal verification helper introduced last release had two more false-negative blind spots (untracked files, and environment variables threaded through function parameters instead of read directly) and ran slowly against stale worktrees; both fixed.
+
 ## [2.3.25] - 2026-08-10
 
 **Orchestray 2.3.25 continues the "things documented as working that silently weren't" theme: the per-agent spawn-size limit has had nothing to compare against on any machine that never ran its own calibration step, for nine releases. It's fixed, plus the resumed-session edge case in last release's restart notice, and `npm test` now passes cleanly on a fresh clone.**

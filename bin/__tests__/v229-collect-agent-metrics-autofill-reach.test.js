@@ -5,11 +5,14 @@
  * v229-collect-agent-metrics-autofill-reach.test.js — W2 autofill reach.
  *
  * Verifies that the agent_stop event emitted by collect-agent-metrics.js
- * contains version: 1 (required by schema), closing the F1-reach gap where
+ * contains version (required by schema), closing the F1-reach gap where
  * the emit previously lacked the field and caused 86% schema validation blocks.
+ * v2.3.26 (W2/W4) bumped the default to version: 2 (additive agent-lifecycle
+ * fields, default-on); ORCHESTRAY_DISABLE_AGENT_LIFECYCLE=1 reverts to
+ * version: 1 with the pre-bump field set.
  *
- * Test 1: SubagentStop path → events.jsonl row has version: 1.
- * Test 2: ORCHESTRAY_AUDIT_AUTOFILL_DISABLED=1 env — version: 1 still present
+ * Test 1: SubagentStop path → events.jsonl row has version: 2.
+ * Test 2: ORCHESTRAY_AUDIT_AUTOFILL_DISABLED=1 env — version: 2 still present
  *         (set explicitly at emit site, not via autofill; this proves the field
  *         is not reliant on a separate autofill mechanism that could be toggled).
  * Test 3: No schema_shadow_validation_block surrogate row appears for the
@@ -91,7 +94,7 @@ function buildPayload(overrides) {
 
 // ---------------------------------------------------------------------------
 
-test('Test 1: agent_stop row has version: 1 (W2 emit-site fix)', () => {
+test('Test 1: agent_stop row has version: 2 (W2/W4 v2.3.26 agent-lifecycle bump)', () => {
   const orchId = 'orch-v229-w2-t1';
   seedOrch(orchId);
 
@@ -101,13 +104,15 @@ test('Test 1: agent_stop row has version: 1 (W2 emit-site fix)', () => {
   const events = readEvents();
   const stop = events.find((e) => e.type === 'agent_stop');
   assert.ok(stop, 'no agent_stop row found in events.jsonl');
-  assert.equal(stop.version, 1, 'agent_stop must have version: 1');
+  assert.equal(stop.version, 2, 'agent_stop must have version: 2 (agent-lifecycle fields default-on)');
 });
 
-test('Test 2: version: 1 present even with ORCHESTRAY_AUDIT_AUTOFILL_DISABLED=1', () => {
+test('Test 2: version: 2 present even with ORCHESTRAY_AUDIT_AUTOFILL_DISABLED=1', () => {
   // version is set explicitly at emit site, not via a toggleable autofill
-  // mechanism. This test documents that the fix is intrinsic to the event
-  // construction, not dependent on a secondary autofill path.
+  // mechanism. ORCHESTRAY_AUDIT_AUTOFILL_DISABLED is unrelated to the
+  // agent-lifecycle kill switch (ORCHESTRAY_DISABLE_AGENT_LIFECYCLE) that
+  // gates version 1 vs 2 -- this test documents that the two toggles are
+  // independent.
   const orchId = 'orch-v229-w2-t2';
   seedOrch(orchId);
 
@@ -121,8 +126,8 @@ test('Test 2: version: 1 present even with ORCHESTRAY_AUDIT_AUTOFILL_DISABLED=1'
   assert.ok(stop, 'no agent_stop row found in events.jsonl');
   assert.equal(
     stop.version,
-    1,
-    'version: 1 must be set at emit site, independent of any autofill toggle'
+    2,
+    'version: 2 must be set at emit site, independent of any autofill toggle'
   );
 });
 
