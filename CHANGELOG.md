@@ -3,6 +3,28 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.27] - 2026-08-12
+
+**Orchestray 2.3.27 confirms the cost-attribution fix from last release actually works on live data, and closes the gap 2.3.26 left open: uncommitted work now survives an agent being killed outright, not just a workspace cleanup. It also fixes a release-safety check that gave a different answer every time it ran against unchanged code, and a test ledger that could tell you to both delete and re-add the same waiver.**
+
+### Added
+
+- **Uncommitted work in an agent's workspace is now rescued even when the agent is killed abruptly and never gets to clean up after itself.** 2.3.26 stopped a workspace cleanup from deleting deliberate uncommitted changes; it didn't cover the case where the agent never reaches that cleanup step at all — an abrupt kill leaves the workspace behind with no hook ever having run. A new sweep now runs on the orchestrator's own turn boundary (measured at 17ms), finds any dirty, quiescent workspace, and commits its contents so nothing is lost. It also flags a workspace whose checkout has fallen behind the main branch, so a later merge from it doesn't silently discard work that landed on main in the meantime.
+
+### Fixed
+
+- **A release-safety check could report a different "something changed" result on two runs of the exact same, unmodified code.** The check has a per-script timeout so a wedged hook can't hang the whole check; that timeout firing was being folded into the same "the script exited abnormally" signal as a real failure, so under normal CPU contention from other work on the machine, whichever script got starved that run looked like it had changed behavior. It now retries once before giving up, and reports "inconclusive" instead of guessing when a script still can't finish — inconclusive results are excluded from what would block a release.
+- **An internal test ledger could tell you to both delete and re-add the same waiver entry.** Two separate checks tracked the same underlying fact from different angles, and could disagree about what to do next for the same item. They're now driven by one shared check that gives a single, coherent instruction — and it immediately found two entries on real data that were left half-updated by that inconsistency.
+
+### Under the hood
+
+- Verified on live data (not just unit tests) that an agent's actual spawn cost — model and price — is now recorded and read back correctly, confirming last release's fix. Verification only; no functional change.
+- Re-tested whether direct control over running agents (stopping or restarting one) has
+  become available since last release — it has not. The platform tools that would allow it
+  still never reach the runtime at all, tested from every position an agent can occupy.
+  No change in behaviour; recorded so the limitation noted in 2.3.26 isn't assumed fixed.
+- The internal housekeeper helper's tool declaration no longer lists a tool it never used; its description, routing rules, and the checks that enforce its permissions were all updated together so none of them promise a capability it doesn't have.
+
 ## [2.3.26] - 2026-08-12
 
 **Orchestray 2.3.26 was scoped around giving you direct control over running agents — restarting an idle one, stopping one you no longer need — but that turned out to be impossible: the platform tools it would take are disabled for plugins, confirmed by calling them directly from both the orchestrator and a subagent. What the investigation into that gap produced ships instead: cost reporting that was silently guessing at most of what you spent is now accurate, a spawn hard-block that punished exactly the model-pinning style our own docs recommend is gone, and an agent's uncommitted work is no longer silently deleted when its workspace is cleaned up.**

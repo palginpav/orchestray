@@ -37,8 +37,12 @@ const VALIDATE_PATH = path.join(REPO_ROOT, 'bin', 'validate-task-completion.js')
 // one narrowly-scoped, read-only MCP tool (history_query_events) so op class
 // 3 can stop Reading the live events.jsonl. Edit/Write/Bash/Grep remain
 // forbidden — Clause 2 (below) is unchanged.
-const EXPECTED_TOOLS_LINE = 'tools: [Read, Glob, mcp__orchestray__history_query_events]';
-const HOUSEKEEPER_FORBIDDEN_TOOLS = ['Edit', 'Write', 'Bash', 'Grep'];
+//
+// Amended 2026-08-12 (V6, scope-locked v2327): `Glob` removed from the grant.
+// It was never used by any op class; this narrows (not promotes) the
+// whitelist, so it does not require a [housekeeper-tools-extension] tag.
+const EXPECTED_TOOLS_LINE = 'tools: [Read, mcp__orchestray__history_query_events]';
+const HOUSEKEEPER_FORBIDDEN_TOOLS = ['Edit', 'Write', 'Bash', 'Grep', 'Glob'];
 
 const PLACEHOLDER_SHA = 'REPLACE_DURING_IMPL_COMMIT_64HEX';
 
@@ -73,15 +77,15 @@ describe('P3.3 — orchestray-housekeeper agent file frozen baseline', () => {
       JSON.stringify(BASELINE_AGENT_SHA));
   });
 
-  test('BASELINE_TOOLS_LINE literally equals "tools: [Read, Glob, mcp__orchestray__history_query_events]"', () => {
+  test('BASELINE_TOOLS_LINE literally equals "tools: [Read, mcp__orchestray__history_query_events]"', () => {
     const { BASELINE_TOOLS_LINE } = require(BASELINE_PATH);
     assert.equal(BASELINE_TOOLS_LINE, EXPECTED_TOOLS_LINE,
       'BASELINE_TOOLS_LINE drifted from the locked-scope D-5 Clause 1 contract\n' +
-      '(as amended by v2.3.23 Item 4).\n' +
+      '(as amended by v2.3.23 Item 4, narrowed V6 scope-locked v2327).\n' +
       '  Expected: ' + JSON.stringify(EXPECTED_TOOLS_LINE) + '\n' +
       '  Actual:   ' + JSON.stringify(BASELINE_TOOLS_LINE) + '\n' +
-      'Housekeeper tools are FROZEN at [Read, Glob, history_query_events] as of\n' +
-      'v2.3.23 — still STRICTER than the scout (no Grep, no other MCP tools).\n' +
+      'Housekeeper tools are FROZEN at [Read, history_query_events] as of\n' +
+      'V6 — still STRICTER than the scout (no Grep, no Glob, no other MCP tools).\n' +
       'Further promotion requires an explicit commit tagged\n' +
       '[housekeeper-tools-extension] updating both this constant and the\n' +
       'agent file. See agents/pm-reference/cost-prediction.md §32.');
@@ -119,13 +123,13 @@ describe('P3.3 — orchestray-housekeeper agent file frozen baseline', () => {
       'the same commit (tagged [housekeeper-tools-extension]).');
   });
 
-  test('frontmatter shape: tools: [Read, Glob, mcp__orchestray__history_query_events] inside YAML block', () => {
+  test('frontmatter shape: tools: [Read, mcp__orchestray__history_query_events] inside YAML block', () => {
     const body = fs.readFileSync(HOUSEKEEPER_PATH, 'utf8');
     const fmMatch = body.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     assert.ok(fmMatch, 'agents/orchestray-housekeeper.md must start with YAML frontmatter');
     const fm = fmMatch[1];
-    assert.match(fm, /\ntools: \[Read, Glob, mcp__orchestray__history_query_events\]\n/,
-      'frontmatter must contain the literal line `tools: [Read, Glob, ' +
+    assert.match(fm, /\ntools: \[Read, mcp__orchestray__history_query_events\]\n/,
+      'frontmatter must contain the literal line `tools: [Read, ' +
       'mcp__orchestray__history_query_events]`');
   });
 

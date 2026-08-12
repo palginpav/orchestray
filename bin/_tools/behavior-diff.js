@@ -86,6 +86,22 @@ const SCHEMA_VERSION = 1;
 /** Per-fixture child-process budget. A wedged hook must not wedge the harness. */
 const RUN_TIMEOUT_MS = 10000;
 
+/**
+ * Retry budget for a fixture whose first attempt was killed by RUN_TIMEOUT_MS.
+ * v2.3.27 V4: the gate flagged a different `bin/*.js` script on each of two
+ * runs against an UNMODIFIED tree, then ran clean 5x. `execFileSync`'s
+ * `timeout` kills the child and throws `{status: null, killed: true}` — the
+ * observe() code path folded that into `code: 99`, indistinguishable from a
+ * real non-zero exit. In this repo's own multi-agent dev environment, many
+ * concurrent Bash/subagent child processes compete for CPU, so a script that
+ * normally finishes in well under a second can occasionally miss a 10s budget
+ * for reasons that have nothing to do with its behavior. One retry at double
+ * budget separates "genuinely slow/hung" from "starved this one time" without
+ * making a real behavior change (a script that reliably exits 99) silently
+ * disappear.
+ */
+const RETRY_TIMEOUT_MS = RUN_TIMEOUT_MS * 2;
+
 /** Fixtures replayed per script per side. Guards against a runaway corpus. */
 const MAX_FIXTURES_PER_SCRIPT = 40;
 
@@ -205,18 +221,22 @@ function materialiseState(sandbox, state) {
 }
 
 /**
- * Run one script against one fixture in an isolated cwd.
+ * One full attempt: fresh sandbox, materialise state, run, read events,
+ * cleanup. Split out of `observe()` so a timed-out attempt can be retried in
+ * a clean sandbox rather than reusing one that may hold partial output from
+ * the killed process.
  *
- * @param {string} scriptPath — absolute path to the script under observation.
+ * @param {string} scriptPath
  * @param {object} fixture — `{stdin, state}`.
- * @returns {{code:number, events:string[], stderr_class:string}}
+ * @param {number} timeoutMs
+ * @returns {{obs: {code:number, events:string[], stderr_class:string}, timedOut: boolean}}
  */
-function observe(scriptPath, fixture) {
+function attemptObserve(scriptPath, fixture, timeoutMs) {
   let sandbox;
   try {
     sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bdg-'));
   } catch (_e) {
-    return observationOf({ code: 99, stderr: 'sandbox_create_failed' });
+    return { obs: observationOf({ code: 99, stderr: 'sandbox_create_failed' }), timedOut: false };
   }
   try {
     fs.mkdirSync(path.join(sandbox, '.orchestray', 'state'), { recursive: true });
@@ -225,11 +245,12 @@ function observe(scriptPath, fixture) {
 
     let code = 0;
     let stderr = '';
+    let timedOut = false;
     try {
       execFileSync(process.execPath, [scriptPath], {
         input: JSON.stringify((fixture && fixture.stdin) || {}),
         cwd: sandbox,
-        timeout: RUN_TIMEOUT_MS,
+        timeout: timeoutMs,
         encoding: 'utf8',
         stdio: ['pipe', 'pipe', 'pipe'],
         env: Object.assign({}, process.env, {
@@ -241,6 +262,13 @@ function observe(scriptPath, fixture) {
     } catch (e) {
       code = typeof e.status === 'number' ? e.status : 99;
       stderr = String((e && e.stderr) || '');
+      // execFileSync's own `timeout` firing is the one case where `e.code`
+      // is Node's literal string `'ETIMEDOUT'` — measured directly (empirically
+      // `e.killed` is NOT reliably set to true for sync execFileSync despite
+      // docs describing it for the async form). `status === null` + a signal
+      // present is the fallback signature for "killed by signal, not by its
+      // own exit()" in case the ETIMEDOUT code ever changes across Node versions.
+      timedOut = !!(e && (e.code === 'ETIMEDOUT' || (e.status === null && e.signal)));
     }
 
     let events = [];
@@ -250,12 +278,36 @@ function observe(scriptPath, fixture) {
         .map((l) => { try { const p = JSON.parse(l); return p.type || p.event_type || '?'; } catch (_e) { return '?'; } });
     } catch (_e) { /* no events emitted */ }
 
-    return observationOf({ code, events, stderr });
+    return { obs: observationOf({ code, events, stderr }), timedOut };
   } catch (_e) {
-    return observationOf({ code: 99, stderr: 'observe_failed' });
+    return { obs: observationOf({ code: 99, stderr: 'observe_failed' }), timedOut: false };
   } finally {
     try { fs.rmSync(sandbox, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
   }
+}
+
+/**
+ * Run one script against one fixture in an isolated cwd.
+ *
+ * A first attempt that gets killed by `RUN_TIMEOUT_MS` is retried once at
+ * `RETRY_TIMEOUT_MS` in a fresh sandbox (see RETRY_TIMEOUT_MS doc). If the
+ * retry also times out, the returned observation carries `_harness_timeout:
+ * true` so `diffScript()` can keep it out of `deltas` — a harness-imposed
+ * kill is not a behavior signal, and `diffScript` is the only caller that
+ * needs to see the marker; `observationOf`'s known-field destructuring means
+ * every other consumer (coverage(), observationEquals()) ignores it safely.
+ *
+ * @param {string} scriptPath — absolute path to the script under observation.
+ * @param {object} fixture — `{stdin, state}`.
+ * @returns {{code:number, events:string[], stderr_class:string, _harness_timeout?:true}}
+ */
+function observe(scriptPath, fixture) {
+  const first = attemptObserve(scriptPath, fixture, RUN_TIMEOUT_MS);
+  if (!first.timedOut) return first.obs;
+  const second = attemptObserve(scriptPath, fixture, RETRY_TIMEOUT_MS);
+  if (!second.timedOut) return second.obs;
+  second.obs._harness_timeout = true;
+  return second.obs;
 }
 
 // ---------------------------------------------------------------------------
@@ -270,12 +322,20 @@ function observe(scriptPath, fixture) {
  * observation on both sides. In none of those cases did we learn anything, and
  * saying `deltas: []` would be a lie of omission.
  *
+ * `inconclusive` (v2.3.27 V4) holds fixtures where either side's observe()
+ * was killed by the harness's own timeout twice (see RETRY_TIMEOUT_MS). These
+ * are deliberately excluded from `deltas` — a harness-imposed kill is not a
+ * behavior signal, and counting it as one is exactly the mechanism that made
+ * the gate flag a different script on every run of an unmodified tree: under
+ * load, whichever script happened to get starved that run "changed", and the
+ * next run a different one did.
+ *
  * @param {string} rel — repo-relative script path, e.g. `bin/foo.js`.
  * @param {string} repoRoot
  * @param {string} baselineRoot
  * @param {object} [opts]
  * @returns {{script:string, fixtures:number, invalid:number, deltas:object[],
- *            uncovered:boolean, reason:?string}}
+ *            inconclusive:object[], uncovered:boolean, reason:?string}}
  */
 function diffScript(rel, repoRoot, baselineRoot, opts) {
   const options = opts || {};
@@ -284,7 +344,7 @@ function diffScript(rel, repoRoot, baselineRoot, opts) {
 
   if (fixtures.length === 0) {
     return {
-      script: rel, fixtures: 0, invalid, deltas: [], uncovered: true,
+      script: rel, fixtures: 0, invalid, deltas: [], inconclusive: [], uncovered: true,
       reason: invalid > 0 ? 'fixtures_invalid' : 'no_fixtures',
     };
   }
@@ -292,6 +352,7 @@ function diffScript(rel, repoRoot, baselineRoot, opts) {
   const basePath = path.join(baselineRoot, rel);
   const workPath = path.join(repoRoot, rel);
   const deltas = [];
+  const inconclusive = [];
   let exercised = false;
 
   for (const { name, fixture } of fixtures) {
@@ -299,18 +360,32 @@ function diffScript(rel, repoRoot, baselineRoot, opts) {
       ? observeFn(basePath, fixture)
       : observationOf({ code: 0, events: [], stderr: '' });
     const after = observeFn(workPath, fixture);
+    if (before._harness_timeout || after._harness_timeout) {
+      inconclusive.push({ fixture: name, before, after });
+      continue;   // neither a delta nor evidence of exercise — the harness gave up, not the script
+    }
     if (!isTrivialObservation(before) || !isTrivialObservation(after)) exercised = true;
     if (!observationEquals(before, after)) deltas.push({ fixture: name, before, after });
   }
 
+  if (inconclusive.length === fixtures.length) {
+    // Every fixture was harness-timed-out on both attempts — resource
+    // contention severe enough that nothing was learned. Distinct from
+    // all_observations_trivial: those ran fine and did nothing; these never
+    // finished running at all.
+    return {
+      script: rel, fixtures: fixtures.length, invalid, deltas: [], inconclusive,
+      uncovered: true, reason: 'harness_timeout',
+    };
+  }
   if (!exercised) {
     // Every fixture fail-opened on both sides — the script was never exercised.
     return {
-      script: rel, fixtures: fixtures.length, invalid, deltas: [],
+      script: rel, fixtures: fixtures.length, invalid, deltas: [], inconclusive,
       uncovered: true, reason: 'all_observations_trivial',
     };
   }
-  return { script: rel, fixtures: fixtures.length, invalid, deltas, uncovered: false, reason: null };
+  return { script: rel, fixtures: fixtures.length, invalid, deltas, inconclusive, uncovered: false, reason: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -518,8 +593,8 @@ function createBaselineWorktree(repoRoot, base) {
  *
  * @param {object} [opts]
  * @returns {{schema_version:number, base:string, scripts:object[], delta_count:number,
- *            declared_delta_count:number, uncovered_count:number, coverage:object,
- *            blocked:boolean, unmatched_declarations:string[],
+ *            declared_delta_count:number, uncovered_count:number, inconclusive_count:number,
+ *            coverage:object, blocked:boolean, unmatched_declarations:string[],
  *            malformed_declarations:string[], ramp:object}}
  */
 function run(opts) {
@@ -540,6 +615,7 @@ function run(opts) {
     delta_count: 0,
     declared_delta_count: 0,
     uncovered_count: 0,
+    inconclusive_count: 0,
     coverage: coverage(repoRoot, { maxFixtures: cfg.max_fixtures_per_script }),
     blocked: false,
     unmatched_declarations: [],
@@ -576,6 +652,7 @@ function run(opts) {
       if (result.declared) report.declared_delta_count += result.deltas.length;
       else report.delta_count += result.deltas.length;
       if (result.uncovered) report.uncovered_count++;
+      report.inconclusive_count += (result.inconclusive || []).length;
     }
   } finally {
     worktree.cleanup();
@@ -613,6 +690,7 @@ function emitRunEvent(repoRoot, report) {
       scripts_replayed: report.scripts.length,
       delta_count: report.delta_count,
       uncovered_count: report.uncovered_count,
+      inconclusive_count: report.inconclusive_count || 0,
       covered_scripts: cov.covered_scripts || 0,
       scripts_with_fixtures: cov.scripts_with_fixtures || 0,
       coverage_ratio: cov.ratio || 0,
@@ -649,18 +727,28 @@ function renderText(report) {
   if (report.error) lines.push('  harness: ' + report.error + ' (fail-open)');
   if (report.scripts.length === 0) lines.push('  no changed bin/*.js scripts to replay');
   for (const s of report.scripts) {
+    if (s.reason === 'harness_timeout') {
+      lines.push('  [TIMEOUT]   ' + s.script + ' — all ' + s.fixtures + ' fixture(s) killed by the harness ' +
+        'timeout on both attempts (NOT a behavior signal — likely resource contention; re-run when idle)');
+      continue;
+    }
     if (s.uncovered) {
       lines.push('  [UNCOVERED] ' + s.script + ' — ' + s.reason +
         ' (NOT "no change": nothing was exercised)');
       continue;
     }
-    if (s.deltas.length === 0) { lines.push('  [SAME]      ' + s.script + ' (' + s.fixtures + ' fixtures)'); continue; }
-    if (s.declared) {
-      lines.push('  [DECLARED]  ' + s.script + ' — ' + s.deltas.length + ' of ' + s.fixtures +
-        ' fixtures differ — ' + s.declared_reason);
+    const inc = (s.inconclusive || []).length;
+    const incNote = inc ? ' (' + inc + ' fixture(s) excluded — harness timeout, not a behavior signal)' : '';
+    if (s.deltas.length === 0) {
+      lines.push('  [SAME]      ' + s.script + ' (' + s.fixtures + ' fixtures)' + incNote);
       continue;
     }
-    lines.push('  [DELTA]     ' + s.script + ' — ' + s.deltas.length + ' of ' + s.fixtures + ' fixtures differ');
+    if (s.declared) {
+      lines.push('  [DECLARED]  ' + s.script + ' — ' + s.deltas.length + ' of ' + s.fixtures +
+        ' fixtures differ — ' + s.declared_reason + incNote);
+      continue;
+    }
+    lines.push('  [DELTA]     ' + s.script + ' — ' + s.deltas.length + ' of ' + s.fixtures + ' fixtures differ' + incNote);
     for (const d of s.deltas.slice(0, 5)) {
       lines.push('      ' + d.fixture + ': code ' + d.before.code + '->' + d.after.code +
         ', events [' + d.before.events.join(',') + ']->[' + d.after.events.join(',') + ']' +
@@ -676,12 +764,14 @@ function renderText(report) {
       '(typo\'d path, or the delta no longer exists?)');
   }
   const declaredNote = report.declared_delta_count ? ' (' + report.declared_delta_count + ' declared, excluded)' : '';
-  lines.push(report.delta_count === 0
+  const inconclusiveNote = report.inconclusive_count
+    ? ' — ' + report.inconclusive_count + ' fixture(s) inconclusive (harness timeout, not counted either way)' : '';
+  lines.push((report.delta_count === 0
     ? '  result: no unexplained behavior deltas' + declaredNote
     : '  result: ' + report.delta_count + ' unexplained behavior delta(s)' + declaredNote +
       (report.blocked ? ' — declare intentional changes with a `Behavior-Change: <script> <reason>` line in the ' +
         'commit body (script must be the full repo-relative path, reason mandatory)'
-                      : ' (telemetry only — behavior_diff_gate.block is false)'));
+                      : ' (telemetry only — behavior_diff_gate.block is false)')) + inconclusiveNote);
   return lines.join('\n');
 }
 
@@ -751,6 +841,7 @@ module.exports = {
   main,
   run,
   observe,
+  attemptObserve,
   diffScript,
   coverage,
   loadFixtures,
@@ -771,4 +862,6 @@ module.exports = {
   fixtureDir,
   SCHEMA_VERSION,
   MAX_FIXTURES_PER_SCRIPT,
+  RUN_TIMEOUT_MS,
+  RETRY_TIMEOUT_MS,
 };

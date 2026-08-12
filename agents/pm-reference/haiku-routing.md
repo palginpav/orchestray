@@ -27,9 +27,10 @@ the Read that fed it might have been Class B, but the *decision* is not.
 - **Read of a large file by absolute path (≥ `scout_min_bytes`, 12288 default).**
   Primary target: 100-KB JSON dump, audit-log chunk, prior-agent report.
   Effective bytes is the on-disk size, not the offset/limit substring.
-- **Multi-file Grep with `output_mode: files_with_matches`.** Small result
-  list, large search corpus.
-- **Glob of a deep directory tree.** Same shape.
+<!-- v2.3.27: 'Multi-file Grep' and 'Glob of a deep directory tree' removed from
+     Class B. haiku-scout grants `tools: [Read]`; neither Glob nor Grep exists in
+     this environment for any agent, so routing those ops here produced a spawn
+     that could not do the work. Use Bash find/grep inline instead. -->
 - **Telemetry-blob summarization.** Scout returns a list; PM reasons about it.
 
 **Anti-pattern:** "spawn scout to grep `agents/pm.md` for Section 19" — the
@@ -113,16 +114,20 @@ background ops the PM would otherwise do inline at Opus rates:
   per `.orchestray/kb/decisions/v2323-events-rotation-read-ceiling.md`),
   returns per-orchestration row counts. Marker: `[housekeeper: rollup-recompute]`.
 
-### Tool whitelist (FROZEN — Clause 1 of locked scope D-5, amended v2.3.23)
+### Tool whitelist (FROZEN — Clause 1 of locked scope D-5, amended v2.3.23, narrowed V6)
 
-`tools: [Read, Glob, mcp__orchestray__history_query_events]` — still strictly
-tighter than the scout's `[Read, Glob, Grep]` (no Grep, no other MCP tool).
-The single MCP grant was added in v2.3.23 [housekeeper-tools-extension] so op
-class 3 could stop reading the live audit log directly; it bypassed the
+`tools: [Read, mcp__orchestray__history_query_events]` — still strictly
+tighter than the scout's `[Read]` (no other MCP tool granted to the scout at
+all). The single MCP grant was added in v2.3.23 [housekeeper-tools-extension]
+so op class 3 could stop reading the live audit log directly; it bypassed the
 v2.2.1+ organic promotion criteria below by explicit, user-locked scope
-decision rather than accumulated operational evidence. Three-layer
-enforcement unchanged: frontmatter declarative (a), runtime exit-2 rejection
-in `bin/validate-task-completion.js` (b), CI test
+decision rather than accumulated operational evidence. `Glob` was removed in
+V6 (scope-locked v2327) — it was granted but never used; op class 3's own
+prose already forbade Read/Glob on the live events.jsonl, so this is a
+narrowing, not a promotion, and does not require the
+`[housekeeper-tools-extension]` tag. Three-layer enforcement unchanged:
+frontmatter declarative (a), runtime exit-2 rejection in
+`bin/validate-task-completion.js` (b), CI test
 `p33-housekeeper-whitelist-frozen.test.js` byte-equality vs baseline (c).
 
 ### Kill switches (Clause 5)

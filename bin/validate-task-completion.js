@@ -260,8 +260,13 @@ const ARTIFACT_PATH_FIELDS = [
 // = new Set([...])` declaration is preserved (rather than aliased through the
 // per-agent map) so the p22 frozen-baseline byte-equality test continues to
 // regex-match the source.
+//
+// V6 (housekeeper Glob strip): `Glob` added to the housekeeper forbidden set
+// to match its narrowed frontmatter grant `tools: [Read,
+// mcp__orchestray__history_query_events]` — Glob was granted but never used
+// (op class 3 already forbade it in prose; the tool was dead weight).
 const SCOUT_FORBIDDEN_TOOLS = new Set(['Edit', 'Write', 'Bash']);
-const HOUSEKEEPER_FORBIDDEN_TOOLS = new Set(['Edit', 'Write', 'Bash', 'Grep']);
+const HOUSEKEEPER_FORBIDDEN_TOOLS = new Set(['Edit', 'Write', 'Bash', 'Grep', 'Glob']);
 const READ_ONLY_AGENT_FORBIDDEN_TOOLS = {
   'haiku-scout':            SCOUT_FORBIDDEN_TOOLS,
   'orchestray-housekeeper': HOUSEKEEPER_FORBIDDEN_TOOLS,
@@ -1265,7 +1270,7 @@ function main() {
           session_id: event.session_id || null,
         });
         const frozenHint = agentRole === 'orchestray-housekeeper'
-          ? ' tools list is FROZEN at [Read, Glob, mcp__orchestray__history_query_events].'
+          ? ' tools list is FROZEN at [Read, mcp__orchestray__history_query_events].'
           : ' tools list (frozen).';
         process.stderr.write(
           '[orchestray] validate-task-completion: read-only contract violation: ' +

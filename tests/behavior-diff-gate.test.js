@@ -719,6 +719,107 @@ describe('BDG: baseline worktree can load npm dependencies', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Harness timeout is not a behavior signal (v2.3.27 V4)
+//
+// The gate flagged a different bin/*.js script on each of two runs against an
+// UNMODIFIED tree, then ran clean 5x. Root cause: execFileSync's own timeout
+// kill was folded into `code: 99`, indistinguishable from a real non-zero
+// exit — so a script starved by concurrent CPU load on this repo's own
+// multi-agent dev machine reported a phantom "behavior delta" that a
+// different script happened to trip on the next run.
+// ---------------------------------------------------------------------------
+
+describe('BDG: a harness timeout is excluded from deltas, not counted as one', () => {
+  test('diffScript routes an observation with _harness_timeout to inconclusive, not deltas', () => {
+    const root = tmpRepo();
+    touchScript(root, 'bin/demo.js');
+    writeFixture(root, 'demo', 'a.json', fixture({ x: 1 }));
+    writeFixture(root, 'demo', 'b.json', fixture({ x: 2 }));
+    let call = 0;
+    const res = bdg.diffScript('bin/demo.js', root, root, {
+      observe: () => {
+        call++;
+        // fixture a: baseline ok, working copy timed out on both attempts
+        if (call === 1) return { code: 0, events: [], stderr_class: '' };
+        if (call === 2) return { code: 99, events: [], stderr_class: '', _harness_timeout: true };
+        // fixture b: a real, non-timeout delta must still be caught
+        if (call === 3) return { code: 0, events: ['a'], stderr_class: '' };
+        return { code: 1, events: ['b'], stderr_class: '' };
+      },
+    });
+    assert.equal(res.uncovered, false, 'one real delta was exercised — must not be uncovered');
+    assert.equal(res.deltas.length, 1, 'the timed-out fixture must not appear as a delta');
+    assert.equal(res.deltas[0].fixture, 'b.json');
+    assert.equal(res.inconclusive.length, 1);
+    assert.equal(res.inconclusive[0].fixture, 'a.json');
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test('a script whose every fixture times out is uncovered with reason harness_timeout, not all_observations_trivial', () => {
+    const root = tmpRepo();
+    touchScript(root, 'bin/demo.js');
+    writeFixture(root, 'demo', 'a.json', fixture({ x: 1 }));
+    const res = bdg.diffScript('bin/demo.js', root, root, {
+      observe: () => ({ code: 99, events: [], stderr_class: '', _harness_timeout: true }),
+    });
+    assert.equal(res.uncovered, true);
+    assert.equal(res.reason, 'harness_timeout');
+    assert.deepEqual(res.deltas, []);
+    assert.equal(res.inconclusive.length, 1);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test('renderText marks a harness_timeout script [TIMEOUT], distinct from [UNCOVERED] and [DELTA]', () => {
+    const text = bdg.renderText({
+      base: 'HEAD', delta_count: 0, blocked: false, inconclusive_count: 1,
+      coverage: { covered_scripts: 0, scripts_with_fixtures: 1, total_fixtures: 1, invalid_fixtures: 0 },
+      scripts: [{
+        script: 'bin/demo.js', fixtures: 1, deltas: [], inconclusive: [{ fixture: 'a.json' }],
+        uncovered: true, reason: 'harness_timeout',
+      }],
+    });
+    assert.match(text, /\[TIMEOUT\]/);
+    assert.match(text, /not a behavior signal/i);
+    assert.equal(/\[DELTA\]/.test(text), false);
+  });
+
+  test('run() aggregates inconclusive_count across scripts and never blocks on it alone', () => {
+    const root = tmpRepo();
+    touchScript(root, 'bin/demo.js');
+    writeFixture(root, 'demo', 'a.json', fixture({ x: 1 }));
+    const report = bdg.run({
+      cwd: root, base: 'HEAD', only: ['bin/demo.js'], baselineRoot: root,
+      config: bdg.loadConfig(root),
+      observe: () => ({ code: 99, events: [], stderr_class: '', _harness_timeout: true }),
+    });
+    assert.equal(report.inconclusive_count, 1);
+    assert.equal(report.delta_count, 0);
+    assert.equal(report.blocked, false, 'an inconclusive-only run must not block a release');
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test('attemptObserve reports timedOut:true when the child is killed on the timeout budget', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdg-slow-'));
+    const script = path.join(dir, 'slow.js');
+    fs.writeFileSync(script, 'setTimeout(() => {}, 5000);\n', 'utf8');   // outlives a tiny budget
+    const { obs, timedOut } = bdg.attemptObserve(script, fixture(), 150);
+    assert.equal(timedOut, true);
+    assert.notEqual(obs.code, 0);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('attemptObserve reports timedOut:false for a script that exits on its own', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdg-fast-'));
+    const script = path.join(dir, 'fast.js');
+    fs.writeFileSync(script, 'process.exit(2);\n', 'utf8');
+    const { obs, timedOut } = bdg.attemptObserve(script, fixture(), 5000);
+    assert.equal(timedOut, false);
+    assert.equal(obs.code, 2);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Design constraint: no static JS analysis anywhere (§4.3, 20/20 false positives)
 // ---------------------------------------------------------------------------
 

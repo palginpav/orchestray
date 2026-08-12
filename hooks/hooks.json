@@ -760,6 +760,15 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/sweep-dirty-worktrees-on-pm-stop.js",
+            "timeout": 15
+          }
+        ]
       }
     ],
     "SubagentStop": [

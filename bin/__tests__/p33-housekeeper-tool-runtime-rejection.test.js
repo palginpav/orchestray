@@ -6,11 +6,11 @@
  *
  * Spawns `bin/validate-task-completion.js` with stdin payloads simulating
  * SubagentStop events for `orchestray-housekeeper` and verifies:
- *   1. Each of {Edit, Write, Bash, Grep} → exit 2 + housekeeper_forbidden_tool_blocked.
+ *   1. Each of {Edit, Write, Bash, Grep, Glob} → exit 2 + housekeeper_forbidden_tool_blocked.
  *   2. Scout payload with the same forbidden tools (Edit/Write/Bash) still
  *      emits the SCOUT-flavoured event (per-agent map differentiation).
  *   3. Scout payload with Grep → exit 0 (scout permits Grep, housekeeper does NOT).
- *   4. Clean housekeeper payload (Read+Glob only) → exit 0.
+ *   4. Clean housekeeper payload (Read only) → exit 0.
  *
  * Layer (b) of the three-layer enforcement (Clause 2 of locked-scope D-5).
  *
@@ -54,18 +54,18 @@ const VALID_RESULT = {
 
 describe('P3.3 — validate-task-completion rejects forbidden housekeeper tool calls', () => {
 
-  test('clean orchestray-housekeeper payload (Read+Glob only) → exit 0', () => {
+  test('clean orchestray-housekeeper payload (Read only) → exit 0', () => {
     const r = runHook({
       hook_event_name: 'SubagentStop',
       subagent_type: 'orchestray-housekeeper',
-      tool_calls: [{ name: 'Read' }, { name: 'Glob' }],
+      tool_calls: [{ name: 'Read' }],
       output: '## Structured Result\n```json\n' + JSON.stringify(VALID_RESULT) + '\n```\n',
     });
     assert.equal(r.status, 0, 'stderr=' + r.stderr);
     fs.rmSync(r.tmp, { recursive: true, force: true });
   });
 
-  for (const forbiddenTool of ['Edit', 'Write', 'Bash', 'Grep']) {
+  for (const forbiddenTool of ['Edit', 'Write', 'Bash', 'Grep', 'Glob']) {
     test('housekeeper with ' + forbiddenTool + ' → exit 2 + housekeeper_forbidden_tool_blocked', () => {
       const r = runHook({
         hook_event_name: 'SubagentStop',

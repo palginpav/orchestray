@@ -136,8 +136,8 @@ describe('P3.3 — audit-housekeeper-drift hook', () => {
     // Replace tools line so the tools-line differs from baseline.
     const realBody = fs.readFileSync(REAL_AGENT, 'utf8');
     const tamperedBody = realBody.replace(
-      /^tools: \[Read, Glob, mcp__orchestray__history_query_events\]$/m,
-      'tools: [Read, Glob, mcp__orchestray__history_query_events, Bash]'
+      /^tools: \[Read, mcp__orchestray__history_query_events\]$/m,
+      'tools: [Read, mcp__orchestray__history_query_events, Bash]'
     );
     assert.notEqual(tamperedBody, realBody, 'sandbox must actually replace the tools line');
     const tmp = setupSandbox({ agentBody: tamperedBody });
@@ -149,7 +149,7 @@ describe('P3.3 — audit-housekeeper-drift hook', () => {
       assert.ok(hit, 'expected housekeeper_drift_detected; events=' + JSON.stringify(events));
       assert.match(hit.reason, /tools/,
         'reason must mention tools when tools-line differs; got: ' + hit.reason);
-      assert.equal(hit.current_tools, 'tools: [Read, Glob, mcp__orchestray__history_query_events, Bash]');
+      assert.equal(hit.current_tools, 'tools: [Read, mcp__orchestray__history_query_events, Bash]');
       assert.equal(fs.existsSync(sentinelPath(tmp)), true);
     } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
   });

@@ -234,7 +234,7 @@ describe('hook integration', () => {
   });
 
   test('bracket-form frontmatter: granted tool at the closing-bracket position produces no warning', () => {
-    // orchestray-housekeeper's real frontmatter is `tools: [Read, Glob,
+    // orchestray-housekeeper's real frontmatter is `tools: [Read,
     // mcp__orchestray__history_query_events]` — mcp__orchestray__history_query_events
     // sits immediately before `]`. A parser that splits on comma without
     // stripping brackets would retain a trailing `]` on this exact entry and

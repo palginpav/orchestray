@@ -96,9 +96,11 @@ owns this gate; reviewers confirm the criteria are met before sign-off.
 The v2.2.0 P3.3 design introduces the `orchestray-housekeeper` subagent for
 three narrow-scope background ops (KB-write verification, schema-shadow regen
 diff, telemetry rollup recompute). Tools FROZEN at
-`[Read, Glob, mcp__orchestray__history_query_events]` — the single MCP grant
+`[Read, mcp__orchestray__history_query_events]` — the single MCP grant
 was added in v2.3.23 (R-EVT-ROTATE) so telemetry rollup recompute could stop
 reading the live `events.jsonl` directly; see "v2.3.23 amendment" below.
+`Glob` was stripped in V6 (scope-locked v2327) — it was never used by any
+op class.
 
 ### Per-call cost components
 
@@ -161,8 +163,8 @@ a previous known-good baseline. The same atomicity rules apply.
 
 | Layer | Surface | Effect |
 |---|---|---|
-| (a) frontmatter | `tools: [Read, Glob, mcp__orchestray__history_query_events]` in `agents/orchestray-housekeeper.md` | Declarative whitelist. |
-| (b) runtime | `bin/validate-task-completion.js` `READ_ONLY_AGENT_FORBIDDEN_TOOLS` map | Exit-2 + `housekeeper_forbidden_tool_blocked` event on `Edit`/`Write`/`Bash`/`Grep`. |
+| (a) frontmatter | `tools: [Read, mcp__orchestray__history_query_events]` in `agents/orchestray-housekeeper.md` | Declarative whitelist. |
+| (b) runtime | `bin/validate-task-completion.js` `READ_ONLY_AGENT_FORBIDDEN_TOOLS` map | Exit-2 + `housekeeper_forbidden_tool_blocked` event on `Edit`/`Write`/`Bash`/`Grep`/`Glob`. |
 | (c) CI | `bin/__tests__/p33-housekeeper-whitelist-frozen.test.js` byte-equality vs `BASELINE_TOOLS_LINE` | Test fails on any unsanctioned mutation. |
 
 The architect (not the reviewer) owns this gate; reviewers confirm the

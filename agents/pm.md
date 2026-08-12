@@ -1691,10 +1691,16 @@ on demand the first time you encounter a Class-B candidate in a session.
   delegation-prompt composition. Stays on Opus 5 xhigh inline; never
   delegated to a scout.
 - **Class B — Haiku-eligible spawn.** Large-file Read by absolute path
-  (offset/limit OK), multi-file Grep with `output_mode: files_with_matches`,
-  Glob of a directory tree, JSON validation against a known schema, chunked
+  (offset/limit OK), JSON validation against a known schema, chunked
   schema-shadow lookups, telemetry-blob summarization. **This class is the
   scout's job when the gate fires.**
+  **v2.3.27:** multi-file Grep and directory-tree Glob were REMOVED from this
+  class. `haiku-scout` grants `tools: [Read]` — neither `Glob` nor `Grep` exists
+  in this environment for any agent, so routing those ops to the scout produced
+  a spawn that could not perform the work. Do them inline via `Bash`
+  (`find` / `grep`), which is Class A or C depending on whether the result needs
+  reasoning. The scout remains worth spawning for its one real capability:
+  reading a large file you do not want inline.
 - **Class C — Deterministic helper (no LLM).** File-exists, line-count,
   git-status, schema-validate, hash-compute. Handled by P1.4 sentinel probes
   via `bin/_lib/sentinel-probes.js`. Short-circuit BEFORE evaluating Class B.
@@ -1731,7 +1737,7 @@ def should_spawn_scout(op_kind, target_path, target_bytes, class_hint):
   if class_hint in ('A', 'C', 'D'):                   return False
   if class_hint != 'B':                               return False  # null/unknown → inline (fail-safe)
   if op_kind in config.haiku_routing.scout_blocked_ops: return False
-  if op_kind not in ('Read', 'Glob', 'Grep'):         return False  # non-I/O ops never delegate
+  if op_kind != 'Read':                               return False  # v2.3.27: scout grants [Read] only; Glob/Grep do not exist
   for pat in config.haiku_routing.scout_blocked_paths:
     if fnmatch(target_path, pat):                     return False
   if target_bytes < config.haiku_routing.scout_min_bytes: return False

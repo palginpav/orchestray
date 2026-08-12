@@ -8,8 +8,9 @@
  * Verifies that bin/validate-task-completion.js emits a well-formed
  * `housekeeper_forbidden_tool_blocked` event (and exits 2) when
  * orchestray-housekeeper is observed calling a tool outside its whitelist
- * (Read, Glob). The housekeeper's forbidden set is STRICTER than the scout's
- * — it also forbids Grep (per Clause 1 of locked-scope D-5).
+ * (Read, mcp__orchestray__history_query_events). The housekeeper's forbidden
+ * set is STRICTER than the scout's — it also forbids Grep and Glob (per
+ * Clause 1 of locked-scope D-5, Glob added V6).
  *
  * Schema r=6:
  *   version, type, timestamp, orchestration_id, hook, agent_role,
@@ -118,13 +119,13 @@ describe('housekeeper_forbidden_tool_blocked — instrumentation', () => {
     }
   });
 
-  test('does NOT emit housekeeper_forbidden_tool_blocked for allowed Read+Glob calls', () => {
+  test('does NOT emit housekeeper_forbidden_tool_blocked for allowed Read-only calls', () => {
     const tmp = makeTmp();
     try {
       const res = runHook({
         hook_event_name: 'SubagentStop',
         subagent_type: 'orchestray-housekeeper',
-        tool_calls: [{ name: 'Read' }, { name: 'Glob' }],
+        tool_calls: [{ name: 'Read' }],
         output: '## Structured Result\n```json\n' + JSON.stringify(VALID_RESULT) + '\n```\n',
       }, tmp);
 
@@ -133,6 +134,27 @@ describe('housekeeper_forbidden_tool_blocked — instrumentation', () => {
       const events = readEvents(tmp);
       const ev = events.find(e => e.type === 'housekeeper_forbidden_tool_blocked');
       assert.equal(ev, undefined, 'no event for allowed tools');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('emits housekeeper_forbidden_tool_blocked for Glob (V6: no longer in whitelist)', () => {
+    const tmp = makeTmp();
+    try {
+      const res = runHook({
+        hook_event_name: 'SubagentStop',
+        subagent_type: 'orchestray-housekeeper',
+        tool_calls: [{ name: 'Glob' }, { name: 'Read' }],
+        output: '## Structured Result\n```json\n' + JSON.stringify(VALID_RESULT) + '\n```\n',
+      }, tmp);
+
+      assert.equal(res.status, 2, 'exit 2 for Glob violation; stderr=' + res.stderr);
+      const events = readEvents(tmp);
+      const ev = events.find(e => e.type === 'housekeeper_forbidden_tool_blocked');
+      assert.ok(ev, 'event must be emitted for Glob violation');
+      assert.ok(ev.forbidden_tools.includes('Glob'));
+      assert.equal(ev.agent_role, 'orchestray-housekeeper');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

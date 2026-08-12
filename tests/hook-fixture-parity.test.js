@@ -97,17 +97,44 @@ describe('hook fixture parity — declared consumers vs captured payloads', () =
     }
   });
 
-  // The ratchet only tightens: once a fixture lands, the waiver must be deleted.
-  test('the known-gap ledger has no stale entries', () => {
-    const uncovered = new Set(P.uncoveredPairs(repoRoot, corpus).map(allowKey));
-    const stale = P.UNCOVERED_ALLOWLIST
-      .filter((a) => !uncovered.has(allowKey(a)))
-      .map(allowKey);
+  // The ratchet only tightens: once a fixture lands AND its shape has been
+  // derived, the waiver must be deleted. This subsumes the old "no stale
+  // entries" check — see lifecycleIssues() doc for why a covered-but-unshaped
+  // entry needs a different instruction than a covered-and-shaped one, and
+  // why conflating them produced contradictory instructions across two runs
+  // (v2.3.27 V8: "delete the waiver" vs "add the waiver" for the same pair).
+  test('the known-gap ledger has no stale entries — and never gives contradictory next steps', () => {
+    const issues = P.lifecycleIssues(repoRoot, corpus);
+    // A covered pair whose event still has no derived shape is a distinct,
+    // actionable state (do steps 1-2 before step 3) — never bare "stale".
+    const pendingShape = issues.filter((i) => i.kind === 'pending_shape');
+    const staleComplete = issues.filter((i) => i.kind === 'stale_complete');
     assert.deepEqual(
-      stale, [],
-      'these pairs are now covered by a real capture — delete them from ' +
-      'UNCOVERED_ALLOWLIST and lower FROZEN_UNCOVERED_COUNT'
+      staleComplete.map((i) => i.message), [],
+      'these pairs are covered AND already shaped — delete them from UNCOVERED_ALLOWLIST'
     );
+    assert.deepEqual(
+      pendingShape.map((i) => i.message), [],
+      'a real capture landed but the shape has not been derived yet — see message for the ' +
+      'full 3-step order (this is NOT the same instruction as "delete the entry")'
+    );
+  });
+
+  // Acceptance: constructs the exact V8 failure mode (a real capture landing
+  // for an allowlisted pair with evidence.n still 0) and proves lifecycleIssues
+  // gives ONE coherent instruction, never two contradictory ones from separate
+  // tests. This must hold structurally, independent of the live corpus state.
+  test('lifecycleIssues gives one coherent instruction for a capture that landed before its shape was derived', () => {
+    const fakeCorpus = new Map([
+      ['worktree-remove', [{ file: 'f', stdin: { hook_event_name: 'WorktreeRemove', session_id: 's', cwd: '/w' } }]],
+    ]);
+    const issues = P.lifecycleIssues(repoRoot, fakeCorpus);
+    const forPair = issues.filter((i) => i.key === 'worktree-remove|WorktreeRemove');
+    assert.equal(forPair.length, 1, 'exactly one instruction for this pair, not zero and not two conflicting ones');
+    assert.equal(forPair[0].kind, 'pending_shape');
+    assert.match(forPair[0].message, /derive required\/forbidden\/types/);
+    assert.match(forPair[0].message, /THEN delete this UNCOVERED_ALLOWLIST entry/);
+    assert.match(forPair[0].message, /not a flip-flopping test/);
   });
 
   // Every allowlist entry must name a consumer that actually exists.

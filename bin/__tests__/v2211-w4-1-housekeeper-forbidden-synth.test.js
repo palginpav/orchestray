@@ -7,18 +7,19 @@
  *
  * Synthetically spawns `bin/validate-task-completion.js` with SubagentStop
  * payloads that simulate an orchestray-housekeeper agent attempting tool calls
- * that are forbidden by its stricter whitelist (Read + Glob only — no Grep,
- * no Edit, no Write, no Bash).
+ * that are forbidden by its stricter whitelist (Read + the single MCP query
+ * tool only — no Grep, no Glob, no Edit, no Write, no Bash).
  *
  * Target dark event: `housekeeper_forbidden_tool_blocked`.
  *
  * Tests:
- *   1. Grep → exit 2 + housekeeper_forbidden_tool_blocked.
- *      (Grep is permitted for scout but forbidden for housekeeper.)
+ *   1. Grep, Glob → exit 2 + housekeeper_forbidden_tool_blocked.
+ *      (Grep/Glob are permitted for scout's Read grant shape but forbidden
+ *      for housekeeper.)
  *   2. Edit → exit 2 + housekeeper_forbidden_tool_blocked.
  *   3. Write → exit 2 + housekeeper_forbidden_tool_blocked.
  *   4. Bash  → exit 2 + housekeeper_forbidden_tool_blocked.
- *   5. Clean payload (Read + Glob only) → exit 0, no forbidden-tool event.
+ *   5. Clean payload (Read only) → exit 0, no forbidden-tool event.
  *
  * Each test creates an isolated tmpDir and cleans up on completion.
  *
@@ -90,7 +91,7 @@ describe('v2211 W4-1 — housekeeper forbidden-tool synthetic coverage', () => {
   // Tests 1-4: each tool in HOUSEKEEPER_FORBIDDEN_TOOLS fires the event.
   // -------------------------------------------------------------------------
 
-  for (const forbiddenTool of ['Grep', 'Edit', 'Write', 'Bash']) {
+  for (const forbiddenTool of ['Grep', 'Glob', 'Edit', 'Write', 'Bash']) {
     test('orchestray-housekeeper with ' + forbiddenTool + ' → exit 2 + housekeeper_forbidden_tool_blocked', () => {
       const r = runHook({
         hook_event_name: 'SubagentStop',
@@ -127,13 +128,13 @@ describe('v2211 W4-1 — housekeeper forbidden-tool synthetic coverage', () => {
   }
 
   // -------------------------------------------------------------------------
-  // Test 5: Clean payload (Read + Glob only) passes without any forbidden-tool event.
+  // Test 5: Clean payload (Read only) passes without any forbidden-tool event.
   // -------------------------------------------------------------------------
-  test('orchestray-housekeeper with Read+Glob only → exit 0, no forbidden-tool event', () => {
+  test('orchestray-housekeeper with Read only → exit 0, no forbidden-tool event', () => {
     const r = runHook({
       hook_event_name: 'SubagentStop',
       subagent_type:   'orchestray-housekeeper',
-      tool_calls:      [{ name: 'Read' }, { name: 'Glob' }],
+      tool_calls:      [{ name: 'Read' }],
       output:          wrapResult(CLEAN_RESULT),
     });
     try {

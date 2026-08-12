@@ -11626,6 +11626,89 @@ Kill switch: none — this is a safety check, not an optional feature.
 
 ---
 
+### `dirty_worktree_captured` event
+
+Emitted by the PM-Stop dirty-worktree sweep (V3, v2.3.27) when it commits a linked worktree found dirty and quiescent (no changed path touched in the last 90s) — the capture net for the case `worktree_auto_commit_emitted`/`SubagentStop` cannot cover: an abrupt kill whose transcript ends mid tool-call, where `SubagentStop` never fires at all.
+
+```json
+{
+  "type": "dirty_worktree_captured",
+  "version": 1,
+  "schema_version": 1,
+  "agent_name": "agent-afb2aadf57297e722",
+  "worktree_path": "/repo/.claude/worktrees/agent-afb2aadf57297e722",
+  "orchestration_id": "orch-20260812T100000Z-example",
+  "files_changed_count": 3,
+  "commit_sha": "a1b2c3d"
+}
+```
+
+Field notes:
+- `agent_name`: basename of the linked worktree directory (also the agent name).
+- `worktree_path`: absolute path of the captured worktree.
+- `orchestration_id`: current orchestration ID read from the worktree's own audit state, best-effort.
+- `files_changed_count`: number of paths included in the capture commit.
+- `commit_sha`: short SHA of the resulting commit.
+
+Emitted from: `bin/sweep-dirty-worktrees-on-pm-stop.js` / `bin/_lib/dirty-worktree-sweep.js` (V3, v2.3.27).
+
+Kill switch: `ORCHESTRAY_DIRTY_WORKTREE_SWEEP_DISABLED=1`.
+
+---
+
+### `dirty_worktree_capture_failed` event
+
+Emitted by the same sweep as `dirty_worktree_captured`, above, when the capture commit itself fails (e.g. `git commit` exits non-zero). The worktree is left as-is — the sweep never deletes or force-resets a worktree it cannot capture.
+
+```json
+{
+  "type": "dirty_worktree_capture_failed",
+  "version": 1,
+  "schema_version": 1,
+  "agent_name": "agent-afb2aadf57297e722",
+  "worktree_path": "/repo/.claude/worktrees/agent-afb2aadf57297e722",
+  "orchestration_id": "orch-20260812T100000Z-example",
+  "stderr_excerpt": "nothing to commit"
+}
+```
+
+Field notes:
+- Same fields as `dirty_worktree_captured` except `files_changed_count`/`commit_sha`, replaced by `stderr_excerpt` (first 200 chars of the failed `git commit` stderr).
+
+Emitted from: `bin/sweep-dirty-worktrees-on-pm-stop.js` / `bin/_lib/dirty-worktree-sweep.js` (V3, v2.3.27).
+
+Kill switch: `ORCHESTRAY_DIRTY_WORKTREE_SWEEP_DISABLED=1`.
+
+---
+
+### `worktree_head_stale` event
+
+Emitted by the same PM-Stop sweep when a worktree's creation-time main-tree HEAD baseline (`main_tree_head_at_creation`, written by `worktree-create.js` P2/W15) diverges from the CURRENT main-tree HEAD — the worktree's checkout no longer reflects the latest main-tree history, and a merge-by-copy from it risks silently reverting work that landed on main since. Rides the existing `recent-diagnostics.js` / `dark-event-banner.js` pipeline via the `_stale` diagnostic suffix (TIER3, already recognized — no changes needed to either of those two files for this event to reach the banner surface).
+
+```json
+{
+  "type": "worktree_head_stale",
+  "version": 1,
+  "schema_version": 1,
+  "agent_name": "agent-afb2aadf57297e722",
+  "worktree_path": "/repo/.claude/worktrees/agent-afb2aadf57297e722",
+  "main_tree_head_at_creation": "93b19a8f...",
+  "main_tree_head_current": "c1d2e3f4...",
+  "created_at": "2026-08-12T09:00:00.000Z"
+}
+```
+
+Field notes:
+- `main_tree_head_at_creation`: full main-tree HEAD SHA recorded when the worktree was created.
+- `main_tree_head_current`: full main-tree HEAD SHA at sweep time.
+- `created_at`: worktree creation timestamp, from the same baseline file.
+
+Emitted from: `bin/sweep-dirty-worktrees-on-pm-stop.js` / `bin/_lib/dirty-worktree-sweep.js`'s `checkAndEmitStaleness()` (V3, v2.3.27).
+
+Kill switch: `ORCHESTRAY_DIRTY_WORKTREE_SWEEP_DISABLED=1` (same switch as the sweep it rides).
+
+---
+
 ### `tombstone_until_probe_passed` event
 
 Emitted when `npm run test:tombstone-probe` exits 0 — all 4 invariants pass. `invariants_checked` always equals 4 (value_is_string, value_is_iso, value_is_future, value_within_ttl).

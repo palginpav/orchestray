@@ -177,8 +177,17 @@ const UNCOVERED_ALLOWLIST = Object.freeze([
   // so this is event-not-yet-observed, not no-harvest-seam -- expected to
   // retire organically once real PreToolUse[Agent|Explore|Task] and
   // SubagentStart spawns are captured during normal use.
-  { script: 'register-agent-spawn',         event: 'PreToolUse',     reason: 'event-not-yet-observed' },
-  { script: 'register-agent-spawn',         event: 'SubagentStart',  reason: 'event-not-yet-observed' },
+  // register-agent-spawn|PreToolUse retired 2026-08-12 (v2.3.27 V8): two real
+  // captures landed (tool_name=Agent) and PreToolUse already carries a derived
+  // shape (evidence.n=656) — the lifecycle-complete case. Surfaced by
+  // lifecycleIssues() as a single coherent instruction; under the previous
+  // two-assertion scheme this pair would have produced contradictory advice.
+  // register-agent-spawn|SubagentStart retired 2026-08-12 (v2.3.27 V8): a real
+  // SubagentStart capture landed AND SubagentStart already carries a derived
+  // shape (evidence.n=97, present since before this pair existed) — lifecycle
+  // complete in one step, exactly the case lifecycleIssues() calls
+  // 'stale_complete'. Discovered via the full suite, not the isolated file:
+  // this worktree's corpus already held the capture.
   { script: 'audit-team-event',             event: 'TaskCreated',    reason: 'no-harvest-seam' },
   { script: 'boot-validate-config',         event: 'SessionStart',   reason: 'no-harvest-seam' },
   { script: 'calibrate-role-budgets',       event: 'SessionStart',   reason: 'no-harvest-seam' },
@@ -306,6 +315,70 @@ function uncoveredPairs(repoRoot, corpus) {
 
 function pairKey(p) { return p.script + '|' + p.event + '|' + p.matcher; }
 
+/**
+ * The capture->shape->retire lifecycle, in one place, so a reader hits it at
+ * the point of failure rather than in a header comment nobody re-reads.
+ *
+ * v2.3.27 V8: two coverage notions exist over this same corpus —
+ * `uncoveredPairs()` (real-time, "is there a same-event capture on disk for
+ * this (script, event) pair?") and `EVENT_SHAPES[event].evidence.n`
+ * (hand-maintained, "have we derived a shape assertion for this event?").
+ * They answer different questions, so updating one without the other is not
+ * a contradiction in the code — it IS a contradiction in what the two tests
+ * tell an operator to do next: "delete the waiver, it's covered now" vs "this
+ * event has zero evidence, keep it in the waiver list or add it back".
+ *
+ * The correct order when a real capture lands for an allowlisted pair is all
+ * three steps, in sequence:
+ *   1. derive the shape (`required`/`forbidden`/`types`) from the real payload
+ *   2. set `EVENT_SHAPES[event].evidence.n` to the capture count
+ *   3. THEN delete the UNCOVERED_ALLOWLIST entry
+ *
+ * Doing only step 3 (what happened twice on 2026-08-12, on `worktree-remove`
+ * then `worktree-create`) leaves the entry gone but `evidence.n` still 0 —
+ * the very next run, "events with zero captures... tracked as gaps" fails and
+ * demands the entry be re-added, which looks like a flip-flopping tooling bug
+ * but is actually a half-finished lifecycle.
+ *
+ * @param {string} repoRoot
+ * @param {Map} [corpus]
+ * @returns {Array<{key:string, message:string, kind:'pending_shape'|'stale_complete'}>}
+ */
+function lifecycleIssues(repoRoot, corpus) {
+  const c = corpus || loadFixtureCorpus(repoRoot);
+  const uncovered = new Set(uncoveredPairs(repoRoot, c).map(pairKeyFromPair));
+  const out = [];
+  for (const a of UNCOVERED_ALLOWLIST) {
+    const key = a.script + '|' + a.event;
+    const isCoveredNow = !uncovered.has(key);
+    if (!isCoveredNow) continue;   // still a real gap, nothing to do
+    const shape = EVENT_SHAPES[a.event];
+    const hasEvidence = shape && shape.evidence && shape.evidence.n > 0;
+    if (!hasEvidence) {
+      out.push({
+        key, kind: 'pending_shape',
+        message: key + ': a real capture landed for "' + a.event + '" but EVENT_SHAPES["' + a.event +
+          '"].evidence.n is still 0. Do all three steps, in order, before touching this file again: ' +
+          '(1) derive required/forbidden/types for "' + a.event + '" from the real captured payload, ' +
+          '(2) set EVENT_SHAPES["' + a.event + '"].evidence.n to the capture count, ' +
+          '(3) THEN delete this UNCOVERED_ALLOWLIST entry and lower FROZEN_UNCOVERED_COUNT. ' +
+          'Deleting the entry before (1)-(2) makes the next run demand you re-add it — that is ' +
+          'this exact half-finished lifecycle, not a flip-flopping test.',
+      });
+    } else {
+      out.push({
+        key, kind: 'stale_complete',
+        message: key + ': covered by a real capture AND ' + a.event + ' already has a derived shape ' +
+          '(evidence.n=' + shape.evidence.n + '). Lifecycle complete — delete this UNCOVERED_ALLOWLIST ' +
+          'entry and lower FROZEN_UNCOVERED_COUNT.',
+      });
+    }
+  }
+  return out;
+}
+
+function pairKeyFromPair(p) { return p.script + '|' + p.event; }
+
 function typeOf(v) {
   if (Array.isArray(v)) return 'array';
   if (v === null) return 'null';
@@ -367,4 +440,5 @@ module.exports = {
   uncoveredPairs,
   pairKey,
   checkShape,
+  lifecycleIssues,
 };

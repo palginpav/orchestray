@@ -28,10 +28,19 @@
 // 100 clean housekeeper_action events) in agents/pm-reference/haiku-routing.md
 // §23f — those criteria govern discovery-driven broadening, not an explicit,
 // user-locked scope requirement. Flagged for PM/architect confirmation.
-const BASELINE_AGENT_SHA = '09830effc516707f55ac7a5e0fe56f01ce504e765464bc0e03903b8d3821b329';
+//
+// Regenerated 2026-08-12 (V6, scope-locked v2327): `Glob` stripped from the
+// grant. It was never actually used — op class 3's own prose already
+// forbade Read/Glob on the live events.jsonl, and no op class ever needed a
+// directory listing. Deferred from v2.3.26 due to the SHA-freeze/late-release
+// risk; done here per explicit scope. This NARROWS the whitelist (Clause 1
+// amendment, not a promotion) so it does not require the promotion criteria
+// in §23f or a [housekeeper-tools-extension] tag — that gate governs
+// broadening, not narrowing.
+const BASELINE_AGENT_SHA = 'b83b3a3bec7bb1e53ae9805a07bf3f3f44eecd34ea56ab53ae64be39d2e97442';
 
 // Exact line, including the 'tools: ' prefix and the bracket-list. Must be
 // byte-identical to the line in the agent file. Newline is NOT included.
-const BASELINE_TOOLS_LINE = 'tools: [Read, Glob, mcp__orchestray__history_query_events]';
+const BASELINE_TOOLS_LINE = 'tools: [Read, mcp__orchestray__history_query_events]';
 
 module.exports = { BASELINE_AGENT_SHA, BASELINE_TOOLS_LINE };

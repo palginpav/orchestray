@@ -48,10 +48,10 @@ describe('P3.3 — orchestray-housekeeper narrow-scope body', () => {
     // (`NEVER`, `never call`, `excludes`, `frontmatter excludes`) OR inside
     // contract notes that explicitly say the tool is OUT of scope.
     const lines = body.split('\n');
-    for (const tool of ['Edit', 'Write', 'Bash', 'Grep']) {
-      // Use word-boundary matching to avoid false positives like `Read` matching
-      // inside `Read+Glob`. We are checking for affirmative mentions of forbidden
-      // tools (e.g. `call Edit`, `Edit the file`).
+    for (const tool of ['Edit', 'Write', 'Bash', 'Grep', 'Glob']) {
+      // Use word-boundary matching to avoid false positives. We are checking
+      // for affirmative mentions of forbidden tools (e.g. `call Edit`, `Edit
+      // the file`).
       const re = new RegExp('\\b' + tool + '\\b');
       const offendingLines = lines.filter(l => {
         if (!re.test(l)) return false;
