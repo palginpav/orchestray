@@ -37,6 +37,9 @@
  */
 
 const path = require('path');
+const { spawnSync } = require('child_process');
+
+const GIT_COMMON_DIR_TIMEOUT_MS = 3000;
 
 /**
  * Resolve a safe absolute cwd for hook scripts.
@@ -60,4 +63,51 @@ function resolveSafeCwd(eventCwd) {
   return process.cwd();
 }
 
-module.exports = { resolveSafeCwd };
+/**
+ * Resolve the MAIN project root for a cwd that may be inside a git worktree
+ * (e.g. `.claude/worktrees/<agent>/`).
+ *
+ * Why this exists (v2.3.28 W1, re-scoped): agent lifecycle hooks fire at
+ * three different stages of a spawn, and two of them (SubagentStart,
+ * SubagentStop) run with cwd already switched to the worktree, while the
+ * third (PreToolUse, which carries the model) runs before the worktree
+ * exists. Callers that write agent lifecycle/cost records need ONE cwd for
+ * all three stages or the same agent_id splits its transitions across two
+ * separate `.orchestray/state/agent-registry.jsonl` files and never
+ * resolves. See `.orchestray/kb/decisions/v2328-scope-locked.md` §W1.
+ *
+ * `git rev-parse --git-common-dir` is git's own answer to "what is the
+ * shared repo directory for this checkout" — for an ordinary checkout it is
+ * that checkout's own `.git`; for ANY worktree of that checkout (regardless
+ * of where it lives or how it's named) it resolves to the SAME path as the
+ * main checkout's `.git`. That makes it a more reliable signal than
+ * string-matching a `.claude/worktrees/` path convention (which
+ * `bin/_lib/dirty-worktree-sweep.js` does for a different purpose — listing
+ * known worktree directories to sweep, not resolving an arbitrary cwd back
+ * to its main tree). The main root is simply the parent of that path.
+ *
+ * Fails safe: not a git repo, git absent, or a timeout all fall through to
+ * returning `cwd` unchanged — identical to pre-fix behavior. Callers should
+ * pass an already-`resolveSafeCwd`-resolved cwd.
+ *
+ * @param {string} cwd - Absolute cwd (typically the output of resolveSafeCwd).
+ * @returns {string} The main project root, or `cwd` if it could not be determined.
+ */
+function resolveMainProjectRoot(cwd) {
+  try {
+    const result = spawnSync(
+      'git',
+      ['-C', cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+      { encoding: 'utf8', timeout: GIT_COMMON_DIR_TIMEOUT_MS },
+    );
+    if (result.status !== 0 || result.error) return cwd;
+    const commonDir = (result.stdout || '').trim();
+    if (!commonDir) return cwd;
+    const mainRoot = path.dirname(commonDir);
+    return mainRoot || cwd;
+  } catch (_e) {
+    return cwd;
+  }
+}
+
+module.exports = { resolveSafeCwd, resolveMainProjectRoot };

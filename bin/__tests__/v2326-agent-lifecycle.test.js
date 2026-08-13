@@ -351,3 +351,232 @@ describe('regression — gate-agent-spawn.js must not crash on the routing.jsonl
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// W5 (v2.3.28) — task_id resolves via routing.jsonl even when the
+// description does not lead with a SCREAMING-CASE task-id token.
+// ---------------------------------------------------------------------------
+
+describe('W5 — task_id lands on the registry for non-conforming descriptions', () => {
+
+  test('a description with no leading task-id token still resolves task_id via routing.jsonl match', () => {
+    const cwd = makeTmpDir();
+    writeOrchestrationId(cwd, 'orch-w5');
+
+    const stateDir = path.join(cwd, '.orchestray', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    // A routing row the PM wrote at decomposition time, keyed by task_id,
+    // whose description does NOT start with a SCREAMING-CASE token --
+    // exactly the real-world pattern this session diagnosed.
+    fs.writeFileSync(
+      path.join(stateDir, 'routing.jsonl'),
+      JSON.stringify({
+        timestamp: '2026-08-12T10:00:00.000Z',
+        orchestration_id: 'orch-w5',
+        task_id: 'W5',
+        agent_type: 'developer',
+        description: 'Fix the thing (sonnet/medium)',
+        model: 'sonnet',
+      }) + '\n'
+    );
+
+    const { status } = preSpawn(cwd, {
+      subagent_type: 'developer',
+      model: 'claude-sonnet-5',
+      description: 'Fix the thing (sonnet/medium)',
+    });
+    assert.equal(status, 0);
+
+    const rows = readRegistryRows(cwd);
+    assert.equal(rows.length, 1);
+    assert.equal(
+      rows[0].task_id, 'W5',
+      'task_id must be resolved from the routing.jsonl description match, not left null ' +
+      'just because the description does not lead with a SCREAMING-CASE token'
+    );
+  });
+
+  test('control: extractSpawnTaskId alone (no routing.jsonl) still returns null for the same description', () => {
+    // Proves the fix is doing real work, not passing on a heuristic fluke.
+    const { extractSpawnTaskId } = require('../_lib/spawn-task-id');
+    assert.equal(extractSpawnTaskId({ description: 'Fix the thing (sonnet/medium)' }), null);
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// W5 follow-up (v2.3.28) — running/completed transitions also carry task_id,
+// via matchPendingSpawn's binding when it succeeds and a routing.jsonl
+// roster-name fallback when it does not (see spawn-task-id.js
+// resolveTaskIdFromRoster doc).
+// ---------------------------------------------------------------------------
+
+describe('W5 follow-up — task_id on running and completed transitions', () => {
+
+  test('a normal pre-spawn -> start -> stop sequence carries task_id onto running and completed', () => {
+    const cwd = makeTmpDir();
+    writeOrchestrationId(cwd, 'orch-w5f-happy');
+
+    const stateDir = path.join(cwd, '.orchestray', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'routing.jsonl'),
+      JSON.stringify({
+        timestamp: '2026-08-12T10:00:00.000Z',
+        orchestration_id: 'orch-w5f-happy',
+        task_id: 'W7',
+        agent_type: 'developer',
+        description: 'Wire task_id into running and completed',
+        model: 'sonnet',
+      }) + '\n'
+    );
+
+    preSpawn(cwd, {
+      subagent_type: 'developer',
+      model: 'claude-sonnet-5',
+      description: 'Wire task_id into running and completed',
+    });
+    startAgent(cwd, 'aW7-259a3a66374e11e2', 'developer');
+    stopAgent(cwd, 'aW7-259a3a66374e11e2', 'developer');
+
+    const rows = readRegistryRows(cwd);
+    assert.equal(rows.find(r => r.event === 'running').task_id, 'W7', 'running must inherit task_id from the matched registered row');
+    assert.equal(rows.find(r => r.event === 'completed').task_id, 'W7', 'completed must inherit task_id from the registry row');
+  });
+
+  test('no matching pending row (registered was missed/TTL-expired): roster name resolves task_id via routing.jsonl', () => {
+    // Simulates matchPendingSpawn finding nothing to bind (no pre-spawn call
+    // at all here) -- the fallback must still land the correct task_id by
+    // confirming the agent_id's roster label against routing.jsonl, exactly
+    // the "name: <task-id>" convention this repo's own PM spawns use.
+    const cwd = makeTmpDir();
+    writeOrchestrationId(cwd, 'orch-w5f-fallback');
+
+    const stateDir = path.join(cwd, '.orchestray', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'routing.jsonl'),
+      JSON.stringify({
+        timestamp: '2026-08-12T10:00:00.000Z',
+        orchestration_id: 'orch-w5f-fallback',
+        task_id: 'W7',
+        agent_type: 'developer',
+        description: 'do the thing',
+        model: 'sonnet',
+      }) + '\n'
+    );
+
+    startAgent(cwd, 'aW7-259a3a66374e11e2', 'W7');
+    stopAgent(cwd, 'aW7-259a3a66374e11e2', 'W7');
+
+    const rows = readRegistryRows(cwd);
+    assert.equal(rows.find(r => r.event === 'running').task_id, 'W7', 'running must resolve task_id from the roster-name fallback when no pending row matched');
+    assert.equal(rows.find(r => r.event === 'completed').task_id, 'W7', 'completed must resolve task_id from the roster-name fallback when the registry row has none');
+  });
+
+  test('control: a roster name that is not a real routing.jsonl task_id is left null, and the hook still exits 0', () => {
+    // Proves the fallback is confirmation-only -- it never invents an id,
+    // and unresolved task_id must fail open rather than throw.
+    const cwd = makeTmpDir();
+    writeOrchestrationId(cwd, 'orch-w5f-control');
+    // No routing.jsonl at all.
+
+    const { status: startStatus } = startAgent(cwd, 'adev-opus5-0123456789abcdef', 'dev-opus5');
+    assert.equal(startStatus, 0);
+    const { status: stopStatus } = stopAgent(cwd, 'adev-opus5-0123456789abcdef', 'dev-opus5');
+    assert.equal(stopStatus, 0);
+
+    const rows = readRegistryRows(cwd);
+    assert.equal(rows.find(r => r.event === 'running').task_id, null);
+    assert.equal(rows.find(r => r.event === 'completed').task_id, null);
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// agent_type namespace fix — running/completed must carry the canonical
+// role, not the roster name, while roster_name keeps carrying the roster
+// name (the defect described in .orchestray/kb/facts, v2.3.27 follow-up).
+// ---------------------------------------------------------------------------
+
+describe('agent_type namespace fix — running/completed carry the canonical role', () => {
+
+  test('a roster-named spawn: running and completed record the canonical role in agent_type, and roster_name stays the roster name', () => {
+    const cwd = makeTmpDir();
+    writeOrchestrationId(cwd, 'orch-agenttype-named');
+
+    preSpawn(cwd, {
+      subagent_type: 'developer',
+      model: 'claude-sonnet-5',
+      description: 'W7 fix the thing',
+    });
+
+    // SubagentStart/SubagentStop payloads carry the roster name in
+    // agent_type ("W7"), exactly the real-world defect -- the registered
+    // row above is the only place the canonical role ("developer") lives.
+    startAgent(cwd, 'aW7-259a3a66374e11e3', 'W7');
+    stopAgent(cwd, 'aW7-259a3a66374e11e3', 'W7');
+
+    const rows = readRegistryRows(cwd);
+    const registered = rows.find(r => r.event === 'registered');
+    const running = rows.find(r => r.event === 'running');
+    const completed = rows.find(r => r.event === 'completed');
+
+    assert.equal(registered.agent_type, 'developer', 'registered row is unchanged (already correct)');
+    assert.equal(registered.roster_name, null, 'registered row never carries roster_name');
+
+    assert.equal(running.agent_type, 'developer', 'running must carry the canonical role, not the roster name');
+    assert.equal(running.roster_name, 'W7', 'running must still carry the roster name in roster_name');
+
+    assert.equal(completed.agent_type, 'developer', 'completed must carry the canonical role, not the roster name');
+    assert.equal(completed.roster_name, 'W7', 'completed must still carry the roster name in roster_name');
+  });
+
+  test('an unnamed spawn: agent_type is unaffected (no roster name in play) and roster_name is null', () => {
+    const cwd = makeTmpDir();
+    writeOrchestrationId(cwd, 'orch-agenttype-unnamed');
+
+    preSpawn(cwd, {
+      subagent_type: 'reviewer',
+      model: 'claude-sonnet-5',
+      description: 'plain unnamed spawn',
+    });
+
+    const plainAgentId = 'a0123456789abcdef0123456789abcd';
+    startAgent(cwd, plainAgentId, 'reviewer');
+    stopAgent(cwd, plainAgentId, 'reviewer');
+
+    const rows = readRegistryRows(cwd);
+    const running = rows.find(r => r.event === 'running');
+    const completed = rows.find(r => r.event === 'completed');
+
+    assert.equal(running.agent_type, 'reviewer');
+    assert.equal(running.roster_name, null);
+    assert.equal(completed.agent_type, 'reviewer');
+    assert.equal(completed.roster_name, null);
+  });
+
+  test('fail-open: no registered row to recover the canonical role from -- running/completed still write, falling back to the payload value instead of throwing', () => {
+    const cwd = makeTmpDir();
+    writeOrchestrationId(cwd, 'orch-agenttype-failopen');
+    // No preSpawn call at all -- matchPendingSpawn/registryRow lookups have
+    // nothing to bind to, so there is no canonical role to recover.
+
+    const agentId = 'aW9-259a3a66374e11e4';
+    const { status: startStatus } = startAgent(cwd, agentId, 'W9');
+    assert.equal(startStatus, 0, 'start must exit 0 even with no canonical role to resolve');
+    const { status: stopStatus } = stopAgent(cwd, agentId, 'W9');
+    assert.equal(stopStatus, 0, 'stop must exit 0 even with no canonical role to resolve');
+
+    const rows = readRegistryRows(cwd);
+    const running = rows.find(r => r.event === 'running');
+    const completed = rows.find(r => r.event === 'completed');
+    assert.ok(running, 'running row must still be written when the canonical role cannot be resolved');
+    assert.ok(completed, 'completed row must still be written when the canonical role cannot be resolved');
+    // Fail-open: falls back to today's (imperfect) payload value rather than
+    // inventing a role or dropping the row.
+    assert.equal(running.agent_type, 'W9');
+    assert.equal(completed.agent_type, 'W9');
+  });
+
+});

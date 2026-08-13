@@ -72,10 +72,22 @@ describe('hook fixture parity — declared consumers vs captured payloads', () =
       const novel = uncovered.filter((p) => !allowSet.has(allowKey(p)));
       assert.deepEqual(
         novel.map(describePair), [],
-        'new fixture-parity gap(s). Either capture a real payload for this event ' +
-        '(ORCHESTRAY_FIXTURE_HARVEST=1) or add an entry to UNCOVERED_ALLOWLIST in ' +
-        'bin/_lib/hook-fixture-parity.js and raise FROZEN_UNCOVERED_COUNT — the ' +
-        'latter needs a reviewer.'
+        'new fixture-parity gap(s): ' + novel.map(describePair).join(', ') + '.\n' +
+        'A BRAND-NEW hook cannot satisfy this gate by construction — capture requires ' +
+        'the hook to fire, firing requires it to be installed, installation follows a ' +
+        'release, and the release is what this gate is blocking. Two escapes, in order ' +
+        'of preference:\n' +
+        '  (1) INSTALL THE DEV BUILD FIRST (preferred — strictly better evidence than a ' +
+        'waiver). Install this worktree/branch as your live Claude Code install so the ' +
+        'hook actually wires into a session, run the flow that fires it, then re-run ' +
+        'ORCHESTRAY_FIXTURE_HARVEST=1 to harvest a genuine payload. This is what ' +
+        'unblocked v2.3.27: sweep-dirty-worktrees-on-pm-stop captured a real Stop ' +
+        'payload and the gate went green with zero UNCOVERED_ALLOWLIST growth.\n' +
+        '  (2) UNCOVERED_ALLOWLIST waiver — add an entry in bin/_lib/hook-fixture-parity.js ' +
+        'and raise FROZEN_UNCOVERED_COUNT in the same commit. This needs a reviewer; an ' +
+        'agent whose own work the waiver would cover must NOT self-grant it (release-manager ' +
+        'correctly refused to do this for its own v2.3.27 work — that refusal is intended ' +
+        'behaviour, not an obstacle to route around).'
       );
     });
 

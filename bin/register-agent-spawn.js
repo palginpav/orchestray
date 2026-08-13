@@ -25,11 +25,11 @@
  * blocks a spawn.
  */
 
-const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
+const { resolveSafeCwd, resolveMainProjectRoot } = require('./_lib/resolve-project-cwd');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { readHookInputRaw } = require('./_lib/hook-stdin');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
-const { extractSpawnTaskId } = require('./_lib/spawn-task-id');
+const { resolveTaskIdViaRouting, resolveTaskIdFromRoster } = require('./_lib/spawn-task-id');
 const { appendTransition, readRegistry, matchPendingSpawn, deriveRosterName } = require('./_lib/agent-registry');
 const { loadAgentLifecycleConfig } = require('./_lib/config-schema');
 const { safeReadJson } = require('./_lib/state-gc');
@@ -91,7 +91,10 @@ function handlePreSpawn(event, cwd) {
     ('spawn-' + Date.now() + '-' + process.pid + '-' + Math.random().toString(36).slice(2));
 
   const agentType = toolInput.subagent_type || toolInput.agent_type || null;
-  const taskId = extractSpawnTaskId(toolInput);
+  // W5 (v2.3.28): resolve via the routing.jsonl match gate-agent-spawn.js
+  // already performed for this same spawn, rather than relying solely on
+  // the leading-description-token convention (see spawn-task-id.js doc).
+  const taskId = resolveTaskIdViaRouting(cwd, toolInput, orchestrationId);
 
   appendTransition(cwd, {
     event: 'registered',
@@ -136,13 +139,27 @@ function handleStart(event, cwd) {
   const { pending } = readRegistry(cwd, { orchestrationId });
   const matched = matchPendingSpawn(pending, { agentType, nowMs: Date.now() });
 
+  // W5 follow-up (v2.3.28): when matchPendingSpawn found no pending partner
+  // (TTL expired, or nothing to bind at all), fall back to confirming the
+  // roster name itself against routing.jsonl — see spawn-task-id.js doc.
+  const taskId = (matched && matched.task_id) ||
+    resolveTaskIdFromRoster(cwd, rosterName, orchestrationId);
+
+  // Registry defect fix (v2.3.27 follow-up): `event.agent_type` (SubagentStart
+  // payload) carries the roster name for `name:`d spawns, not the canonical
+  // role — `matched.agent_type` (from the `registered` row written at
+  // PreToolUse) is the canonical role and must win. Fall back to the payload
+  // value only when no pending partner was matched (fail-open, not a role
+  // invention — same value the registry would have recorded before this fix).
+  const canonicalAgentType = (matched && matched.agent_type) || agentType || null;
+
   appendTransition(cwd, {
     event: 'running',
     orchestration_id: orchestrationId,
     agent_id: agentId,
     roster_name: rosterName,
-    agent_type: agentType || (matched && matched.agent_type) || null,
-    task_id: matched ? matched.task_id : null,
+    agent_type: canonicalAgentType,
+    task_id: taskId,
     model: matched ? matched.model : null,
     effort: matched ? matched.effort : null,
     session_id: event.session_id || null,
@@ -172,7 +189,11 @@ if (input.length > MAX_INPUT_BYTES) {
 setImmediate(() => {
   try {
     const event = JSON.parse(input || '{}');
-    const cwd = resolveSafeCwd(event.cwd);
+    // W1 (v2.3.28, re-scoped): SubagentStart fires with cwd already inside
+    // the worktree — resolve back to the main tree so `registered` (written
+    // at PreToolUse, before the worktree exists) and `running`/`completed`
+    // land in the SAME registry file instead of splitting across two trees.
+    const cwd = resolveMainProjectRoot(resolveSafeCwd(event.cwd));
 
     if (!lifecycleDisabled(cwd)) {
       switch (SUBCOMMAND) {

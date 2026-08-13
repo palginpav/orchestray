@@ -171,6 +171,104 @@ describe('v2211 W4-1 — scout forbidden-tool synthetic coverage', () => {
   });
 
   // -------------------------------------------------------------------------
+  // v2.3.28 W3: Glob/Grep were previously ABSENT from SCOUT_FORBIDDEN_TOOLS
+  // even though haiku-scout's frontmatter narrowed to `tools: [Read]` in
+  // v2.3.27 — a scout calling Glob/Grep failed on tool-not-granted instead
+  // of being blocked and audited. Regression coverage for that close.
+  // -------------------------------------------------------------------------
+  test('haiku-scout with Grep tool call → exit 2 + scout_forbidden_tool_blocked', () => {
+    const r = runHook({
+      hook_event_name: 'SubagentStop',
+      subagent_type:   'haiku-scout',
+      tool_calls:      [{ name: 'Grep' }],
+      output:          wrapResult(CLEAN_RESULT),
+    });
+    try {
+      assert.equal(r.status, 2,
+        'Expected exit 2 for haiku-scout + Grep. stderr=' + r.stderr);
+      const events = readEvents(r.tmp);
+      const hit    = events.find(e => e.type === 'scout_forbidden_tool_blocked');
+      assert.ok(hit,
+        'Expected scout_forbidden_tool_blocked for Grep. ' +
+        'Got: ' + JSON.stringify(events.map(e => e.type)));
+      assert.deepEqual(hit.forbidden_tools, ['Grep'],
+        'forbidden_tools must list Grep; got: ' + JSON.stringify(hit.forbidden_tools));
+    } finally {
+      fs.rmSync(r.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('haiku-scout with Glob tool call → exit 2 + scout_forbidden_tool_blocked', () => {
+    const r = runHook({
+      hook_event_name: 'SubagentStop',
+      subagent_type:   'haiku-scout',
+      tool_calls:      [{ name: 'Glob' }],
+      output:          wrapResult(CLEAN_RESULT),
+    });
+    try {
+      assert.equal(r.status, 2,
+        'Expected exit 2 for haiku-scout + Glob. stderr=' + r.stderr);
+      const events = readEvents(r.tmp);
+      const hit    = events.find(e => e.type === 'scout_forbidden_tool_blocked');
+      assert.ok(hit,
+        'Expected scout_forbidden_tool_blocked for Glob. ' +
+        'Got: ' + JSON.stringify(events.map(e => e.type)));
+      assert.deepEqual(hit.forbidden_tools, ['Glob'],
+        'forbidden_tools must list Glob; got: ' + JSON.stringify(hit.forbidden_tools));
+    } finally {
+      fs.rmSync(r.tmp, { recursive: true, force: true });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // v2.3.28 W3: project-intent (agents/project-intent.md `tools: Read`) was
+  // found during the sweep for the scout gap's shape — it had NO entry in
+  // READ_ONLY_AGENT_FORBIDDEN_TOOLS at all, so it had zero runtime tool
+  // enforcement. Regression coverage for that close.
+  // -------------------------------------------------------------------------
+  test('project-intent with Glob tool call → exit 2 + scout_forbidden_tool_blocked', () => {
+    const r = runHook({
+      hook_event_name: 'SubagentStop',
+      subagent_type:   'project-intent',
+      tool_calls:      [{ name: 'Glob' }],
+      output:          '# Project Intent\n',
+    });
+    try {
+      assert.equal(r.status, 2,
+        'Expected exit 2 for project-intent + Glob. stderr=' + r.stderr);
+      const events = readEvents(r.tmp);
+      const hit    = events.find(e => e.type === 'scout_forbidden_tool_blocked');
+      assert.ok(hit,
+        'Expected scout_forbidden_tool_blocked for project-intent+Glob. ' +
+        'Got: ' + JSON.stringify(events.map(e => e.type)));
+      assert.equal(hit.agent_role, 'project-intent',
+        'agent_role must be project-intent; got: ' + JSON.stringify(hit.agent_role));
+    } finally {
+      fs.rmSync(r.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('project-intent with Edit tool call → exit 2 + scout_forbidden_tool_blocked', () => {
+    const r = runHook({
+      hook_event_name: 'SubagentStop',
+      subagent_type:   'project-intent',
+      tool_calls:      [{ name: 'Edit' }],
+      output:          '# Project Intent\n',
+    });
+    try {
+      assert.equal(r.status, 2,
+        'Expected exit 2 for project-intent + Edit. stderr=' + r.stderr);
+      const events = readEvents(r.tmp);
+      const hit    = events.find(e => e.type === 'scout_forbidden_tool_blocked');
+      assert.ok(hit,
+        'Expected scout_forbidden_tool_blocked for project-intent+Edit. ' +
+        'Got: ' + JSON.stringify(events.map(e => e.type)));
+    } finally {
+      fs.rmSync(r.tmp, { recursive: true, force: true });
+    }
+  });
+
+  // -------------------------------------------------------------------------
   // Test 4: Non-empty files_changed in Structured Result → scout_files_changed_blocked.
   // -------------------------------------------------------------------------
   test('haiku-scout with non-empty files_changed → exit 2 + scout_files_changed_blocked', () => {

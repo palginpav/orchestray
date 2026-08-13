@@ -111,17 +111,20 @@ describe('scout_forbidden_tool_blocked — instrumentation', () => {
     }
   });
 
-  test('does NOT emit scout_forbidden_tool_blocked for allowed Grep calls', () => {
+  // v2.3.28 W3: haiku-scout's frontmatter narrowed to `tools: [Read]` in
+  // v2.3.27; Grep and Glob are no longer allowed and now DO block. Renamed
+  // and repurposed to cover only actually-allowed calls (Read).
+  test('does NOT emit scout_forbidden_tool_blocked for allowed Read-only calls', () => {
     const tmp = makeTmp();
     try {
       const res = runHook({
         hook_event_name: 'SubagentStop',
         subagent_type: 'haiku-scout',
-        tool_calls: [{ name: 'Read' }, { name: 'Grep' }, { name: 'Glob' }],
+        tool_calls: [{ name: 'Read' }],
         output: '## Structured Result\n```json\n' + JSON.stringify(VALID_RESULT) + '\n```\n',
       }, tmp);
 
-      // Grep is allowed for scout — must not block.
+      // Read is the only tool scout's frontmatter grants — must not block.
       assert.equal(res.status, 0, 'exit 0 for allowed tools; stderr=' + res.stderr);
       const events = readEvents(tmp);
       const ev = events.find(e => e.type === 'scout_forbidden_tool_blocked');

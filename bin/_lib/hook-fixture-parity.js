@@ -170,6 +170,16 @@ const EVENT_SHAPES = Object.freeze({
  *                           changing the script, not running it more.
  *   event-not-yet-observed — the script does use the harvest seam; this repo's
  *                           runs have simply never triggered the event.
+ *
+ * v2.3.28 W4 — the bootstrap deadlock: a brand-new hook cannot pass this gate
+ * by construction (capture needs the hook to fire → firing needs it installed
+ * → installation follows a release → the release is what this gate blocks).
+ * Two escapes: install the dev build first so the hook fires in a real
+ * session and harvest a genuine payload (strictly better evidence, and what
+ * actually unblocked v2.3.27 — see sweep-dirty-worktrees-on-pm-stop), or add a
+ * reviewed entry here + raise FROZEN_UNCOVERED_COUNT. Full text of both
+ * escapes is surfaced at the point of failure in
+ * tests/hook-fixture-parity.test.js — read it there when the gate blocks you.
  */
 const UNCOVERED_ALLOWLIST = Object.freeze([
   // v2.3.26 (W2/W4): register-agent-spawn.js is a brand-new script this

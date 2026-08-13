@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { atomicAppendJsonl } = require('./_lib/atomic-append');
 const { writeEvent }        = require('./_lib/audit-event-writer');
-const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
+const { resolveSafeCwd, resolveMainProjectRoot } = require('./_lib/resolve-project-cwd');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { loadCostBudgetCheckConfig, loadAgentLifecycleConfig } = require('./_lib/config-schema');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
@@ -13,7 +13,8 @@ const { appendJsonlWithRotation } = require('./_lib/jsonl-rotate');
 const { normalizeEvent } = require('./read-event');
 const { resolveTeammateModel } = require('./_lib/team-config-resolve');
 const { requireGuard }   = require('./_lib/double-fire-guard');
-const { readRegistry, appendTransition } = require('./_lib/agent-registry');
+const { readRegistry, appendTransition, deriveRosterName } = require('./_lib/agent-registry');
+const { resolveTaskIdFromRoster } = require('./_lib/spawn-task-id');
 
 /**
  * W2/W4 (v2.3.26) master kill switch. Fail-open on config error (feature
@@ -348,7 +349,14 @@ if (input.length > MAX_INPUT_BYTES) {
 setImmediate(() => {
   try {
     const event = JSON.parse(input);
-    const cwd = resolveSafeCwd(event.cwd);
+    // W1 (v2.3.28, re-scoped): SubagentStop fires with cwd already inside the
+    // worktree — resolve back to the main tree so the registry `completed`
+    // row, the audit trail, and the metrics row all land where the
+    // PreToolUse `registered` row and the orchestration state file already
+    // live. Without this, the whole file below (registry lookup, events.jsonl,
+    // agent_metrics.jsonl) reads/writes the worktree's own empty/partial
+    // `.orchestray/` tree and the agent_id lookup never resolves.
+    const cwd = resolveMainProjectRoot(resolveSafeCwd(event.cwd));
     const auditDir = path.join(cwd, '.orchestray', 'audit');
 
     // Detect event source: team event (TaskCompleted) vs subagent event (SubagentStop)
@@ -620,7 +628,12 @@ setImmediate(() => {
     // W4: prefer the task_id captured in the registry at PreToolUse (the
     // value the PM actually handed to the spawn) over event.task_id, which
     // the SubagentStop payload never carries in production (Teams-only field).
-    const taskId = (registryRow && registryRow.task_id) || event.task_id || null;
+    // W5 follow-up (v2.3.28): if the running row itself never resolved a
+    // task_id (matchPendingSpawn miss upstream), fall back independently to
+    // confirming the roster name against routing.jsonl — see spawn-task-id.js.
+    const taskId = (registryRow && registryRow.task_id) || event.task_id ||
+      resolveTaskIdFromRoster(cwd, deriveRosterName(event.agent_id), orchestrationId) ||
+      null;
     if (!resolvedModel && taskId) {
       const routingEntry = findRoutingEntryByTaskId(cwd, orchestrationId, taskId);
       if (routingEntry && routingEntry.model) {
@@ -951,7 +964,12 @@ setImmediate(() => {
           orchestration_id: orchestrationId,
           agent_id: event.agent_id,
           roster_name: (registryRow && registryRow.roster_name) || null,
-          agent_type: agentType,
+          // Registry defect fix: `agentType` here is the SubagentStop payload's
+          // agent_type (roster name for `name:`d spawns) or transcript-recovered
+          // value — the registry's own `registryRow.agent_type` (carried from the
+          // `registered` row's canonical role) takes priority; fail open to
+          // `agentType` when no registry row was matched.
+          agent_type: (registryRow && registryRow.agent_type) || agentType,
           task_id: taskId,
           model: resolvedModel,
           effort: (registryRow && registryRow.effort) || null,

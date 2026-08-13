@@ -3,6 +3,24 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.28] - 2026-08-13
+
+**Orchestray 2.3.28 finishes a fix that two earlier releases already claimed was done: cost and model attribution for agents that run in an isolated worktree, which is most implementation work and most of what you spend. It also adds a safe way to merge an isolated agent's work back into your project, fixes agent activity records that were showing up blank, and closes a permissions gap for read-only helper agents.**
+
+### Added
+
+- **A new command safely merges an isolated agent's work back into the main project.** It refuses rather than guesses when the same file changed on both sides, so a merge either lands cleanly or tells you exactly what conflicts before touching anything.
+
+### Fixed
+
+- **Cost and model attribution now works for agents that run in isolated worktrees** — previously those agents showed up as unknown, with an estimated rather than a real cost. Most implementation work (architect, developer, refactorer, and similar roles) runs in a worktree, so this covers the majority of spend. Two earlier releases believed this was already fixed; both had only been checked against an agent type that never uses a worktree.
+- **Agent activity records now show the agent's role and the task it was working on**, instead of blank or mislabelled entries.
+- **Read-only helper agents are now correctly blocked from file-search tools they were never granted**, instead of failing with a confusing error when they tried to use one.
+
+### Under the hood
+
+- Documentation now explains, at the point of failure, how to get a brand-new hook past the fixture-parity release check without granting itself a waiver.
+
 ## [2.3.27] - 2026-08-12
 
 **Orchestray 2.3.27 confirms the cost-attribution fix from last release actually works on live data, and closes the gap 2.3.26 left open: uncommitted work now survives an agent being killed outright, not just a workspace cleanup. It also fixes a release-safety check that gave a different answer every time it ran against unchanged code, and a test ledger that could tell you to both delete and re-add the same waiver.**

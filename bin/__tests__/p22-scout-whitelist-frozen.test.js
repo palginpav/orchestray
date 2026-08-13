@@ -36,7 +36,11 @@ const FROZEN_TOOLS_LINE = 'tools: [Read]';
 // runtime rejection (layer b) + this byte-equality check (layer c) are the
 // three layers of the read-only-tier whitelist. Drift on any one layer
 // alone is observable but defense-in-depth weakens.
-const FROZEN_FORBIDDEN_TOOLS = ['Edit', 'Write', 'Bash'];
+// v2.3.28 W3: widened to include Glob and Grep — the scout's `tools: [Read]`
+// grant never included them, but SCOUT_FORBIDDEN_TOOLS omitted them until
+// now, so a scout calling Glob/Grep failed on tool-not-granted instead of
+// being blocked and audited. See bin/validate-task-completion.js comment.
+const FROZEN_FORBIDDEN_TOOLS = ['Edit', 'Write', 'Bash', 'Glob', 'Grep'];
 
 describe('P2.2 — agent file tools-line byte-equality (drift detector)', () => {
 
@@ -71,8 +75,8 @@ describe('P2.2 — agent file tools-line byte-equality (drift detector)', () => 
   });
 
   // F-012 (v2.2.0 fix-pass): cross-check that the runtime SCOUT_FORBIDDEN_TOOLS
-  // set in bin/validate-task-completion.js is exactly {Edit, Write, Bash} —
-  // the strict complement of the frontmatter allow-list. The error message
+  // set in bin/validate-task-completion.js is exactly {Edit, Write, Bash, Glob,
+  // Grep} — the strict complement of the frontmatter allow-list. The error message
   // at the top of this file ("update FROZEN_TOOLS_LINE in this test AND the
   // runtime SCOUT_FORBIDDEN_TOOLS set ... in the same commit") was a verbal
   // commitment until this assertion landed; institutional memory is now a
@@ -95,6 +99,20 @@ describe('P2.2 — agent file tools-line byte-equality (drift detector)', () => 
       'Layer (a) frontmatter and layer (b) runtime rejection must be exact\n' +
       'complements. Update both this test and SCOUT_FORBIDDEN_TOOLS in the\n' +
       'same commit. See feedback_explore_agent_readonly.md.');
+  });
+
+  // v2.3.28 W3: project-intent (agents/project-intent.md `tools: Read`) was
+  // found during the sweep for the scout gap's shape — it had NO entry in
+  // READ_ONLY_AGENT_FORBIDDEN_TOOLS at all, so it had zero runtime tool
+  // enforcement (worse than the scout hole: a missing map entry skips the
+  // whole enforcement block).
+  test('READ_ONLY_AGENT_FORBIDDEN_TOOLS covers project-intent', () => {
+    const src = fs.readFileSync(VALIDATE_PATH, 'utf8');
+    const m = src.match(/READ_ONLY_AGENT_FORBIDDEN_TOOLS\s*=\s*\{([\s\S]*?)\}/);
+    assert.ok(m, 'Could not locate READ_ONLY_AGENT_FORBIDDEN_TOOLS map in ' + VALIDATE_PATH);
+    assert.match(m[1], /'project-intent':\s*SCOUT_FORBIDDEN_TOOLS/,
+      'project-intent must be enforced by READ_ONLY_AGENT_FORBIDDEN_TOOLS ' +
+      '(its frontmatter grants `tools: Read` only, same as haiku-scout).');
   });
 
 });

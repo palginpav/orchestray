@@ -9,7 +9,8 @@
  *   1. Each of {Edit, Write, Bash, Grep, Glob} → exit 2 + housekeeper_forbidden_tool_blocked.
  *   2. Scout payload with the same forbidden tools (Edit/Write/Bash) still
  *      emits the SCOUT-flavoured event (per-agent map differentiation).
- *   3. Scout payload with Grep → exit 0 (scout permits Grep, housekeeper does NOT).
+ *   3. Scout payload with Grep → exit 2, SCOUT-flavoured event (v2.3.28: scout
+ *      no longer permits Grep either — both roles forbid it, independently pinned).
  *   4. Clean housekeeper payload (Read only) → exit 0.
  *
  * Layer (b) of the three-layer enforcement (Clause 2 of locked-scope D-5).
@@ -110,22 +111,27 @@ describe('P3.3 — validate-task-completion rejects forbidden housekeeper tool c
     fs.rmSync(r.tmp, { recursive: true, force: true });
   });
 
-  test('haiku-scout with Grep does NOT exit 2 (scout permits Grep, housekeeper does not)', () => {
+  // v2.3.28 W3: haiku-scout's frontmatter narrowed to `tools: [Read]` in
+  // v2.3.27, so scout no longer permits Grep (or Glob) — this test used to
+  // assert the un-widened gap as intended behavior. SCOUT_FORBIDDEN_TOOLS
+  // now matches HOUSEKEEPER_FORBIDDEN_TOOLS in contents (both {Edit, Write,
+  // Bash, Glob, Grep}), even though the two roles remain independently
+  // pinned (see bin/validate-task-completion.js comment).
+  test('haiku-scout with Grep DOES exit 2 (scout no longer permits Grep, same as housekeeper)', () => {
     const r = runHook({
       hook_event_name: 'SubagentStop',
       subagent_type: 'haiku-scout',
       tool_calls: [{ name: 'Grep' }, { name: 'Read' }],
       output: '## Structured Result\n```json\n' + JSON.stringify(VALID_RESULT) + '\n```\n',
     });
-    assert.equal(r.status, 0,
-      'scout permits Grep — must NOT be blocked; stderr=' + r.stderr);
+    assert.equal(r.status, 2,
+      'scout no longer permits Grep — must be blocked; stderr=' + r.stderr);
     const events = readEvents(r.tmp);
-    const blocked = events.filter(e =>
-      e.type === 'scout_forbidden_tool_blocked' || e.type === 'housekeeper_forbidden_tool_blocked'
-    );
-    assert.equal(blocked.length, 0,
-      'no forbidden-tool events expected for scout+Grep; events=' +
-      JSON.stringify(events.map(e => e.type)));
+    const scoutHit = events.find(e => e.type === 'scout_forbidden_tool_blocked');
+    assert.ok(scoutHit, 'expected scout_forbidden_tool_blocked for scout+Grep');
+    const houseHit = events.find(e => e.type === 'housekeeper_forbidden_tool_blocked');
+    assert.equal(houseHit, undefined,
+      'scout payload must NOT emit housekeeper_forbidden_tool_blocked');
     fs.rmSync(r.tmp, { recursive: true, force: true });
   });
 

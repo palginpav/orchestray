@@ -54,10 +54,13 @@ const VALID_RESULT = {
 describe('P2.2 — validate-task-completion rejects forbidden scout tool calls', () => {
 
   test('clean haiku-scout payload (Read-only tool calls) → exit 0', () => {
+    // v2.3.28 W3: haiku-scout's frontmatter grants `tools: [Read]` only —
+    // Glob was mistakenly treated as "clean" here before SCOUT_FORBIDDEN_TOOLS
+    // was widened to include it. A clean payload uses ONLY the granted tool.
     const r = runHook({
       hook_event_name: 'SubagentStop',
       subagent_type: 'haiku-scout',
-      tool_calls: [{ name: 'Read' }, { name: 'Glob' }],
+      tool_calls: [{ name: 'Read' }],
       output: '## Structured Result\n```json\n' + JSON.stringify(VALID_RESULT) + '\n```\n',
     });
     assert.equal(r.status, 0, 'stderr=' + r.stderr);

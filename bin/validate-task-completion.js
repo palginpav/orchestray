@@ -255,8 +255,8 @@ const ARTIFACT_PATH_FIELDS = [
 // `bin/__tests__/p22-scout-whitelist-frozen.test.js` byte-equality check.
 //
 // P3.3 (v2.2.0): adds `orchestray-housekeeper` with a STRICTER forbidden set
-// that includes `Grep`. Scout permits Grep; housekeeper does NOT. Per Clause 1
-// of the locked-scope D-5 hardening contract. The literal `SCOUT_FORBIDDEN_TOOLS
+// that includes `Grep`. Per Clause 1 of the locked-scope D-5 hardening
+// contract. The literal `SCOUT_FORBIDDEN_TOOLS
 // = new Set([...])` declaration is preserved (rather than aliased through the
 // per-agent map) so the p22 frozen-baseline byte-equality test continues to
 // regex-match the source.
@@ -265,11 +265,37 @@ const ARTIFACT_PATH_FIELDS = [
 // to match its narrowed frontmatter grant `tools: [Read,
 // mcp__orchestray__history_query_events]` — Glob was granted but never used
 // (op class 3 already forbade it in prose; the tool was dead weight).
-const SCOUT_FORBIDDEN_TOOLS = new Set(['Edit', 'Write', 'Bash']);
+//
+// v2.3.28 W3: haiku-scout's frontmatter grant narrowed to `tools: [Read]` in
+// v2.3.27, but SCOUT_FORBIDDEN_TOOLS was never widened to match — a scout
+// calling Glob or Grep FAILED with a tool-not-granted error instead of being
+// BLOCKED and audited by this three-layer defense. Same shape as the
+// housekeeper gap V6 closed: narrowing a whitelist (layer a) does not by
+// itself promote the runtime rejection (layer b) to match it. Closed the
+// same way — SCOUT_FORBIDDEN_TOOLS is now the strict complement of
+// `tools: [Read]`, identical in contents to HOUSEKEEPER_FORBIDDEN_TOOLS
+// (kept as separate declarations: scout's is regex-matched by the p22 frozen
+// test, and the two whitelists are pinned independently so a future
+// narrowing of one does not silently narrow the other).
+//
+// v2.3.28 W3: swept agents/*.md for the same shape of gap. `project-intent`
+// has the identical hole — frontmatter grants `tools: Read` only
+// (agents/project-intent.md) but the role was absent from
+// READ_ONLY_AGENT_FORBIDDEN_TOOLS entirely, so it had ZERO runtime tool
+// enforcement (a missing map entry skips this whole block — worse than the
+// scout hole, since Edit/Write/Bash would also have gone unblocked). Added
+// below with the scout forbidden set. Checked and ruled OUT:
+// `pattern-extractor` (`tools: []`) is invoked headless via CLI subprocess
+// by bin/post-orchestration-extract.js, never through Agent()/SubagentStop,
+// so it never reaches this hook — not the same gap shape. Every other
+// agents/*.md declares Bash/Write/Edit in its `tools:` line, so adding a
+// read-only-tier entry for them would be a scope change, not a gap-close.
+const SCOUT_FORBIDDEN_TOOLS = new Set(['Edit', 'Write', 'Bash', 'Glob', 'Grep']);
 const HOUSEKEEPER_FORBIDDEN_TOOLS = new Set(['Edit', 'Write', 'Bash', 'Grep', 'Glob']);
 const READ_ONLY_AGENT_FORBIDDEN_TOOLS = {
   'haiku-scout':            SCOUT_FORBIDDEN_TOOLS,
   'orchestray-housekeeper': HOUSEKEEPER_FORBIDDEN_TOOLS,
+  'project-intent':         SCOUT_FORBIDDEN_TOOLS,
 };
 const READ_ONLY_AGENTS = new Set(Object.keys(READ_ONLY_AGENT_FORBIDDEN_TOOLS));
 
