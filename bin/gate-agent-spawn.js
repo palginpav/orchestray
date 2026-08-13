@@ -582,8 +582,11 @@ if (require.main === module) {
     // (default 200). Spawn calls requesting more get blocked here.
     // -----------------------------------------------------------------------
     {
-      const requestedTurns = toolInput.maxTurns ?? toolInput.max_turns;
-      if (typeof requestedTurns === 'number' && Number.isFinite(requestedTurns)) {
+      // Real callers send maxTurns as a JSON string ("18"); coerce before checking
+      // so the hard-cap actually runs against the values being sent (v2.3.29 W3).
+      const requestedTurnsRaw = toolInput.maxTurns ?? toolInput.max_turns;
+      const requestedTurns = Number(requestedTurnsRaw);
+      if (requestedTurnsRaw !== undefined && requestedTurnsRaw !== null && Number.isFinite(requestedTurns)) {
         let hardCap = 200;
         try {
           const _nt = require('./_lib/numeric-thresholds');

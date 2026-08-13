@@ -16,6 +16,11 @@ const { requireGuard }   = require('./_lib/double-fire-guard');
 const { readRegistry, appendTransition, deriveRosterName } = require('./_lib/agent-registry');
 const { resolveTaskIdFromRoster } = require('./_lib/spawn-task-id');
 
+// Fix A (v2.3.29): distinct sentinel for "no Structured Result block found",
+// so absent and unknown never collapse to the same `null` — see
+// .orchestray/kb/artifacts/v2329-w3-turn-budget-diagnosis.md Finding 4.
+const NO_STRUCTURED_RESULT_STATUS = 'no_structured_result';
+
 /**
  * W2/W4 (v2.3.26) master kill switch. Fail-open on config error (feature
  * stays ON — default-on per project convention). When disabled, no registry
@@ -417,6 +422,13 @@ setImmediate(() => {
     }
 
     let turnsUsed = 0;
+    // v2.3.29 W3 fix 2: turnsUsed counts raw assistant-role lines (streaming
+    // fragments, over-counts real turns 1.7x-2.8x). turnsReal groups by
+    // requestId to recover the real turn count; null if requestId is absent
+    // anywhere (older transcripts) rather than guessing.
+    const seenRequestIds = new Set();
+    let sawAssistantLine = false;
+    let requestIdMissing = false;
     // E#3 (v2.2.19 audit-fix R1): parse files_changed from the transcript's
     // last assistant message ## Structured Result block. Production agent_stop
     // events do not carry structured_result on the hook payload (the SubagentStop
@@ -428,9 +440,16 @@ setImmediate(() => {
     // C2 (v2.3.10): agent_type recovered from the transcript spawn prompt when
     // the SubagentStop payload omits it. null when nothing trustworthy is found.
     let recoveredAgentType = null;
+    // Fix A/B (v2.3.29): whether a `## Structured Result` fence was found and
+    // parsed, and the `status` field it carried (raw string, or null if the
+    // block parsed but had no usable status).
+    let structuredResultFound = false;
+    let transcriptResultStatus = null;
+    let transcriptReadable = false;
 
     try {
       if (transcriptPath && fs.existsSync(transcriptPath)) {
+        transcriptReadable = true;
         const content = fs.readFileSync(transcriptPath, 'utf8');
         const lines = content.split('\n').filter((l) => l.trim());
 
@@ -445,6 +464,12 @@ setImmediate(() => {
             const role = entry.role || entry.type || (entry.message && entry.message.role);
             if (role === 'assistant') {
               turnsUsed++;
+              sawAssistantLine = true;
+              if (typeof entry.requestId === 'string' && entry.requestId) {
+                seenRequestIds.add(entry.requestId);
+              } else {
+                requestIdMissing = true;
+              }
               // Capture the text of every assistant entry; last one wins.
               const msgContent = entry.content || (entry.message && entry.message.content);
               if (typeof msgContent === 'string' && msgContent.length > 0) {
@@ -481,6 +506,10 @@ setImmediate(() => {
                   .filter((f) => typeof f === 'string' && f.trim().length > 0)
                   .map((f) => f.trim());
               }
+              if (parsed && typeof parsed.status === 'string' && parsed.status.trim().length > 0) {
+                structuredResultFound = true;
+                transcriptResultStatus = parsed.status.trim();
+              }
             }
           } catch (_parseErr) {
             // Structured result block absent or malformed — files_changed stays []
@@ -490,6 +519,11 @@ setImmediate(() => {
     } catch (_e) {
       // Transcript unavailable -- all usage fields remain 0, turnsUsed remains 0
     }
+
+    // turnsReal: distinct requestId groups among assistant lines (real API turns).
+    // null when requestId is missing on any assistant line (older transcripts) or
+    // no assistant lines were seen at all -- never guess or fall back to turnsUsed.
+    const turnsReal = (sawAssistantLine && !requestIdMissing) ? seenRequestIds.size : null;
 
     let usageSource = 'transcript';
     // cost_confidence: "measured" when token counts came from the transcript
@@ -761,6 +795,7 @@ setImmediate(() => {
         estimated_cost_opus_baseline_usd: estimatedCostOpusBaselineUsd,
         model_used: resolvedModel,
         turns_used: turnsUsed,
+        turns_real: turnsReal,
       };
     } else {
       auditEvent = {
@@ -780,6 +815,7 @@ setImmediate(() => {
         transcript_path: transcriptPath,
         model_used: resolvedModel,
         turns_used: turnsUsed,
+        turns_real: turnsReal,
         // E#3 (v2.2.19 audit-fix R1): files_changed parsed from transcript's last
         // ## Structured Result block. Empty array when transcript is absent, the
         // agent did not emit a structured result, or the agent type never changes
@@ -797,6 +833,8 @@ setImmediate(() => {
         auditEvent.roster_name = (registryRow && registryRow.roster_name) || null;
         auditEvent.model_source = modelSource;
         auditEvent.lifecycle_registered = lifecycleRegistered;
+        // Fix B (v2.3.29): observable at the event level, not just the registry.
+        auditEvent.structured_result_found = structuredResultFound;
       }
     }
 
@@ -949,8 +987,40 @@ setImmediate(() => {
       }
     }
 
+    // Fix A (v2.3.29): resolve the final result_status once. `structuredResultFound`
+    // trusts whatever the agent self-reported (not restricted to the three known
+    // values — an unrecognized status is still more informative than null); its
+    // absence gets the distinct NO_STRUCTURED_RESULT_STATUS sentinel rather than null.
+    const resolvedResultStatus = structuredResultFound
+      ? transcriptResultStatus
+      : NO_STRUCTURED_RESULT_STATUS;
+
     // Append to events.jsonl via the gateway
     writeEvent(auditEvent, { cwd });
+
+    // Fix B (v2.3.29): emit an observability event when a subagent stopped
+    // without a parseable Structured Result — the W10 defect (a1e5674a142d82756)
+    // stranded silently with nothing recording that its output was unusable.
+    // Skip team events (teammates don't emit this handoff contract) and skip
+    // when no transcript was even readable (nothing to report beyond agent_stop
+    // itself, which already carries transcript_path: null). Written AFTER
+    // auditEvent so existing consumers keyed on "agent_stop is the last
+    // event this hook writes for the base case" are undisturbed.
+    if (!isTeamEvent && !structuredResultFound && transcriptReadable) {
+      try {
+        writeEvent({
+          type: 'agent_missing_structured_result',
+          schema_version: 1,
+          orchestration_id: orchestrationId,
+          agent_id: event.agent_id || null,
+          agent_type: (registryRow && registryRow.agent_type) || agentType || null,
+          task_id: taskId,
+          transcript_path: transcriptPath,
+        }, { cwd });
+      } catch (_missingResultErr) {
+        // Fail open — never block the agent_stop write over an observability event.
+      }
+    }
 
     // W2 §3.5: append a `completed` transition ONLY when this agent_id
     // already resolved to a registry entry in running/resumed/completed —
@@ -978,9 +1048,10 @@ setImmediate(() => {
           spawn_tool: (registryRow && registryRow.spawn_tool) || null,
           description: (registryRow && registryRow.description) || null,
           turns_used: turnsUsed,
+          turns_real: turnsReal,
           estimated_cost_usd: estimatedCostUsd,
           transcript_path: transcriptPath,
-          result_status: null,
+          result_status: resolvedResultStatus,
           hold_for_resume: null,
           resume_count: (registryRow && registryRow.resume_count) || 0,
           reason: null,
@@ -1008,6 +1079,7 @@ setImmediate(() => {
           session_id:         auditEvent.session_id,
           model_used:         resolvedModel,
           turns_used:         turnsUsed,
+          turns_real:         turnsReal,
           usage: {
             input_tokens:                   totalUsage.input_tokens,
             output_tokens:                  totalUsage.output_tokens,

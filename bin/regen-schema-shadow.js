@@ -211,6 +211,20 @@ if (require.main === module) {
       '[regen-schema-shadow] OK — ' + count + ' event types, ' +
       shadow._meta.shadow_size_bytes + ' bytes → agents/pm-reference/event-schemas.shadow.json\n'
     );
+    // v2.3.29: rebuild the tier2-index sidecar in lock-step, matching
+    // regen-schema-shadow-hook.js. Without this the standalone leaves the sidecar
+    // stale against a freshly-regenerated shadow, which trips the P1.3 freshness
+    // gate and fails ~27 tests with no hint that the sidecar is the cause.
+    try {
+      const { buildIndex } = require('./_lib/tier2-index');
+      const index = buildIndex({ cwd });
+      process.stderr.write(
+        '[regen-schema-shadow] tier2-index: ' + Object.keys(index.events).length +
+        ' events, ' + index._meta.index_size_bytes + ' bytes\n'
+      );
+    } catch (idxErr) {
+      process.stderr.write('[regen-schema-shadow] tier2-index regen failed: ' + idxErr.message + '\n');
+    }
     // v2.2.7 zone1-stability fix: null out zone1_hash so the next compose-block-a
     // run re-pins with the freshly-regenerated shadow included. Fail-open: if
     // invalidation throws, warn to stderr and continue — the regen itself succeeded.

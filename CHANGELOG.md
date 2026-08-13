@@ -3,6 +3,25 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.29] - 2026-08-13
+
+**Orchestray 2.3.29 catches agents that go dark instead of leaving them looking like they're still working forever: an agent that stops without reporting back is now recorded as such, with its cost and turn count marked unavailable rather than guessed at. It also fixes two measurement bugs — an agent turn count that was roughly double what actually ran, and a per-agent turn cap that had never once taken effect — and now warns worktree-isolated agents when their copy of the project has fallen behind, so they stop reporting misleading test results.**
+
+### Added
+
+- **A new sweep catches agents that stopped without ever reporting back** (for example, one killed mid-task by a permission denial) instead of leaving them looking like they're still running indefinitely. Their cost and turn count are now recorded as unavailable rather than silently guessed at.
+- **Worktree-isolated agents are now warned when their copy of the project has fallen behind** the main branch, instead of confidently reporting test results or file state measured against a stale checkout.
+
+### Fixed
+
+- **Agent activity records now say how an agent finished** — succeeded, partially finished, or stopped without reporting — instead of that field always being blank.
+- **The turn count shown for an agent was inflated roughly two-fold.** A corrected count is now recorded alongside the original, rather than replacing it outright, so nothing that depended on the old number breaks silently.
+- **A safety limit meant to cap how long an agent can run had never actually applied**, because the value it checked arrives as text rather than a number and the check silently ignored it. It applies now.
+
+### Under the hood
+
+- The test suite is now reliable — a long-standing intermittent failure in one test, which made roughly one run in three untrustworthy, has been eliminated.
+
 ## [2.3.28] - 2026-08-13
 
 **Orchestray 2.3.28 finishes a fix that two earlier releases already claimed was done: cost and model attribution for agents that run in an isolated worktree, which is most implementation work and most of what you spend. It also adds a safe way to merge an isolated agent's work back into your project, fixes agent activity records that were showing up blank, and closes a permissions gap for read-only helper agents.**

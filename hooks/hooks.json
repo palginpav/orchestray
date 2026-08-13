@@ -255,6 +255,11 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-context-size-hint.js",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/inject-worktree-staleness.js",
+            "timeout": 10
           }
         ]
       },
@@ -766,6 +771,15 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/sweep-dirty-worktrees-on-pm-stop.js",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/sweep-orphaned-agents-on-pm-stop.js",
             "timeout": 15
           }
         ]

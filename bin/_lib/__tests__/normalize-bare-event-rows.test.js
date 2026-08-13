@@ -27,7 +27,16 @@ const {
   saveHighWaterState,
   HIGHWATER_REL_PATH,
   MAX_FAST_PATH_DELTA_BYTES,
+  QUIESCENT_IDLE_MS,
+  MAX_QUIESCENCE_WAIT_MS,
 } = require('../normalize-bare-event-rows');
+
+// Deterministic, non-racing quiescence window for the concurrent-append test
+// below — see that suite's header note. Large enough that this file's own
+// `npm test` isolation (it now runs alone, outside the parallel worker pool
+// — see package.json's `test` script) leaves ample headroom against ordinary
+// system jitter; the writer itself is not paced to fit any bound.
+const TEST_QUIESCENCE_OVERRIDES = { quiescentIdleMs: 100, maxQuiescenceWaitMs: 30000 };
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -331,19 +340,78 @@ describe('normalizeEventsFile', () => {
 // rename swapping in a stale snapshot. See bin/_lib/normalize-bare-event-
 // rows.js's header note 2 and MAX_QUIESCENCE_WAIT_MS.
 //
+// Determinism note (replaces an earlier self-paced-to-500ms version that
+// still flaked ~1-in-6 under this repo's 32-way-parallel `npm test`): racing
+// a real writer against the fixed 500ms PRODUCTION quiescence bound is
+// inherently non-deterministic — under enough CPU contention, no pacing
+// constant reliably wins. The contract this test actually needs to prove is
+// "every row appended before the quiescence window closes survives the
+// rewrite" — that is orthogonal to WHAT the window's duration is. So the
+// window is widened via `normalizeEventsFile`'s test-only
+// `maxQuiescenceWaitMs`/`quiescentIdleMs` opts (production defaults, used by
+// every real caller, are untouched — see that function's opts doc). The
+// child still writes for real, is still a genuine separate OS process racing
+// the main read loop's EOF, and the assertion (zero rows lost) is unchanged;
+// only the wall-clock budget for the writer to finish is now generous enough
+// to not itself be the source of flakiness. This intentionally does NOT
+// re-verify the 500ms bound's own timeout behavior — that a sustained writer
+// PAST the window loses rows — because the task instructions forbid touching
+// or re-tuning that value; it is asserted here only as an unchanged constant
+// (see the assertion on MAX_QUIESCENCE_WAIT_MS below).
+//
 // The child is handshake-synchronized (writes a ready marker, then busy-polls
 // for a go marker) so its Node runtime is already warm before the race
 // starts — otherwise ~30-50ms of node-startup latency would swallow the
-// whole race window and the test would pass for the wrong reason. Its append
-// burst is spread over small batches with short sleeps so it behaves like a
-// real sustained writer (not an instant burst that finishes before the main
-// read loop ever reaches EOF), and the seed file is sized so the backup
-// phase (the actual vulnerable gap) takes long enough to be a realistic
-// target rather than a sub-millisecond sliver.
+// whole race window and the test would pass for the wrong reason. The seed
+// file is sized so the backup phase (the actual vulnerable gap) takes long
+// enough to be a realistic target rather than a sub-millisecond sliver.
+//
+// v2.3.29 W4 flake fix: the append burst used to be a FIXED row count (2000)
+// paced by a fixed "sleep 1ms every 5 appends" cadence, sized to finish in
+// roughly 400-1000ms of real time on an idle machine. Under this repo's own
+// fully-parallel `npm test` (node --test spawns one worker per file, default
+// concurrency = CPU count), that pacing assumption doesn't hold — OS
+// scheduling starves the child process unpredictably, so the SAME fixed
+// count can take well over MAX_QUIESCENCE_WAIT_MS of real wall time purely
+// from contention unrelated to how fast the child is actually trying to
+// write. That let rows land after normalizeEventsFile's bounded quiescence
+// wait gave up and proceeded to backup+rename, losing them — a real,
+// reproduced failure (`1988 !== 2000`, 12 rows lost), but caused by the
+// TEST's timing assumption, not by product logic: `normalizeEventsFile`
+// behaved exactly per its documented (and deliberately bounded) contract.
+//
+// Fix: the child now self-paces to a wall-clock TARGET_DURATION_MS instead
+// of a fixed row count, so its actual write burst always spans a bounded,
+// known-safe fraction of MAX_QUIESCENCE_WAIT_MS regardless of how much CPU
+// time the scheduler hands it — a slow/contended run just writes fewer rows
+// in that window, a fast run writes more, but the burst never overruns the
+// window the product code is contracted to tolerate. The zero-row-loss
+// assertion is unchanged; only the row COUNT is no longer a wall-clock-
+// dependent guess.
+//
+// A first cut of this fix removed the original per-batch sleep entirely
+// (unthrottled tight loop bounded only by elapsed time) and reproduced a
+// SECOND, distinct failure mode on a fast/idle run: 166220 appends landed in
+// the 300ms window (≈554/ms) — `normalizeEventsFile`'s own per-line
+// processing cost (JSON parse/rebuild + a `fs.writeSync` per row) scales with
+// total volume, so draining that much data on every growth-triggered
+// `drainAvailable()` call ate into the SAME real-time quiescence budget the
+// writer was racing against, losing 251 rows — not a concurrency defect
+// either, just an unrealistically large burst for what "a sustained writer"
+// is meant to model. The short inter-batch sleep below throttles throughput
+// back to a realistic sustained rate (bounding total volume to roughly what
+// the original fixed-2000-count design produced) while the wall-clock
+// duration bound keeps total elapsed time safe under contention.
 describe('normalizeEventsFile — concurrent-append race (v2.3.21 fix 1)', () => {
   test('a real concurrent OS process appending during a rewrite loses zero rows', async () => {
     const SEED_COUNT = 80000;
-    const APPEND_COUNT = 2000;
+    // Comfortably inside MAX_QUIESCENCE_WAIT_MS (default 500ms) — leaves
+    // margin for QUIESCENT_IDLE_MS confirmation + main-thread overhead after
+    // the burst ends, even under heavy scheduling contention.
+    const TARGET_DURATION_MS = Math.min(300, Math.floor(MAX_QUIESCENCE_WAIT_MS * 0.6));
+    // Sanity floor: below this, the environment gave the child essentially no
+    // CPU time at all and the race wasn't meaningfully exercised.
+    const MIN_MEANINGFUL_APPENDS = 20;
 
     const seedRows = [];
     for (let i = 0; i < SEED_COUNT; i++) {
@@ -358,7 +426,7 @@ describe('normalizeEventsFile — concurrent-append race (v2.3.21 fix 1)', () =>
       const fs = require('fs');
       function sleepMs(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
       const filePath = process.argv[1];
-      const count = parseInt(process.argv[2], 10);
+      const targetDurationMs = parseInt(process.argv[2], 10);
       const goFile = process.argv[3];
       const readyFile = process.argv[4];
       fs.writeFileSync(readyFile, '1');
@@ -366,16 +434,29 @@ describe('normalizeEventsFile — concurrent-append race (v2.3.21 fix 1)', () =>
       while (!fs.existsSync(goFile)) {
         if (Date.now() > deadline) process.exit(2);
       }
+      const start = Date.now();
       const BATCH = 5;
-      for (let i = 0; i < count; i++) {
+      let i = 0;
+      // Bounded on BOTH axes: elapsed wall time (survives CPU starvation
+      // under contention — the burst never overruns the product's own
+      // quiescence budget) and throttled throughput via the inter-batch
+      // sleep (survives an unthrottled fast machine — keeps total volume
+      // from swamping normalizeEventsFile's own per-line processing cost).
+      // See the describe-block comment above for both failure modes this
+      // closes.
+      while (Date.now() - start < targetDurationMs && i < 50000) {
         fs.appendFileSync(filePath, JSON.stringify({event:'race_probe_row', seq:i, pad:'z'.repeat(40)}) + '\\n');
-        if (i % BATCH === BATCH - 1) sleepMs(1);
+        i++;
+        if (i % BATCH === 0) sleepMs(1);
       }
+      process.stdout.write(String(i));
     `;
 
     const child = spawn(process.execPath, [
-      '-e', childScript, eventsPath(), String(APPEND_COUNT), goFile, readyFile,
+      '-e', childScript, eventsPath(), String(TARGET_DURATION_MS), goFile, readyFile,
     ]);
+    let childStdout = '';
+    child.stdout.on('data', (chunk) => { childStdout += chunk; });
     const closed = new Promise((resolve) => child.on('close', resolve));
 
     const readyDeadline = Date.now() + 10000;
@@ -384,9 +465,21 @@ describe('normalizeEventsFile — concurrent-append race (v2.3.21 fix 1)', () =>
     }
 
     fs.writeFileSync(goFile, '1'); // signal the child to start its append burst
-    const result = normalizeEventsFile(eventsPath(), { chunkBytes: 65536 });
+    const result = normalizeEventsFile(eventsPath(), { chunkBytes: 65536, ...TEST_QUIESCENCE_OVERRIDES });
 
     await closed; // every append must have actually landed before we inspect the file
+
+    const appendCount = parseInt(childStdout.trim(), 10);
+    assert.ok(
+      Number.isInteger(appendCount) && appendCount >= MIN_MEANINGFUL_APPENDS,
+      `race-repro child reported ${childStdout.trim()} appends — expected an integer >= ${MIN_MEANINGFUL_APPENDS} ` +
+      '(environment starved the child of CPU time entirely; race was not meaningfully exercised)'
+    );
+    // Prove the override is test-only: production callers (repairBareEventRows,
+    // the CLI entry) never pass these opts, so they get these unchanged
+    // constants — the widened window above did not touch production behavior.
+    assert.equal(MAX_QUIESCENCE_WAIT_MS, 500, 'production bound unchanged');
+    assert.equal(QUIESCENT_IDLE_MS, 25, 'production idle threshold unchanged');
 
     const finalLines = readLines(tmpDir);
     const raceProbeSeqs = new Set();
@@ -400,9 +493,9 @@ describe('normalizeEventsFile — concurrent-append race (v2.3.21 fix 1)', () =>
 
     assert.equal(result.backfilled >= SEED_COUNT, true, 'at least every seed row backfilled');
     assert.equal(
-      raceProbeSeqs.size, APPEND_COUNT,
-      `expected all ${APPEND_COUNT} concurrently-appended rows to survive the rewrite, ` +
-      `found ${raceProbeSeqs.size} (${APPEND_COUNT - raceProbeSeqs.size} lost to the race)`
+      raceProbeSeqs.size, appendCount,
+      `expected all ${appendCount} concurrently-appended rows to survive the rewrite, ` +
+      `found ${raceProbeSeqs.size} (${appendCount - raceProbeSeqs.size} lost to the race)`
     );
   });
 });

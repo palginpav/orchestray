@@ -533,6 +533,70 @@ describe('outside orchestration', () => {
 });
 
 // ---------------------------------------------------------------------------
+// v2.3.29 W3 fix 1 — maxTurns hard-cap coercion (gate-agent-spawn.js:585)
+// Real callers send maxTurns as a JSON string; the gate must coerce it
+// before the cap check so the check actually runs against real spawns.
+// ---------------------------------------------------------------------------
+
+describe('maxTurns hard-cap — string coercion', () => {
+
+  test('string maxTurns exceeding the default cap (200) is blocked', () => {
+    const dir = makeDir({ withOrch: true });
+    const { status, stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { model: 'sonnet', maxTurns: '250' },
+    });
+    assert.equal(status, 2, 'string-valued maxTurns must reach the hard-cap check');
+    assert.match(stderr, /maxTurns=250/);
+    assert.match(stderr, /exceeds spawn\.max_turns_hard_cap=200/);
+  });
+
+  test('genuine number maxTurns exceeding the default cap (200) is blocked', () => {
+    const dir = makeDir({ withOrch: true });
+    const { status, stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { model: 'sonnet', maxTurns: 250 },
+    });
+    assert.equal(status, 2, 'numeric maxTurns must still be enforced');
+    assert.match(stderr, /maxTurns=250/);
+    assert.match(stderr, /exceeds spawn\.max_turns_hard_cap=200/);
+  });
+
+  test('string maxTurns within the cap is allowed through the maxTurns check', () => {
+    const dir = makeDir({ withOrch: true });
+    const { stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { model: 'sonnet', maxTurns: '18' },
+    });
+    assert.ok(!stderr.includes('max_turns_hard_cap'), 'in-budget string maxTurns must not trip the cap');
+  });
+
+  test('non-coercible maxTurns ("abc") fails open without throwing', () => {
+    const dir = makeDir({ withOrch: true });
+    const { status, stderr, } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { model: 'sonnet', maxTurns: 'abc' },
+    });
+    assert.notEqual(status, null, 'process must not crash');
+    assert.ok(!stderr.includes('max_turns_hard_cap'), 'non-coercible value must not trip the cap check');
+  });
+
+  test('undefined maxTurns fails open (no maxTurns field at all)', () => {
+    const dir = makeDir({ withOrch: true });
+    const { stderr } = run({
+      tool_name: 'Agent',
+      cwd: dir,
+      tool_input: { model: 'sonnet' },
+    });
+    assert.ok(!stderr.includes('max_turns_hard_cap'));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Inside orchestration — block paths
 // ---------------------------------------------------------------------------
 

@@ -13413,3 +13413,126 @@ Field notes:
 - Kill switch: `ORCHESTRAY_UNGRANTED_TOOL_WARN_DISABLED=1` (env) or
   `ungranted_tool_mention.enabled: false` (config). Advisory only — the spawn
   is never blocked regardless of kill-switch state.
+
+---
+
+## Section 60: Agent Termination Observability Events (v2.3.29 W1/W5)
+
+Two events emitted when an agent's termination is abnormal. Both are advisory
+telemetry — neither blocks a spawn nor discards a work record. Grep anchor:
+`v2329-agent-termination`.
+
+### `agent_missing_structured_result` event
+
+Emitted by `bin/collect-agent-metrics.js` at `SubagentStop` when a subagent's
+transcript was readable but carried no parseable `## Structured Result` block.
+Written AFTER the `agent_stop` event so a reporting failure never destroys the
+record of work actually done.
+
+```json
+{
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "agent_missing_structured_result",
+  "schema_version": 1,
+  "orchestration_id": "<orch id>",
+  "agent_id": "<agent id>",
+  "agent_type": "developer",
+  "task_id": "W12",
+  "transcript_path": "<absolute path or null>"
+}
+```
+
+Field notes:
+- Absence of a Structured Result is a reporting failure, not a work failure — the
+  corresponding registry row records `result_status: "no_structured_result"`, which is
+  deliberately distinct from `null` ("unknown"). Collapsing the two was the original defect.
+- Skipped for team events and for transcripts that could not be read at all.
+- Source: emitted by `bin/collect-agent-metrics.js`.
+
+### `agent_orphan_reconciled` event
+
+Emitted by `bin/_lib/orphan-agent-sweep.js` (PM-`Stop` hook via
+`bin/sweep-orphaned-agents-on-pm-stop.js`) when a registry row stuck at `running`
+is reconciled to the terminal `reconciled_orphan` state. Fires for agents whose
+process went dark without a `SubagentStop` — e.g. after a permission denial.
+
+```json
+{
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "agent_orphan_reconciled",
+  "schema_version": 1,
+  "orchestration_id": "<orch id>",
+  "agent_id": "<agent id>",
+  "agent_type": "documenter",
+  "task_id": "W10",
+  "registry_age_seconds": 5714,
+  "liveness_signal": "derived_transcript_path",
+  "transcript_quiescent_seconds": 5649
+}
+```
+
+Field notes:
+- `liveness_signal`: which corroborating signal was used —
+  `"row_transcript_path"` (path recorded on the row), `"derived_transcript_path"`
+  (deterministically derived, the usual case since `running` rows carry no
+  `transcript_path`), or `"registry_timestamp_only"` (no transcript signal available;
+  uses a 3x threshold and trades safety margin for the ability to fire at all).
+- `transcript_quiescent_seconds`: `null` when `liveness_signal` is
+  `"registry_timestamp_only"`.
+- The reconciled registry row records `turns_used` and `estimated_cost_usd` as `null` —
+  these were never captured for a stranded agent and are **not** inferred or zeroed.
+- Source: emitted by `bin/_lib/orphan-agent-sweep.js`.
+
+---
+
+## Section 61: Worktree Staleness Signalling Events (v2.3.29 W6)
+
+Emitted by `bin/inject-worktree-staleness.js` (a `PreToolUse:Agent` hook) when a
+worktree-isolated agent is about to be spawned. Worktrees are created
+`git worktree add --detach HEAD` and this repo commits only at release time, so an
+isolated agent works in a tree missing the current release's in-flight changes. Without a
+signal, agents report false suite baselines with full confidence — three did so in the
+v2.3.29 session alone. Grep anchor: `v2329-worktree-staleness`.
+
+### `worktree_staleness_injected` event
+
+Emitted when a staleness warning was appended to the delegation prompt.
+
+```json
+{
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "worktree_staleness_injected",
+  "version": 1,
+  "orchestration_id": "<orch id>",
+  "agent_type": "developer",
+  "main_tree_head": "<40-char sha>",
+  "main_tree_uncommitted_count": 19
+}
+```
+
+Field notes:
+- `main_tree_uncommitted_count`: number of changed/untracked files in the MAIN tree at
+  spawn time — i.e. the work the spawned agent will NOT see.
+- Injection targets only spawns that will actually be worktree-isolated; a non-isolated
+  agent shares the main tree and has nothing to be stale about.
+
+### `worktree_staleness_skipped` event
+
+Emitted when no warning was needed or none could be computed.
+
+```json
+{
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "worktree_staleness_skipped",
+  "version": 1,
+  "orchestration_id": "<orch id>",
+  "agent_type": "developer",
+  "reason": "clean_tree"
+}
+```
+
+Field notes:
+- `reason`: `"clean_tree"` (main tree had no uncommitted work, so the worktree is not
+  stale) or `"git_measurement_failed"` (the count could not be determined — fails open,
+  the spawn proceeds without a warning).
+- Source: both events emitted by `bin/inject-worktree-staleness.js`.

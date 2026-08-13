@@ -159,6 +159,18 @@ function readEventsJsonl(tmpDir) {
  * Run a node child that loads writeEvent and invokes it once per payload.
  * Returns the parsed events.jsonl rows. Optional `env` overrides for the
  * kill-switch test.
+ *
+ * v2.3.29 W4 flake fix: this child is single-process, fully synchronous, and
+ * deterministic (no concurrency, no I/O wait) — isolated it completes in
+ * ~1-2s for the full ~344-payload sweep. The prior 20000ms timeout was sized
+ * for an idle machine; under this repo's own fully-parallel `npm test` (one
+ * `node --test` worker per file, default concurrency = CPU count) the child
+ * gets starved of CPU by sibling workers and was observed killed mid-run
+ * (168/344 payloads written before the 20s cutoff fired — reproduced
+ * directly, not hypothesized). Since the computation itself has no race to
+ * hide (same input always yields the same output regardless of how much wall
+ * time it takes), a larger bound that still guards against a genuine hang is
+ * the correct fix, not a workaround.
  */
 function callWriteEvents(tmpDir, payloads, env) {
   const harness = `
@@ -168,7 +180,7 @@ function callWriteEvents(tmpDir, payloads, env) {
   `;
   spawnSync(process.execPath, ['-e', harness], {
     encoding: 'utf8',
-    timeout: 20000,
+    timeout: 120000,
     env: Object.assign({}, process.env, env || {}),
   });
   return readEventsJsonl(tmpDir);

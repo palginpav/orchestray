@@ -57,6 +57,18 @@ function readEventsJsonl(auditDir) {
     .map(l => JSON.parse(l));
 }
 
+// v2.3.29 Fix B: an `agent_missing_structured_result` event may now be
+// appended AFTER `agent_stop` whenever a test fixture's transcript (nearly
+// all of them, written before this feature) carries no Structured Result
+// block. `agent_stop` is therefore no longer reliably the LAST event in
+// events.jsonl -- look it up by type instead of by trailing index.
+function lastAgentStopEvent(events) {
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].type === 'agent_stop') return events[i];
+  }
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Exit codes and safe fallback
 // ---------------------------------------------------------------------------
@@ -285,6 +297,94 @@ describe('SubagentStop event handling', () => {
       assert.equal(ev.usage.cache_read_input_tokens, 1000, 'should sum cache read tokens');
       assert.equal(ev.usage_source, 'transcript');
       assert.equal(ev.turns_used, 2);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  // v2.3.29 W3 fix 2: turns_used counts raw assistant-role lines (streaming
+  // fragments); turns_real groups by requestId to recover real API turns.
+  test('turns_real groups fragmented assistant lines by requestId', () => {
+    const tmpDir = makeTmpDir();
+    const auditDir = path.join(tmpDir, '.orchestray', 'audit');
+    writeOrchestrationId(auditDir, 'orch-turns-real-001');
+
+    const transcriptPath = path.join(tmpDir, 'transcript.jsonl');
+    const lines = [
+      // Turn 1: two streaming fragments (thinking + tool_use) share one requestId.
+      JSON.stringify({ role: 'assistant', requestId: 'req-1', message: { content: [] } }),
+      JSON.stringify({ role: 'assistant', requestId: 'req-1', message: { content: [] } }),
+      // Turn 2: a single fragment under a different requestId.
+      JSON.stringify({ role: 'assistant', requestId: 'req-2', message: { content: [] } }),
+    ].join('\n');
+    fs.writeFileSync(transcriptPath, lines);
+
+    try {
+      const input = JSON.stringify({
+        cwd: tmpDir,
+        hook_event_name: 'SubagentStop',
+        agent_type: 'developer',
+        agent_transcript_path: transcriptPath,
+      });
+      run(input);
+
+      const events = readEventsJsonl(auditDir);
+      const ev = events[1];
+      assert.equal(ev.turns_used, 3, 'raw fragment count stays 3 -- back-compat');
+      assert.equal(ev.turns_real, 2, 'distinct requestId groups recover the real turn count');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('turns_real is null when requestId is absent from the transcript', () => {
+    const tmpDir = makeTmpDir();
+    const auditDir = path.join(tmpDir, '.orchestray', 'audit');
+    writeOrchestrationId(auditDir, 'orch-turns-real-002');
+
+    const transcriptPath = path.join(tmpDir, 'transcript.jsonl');
+    // Older-shaped transcript: assistant lines with no requestId field at all.
+    const lines = [
+      JSON.stringify({ role: 'assistant', content: 'ok' }),
+      JSON.stringify({ role: 'assistant', content: 'done' }),
+    ].join('\n');
+    fs.writeFileSync(transcriptPath, lines);
+
+    try {
+      const input = JSON.stringify({
+        cwd: tmpDir,
+        hook_event_name: 'SubagentStop',
+        agent_type: 'developer',
+        agent_transcript_path: transcriptPath,
+      });
+      run(input);
+
+      const events = readEventsJsonl(auditDir);
+      const ev = events[1];
+      assert.equal(ev.turns_used, 2, 'raw fragment count is still measured');
+      assert.equal(ev.turns_real, null, 'missing requestId must yield null, never a guessed number');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  test('turns_real is null when there are no assistant lines at all', () => {
+    const tmpDir = makeTmpDir();
+    const auditDir = path.join(tmpDir, '.orchestray', 'audit');
+    writeOrchestrationId(auditDir, 'orch-turns-real-003');
+
+    try {
+      const input = JSON.stringify({
+        cwd: tmpDir,
+        hook_event_name: 'SubagentStop',
+        agent_type: 'developer',
+      });
+      run(input);
+
+      const events = readEventsJsonl(auditDir);
+      const ev = events[1];
+      assert.equal(ev.turns_used, 0);
+      assert.equal(ev.turns_real, null);
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
     }
@@ -539,7 +639,7 @@ describe('pricing and cost estimation', () => {
 
       const events = readEventsJsonl(auditDir);
       // Second event is the agent_stop (first is routing_outcome we seeded)
-      const ev = events[events.length - 1];
+      const ev = lastAgentStopEvent(events);
       assert.ok(ev.estimated_cost_usd > 0, 'cost should be positive');
       // opus: $5/M input + $25/M output = $30 for 1M each
       assert.ok(Math.abs(ev.estimated_cost_usd - 30.0) < 0.01,
@@ -579,7 +679,7 @@ describe('pricing and cost estimation', () => {
       run(input);
 
       const events = readEventsJsonl(auditDir);
-      const ev = events[events.length - 1];
+      const ev = lastAgentStopEvent(events);
       assert.ok(Math.abs(ev.estimated_cost_usd - 6.0) < 0.01,
         `haiku cost should be ~$6 for 1M+1M tokens, got ${ev.estimated_cost_usd}`);
     } finally {
@@ -609,7 +709,7 @@ describe('pricing and cost estimation', () => {
       run(input);
 
       const events = readEventsJsonl(auditDir);
-      const ev = events[events.length - 1];
+      const ev = lastAgentStopEvent(events);
       assert.ok(Math.abs(ev.estimated_cost_usd - 18.0) < 0.01,
         `unknown agent type should default to sonnet ($18), got ${ev.estimated_cost_usd}`);
     } finally {
@@ -645,7 +745,7 @@ describe('pricing and cost estimation', () => {
       run(input);
 
       const events = readEventsJsonl(auditDir);
-      const ev = events[events.length - 1];
+      const ev = lastAgentStopEvent(events);
       // usage_source will NOT be transcript because input+output are both 0
       // so the fallback path kicks in and usage becomes estimated or from payload
       // Let's check: the script checks `if (totalUsage.input_tokens === 0 && totalUsage.output_tokens === 0)`
@@ -682,7 +782,7 @@ describe('pricing and cost estimation', () => {
       run(input);
 
       const events = readEventsJsonl(auditDir);
-      const ev = events[events.length - 1];
+      const ev = lastAgentStopEvent(events);
       // baseline should always be at opus rates ($5+$25 = $30)
       assert.ok(Math.abs(ev.estimated_cost_opus_baseline_usd - 30.0) < 0.01,
         `opus baseline should be ~$30 for 1M+1M tokens, got ${ev.estimated_cost_opus_baseline_usd}`);
@@ -732,7 +832,7 @@ describe('pricing and cost estimation', () => {
       run(input);
 
       const events = readEventsJsonl(auditDir);
-      const ev = events[events.length - 1];
+      const ev = lastAgentStopEvent(events);
       // Should use opus (the last routing_outcome), not haiku
       assert.equal(ev.model_used, 'claude-opus-4-6', 'escalation should use last routing_outcome');
       assert.ok(Math.abs(ev.estimated_cost_usd - 30.0) < 0.01,
@@ -782,7 +882,7 @@ describe('cost_confidence field', () => {
       });
       run(input);
       const events = readEventsJsonl(auditDir);
-      const ev = events[events.length - 1];
+      const ev = lastAgentStopEvent(events);
       assert.equal(ev.cost_confidence, 'measured');
       assert.equal(ev.usage_source, 'transcript');
     } finally {
@@ -815,7 +915,7 @@ describe('cost_confidence field', () => {
       });
       run(input);
       const events = readEventsJsonl(auditDir);
-      const ev = events[events.length - 1];
+      const ev = lastAgentStopEvent(events);
       assert.equal(ev.cost_confidence, 'measured');
       assert.equal(ev.usage_source, 'event_payload');
     } finally {
@@ -845,7 +945,7 @@ describe('cost_confidence field', () => {
       });
       run(input);
       const events = readEventsJsonl(auditDir);
-      const ev = events[events.length - 1];
+      const ev = lastAgentStopEvent(events);
       assert.equal(ev.cost_confidence, 'estimated',
         'turn-based fallback must mark cost_confidence as estimated');
       assert.equal(ev.usage_source, 'estimated');
@@ -940,9 +1040,10 @@ describe('path containment with symlinks (DEF-1)', () => {
       run(input);
 
       const events = readEventsJsonl(auditDir);
-      // Variant C routing_outcome + agent_stop
-      assert.equal(events.length, 2, 'both events should be written');
-      const ev = events[1];
+      // Variant C routing_outcome + agent_stop + agent_missing_structured_result
+      // (this fixture's transcript carries no Structured Result block).
+      assert.equal(events.length, 3, 'all three events should be written');
+      const ev = lastAgentStopEvent(events);
       assert.equal(ev.usage_source, 'transcript',
         'transcript should be accepted despite cwd being a symlink to the real dir');
       assert.equal(ev.usage.input_tokens, 1234);
@@ -1032,7 +1133,7 @@ describe('model_resolution_note on escalation (DEF-2)', () => {
       run(input);
 
       const events = readEventsJsonl(auditDir);
-      const ev = events[events.length - 1];
+      const ev = lastAgentStopEvent(events);
       assert.equal(ev.type, 'agent_stop');
       assert.ok(ev.model_resolution_note,
         'escalated agent event should carry model_resolution_note');
@@ -1073,7 +1174,7 @@ describe('model_resolution_note on escalation (DEF-2)', () => {
       run(input);
 
       const events = readEventsJsonl(auditDir);
-      const ev = events[events.length - 1];
+      const ev = lastAgentStopEvent(events);
       assert.equal(ev.type, 'agent_stop');
       assert.equal(ev.model_resolution_note, undefined,
         'non-escalated agent event must not carry model_resolution_note');
@@ -1243,7 +1344,7 @@ describe('2013-W5: configurable MAX_EVENTS_BYTES', () => {
       assert.equal(parseOutput(stdout).continue, true);
 
       const events = readEventsJsonl(auditDir);
-      const ev = events[events.length - 1];
+      const ev = lastAgentStopEvent(events);
       assert.ok(
         ev.model_resolution_note && ev.model_resolution_note.includes('scan cap'),
         'cap-hit note must appear when events.jsonl exceeds the env-var cap'
@@ -1280,7 +1381,7 @@ describe('2013-W5: configurable MAX_EVENTS_BYTES', () => {
       assert.equal(parseOutput(stdout).continue, true);
 
       const events = readEventsJsonl(auditDir);
-      const ev = events[events.length - 1];
+      const ev = lastAgentStopEvent(events);
       assert.ok(
         ev.model_resolution_note && ev.model_resolution_note.includes('scan cap'),
         'cap-hit note must appear when events.jsonl exceeds the config-key cap'
@@ -1317,7 +1418,7 @@ describe('2013-W5: configurable MAX_EVENTS_BYTES', () => {
       assert.equal(parseOutput(stdout).continue, true);
 
       const events = readEventsJsonl(auditDir);
-      const ev = events[events.length - 1];
+      const ev = lastAgentStopEvent(events);
       // Small events.jsonl must not trigger cap-hit — no model_resolution_note for cap
       assert.ok(
         !ev.model_resolution_note || !ev.model_resolution_note.includes('scan cap'),
@@ -1353,7 +1454,7 @@ describe('2013-W5: configurable MAX_EVENTS_BYTES', () => {
       assert.equal(parseOutput(stdout).continue, true);
 
       const events = readEventsJsonl(auditDir);
-      const ev = events[events.length - 1];
+      const ev = lastAgentStopEvent(events);
       assert.equal(ev.type, 'agent_stop', 'agent_stop event must be written');
       // No cap-hit note expected for an empty/tiny events.jsonl under default cap
       assert.ok(
@@ -1387,7 +1488,7 @@ describe('2013-W5: configurable MAX_EVENTS_BYTES', () => {
       assert.equal(parseOutput(stdout).continue, true);
 
       const events = readEventsJsonl(auditDir);
-      const ev = events[events.length - 1];
+      const ev = lastAgentStopEvent(events);
       assert.equal(ev.type, 'agent_stop', 'agent_stop event must be written');
       assert.ok(
         !ev.model_resolution_note || !ev.model_resolution_note.includes('scan cap'),

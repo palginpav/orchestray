@@ -218,7 +218,17 @@ function classifyLine(rawLine) {
  * become `type`, every other row is copied through byte-for-byte.
  *
  * @param {string} filePath
- * @param {{dryRun?: boolean, chunkBytes?: number}} [opts]
+ * @param {{dryRun?: boolean, chunkBytes?: number, quiescentIdleMs?: number,
+ *   maxQuiescenceWaitMs?: number}} [opts] `quiescentIdleMs`/`maxQuiescenceWaitMs`
+ *   are TEST-ONLY overrides of the quiescence-drain tuning (default to the
+ *   production constants `QUIESCENT_IDLE_MS`/`MAX_QUIESCENCE_WAIT_MS` below
+ *   when omitted, so every production caller — `repairBareEventRows`, the CLI
+ *   entry — is byte-for-byte unaffected). Exists so a test can assert the
+ *   zero-loss contract ("every row appended before the quiescence window
+ *   closes survives") without racing a real writer against the fixed 500ms
+ *   production bound under parallel-test-suite contention. See
+ *   `bin/_lib/__tests__/normalize-bare-event-rows.test.js`'s concurrent-append
+ *   race suite.
  * @returns {{
  *   filePath: string, existed: boolean, changed: boolean, dryRun: boolean,
  *   backfilled: number, bothKeysCount: number, malformedCount: number,
@@ -339,10 +349,12 @@ function normalizeEventsFile(filePath, opts) {
     // MAX_QUIESCENCE_WAIT_MS so a sustained write storm cannot hang the
     // caller forever).
     if (!readError) {
-      const quiescenceDeadline = Date.now() + MAX_QUIESCENCE_WAIT_MS;
+      const quiescentIdleMs = opts.quiescentIdleMs || QUIESCENT_IDLE_MS;
+      const maxQuiescenceWaitMs = opts.maxQuiescenceWaitMs || MAX_QUIESCENCE_WAIT_MS;
+      const quiescenceDeadline = Date.now() + maxQuiescenceWaitMs;
       let idleSinceMs = Date.now();
       for (;;) {
-        if (Date.now() - idleSinceMs >= QUIESCENT_IDLE_MS) break; // confirmed quiescent
+        if (Date.now() - idleSinceMs >= quiescentIdleMs) break; // confirmed quiescent
         if (Date.now() >= quiescenceDeadline) break; // bounded — proceed with what we've captured
         if (readError) break;
 
