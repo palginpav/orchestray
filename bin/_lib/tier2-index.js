@@ -111,7 +111,6 @@ function _sourceHash(cwd) {
 //       source_path:                string;
 //       source_hash:                string;   // SHA-256 of event-schemas.md
 //       source_bytes:               number;
-//       generated_at:               string;   // ISO 8601
 //       index_size_bytes:           number;
 //       event_count:                number;   // Object.keys(events).length
 //       fingerprint_token_estimate: number;
@@ -195,7 +194,9 @@ function buildIndex(opts) {
       source_path: 'agents/pm-reference/event-schemas.md',
       source_hash: sourceHash,
       source_bytes: sourceBytes,
-      generated_at: new Date().toISOString(),
+      // generated_at intentionally omitted (v2.3.30, mirroring v2.2.14 G-10 on the
+      // shadow): the timestamp made every regen produce a diff even when the content
+      // was byte-identical, leaving the sidecar permanently dirty in git status.
       index_size_bytes: 0, // filled in after serialization
       event_count: parsedEvents.length,
       // Estimate ~4 chars per token. The fingerprint is ~3-4 KB / ~1k tokens

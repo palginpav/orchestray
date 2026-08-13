@@ -174,3 +174,28 @@ describe('G-10: regen-schema-shadow content-stability', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// v2.3.30 — sibling parity: the tier2-index sidecar had the SAME defect the
+// shadow fixed in v2.2.14 G-10. It embedded `_meta.generated_at`, so every
+// regen produced a git diff even when the content was byte-identical, leaving
+// the file permanently dirty. The shadow was fixed; its sibling generator was
+// not — the sibling-loader parity drift this repo keeps rediscovering.
+// ---------------------------------------------------------------------------
+describe('v2.3.30 — tier2-index sidecar is regen-stable', () => {
+  test('_meta.generated_at is absent from the sidecar', () => {
+    const { buildIndex } = require(path.join(REPO_ROOT, 'bin', '_lib', 'tier2-index.js'));
+    const index = buildIndex({ cwd: REPO_ROOT, write: false });
+    assert.equal(
+      index._meta.generated_at, undefined,
+      '_meta.generated_at must be absent (v2.3.30, mirroring v2.2.14 G-10 on the shadow)',
+    );
+  });
+
+  test('two consecutive builds produce byte-identical output', () => {
+    const { buildIndex } = require(path.join(REPO_ROOT, 'bin', '_lib', 'tier2-index.js'));
+    const a = JSON.stringify(buildIndex({ cwd: REPO_ROOT, write: false }));
+    const b = JSON.stringify(buildIndex({ cwd: REPO_ROOT, write: false }));
+    assert.equal(a, b, 'sidecar must be deterministic across regens — no timestamp drift');
+  });
+});
