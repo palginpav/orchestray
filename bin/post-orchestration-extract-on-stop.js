@@ -57,8 +57,13 @@ const MAX_EVENTS_SCAN_BYTES = 10 * 1024 * 1024;
 /**
  * Find a history archive that just completed and has not yet been extracted.
  *
+ * v2.3.30: also returns a `skipReason` when no archive is found, so the
+ * caller can emit an observable skip event instead of silently returning
+ * (previously this branch was completely silent — see
+ * `.orchestray/kb/artifacts/v2330-learn-extraction-diagnosis.md` F3).
+ *
  * @param {string} projectRoot
- * @returns {{archiveDir:string,eventsPath:string,markerPath:string,orchId:string}|null}
+ * @returns {{archive:({archiveDir:string,eventsPath:string,markerPath:string,orchId:string}|null), skipReason:(string|null)}}
  */
 function findFreshArchive(projectRoot) {
   const historyDir = path.join(projectRoot, '.orchestray', 'history');
@@ -66,7 +71,10 @@ function findFreshArchive(projectRoot) {
   try {
     entries = fs.readdirSync(historyDir, { withFileTypes: true });
   } catch (_e) {
-    return null;
+    // No .orchestray/history/ at all -- e.g. direct-spawn / Simple Task Path
+    // work, which never calls `ox state init` and so never produces an
+    // archive for extraction to see. Structural, not a bug (see diagnosis F1).
+    return { archive: null, skipReason: 'no_history_dir' };
   }
 
   const candidates = [];
@@ -80,11 +88,15 @@ function findFreshArchive(projectRoot) {
   candidates.sort((a, b) => b.mtime - a.mtime);
 
   const now = Date.now();
+  let sawAlreadyExtracted = false;
   for (const c of candidates) {
-    if (now - c.mtime > FRESH_ARCHIVE_WINDOW_MS) return null; // sorted — all older from here
+    if (now - c.mtime > FRESH_ARCHIVE_WINDOW_MS) {
+      // sorted -- all remaining candidates are older from here.
+      return { archive: null, skipReason: sawAlreadyExtracted ? 'already_extracted' : 'no_fresh_candidate' };
+    }
     const eventsPath = path.join(c.path, 'events.jsonl');
     const markerPath = path.join(c.path, '.extracted');
-    if (fs.existsSync(markerPath)) continue;
+    if (fs.existsSync(markerPath)) { sawAlreadyExtracted = true; continue; }
     let stat;
     try { stat = fs.statSync(eventsPath); } catch { continue; }
     if (stat.size === 0 || stat.size > MAX_EVENTS_SCAN_BYTES) continue;
@@ -107,9 +119,9 @@ function findFreshArchive(projectRoot) {
     }
     if (!sawComplete || !orchId) continue;
 
-    return { archiveDir: c.path, eventsPath, markerPath, orchId };
+    return { archive: { archiveDir: c.path, eventsPath, markerPath, orchId }, skipReason: null };
   }
-  return null;
+  return { archive: null, skipReason: sawAlreadyExtracted ? 'already_extracted' : 'no_fresh_candidate' };
 }
 
 /**
@@ -118,8 +130,22 @@ function findFreshArchive(projectRoot) {
  * @param {string} projectRoot
  */
 function processStop(projectRoot) {
-  const fresh = findFreshArchive(projectRoot);
-  if (!fresh) return; // nothing to do
+  const { archive: fresh, skipReason } = findFreshArchive(projectRoot);
+  if (!fresh) {
+    // v2.3.30: make the skip observable to audit tooling — previously this
+    // branch was a bare return with zero trace anywhere (F3 in the diagnosis).
+    // Fail-open: an emit failure must never affect the Stop hook's outcome.
+    try {
+      writeEvent({
+        timestamp: new Date().toISOString(),
+        type: 'pattern_extraction_skipped',
+        schema_version: 1,
+        reason: skipReason || 'no_fresh_candidate',
+        source: 'stop_hook_scan',
+      }, { cwd: projectRoot });
+    } catch (_e) { /* fail-open */ }
+    return; // nothing to do
+  }
 
   // Synthetic current-orchestration.json — kept inside the archive dir so it
   // gets cleaned up with the archive and never collides with the live marker.

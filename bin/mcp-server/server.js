@@ -79,6 +79,7 @@ const routingLookup = require('./tools/routing_lookup');
 const costBudgetReserve = require('./tools/cost_budget_reserve');
 const metricsQuery = require('./tools/metrics_query');
 const curatorTombstone = require('./tools/curator_tombstone');
+const patternPromote = require('./tools/pattern_promote');
 const schemaGet = require('./tools/schema_get');
 const spawnAgent = require('./tools/spawn_agent');
 
@@ -195,6 +196,10 @@ const TOOL_TABLE = Object.freeze({
     definition: patternDeprecate.definition,
     handler: patternDeprecate.handle,
   },
+  pattern_promote: {
+    definition: patternPromote.definition,
+    handler: patternPromote.handle,
+  },
   pattern_find: {
     definition: patternFind.definition,
     handler: patternFind.handle,
@@ -269,6 +274,7 @@ const TOOL_TABLE = Object.freeze({
 const DOCUMENTED_EXCLUSIONS = Object.freeze([
   'spawn_agent',       // worker-side spawn request tool; PM uses the Agent() tool, not this
   'curator_tombstone', // curator-only lifecycle tool; never PM-invoked
+  'pattern_promote',   // curator/skill-only promote surface; PM never promotes directly
 ]);
 
 // Activate the layered tool registry.

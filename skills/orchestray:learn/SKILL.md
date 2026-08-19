@@ -39,7 +39,17 @@ The user wants to extract reusable patterns from a completed orchestration.
    - If empty: find the most recent orchestration by listing directories in `.orchestray/history/`, sorting by name (which contains a timestamp), and picking the last one. Report: "Using most recent orchestration: {orch-id}"
 
 2. **Validate:** Check that `.orchestray/history/{orch-id}/events.jsonl` exists using the Read tool.
-   - If not found: report "No audit trail found for orchestration '{orch-id}'." Then list available orchestrations from `.orchestray/history/` directory. If the directory is empty or missing: "No orchestration history found. Run an orchestration first, then use `/orchestray:learn` to extract patterns."
+   - If not found: report "No audit trail found for orchestration '{orch-id}'." Then list available orchestrations from `.orchestray/history/` directory. If the directory is empty or missing: "Extraction only reads recorded orchestrations under `.orchestray/history/`, and none exist yet. This does NOT mean no real work happened — work done as direct-spawn tasks (the common fast path for simple prompts) is never recorded here by design, so extraction structurally cannot see it. If you captured lessons from that work, check `.orchestray/kb/` via `/orchestray:kb` — that's where direct-spawn findings land, though `/orchestray:learn` cannot pull from it directly. Then run the kb-sourced extractor and report its result:
+
+     ```
+     node bin/kb-pattern-extract.js --dry-run
+     ```
+
+     Report the JSON summary (`since` / `checked` / `staged` / `skipped`) and state plainly that these
+     are **kb-sourced** proposals, distinct from history-sourced ones — they carry `provenance: kb` and a
+     synthetic `evidence_orch_id: orch-kb-<date>`. Re-run without `--dry-run` to stage them. Note that
+     kb content supports only the `anti-pattern`, `user-correction`, and `specialization` categories;
+     `decomposition` and `routing` require orchestration history and cannot be derived from kb entries."
 
 3. **Read the audit trail:** Read `.orchestray/history/{orch-id}/events.jsonl` line by line. Also read `.orchestray/history/{orch-id}/state/task-graph.md` if it exists (for decomposition context).
 

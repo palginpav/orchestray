@@ -41,6 +41,7 @@ const EXPECTED_TOOL_NAMES = [
   'metrics_query',
   'pattern_deprecate',
   'pattern_find',
+  'pattern_promote',
   'pattern_read',
   'pattern_record_application',
   'pattern_record_skip_reason',

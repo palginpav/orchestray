@@ -8578,7 +8578,7 @@ to `index.json` is skipped due to lock contention, I/O error, or kill switch.
 Field notes:
 - `slug`: the filename stem of the written KB file.
 - `bucket` ∈ `{"facts", "decisions", "artifacts"}`.
-- `reason` ∈ `{"index_read_error", "index_write_error"}`.
+- `reason` ∈ `{"index_read_error", "index_write_error", "lock_contention"}`.
 - `schema_version`: always `1` (v2.2.12 baseline).
 
 ---
@@ -13536,3 +13536,197 @@ Field notes:
   stale) or `"git_measurement_failed"` (the count could not be determined — fails open,
   the spawn proceeds without a warning).
 - Source: both events emitted by `bin/inject-worktree-staleness.js`.
+
+---
+
+## Section 62: Federation Promotion & Shared-Tier Guard Events (v2.3.30 W1)
+
+Emitted when a pattern is promoted to the cross-project shared tier, or when a promotion or
+a direct write to that tier is refused. Before v2.3.30 the sanitization pipeline
+(`bin/_lib/shared-promote.js`) had **zero production callers** — no MCP tool, no CLI — so no
+stage had ever executed and no promotion was ever recorded. Grep anchor: `v2330-federation`.
+
+### `federation_pattern_promoted` event
+
+Emitted by `bin/mcp-server/tools/pattern_promote.js` after a promotion writes successfully.
+
+```json
+{
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "federation_pattern_promoted",
+  "schema_version": 1,
+  "version": 1,
+  "orchestration_id": null,
+  "slug": "anti-pattern-token-rotation",
+  "by": "curator",
+  "run_id": "<curator run id or null>",
+  "promoted_from": "<8-char project-path hash>",
+  "stages_run": ["sharing-flag", "sensitivity", "secret-scan", "evidence-strip", "schema-validate", "size-cap", "write"],
+  "evidence_stripped_bytes": 812,
+  "final_size_bytes": 4193,
+  "overwrote_existing": false
+}
+```
+
+Field notes:
+- `promoted_from` is an anonymized project-path hash, never a literal project name.
+- `evidence_stripped_bytes` reports what the Evidence-strip stage removed; `final_size_bytes`
+  is measured POST-strip, so the size-cap number is the real one.
+- `orchestration_id` is `null`: MCP tool calls carry no orchestration context.
+
+### `federation_promote_blocked` event
+
+Emitted on a policy refusal. A refusal is NOT an error — the tool returns `toolSuccess`
+with `result: "blocked"`; this event records the refusal for audit.
+
+```json
+{
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "federation_promote_blocked",
+  "schema_version": 1,
+  "version": 1,
+  "orchestration_id": null,
+  "slug": "anti-pattern-token-rotation",
+  "by": "curator",
+  "stage": "secret-scan",
+  "detected_kind": "Anthropic API key",
+  "retryable_after_edit": true
+}
+```
+
+Field notes:
+- `stage`: `sharing-flag` | `sensitivity` | `secret-scan` | `size-cap` | `schema-validate` |
+  `collision` | `write` | `preview_invariant`.
+- `retryable_after_edit`: `false` for `sensitivity` and `write` — conditions only the
+  operator can change. An agent must not retry-loop on these.
+- `preview_invariant` fires only if preview mode ever returns a written destination — an
+  internal invariant violation, not a user-caused refusal.
+
+### `shared_tier_write_blocked` event
+
+Emitted by `bin/gate-shared-tier-write.js` (PreToolUse `Write|Edit|MultiEdit`) when a
+subagent attempts to write directly to the shared tier instead of using
+`mcp__orchestray__pattern_promote`. Operator sessions (no agent role) are not blocked.
+
+```json
+{
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "shared_tier_write_blocked",
+  "schema_version": 1,
+  "hook": "gate-shared-tier-write",
+  "agent_role": "curator",
+  "tool_name": "Write",
+  "attempted_path": "<home>/.orchestray/shared/patterns/<slug>.md",
+  "session_id": "<session id>"
+}
+```
+
+Field notes:
+- Path containment is checked on a `path.sep` boundary against the resolved shared root, so
+  a sibling directory such as `~/.orchestray/shared-old/` does not match.
+- The hook fails CLOSED on stdin overflow (it is a security gate) and OPEN on parse errors
+  or missing federation config (a hook crash must not wedge unrelated writes).
+- Kill switches: `ORCHESTRAY_SHARED_TIER_WRITE_GATE_DISABLED=1`, or
+  `shared_tier_write_gate.enabled: false` in `.orchestray/config.json`.
+
+---
+
+## Section 63: KB-Sourced Pattern Extraction Events (v2.3.30 W3/W4)
+
+Before v2.3.30, pattern extraction read only `.orchestray/history/` and had **zero**
+references to `.orchestray/kb/`. Work done as direct spawns produces no history rows by
+design (the Simple Task Path never opens an orchestration), so lessons captured in the KB
+were structurally invisible to extraction. These events cover the kb-sourced path and the
+now-observable skip. Grep anchor: `v2330-kb-extract`.
+
+**Provenance is load-bearing.** kb-sourced proposals carry `provenance: "kb"` and a
+synthetic `evidence_orch_id: orch-kb-<YYYYMMDD>`; history-sourced ones carry
+`provenance: "history"` and a real orchestration id. Never conflate them: kb entries carry
+no `task-graph.md` or `routing_outcome` data, so **`decomposition` and `routing` patterns
+cannot be derived from kb content** and are structurally excluded.
+
+### `kb_extract_staged` event
+
+Emitted by `bin/kb-pattern-extract.js` (manual, human-gated CLI) per staged proposal.
+
+```json
+{
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "kb_extract_staged",
+  "schema_version": 1,
+  "slug": "anti-pattern-guard-checks-presence-not-liveness",
+  "category": "anti-pattern",
+  "kb_source_path": "artifacts/v2330-federation-audit.md",
+  "kb_source_bucket": "artifacts",
+  "provenance": "kb"
+}
+```
+
+### `kb_extract_run_complete` event
+
+Emitted once per manual run.
+
+```json
+{
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "kb_extract_run_complete",
+  "schema_version": 1,
+  "since": "<ISO 8601 UTC of last run, or null on first run>",
+  "checked": 12,
+  "staged_count": 3,
+  "skipped_count": 9,
+  "provenance": "kb"
+}
+```
+
+Field notes:
+- `since` comes from `.orchestray/state/kb-extract-last-run.json`. The join key is **file
+  mtime vs this stamp** — NOT `orchestration_id`, which kb entries do not carry and which
+  direct-spawn work does not have.
+
+### `auto_extract_kb_fallback_staged` / `auto_extract_kb_fallback_skipped` events
+
+Emitted by `bin/post-orchestration-extract.js` when the automatic path falls back to kb
+because no `current-orchestration.json` exists. Deliberately distinct event types so a
+kb-sourced auto-stage can never be mistaken for the history-sourced `auto_extract_staged`.
+
+```json
+{
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "auto_extract_kb_fallback_staged",
+  "schema_version": 1,
+  "slug": "specialization-...",
+  "category": "specialization",
+  "provenance": "kb",
+  "kb_source_path": "facts/<file>.md"
+}
+```
+
+```json
+{
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "auto_extract_kb_fallback_skipped",
+  "schema_version": 1,
+  "reason": "category_restricted_to_auto",
+  "kb_source_path": "decisions/<file>.md",
+  "category": "anti-pattern"
+}
+```
+
+Field notes:
+- `reason`: `no_category_match` (heuristics matched nothing) or
+  `category_restricted_to_auto` (the category is human-gated).
+- The automatic path stages **only** `specialization`. `anti-pattern` and
+  `user-correction` remain human-gated via the manual CLI — a hook silently staging an
+  anti-pattern would violate the existing authorization invariant.
+
+### `pattern_extraction_skipped` — additional reasons (v2.3.30 W3)
+
+The Stop-hook scan previously returned bare with **no event at all**, making the skip
+invisible even to internal audit tooling. It now emits `pattern_extraction_skipped` with:
+
+- `reason`: adds `no_history_dir` (no `.orchestray/history/` exists — the direct-spawn-only
+  project case), `no_fresh_candidate` (nothing within the freshness window), and
+  `already_extracted` (a fresh candidate already carries the `.extracted` marker).
+- `source`: `"stop_hook_scan"` — distinguishes this emit site from the per-proposal skips
+  in `post-orchestration-extract.js`, which do not set `source`.

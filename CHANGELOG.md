@@ -3,6 +3,28 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.30] - 2026-08-19
+
+**Orchestray 2.3.30 makes pattern sharing actually safe and moves lessons recorded in quick tasks where they can become patterns. A new tool finds features that are documented but cannot run, and a knowledge-base bookkeeping defect that silently dropped entries when multiple agents worked together has been fixed.**
+
+### Added
+
+- **Patterns you share between projects are now sanitized before they leave.** A safety pipeline that strips evidence sections, scans for secrets, and enforces size limits existed but had no way to be invoked — nothing could trigger it, so it never ran on any real pattern until now. A proper path now exists, and direct writes that skip it are blocked.
+- **Lessons recorded during quick, one-off tasks can now become patterns.** The learning command only examined multi-agent orchestrations before, leaving single-prompt work invisible to it — it would report "nothing to extract" even when actual lessons had been written down. Both multi-agent runs and captured quick tasks are now scanned.
+- **A new command reports features that are documented but cannot actually run.** Seven such cases have been found and fixed across recent releases; this command makes finding the next one mechanical rather than accidental.
+
+### Fixed
+
+- **The learning command no longer blames you when it finds nothing.** It used to say "run an orchestration first," which wasn't accurate — quick tasks aren't recorded by design. It now explains this and points to where those quick-task lessons are actually stored.
+- **A knowledge-base bookkeeping bug that silently dropped entries when several agents worked at once has been fixed.** Under high concurrency, an entry written by one agent could vanish from the index mid-operation without any signal that the write had failed.
+- **Stale references are no longer reported for knowledge-base files that are correctly recorded.** A sweep was reading only half of the index, so files recorded by the other half looked like broken links.
+
+### Known Limitations
+
+- **Two internal helpers are flagged by the new command as having no callers. Both are intentional:** one is a one-shot maintenance helper, the other a convenience API deliberately bypassed on a performance-sensitive path. Both are documented as such.
+- **One test asserts a pinned checksum that is currently stale.** It passes or fails depending on whether another Orchestray instance on the same machine has toggled a runtime flag mid-test. This is a known environmental interaction, not a code defect, and is unresolved.
+- **Multiple Orchestray instances sharing one machine share runtime state.** A test's result can change because another instance created or deleted a file mid-run. Any single test run on such a machine is less deterministic than it appears.
+
 ## [2.3.29] - 2026-08-13
 
 **Orchestray 2.3.29 catches agents that go dark instead of leaving them looking like they're still working forever: an agent that stops without reporting back is now recorded as such, with its cost and turn count marked unavailable rather than guessed at. It also fixes two measurement bugs — an agent turn count that was roughly double what actually ran, and a per-agent turn cap that had never once taken effect — and now warns worktree-isolated agents when their copy of the project has fallen behind, so they stop reporting misleading test results.**

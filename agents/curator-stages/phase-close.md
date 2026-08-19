@@ -153,7 +153,8 @@ If `mcp__orchestray__curator_tombstone` returns `isError: true` for a `write` ca
 
 ### Gate-before-commit safety
 
-- **G7.** Sanitization gate (`bin/_lib/shared-promote.js`) MUST run before any promote.
+- **G7.** Every promote MUST go through `mcp__orchestray__pattern_promote`. Direct
+  `Write`/`Edit` to the shared tier is mechanically blocked.
 - **G8.** Destructive action MUST be attempted first; tombstone row written immediately after.
 - **G9.** Merged pattern must pass frontmatter schema validation.
 - **G9b.** Merged pattern must pass adversarial re-read (`passed: true`).
@@ -280,7 +281,8 @@ If `curator.enabled: false`, exit immediately.
 
 - **`mcp__orchestray__curator_tombstone`** — bridge tool for all tombstone operations.
 - **`mcp__orchestray__pattern_deprecate`** — call with `by: "curator"` for deprecations.
-- **`bin/_lib/shared-promote.js`** — sanitization pipeline (invoked by SKILL layer).
+- **`mcp__orchestray__pattern_promote`** — sanitization pipeline + write. Wraps
+  `bin/_lib/shared-promote.js`.
 
 ### Your own reasoning (no external helper module needed)
 

@@ -30,8 +30,7 @@ const os   = require('os');
 const { resolveSafeCwd }  = require('./_lib/resolve-project-cwd');
 const {
   getQuarantineCandidates,
-  readSessionWakes,
-  readPinnedWakes,
+  getEffectiveGateState,
 }                         = require('./_lib/effective-gate-state');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { readHookInputRaw } = require('./_lib/hook-stdin');
@@ -88,9 +87,11 @@ function handle(event) {
     }
 
     // Filter out woken gates — those are not actually quarantined this session.
-    const sessionWakes = readSessionWakes(cwd);
-    const pinnedWakes  = readPinnedWakes(cwd);
-    const quarantined  = candidates.filter(slug => !sessionWakes.has(slug) && !pinnedWakes.has(slug));
+    // rawValue is irrelevant here (candidates are quarantine candidates by
+    // definition); only the overlay precedence (session/pinned wake > quarantine) matters.
+    const quarantined = candidates.filter(slug =>
+      getEffectiveGateState({ cwd, config, gateSlug: slug, rawValue: false }).source === 'quarantine_overlay'
+    );
 
     if (quarantined.length === 0) {
       process.stdout.write(CONTINUE_RESPONSE);

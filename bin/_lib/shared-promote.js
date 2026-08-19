@@ -192,6 +192,66 @@ function _secretScan(bodyText, slug) {
 }
 
 // ---------------------------------------------------------------------------
+// Stage 3b: Evidence strip (D3)
+//
+// Removes an H1-H6 `Evidence` heading and everything up to the next heading
+// of the same-or-shallower depth, or EOF. Case-insensitive on the word
+// "Evidence"; tolerant of trailing punctuation ("## Evidence:"). Leaves a
+// marker so consumers can tell "no evidence" from "evidence removed".
+//
+// Runs AFTER the secret scan (Stage 3) and BEFORE the path strip (Stage 4) —
+// order is deliberate: scan first (so a secret hidden in Evidence still
+// blocks), strip second (so the removed bytes are excluded from the Stage 6
+// size check).
+// ---------------------------------------------------------------------------
+
+const EVIDENCE_STRIP_MARKER = '(evidence section removed at promotion)';
+
+/**
+ * Strip the Evidence section (if present) from a pattern body.
+ *
+ * @param {string} body
+ * @returns {{ body: string, strippedBytes: number }}
+ */
+function _stripEvidenceSection(body) {
+  const lines = body.split('\n');
+  const out = [];
+  let stripping = false;
+  let strippingDepth = 0;
+  let strippedBytes = 0;
+
+  for (const line of lines) {
+    const headingMatch = /^(#{1,6})\s+(.+)$/.exec(line);
+    if (headingMatch) {
+      const depth = headingMatch[1].length;
+      const title = headingMatch[2].trim().replace(/:$/, '').trim();
+
+      if (stripping && depth <= strippingDepth) {
+        // Reached the next heading at the same-or-shallower depth — stop stripping.
+        stripping = false;
+      }
+
+      if (!stripping && /^evidence$/i.test(title)) {
+        stripping = true;
+        strippingDepth = depth;
+        strippedBytes += Buffer.byteLength(line, 'utf8') + 1;
+        out.push(EVIDENCE_STRIP_MARKER);
+        continue;
+      }
+    }
+
+    if (stripping) {
+      strippedBytes += Buffer.byteLength(line, 'utf8') + 1;
+      continue;
+    }
+
+    out.push(line);
+  }
+
+  return { body: out.join('\n'), strippedBytes };
+}
+
+// ---------------------------------------------------------------------------
 // Stage 4: Path/identity strip
 // ---------------------------------------------------------------------------
 
@@ -373,6 +433,7 @@ function _appendPromoteLog(logPath, entry) {
  * @param {boolean} params.sensitivityBlocks — true if sensitivity gate would block a real share
  * @param {string|null} params.blockingStage — stage name if a non-sensitivity stage would fail
  * @param {string|null} params.blockingReason — human-readable reason for blockingStage
+ * @param {number} [params.evidenceStrippedBytes] — bytes removed by the Evidence strip (Stage 3b)
  * @returns {object} PreviewReport
  */
 function _buildPreviewReport(params) {
@@ -386,6 +447,7 @@ function _buildPreviewReport(params) {
     sensitivityBlocks,
     blockingStage,
     blockingReason,
+    evidenceStrippedBytes,
   } = params;
 
   // Frontmatter diff: fields removed (project-local metadata).
@@ -423,9 +485,14 @@ function _buildPreviewReport(params) {
   // Report a size delta when path/header sanitization shrank the body meaningfully.
   // We do NOT strip whole sections here; this is purely a body-shrink signal.
   const sectionsStripped = [];
+  if (evidenceStrippedBytes && evidenceStrippedBytes > 0) {
+    sectionsStripped.push(`Evidence (${evidenceStrippedBytes} bytes)`);
+  }
   if (sanitizedBody.length < originalBody.length) {
     // Report the delta only when the path/header stage caused large changes.
-    const delta = originalBody.length - sanitizedBody.length;
+    // Evidence bytes are already accounted for above — subtract them so this
+    // entry reflects only path/header sanitization, not double-counted.
+    const delta = originalBody.length - sanitizedBody.length - (evidenceStrippedBytes || 0);
     if (delta > 200) {
       sectionsStripped.push(`~${(delta / 1024).toFixed(1)} KB stripped by path/header sanitization`);
     }
@@ -450,7 +517,7 @@ function _buildPreviewReport(params) {
       size_limit_bytes: 8192,
     },
     secrets_scan: secretsScan,
-    sanitization_stages_run: ['path-strip', 'header-downgrade', 'schema-validate', 'size-check'],
+    sanitization_stages_run: ['evidence-strip', 'path-strip', 'header-downgrade', 'schema-validate', 'size-check'],
   };
 }
 
@@ -587,9 +654,16 @@ async function promotePattern(slug, options = {}) {
   }
 
   // -------------------------------------------------------------------------
+  // Stage 3b: Evidence strip (D3) — runs before path strip so the removed
+  // bytes are excluded from the Stage 6 size check.
+  // -------------------------------------------------------------------------
+  const evidenceStripResult = _stripEvidenceSection(body);
+  const evidenceStrippedBytes = evidenceStripResult.strippedBytes;
+
+  // -------------------------------------------------------------------------
   // Stage 4: Path/identity strip
   // -------------------------------------------------------------------------
-  let sanitizedBody = _stripPaths(body);
+  let sanitizedBody = _stripPaths(evidenceStripResult.body);
 
   // Strip per-install metadata fields from frontmatter before promotion.
   // These fields are project-local state and must not appear in the shared copy.
@@ -637,6 +711,7 @@ async function promotePattern(slug, options = {}) {
         sensitivityBlocks,
         blockingStage: 'size-cap',
         blockingReason: sizeResult.error,
+        evidenceStrippedBytes,
       }),
       destPath: '<not-written>',
     };
@@ -668,19 +743,16 @@ async function promotePattern(slug, options = {}) {
         sensitivityBlocks,
         blockingStage: 'schema-validate',
         blockingReason: fmResult.error,
+        evidenceStrippedBytes,
       }),
       destPath: '<not-written>',
     };
   }
 
-  // -------------------------------------------------------------------------
-  // W6 (v2.1.6): Local collision pre-check — warn-only, does NOT block promote.
-  // Run after all sanitization stages so we compare the final promoted body.
-  // Skip in preview/dryRun since nothing is being written to shared tier.
-  // -------------------------------------------------------------------------
-  if (!preview && !dryRun) {
-    _localCollisionCheck(slug, sanitizedBody, cwd);
-  }
+  // Note (D5, v2.3.30): the W6 local-collision warn check used to run
+  // unconditionally here. It is now called only on the `overwrite: true`
+  // path inside Stage 7b below — the hard collision gate blocks a differing
+  // promote by default, so this is the only path the warn can still fire on.
 
   // Add shared-tier metadata fields to the promoted frontmatter.
   const promotedFm = Object.assign({}, sharedFrontmatter, {
@@ -709,15 +781,18 @@ async function promotePattern(slug, options = {}) {
         sensitivityBlocks,
         blockingStage: null,
         blockingReason: null,
+        evidenceStrippedBytes,
       }),
       destPath: '<not-written>',
     };
   }
 
   // Resolve destination path via the paths helper (respects test override and config).
+  // D6: forward `cwd` so the destination is resolved from the same project
+  // whose pattern and sensitivity were just read, not from process cwd.
   const sharedPatternsDir = process.env.ORCHESTRAY_TEST_SHARED_DIR
     ? require('node:path').join(process.env.ORCHESTRAY_TEST_SHARED_DIR, 'patterns')
-    : paths.getSharedPatternsDir();
+    : paths.getSharedPatternsDir(cwd);
 
   if (!sharedPatternsDir) {
     if (!dryRun) {
@@ -736,7 +811,76 @@ async function promotePattern(slug, options = {}) {
     ? require('node:path').join(sharedPatternsDir, slug + '.md')
     : '<dry-run-no-dest>';
 
+  const stagesRun = ['secret-scan', 'evidence-strip', 'path-strip', 'header-downgrade', 'size-cap', 'schema-validate'];
+  let overwroteExisting = false;
+  const removedFrontmatterFields = [
+    'created_from', 'last_applied', 'times_applied',
+    'recently_curated_at', 'recently_curated_action', 'recently_curated_action_id',
+    'recently_curated_run_id', 'recently_curated_why',
+  ].filter((f) => f in frontmatter);
+  const addedFrontmatterFields = ['origin', 'promoted_at', 'promoted_from'];
+
   if (!dryRun && sharedPatternsDir) {
+    // -----------------------------------------------------------------------
+    // Stage 7b: Collision gate (D5) — block by default; `overwrite: true` is
+    // an explicit, audited input. Byte-identical content is idempotent
+    // (no_op) rather than an error or a churned promoted_at.
+    // -----------------------------------------------------------------------
+    stagesRun.push('collision');
+    let existingRaw = null;
+    try {
+      existingRaw = fs.readFileSync(destPath, 'utf8');
+    } catch (_e) {
+      // No existing file — no collision.
+    }
+
+    if (existingRaw !== null) {
+      const { parse: parseFmExisting } = _getFrontmatter();
+      const existingParsed = parseFmExisting(existingRaw);
+      const existingBody = existingParsed.hasFrontmatter ? existingParsed.body : existingRaw;
+      const existingFm = existingParsed.hasFrontmatter ? existingParsed.frontmatter : {};
+
+      if (_bodyHash(existingBody) === _bodyHash(sanitizedBody)) {
+        // Idempotent re-promotion of unchanged content — no write, no
+        // promoted_at churn. The curator re-evaluates the same corpus every
+        // run; this must not look like a fresh promote each time.
+        return {
+          ok: true,
+          result: 'no_op',
+          written: false,
+          destPath,
+          dryRun,
+          sanitizedBody,
+          promotedFm: existingFm,
+          stagesRun,
+          evidenceStrippedBytes,
+          overwroteExisting: false,
+          reason: 'identical content already shared',
+          frontmatterRemoved: removedFrontmatterFields,
+          frontmatterAdded: addedFrontmatterFields,
+        };
+      }
+
+      if (options.overwrite !== true) {
+        return {
+          ok: false,
+          stage: 'collision',
+          error:
+            `promote blocked: '${slug}' already exists in the shared tier ` +
+            `(promoted_at: ${existingFm.promoted_at || 'unknown'}, promoted_from: ${existingFm.promoted_from || 'unknown'}) ` +
+            `with different content than the body being promoted. ` +
+            `Rename the local slug, or re-call with overwrite: true to replace it.`,
+          existing: { promoted_at: existingFm.promoted_at || null, promoted_from: existingFm.promoted_from || null },
+          bodiesDiffer: true,
+        };
+      }
+
+      overwroteExisting = true;
+      // W6 local-collision warn (D5): now only reachable via the explicit
+      // overwrite:true path — the block above already covers the default case.
+      _localCollisionCheck(slug, sanitizedBody, cwd);
+    }
+
     const writeResult = writeFm(destPath, promotedFm, sanitizedBody);
     if (!writeResult.ok) {
       return { ok: false, error: `Stage write: atomic write failed: ${writeResult.error}`, stage: 'write' };
@@ -753,7 +897,20 @@ async function promotePattern(slug, options = {}) {
     });
   }
 
-  return { ok: true, destPath, dryRun, sanitizedBody };
+  return {
+    ok: true,
+    result: dryRun ? 'dry_run' : 'promoted',
+    written: !dryRun && Boolean(sharedPatternsDir),
+    destPath,
+    dryRun,
+    sanitizedBody,
+    promotedFm,
+    stagesRun,
+    evidenceStrippedBytes,
+    overwroteExisting,
+    frontmatterRemoved: removedFrontmatterFields,
+    frontmatterAdded: addedFrontmatterFields,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1127,6 +1284,8 @@ module.exports = {
   _projectHash,
   _localCollisionCheck,
   _bodyHash,
+  _stripEvidenceSection,
+  EVIDENCE_STRIP_MARKER,
 };
 
 // ---------------------------------------------------------------------------

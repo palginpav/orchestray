@@ -1024,3 +1024,96 @@ describe('BLK-01 regression — approach and evidence_orch_id in frontmatter', (
     assert.ok(content.includes(orchId), 'evidence_orch_id value must appear in content');
   });
 });
+
+// ---------------------------------------------------------------------------
+// v2.3.30 — kb/ fallback when there's no current orchestration
+// ---------------------------------------------------------------------------
+
+describe('v2.3.30 kb/ fallback (no current-orchestration.json)', () => {
+  function writeKbFact(slug, topic, body) {
+    const dir = path.join(tmpDir, '.orchestray', 'kb', 'facts');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, slug + '.md'),
+      `---\nauthor: developer\ntopic: ${topic}\n---\n\n# ${slug}\n\n${body}\n`,
+      'utf8'
+    );
+  }
+
+  test('no orch file + kb/ specialization fact → stages a kb-provenance proposal, not auto_extract_staged', () => {
+    writeKbFact(
+      'route-security-work',
+      'delegate to a specialist agent role for security work',
+      'Route to the security-engineer specialist via model routing whenever the task needs deep review.'
+    );
+    writeConfig({
+      global_kill_switch: false,
+      extract_on_complete: { enabled: true },
+      safety: { circuit_breaker: { max_extractions_per_24h: 100 } },
+    });
+    // Deliberately do NOT write current-orchestration.json or events.jsonl.
+
+    runExtraction({
+      projectRoot: tmpDir,
+      eventsPath:  path.join(tmpDir, '.orchestray', 'audit', 'events.jsonl'),
+      orchFilePath: path.join(tmpDir, '.orchestray', 'audit', 'current-orchestration.json'),
+    });
+
+    const events = readEmittedEvents();
+    assert.ok(!events.find((e) => e.type === 'auto_extract_staged'), 'history-sourced event type must not fire');
+    const staged = events.find((e) => e.type === 'auto_extract_kb_fallback_staged');
+    assert.ok(staged, 'auto_extract_kb_fallback_staged must be emitted');
+    assert.equal(staged.provenance, 'kb');
+    assert.equal(staged.category, 'specialization');
+
+    const proposedDir = path.join(tmpDir, '.orchestray', 'proposed-patterns');
+    const files = fs.readdirSync(proposedDir);
+    assert.equal(files.length, 1);
+    const content = fs.readFileSync(path.join(proposedDir, files[0]), 'utf8');
+    assert.match(content, /provenance: kb/);
+  });
+
+  test('anti-pattern / user-correction kb entries are NOT auto-staged (human-gated categories)', () => {
+    writeKbFact(
+      'never-mock-db',
+      'this is an anti-pattern to avoid, a landmine',
+      'Never do this again — mocking the database in integration tests is a gotcha that masked a broken migration.'
+    );
+    writeConfig({
+      global_kill_switch: false,
+      extract_on_complete: { enabled: true },
+      safety: { circuit_breaker: { max_extractions_per_24h: 100 } },
+    });
+
+    runExtraction({
+      projectRoot: tmpDir,
+      eventsPath:  path.join(tmpDir, '.orchestray', 'audit', 'events.jsonl'),
+      orchFilePath: path.join(tmpDir, '.orchestray', 'audit', 'current-orchestration.json'),
+    });
+
+    const events = readEmittedEvents();
+    assert.ok(!events.find((e) => e.type === 'auto_extract_kb_fallback_staged'), 'anti-pattern must not auto-stage');
+    const skipped = events.find((e) => e.type === 'auto_extract_kb_fallback_skipped' && e.reason === 'category_restricted_to_auto');
+    assert.ok(skipped);
+
+    const proposedDir = path.join(tmpDir, '.orchestray', 'proposed-patterns');
+    assert.ok(!fs.existsSync(proposedDir) || fs.readdirSync(proposedDir).length === 0);
+  });
+
+  test('no kb/ directory at all → silent no-op, matches pre-existing "exits 0 silently" contract', () => {
+    writeConfig({
+      global_kill_switch: false,
+      extract_on_complete: { enabled: true },
+      safety: { circuit_breaker: { max_extractions_per_24h: 100 } },
+    });
+
+    runExtraction({
+      projectRoot: tmpDir,
+      eventsPath:  path.join(tmpDir, '.orchestray', 'audit', 'events.jsonl'),
+      orchFilePath: path.join(tmpDir, '.orchestray', 'audit', 'current-orchestration.json'),
+    });
+
+    const events = readEmittedEvents();
+    assert.equal(events.length, 0);
+  });
+});

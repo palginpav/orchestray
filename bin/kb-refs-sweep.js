@@ -416,10 +416,17 @@ function _loadKbSlugs(kbDir, projectRoot) {
     const raw = readResult.content;
     const index = JSON.parse(raw);
     const slugs = new Set();
-    if (Array.isArray(index.entries)) {
-      for (const entry of index.entries) {
+    // v2.3.30 W5: index.json carries TWO disjoint schemas written by two writers
+    // that never read each other — flat `entries[]` (redirect-kb-write.js hook) and
+    // per-bucket arrays (kb_write.js MCP tool). Reading only `entries[]` made every
+    // bucket-indexed file look like a dangling reference. Union all four.
+    const arrays = [index.entries, index.artifacts, index.facts, index.decisions];
+    for (const arr of arrays) {
+      if (!Array.isArray(arr)) continue;
+      for (const entry of arr) {
+        if (!entry) continue;
         if (entry.slug) slugs.add(entry.slug);
-        // Also accept `id` as an alternate slug field (some entries use `id`).
+        // Also accept `id` as an alternate slug field (bucket entries use `id`).
         if (entry.id) slugs.add(entry.id);
       }
     }

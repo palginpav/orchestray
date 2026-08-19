@@ -50,16 +50,41 @@ Merge and deprecate proceed normally.
 always emit a calibration table showing the top-N promote candidates by
 `decayed_confidence`, with per-candidate reasoning regardless of whether they qualify.
 
-**Pre-commit sanitization gate.** Before writing to the shared tier, run the
-sanitization pipeline via `bin/_lib/shared-promote.js`: secret scan → Evidence strip
-→ path/prefix strip → frontmatter rewrite → schema validate → length cap → write.
-Gate failure → skip the promote, log reason, surface in summary. Leave local file
-untouched.
+**Promotion is a single tool call. You never write the shared tier yourself.**
+Call `mcp__orchestray__pattern_promote` with `{ slug, mode: "promote", by: "curator", run_id }`.
+The tool runs the full sanitization pipeline (secret scan → Evidence strip →
+path/identity strip → header downgrade → size cap → schema validate → collision
+check) and performs the write itself.
+
+- On `result: "promoted"` (or `"no_op"` for an unchanged re-promote), proceed to the
+  tombstone step below.
+- On `result: "blocked"`, this is a **normal outcome, not an error.** Read `stage`
+  and `remediation`, skip that promote, log the reason, and surface it in the
+  summary. Leave the local file untouched.
+  - If `remediation.retryable_after_edit` is `false` (this is the case for the
+    `sensitivity` and `write` stages), **do not retry** — those are operator
+    decisions (e.g. flipping `federation.sensitivity` to `shareable`, or enabling
+    `federation.shared_dir_enabled`) that you must not make on the agent's own
+    authority. Report the block and move on to the next candidate.
+  - If `remediation.retryable_after_edit` is `true` (e.g. `secret-scan`,
+    `size-cap`, `schema-validate`, `collision`), you may fix the local pattern
+    file and re-call the tool for that slug in a later run — do not loop
+    immediately within the same run.
+- In a `--dry-run` run, call with `mode: "preview"` instead — it runs every stage,
+  writes nothing, and returns the exact before/after diff to report. A preview
+  against a `private`-sensitivity project returns `sensitivity_blocks_actual_share:
+  true`; do not mistake this for a completed promote.
+- **Do not use `Write` or `Edit` on `~/.orchestray/shared/`.** That path is blocked
+  by `gate-shared-tier-write.js` and the attempt is recorded as a violation
+  (`shared_tier_write_blocked`).
 
 **Output of a promote action:**
-- New file at `~/.orchestray/shared/patterns/<slug>.md` (sanitized copy).
+- New file at `~/.orchestray/shared/patterns/<slug>.md` (sanitized copy), written by
+  `mcp__orchestray__pattern_promote` — not by you.
 - Local file left in place, unchanged.
-- Tombstone row written AFTER the copy succeeds (see phase-close.md §"5. Tombstone Protocol").
+- Tombstone row written AFTER `result: "promoted"` (or `"no_op"`) is returned (see
+  phase-close.md §"5. Tombstone Protocol"). Do not write a tombstone for a `"blocked"`
+  result.
 - Before calling `curator_tombstone`, assemble a `rationale` object per §5.x.
   For promote, `signals` MUST include `confidence`, `decayed_confidence`,
   `times_applied`, `age_days`, `category`, and `skip_penalty` (0 if suppressed

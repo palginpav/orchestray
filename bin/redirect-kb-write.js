@@ -30,6 +30,7 @@ const { MAX_INPUT_BYTES }       = require('./_lib/constants');
 const { resolveSafeCwd }        = require('./_lib/resolve-project-cwd');
 const { writeEvent }            = require('./_lib/audit-event-writer');
 const { readHookInputRaw } = require('./_lib/hook-stdin');
+const { _withAdvisoryLock } = require('./_lib/atomic-append');
 
 // ---------------------------------------------------------------------------
 // KB index auto-append (W2d)
@@ -48,58 +49,91 @@ function deriveTitle(filePath, slug, bucket) {
   return (bucket + '/' + slug).replace(/[-_]/g, ' ');
 }
 
-/** Auto-append entry to index.json if slug absent. Fail-open. */
+/**
+ * Auto-append entry to index.json if slug absent. Fail-open.
+ *
+ * Serialised via the same `index.json.lock` advisory lock kb_write.js
+ * acquires (bin/mcp-server/tools/kb_write.js `_acquireLock`/`_releaseLock`,
+ * both O_EXCL-create the same `<indexPath>.lock` path), reusing the shared
+ * `_withAdvisoryLock` primitive from atomic-append.js (already used by
+ * kb-index-validator.js) instead of a second lock implementation. This
+ * closes the lost-update race documented in
+ * .orchestray/kb/artifacts/v2330-kb-index-drift-diagnosis.md Finding 3 —
+ * both writers now exclude each other, not just themselves.
+ *
+ * _withAdvisoryLock fails closed on lock-acquire timeout (skips fn, logs to
+ * stderr) rather than running the read-modify-write unlocked — exactly the
+ * fail-open contract this hook needs: the index append is skipped, the
+ * user's Write is never touched (that happens entirely outside this
+ * function). Stale locks (dead PID, or >5x the 10s threshold) are reclaimed
+ * by _acquireLockFd inside the shared primitive, so a crashed holder cannot
+ * wedge future writes.
+ */
 function autoAppendKbIndex(cwd, filePath, slug, bucket) {
   if (process.env.ORCHESTRAY_KB_INDEX_AUTO_DISABLED === '1') return;
 
   const indexPath = path.join(cwd, '.orchestray', 'kb', 'index.json');
+  const lockPath = indexPath + '.lock';
   const SCHEMA_VERSION = 1;
 
-  let parsed;
-  try {
-    const raw = fs.readFileSync(indexPath, 'utf8');
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    if (!err || err.code !== 'ENOENT') {
-      writeEvent({ type: 'kb_index_auto_skipped', slug, bucket, reason: 'index_read_error', schema_version: SCHEMA_VERSION }, { cwd });
-      return;
+  const result = _withAdvisoryLock(lockPath, () => {
+    let parsed;
+    try {
+      const raw = fs.readFileSync(indexPath, 'utf8');
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      if (!err || err.code !== 'ENOENT') {
+        return { outcome: 'skip', reason: 'index_read_error' };
+      }
+      // index.json doesn't exist yet — start fresh
+      parsed = { version: '1.0', created_at: new Date().toISOString(), entries: [] };
     }
-    // index.json doesn't exist yet — start fresh
-    parsed = { version: '1.0', created_at: new Date().toISOString(), entries: [] };
-  }
 
-  if (!Array.isArray(parsed.entries)) parsed.entries = [];
+    if (!Array.isArray(parsed.entries)) parsed.entries = [];
 
-  // Idempotency check — slug already present
-  const alreadyPresent = parsed.entries.some(
-    (e) => (typeof e.slug === 'string' && e.slug === slug) || (typeof e.id === 'string' && e.id === slug)
-  );
-  if (alreadyPresent) return;
+    // Idempotency check — slug already present
+    const alreadyPresent = parsed.entries.some(
+      (e) => (typeof e.slug === 'string' && e.slug === slug) || (typeof e.id === 'string' && e.id === slug)
+    );
+    if (alreadyPresent) return { outcome: 'noop' };
 
-  const relPath = '.orchestray/kb/' + bucket + '/' + slug + '.md';
-  const title = deriveTitle(filePath, slug, bucket);
-  const typeMap = { facts: 'fact', decisions: 'decision', artifacts: 'artifact' };
+    const relPath = '.orchestray/kb/' + bucket + '/' + slug + '.md';
+    const title = deriveTitle(filePath, slug, bucket);
+    const typeMap = { facts: 'fact', decisions: 'decision', artifacts: 'artifact' };
 
-  parsed.entries.push({
-    slug,
-    title,
-    type: typeMap[bucket] || bucket,
-    path: relPath,
-    created_at: new Date().toISOString(),
+    parsed.entries.push({
+      slug,
+      title,
+      type: typeMap[bucket] || bucket,
+      path: relPath,
+      created_at: new Date().toISOString(),
+    });
+
+    // Atomic write via tmp file + rename, still under the lock.
+    const tmpPath = indexPath + '.tmp.' + process.pid;
+    try {
+      fs.writeFileSync(tmpPath, JSON.stringify(parsed, null, 2) + '\n', 'utf8');
+      fs.renameSync(tmpPath, indexPath);
+    } catch (writeErr) {
+      try { fs.unlinkSync(tmpPath); } catch (_e) { /* ignore */ }
+      return { outcome: 'skip', reason: 'index_write_error' };
+    }
+
+    return { outcome: 'updated', relPath };
   });
 
-  // Atomic write via tmp file + rename
-  const tmpPath = indexPath + '.tmp.' + process.pid;
-  try {
-    fs.writeFileSync(tmpPath, JSON.stringify(parsed, null, 2) + '\n', 'utf8');
-    fs.renameSync(tmpPath, indexPath);
-  } catch (writeErr) {
-    try { fs.unlinkSync(tmpPath); } catch (_e) { /* ignore */ }
-    writeEvent({ type: 'kb_index_auto_skipped', slug, bucket, reason: 'index_write_error', schema_version: SCHEMA_VERSION }, { cwd });
+  if (result && result.skipped) {
+    // Lock contention timeout — fail-open, the Write itself is unaffected.
+    writeEvent({ type: 'kb_index_auto_skipped', slug, bucket, reason: 'lock_contention', schema_version: SCHEMA_VERSION }, { cwd });
+    return;
+  }
+  if (!result || result.outcome === 'noop') return;
+  if (result.outcome === 'skip') {
+    writeEvent({ type: 'kb_index_auto_skipped', slug, bucket, reason: result.reason, schema_version: SCHEMA_VERSION }, { cwd });
     return;
   }
 
-  writeEvent({ type: 'kb_index_auto_updated', slug, bucket, path: relPath, schema_version: SCHEMA_VERSION }, { cwd });
+  writeEvent({ type: 'kb_index_auto_updated', slug, bucket, path: result.relPath, schema_version: SCHEMA_VERSION }, { cwd });
 }
 
 // ---------------------------------------------------------------------------
@@ -117,20 +151,23 @@ function isKbPath(filePath) {
 }
 
 // ---------------------------------------------------------------------------
-// Stdin reader
+// Stdin reader — only runs when invoked directly as the hook CLI (hooks.json
+// wiring), not when required as a library (tests import autoAppendKbIndex).
 // ---------------------------------------------------------------------------
 
-let _input = '';
-_input = readHookInputRaw();
-if (_input.length > MAX_INPUT_BYTES) exitContinue();
-setImmediate(() => {
-  try {
-    const event = JSON.parse(_input);
-    main(event).catch(() => exitContinue());
-  } catch (_e) {
-    exitContinue();
-  }
-});
+if (require.main === module) {
+  let _input = '';
+  _input = readHookInputRaw();
+  if (_input.length > MAX_INPUT_BYTES) exitContinue();
+  setImmediate(() => {
+    try {
+      const event = JSON.parse(_input);
+      main(event).catch(() => exitContinue());
+    } catch (_e) {
+      exitContinue();
+    }
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Output helpers
@@ -248,3 +285,7 @@ async function runTelemetry(cwd, filePath, toolInput, hookEvent) {
     autoAppendKbIndex(cwd, filePath, slug, bucket);
   }
 }
+
+// Exported for tests only — hooks.json always invokes this file directly
+// (require.main === module), so these exports have no effect on hook runtime.
+module.exports = { autoAppendKbIndex, isKbPath };

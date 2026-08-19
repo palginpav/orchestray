@@ -1,3 +1,8 @@
+<!-- SUPERSEDED (v2.3.30 W1): the promote instructions below still describe the -->
+<!-- pre-W1 Write+shared-promote.js flow, which the live curator no longer uses -->
+<!-- (see agents/curator-stages/phase-execute.md §4.1 and phase-close.md G7 for -->
+<!-- the current mcp__orchestray__pattern_promote flow). Not edited in place to -->
+<!-- avoid two copies of the same instruction drifting into disagreement. -->
 <!-- v2.2.21: scheduled for removal in v2.3.0 unless rollback proves necessary -->
 <!-- TTL: this .legacy shim is a kill-switch fallback only; the canonical curator -->
 <!-- now lives across agents/curator-stages/. Delete-on-release once -->

@@ -22,7 +22,6 @@ const fs   = require('fs');
 const path = require('path');
 
 const {
-  WIRED_EMITTER_PROTOCOLS,
   GATE_SLUG_TO_CONFIG_KEY,
 } = require('./feature-demand-tracker');
 
@@ -124,46 +123,6 @@ function getEffectiveGateState({ cwd, config, gateSlug, rawValue }) {
 }
 
 /**
- * Get the full effective gate map for all tracked wired-emitter gates.
- * Returns an object: gateSlug → { effective: boolean, source: string }
- *
- * @param {string} cwd - Project root directory (absolute path).
- * @param {object} config - Raw parsed config object.
- * @returns {object}
- */
-function getEffectiveGateMap(cwd, config) {
-  const result = {};
-  try {
-    const sessionWakes = readSessionWakes(cwd);
-    const pinnedWakes  = readPinnedWakes(cwd);
-    const candidates   = getQuarantineCandidates(config);
-
-    for (const slug of WIRED_EMITTER_PROTOCOLS) {
-      const configKey = GATE_SLUG_TO_CONFIG_KEY[slug];
-      const rawValue  = config && config[configKey];
-
-      if (sessionWakes.has(slug)) {
-        result[slug] = { effective: true, source: 'session_wake' };
-      } else if (pinnedWakes.has(slug)) {
-        result[slug] = { effective: true, source: 'pinned_wake' };
-      } else if (candidates.includes(slug)) {
-        result[slug] = { effective: false, source: 'quarantine_overlay' };
-      } else {
-        result[slug] = { effective: Boolean(rawValue), source: 'config' };
-      }
-    }
-  } catch (_e) {
-    // Fall back: all gates follow raw config (or default false)
-    for (const slug of WIRED_EMITTER_PROTOCOLS) {
-      const configKey = GATE_SLUG_TO_CONFIG_KEY[slug];
-      const rawValue  = config && config[configKey];
-      result[slug] = { effective: Boolean(rawValue), source: 'config' };
-    }
-  }
-  return result;
-}
-
-/**
  * Write a session-wake entry for the given slug.
  * Adds to existing set (idempotent).
  *
@@ -218,7 +177,6 @@ function addPinnedWake(cwd, slug) {
 
 module.exports = {
   getEffectiveGateState,
-  getEffectiveGateMap,
   readSessionWakes,
   readPinnedWakes,
   getQuarantineCandidates,

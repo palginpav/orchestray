@@ -148,6 +148,13 @@ function compileToolInputSchema(jsonSchema) {
 /**
  * Convenience function: compile a schema and immediately validate a single input.
  *
+ * No in-repo caller: plugin-loader.js deliberately calls compileToolInputSchema()
+ * directly and caches the returned validator per tool at load time, since it
+ * validates the same schema on every tool call and recompiling per call (what
+ * this wrapper does) would be wasteful. This function is kept as public one-shot
+ * API — documented in this file's own usage example above — for callers that
+ * validate a schema once (tests, ad-hoc CLI checks, future non-hot-path callers).
+ *
  * @param {object}  jsonSchema  The JSON Schema to validate against.
  * @param {unknown} input       The value to validate.
  * @returns {{ ok: boolean, errors: Array|null }}

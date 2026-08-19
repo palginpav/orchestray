@@ -43,6 +43,11 @@ const NOT_FOR_PM = Object.freeze({
   // agents/curator-stages/phase-close.md). PM never tombstones directly.
   curator_tombstone:  'owned-by-curator',
 
+  // Curator/skill-only promote surface (v2.3.30 W1). PM never promotes
+  // directly — see agents/curator-stages/phase-execute.md and
+  // skills/orchestray:learn/SKILL.md.
+  pattern_promote:    'owned-by-curator',
+
   // System spawn path: bin/_lib/spawn-runner.js + Agent() tool. PM uses the
   // native `Agent()` shape, not the raw MCP tool.
   spawn_agent:        'internal-spawn-runner',

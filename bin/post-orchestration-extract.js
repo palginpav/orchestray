@@ -55,6 +55,17 @@ const { runExtractor }          = require('./_lib/haiku-extractor-transport');
 const { emitTier2Invoked }      = require('./_lib/tier2-invoked-emitter');
 const { parseExtractorOutput }  = require('./_lib/extractor-output-parser');
 const { readHookInputRaw } = require('./_lib/hook-stdin');
+// v2.3.30: kb/-sourced fallback when there's no current orchestration to
+// scope history to (direct-spawn / Simple Task Path work — see diagnosis
+// .orchestray/kb/artifacts/v2330-learn-extraction-diagnosis.md Recommendation 2).
+const {
+  readLastRunStamp:        _kbReadLastRunStamp,
+  writeLastRunStamp:       _kbWriteLastRunStamp,
+  collectKbEntriesSince:   _kbCollectEntriesSince,
+  deriveCategoryForEntry:  _kbDeriveCategory,
+  buildProposalFromKbEntry: _kbBuildProposal,
+  buildKbProposalContent:  _kbBuildProposalContent,
+} = require('./_lib/kb-extract-source.js');
 
 // ---------------------------------------------------------------------------
 // Category allowlist — auto-extraction may only propose from this subset.
@@ -431,6 +442,7 @@ function _buildProposalContent(proposal, orchId) {
     `proposed: true`,
     `proposed_at: ${now}`,
     `proposed_from: ${orchId}`,
+    `provenance: history`,
     `schema_version: 2`,
     `layer_b_markers: []`,
     '---',
@@ -453,6 +465,109 @@ function _writeProposalFile(filePath, content) {
   const tmp = filePath + '.tmp.' + process.pid;
   fs.writeFileSync(tmp, content, 'utf8');
   fs.renameSync(tmp, filePath);
+}
+
+// ---------------------------------------------------------------------------
+// kb/-sourced fallback (v2.3.30) — see call site in runExtraction() Step 2.
+// ---------------------------------------------------------------------------
+
+/**
+ * Best-effort kb-sourced extraction, run only when there is no current
+ * orchestration to scope history to. Restricted to
+ * AUTO_EXTRACT_CATEGORY_ALLOWLIST (i.e. `specialization` only, of the three
+ * categories kb entries can produce) — `anti-pattern` / `user-correction`
+ * stay reserved for the human-gated manual path (bin/kb-pattern-extract.js /
+ * curator), matching the existing allowlist's own rule for history-sourced
+ * proposals.
+ *
+ * Fail-open: any error here must never affect the caller's silent-exit
+ * behavior for the missing-orchestration case (existing test contract).
+ *
+ * @param {{ projectRoot: string, auditFile: string }} opts
+ */
+function _runKbFallbackExtraction(opts) {
+  const projectRoot = opts.projectRoot;
+  const auditFile = opts.auditFile;
+
+  const since = _kbReadLastRunStamp(projectRoot);
+  const entries = _kbCollectEntriesSince(projectRoot, since);
+  if (entries.length === 0) {
+    // Nothing new since last run — still advance the stamp so a future run
+    // doesn't rescan a growing kb/ from scratch every PreCompact.
+    _kbWriteLastRunStamp(projectRoot);
+    return;
+  }
+
+  const proposedPatternsDir = path.join(projectRoot, '.orchestray', 'proposed-patterns');
+  const activePatternsDir   = path.join(projectRoot, '.orchestray', 'patterns');
+
+  let stagedCount = 0;
+  for (const entry of entries) {
+    const category = _kbDeriveCategory(entry);
+    if (!category) {
+      _emitEvent(auditFile, {
+        timestamp: new Date().toISOString(),
+        type: 'auto_extract_kb_fallback_skipped',
+        schema_version: 1,
+        reason: 'no_category_match',
+        kb_source_path: entry.relPath,
+      });
+      continue;
+    }
+    if (!AUTO_EXTRACT_CATEGORY_ALLOWLIST.has(category)) {
+      _emitEvent(auditFile, {
+        timestamp: new Date().toISOString(),
+        type: 'auto_extract_kb_fallback_skipped',
+        schema_version: 1,
+        reason: 'category_restricted_to_auto',
+        category,
+        kb_source_path: entry.relPath,
+      });
+      continue;
+    }
+
+    const proposal = _kbBuildProposal(entry, category);
+    const valResult = validateProposal(proposal, { strict: true });
+    if (!valResult.ok) {
+      const fields = (valResult.errors || []).map((e) => e.field).join(',');
+      _emitEvent(auditFile, {
+        timestamp: new Date().toISOString(),
+        type: 'auto_extract_kb_fallback_skipped',
+        schema_version: 1,
+        reason: 'validator_rejected',
+        detail: fields,
+        kb_source_path: entry.relPath,
+      });
+      continue;
+    }
+
+    const proposedPath = path.join(proposedPatternsDir, proposal.name + '.md');
+    const activePath   = path.join(activePatternsDir, proposal.name + '.md');
+    if (fs.existsSync(proposedPath) || fs.existsSync(activePath)) {
+      _emitEvent(auditFile, {
+        timestamp: new Date().toISOString(),
+        type: 'auto_extract_kb_fallback_skipped',
+        schema_version: 1,
+        reason: 'slug_collision',
+        slug: proposal.name,
+      });
+      continue;
+    }
+
+    _writeProposalFile(proposedPath, _kbBuildProposalContent(proposal, entry));
+    _emitEvent(auditFile, {
+      timestamp: new Date().toISOString(),
+      type: 'auto_extract_kb_fallback_staged',
+      schema_version: 1,
+      slug: proposal.name,
+      category,
+      provenance: 'kb',
+      kb_source_path: entry.relPath,
+    });
+    stagedCount += 1;
+  }
+
+  _kbWriteLastRunStamp(projectRoot);
 }
 
 // ---------------------------------------------------------------------------
@@ -542,6 +657,31 @@ function runExtraction({ projectRoot, eventsPath, orchFilePath }) {
     return { proposals_written: 0, shadow: false };
   }
 
+  // ── Gate 3.5 (v2.3.30): no current orchestration → kb/ fallback ────────────
+  // Checked BEFORE the events.jsonl gates below because a project that has
+  // only ever done direct-spawn / Simple Task Path work may never have
+  // written events.jsonl at all (diagnosis repro:
+  // .orchestray/kb/artifacts/v2330-learn-extraction-diagnosis.md — sandbox
+  // with kb facts present, current-orchestration.json absent, no
+  // .orchestray/history/). Waiting for the events.jsonl gates would starve
+  // the kb fallback of a chance to run in exactly that scenario. Does NOT
+  // touch events.jsonl and does NOT open an orchestration — it only reads
+  // .orchestray/kb/ and stages proposals via the same staged-proposal
+  // format the history path uses (see _runKbFallbackExtraction).
+  if (!fs.existsSync(orchFilePath)) {
+    try {
+      _runKbFallbackExtraction({ projectRoot, auditFile });
+    } catch (_kbErr) {
+      recordDegradation({
+        kind: 'config_load_failed',
+        severity: 'warn',
+        detail: { reason: 'kb_fallback_extraction_threw', error: _kbErr && _kbErr.message ? _kbErr.message.slice(0, 80) : 'unknown' },
+        projectRoot,
+      });
+    }
+    return { proposals_written: 0, shadow: false };
+  }
+
   // ── Gate 4: events file existence + size cap ──────────────────────────────
   // B4-02: guard against OOM on unbounded events.jsonl growth.
   // Cap defaults to AUTO_EXTRACT_MAX_EVENTS_FILE_BYTES (10 MiB); tests can
@@ -607,7 +747,25 @@ function runExtraction({ projectRoot, eventsPath, orchFilePath }) {
   try {
     orchData = JSON.parse(fs.readFileSync(orchFilePath, 'utf8'));
   } catch (_e) {
-    // current-orchestration.json missing — not inside a completed orch; exit silently.
+    // current-orchestration.json missing — not inside a completed orch. This is
+    // exactly the direct-spawn / Simple Task Path gap from the v2.3.30 diagnosis:
+    // no history to scope to, but kb/ facts/decisions may still exist. Fall back
+    // to the kb-sourced path instead of exiting silently — restricted to the
+    // categories already on AUTO_EXTRACT_CATEGORY_ALLOWLIST (specialization only;
+    // anti-pattern/user-correction stay human-gated, see that Set's own comment).
+    // Deliberately does NOT emit auto_extract_staged / pattern_proposed — those
+    // event types mean "history-sourced extraction ran"; kb fallback gets its
+    // own event types so the two paths are never conflated in the audit trail.
+    try {
+      _runKbFallbackExtraction({ projectRoot, auditFile });
+    } catch (_kbErr) {
+      recordDegradation({
+        kind: 'config_load_failed',
+        severity: 'warn',
+        detail: { reason: 'kb_fallback_extraction_threw', error: _kbErr && _kbErr.message ? _kbErr.message.slice(0, 80) : 'unknown' },
+        projectRoot,
+      });
+    }
     return { proposals_written: 0, shadow: false };
   }
   const orchId = orchData && orchData.orchestration_id;
@@ -803,6 +961,7 @@ module.exports = {
   _isK7Excluded,
   _buildOrchestrationMeta,
   _buildProposalContent,
+  _runKbFallbackExtraction,
   AUTO_EXTRACT_CATEGORY_ALLOWLIST,
   AUTO_EXTRACT_MAX_EVENTS_FILE_BYTES,
   _setMaxEventsBytesForTest,

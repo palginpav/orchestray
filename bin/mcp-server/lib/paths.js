@@ -395,9 +395,15 @@ function _expandTilde(p) {
  *
  * Does NOT verify the directory exists — callers check that themselves.
  *
+ * @param {string} [root] - D6: optional project root override. When omitted,
+ *   falls back to getProjectRoot() (unchanged behaviour for existing
+ *   zero-arg callers). When passed, the returned dir is resolved from THIS
+ *   root's federation config, not process cwd — closes the bug where a
+ *   caller with an explicit source `cwd` read one project's pattern and
+ *   sensitivity but resolved the destination from another.
  * @returns {string|null}
  */
-function getSharedPatternsDir() {
+function getSharedPatternsDir(root) {
   try {
     // Test override: bypass enabled check entirely.
     const testOverride = process.env.ORCHESTRAY_TEST_SHARED_DIR;
@@ -409,11 +415,15 @@ function getSharedPatternsDir() {
     // We use a lazy require to avoid a circular-dependency risk at module load.
     const { loadFederationConfig } = require('../../_lib/config-schema.js');
     let cwd;
-    try {
-      cwd = getProjectRoot();
-    } catch (_e) {
-      // No project root found — cannot determine config; return null.
-      return null;
+    if (root) {
+      cwd = root;
+    } else {
+      try {
+        cwd = getProjectRoot();
+      } catch (_e) {
+        // No project root found — cannot determine config; return null.
+        return null;
+      }
     }
     const fedCfg = loadFederationConfig(cwd);
 

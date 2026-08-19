@@ -29,7 +29,7 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 
-const { promotePattern, _projectHash } = require('../shared-promote.js');
+const { promotePattern, _projectHash, _stripEvidenceSection, EVIDENCE_STRIP_MARKER } = require('../shared-promote.js');
 
 // ---------------------------------------------------------------------------
 // Test infrastructure helpers
@@ -1449,6 +1449,277 @@ describe('preview mode', () => {
     const h2 = _projectHash('/some/project/path');
     assert.equal(h1, h2, '_projectHash must be deterministic');
     assert.match(h1, /^[0-9a-f]{8}$/, '_projectHash must return 8 hex chars');
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// 12. Evidence strip (Stage 3b, D3)
+// ---------------------------------------------------------------------------
+
+describe('12. Evidence strip (Stage 3b, D3)', () => {
+
+  test('_stripEvidenceSection removes an H2 Evidence heading and its content, leaves a marker', () => {
+    const body = '## Context\nSome context.\n\n## Evidence\nOrchestration orch-123 ran at /home/x.\n\n## Approach\nDo the thing.\n';
+    const { body: stripped, strippedBytes } = _stripEvidenceSection(body);
+    assert.ok(!stripped.includes('## Evidence'), 'Evidence heading should be removed');
+    assert.ok(!stripped.includes('orch-123'), 'Evidence content should be removed');
+    assert.ok(stripped.includes(EVIDENCE_STRIP_MARKER), 'marker should be present');
+    assert.ok(stripped.includes('## Approach'), 'sibling heading should survive');
+    assert.ok(strippedBytes > 0, 'strippedBytes should be positive');
+  });
+
+  test('_stripEvidenceSection is case-insensitive and tolerates trailing colon', () => {
+    const body = '### evidence:\nSome proof.\n\n### Next\nMore.\n';
+    const { body: stripped } = _stripEvidenceSection(body);
+    assert.ok(!stripped.includes('Some proof'));
+    assert.ok(stripped.includes('### Next'));
+  });
+
+  test('_stripEvidenceSection with no Evidence section is a no-op (besides zero strippedBytes)', () => {
+    const body = '## Context\nNo evidence here.\n';
+    const { body: stripped, strippedBytes } = _stripEvidenceSection(body);
+    assert.equal(stripped, body);
+    assert.equal(strippedBytes, 0);
+  });
+
+  test('Evidence section runs to EOF when it is the last section', () => {
+    const body = '## Context\nText.\n\n## Evidence\nLast section, no heading after.\n';
+    const { body: stripped } = _stripEvidenceSection(body);
+    assert.ok(!stripped.includes('Last section'));
+    assert.ok(stripped.includes(EVIDENCE_STRIP_MARKER));
+  });
+
+  test('promoted pattern has Evidence section stripped and marker present', async () => {
+    const { projectDir, sharedDir } = makeTmpProject();
+    try {
+      const body = '## Context\nUseful.\n\n## Evidence\nRan in /home/palgin/project at commit abc123.\n';
+      writePattern(projectDir, 'evidence-strip-live', { body });
+      const result = await runPromote('evidence-strip-live', projectDir, sharedDir);
+      assert.equal(result.ok, true, `should promote, got: ${result.error}`);
+
+      const content = fs.readFileSync(path.join(sharedDir, 'patterns', 'evidence-strip-live.md'), 'utf8');
+      assert.ok(!content.includes('## Evidence'), 'raw Evidence heading should be gone');
+      assert.ok(content.includes(EVIDENCE_STRIP_MARKER), 'marker should be present in written file');
+      assert.ok(result.evidenceStrippedBytes > 0, 'evidenceStrippedBytes should be reported');
+    } finally {
+      cleanup(projectDir, sharedDir);
+    }
+  });
+
+  test('a secret hidden inside the Evidence section still BLOCKS the promote (scan-before-strip)', async () => {
+    const { projectDir, sharedDir } = makeTmpProject();
+    try {
+      const antKey = 'sk-ant-api03-abc123def456_real-looking-key';
+      const body = `## Context\nClean.\n\n## Evidence\nFound: ${antKey}\n`;
+      writePattern(projectDir, 'evidence-secret-blocks', { body });
+      const result = await runPromote('evidence-secret-blocks', projectDir, sharedDir);
+      assert.equal(result.ok, false, 'secret in Evidence must still block, proving scan runs before strip');
+      assert.equal(result.stage, 'secret-scan');
+    } finally {
+      cleanup(projectDir, sharedDir);
+    }
+  });
+
+  test('size-cap error is measured post-Evidence-strip — a body only oversized WITH Evidence included is promoted', async () => {
+    const { projectDir, sharedDir } = makeTmpProject();
+    try {
+      // ~6 KB of body content + ~4 KB Evidence section = ~10 KB raw, but the
+      // Evidence section is stripped before the size check runs, so the
+      // promoted body (~6 KB) is under the 8 KB cap.
+      const mainBody = 'x'.repeat(6 * 1024);
+      const evidenceBody = 'y'.repeat(4 * 1024);
+      const body = `## Context\n${mainBody}\n\n## Evidence\n${evidenceBody}\n`;
+      writePattern(projectDir, 'size-post-strip', { body });
+      const result = await runPromote('size-post-strip', projectDir, sharedDir, { dryRun: true });
+      assert.equal(result.ok, true, `should pass size cap post-strip, got: ${result.error}`);
+    } finally {
+      cleanup(projectDir, sharedDir);
+    }
+  });
+
+  test('preview report sections_stripped includes an Evidence byte-count entry', async () => {
+    const { projectDir, sharedDir } = makeTmpProject({ sensitivity: 'shareable' });
+    try {
+      const body = '## Context\nClean.\n\n## Evidence\nSome supporting evidence text here.\n';
+      writePattern(projectDir, 'preview-evidence-strip', { body });
+      const result = await runPromote('preview-evidence-strip', projectDir, sharedDir, { preview: true });
+      assert.equal(result.ok, true);
+      const stripped = result.preview.body.sections_stripped.find((s) => s.startsWith('Evidence ('));
+      assert.ok(stripped, `expected an Evidence(...) entry, got: ${JSON.stringify(result.preview.body.sections_stripped)}`);
+    } finally {
+      cleanup(projectDir, sharedDir);
+    }
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// 13. Collision gate (Stage 7b, D5)
+// ---------------------------------------------------------------------------
+
+describe('13. Collision gate (Stage 7b, D5)', () => {
+
+  test('a differing slug collision BLOCKS by default (no overwrite)', async () => {
+    const { projectDir, sharedDir } = makeTmpProject();
+    try {
+      writePattern(projectDir, 'collision-default', { body: '## Context\nVersion one.\n' });
+      const first = await runPromote('collision-default', projectDir, sharedDir);
+      assert.equal(first.ok, true, `first promote should succeed, got: ${first.error}`);
+
+      writePattern(projectDir, 'collision-default', { body: '## Context\nVersion two, different.\n' });
+      const second = await runPromote('collision-default', projectDir, sharedDir);
+      assert.equal(second.ok, false, 'differing re-promote should be blocked by default');
+      assert.equal(second.stage, 'collision');
+      assert.ok(second.existing && second.existing.promoted_at, 'error payload should include existing promoted_at');
+    } finally {
+      cleanup(projectDir, sharedDir);
+    }
+  });
+
+  test('overwrite: true permits replacing a differing collision', async () => {
+    const { projectDir, sharedDir } = makeTmpProject();
+    try {
+      writePattern(projectDir, 'collision-overwrite', { body: '## Context\nVersion one.\n' });
+      const first = await runPromote('collision-overwrite', projectDir, sharedDir);
+      assert.equal(first.ok, true);
+
+      writePattern(projectDir, 'collision-overwrite', { body: '## Context\nVersion two, different.\n' });
+      const second = await runPromote('collision-overwrite', projectDir, sharedDir, { overwrite: true });
+      assert.equal(second.ok, true, `overwrite should succeed, got: ${second.error}`);
+      assert.equal(second.overwroteExisting, true);
+
+      const content = fs.readFileSync(path.join(sharedDir, 'patterns', 'collision-overwrite.md'), 'utf8');
+      assert.ok(content.includes('Version two'), 'file should contain the new content');
+    } finally {
+      cleanup(projectDir, sharedDir);
+    }
+  });
+
+  test('byte-identical re-promotion returns no_op without writing or changing promoted_at', async () => {
+    const { projectDir, sharedDir } = makeTmpProject();
+    try {
+      const body = '## Context\nStable content.\n';
+      writePattern(projectDir, 'collision-noop', { body });
+      const first = await runPromote('collision-noop', projectDir, sharedDir);
+      assert.equal(first.ok, true);
+
+      const before = fs.readFileSync(path.join(sharedDir, 'patterns', 'collision-noop.md'), 'utf8');
+      const promotedAtBefore = /promoted_at:\s*(.+)/.exec(before)[1].trim();
+
+      // Re-write the identical local file (simulating the curator re-evaluating
+      // the same corpus) and promote again.
+      writePattern(projectDir, 'collision-noop', { body });
+      const second = await runPromote('collision-noop', projectDir, sharedDir);
+      assert.equal(second.ok, true, `identical re-promote should succeed, got: ${second.error}`);
+      assert.equal(second.result, 'no_op');
+      assert.equal(second.written, false);
+
+      const after = fs.readFileSync(path.join(sharedDir, 'patterns', 'collision-noop.md'), 'utf8');
+      assert.equal(after, before, 'file must be byte-identical — no_op must not touch the write');
+      const promotedAtAfter = /promoted_at:\s*(.+)/.exec(after)[1].trim();
+      assert.equal(promotedAtAfter, promotedAtBefore, 'promoted_at must not churn on no_op');
+    } finally {
+      cleanup(projectDir, sharedDir);
+    }
+  });
+
+  test('no existing shared file: stagesRun includes "collision" (gate ran, found nothing)', async () => {
+    const { projectDir, sharedDir } = makeTmpProject();
+    try {
+      writePattern(projectDir, 'collision-stage-listed', { body: '## Context\nFresh.\n' });
+      const result = await runPromote('collision-stage-listed', projectDir, sharedDir);
+      assert.equal(result.ok, true);
+      assert.ok(result.stagesRun.includes('collision'), 'collision stage should be recorded as run');
+      assert.ok(result.stagesRun.includes('evidence-strip'), 'evidence-strip stage should be recorded as run');
+    } finally {
+      cleanup(projectDir, sharedDir);
+    }
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// 14. D6 — cwd-scoped destination resolution
+// ---------------------------------------------------------------------------
+
+describe('14. D6 — cwd propagation to destination resolution', () => {
+
+  test('getSharedPatternsDir(root) resolves from the given root, not process.cwd()', () => {
+    const { getSharedPatternsDir } = require('../../mcp-server/lib/paths.js');
+
+    const projA = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestray-d6-a-'));
+    const projB = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestray-d6-b-'));
+    try {
+      fs.mkdirSync(path.join(projA, '.orchestray'), { recursive: true });
+      fs.mkdirSync(path.join(projB, '.orchestray'), { recursive: true });
+      fs.writeFileSync(path.join(projA, '.orchestray', 'config.json'), JSON.stringify({
+        federation: { shared_dir_enabled: true, sensitivity: 'shareable', shared_dir_path: path.join(projA, 'shared-a') },
+      }), 'utf8');
+      fs.writeFileSync(path.join(projB, '.orchestray', 'config.json'), JSON.stringify({
+        federation: { shared_dir_enabled: true, sensitivity: 'shareable', shared_dir_path: path.join(projB, 'shared-b') },
+      }), 'utf8');
+
+      const prev = process.env.ORCHESTRAY_TEST_SHARED_DIR;
+      delete process.env.ORCHESTRAY_TEST_SHARED_DIR;
+      try {
+        const dirA = getSharedPatternsDir(projA);
+        const dirB = getSharedPatternsDir(projB);
+        assert.ok(dirA.startsWith(path.join(projA, 'shared-a')), `dirA should resolve under projA, got: ${dirA}`);
+        assert.ok(dirB.startsWith(path.join(projB, 'shared-b')), `dirB should resolve under projB, got: ${dirB}`);
+        assert.notEqual(dirA, dirB, 'different roots must resolve to different shared dirs');
+      } finally {
+        if (prev !== undefined) process.env.ORCHESTRAY_TEST_SHARED_DIR = prev;
+      }
+    } finally {
+      cleanup(projA, projB);
+    }
+  });
+
+  test('getSharedPatternsDir() zero-arg form is unchanged for existing callers', () => {
+    const { getSharedPatternsDir } = require('../../mcp-server/lib/paths.js');
+    // ORCHESTRAY_TEST_SHARED_DIR override still short-circuits with no root arg.
+    const prev = process.env.ORCHESTRAY_TEST_SHARED_DIR;
+    process.env.ORCHESTRAY_TEST_SHARED_DIR = '/tmp/orchestray-d6-zero-arg-check';
+    try {
+      const result = getSharedPatternsDir();
+      assert.ok(result.includes('patterns'), 'zero-arg call should still work via the env override');
+    } finally {
+      if (prev === undefined) delete process.env.ORCHESTRAY_TEST_SHARED_DIR;
+      else process.env.ORCHESTRAY_TEST_SHARED_DIR = prev;
+    }
+  });
+
+  test('promote with explicit cwd writes under that project federation config path (not process.cwd())', async () => {
+    // Regression for the D6 bug: destination must be resolved from the SAME
+    // cwd that Stage 1/2 read the pattern and sensitivity from.
+    const { projectDir, sharedDir } = makeTmpProject({ sensitivity: 'shareable' });
+    try {
+      writePattern(projectDir, 'd6-cwd-check', { body: '## Context\nCwd propagation check.\n' });
+      // runPromote already passes cwd: projectDir and uses ORCHESTRAY_TEST_SHARED_DIR,
+      // which takes precedence over federation config — so exercise the config-driven
+      // path directly here instead.
+      const prevTestDir = process.env.ORCHESTRAY_TEST_SHARED_DIR;
+      delete process.env.ORCHESTRAY_TEST_SHARED_DIR;
+      try {
+        const altSharedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestray-d6-alt-shared-'));
+        fs.writeFileSync(path.join(projectDir, '.orchestray', 'config.json'), JSON.stringify({
+          federation: { shared_dir_enabled: true, sensitivity: 'shareable', shared_dir_path: altSharedRoot },
+        }), 'utf8');
+
+        const result = await promotePattern('d6-cwd-check', { cwd: projectDir });
+        assert.equal(result.ok, true, `should promote, got: ${result.error}`);
+        assert.ok(
+          result.destPath.startsWith(path.join(altSharedRoot, 'patterns')),
+          `destPath should resolve under projectDir's federation config, got: ${result.destPath}`
+        );
+        cleanup(altSharedRoot);
+      } finally {
+        if (prevTestDir !== undefined) process.env.ORCHESTRAY_TEST_SHARED_DIR = prevTestDir;
+      }
+    } finally {
+      cleanup(projectDir, sharedDir);
+    }
   });
 
 });

@@ -152,9 +152,11 @@ test('different shared body: pattern_collision_local_warn emitted, promote succe
       `---\nname: change-slug\ncategory: decomposition\nconfidence: 0.8\ndescription: Test\norigin: shared\npromoted_at: 2026-01-01\npromoted_from: abcdef01\n---\n\n${originalBody}`
     );
 
-    // Now promote with a different body.
+    // Now promote with a different body. D5 (v2.3.30): a differing collision
+    // blocks by default — overwrite: true is required to reach the write and
+    // the warn-only local-collision check.
     writePattern(projectDir, 'change-slug', { body: newBody });
-    const result = await runPromote('change-slug', projectDir, sharedDir);
+    const result = await runPromote('change-slug', projectDir, sharedDir, { overwrite: true });
     assert.equal(result.ok, true, 'promote should still succeed despite collision warning');
 
     const events = readEvents(projectDir);
@@ -190,7 +192,9 @@ test('deprecated local file: no collision warning even if shared body differs', 
       frontmatter: { deprecated: true, deprecated_at: '2026-03-01', deprecated_reason: 'superseded' },
     });
 
-    const result = await runPromote('deprecated-slug', projectDir, sharedDir);
+    // D5: differing collision blocks by default; overwrite: true is needed
+    // to reach the write and exercise the deprecated-skip warn logic.
+    const result = await runPromote('deprecated-slug', projectDir, sharedDir, { overwrite: true });
     assert.equal(result.ok, true, 'promote should succeed');
 
     const events = readEvents(projectDir);
