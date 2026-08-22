@@ -116,7 +116,8 @@
  *   - `ORCHESTRAY_HOOK_DEDUP_SAMPLE_RATE=<0..1>` — sampled-telemetry rate;
  *     `0` silences the sampled rows (always-emit reasons are unaffected).
  *     Defaults to 0 under the test harness, to the sampled rate otherwise.
- *   - `ORCHESTRAY_FIXTURE_HARVEST=1` — ARM the BDG harvest (default: dormant).
+ *   - `ORCHESTRAY_FIXTURE_HARVEST` — BDG harvest. ARMED by default since
+ *     v2.3.18 W5b; set `0` to opt OUT. (`1` forces on, overriding config.)
  *
  * Fail-open is absolute: every internal error path returns "fire the hook".
  */

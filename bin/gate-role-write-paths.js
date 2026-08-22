@@ -106,12 +106,46 @@ function validatePathPreAllowlist(originalTarget, relPath) {
     return { ok: false, reason: 'invalid_chars' };
   }
   if (!_CHAR_ALLOWLIST_RE.test(relPath)) {
-    return { ok: false, reason: 'invalid_chars' };
+    // v2.3.31 W2: locate the first offending character so the block message
+    // can echo the matched fragment instead of a leading slice of relPath.
+    const m = /[^a-zA-Z0-9_./-]/.exec(relPath);
+    return { ok: false, reason: 'invalid_chars', matchedText: m ? m[0] : relPath, matchIndex: m ? m.index : 0 };
   }
-  if (_DOTDOT_SEGMENT_RE.test(relPath)) {
-    return { ok: false, reason: 'traversal_segment_present' };
+  const dd = _DOTDOT_SEGMENT_RE.exec(relPath);
+  if (dd) {
+    return { ok: false, reason: 'traversal_segment_present', matchedText: dd[0], matchIndex: dd.index };
   }
   return { ok: true, reason: null };
+}
+
+/**
+ * Build a bounded excerpt of `text` centered on the matched fragment, marking
+ * elision with `…`. Falls back to a marked leading slice when no match
+ * location is known.
+ *
+ * v2.3.31 W2: replaces `String(targetPath).slice(0, 200)`, which could
+ * truncate BEFORE the offending traversal segment on a long path, hiding the
+ * actual reason for the block.
+ *
+ * @param {string} text
+ * @param {string} [matchedText]
+ * @param {number} [matchIndex]
+ * @param {number} [radius]
+ * @returns {string}
+ */
+function extractPathFragment(text, matchedText, matchIndex, radius) {
+  const r = typeof radius === 'number' ? radius : 40;
+  const str = String(text);
+  if (typeof matchIndex !== 'number' || matchIndex < 0 || typeof matchedText !== 'string') {
+    const MAX = 200;
+    return str.length > MAX ? str.slice(0, MAX) + '…' : str;
+  }
+  const start = Math.max(0, matchIndex - r);
+  const end = Math.min(str.length, matchIndex + matchedText.length + r);
+  let frag = str.slice(start, end);
+  if (start > 0) frag = '…' + frag;
+  if (end < str.length) frag = frag + '…';
+  return frag;
 }
 
 /**
@@ -296,9 +330,13 @@ function main() {
           reason: pre.reason,
           session_id: event.session_id || null,
         });
+        const relFragment = extractPathFragment(relPath, pre.matchedText, pre.matchIndex);
+        const targetFragment = extractPathFragment(targetPath);
+        const offsetNote = typeof pre.matchIndex === 'number' ? ' (matched at offset ' + pre.matchIndex + ' in relPath)' : '';
         process.stderr.write(
           '[orchestray] gate-role-write-paths: BLOCKED — ' + role + ' attempted to write "' +
-          String(targetPath).slice(0, 200) + '" (relPath="' + relPath + '"); reason=' + pre.reason + '.\n' +
+          targetFragment + '"; reason=' + pre.reason + offsetNote + '.\n' +
+          'Matched fragment (relPath): ' + relFragment + '\n' +
           'Path-traversal hardening: hardcoded reject before allowlist check.\n' +
           'Kill switch (this check only): ORCHESTRAY_ROLE_WRITE_TRAVERSAL_DISABLED=1\n' +
           'Kill switch (entire gate):     ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1\n'

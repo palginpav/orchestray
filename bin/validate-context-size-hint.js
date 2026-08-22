@@ -15,6 +15,24 @@
  * inline-prompt-body declaration that PMs are expected to emit per
  * delegation-templates.md.
  *
+ * W5 (v2.3.31): this hook and preflight-spawn-budget.js are SIBLING
+ * PreToolUse:Agent hooks — `updatedInput` from one does NOT propagate to the
+ * other (Claude Code platform constraint, documented at
+ * preflight-spawn-budget.js:315). preflight-spawn-budget.js already computes
+ * a fallback hint from the prompt body when the field is absent and proceeds
+ * without blocking; this hook, running independently, used to have NO idea
+ * that happened and would ramp its OWN counter toward its OWN exit-2 based on
+ * raw presence/absence alone. That is the "hook A fills the field, hook B
+ * still demands it" defect the W5 scope doc names explicitly — 17
+ * `context_size_hint_gate_blocked` + 29 `context_size_hint_gate_warn` events
+ * were fired for spawns that were, from the operator's perspective, already
+ * handled. Fixed by having THIS hook compute the same fallback itself
+ * (`computeHintFromPrompt`, imported from preflight-spawn-budget.js) before
+ * consulting the ramp — a spawn with a non-empty prompt is "present" for
+ * ramp purposes even when the operator wrote no `context_size_hint:` line.
+ * The ramp is now reserved for the one case neither hook can resolve: an
+ * empty/unreadable prompt (or the strict-mode kill switch).
+ *
  * Activation: every PreToolUse:Agent spawn (any subagent_type).
  *
  * Accepted forms (per v2.2.14 G-11 — both forms must parse):
@@ -49,6 +67,10 @@ const { writeEvent }      = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { getCurrentOrchestrationFile } = require('./_lib/orchestration-state');
 const { readHookInputRaw } = require('./_lib/hook-stdin');
+// W5 (v2.3.31): reuse the SAME compute-fallback preflight-spawn-budget.js
+// already implements, rather than demanding the field a second time. See the
+// file-header comment above for why this can't be wired via updatedInput.
+const { computeHintFromPrompt, isComputeFallbackDisabled } = require('./preflight-spawn-budget');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -217,7 +239,32 @@ function main() {
       process.exit(0);
     }
 
-    // Hint missing. Decide warn vs block via ramp.
+    // W5 (v2.3.31): before ramping toward a block, try the SAME compute
+    // fallback preflight-spawn-budget.js uses. A validator that can compute
+    // a value must never block for its absence (feedback_mechanical_over_prose.md).
+    // Only a genuinely empty/unreadable prompt, or the strict-mode kill
+    // switch, falls through to the ramp below.
+    const promptTextForCompute = typeof toolInput.prompt === 'string' ? toolInput.prompt : '';
+    const canCompute = promptTextForCompute.trim().length > 0 && !isComputeFallbackDisabled(cwd);
+    if (canCompute) {
+      let computed = { systemSize: 0, tier2Size: 0, handoffSize: 0 };
+      try {
+        computed = computeHintFromPrompt(promptTextForCompute, role, cwd);
+      } catch (_e) { /* fail-open: fall through to ramp below */ }
+      emitGateEvent(cwd, {
+        version:        SCHEMA_VERSION,
+        schema_version: SCHEMA_VERSION,
+        type:           'context_size_hint_gate_computed',
+        subagent_type:  role,
+        system:         computed.systemSize,
+        tier2:          computed.tier2Size,
+        handoff:        computed.handoffSize,
+      });
+      process.stdout.write(JSON.stringify({ continue: true }));
+      process.exit(0);
+    }
+
+    // Hint missing and nothing computable. Decide warn vs block via ramp.
     const orchId = resolveOrchestrationId(cwd);
     const threshold = (() => {
       const env = process.env.ORCHESTRAY_CONTEXT_SIZE_HINT_RAMP_THRESHOLD;

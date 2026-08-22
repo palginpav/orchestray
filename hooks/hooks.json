@@ -218,11 +218,6 @@
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/inject-review-dimensions.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/inject-spawn-agent-hint.js",
             "timeout": 5
           },
@@ -793,6 +788,15 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-unresolved-block.js",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "SubagentStop": [
@@ -920,6 +924,15 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/detect-tool-grant-shortfall.js",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/validate-unresolved-block.js",
             "timeout": 10
           }
         ]

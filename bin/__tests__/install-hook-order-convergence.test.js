@@ -193,9 +193,10 @@ describe('v2.3.24 Item 1 — hook reorder convergence', () => {
       'got=' + JSON.stringify(gotOrder) + '\nwant=' + JSON.stringify(canonical));
 
     // Correctness (dimension: exact basename sequence, not "a reorder occurred"):
-    // emit-orchestration-complete.js must run FIRST, detect-tool-grant-shortfall.js LAST.
+    // emit-orchestration-complete.js must run FIRST, validate-unresolved-block.js LAST
+    // (v2.3.31 W1: appended after detect-tool-grant-shortfall.js).
     assert.equal(gotOrder[0], 'emit-orchestration-complete.js');
-    assert.equal(gotOrder[gotOrder.length - 1], 'detect-tool-grant-shortfall.js');
+    assert.equal(gotOrder[gotOrder.length - 1], 'validate-unresolved-block.js');
 
     // Exactly one correction record for the whole merged group — not one per
     // canonical entry (the old bug emitted up to N nearly-redundant records).

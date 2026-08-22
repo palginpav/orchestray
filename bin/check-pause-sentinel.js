@@ -42,6 +42,29 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { readHookInputRaw } = require('./_lib/hook-stdin');
+const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
+const { writeEvent } = require('./_lib/audit-event-writer');
+const { recordDegradation } = require('./_lib/degraded-journal');
+
+// W7 (v2.3.31): emit an audit event on refusal so an operator can reconstruct
+// after the fact whether a spawn was actually blocked here. Fail-open on the
+// emit itself — an audit-write failure must never turn this gate into a
+// hard block (matches bin/gate-developer-git.js:648-663).
+function emitAuditEvent(cwd, record) {
+  try {
+    const safeCwd = resolveSafeCwd(cwd);
+    writeEvent(record, { cwd: safeCwd });
+  } catch (err) {
+    try {
+      recordDegradation({
+        kind: 'unknown_kind',
+        severity: 'warn',
+        projectRoot: cwd,
+        detail: { hook: 'check-pause-sentinel', err: String(err && err.message || err).slice(0, 80) },
+      });
+    } catch (_) {}
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Determine project dir
@@ -133,6 +156,16 @@ function readSentinel(sentinelPath) {
 // Main
 // ---------------------------------------------------------------------------
 
+/** Best-effort session_id extraction from the drained hook payload. Never throws. */
+function extractSessionId() {
+  try {
+    const parsed = JSON.parse(_stdinBuf);
+    return (parsed && typeof parsed.session_id === 'string') ? parsed.session_id : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
 function main() {
   try {
     const config = loadStateSentinelConfig(projectDir);
@@ -159,6 +192,16 @@ function main() {
         process.exit(0);
       }
 
+      emitAuditEvent(projectDir, {
+        timestamp: new Date().toISOString(),
+        type: 'pause_sentinel_spawn_blocked',
+        hook: 'check-pause-sentinel',
+        sentinel_type: 'cancel',
+        orchestration_id: orchId,
+        rule_id: 'cancel_sentinel_active',
+        session_id: extractSessionId(),
+        description: 'Agent() spawn blocked — cancel sentinel present',
+      });
       process.stdout.write(
         'cancelled: ' + orchId + '\n' +
         '[orchestray] Cancel sentinel present — further Agent() spawns are blocked.\n' +
@@ -174,6 +217,16 @@ function main() {
       const orchId = data.orchestration_id || 'unknown';
       const reason = data.reason ? ' (' + data.reason + ')' : '';
 
+      emitAuditEvent(projectDir, {
+        timestamp: new Date().toISOString(),
+        type: 'pause_sentinel_spawn_blocked',
+        hook: 'check-pause-sentinel',
+        sentinel_type: 'pause',
+        orchestration_id: orchId,
+        rule_id: 'pause_sentinel_active',
+        session_id: extractSessionId(),
+        description: 'Agent() spawn blocked — pause sentinel present' + reason,
+      });
       process.stdout.write(
         'paused: ' + orchId + ' — use /orchestray:state pause --resume to continue\n' +
         '[orchestray] Pause sentinel present' + reason + ' — Agent() spawn blocked.\n' +

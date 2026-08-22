@@ -95,44 +95,58 @@ describe('v2.2.15 FN-43 — validate-reviewer-dimensions hard gate', () => {
     cleanup(r.tmp);
   });
 
-  test('Test 2: reviewer prompt missing heading → exit 2', () => {
+  // v2.3.31 W8B: the hard-block-on-missing behaviour these two tests
+  // originally asserted is superseded. The retired sibling injector
+  // (bin/inject-review-dimensions.js) never actually got its updatedInput
+  // observed by this validator (sibling PreToolUse:Agent hooks don't share
+  // updatedInput), so a bare reviewer prompt blocked unconditionally. This
+  // validator now computes and appends the block itself instead of
+  // blocking — see tests/reviewer-autofill.test.js for full autofill
+  // coverage. These two cases now assert the autofill path directly.
+  test('Test 2: reviewer prompt missing heading → autofilled, exit 0', () => {
     const prompt = 'Review the patch.\n\n- correctness\n- security\n';
     const r = runHook({
       tool_name: 'Agent',
       tool_input: { subagent_type: 'reviewer', prompt },
     });
-    assert.equal(r.status, 2, 'missing heading must block. stderr=' + r.stderr.slice(0, 200));
+    assert.equal(r.status, 0, 'missing heading is autofilled, not blocked. stderr=' + r.stderr.slice(0, 200));
     const events = readEvents(r.tmp);
-    const ev = events.find(e => e.type === 'reviewer_dimensions_gate_blocked');
-    assert.ok(ev, 'expected reviewer_dimensions_gate_blocked event');
+    const ev = events.find(e => e.type === 'reviewer_dimensions_autofilled');
+    assert.ok(ev, 'expected reviewer_dimensions_autofilled event');
     assert.equal(ev.reason, 'missing_heading');
+    const out = JSON.parse(r.stdout);
+    assert.match(out.hookSpecificOutput.updatedInput.prompt, /^##\s+Dimensions to Apply/m);
     cleanup(r.tmp);
   });
 
-  test('Test 3: heading present but no bulleted list under it → exit 2', () => {
+  test('Test 3: heading present but no bulleted list under it → autofilled, exit 0', () => {
     const prompt = '## Dimensions to Apply\n\n(see review prompt for details)\n';
     const r = runHook({
       tool_name: 'Agent',
       tool_input: { subagent_type: 'reviewer', prompt },
     });
-    assert.equal(r.status, 2, 'missing bulleted list must block. stderr=' + r.stderr.slice(0, 200));
+    assert.equal(r.status, 0, 'missing bulleted list is autofilled, not blocked. stderr=' + r.stderr.slice(0, 200));
     const events = readEvents(r.tmp);
-    const ev = events.find(e => e.type === 'reviewer_dimensions_gate_blocked');
+    const ev = events.find(e => e.type === 'reviewer_dimensions_autofilled');
     assert.ok(ev);
     assert.equal(ev.reason, 'missing_bulleted_list');
     cleanup(r.tmp);
   });
 
-  test('Test 4: kill switch ORCHESTRAY_REVIEWER_DIMENSIONS_GATE_DISABLED=1 → warn-only, exit 0', () => {
+  test('Test 4: kill switch ORCHESTRAY_REVIEWER_DIMENSIONS_GATE_DISABLED=1 → still autofills (autofill never fails on this path)', () => {
+    // v2.3.31 W8B: ORCHESTRAY_REVIEWER_DIMENSIONS_GATE_DISABLED only affects
+    // the residual hard-block fallback (autofill itself throwing), which
+    // classifyReviewDimensions() fails open against ("all"). A bare prompt
+    // is still autofilled regardless of this kill switch.
     const prompt = 'Review the patch.';
     const r = runHook(
       { tool_name: 'Agent', tool_input: { subagent_type: 'reviewer', prompt } },
       { ORCHESTRAY_REVIEWER_DIMENSIONS_GATE_DISABLED: '1' }
     );
-    assert.equal(r.status, 0, 'kill switch must downgrade to warn. stderr=' + r.stderr.slice(0, 200));
+    assert.equal(r.status, 0, 'stderr=' + r.stderr.slice(0, 200));
     const events = readEvents(r.tmp);
-    const warnEv = events.find(e => e.type === 'reviewer_dimensions_gate_warn');
-    assert.ok(warnEv, 'expected reviewer_dimensions_gate_warn event under kill switch');
+    const autofillEv = events.find(e => e.type === 'reviewer_dimensions_autofilled');
+    assert.ok(autofillEv, 'expected reviewer_dimensions_autofilled event even with the gate kill switch set');
     cleanup(r.tmp);
   });
 
@@ -184,12 +198,18 @@ describe('v2.2.15 FN-44 — validate-context-size-hint soft-warn ramp', () => {
     cleanup(tmp);
   });
 
-  test('Test 3 (warn ramp, count=1): missing hint, count below threshold → exit 0 + warn event', () => {
+  // W5 (v2.3.31): a non-empty prompt is now resolved via compute-fallback
+  // BEFORE the ramp is consulted (see hook file-header comment). The ramp is
+  // reserved for the one case nothing can compute from: an empty/unreadable
+  // prompt. Tests 3 and 4 (below) therefore use an empty prompt to still
+  // exercise the ramp; the compute-fallback path itself is covered by the
+  // new Test 3b.
+  test('Test 3 (warn ramp, count=1): missing hint + unreadable prompt, count below threshold → exit 0 + warn event', () => {
     const tmp = makeTmp('fn44-');
     writeOrchMarker(tmp, 'orch-fn44-3');
     const r = runHook(tmp, {
       tool_name: 'Agent',
-      tool_input: { subagent_type: 'developer', prompt: 'Do the thing.' },
+      tool_input: { subagent_type: 'developer', prompt: '' },
     });
     assert.equal(r.status, 0, 'first missing-hint spawn must warn, not block. stderr=' + r.stderr.slice(0, 200));
     const events = readEvents(tmp);
@@ -199,7 +219,32 @@ describe('v2.2.15 FN-44 — validate-context-size-hint soft-warn ramp', () => {
     cleanup(tmp);
   });
 
-  test('Test 4 (block beyond ramp): 4th missing-hint spawn → exit 2', () => {
+  test('Test 3b (W5 compute-fallback): missing hint + non-empty prompt → exit 0, computed event, ramp NOT touched', () => {
+    const tmp = makeTmp('fn44-');
+    writeOrchMarker(tmp, 'orch-fn44-3b');
+    // Pre-seed the ramp counter at the block threshold — if the compute
+    // fallback fired the ramp check at all, this spawn would exit 2.
+    fs.writeFileSync(
+      path.join(tmp, '.orchestray', 'state', 'context-size-hint-warn-count-orch-fn44-3b.txt'),
+      '3\n', 'utf8'
+    );
+    const r = runHook(tmp, {
+      tool_name: 'Agent',
+      tool_input: { subagent_type: 'developer', prompt: 'Implement the widget. '.repeat(20) },
+    });
+    assert.equal(r.status, 0, 'computable prompt must never block, regardless of ramp state. stderr=' + r.stderr.slice(0, 200));
+    const events = readEvents(tmp);
+    const computedEv = events.find(e => e.type === 'context_size_hint_gate_computed');
+    assert.ok(computedEv, 'expected context_size_hint_gate_computed event');
+    assert.ok(computedEv.handoff > 0, 'computed handoff size must be derived from the prompt body');
+    assert.equal(events.find(e => e.type === 'context_size_hint_gate_warn'), undefined,
+      'compute-fallback path must not touch the ramp');
+    assert.equal(events.find(e => e.type === 'context_size_hint_gate_blocked'), undefined,
+      'compute-fallback path must not block even with an exhausted ramp counter');
+    cleanup(tmp);
+  });
+
+  test('Test 4 (block beyond ramp): 4th missing-hint spawn with unreadable prompt → exit 2', () => {
     const tmp = makeTmp('fn44-');
     writeOrchMarker(tmp, 'orch-fn44-4');
     // Pre-seed counter to exactly the threshold so the next spawn becomes count=4 → block.
@@ -209,7 +254,7 @@ describe('v2.2.15 FN-44 — validate-context-size-hint soft-warn ramp', () => {
     );
     const r = runHook(tmp, {
       tool_name: 'Agent',
-      tool_input: { subagent_type: 'developer', prompt: 'No hint here.' },
+      tool_input: { subagent_type: 'developer', prompt: '' },
     });
     assert.equal(r.status, 2, '4th missing-hint spawn must block. stderr=' + r.stderr.slice(0, 200));
     const events = readEvents(tmp);

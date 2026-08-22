@@ -36,6 +36,8 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const { resolveSafeCwd } = require('../_lib/resolve-project-cwd');
+const { writeEvent } = require('../_lib/audit-event-writer');
+const { recordDegradation } = require('../_lib/degraded-journal');
 // v2.3.12 W13 follow-up (review F1): reuse the canonical deferral detector so
 // release-gate detection matches the SubagentStop no-deferral firewall exactly.
 // Its strict/non-strict logic only flags the noisy phrases ("for now", "punt")
@@ -78,6 +80,26 @@ function extractReleaseVersion(command) {
   // ending in m, followed by optional whitespace/quotes and the release prefix.
   const m = command.match(/-[a-zA-Z]*m\s*['"]?\s*release:\s*v?(\d+\.\d+\.\d+)/i);
   return m ? m[1] : null;
+}
+
+// W7 (v2.3.31): emit an audit event on refusal so an operator can reconstruct
+// whether a release commit was actually blocked. Fail-open on the emit itself
+// — an audit-write failure must never turn this gate into a broken one
+// (matches bin/gate-developer-git.js:648-663).
+function emitAuditEvent(cwd, record) {
+  try {
+    const safeCwd = resolveSafeCwd(cwd);
+    writeEvent(record, { cwd: safeCwd });
+  } catch (err) {
+    try {
+      recordDegradation({
+        kind: 'unknown_kind',
+        severity: 'warn',
+        projectRoot: cwd,
+        detail: { hook: 'gate-release-completeness', err: String(err && err.message || err).slice(0, 80) },
+      });
+    } catch (_) {}
+  }
 }
 
 function readFileSafe(fp) {
@@ -199,6 +221,15 @@ function main() {
   }
 
   if (failures.length > 0) {
+    emitAuditEvent(cwd, {
+      timestamp: new Date().toISOString(),
+      type: 'release_completeness_blocked',
+      hook: 'gate-release-completeness',
+      version,
+      rule_id: 'release_completeness_failed',
+      failures,
+      session_id: (payload && payload.session_id) || null,
+    });
     process.stderr.write(
       '[orchestray] gate-release-completeness: BLOCKED — release commit for v' + version + ' is incomplete:\n' +
       failures.map(f => '  - ' + f).join('\n') + '\n' +

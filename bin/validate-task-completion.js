@@ -297,7 +297,10 @@ const READ_ONLY_AGENT_FORBIDDEN_TOOLS = {
   'orchestray-housekeeper': HOUSEKEEPER_FORBIDDEN_TOOLS,
   'project-intent':         SCOUT_FORBIDDEN_TOOLS,
 };
-const READ_ONLY_AGENTS = new Set(Object.keys(READ_ONLY_AGENT_FORBIDDEN_TOOLS));
+// v2.3.31 W6: membership sourced from the canonical axis module. The
+// per-role forbidden-tool MAP above stays local — it is a different shape
+// (tool lists, not membership) and is not part of the axis reconciliation.
+const { RUNTIME_TOOL_VERIFIED_ROLES: READ_ONLY_AGENTS } = require('./_lib/read-only-roles');
 
 // Patterns that indicate the agent returned a placeholder instead of a real path.
 const PLACEHOLDER_PATTERNS = [
@@ -1601,7 +1604,8 @@ function main() {
       const eventTypeCheck = validateAuditEventType(event);
       if (eventTypeCheck.rejected) {
         process.stderr.write(
-          '[orchestray] validate-task-completion: audit event validator: ' + eventTypeCheck.reason + '\n'
+          '[orchestray] validate-task-completion: audit event validator: ' + eventTypeCheck.reason + '\n' +
+          'Kill switch: ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD=1\n'
         );
         // Exit 2 blocks the event. Kill switch: ORCHESTRAY_EVENT_SCHEMAS_ALWAYS_LOAD=1 disables this check.
         process.stdout.write(JSON.stringify({ continue: false, reason: 'unknown_audit_event_type' }));

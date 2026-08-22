@@ -37,8 +37,17 @@
  *   - `git reset --soft` remains allowed.
  *   - Read-only roles fail CLOSED (exit 2) on parse uncertainty.
  *
+ * v2.3.31 W8A: team-lead roles (currently: pm) acting as operator proxy are
+ * exempt from wt_destructive_git's alsoBlockWhenMainCheckout extension — the
+ * PM may run all 5 destructive verbs even in the shared main checkout. Every
+ * applied exemption emits a `team_lead_git_exemption_applied` audit event
+ * (never silent). See bin/_lib/team-lead-roles.js.
+ *   Kill switch: ORCHESTRAY_TEAM_LEAD_GIT_EXEMPTION_DISABLED=1 — disables the
+ *   exemption; team-lead roles then behave exactly as before W8A (blocked in
+ *   the shared main checkout).
+ *
  * Kill switch: ORCHESTRAY_GIT_GATE_DISABLED=1 — disables all checks (subsumes
- * FN-46 and FN-48).
+ * FN-46, FN-48, and the W8A team-lead exemption).
  *
  * Contract:
  *   - exit 2 + emit git_destructive_blocked or developer_git_violation when a
@@ -59,9 +68,16 @@ const { readHookInputRaw } = require('./_lib/hook-stdin');
 // Read-only roles: always block destructive git regardless of cwd.
 // ---------------------------------------------------------------------------
 
-const READ_ONLY_ROLES = new Set([
-  'reviewer', 'debugger', 'researcher', 'ux-critic', 'platform-oracle', 'project-intent',
-]);
+// v2.3.31 W6: sourced from the canonical axis module rather than an inline Set.
+// Three axes exist (git-destructive block / write-path restriction / runtime tool
+// verification) and are deliberately NOT merged — see bin/_lib/read-only-roles.js.
+const { GIT_DESTRUCTIVE_BLOCKED_ROLES: READ_ONLY_ROLES } = require('./_lib/read-only-roles');
+
+// v2.3.31 W8A: team-lead roles (currently: pm) are exempt from the
+// alsoBlockWhenMainCheckout extension of wt_destructive_git — see
+// bin/_lib/team-lead-roles.js for rationale. Kill switch:
+// ORCHESTRAY_TEAM_LEAD_GIT_EXEMPTION_DISABLED=1.
+const { isTeamLead, isTeamLeadExemptionEnabled } = require('./_lib/team-lead-roles');
 
 // ---------------------------------------------------------------------------
 // A0 (v2.3.10): non-destructive git verbs are ALWAYS allowed for ALL roles
@@ -579,7 +595,13 @@ function hasGitCommandToken(seg) {
  * @param {string} command
  * @param {string} role - resolved agent role (lower-case)
  * @param {{ isMain: boolean, isReadOnly: boolean }} [ctx]
- * @returns {{id: string, description: string}|null}
+ * `matchedText`/`matchIndex` locate the actual offending fragment within
+ * `command` so callers can echo it (see `extractMatchFragment`) instead of a
+ * leading slice of the raw command, which can put the match past a fixed
+ * truncation cutoff and make a correct block look like a false positive
+ * (v2.3.31 W2).
+ *
+ * @returns {{id: string, description: string, matchedText?: string, matchIndex?: number}|null}
  */
 function findForbiddenPattern(command, role, ctx) {
   if (typeof command !== 'string') return null;
@@ -607,21 +629,57 @@ function findForbiddenPattern(command, role, ctx) {
           // Unparseable git invocation (e.g. stdin-piped subcommand).
           // Read-only roles fail closed; others fail open.
           const isRO = READ_ONLY_ROLES.has(targetRole);
-          if (isRO || context.isMain) return { id: pattern.id, description: pattern.description };
+          if (isRO || context.isMain) {
+            return { id: pattern.id, description: pattern.description, matchedText: seg, matchIndex: command.indexOf(seg) };
+          }
           continue;
         }
         // When --git-dir/GIT_DIR redirect is present, target is ambiguous → fail-closed
         // for read-only roles (same as unparseable).
         if (gitDirRedirected && READ_ONLY_ROLES.has(targetRole)) {
-          return { id: pattern.id, description: pattern.description };
+          return { id: pattern.id, description: pattern.description, matchedText: seg, matchIndex: command.indexOf(seg) };
         }
-        if (isWtDestructiveGit(seg)) return { id: pattern.id, description: pattern.description };
+        if (isWtDestructiveGit(seg)) {
+          return { id: pattern.id, description: pattern.description, matchedText: seg, matchIndex: command.indexOf(seg) };
+        }
       }
-    } else if (pattern.regex.test(command)) {
-      return { id: pattern.id, description: pattern.description };
+    } else {
+      const m = pattern.regex.exec(command);
+      if (m) return { id: pattern.id, description: pattern.description, matchedText: m[0], matchIndex: m.index };
     }
   }
   return null;
+}
+
+/**
+ * Build a bounded, human-recognisable excerpt of `command` centered on the
+ * matched fragment, with `…` elision markers when the excerpt does not cover
+ * the full command. Falls back to a plain leading slice (still marked with
+ * `…`) when no match location is available.
+ *
+ * v2.3.31 W2: replaces `command.slice(0, N)`, which could truncate BEFORE the
+ * matched (forbidden) segment on long/multi-line commands, producing a block
+ * message that showed no trace of what was actually blocked.
+ *
+ * @param {string} command
+ * @param {string} [matchedText]
+ * @param {number} [matchIndex]
+ * @param {number} [radius] - characters of context to keep on each side of the match
+ * @returns {string}
+ */
+function extractMatchFragment(command, matchedText, matchIndex, radius) {
+  const r = typeof radius === 'number' ? radius : 60;
+  if (typeof matchIndex !== 'number' || matchIndex < 0 || typeof matchedText !== 'string') {
+    // No known match location — fall back to a marked leading slice.
+    const MAX = 160;
+    return command.length > MAX ? command.slice(0, MAX) + '…' : command;
+  }
+  const start = Math.max(0, matchIndex - r);
+  const end = Math.min(command.length, matchIndex + matchedText.length + r);
+  let frag = command.slice(start, end);
+  if (start > 0) frag = '…' + frag;
+  if (end < command.length) frag = frag + '…';
+  return frag;
 }
 
 /**
@@ -643,6 +701,24 @@ function resolveRole(event) {
     }
   }
   return null;
+}
+
+/**
+ * Read `.orchestray/config.json` for the given cwd. Fails soft (returns {})
+ * on any error — config is advisory here, never a reason to fail closed.
+ *
+ * @param {string} cwd
+ * @returns {object}
+ */
+function readConfig(cwd) {
+  try {
+    const raw = fs.readFileSync(path.join(cwd, '.orchestray', 'config.json'), 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return parsed;
+  } catch (_e) {
+    return {};
+  }
 }
 
 function emitAuditEvent(cwd, record) {
@@ -727,9 +803,11 @@ function main() {
     // main checkout still applies to the PM via alsoBlockWhenMainCheckout below —
     // but role-specific rules (developer/release-manager/read-only) never fire for it.
     if (role === 'pm') {
-      // PM only subject to wt_destructive_git in the shared main checkout. Fall
-      // through to the main check with role='pm' (which matches no role list);
-      // findForbiddenPattern will only fire wt_destructive_git via main-checkout.
+      // v2.3.31 W8A: team-lead roles (pm) are exempt from the main-checkout
+      // extension too, unless the exemption is disabled (kill switch or
+      // config). Fall through to the main check as before; the exemption is
+      // applied after findForbiddenPattern below so it only fires on an
+      // otherwise-blocked wt_destructive_git match (and is auditable).
     }
 
     // For non-read-only roles that aren't developer/release-manager, we still
@@ -814,6 +892,36 @@ function main() {
       process.exit(0);
     }
 
+    // v2.3.31 W8A: team-lead roles (pm) acting as operator proxy are exempt
+    // from wt_destructive_git's alsoBlockWhenMainCheckout extension. This is
+    // the ONLY rule that could ever match role='pm' (all role-specific rules
+    // exclude pm), so gating on violation.id === 'wt_destructive_git' here is
+    // exhaustive. The exemption is never silent — an audit event is always
+    // written before the command is allowed through.
+    if (violation.id === 'wt_destructive_git' && isTeamLead(role)) {
+      const config = readConfig(cwd);
+      const exemptionEnabled = isTeamLeadExemptionEnabled(process.env, config);
+      if (exemptionEnabled) {
+        // 'config' when an explicit config.team_lead.git_exemption_enabled: true
+        // opt-in is present; 'default' otherwise (the ships-default-on behaviour).
+        const exemptionSource = (config && config.team_lead &&
+          config.team_lead.git_exemption_enabled === true) ? 'config' : 'default';
+        emitAuditEvent(cwd, {
+          timestamp: new Date().toISOString(),
+          type: 'team_lead_git_exemption_applied',
+          hook: 'gate-developer-git',
+          agent_role: role,
+          git_subcommand: extractGitSubcommand(violation.matchedText || command).subcommand,
+          command_excerpt: command.slice(0, 160),
+          is_main_checkout: mainCheckout,
+          exemption_source: exemptionSource,
+          session_id: event.session_id || null,
+        });
+        process.stdout.write(JSON.stringify({ continue: true }));
+        process.exit(0);
+      }
+    }
+
     // Use git_destructive_blocked event type for wt_destructive_git violations;
     // existing event type for other violations.
     const eventType = violation.id === 'wt_destructive_git'
@@ -835,10 +943,14 @@ function main() {
       is_main_checkout: mainCheckout,
     });
 
+    const matchFragment = extractMatchFragment(command, violation.matchedText, violation.matchIndex);
+    const offsetNote = typeof violation.matchIndex === 'number' && violation.matchIndex >= 0
+      ? ' (matched at offset ' + violation.matchIndex + ')'
+      : '';
     process.stderr.write(
       '[orchestray] gate-developer-git: BLOCKED — ' + (role || 'unknown') +
       ' attempted forbidden git command: ' + violation.id + ': ' + violation.description + '.\n' +
-      'Command: ' + command.slice(0, 120) + '\n' +
+      'Matched' + offsetNote + ': ' + matchFragment + '\n' +
       'Kill switch: ORCHESTRAY_GIT_GATE_DISABLED=1\n'
     );
     process.stdout.write(JSON.stringify({
@@ -851,6 +963,7 @@ function main() {
 
 module.exports = {
   findForbiddenPattern,
+  extractMatchFragment,
   resolveRole,
   FORBIDDEN_PATTERNS,
   READ_ONLY_ROLES,

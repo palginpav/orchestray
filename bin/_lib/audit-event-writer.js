@@ -63,6 +63,7 @@ const { peekOrchestrationId }          = require('./peek-orchestration-id');
 // === v2.2.21 W4-T18: state-gc safeReadJson for corrupt state-file self-heal (F-15) ===
 const { safeReadJson }                 = require('./state-gc');
 const { readHookInputRaw } = require('./hook-stdin');
+const { recordDegradation } = require('./degraded-journal');
 
 // ---------------------------------------------------------------------------
 // Internal state
@@ -774,11 +775,22 @@ function writeEvent(eventPayload, opts) {
     if (!_schemaWarnedThisProcess) {
       _schemaWarnedThisProcess = true;
       try {
+        // Reason already states "validation skipped" — don't re-prefix it (was
+        // producing "schema unreadable — validation skipped: schema file
+        // unreadable — validation skipped").
         process.stderr.write(
-          '[audit-event-writer] schema unreadable — validation skipped: ' +
-          validation.warnings.join('; ') + '\n'
+          '[audit-event-writer] ' + validation.warnings.join('; ') + '\n'
         );
       } catch (_e) { /* ignore */ }
+      // Durable record: schema validation is silently off for this process's
+      // lifetime (e.g. running inside a non-Orchestray project). Reuse the
+      // existing degraded-journal mechanism rather than inventing a new one.
+      recordDegradation({
+        kind:     'event_schema_unreadable',
+        severity: 'warn',
+        detail:   { reason: validation.warnings.join('; ') },
+        projectRoot: cwd,
+      });
     }
     try {
       atomicAppendJsonl(eventsPath, filledPayload);

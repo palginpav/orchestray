@@ -11,8 +11,8 @@
  *     deterministic hits (W-PE-1)
  *   - inject-active-phase-slice exposes _shouldSkipReStage and the cache
  *     skips re-staging when freshly written (I-PE-1)
- *   - inject-review-dimensions writes files-changed-cache.json on cache miss
- *     and reads it on hit (W-PE-2)
+ *   - resolve-files-changed.js (shared lib, v2.3.31) writes
+ *     files-changed-cache.json on cache miss and reads it on hit (W-PE-2)
  *   - architect.md tools list contains mcp__orchestray__history_query_events (W-OP-7)
  *   - phase-decomp.md step 1b carries the pipeline-templates clarification (I-CQ-2)
  *   - handoff-contract.md §10 carries the per-role token budget table (W-AC-1/2)
@@ -232,9 +232,12 @@ test('F-19: config-schema.js DEFAULT_CONTEXT_STATUSBAR includes idle_suppression
 // W-PE-2: files-changed cache file path constant
 // ---------------------------------------------------------------------------
 
-test('W-PE-2: inject-review-dimensions.js carries files-changed-cache.json path', () => {
-  const txt = fs.readFileSync(path.join(ROOT, 'bin', 'inject-review-dimensions.js'), 'utf8');
+test('W-PE-2: resolve-files-changed.js carries files-changed-cache.json path', () => {
+  // v2.3.31 W8B: the cache logic moved from inject-review-dimensions.js
+  // (now a retired no-op) into bin/_lib/resolve-files-changed.js, shared by
+  // validate-reviewer-dimensions.js.
+  const txt = fs.readFileSync(path.join(ROOT, 'bin', '_lib', 'resolve-files-changed.js'), 'utf8');
   assert.match(txt, /files-changed-cache\.json/,
-    'inject-review-dimensions must reference the cache file');
+    'resolve-files-changed must reference the cache file');
   assert.match(txt, /W-PE-2/, 'W-PE-2 marker present');
 });

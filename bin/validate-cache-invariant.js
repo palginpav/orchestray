@@ -776,7 +776,8 @@ function handleManifestMode(event) {
     if (strictInvariant && result.reason !== 'manifest_missing') {
       process.stderr.write(
         '[validate-cache-invariant] manifest invariant broken (' + result.reason +
-        '). Run: node bin/invalidate-block-a-zone1.js --watch-pm-md\n'
+        '). Run: node bin/invalidate-block-a-zone1.js --watch-pm-md\n' +
+        'Kill switch: ORCHESTRAY_DISABLE_BLOCK_A_ZONES=1 or ORCHESTRAY_DISABLE_ENGINEERED_BREAKPOINTS=1\n'
       );
       process.exit(2);
       return;

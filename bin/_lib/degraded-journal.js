@@ -201,6 +201,8 @@ const KINDS = [
   'archetype_cache_blacklisted',         // ArchetypeCache: match found but archetype_id in blacklist; advisory suppressed
   'archetype_cache_signature_failed',    // ArchetypeCache: computeSignature() returned empty string; advisory skipped
   'archetype_cache_hint_write_failed',   // ArchetypeCache: recordAdvisoryServed() disk write failed; advisory event not persisted
+  // v2.3.31 W3: event-schema shadow validation degraded (schema file unreadable — e.g. foreign, non-Orchestray project)
+  'event_schema_unreadable',
   'unknown_kind',
 ];
 

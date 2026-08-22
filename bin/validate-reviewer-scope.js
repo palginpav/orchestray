@@ -14,19 +14,94 @@
  * v2.2 promise fulfilled — flipped to exit-2 in v2.2.9 (B-2.3).
  * Kill switch: ORCHESTRAY_REVIEWER_SCOPE_HARD_DISABLED=1 → reverts to warn-only.
  *
+ * v2.3.31 W8B: before blocking on an unbound scope, derive a file list from
+ * the working tree (`git diff --name-only HEAD`, falling back to `--cached
+ * HEAD`) and autofill a `## Files to Review` section via `updatedInput`.
+ * Only falls through to the hard block when the tree is genuinely clean —
+ * that remaining case is the real turn-cap protection this gate exists for.
+ * Emits `reviewer_scope_autofilled` on success.
+ *
  * Contract:
- *   - exit 2 when scope is unbound (hard block, default-on)
- *   - exit 0 when scope is bounded or kill switch is active
+ *   - exit 0 + updatedInput when scope is unbound but files can be derived
+ *     from git (autofill)
+ *   - exit 2 when scope is unbound and no files can be derived (clean tree)
+ *   - exit 0 when scope is already bounded or kill switch is active
  *   - fail-open on any internal error
  */
 
 const fs = require('fs');
 const path = require('path');
+const cp = require('child_process');
 const { resolveSafeCwd } = require('./_lib/resolve-project-cwd');
 const { writeEvent } = require('./_lib/audit-event-writer');
 const { MAX_INPUT_BYTES } = require('./_lib/constants');
 const { recordDegradation } = require('./_lib/degraded-journal');
 const { readHookInputRaw } = require('./_lib/hook-stdin');
+
+// v2.3.31 W8B: cap on the number of derived file paths injected into
+// `## Files to Review` — bounds prompt growth for very large diffs.
+const MAX_DERIVED_FILES = 40;
+
+/**
+ * Run `git diff --name-only [args]` in `cwd`. Fails safe: any error (git
+ * missing, not a repo, timeout) is treated as "empty" so the caller falls
+ * through to the next precedence tier.
+ *
+ * @param {string} cwd
+ * @param {string[]} args - extra args appended after `diff --name-only`
+ * @returns {string[]}
+ */
+function tryGitNameOnly(cwd, args) {
+  try {
+    const r = cp.spawnSync('git', ['diff', '--name-only'].concat(args), {
+      cwd,
+      encoding: 'utf8',
+      timeout: 5000,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    if (r.error || r.status !== 0 || typeof r.stdout !== 'string') return [];
+    return r.stdout.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+  } catch (_e) {
+    return [];
+  }
+}
+
+/**
+ * Derive a `## Files to Review` list from the working tree, in precedence
+ * order: unstaged diff against HEAD, then staged diff against HEAD.
+ * Returns an empty array when the tree is clean (or git is unavailable).
+ *
+ * @param {string} cwd
+ * @returns {{ files: string[], truncated: boolean, source: string }}
+ */
+function deriveFilesFromGit(cwd) {
+  let files = tryGitNameOnly(cwd, ['HEAD']);
+  let source = 'git_diff_head';
+  if (files.length === 0) {
+    files = tryGitNameOnly(cwd, ['--cached', 'HEAD']);
+    source = 'git_diff_cached_head';
+  }
+  if (files.length === 0) {
+    return { files: [], truncated: false, source: 'empty' };
+  }
+  const truncated = files.length > MAX_DERIVED_FILES;
+  return { files: files.slice(0, MAX_DERIVED_FILES), truncated, source };
+}
+
+/**
+ * Build the `## Files to Review` block to append to a reviewer prompt.
+ *
+ * @param {string[]} files
+ * @param {boolean} truncated
+ * @returns {string}
+ */
+function buildFilesToReviewBlock(files, truncated) {
+  const bulletList = files.map((f) => '- `' + f + '`').join('\n');
+  const truncNote = truncated
+    ? '\n\n_(list capped at ' + MAX_DERIVED_FILES + ' paths; additional changed files were truncated)_'
+    : '';
+  return '\n\n## Files to Review\n\n' + bulletList + truncNote;
+}
 
 // Heuristics for detecting an explicit file list in the prompt body.
 // Any one of these signals is sufficient to treat the scope as bounded.
@@ -176,6 +251,40 @@ function main() {
     }
 
     if (!evaluation.scoped) {
+      // v2.3.31 W8B: derive a file list from the working tree instead of
+      // blocking outright — the injector pattern (bin/inject-review-dimensions.js)
+      // is dead for this exact reason (sibling PreToolUse hooks can't share
+      // updatedInput), so autofill happens HERE, in the validator that gates
+      // the spawn. Only genuinely falls through to the hard block below when
+      // the tree is clean (nothing to scope to) — that is the real turn-cap
+      // protection this gate exists for.
+      const derived = deriveFilesFromGit(cwd);
+      if (derived.files.length > 0) {
+        emitAuditEvent(cwd, {
+          timestamp: new Date().toISOString(),
+          type: 'reviewer_scope_autofilled',
+          hook: 'validate-reviewer-scope',
+          spawn_target: event.tool_input && event.tool_input.subagent_type || 'reviewer',
+          path_count: derived.files.length,
+          truncated: derived.truncated,
+          source: derived.source,
+          session_id: event.session_id || null,
+        });
+        const block = buildFilesToReviewBlock(derived.files, derived.truncated);
+        const newToolInput = Object.assign({}, event.tool_input, {
+          prompt: promptBody + block,
+        });
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'allow',
+            updatedInput: newToolInput,
+          },
+          continue: true,
+        }));
+        process.exit(0);
+      }
+
       // v2.2.9 B-2.3: hard-reject unless kill switch is active.
       const hardDisabled = process.env.ORCHESTRAY_REVIEWER_SCOPE_HARD_DISABLED === '1';
 
@@ -223,6 +332,10 @@ module.exports = {
   shouldValidate,
   FILE_MARKERS,
   BULLET_PATH_THRESHOLD,
+  deriveFilesFromGit,
+  buildFilesToReviewBlock,
+  tryGitNameOnly,
+  MAX_DERIVED_FILES,
 };
 
 if (require.main === module) {

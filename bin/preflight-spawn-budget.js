@@ -395,28 +395,37 @@ setImmediate(() => {
       let orchId = 'unknown';
       try {
         const orchFile = path.join(cwd, '.orchestray', 'audit', 'current-orchestration.json');
-        try {
-          const orchRaw = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
-          orchId = orchRaw.orchestration_id || 'unknown';
-        } catch (_e) { /* fail-open */ }
-
-        // Warn event always fires (telemetry trail) — hint was absent from the spawn.
-        writeEvent({
-          event_type:     'context_size_hint_missing',
-          version:        1,
-          orchestration_id: orchId,
-          subagent_type:  role,
-          task_id:        toolInput.task_id || null,
-        }, { cwd });
-      } catch (_e) {
-        // Audit emit failure never blocks the spawn
-      }
+        const orchRaw = JSON.parse(fs.readFileSync(orchFile, 'utf8'));
+        orchId = orchRaw.orchestration_id || 'unknown';
+      } catch (_e) { /* fail-open */ }
 
       const promptText       = typeof toolInput.prompt === 'string' ? toolInput.prompt : '';
       const promptUnreadable = promptText.trim().length === 0;
       const strictModeOn     = isComputeFallbackDisabled(cwd);
 
+      // W5 (v2.3.31): `context_size_hint_missing` used to fire unconditionally
+      // here, even on the path below where the compute-fallback succeeds and
+      // the spawn proceeds without incident. That made "missing" indistinguishable
+      // from "handled automatically" — exactly the confusion the W5 acceptance
+      // criterion targets ("zero context_size_hint_missing... because the field
+      // was filled mechanically", not because nobody looked). Now it fires ONLY
+      // on the two paths that still require a human decision (nothing to compute
+      // from, or the operator opted back into strict enforcement). The success
+      // path below emits `context_size_hint_computed` instead, which is the
+      // correct "handled" signal and already existed.
       if (promptUnreadable || strictModeOn) {
+        try {
+          writeEvent({
+            event_type:     'context_size_hint_missing',
+            version:        1,
+            orchestration_id: orchId,
+            subagent_type:  role,
+            task_id:        toolInput.task_id || null,
+          }, { cwd });
+        } catch (_e) {
+          // Audit emit failure never blocks the spawn
+        }
+
         // Nothing to compute from (or the operator opted back into strict
         // enforcement) — the ONLY remaining block path (was: any missing hint).
         try {

@@ -14,6 +14,14 @@
  * now computes a fallback and PROCEEDS (exit 0); only a genuinely unreadable
  * prompt (or the ORCHESTRAY_CONTEXT_SIZE_HINT_COMPUTE_DISABLED=1 escape hatch)
  * still hard-blocks.
+ *
+ * v2.3.31 W5 UPDATE: `context_size_hint_missing` no longer fires on the
+ * successful-compute path (Tests 2, 3, 6 below) — it used to fire
+ * unconditionally, which made "missing" indistinguishable from "handled
+ * automatically" and directly contradicted the W5 acceptance criterion (a
+ * full wave should show ZERO `context_size_hint_missing` when the field was
+ * filled mechanically). It still fires on the two genuine-block paths (Tests
+ * 4, 5) where a human decision is actually required.
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
@@ -134,7 +142,7 @@ describe('v2.2.11 W2-8 / v2.3.18 W3 Q1 — context_size_hint compute-and-warn (n
     const missing  = events.filter(e => e.event_type === 'context_size_hint_missing');
     const computed = events.filter(e => e.event_type === 'context_size_hint_computed');
     const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
-    assert.equal(missing.length,  1, 'exactly 1 context_size_hint_missing event (telemetry trail)');
+    assert.equal(missing.length,  0, 'no context_size_hint_missing on the successful-compute path (W5)');
     assert.equal(computed.length, 1, 'exactly 1 context_size_hint_computed event');
     assert.equal(required.length, 0, 'no context_size_hint_required_failed event — spawn was not blocked');
     assert.ok(computed[0].handoff > 0, 'computed handoff size must be derived from the prompt body');
@@ -153,7 +161,7 @@ describe('v2.2.11 W2-8 / v2.3.18 W3 Q1 — context_size_hint compute-and-warn (n
     const events = readEvents(tmpRoot);
     const missing  = events.filter(e => e.event_type === 'context_size_hint_missing');
     const computed = events.filter(e => e.event_type === 'context_size_hint_computed');
-    assert.equal(missing.length,  1, 'exactly 1 context_size_hint_missing event');
+    assert.equal(missing.length,  0, 'no context_size_hint_missing on the successful-compute path (W5)');
     assert.equal(computed.length, 1, 'exactly 1 context_size_hint_computed event');
     assert.equal(computed[0].subagent_type, 'architect');
   });

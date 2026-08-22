@@ -6346,8 +6346,18 @@ R-EVENT-NAMING. Source: PM via `ox events append`.
 
 ### `review_dimension_scoping_applied` event
 
-Emitted by `bin/inject-review-dimensions.js` (v2.2.19 R-RV-DIMS) on every
-reviewer `Agent()` spawn. Documents whether the `## Dimensions to Apply` block
+**Retired (v2.3.31 W8B).** `bin/inject-review-dimensions.js` — the emitter of
+this event — is now a documented no-op and is unwired from `hooks/hooks.json`:
+it ran as a sibling `PreToolUse:Agent` hook and its `updatedInput` was never
+observed by `validate-reviewer-dimensions.js`, the hook that actually gates
+reviewer spawns, so it was dead code for its stated purpose. This event is no
+longer emitted by any live code path. Historical rows from before v2.3.31
+remain valid under this schema; the live replacement is
+`reviewer_dimensions_autofilled`, emitted by `validate-reviewer-dimensions.js`
+itself. The retired `ORCHESTRAY_DISABLE_REVIEW_DIMS_HOOK` kill switch named below is no longer read by any code.
+
+Was emitted by `bin/inject-review-dimensions.js` (v2.2.19 R-RV-DIMS) on every
+reviewer `Agent()` spawn. Documented whether the `## Dimensions to Apply` block
 was injected, idempotently skipped (PM already authored it), or suppressed by
 a kill switch. Modeled byte-for-byte on `output_shape_applied` so analytics
 can group both behind a single "applied-lever" view.
@@ -6409,9 +6419,9 @@ Cross-references: `bin/inject-review-dimensions.js` (emit source);
 `bin/_lib/classify-review-dimensions.js` (classifier); design doc
 `.orchestray/kb/decisions/v2219-rv-dims-wiring.md`.
 
-Schema stability: additive-only. Absence of this event on reviewer spawns when
-the master kill switch (`ORCHESTRAY_DISABLE_REVIEW_DIMS_HOOK=1`) fires — that
-is the only case where no event is emitted.
+Schema stability: additive-only (historical). The master kill switch
+`ORCHESTRAY_DISABLE_REVIEW_DIMS_HOOK=1` was retired along with the emitter in
+v2.3.31 and no longer does anything — no code reads it.
 
 ---
 
@@ -8256,6 +8266,39 @@ Field notes:
 - `violation_type` is always `wt_destructive_git` for this event.
 - `is_main_checkout`: `true` when blocked because target is the shared main checkout; `true` also for read-only roles (always blocked regardless of checkout).
 - `target_repo`: the resolved effective directory for the git command (`git -C <dir>` or `event.cwd`).
+
+---
+
+### `team_lead_git_exemption_applied` event
+
+Emitted by `bin/gate-developer-git.js` (PreToolUse:Bash) when a team-lead role
+(currently: `pm`) is exempted from `wt_destructive_git`'s
+`alsoBlockWhenMainCheckout` extension and the destructive working-tree command
+is allowed through (v2.3.31 W8A). Never silent — this event fires on every
+applied exemption before the command runs.
+Kill switch: `ORCHESTRAY_TEAM_LEAD_GIT_EXEMPTION_DISABLED=1` (disables the
+exemption entirely; the command is blocked instead and `git_destructive_blocked`
+fires as before). Also subsumed by `ORCHESTRAY_GIT_GATE_DISABLED=1`.
+
+```json
+{
+  "version": 1,
+  "type": "team_lead_git_exemption_applied",
+  "timestamp": "<ISO-8601>",
+  "hook": "gate-developer-git",
+  "agent_role": "pm",
+  "git_subcommand": "stash | clean | restore | checkout | reset | worktree",
+  "command_excerpt": "<first 160 chars of the bash command>",
+  "is_main_checkout": true,
+  "exemption_source": "default | config",
+  "session_id": "<session-id|null>"
+}
+```
+
+Field notes:
+- `git_subcommand`: the destructive verb extracted from the matched segment via `extractGitSubcommand()`.
+- `exemption_source`: `"config"` when an explicit `team_lead.git_exemption_enabled: true` opt-in is present in `.orchestray/config.json`; `"default"` otherwise (the ships-default-on behaviour).
+- See `bin/_lib/team-lead-roles.js` for the role/config resolution logic.
 
 ### `spawn_approved_drainer_injected` event
 
@@ -10548,6 +10591,79 @@ Field notes: same as `reviewer_dimensions_gate_blocked`, except
 Emitted from: `bin/validate-reviewer-dimensions.js`.
 
 Kill switch: not applicable (this event IS the kill-switch-active telemetry).
+
+---
+
+### `reviewer_dimensions_autofilled` event
+
+Emitted by `bin/validate-reviewer-dimensions.js` (v2.3.31 W8B) when a
+reviewer prompt lacks a `## Dimensions to Apply` block and the validator
+computes and appends one itself (via `classifyReviewDimensions()`), rather
+than blocking the spawn. Supersedes `bin/inject-review-dimensions.js`, which
+was dead code: it emitted `updatedInput` as a sibling PreToolUse:Agent hook,
+which does not propagate to `validate-reviewer-dimensions.js`.
+
+```json
+{
+  "type": "reviewer_dimensions_autofilled",
+  "version": 1,
+  "schema_version": 1,
+  "spawn_id": "subagent-def456",
+  "reason": "missing_heading",
+  "dimensions": ["code-quality", "operability", "api-compat"],
+  "rationale": "security-sensitive path: bin/validate-task-completion.js",
+  "source": "validator_autofill"
+}
+```
+
+Field notes:
+- `dimensions`: `"all"` or a subset array from `classifyReviewDimensions()`;
+  never contains `"correctness"` or `"security"` (always-on, live in the
+  reviewer's core prompt).
+- `rationale`: classifier rationale string, ≤120 chars.
+- `source`: always `"validator_autofill"` — distinguishes this from the
+  retired injector's `review_dimension_scoping_applied` event.
+
+Emitted from: `bin/validate-reviewer-dimensions.js`.
+
+Kill switch: `review_dimension_scoping.enabled: false` (config) or
+`ORCHESTRAY_DISABLE_REVIEWER_SCOPING=1` (env) forces `dimensions: "all"` but
+autofill still runs (the block is still appended).
+
+---
+
+### `reviewer_scope_autofilled` event
+
+Emitted by `bin/validate-reviewer-scope.js` (v2.3.31 W8B) when a reviewer
+prompt lacks an explicit file list and the validator derives one from the
+working tree (`git diff --name-only HEAD`, falling back to `--cached HEAD`)
+and appends a `## Files to Review` section, rather than blocking the spawn.
+
+```json
+{
+  "timestamp": "2026-08-22T00:00:00.000Z",
+  "type": "reviewer_scope_autofilled",
+  "hook": "validate-reviewer-scope",
+  "spawn_target": "reviewer",
+  "path_count": 12,
+  "truncated": false,
+  "source": "git_diff_head",
+  "session_id": null
+}
+```
+
+Field notes:
+- `path_count`: number of paths actually injected (capped at 40).
+- `truncated`: `true` when more than 40 changed paths existed and the list
+  was capped.
+- `source`: `"git_diff_head"` or `"git_diff_cached_head"` depending on which
+  precedence tier produced a non-empty result.
+
+Emitted from: `bin/validate-reviewer-scope.js`.
+
+Kill switch: none dedicated — when git produces zero paths (clean tree) the
+validator falls through to the pre-existing `reviewer_scope_blocked` /
+`reviewer_scope_warn` block behaviour.
 
 ---
 
@@ -13730,3 +13846,219 @@ invisible even to internal audit tooling. It now emits `pattern_extraction_skipp
   `already_extracted` (a fresh candidate already carries the `.extracted` marker).
 - `source`: `"stop_hook_scan"` — distinguishes this emit site from the per-proposal skips
   in `post-orchestration-extract.js`, which do not set `source`.
+
+---
+
+## Section 64: Unresolved Blocked-Call Events (v2.3.31 W1)
+
+Emitted by `bin/validate-unresolved-block.js`, a `SubagentStop` + `Stop` hook that detects
+when a `PreToolUse` gate blocked a tool call and the turn ended with **no retry and no
+acknowledgement**. Grep anchor: `v2331-unresolved-block`.
+
+**Why this exists.** Measured in one PM session: **22** `toolDenialKind: "permission-rule"`
+denials, **16** turns ended immediately by `hook_stopped_continuation`, and **15 of those 16
+were resumed by a human typing "check" or "status?"**. The agent self-recovered once.
+`hook_stopped_continuation` can deny the model the very turn it would need to acknowledge a
+block — so silence after a block does not distinguish "was cut off" from "ignored it". The
+hook gives that turn back.
+
+**Detection:** `is_error: true` AND `toolDenialKind: "permission-rule"` on the user-role
+message carrying the `tool_result`, additionally scoped to Orchestray's own gates by
+matching `PreToolUse:<Tool> hook error: [node "<...bin/*.js>"]`. The `toolDenialKind` marker
+is NOT Orchestray-specific — Claude Code's own denials carry it too — hence the second filter.
+
+**Resolution scanning stops at the first human-origin turn.** A human re-prompt is NOT
+counted as the agent resolving the block; that is the failure being fixed.
+
+### `unresolved_block_nudge` event
+
+Emitted when the hook exits 2 to force one additional turn.
+
+```json
+{
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "unresolved_block_nudge",
+  "hook": "validate-unresolved-block",
+  "orchestration_id": "<orch id or null>",
+  "hook_event": "SubagentStop",
+  "session_id": "<session id or null>",
+  "agent_id": "<agent id or null>",
+  "agent_type": "developer",
+  "gate_tool": "Bash",
+  "gate_script": "gate-developer-git.js",
+  "block_id": "<stable id for this block>"
+}
+```
+
+### `unresolved_block_resolved` event
+
+Emitted when a block WAS addressed by the agent itself.
+
+```json
+{
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "unresolved_block_resolved",
+  "hook": "validate-unresolved-block",
+  "orchestration_id": "<orch id or null>",
+  "hook_event": "Stop",
+  "session_id": "<session id or null>",
+  "agent_id": "<agent id or null>",
+  "agent_type": "developer",
+  "gate_tool": "Bash",
+  "gate_script": "gate-developer-git.js",
+  "block_id": "<stable id for this block>",
+  "resolution_type": "acknowledgement"
+}
+```
+
+Field notes:
+- `resolution_type`: `"retry"` (a subsequent `tool_use` appeared) or `"acknowledgement"`
+  (an assistant text block referenced the block).
+- Resolution scanning stops at the first human-origin turn, so a human re-prompt never
+  produces this event.
+
+### `unresolved_block_final` event
+
+Emitted when the hook declines to nudge and lets Stop proceed.
+
+```json
+{
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "unresolved_block_final",
+  "hook": "validate-unresolved-block",
+  "orchestration_id": "<orch id or null>",
+  "hook_event": "Stop",
+  "session_id": "<session id or null>",
+  "agent_id": "<agent id or null>",
+  "agent_type": "developer",
+  "gate_tool": "Bash",
+  "gate_script": "gate-developer-git.js",
+  "block_id": "<stable id for this block>",
+  "reason": "already_prompted"
+}
+```
+
+Field notes:
+- `reason`: `"stop_hook_active_no_resolution"` (this Stop is already the result of a prior
+  forced continuation) or `"already_prompted"` (this `block_id` was nudged before).
+- This event is the durable record of a block that was never addressed — the audit trail
+  that previously did not exist at all.
+
+**Loop safety, two independent guards.** The hook never exits 2 when the incoming payload
+carries `stop_hook_active: true`, AND a per-`block_id` state file
+(`.orchestray/state/unresolved-block-nudges.json`, trimmed to the 300 most recent entries)
+prevents a second nudge for the same block. Either alone prevents a hang; together the hook
+fires **at most once per block**, then records `unresolved_block_final` and gets out of the
+way.
+
+**The acknowledgement escape is mandatory.** The refusal message states that retrying,
+trying an alternative, OR stating plainly that the action could not be done are all
+acceptable — *"silence is not"*. A guard that only accepted a successful retry would train
+agents to fabricate workarounds, and an invented workaround is worse than an honest limit.
+
+**Kill switch:** `ORCHESTRAY_UNRESOLVED_BLOCK_GATE_DISABLED=1`, or
+`unresolved_block_gate.enabled: false` in `.orchestray/config.json`. Default on; both named
+in the refusal message.
+
+## Section 65: Previously-Undeclared Gate and Cache Events (v2.3.31 W8)
+
+Five event types were emitting from live, wired hooks with no schema declaration. Each was
+verified present in code before documenting here — the emitter file and line are named per
+event. Grep anchor: `v2331-schema-backfill`.
+
+**Why this matters.** `bin/audit-promised-events.js` (FN-34) reconciles declared schemas
+against live emissions. An event that emits without a declaration is invisible to that
+reconciliation, so drift in its payload cannot be detected.
+
+### `pause_sentinel_spawn_blocked` event
+
+Emitted by `bin/check-pause-sentinel.js` (two call sites) when an `Agent()` spawn is
+refused because a pause or cancel sentinel is present. `sentinel_type` distinguishes the
+two; `rule_id` is `cancel_sentinel_active` or `pause_sentinel_active` respectively. The
+cancel path is only reached after the grace window has elapsed.
+
+```json
+{
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "pause_sentinel_spawn_blocked",
+  "hook": "check-pause-sentinel",
+  "sentinel_type": "pause",
+  "orchestration_id": "<orch id or 'unknown'>",
+  "rule_id": "pause_sentinel_active",
+  "session_id": "<session id or null>",
+  "description": "Agent() spawn blocked — pause sentinel present"
+}
+```
+
+### `release_completeness_blocked` event
+
+Emitted by `bin/release-manager/gate-release-completeness.js` when a release commit is
+refused as incomplete. `failures` carries one string per unmet requirement. This gate is
+role-independent: it fires for any actor, including the PM, because it protects release
+completeness rather than enforcing a permission boundary.
+
+```json
+{
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "release_completeness_blocked",
+  "hook": "gate-release-completeness",
+  "version": "<version string being released>",
+  "rule_id": "release_completeness_failed",
+  "failures": ["<unmet requirement>"],
+  "session_id": "<session id or null>"
+}
+```
+
+### `context_size_hint_gate_computed` event
+
+Emitted by `bin/validate-context-size-hint.js` on its **successful** compute-fallback path:
+the spawn omitted `context_size_hint`, so the gate derived one from the prompt and allowed
+the spawn. This is a success signal, not a failure signal — counting it as "hint missing"
+overstates the block rate, an error made during v2.3.31 W5 triage.
+
+```json
+{
+  "version": 1,
+  "schema_version": 1,
+  "type": "context_size_hint_gate_computed",
+  "subagent_type": "developer",
+  "system": 0,
+  "tier2": 0,
+  "handoff": 0
+}
+```
+
+### `cache_sentinel_expired` event
+
+Emitted by `bin/validate-cache-invariant.js` when a stale cache-disable sentinel is removed
+and `block_a_zone_caching` is re-enabled. `previous_body` is truncated to 256 characters.
+
+```json
+{
+  "version": 1,
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "cache_sentinel_expired",
+  "orchestration_id": "<orch id or 'unknown'>",
+  "reason": "<staleness reason>",
+  "previous_body": "<first 256 chars of sentinel body, or null>",
+  "ttl_hours": 0
+}
+```
+
+### `cache_geometry_quarantined` event
+
+Emitted by `bin/validate-cache-invariant.js` when repeated geometry trips cross the
+configured threshold and caching is quarantined for `ttl_hours`.
+
+```json
+{
+  "version": 1,
+  "timestamp": "<ISO 8601 UTC>",
+  "type": "cache_geometry_quarantined",
+  "orchestration_id": "<orch id or 'unknown'>",
+  "trip_count": 0,
+  "threshold": 0,
+  "reason": "<trip reason>",
+  "ttl_hours": 0
+}
+```

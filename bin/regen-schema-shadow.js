@@ -22,10 +22,10 @@
  * file to appear modified in git status on every regen even when no event
  * schema changed. source_hash is sufficient to detect staleness.
  *
- * Output target: ≤ 18 KB. Script errors out if the shadow exceeds this limit.
+ * Output target: ≤ 20 KB. Script errors out if the shadow exceeds this limit.
  * (Raised from 8 KB to 12 KB in v2.2.9; 12 KB to 16 KB in v2.2.11; 16 KB to
- * 18 KB in v2.3.20 — each bump absorbs new legitimately-declared event
- * types. 18 KB still sits well under Linux PIPE_BUF (65536).)
+ * 18 KB in v2.3.20; 18 KB to 20 KB in v2.3.31 — each bump absorbs new legitimately-declared event
+ * types. 20 KB still sits well under Linux PIPE_BUF (65536).)
  *
  * Usage: node bin/regen-schema-shadow.js [--cwd <dir>]
  *
@@ -58,12 +58,10 @@ const _parser = require('./_lib/event-schemas-parser');
 // on the next UserPromptSubmit, avoiding a spurious violation → sentinel trip.
 const { invalidateZone1Hash } = require('./_lib/invalidate-block-a-zone1');
 
-const MAX_SHADOW_BYTES = 18432; // 18 KB hard ceiling — raised from 16384 (16 KB) in v2.3.20 (event-registry reconciliation added 6 legitimately-live declares)
-                                // because v2.2.12 is expected to add ≥4 new event types
-                                // (pushing shadow past the former 12 KB limit before the
-                                // release shipped). Previous raise was 8192→12288 in v2.2.9
-                                // to absorb the 23 new event types added by the mechanisation
-                                // release. Value stays well under Linux PIPE_BUF (65536).
+const MAX_SHADOW_BYTES = 20480; // 20 KB ceiling. Raise history: 8192→12288 (v2.2.9),
+                                // →16384 (v2.2.11), →18432 (v2.3.20), →20480 (v2.3.31).
+                                // Each raise absorbs new legitimately-declared event types.
+                                // Stays well under Linux PIPE_BUF (65536).
 
 // ---------------------------------------------------------------------------
 // Argument parsing
