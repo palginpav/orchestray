@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/orchestray.svg)](https://www.npmjs.com/package/orchestray)
 [![npm downloads](https://img.shields.io/npm/dw/orchestray.svg)](https://www.npmjs.com/package/orchestray)
-[![Socket Badge](https://badge.socket.dev/npm/package/orchestray/2.3.30)](https://socket.dev/npm/package/orchestray)
+[![Socket Badge](https://badge.socket.dev/npm/package/orchestray/2.3.31)](https://socket.dev/npm/package/orchestray)
 [![License](https://img.shields.io/npm/l/orchestray.svg)](https://github.com/palginpav/orchestray/blob/master/LICENSE)
 [![Node](https://img.shields.io/node/v/orchestray.svg)](https://nodejs.org)
 
@@ -182,6 +182,11 @@ same filesystem and network access as Orchestray itself.** Specifically:
 | **UX Critic** | Adversarial critique of user-facing surfaces for friction and consistency (read-only) |
 | **Platform Oracle** | Authoritative answers to Claude Code / Anthropic SDK / API / MCP questions with cited sources |
 
+"Read-only" above means the role does not modify the code it examines; it still writes its
+findings to the knowledge base. As of v2.3.31 that boundary is enforced rather than described:
+each of these roles is limited to the paths it is documented to write, and reviewer and debugger
+are checked against those paths when they finish.
+
 Five specialist templates also ship: translator, ui-ux-designer, database-migration, api-contract-designer, error-message-writer. The PM activates them automatically on matching keywords; project-local overrides go in `.orchestray/specialists/`.
 
 ## Custom agents (drop-in)
@@ -279,7 +284,7 @@ Kill switches: `oversized_input.enabled: false` in `.orchestray/config.json`, or
 
 ## Kill switches
 
-Orchestray ships ~110 feature-level kill switches (config keys + env vars) for emergency rollback or selective opt-out. The full reference lives in [`KILL_SWITCHES.md`](./KILL_SWITCHES.md), grouped into 10 categories (orchestration core, hooks & gates, reviewer, tokenwright, dossier, telemetry, MCP, install, lints, worktree). No session restart required for any of them.
+Orchestray ships ~114 feature-level kill switches (config keys + env vars) for emergency rollback or selective opt-out. The full reference lives in [`KILL_SWITCHES.md`](./KILL_SWITCHES.md), grouped into 10 categories (orchestration core, hooks & gates, reviewer, tokenwright, dossier, telemetry, MCP, install, lints, worktree). No session restart required for any of them.
 
 ## Requirements
 

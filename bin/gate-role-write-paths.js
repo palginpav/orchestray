@@ -34,6 +34,7 @@ const {
   compileGlob,
   isSubstrateDenied,
   RESTRICTED_WRITE_DENYLIST,
+  isWriteRestricted,
 } = require('./_lib/role-write-allowlists');
 
 // ---------------------------------------------------------------------------
@@ -287,7 +288,10 @@ function main() {
     }
 
     const role = resolveRole(event);
-    if (!role || !RESTRICTED_ROLES.has(role)) {
+    // v2.3.31 W9: isWriteRestricted() layers the per-widening kill switch
+    // (ORCHESTRAY_RESEARCH_TIER_WRITE_GATE_DISABLED) on top of RESTRICTED_ROLES
+    // membership — a plain RESTRICTED_ROLES.has(role) check would ignore it.
+    if (!role || !isWriteRestricted(role)) {
       // Not a gated role — pass through.
       process.stdout.write(JSON.stringify({ continue: true }));
       process.exit(0);

@@ -52,6 +52,9 @@ describe('v2.2.21 T8 — compiled allowlists are root-anchored', () => {
   });
 
   test('every restricted role has at least one compiled regex', () => {
+    // v2.3.31 W9: no deny-all carve-out. A restricted role with an empty
+    // allowlist silently fails every write shut, which is indistinguishable
+    // from a config typo — every gated role must name where it may write.
     const map = allowlists.__test__.COMPILED_ALLOWLISTS;
     for (const role of Object.keys(allowlists.ROLE_WRITE_ALLOWLISTS)) {
       assert.ok(Array.isArray(map[role]) && map[role].length > 0,

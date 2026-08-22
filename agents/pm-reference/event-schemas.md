@@ -1181,6 +1181,46 @@ Field notes:
 
 ---
 
+### `stop_allowlist_violation_blocked` event
+
+Emitted by `bin/validate-task-completion.js` (TaskCompleted/SubagentStop hook,
+v2.3.31 W9) when `reviewer` or `debugger` — the two axis-4
+`ALLOWLIST_VERIFIED_ROLES` in `bin/_lib/read-only-roles.js` — made a
+Write/Edit/MultiEdit call during the session whose target path falls outside
+`ROLE_WRITE_ALLOWLISTS[agent_role]` (re-used from
+`bin/_lib/role-write-allowlists.js`, never duplicated). Distinct check SHAPE
+from `scout_files_changed_blocked` above: that check expects ZERO writes;
+this one expects scoped writes and only blocks when a write lands outside the
+role's allowlist. This is a Stop-time backstop — the primary, real-time
+enforcement is `bin/gate-role-write-paths.js` (PreToolUse), which already
+gates `reviewer`/`debugger` via `RESTRICTED_ROLES`.
+Kill switch: `ORCHESTRAY_ALLOWLIST_VERIFIED_ROLES_DISABLED=1`.
+
+```json
+{
+  "version": 1,
+  "type": "stop_allowlist_violation_blocked",
+  "timestamp": "<ISO 8601>",
+  "orchestration_id": "<current orch id or 'unknown'>",
+  "hook": "validate-task-completion",
+  "agent_role": "reviewer",
+  "attempted_paths": ["bin/gate-developer-git.js"],
+  "allowlist": [".orchestray/kb/**", ".orchestray/kb/artifacts/**.md", ".orchestray/audit/**"],
+  "session_id": "<session uuid or null>"
+}
+```
+
+Field notes:
+- `agent_role`: one of `reviewer`, `debugger`.
+- `attempted_paths`: de-duplicated list of every out-of-allowlist Write/Edit/
+  MultiEdit target found in `event.tool_calls`, in transcript order.
+- `allowlist`: the role's `ROLE_WRITE_ALLOWLISTS` entry at emit time, for
+  operator debugging (mirrors the pattern already used by
+  `role_write_path_blocked`).
+- `hook`: always `validate-task-completion` for this event type.
+
+---
+
 ### `sentinel_probe` event
 
 Appended on every `runProbe` call from `bin/_lib/sentinel-probes.js` (P1.4,
@@ -8201,8 +8241,16 @@ Kill switch: `ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1`.
 ```
 
 Field notes:
-- Gated roles: `reviewer`, `tester`, `documenter`, `release-manager`, `debugger`.
+- Gated roles: `reviewer`, `tester`, `documenter`, `release-manager`, `debugger`,
+  and — v2.3.31 W9, operator-approved widening — `researcher`, `ux-critic`,
+  `platform-oracle`. `platform-oracle`'s allowlist is empty (all writes deny):
+  its agent definition documents no write target (`output_shape: none`).
 - `allowlist_matched` is always `false` when this event fires.
+- Kill switch (W9 widening only, restores pre-W9 unrestricted write for just
+  `researcher`/`ux-critic`/`platform-oracle`):
+  `ORCHESTRAY_RESEARCH_TIER_WRITE_GATE_DISABLED=1`. The pre-existing five
+  restricted roles are unaffected by this switch — use
+  `ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1` to disable the gate entirely.
 - `reason` (v2.2.21 T8, optional): one of
   - `traversal_segment_present` — relPath contains a `..` path component.
   - `absolute_path`              — original write target was absolute.
@@ -8242,9 +8290,17 @@ Field notes:
 
 Emitted by `bin/gate-developer-git.js` (PreToolUse:Bash) when a destructive
 working-tree git command is blocked (v2.3.8 wt_destructive_git).
-Fires for: read-only roles (reviewer, debugger, researcher, ux-critic, platform-oracle,
-project-intent) always; all roles when the target repo is the shared main checkout.
-Kill switch: `ORCHESTRAY_GIT_GATE_DISABLED=1`.
+Fires for: destructive-git-blocked roles (reviewer, debugger, researcher,
+ux-critic, platform-oracle, project-intent, and — v2.3.31 W9 — tester,
+documenter) always, regardless of cwd; all roles when the target repo is the
+shared main checkout. NOTE: this set is NOT "read-only" — tester and
+documenter still commit/push freely; only the 5 destructive working-tree
+verbs (`stash`, `clean`, `checkout --<files>`, `restore`, `reset --hard`) are
+blocked. See `bin/_lib/read-only-roles.js` module header for the axis
+breakdown.
+Kill switch: `ORCHESTRAY_GIT_GATE_DISABLED=1`. W9 widening only (tester,
+documenter — leaves the pre-existing six roles blocked):
+`ORCHESTRAY_TESTER_DOCUMENTER_GIT_BLOCK_DISABLED=1`.
 
 ```json
 {

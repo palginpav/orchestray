@@ -300,7 +300,11 @@ const READ_ONLY_AGENT_FORBIDDEN_TOOLS = {
 // v2.3.31 W6: membership sourced from the canonical axis module. The
 // per-role forbidden-tool MAP above stays local — it is a different shape
 // (tool lists, not membership) and is not part of the axis reconciliation.
-const { RUNTIME_TOOL_VERIFIED_ROLES: READ_ONLY_AGENTS } = require('./_lib/read-only-roles');
+const { RUNTIME_TOOL_VERIFIED_ROLES: READ_ONLY_AGENTS, isAllowlistVerified } = require('./_lib/read-only-roles');
+// v2.3.31 W9: axis-4 check (allowlist-scoped writes) reuses ROLE_WRITE_ALLOWLISTS
+// and the same path-matching logic as the PreToolUse gate — never duplicated.
+const { ROLE_WRITE_ALLOWLISTS } = require('./_lib/role-write-allowlists');
+const { isPathAllowed: isRoleWritePathAllowed, extractTargetPaths: extractWriteTargetPaths } = require('./gate-role-write-paths');
 
 // Patterns that indicate the agent returned a placeholder instead of a real path.
 const PLACEHOLDER_PATTERNS = [
@@ -931,6 +935,42 @@ function findForbiddenToolCalls(transcriptToolCalls, forbiddenSet) {
 }
 
 // ---------------------------------------------------------------------------
+// v2.3.31 W9 — axis-4 helper: allowlist-scoped write verification.
+// ---------------------------------------------------------------------------
+
+/**
+ * Walk the event's `tool_calls` array and return every Write/Edit/MultiEdit
+ * target path that falls OUTSIDE `role`'s ROLE_WRITE_ALLOWLISTS entry.
+ *
+ * Distinct shape from findForbiddenToolCalls(): that helper checks tool NAME
+ * membership (expects zero writes); this one checks tool ARGUMENT paths
+ * against an allowlist (expects scoped writes). Tolerant of the same
+ * {name}/{tool_name} shapes plus {tool_input}/{input}/{args} for the write
+ * target, matching the tolerance already established by
+ * gate-role-write-paths.js's extractTargetPaths().
+ *
+ * @param {Array} transcriptToolCalls
+ * @param {string} role
+ * @returns {string[]} out-of-allowlist paths, in transcript order (deduped)
+ */
+function findAllowlistViolations(transcriptToolCalls, role) {
+  const violations = [];
+  if (!Array.isArray(transcriptToolCalls)) return violations;
+  const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit']);
+  for (const tc of transcriptToolCalls) {
+    if (!tc || typeof tc !== 'object') continue;
+    const name = tc.name || tc.tool_name || '';
+    if (!WRITE_TOOLS.has(name)) continue;
+    const toolInput = tc.tool_input || tc.input || tc.args || {};
+    const paths = extractWriteTargetPaths(toolInput);
+    for (const p of paths) {
+      if (!isRoleWritePathAllowed(role, p)) violations.push(p);
+    }
+  }
+  return Array.from(new Set(violations));
+}
+
+// ---------------------------------------------------------------------------
 // Artifact body-size cap validation
 // ---------------------------------------------------------------------------
 
@@ -1332,6 +1372,38 @@ function main() {
       }
     }
 
+    // ── v2.3.31 W9 — axis-4: allowlist-scoped write verification for
+    // reviewer/debugger. Distinct check shape from the axis-3 block above:
+    // that block expects ZERO writes (haiku-scout etc.); this one expects
+    // writes, but every one must land inside ROLE_WRITE_ALLOWLISTS[role] (the
+    // same allowlist gate-role-write-paths.js already enforces at PreToolUse
+    // — this is a Stop-time backstop, not the primary enforcement).
+    // Kill switch: ORCHESTRAY_ALLOWLIST_VERIFIED_ROLES_DISABLED=1.
+    if (agentRole && isAllowlistVerified(agentRole)) {
+      const violations = findAllowlistViolations(event.tool_calls, agentRole);
+      if (violations.length > 0) {
+        emitAuditEvent(cwd, {
+          version: 1,
+          timestamp: new Date().toISOString(),
+          type: 'stop_allowlist_violation_blocked',
+          hook: 'validate-task-completion',
+          orchestration_id: resolveOrchestrationId(cwd),
+          agent_role: agentRole,
+          attempted_paths: violations,
+          allowlist: ROLE_WRITE_ALLOWLISTS[agentRole] || [],
+          session_id: event.session_id || null,
+        });
+        process.stderr.write(
+          '[orchestray] validate-task-completion: ' + agentRole +
+          ' wrote outside its allowlist: ' + violations.join(', ') + '. ' +
+          'Allowed: ' + JSON.stringify(ROLE_WRITE_ALLOWLISTS[agentRole] || []) + '.\n' +
+          'Kill switch: ORCHESTRAY_ALLOWLIST_VERIFIED_ROLES_DISABLED=1\n'
+        );
+        process.stdout.write(JSON.stringify({ continue: false, reason: 'stop_allowlist_violation:' + agentRole }) + '\n');
+        process.exit(2);
+      }
+    }
+
     if (agentRole && (HARD_TIER.has(agentRole) || WARN_TIER.has(agentRole))) {
       const check = validateStructuredResult(structuredResult, {
         enforcePatternAckFields: patternAckFieldsEnforced(cwd),
@@ -1650,6 +1722,8 @@ module.exports = {
   READ_ONLY_AGENTS,
   READ_ONLY_AGENT_FORBIDDEN_TOOLS,
   SCOUT_FORBIDDEN_TOOLS,
+  // v2.3.31 W9: axis-4 allowlist-scoped write verification
+  findAllowlistViolations,
   // body-size cap exports
   estimateTokens,
   checkArtifactBodySizes,

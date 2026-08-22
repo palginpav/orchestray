@@ -28,14 +28,18 @@
  * v2.3.8 wt_destructive_git: blocks git stash/clean/checkout-files/restore/reset
  * (except --soft) that could silently revert uncommitted work in the shared main
  * checkout (v2.3.7 silent-revert incident).
- *   - Read-only roles (reviewer, debugger, researcher, ux-critic, platform-oracle,
- *     project-intent): blocked ALWAYS regardless of cwd.
+ *   - Destructive-git-blocked roles (reviewer, debugger, researcher, ux-critic,
+ *     platform-oracle, project-intent, and — v2.3.31 W9 — tester, documenter):
+ *     blocked ALWAYS regardless of cwd. NOTE: this set is NOT "read-only" —
+ *     tester and documenter legitimately run `git commit`/`git push` for their
+ *     own W-items; only the 5 destructive working-tree verbs are blocked. See
+ *     bin/_lib/read-only-roles.js module header for the full axis breakdown.
  *   - All other roles: blocked when the effective target repo is the shared main
  *     checkout (detected via git-common-dir == git-dir).
  *   - Evasion via `git -C <path>` is covered by resolving the explicit path arg.
  *   - `git stash list` and `git stash show` remain allowed (non-destructive).
  *   - `git reset --soft` remains allowed.
- *   - Read-only roles fail CLOSED (exit 2) on parse uncertainty.
+ *   - Destructive-git-blocked roles fail CLOSED (exit 2) on parse uncertainty.
  *
  * v2.3.31 W8A: team-lead roles (currently: pm) acting as operator proxy are
  * exempt from wt_destructive_git's alsoBlockWhenMainCheckout extension — the
@@ -71,7 +75,7 @@ const { readHookInputRaw } = require('./_lib/hook-stdin');
 // v2.3.31 W6: sourced from the canonical axis module rather than an inline Set.
 // Three axes exist (git-destructive block / write-path restriction / runtime tool
 // verification) and are deliberately NOT merged — see bin/_lib/read-only-roles.js.
-const { GIT_DESTRUCTIVE_BLOCKED_ROLES: READ_ONLY_ROLES } = require('./_lib/read-only-roles');
+const { GIT_DESTRUCTIVE_BLOCKED_ROLES: READ_ONLY_ROLES, isGitDestructiveBlocked } = require('./_lib/read-only-roles');
 
 // v2.3.31 W8A: team-lead roles (currently: pm) are exempt from the
 // alsoBlockWhenMainCheckout extension of wt_destructive_git — see
@@ -250,6 +254,12 @@ const FORBIDDEN_PATTERNS = [
     // findForbiddenPattern() which special-cases this id.
     regex: /\bgit\b/,
     description: 'read-only agents must not mutate git state; use `git stash list` / `git show <sha>:<path>` for clean-baseline comparisons (v2.3.7 silent-revert incident)',
+    // v2.3.31 W9: tester and documenter are intentionally NOT added to this
+    // static list — it is unconditional (no kill-switch awareness). They are
+    // gated instead via ctx.isMain, which is derived from isGitDestructiveBlocked()
+    // (kill-switch aware) in main() below. Adding them here would make
+    // ORCHESTRAY_TESTER_DOCUMENTER_GIT_BLOCK_DISABLED=1 unable to restore
+    // their pre-W9 behaviour.
     roles: ['reviewer', 'debugger', 'researcher', 'ux-critic', 'platform-oracle', 'project-intent'],
     alsoBlockWhenMainCheckout: true,
   },
@@ -628,7 +638,9 @@ function findForbiddenPattern(command, role, ctx) {
         if (!subcommand) {
           // Unparseable git invocation (e.g. stdin-piped subcommand).
           // Read-only roles fail closed; others fail open.
-          const isRO = READ_ONLY_ROLES.has(targetRole);
+          // v2.3.31 W9: isGitDestructiveBlocked() layers the tester/documenter
+          // per-widening kill switch on top of Set membership.
+          const isRO = isGitDestructiveBlocked(targetRole);
           if (isRO || context.isMain) {
             return { id: pattern.id, description: pattern.description, matchedText: seg, matchIndex: command.indexOf(seg) };
           }
@@ -636,7 +648,7 @@ function findForbiddenPattern(command, role, ctx) {
         }
         // When --git-dir/GIT_DIR redirect is present, target is ambiguous → fail-closed
         // for read-only roles (same as unparseable).
-        if (gitDirRedirected && READ_ONLY_ROLES.has(targetRole)) {
+        if (gitDirRedirected && isGitDestructiveBlocked(targetRole)) {
           return { id: pattern.id, description: pattern.description, matchedText: seg, matchIndex: command.indexOf(seg) };
         }
         if (isWtDestructiveGit(seg)) {
@@ -780,7 +792,7 @@ function main() {
     }
 
     const role = resolveRole(event);
-    const isReadOnly = READ_ONLY_ROLES.has(role);
+    const isReadOnly = isGitDestructiveBlocked(role);
 
     // A0 (v2.3.10): the PM orchestrator is NEVER gated for non-destructive git.
     // It is also never one of the destructive-by-role read-only roles, and it

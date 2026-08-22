@@ -3,6 +3,34 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.31] - 2026-08-22
+
+**Orchestray 2.3.31 stops agents going quiet when something blocks them, and stops the orchestrator being locked out of the commands it needs to recover your workspace. Review tasks that used to fail because a section was missing from the request now fill it in themselves, and several rules that existed only as written guidance are now actually enforced.**
+
+### Added
+
+- **An agent that gets blocked now has to respond to it.** A blocked command could previously end an agent's turn outright, leaving it looking like it had simply decided to do nothing. Measured across one session: sixteen such stalls, fifteen of which only got moving again when a person typed "check". Agents now get that turn back and must retry, try another way, or say plainly that they could not do it.
+- **Roles that could write anywhere in your project are now limited to where they actually produce output.** Three roles had no restriction at all despite being blocked from other things.
+- **Roles with no reason to rewrite your working tree can no longer do so**, while still being able to commit their own work normally.
+- **Reviews are now checked against what the reviewer was actually allowed to change**, rather than trusting the description of the role.
+
+### Fixed
+
+- **The orchestrator is no longer locked out of workspace recovery.** It could not undo, discard, or clean anything in the main copy of your project — the one place it most needs to — while remaining free to run far more destructive things elsewhere. Every such use is now recorded, so removing the restriction did not remove the evidence.
+- **Review tasks no longer fail because a section was missing from the request.** A helper meant to add that section could never actually be seen by the check demanding it, so the check blocked whenever it had not been written by hand. Both missing pieces are now filled in automatically, and the helper that could never work has been removed.
+- **Spawning work no longer fails for omitting a size estimate** that can be worked out from the request itself.
+- **Failure messages now quote the part of the command that actually triggered a rule.** They previously showed a fixed-length excerpt that often cut off before the relevant part — three separate readers were misled by the same clipped message.
+- **Two checks that can block a release or pause your work now leave a record.** Neither left any trace before, so afterwards there was no way to tell whether a block had happened at all.
+- **Escape hatches are now named in the messages that mention them**, so turning off one specific check no longer means guessing and disabling something broader.
+- **Reports about your project no longer include noise from unrelated projects** sharing the same machine.
+- **"Read-only role" meant three different things in three different places.** A role could be restricted by one check and completely unrestricted by another, which made the behaviour impossible to predict. There is now one definition.
+- **Five kinds of internal record were being written without ever being declared**, which made changes to them undetectable.
+
+### Known Limitations
+
+- **One role can be granted permission to write files but has no documented place to write them.** It is now scoped to the same location as similar roles rather than being denied outright, so nothing fails unexpectedly, but the underlying inconsistency is real and is called out in the code.
+- **Multiple Orchestray instances sharing one machine share runtime state**, including the list of saved work-in-progress changes. An agent working in an isolated copy can therefore interact with entries it did not create.
+
 ## [2.3.30] - 2026-08-19
 
 **Orchestray 2.3.30 makes pattern sharing actually safe and moves lessons recorded in quick tasks where they can become patterns. A new tool finds features that are documented but cannot run, and a knowledge-base bookkeeping defect that silently dropped entries when multiple agents worked together has been fixed.**

@@ -68,6 +68,10 @@ Within each category, entries are sorted case-insensitive alphabetically by feat
 | Claim–Evidence Ledger (v2.3.18) — blocks unevidenced claims; replaces the tester-runs-tests, pattern-application, researcher-citations, platform-oracle-grounding and MCP-grounding gates | `claim_evidence_ledger.enabled: false` (or `block: false` for telemetry-only) | `ORCHESTRAY_CLAIM_EVIDENCE_DISABLED=1`; soft-warn: `ORCHESTRAY_CLAIM_EVIDENCE_RAMP_THRESHOLD=N` | default-on |
 | Per-role hard-tier handoff schema | — | `ORCHESTRAY_T15_<ROLE>_HARD_DISABLED=1` (per role: `DEVELOPER`, `RESEARCHER`, etc.) | default-on |
 | Per-role write-path gate | — | `ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1` | default-on |
+| PM team-lead git exemption (v2.3.31) — the PM may run the 5 destructive working-tree verbs in the shared main checkout; every use writes an audit event | `team_lead.git_exemption_enabled: false` | `ORCHESTRAY_TEAM_LEAD_GIT_EXEMPTION_DISABLED=1` | default-on |
+| Research-tier write allowlist (v2.3.31) — scopes `researcher` / `ux-critic` / `platform-oracle` writes to `.orchestray/kb/artifacts/`; these roles were previously unrestricted | — | `ORCHESTRAY_RESEARCH_TIER_WRITE_GATE_DISABLED=1` | default-on |
+| Tester/documenter destructive-git block (v2.3.31) — blocks the 5 destructive working-tree verbs for these two roles; `git commit` and `git push` are unaffected | — | `ORCHESTRAY_TESTER_DOCUMENTER_GIT_BLOCK_DISABLED=1` | default-on |
+| Allowlist-verified SubagentStop check (v2.3.31) — verifies `reviewer` / `debugger` writes stayed inside their write allowlist, a distinct check from the existing zero-writes assertion | — | `ORCHESTRAY_ALLOWLIST_VERIFIED_ROLES_DISABLED=1` | default-on |
 | Role write-path traversal guard (v2.2.21) | — | `ORCHESTRAY_ROLE_WRITE_TRAVERSAL_DISABLED=1` | default-on |
 | Schema-get self-call on shadow cache miss | — | `ORCHESTRAY_SCHEMA_GET_SELF_CALL_DISABLED=1` | default-on |
 | Schema-shadow safety net (event-type validation) | — | `ORCHESTRAY_DISABLE_SCHEMA_SHADOW=1` | default-on |
