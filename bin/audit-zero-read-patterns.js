@@ -127,20 +127,49 @@ try {
 /** @type {Array<{slug: string, read_count: number, catalog_calls_in_window: number}>} */
 const flagged = [];
 
+/**
+ * v2.3.33: a pattern below the catalog-mode escalation bar is one the PM is
+ * INSTRUCTED not to read (pm.md §2.4: escalate to pattern_read only when
+ * `confidence >= 0.6` AND `times_applied >= 1` AND the headline matches).
+ * Zero reads on those is correct behaviour, not a weak context_hook — flagging
+ * them tells a maintainer to reword hooks that are working as designed.
+ *
+ * Measured when this was fixed: 44 of 44 patterns were flagged, while exactly
+ * 6 met the bar and had exactly 6 pattern_read calls between them. The read
+ * path was working perfectly; the audit's premise did not account for the bar.
+ *
+ * @param {string} slug
+ * @returns {boolean} true if the PM is eligible to escalate to pattern_read
+ */
+function meetsEscalationBar(slug) {
+  try {
+    const head = fs.readFileSync(path.join(patternsDir, slug + '.md'), 'utf8').slice(0, 800);
+    const conf = /confidence:\s*([0-9.]+)/.exec(head);
+    const apps = /times_applied:\s*(\d+)/.exec(head);
+    if (!conf) return false;
+    return parseFloat(conf[1]) >= 0.6 && !!apps && parseInt(apps[1], 10) >= 1;
+  } catch (_e) {
+    return false; // unreadable frontmatter — not eligible, so not flaggable
+  }
+}
+
+/** @type {string[]} slugs skipped because reading them was never expected */
+const belowBar = [];
+
 for (const name of patternFiles) {
   const slug = name.slice(0, -3);
   const readCount = readCounts.get(slug) || 0;
-  // Flag: zero reads AND catalog_calls_in_window >= minReturns threshold.
-  // Since we don't track per-slug catalog return counts, we use the total
-  // catalog call count as a proxy: if there were >= minReturns catalog calls
-  // in the window and this slug was never read, flag it.
-  if (readCount === 0 && catalogCallCount >= minReturns) {
-    flagged.push({
-      slug,
-      read_count: 0,
-      catalog_calls_in_window: catalogCallCount,
-    });
-  }
+  if (readCount > 0) continue;
+  if (catalogCallCount < minReturns) continue;
+
+  // Below the escalation bar: zero reads is the designed outcome, not a signal.
+  if (!meetsEscalationBar(slug)) { belowBar.push(slug); continue; }
+
+  flagged.push({
+    slug,
+    read_count: 0,
+    catalog_calls_in_window: catalogCallCount,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +182,8 @@ const report = {
   catalog_calls_in_window: catalogCallCount,
   min_returns_threshold: minReturns,
   zero_read_patterns: flagged,
+  below_escalation_bar_count: belowBar.length,
+  below_escalation_bar: belowBar,
   total_patterns: patternFiles.length,
 };
 
