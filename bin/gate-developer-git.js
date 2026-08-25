@@ -50,6 +50,16 @@
  *   exemption; team-lead roles then behave exactly as before W8A (blocked in
  *   the shared main checkout).
  *
+ * v2.3.32 W1/W2/W3: wt_destructive_git's block message and the
+ * `git_destructive_blocked` audit event now say WHICH of the two trigger
+ * paths above fired (`via`/`blocked_via`: 'role' or 'main_checkout') and use
+ * a distinct, accurate description for each — the prior single description
+ * ("read-only agents must not mutate git state") was false for the
+ * alsoBlockWhenMainCheckout path when the role was not actually one of the
+ * destructive-git-blocked roles. The main_checkout message also names a
+ * concrete recovery path (`git show HEAD:<path>` + Write tool) instead of
+ * only comparison commands.
+ *
  * Kill switch: ORCHESTRAY_GIT_GATE_DISABLED=1 — disables all checks (subsumes
  * FN-46, FN-48, and the W8A team-lead exemption).
  *
@@ -253,7 +263,15 @@ const FORBIDDEN_PATTERNS = [
     // fallback stub; the actual check uses extractGitSubcommand() — see
     // findForbiddenPattern() which special-cases this id.
     regex: /\bgit\b/,
+    // v2.3.32 W1: this rule fires via two independent paths — role membership
+    // (READ_ONLY_ROLES below) or alsoBlockWhenMainCheckout (ANY role, shared
+    // main checkout). The two paths have genuinely different causes and need
+    // genuinely different messages; findForbiddenPattern() picks between them
+    // via `via` ('role' wins when both apply — it is the more specific reason)
+    // and the caller in main() selects on it. See descriptionMainCheckout for
+    // the v2.3.32 W2 concrete-recovery-path text.
     description: 'read-only agents must not mutate git state; use `git stash list` / `git show <sha>:<path>` for clean-baseline comparisons (v2.3.7 silent-revert incident)',
+    descriptionMainCheckout: 'destructive working-tree git (stash/clean/checkout --/restore/reset) is blocked for ALL roles in the shared main checkout — a peer agent\'s uncommitted work here would be destroyed and is unrecoverable (v2.3.7 silent-revert incident). This is NOT a read-only-role restriction. To restore a file you broke: run `git show HEAD:<path>` to read the last-committed content (read-only, always allowed), then write that content back with the Write tool — this restores the file without mutating git state or touching any other agent\'s uncommitted work',
     // v2.3.31 W9: tester and documenter are intentionally NOT added to this
     // static list — it is unconditional (no kill-switch awareness). They are
     // gated instead via ctx.isMain, which is derived from isGitDestructiveBlocked()
@@ -611,7 +629,7 @@ function hasGitCommandToken(seg) {
  * truncation cutoff and make a correct block look like a false positive
  * (v2.3.31 W2).
  *
- * @returns {{id: string, description: string, matchedText?: string, matchIndex?: number}|null}
+ * @returns {{id: string, description: string, via?: 'role'|'main_checkout', matchedText?: string, matchIndex?: number}|null}
  */
 function findForbiddenPattern(command, role, ctx) {
   if (typeof command !== 'string') return null;
@@ -630,6 +648,14 @@ function findForbiddenPattern(command, role, ctx) {
 
     // For wt_destructive_git, split chains and use the tokenizer (F2: option-evasion fix).
     if (pattern.id === 'wt_destructive_git') {
+      // v2.3.32 W1: `via` says which of the two independent paths fired this
+      // rule. Role membership is checked first (isGitDestructiveBlocked), so
+      // when a segment is unparseable/ambiguous and BOTH the role-based
+      // fail-closed check and the main-checkout fail-closed check would fire,
+      // 'role' wins — it is the more specific reason.
+      const isRO = isGitDestructiveBlocked(targetRole);
+      const via = isRO ? 'role' : 'main_checkout';
+      const desc = via === 'role' ? pattern.description : pattern.descriptionMainCheckout;
       const segments = splitChained(command);
       for (const seg of segments) {
         // Read-only roles: fail-closed on unparseable input (no 'git' or no subcommand after options).
@@ -640,19 +666,18 @@ function findForbiddenPattern(command, role, ctx) {
           // Read-only roles fail closed; others fail open.
           // v2.3.31 W9: isGitDestructiveBlocked() layers the tester/documenter
           // per-widening kill switch on top of Set membership.
-          const isRO = isGitDestructiveBlocked(targetRole);
           if (isRO || context.isMain) {
-            return { id: pattern.id, description: pattern.description, matchedText: seg, matchIndex: command.indexOf(seg) };
+            return { id: pattern.id, description: desc, via, matchedText: seg, matchIndex: command.indexOf(seg) };
           }
           continue;
         }
         // When --git-dir/GIT_DIR redirect is present, target is ambiguous → fail-closed
         // for read-only roles (same as unparseable).
-        if (gitDirRedirected && isGitDestructiveBlocked(targetRole)) {
-          return { id: pattern.id, description: pattern.description, matchedText: seg, matchIndex: command.indexOf(seg) };
+        if (gitDirRedirected && isRO) {
+          return { id: pattern.id, description: desc, via, matchedText: seg, matchIndex: command.indexOf(seg) };
         }
         if (isWtDestructiveGit(seg)) {
-          return { id: pattern.id, description: pattern.description, matchedText: seg, matchIndex: command.indexOf(seg) };
+          return { id: pattern.id, description: desc, via, matchedText: seg, matchIndex: command.indexOf(seg) };
         }
       }
     } else {
@@ -953,6 +978,10 @@ function main() {
       // path (which leaks the OS username via the home-dir prefix).
       target_repo: path.basename(targetDir),
       is_main_checkout: mainCheckout,
+      // v2.3.32 W3: which of wt_destructive_git's two independent trigger
+      // paths fired — see findForbiddenPattern()'s `via` field. Only
+      // meaningful for wt_destructive_git; other violation ids leave it null.
+      blocked_via: violation.via || null,
     });
 
     const matchFragment = extractMatchFragment(command, violation.matchedText, violation.matchIndex);

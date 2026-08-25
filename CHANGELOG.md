@@ -3,6 +3,23 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.32] - 2026-08-25
+
+**Orchestray 2.3.32 fixes a class of failure where an agent was stopped by a safety check, told the wrong reason, given no way to proceed, and quietly abandoned the job with your code half-edited. Blocks now explain what actually happened and how to recover.**
+
+### Fixed
+
+- **Agents no longer give up and leave your code broken when a safety check stops them.** An agent that had made a bad edit and tried to undo it was told it was a "read-only" agent that must not touch your project at all. That was the wrong reason — the real one is that undoing changes in a shared working copy can destroy another agent's unsaved work. Worse, the two suggestions offered were both ways to *compare* files, not restore one, so there was no way forward and the agent stopped. In one project 39 of 40 such stops named a reason that did not apply.
+- **A block now tells the agent how to actually recover.** When undoing a change is not permitted, the agent is shown a way to read the last saved version of the file and write it back — which fixes the file without endangering anyone else's work.
+- **Pausing or cancelling your work now explains itself.** Both already stopped new agents from starting, but the explanation was sent to a channel the agent never sees, so it was stopped with no reason given at all. The message now reaches it, including how to resume.
+- **Internal warnings no longer leak into the messages you see when something is blocked.** A diagnostic note about an unreadable internal file was appearing alongside — and in one case instead of — the actual explanation.
+- **Orchestray can now find its own internal reference data once installed.** It was looking in a folder that only exists when running from a source checkout, so an installed copy silently fell back to a reduced mode. This went unnoticed because the test suite runs from a source checkout, where the folder is present.
+
+### Known Limitations
+
+- **Checking recorded events against their definitions still does not run outside Orchestray's own repository.** Installed copies can now locate the definitions, but the check itself still looks for them relative to whichever project you are working in. Turning it on everywhere is a behaviour change with an unmeasured effect, so it is recorded for its own release rather than bundled into this one.
+- **A message about cancelled work names a folder with a duplicated prefix.** The code that writes the message and the code that reads it agree with each other, so nothing breaks, and no such folder has ever been created. Recorded rather than patched, because the naming does not match how other archived work is stored and the whole path deserves a proper look.
+
 ## [2.3.31] - 2026-08-22
 
 **Orchestray 2.3.31 stops agents going quiet when something blocks them, and stops the orchestrator being locked out of the commands it needs to recover your workspace. Review tasks that used to fail because a section was missing from the request now fill it in themselves, and several rules that existed only as written guidance are now actually enforced.**

@@ -301,6 +301,47 @@ describe('check-pause-sentinel.js', () => {
     const { dir } = makeProject();
     const r = runSentinelCheck(dir);
     assert.strictEqual(r.status, 0, 'exits 0 with no sentinels');
+    assert.ok(
+      !/paused:|cancelled:/.test(r.stderr),
+      'stderr is empty of block text when nothing blocks'
+    );
+  });
+
+  // W6 (v2.3.32): the block reason MUST land on stderr — Claude Code only
+  // surfaces stderr to the model on a PreToolUse block; stdout is the JSON
+  // control channel. A test that only checks the exit code would still pass
+  // with the bug (reason on stdout) present, which is how this survived.
+  test('pause sentinel: block reason is on stderr, names orch id and a resume instruction', () => {
+    const { dir } = makeProject({ orchId: 'orch-w6-stderr-test' });
+    run(PAUSE_SCRIPT, [dir]);
+
+    const r = runSentinelCheck(dir);
+    assert.strictEqual(r.status, 2);
+    assert.ok(r.stderr.includes('orch-w6-stderr-test'), 'stderr names the orchestration id');
+    assert.ok(
+      r.stderr.includes('/orchestray:state pause --resume') || r.stderr.includes('state-pause.js --resume'),
+      'stderr includes a concrete resume instruction'
+    );
+    assert.strictEqual(r.stdout, '', 'stdout carries no block text');
+  });
+
+  test('cancel sentinel: block reason is on stderr and explains the cancel state', () => {
+    const { dir, cancelPath } = makeProject({
+      orchId: 'orch-w6-cancel-stderr-test',
+      config: { state_sentinel: { cancel_grace_seconds: 0 } },
+    });
+    const oldTime = new Date(Date.now() - 10000).toISOString();
+    fs.writeFileSync(cancelPath, JSON.stringify({
+      orchestration_id: 'orch-w6-cancel-stderr-test',
+      reason: null,
+      requested_at: oldTime,
+    }));
+
+    const r = runSentinelCheck(dir);
+    assert.strictEqual(r.status, 2);
+    assert.ok(r.stderr.includes('orch-w6-cancel-stderr-test'), 'stderr names the orchestration id');
+    assert.ok(r.stderr.includes('Cancel sentinel present'), 'stderr explains the cancel state');
+    assert.strictEqual(r.stdout, '', 'stdout carries no block text');
   });
 
   test('exits 2 when pause.sentinel is present', () => {
@@ -309,8 +350,9 @@ describe('check-pause-sentinel.js', () => {
 
     const r = runSentinelCheck(dir);
     assert.strictEqual(r.status, 2, 'exits 2 on pause sentinel');
-    assert.ok(r.stdout.includes('paused:'), 'prints paused: <orch-id>');
-    assert.ok(r.stdout.includes('--resume'), 'includes resume instructions');
+    assert.ok(r.stderr.includes('paused:'), 'prints paused: <orch-id> on stderr');
+    assert.ok(r.stderr.includes('--resume'), 'includes resume instructions on stderr');
+    assert.strictEqual(r.stdout, '', 'stdout carries no block text');
   });
 
   test('exits 2 when cancel.sentinel is present and past grace window', () => {
@@ -328,7 +370,8 @@ describe('check-pause-sentinel.js', () => {
 
     const r = runSentinelCheck(dir);
     assert.strictEqual(r.status, 2, 'exits 2 on cancel sentinel past grace');
-    assert.ok(r.stdout.includes('cancelled:'), 'prints cancelled: <orch-id>');
+    assert.ok(r.stderr.includes('cancelled:'), 'prints cancelled: <orch-id> on stderr');
+    assert.strictEqual(r.stdout, '', 'stdout carries no block text');
   });
 
   test('exits 0 when cancel.sentinel is within grace window', () => {
@@ -345,6 +388,7 @@ describe('check-pause-sentinel.js', () => {
 
     const r = runSentinelCheck(dir);
     assert.strictEqual(r.status, 0, 'exits 0 within grace window');
+    assert.strictEqual(r.stderr, '', 'stderr is empty when the grace window allows the spawn');
   });
 
   test('cancel sentinel takes priority over pause sentinel (both present)', () => {
@@ -367,7 +411,7 @@ describe('check-pause-sentinel.js', () => {
 
     const r = runSentinelCheck(dir);
     assert.strictEqual(r.status, 2, 'cancel takes priority over pause (both exit 2)');
-    assert.ok(r.stdout.includes('cancelled:'));
+    assert.ok(r.stderr.includes('cancelled:'));
   });
 
   test('kill flag: pause_check_enabled=false → exits 0 even with sentinels', () => {

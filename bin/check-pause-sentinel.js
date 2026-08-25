@@ -31,7 +31,11 @@
  *
  * Input:  JSON on stdin (Claude Code PreToolUse hook payload) — not consumed,
  *         only stdin is drained to avoid EPIPE.
- * Output: block message to stdout (exit 2) or nothing (exit 0).
+ * Output: block message to stderr (exit 2) or nothing (exit 0). Claude Code
+ *         surfaces stderr to the model when a PreToolUse hook blocks a tool
+ *         call — stdout is reserved for the JSON control channel (matches
+ *         bin/gate-developer-git.js, bin/gate-role-write-paths.js,
+ *         bin/validate-reviewer-scope.js).
  *
  * Fail-open: any internal error → exit 0 (operators must never be hard-blocked
  * by a buggy sentinel script).
@@ -202,7 +206,7 @@ function main() {
         session_id: extractSessionId(),
         description: 'Agent() spawn blocked — cancel sentinel present',
       });
-      process.stdout.write(
+      process.stderr.write(
         'cancelled: ' + orchId + '\n' +
         '[orchestray] Cancel sentinel present — further Agent() spawns are blocked.\n' +
         'The PM will archive state to history/orch-' + orchId + '-cancelled/ at the next boundary.\n' +
@@ -227,7 +231,7 @@ function main() {
         session_id: extractSessionId(),
         description: 'Agent() spawn blocked — pause sentinel present' + reason,
       });
-      process.stdout.write(
+      process.stderr.write(
         'paused: ' + orchId + ' — use /orchestray:state pause --resume to continue\n' +
         '[orchestray] Pause sentinel present' + reason + ' — Agent() spawn blocked.\n' +
         'Resume with: node bin/state-pause.js --resume\n' +

@@ -774,17 +774,15 @@ function writeEvent(eventPayload, opts) {
   if (validation.valid && Array.isArray(validation.warnings) && validation.warnings.length > 0) {
     if (!_schemaWarnedThisProcess) {
       _schemaWarnedThisProcess = true;
-      try {
-        // Reason already states "validation skipped" — don't re-prefix it (was
-        // producing "schema unreadable — validation skipped: schema file
-        // unreadable — validation skipped").
-        process.stderr.write(
-          '[audit-event-writer] ' + validation.warnings.join('; ') + '\n'
-        );
-      } catch (_e) { /* ignore */ }
-      // Durable record: schema validation is silently off for this process's
-      // lifetime (e.g. running inside a non-Orchestray project). Reuse the
-      // existing degraded-journal mechanism rather than inventing a new one.
+      // W5 (v2.3.32): do NOT write this to process.stderr. On a blocked
+      // PreToolUse/hook call (exit code 2), Claude Code surfaces stderr
+      // verbatim to the model — this warning is diagnostic noise from the
+      // gate's own instrumentation, not part of the block reason, and was
+      // observed contaminating (in one case, replacing) the actual block
+      // message a user saw. Route it exclusively through the existing
+      // degraded-journal mechanism (a file, not a model-facing stream),
+      // which already gives operators a durable, once-per-invalidation
+      // record via `/orchestray:doctor` and similar tooling.
       recordDegradation({
         kind:     'event_schema_unreadable',
         severity: 'warn',

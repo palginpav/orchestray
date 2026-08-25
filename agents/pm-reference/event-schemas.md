@@ -8302,6 +8302,12 @@ Kill switch: `ORCHESTRAY_GIT_GATE_DISABLED=1`. W9 widening only (tester,
 documenter — leaves the pre-existing six roles blocked):
 `ORCHESTRAY_TESTER_DOCUMENTER_GIT_BLOCK_DISABLED=1`.
 
+v2.3.32 W3: `wt_destructive_git` fires via two independent paths — role
+membership (the destructive-git-blocked role set) or `alsoBlockWhenMainCheckout`
+(ANY role, shared main checkout). `blocked_via` records which path fired so
+this no longer requires forensic reconstruction from `agent_role`. `role` wins
+when both paths could apply.
+
 ```json
 {
   "version": 1,
@@ -8314,7 +8320,8 @@ documenter — leaves the pre-existing six roles blocked):
   "description": "<human-readable explanation>",
   "session_id": "<session-id|null>",
   "target_repo": "<resolved target directory>",
-  "is_main_checkout": true
+  "is_main_checkout": true,
+  "blocked_via": "role"
 }
 ```
 
@@ -8322,6 +8329,7 @@ Field notes:
 - `violation_type` is always `wt_destructive_git` for this event.
 - `is_main_checkout`: `true` when blocked because target is the shared main checkout; `true` also for read-only roles (always blocked regardless of checkout).
 - `target_repo`: the resolved effective directory for the git command (`git -C <dir>` or `event.cwd`).
+- `blocked_via` (v2.3.32 W3): `"role"` when the block fired because `agent_role` is on the destructive-git-blocked role set (message names the role as the cause), or `"main_checkout"` when it fired only because the target is the shared main checkout (message says the block applies to ALL roles there, not to `agent_role` specifically). `"role"` wins when both paths could apply.
 
 ---
 

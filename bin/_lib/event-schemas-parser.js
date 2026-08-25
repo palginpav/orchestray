@@ -45,9 +45,56 @@ const path   = require('path');
 // File-level mtime cache (W5, v2.2.18)
 // ---------------------------------------------------------------------------
 
-// Canonical path to the schema source file — relative to this module's
-// location: bin/_lib/ → ../../agents/pm-reference/event-schemas.md
-const SCHEMA_PATH = path.resolve(__dirname, '..', '..', 'agents', 'pm-reference', 'event-schemas.md');
+// Candidate paths to the schema source file, tried in order (W5, v2.3.32).
+//
+// Two on-disk layouts exist for this module, and which one is active cannot
+// be assumed at require-time:
+//   1. Source repo:     <repo>/bin/_lib/event-schemas-parser.js
+//                        → <repo>/agents/pm-reference/event-schemas.md
+//                        (two levels up from bin/_lib/, then agents/pm-reference/).
+//   2. Installed tree:   bin/install.js copies agents/** into
+//                        <targetDir>/agents/pm-reference/* (install() step 1)
+//                        and bin/_lib/** into
+//                        <targetDir>/orchestray/bin/_lib/* (install() step 3,
+//                        via the `dstLibDir` copy). __dirname is therefore
+//                        <targetDir>/orchestray/bin/_lib, so the schema file
+//                        lives THREE levels up (…/_lib → …/bin → …/orchestray
+//                        → <targetDir>), then agents/pm-reference/event-schemas.md.
+//
+// Before this fix SCHEMA_PATH only ever tried candidate (1). In an installed
+// tree that resolves to <targetDir>/orchestray/agents/pm-reference/…, which
+// never exists — schema validation silently no-oped on every hook invocation
+// outside the source repo. See the `event_schema_unreadable` degraded-journal
+// kind and the once-per-process stderr warning in audit-event-writer.js.
+//
+// Candidate (1) is tried first so source/test behaviour is byte-identical to
+// before this change.
+const SCHEMA_PATH_CANDIDATES = [
+  path.resolve(__dirname, '..', '..', 'agents', 'pm-reference', 'event-schemas.md'),
+  path.resolve(__dirname, '..', '..', '..', 'agents', 'pm-reference', 'event-schemas.md'),
+];
+
+/**
+ * First candidate that exists on disk, or the repo-layout candidate (index 0)
+ * if neither exists — giving callers a stable path to stat/read either way.
+ * Fail-open behaviour on a missing file is handled by callers (statSync/
+ * readFileSync throw ENOENT, which parseEventSchemasFromFile()'s caller
+ * catches — see schema-emit-validator.js getSchemas()).
+ */
+function _resolveSchemaPath() {
+  for (const candidate of SCHEMA_PATH_CANDIDATES) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return SCHEMA_PATH_CANDIDATES[0];
+}
+
+// Resolved once at require-time — a plain string, as existing callers
+// (schema-emit-validator.js, tests) read SCHEMA_PATH as a value, not a
+// function. This does not conflict with the mtime-aware cache below: that
+// cache invalidates on the *content* of the resolved file changing; the
+// candidate *search* only needs to run once per process because a process's
+// own install layout does not change during its lifetime.
+const SCHEMA_PATH = _resolveSchemaPath();
 
 let _fileCachedSchemas  = null;  // Array<EventSchema> | null
 let _fileCachedMtimeMs  = 0;     // mtimeMs of the file at last parse

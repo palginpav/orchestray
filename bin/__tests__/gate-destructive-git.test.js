@@ -553,3 +553,132 @@ describe('v239 F2 — option-evasion: isWtDestructiveGit', () => {
     assert.equal(isWtDestructiveGit('ls -la'), false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// v2.3.32 W1/W2/W3 — `via` selection, message accuracy, blocked_via audit field.
+//
+// Prior to this fix, wt_destructive_git always printed the role-based
+// "read-only agents must not mutate git state" description regardless of
+// which of its two independent trigger paths fired. A non-read-only role
+// blocked in the shared main checkout (alsoBlockWhenMainCheckout) saw a false
+// claim about its own role and no actionable recovery path.
+// ---------------------------------------------------------------------------
+
+describe('v2332 W1/W2 — findForbiddenPattern via selection (unit)', () => {
+  const { findForbiddenPattern } = mod;
+
+  test('unknown non-read-only role + main checkout → via=main_checkout, message is NOT the read-only text', () => {
+    const r = findForbiddenPattern('git checkout -- apps/x.h', 'envz38-fv', { isMain: true, isReadOnly: false });
+    assert.ok(r, 'must be blocked');
+    assert.equal(r.via, 'main_checkout');
+    assert.ok(!/read-only agents/i.test(r.description), 'main_checkout message must not claim the role is read-only');
+    assert.ok(/shared main checkout/i.test(r.description), 'main_checkout message must name the actual rule');
+    assert.ok(/git show HEAD:/.test(r.description), 'main_checkout message must give the concrete recovery command');
+    assert.ok(/Write tool/.test(r.description), 'main_checkout message must name the Write-tool follow-up');
+  });
+
+  test('reviewer (read-only role) → via=role, message keeps the read-only text', () => {
+    const r = findForbiddenPattern('git stash', 'reviewer', { isMain: false, isReadOnly: true });
+    assert.ok(r);
+    assert.equal(r.via, 'role');
+    assert.ok(/read-only agents/i.test(r.description));
+  });
+
+  test('reviewer in main checkout too → via=role wins over main_checkout', () => {
+    const r = findForbiddenPattern('git stash', 'reviewer', { isMain: true, isReadOnly: true });
+    assert.ok(r);
+    assert.equal(r.via, 'role', 'role must win when both paths could apply');
+    assert.ok(/read-only agents/i.test(r.description));
+  });
+
+  test('tester in main checkout → via=role (tester is on the destructive-git-blocked axis)', () => {
+    const r = findForbiddenPattern('git reset --hard', 'tester', { isMain: true, isReadOnly: true });
+    assert.ok(r);
+    assert.equal(r.via, 'role');
+  });
+});
+
+describe('v2332 W1/W2/W3 — integration: message + blocked_via via real hook', () => {
+  test('unknown role in main checkout: git checkout -- f → exit 2, message says main-checkout not read-only, blocked_via=main_checkout', () => {
+    const mainRepo = createGitRepo('w1a');
+    try {
+      const res = runHook(bashPayload('git checkout -- f', 'envz38-fv'), mainRepo);
+      assert.equal(res.status, 2, 'stderr=' + res.stderr.slice(0, 300));
+      assert.ok(!/read-only agents/i.test(res.stderr), 'must not claim the role is read-only. stderr=' + res.stderr);
+      assert.ok(/shared main checkout/i.test(res.stderr), 'must name the main-checkout rule. stderr=' + res.stderr);
+      assert.ok(/git show HEAD:/.test(res.stderr), 'must give the recovery command. stderr=' + res.stderr);
+      const events = readAuditEvents(mainRepo);
+      const ev = events.find(e => e.type === 'git_destructive_blocked');
+      assert.ok(ev, 'git_destructive_blocked event must be emitted');
+      assert.equal(ev.blocked_via, 'main_checkout');
+    } finally {
+      cleanup(mainRepo);
+    }
+  });
+
+  test('reviewer in linked worktree: git stash → exit 2, message says read-only, blocked_via=role', () => {
+    const mainRepo = createGitRepo('w1b');
+    let wtPath;
+    try {
+      wtPath = createLinkedWorktree(mainRepo);
+      const res = runHook(bashPayload('git stash', 'reviewer'), wtPath);
+      assert.equal(res.status, 2, 'stderr=' + res.stderr.slice(0, 300));
+      assert.ok(/read-only agents/i.test(res.stderr), 'stderr=' + res.stderr);
+      const events = readAuditEvents(wtPath);
+      const ev = events.find(e => e.type === 'git_destructive_blocked');
+      assert.ok(ev, 'git_destructive_blocked event must be emitted');
+      assert.equal(ev.blocked_via, 'role');
+    } finally {
+      cleanup(mainRepo, wtPath);
+    }
+  });
+
+  test('reviewer in main checkout: git stash → exit 2, via=role wins over main_checkout', () => {
+    const mainRepo = createGitRepo('w1c');
+    try {
+      const res = runHook(bashPayload('git stash', 'reviewer'), mainRepo);
+      assert.equal(res.status, 2, 'stderr=' + res.stderr.slice(0, 300));
+      assert.ok(/read-only agents/i.test(res.stderr), 'stderr=' + res.stderr);
+      const events = readAuditEvents(mainRepo);
+      const ev = events.find(e => e.type === 'git_destructive_blocked');
+      assert.ok(ev, 'git_destructive_blocked event must be emitted');
+      assert.equal(ev.blocked_via, 'role');
+    } finally {
+      cleanup(mainRepo);
+    }
+  });
+
+  test('pm in main checkout: git stash → exit 0 (team-lead exemption unchanged)', () => {
+    const mainRepo = createGitRepo('w1d');
+    try {
+      const res = runHook(bashPayload('git stash', 'pm'), mainRepo);
+      assert.equal(res.status, 0, 'pm must remain exempt. stderr=' + res.stderr.slice(0, 300));
+    } finally {
+      cleanup(mainRepo);
+    }
+  });
+
+  test('tester in main checkout: git reset --hard → exit 2', () => {
+    const mainRepo = createGitRepo('w1e');
+    try {
+      const res = runHook(bashPayload('git reset --hard', 'tester'), mainRepo);
+      assert.equal(res.status, 2, 'stderr=' + res.stderr.slice(0, 300));
+    } finally {
+      cleanup(mainRepo);
+    }
+  });
+
+  test('any role: git status → exit 0 (read-only verb always allowed)', () => {
+    const mainRepo = createGitRepo('w1f');
+    try {
+      const res1 = runHook(bashPayload('git status', 'envz38-fv'), mainRepo);
+      assert.equal(res1.status, 0, 'stderr=' + res1.stderr.slice(0, 300));
+      const res2 = runHook(bashPayload('git status', 'reviewer'), mainRepo);
+      assert.equal(res2.status, 0, 'stderr=' + res2.stderr.slice(0, 300));
+      const res3 = runHook(bashPayload('git status', 'pm'), mainRepo);
+      assert.equal(res3.status, 0, 'stderr=' + res3.stderr.slice(0, 300));
+    } finally {
+      cleanup(mainRepo);
+    }
+  });
+});

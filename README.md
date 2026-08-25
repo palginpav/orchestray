@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/orchestray.svg)](https://www.npmjs.com/package/orchestray)
 [![npm downloads](https://img.shields.io/npm/dw/orchestray.svg)](https://www.npmjs.com/package/orchestray)
-[![Socket Badge](https://badge.socket.dev/npm/package/orchestray/2.3.31)](https://socket.dev/npm/package/orchestray)
+[![Socket Badge](https://badge.socket.dev/npm/package/orchestray/2.3.32)](https://socket.dev/npm/package/orchestray)
 [![License](https://img.shields.io/npm/l/orchestray.svg)](https://github.com/palginpav/orchestray/blob/master/LICENSE)
 [![Node](https://img.shields.io/node/v/orchestray.svg)](https://nodejs.org)
 
@@ -310,6 +310,9 @@ v2.2.9 flipped the default for `ORCHESTRAY_STRICT_MODEL_REQUIRED` from "auto-res
 
 **Write-path blocked for reviewer / tester / documenter / release-manager** (`role_write_path_blocked`)
 Each write-capable specialist has a per-role allowlist defined in `bin/_lib/role-write-allowlists.js`. If you need a wider scope for a one-off task, set `ORCHESTRAY_ROLE_WRITE_GATE_DISABLED=1` in the spawning shell, or add the path to the allowlist (preferred — keeps the rest of the codebase protected).
+
+**Agent blocked from undoing its own edit** (`git_destructive_blocked`)
+`git stash` / `clean` / `checkout -- <file>` / `restore` / `reset` are blocked for every role when the target is the shared main checkout, because they can destroy another agent's unsaved work irrecoverably. Since v2.3.32 the message distinguishes this from the separate read-only-role rule and names the recovery path: run `git show HEAD:<path>` to read the last committed content, then write it back with the Write tool — this restores the file without touching git state or anyone else's work. The `blocked_via` field on the event records which of the two rules fired. Kill switch: `ORCHESTRAY_GIT_GATE_DISABLED=1`.
 
 **Task YAML Contracts section blocked at spawn** (`contracts_parse_failed`)
 Since v2.2.12, Contracts validation is a hard-fail (exit 2). If a task YAML `## Contracts` section is malformed, the spawn is blocked and `contracts_parse_failed` is emitted. To revert to soft-warn, set `ORCHESTRAY_CONTRACTS_PARSE_GATE_DISABLED=1`. To disable the validator entirely, set `ORCHESTRAY_CONTRACTS_VALIDATOR_DISABLED=1` or `ORCHESTRAY_CONTRACTS_MISSING_WARN_DISABLED=1`.
