@@ -1852,9 +1852,21 @@ project (`bin/pre-compact-archive.js`). See commit `8761fb2` for the full invest
 
 ### `kill_switch_activated`
 
-IMPLEMENTED (as of 2.0.13, task 2013-W7). Emitted by `bin/emit-kill-switch-event.js`
-(called from the `skills/orchestray:config` skill write path) immediately after a
-successful write that flips `mcp_enforcement.global_kill_switch` from `false` → `true`.
+IMPLEMENTED (as of 2.0.13, task 2013-W7). **Two independent emitters produce this
+type**, distinguished by `source` (v2.3.33 W6):
+
+1. `source: "config-skill"` — `bin/emit-kill-switch-event.js`, called from the
+   `skills/orchestray:config` write path immediately after a write that flips
+   `mcp_enforcement.global_kill_switch` from `false` → `true`. Carries
+   `previous_value` / `new_value` describing the flip.
+2. `source: "gate-agent-spawn"` — `bin/gate-agent-spawn.js`, a per-spawn observability
+   signal recording that a spawn was evaluated while the switch was already on. Nothing
+   is being flipped, so `previous_value` / `new_value` do not apply; it carries
+   `switch_name` and `tool_name` instead.
+
+`previous_value` / `new_value` are therefore **optional**, not required — a flip-only
+contract made every emission from emitter 2 a schema violation, invisible until v2.3.33
+made validation run outside this repo.
 
 Written via `atomicAppendJsonl` to `.orchestray/audit/events.jsonl`. Fail-open:
 if the write fails, a stderr warning is emitted and the config write proceeds normally.
@@ -1867,9 +1879,11 @@ no event. Grep anchor: `2013-W7-kill-switch`.
   "type": "kill_switch_activated",
   "orchestration_id": "<current orch id, or null if no orchestration active>",
   "reason": "<user-supplied reason string, or null>",
-  "source": "config-skill",
-  "previous_value": false,
-  "new_value": true
+  "source": "config-skill | gate-agent-spawn",
+  "previous_value": "optional — config-skill only; always false when present",
+  "new_value": "optional — config-skill only; always true when present",
+  "switch_name": "optional — gate-agent-spawn only; e.g. global_kill_switch",
+  "tool_name": "optional — gate-agent-spawn only; the tool whose spawn was evaluated"
 }
 ```
 
@@ -1888,13 +1902,20 @@ no event. Grep anchor: `2013-W7-kill-switch`.
   add friction). `null` if the operator declined to supply a reason or the flag was
   absent during a non-interactive deactivation. Populated as of 2.0.13.
 
-- `source` — always `"config-skill"` for events emitted via the config write path.
+- `source` — `"config-skill"` for the config write path, `"gate-agent-spawn"` for the
+  per-spawn observability signal. Consumers filtering for real flips must select on
+  `source === "config-skill"`; counting both conflates a config change with routine
+  spawn activity.
 
-- `previous_value` (boolean) — the value of `global_kill_switch` BEFORE the write.
-  Always `false` for `kill_switch_activated` events.
+- `switch_name` (string, optional) — emitter 2 only. The switch being reported.
 
-- `new_value` (boolean) — the value of `global_kill_switch` AFTER the write.
-  Always `true` for `kill_switch_activated` events.
+- `tool_name` (string, optional) — emitter 2 only. The tool whose spawn was evaluated.
+
+- `previous_value` (boolean, optional) — emitter 1 only. The value BEFORE the write;
+  always `false` here. Absent from emitter 2, which flips nothing.
+
+- `new_value` (boolean, optional) — emitter 1 only. The value AFTER the write;
+  always `true` here. Absent from emitter 2, which flips nothing.
 
 **Consumer guidance:** analytics-only. This event is NOT consumed by hooks (the
 `gate-agent-spawn.js` kill-switch check reads `config.json` directly — not events.jsonl).
