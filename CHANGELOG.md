@@ -3,6 +3,28 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.33] - 2026-08-25
+
+**Orchestray records an internal event log and checks each entry against a declared shape. That checking has never actually run on your machine — only inside Orchestray's own source repository. Turning it on revealed that a quarter of the declared shapes were invisible to it, several no longer matched what the code sends, and a counting bug meant notes *about* an event were being tallied as extra occurrences of it.**
+
+### Fixed
+
+- **Internal event checking now runs on your project, not just on Orchestray's own source tree.** It looked for its reference data in a folder that only exists in a source checkout, so every installed copy silently fell back to no checking at all. The test suite never caught this because tests run from a source checkout, where the folder is present.
+- **A quarter of the declared event shapes were invisible.** 25 of them were written under a heading style the reader does not recognise, so they were never loaded. Each one emitted an "unknown type" note on every use and advanced a counter that can switch checking off entirely. That counter had not tripped, but nothing prevented it.
+- **Notes about an event were being counted as extra occurrences of that event.** A record commenting on something carries the name of the thing it describes, and eight internal readers plus dozens of checks treated that name as the record's own identity. Anything counting events this way over-reported.
+- **Several declared shapes no longer matched what the code actually sends** — wrong field names, fields required that are never produced, and one event with two different producers described as though it had one. All now match reality, verified against records already on disk.
+- **Three producers had opted out of checking entirely**, so their drift from the declared shape was invisible by construction. They are checked like everything else now.
+- **Cancelling work now archives it somewhere findable.** The path had three competing spellings across the code that names it, the code that looks for it, and the instructions that create it — and had never once been exercised end to end.
+- **A maintenance report no longer flags every stored lesson as badly written.** It reported all 44 as needing rewording, when 38 of them are ones the system is deliberately designed not to open.
+
+### Added
+
+- **Three new self-checks that fail the build**, so each of the above cannot silently return: one catches a declared shape the reader cannot see, one catches a producer that omits a required field, and one refuses to pass if it inspected implausibly few producers. Each was verified by breaking something on purpose and confirming it complains.
+
+### Known Limitations
+
+- **39 producers still cannot be checked automatically.** Each assembles its record in a way that cannot be read without running the code. None is a known fault, the number is recorded with a per-case reason, and it is held to a ratchet that can only go down. Reduced from 84 during this release.
+
 ## [2.3.32] - 2026-08-25
 
 **Orchestray 2.3.32 fixes a class of failure where an agent was stopped by a safety check, told the wrong reason, given no way to proceed, and quietly abandoned the job with your code half-edited. Blocks now explain what actually happened and how to recover.**
