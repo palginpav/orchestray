@@ -218,6 +218,15 @@ function main() {
             schema_version:   SCHEMA_VERSION,
             type:             'archive_must_copy_validation',
             orchestration_id: orchId,
+            // W7 (v2.3.33): schema (drafted while this emit site was
+            // "declared dark") requires missing_files/present_files, not
+            // files_checked/result — this branch only runs when `missing`
+            // is empty, so missing_files is always [] and present_files is
+            // the full REQUIRED_FILES list. Kept files_checked/result too
+            // (harmless extras, not schema-declared) rather than deleting
+            // signal a consumer may already read.
+            missing_files:    [],
+            present_files:    REQUIRED_FILES.slice(),
             files_checked:    REQUIRED_FILES.length,
             result:           'success',
           }, { cwd });

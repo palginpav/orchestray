@@ -270,9 +270,24 @@ function extractFields(jsonBlock) {
   const lines = jsonBlock.split('\n').filter((l) => !l.match(/^```/));
   const KEY_VALUE_RE = /^\s+"([^"]+)"\s*:\s*(.+?)(?:,\s*)?$/;
 
+  // v2.3.33 W8: only capture keys of the TOP-LEVEL object. Previously every
+  // `"key": value` line was captured regardless of nesting, so keys inside a
+  // nested array/object (e.g. contract_check's `checks: [{target, result,
+  // detail}]`) were hoisted into the event's own required list. That made
+  // correctly-shaped emitters look like schema violations.
+  let depth = 0;
+
   for (const line of lines) {
     const m = line.match(KEY_VALUE_RE);
+    const openers = (line.match(/[{[]/g) || []).length;
+    const closers = (line.match(/[}\]]/g) || []).length;
+    // depth BEFORE this line's own brackets decides whether its key is top-level:
+    // the outermost `{` sits on its own line, putting real top-level keys at depth 1.
+    const depthAtKey = depth;
+    depth += openers - closers;
+
     if (!m) continue;
+    if (depthAtKey !== 1) continue; // nested key — belongs to a sub-object, not the event
     const key = m[1];
     const valText = m[2].trim();
 

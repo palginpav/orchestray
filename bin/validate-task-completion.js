@@ -1532,6 +1532,9 @@ function main() {
             orchestration_id: resolveOrchestrationId(cwd),
             agent_role: agentRole,
             violations: violations.map(v => ({ field: v.field, reason: v.reason })),
+            // W7 (v2.3.33): required — distinguishes this per-role violation
+            // from the cross_field variant below, per event-schemas.md field notes.
+            role_schema_violation: true,
             session_id: event.session_id || null,
           });
           process.stderr.write(
@@ -1571,6 +1574,10 @@ function main() {
                 expected: v.expected,
                 actual: v.actual,
               })),
+              // W7 (v2.3.33): required — false here because this is the
+              // cross_field variant, not a per-role violation (see field
+              // notes on t15_role_schema_violation in event-schemas.md).
+              role_schema_violation: false,
               session_id: event.session_id || null,
             });
             process.stderr.write(

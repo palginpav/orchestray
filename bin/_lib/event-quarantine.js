@@ -289,6 +289,11 @@ function _emitQuarantineSkipped(orchestrationId, eventTypeDrop, reason, cwd) {
       orchestration_id: orchestrationId,
       event_type_dropped: sanitizedEventTypeDrop,
       reason,
+      // W7 (v2.3.33): schema requires `count` (total events dropped for this
+      // reason). This inline per-drop emit path fires once per individual
+      // drop — count is always 1 here; the aggregated-across-the-run count
+      // is emitted separately by bin/post-orchestration-extract.js.
+      count: 1,
     }, { cwd });
   } catch (_e) {
     // Fail-open: quarantine skip emission must never block the caller.

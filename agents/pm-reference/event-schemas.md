@@ -3250,7 +3250,9 @@ and the per-orchestration cap.
 ### `pattern_extraction_skipped`
 
 Emitted by `bin/post-orchestration-extract.js` once per proposal that was processed but
-not staged. Multiple per run are normal.
+not staged (multiple per run are normal), and by `bin/post-orchestration-extract-on-stop.js`
+once per Stop-hook scan that found nothing fresh to extract — see the "additional reasons"
+addendum below for that second emitter's `reason`/`source` values.
 
 ```json
 {
@@ -3259,12 +3261,13 @@ not staged. Multiple per run are normal.
   "schema_version": 1,
   "orchestration_id": "<current orch id>",
   "reason": "<reason enum — see below>",
-  "detail": "<field names involved, or absent>",
-  "slug": "<slug, or absent>"
+  "detail": "optional — field names involved; only set for validator_rejected",
+  "slug": "optional — only set for slug_collision",
+  "source": "optional — 'stop_hook_scan' distinguishes the Stop-hook emitter; absent for per-proposal skips"
 }
 ```
 
-**`reason` enum values:**
+**`reason` enum values (per-proposal emitter, `post-orchestration-extract.js`):**
 
 | reason | When emitted |
 |---|---|
@@ -3274,9 +3277,13 @@ not staged. Multiple per run are normal.
 | `slug_collision` | A file with the same slug already exists in `proposed-patterns/` or `patterns/` |
 | `per_orchestration_cap` | Per-run proposal cap (`proposals_per_orchestration`, default 3) reached |
 
+See the "additional reasons" addendum below for the Stop-hook emitter's `reason` values
+(`no_history_dir`, `no_fresh_candidate`, `already_extracted`) — those never set `detail`
+or `slug`.
+
 **Optional fields:** `detail` is present only for `validator_rejected` and contains the
 comma-separated field names that failed (never the rejected values, per F-07). `slug` is
-present only for `slug_collision`.
+present only for `slug_collision`. `source` is present only on the Stop-hook emitter.
 
 ---
 
@@ -4235,8 +4242,14 @@ Field notes:
 
 ### `task_completion_warn`
 
-Emitted by `bin/validate-task-completion.js` when a warn-tier agent stops without a
-valid Structured Result. Advisory only — the stop is not blocked.
+Emitted by `bin/validate-task-completion.js` in two situations — two distinct payload
+shapes under one type, not renamed (analytics consumers query this slug; kept together
+per the `kill_switch_activated` precedent, W7 v2.3.33):
+
+1. A warn-tier agent stops without a valid Structured Result (the original shape below).
+2. (v2.3.21, "Branch (a)") The agent's role could not be identified at all from the
+   payload (e.g. a team completion carrying only `teammate_name`), so the entire T15
+   pre-done gate no-ops — this variant makes that skip observable instead of silent.
 
 ```json
 {
@@ -4244,15 +4257,22 @@ valid Structured Result. Advisory only — the stop is not blocked.
   "type": "task_completion_warn",
   "hook": "validate-task-completion",
   "orchestration_id": "<current orch id | null>",
-  "agent_role": "<agent role>",
-  "tier": "warn",
-  "missing_sections": ["<section name>", "..."],
-  "session_id": "<session id | null>"
+  "agent_role": "optional — absent for the role-unidentifiable variant (2)",
+  "tier": "optional — always \"warn\" when present; absent for variant (2)",
+  "missing_sections": "optional — [\"<section name>\", ...]; absent for variant (2)",
+  "session_id": "<session id | null>",
+  "reason": "optional — human-readable, variant (2) only",
+  "reason_code": "optional — e.g. \"agent_role_unidentified\"; variant (2) only",
+  "hook_event_name": "optional — SubagentStop | Stop; variant (2) only",
+  "payload_keys": "optional — array, keys present on the raw hook payload; variant (2) only"
 }
 ```
 
 Field notes:
-- `tier`: Always `"warn"` on this event type. Hard-tier agents emit `pre_done_checklist_failed`.
+- `tier`: Always `"warn"` on this event type when present (variant 1). Hard-tier agents
+  emit `pre_done_checklist_failed`.
+- Variant (2) never sets `agent_role`/`tier`/`missing_sections` — there is no identified
+  role to report and no structured-result check was reached.
 
 ---
 
@@ -8220,6 +8240,11 @@ Field notes:
 - `violations` — violation strings. Prefixes: `missing_field:`, `enum_violation:`,
   `min_count:`, `output_regex:`, `critic_evidence:`, `issues_required:`.
 - `role_schema_violation: true` — distinguishes per-role violations from base-field failures.
+- W2-4 cross-field variant (R1/R2/R3, non-blocking): the same `type` is also emitted with
+  `violation_kind: "cross_field"` and `role_schema_violation: false` when
+  `validateCrossField()` finds an invariant break (e.g. `files_changed` non-empty but
+  `files_read` empty). That variant's `violations` array holds `{field, rule, expected,
+  actual}` objects rather than prefixed strings, and it never `exit(2)`s.
 
 ---
 
@@ -13207,7 +13232,7 @@ dispatches a map layer (or a hierarchical batch, Section OI.7). Written via
   "corpus_id": "<12 hex chars>",
   "slice_count": 42,
   "map_model": "haiku",
-  "batch": 0
+  "batch": "optional — batch index for hierarchical mode (0-based); omitted for direct mode"
 }
 ```
 

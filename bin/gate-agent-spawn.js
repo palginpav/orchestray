@@ -1497,6 +1497,12 @@ if (require.main === module) {
                           phase: 'post-decomposition',
                           phase_mismatch: false,
                           source: 'hook',
+                          // This branch only runs when praEnforcement === 'hook-strict'
+                          // (checked above) — warn-only enforcement never reaches
+                          // this emit site, so warn_mode is always false here.
+                          // Added W7 (v2.3.33) — sibling emit site (line ~1305)
+                          // already carried this required field.
+                          warn_mode: false,
                         }, { cwd });
                       } catch (_emitErr) {
                         process.stderr.write(

@@ -207,8 +207,13 @@ function applyMigrationIfNeeded({ cwd, config, dryRun }) {
     writeEvent({
       version: 1,
       type:    'feature_demand_gate_migrated',
-      from:    { shadow_mode: true },
-      to:      { shadow_mode: false },
+      // W7 (v2.3.33): schema declares flat previous_value/new_value
+      // (always true -> false for this migration, per event-schemas.md
+      // field notes) — the emitter used a nested from/to shape instead.
+      // Fixed to match; from/to conveyed the same fact, just not the
+      // declared field names.
+      previous_value: true,
+      new_value:      false,
       release: 'v2.1.15',
       reason:  'aggressive_default_on_q1',
     }, { cwd });

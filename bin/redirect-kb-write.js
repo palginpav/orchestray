@@ -211,6 +211,11 @@ async function main(hookEvent) {
     try {
       writeEvent({
         type: 'kb_write_redirected',
+        // W7 (v2.3.33): required field, same derivation runTelemetry() uses
+        // for the success-path emit — this fail-open branch never ran it.
+        agent_id: (hookEvent && hookEvent.agent_id) ||
+          (hookEvent && hookEvent.tool_input && hookEvent.tool_input.agent_id) ||
+          'unknown',
         target_path: filePath,
         phase: 'transparent-pass-v2210',
         error: (err && err.message ? err.message : String(err)).slice(0, 200),

@@ -174,8 +174,15 @@ function main() {
         // skipped run so SessionStart hook timing is traceable. The prior
         // silent exit-0 made the cache-fresh branch invisible to telemetry —
         // operators couldn't distinguish "cache hit" from "hook didn't run".
-        // Schema declared by W8c FN-33: {type, ts, schema_version:1,
-        // cache_age_ms, window_ms, mode}.
+        // Schema declared by W8c FN-33: {type, timestamp, schema_version:1,
+        // cache_age_days, window_days, source} — day-granularity, matching
+        // the day-based convention this file uses everywhere else
+        // (--window-days, the sibling `source` field at the emit site
+        // below). This emit site originally used a ms/mode shape that
+        // disagreed with the declared schema and its own siblings; fixed to
+        // match (W7, v2.3.33 — found by the emit/schema conformance sweep,
+        // not by any test, since skipValidation:true masks the shadow
+        // validator here).
         //
         // Use skipValidation:true so the v2.2.14 G-02 invariant ("--if-stale
         // cache-fresh must produce no stderr") survives — the schema-shadow
@@ -189,9 +196,9 @@ function main() {
             writeEvent({
               type:           'calibrate_skipped_fresh_cache',
               schema_version: 1,
-              cache_age_ms:   Math.max(0, Date.now() - stat.mtimeMs),
-              window_ms:      windowMs,
-              mode:           'if_stale',
+              cache_age_days: Math.floor(Math.max(0, Date.now() - stat.mtimeMs) / (24 * 60 * 60 * 1000)),
+              window_days:    windowDays,
+              source:         'calibrate',
             }, { cwd, skipValidation: true });
           }
         } catch (_e) { /* fail-open — never block session start on telemetry */ }
