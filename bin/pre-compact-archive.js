@@ -117,10 +117,18 @@ setImmediate(() => {
         process.stdout.write(JSON.stringify({ continue: false }));
         process.exit(2);
       } else if (blockDecision.suppressed_reason === 'kill_switch_or_config') {
+        // W9 (v2.3.33): schema requires `phase` and `override` — both were
+        // missing. `override` is the two-value enum documented for this
+        // event (env_var | config_flag); kill_switch_source already encodes
+        // which one fired via its `env_`/`config_` prefix.
         _emitBlockEvent(auditDir, 'resilience_block_suppressed', {
           orchestration_id: orchestrationId || 'unknown',
+          phase: blockDecision.phase || 'unknown',
           trigger,
           reason: blockDecision.kill_switch_source || 'kill_switch_or_config',
+          override: blockDecision.kill_switch_source && blockDecision.kill_switch_source.startsWith('env_')
+            ? 'env_var'
+            : 'config_flag',
         });
       } else if (blockDecision.suppressed_reason === 'inactive') {
         _emitBlockEvent(auditDir, 'resilience_block_suppressed_inactive', {

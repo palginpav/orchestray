@@ -24,10 +24,13 @@ like "iterate on tests until they pass."
 
 ## Behavior
 
-1. Skill writes `.orchestray/state/loop.json` with the loop config and emits `loop_started`:
+1. Skill generates `loop_id` (format `loop-<unix-ms>-<4 random hex chars>`, mirroring the
+   `orchestration_id` convention) and writes `.orchestray/state/loop.json` with the loop
+   config and the generated ID, then emits `loop_started` (schema requires `loop_id`):
    ```json
    {
      "enabled": true,
+     "loop_id": "loop-1735689600000-a1b2",
      "agent": "developer",
      "max_iterations": 10,
      "completion_promise": "TASK_COMPLETE",

@@ -340,6 +340,7 @@ function handleUserPromptSubmit(event) {
       _audit(cwd, {
         type: 'rehydration_skipped_fence_collision',
         orchestration_id: dossier.orchestration_id || null,
+        reason: 'fence_collision', // W9 (v2.3.33): schema-declared constant, was missing
         offending_field: fenceCheck.offending_field || null,
       });
       // SKIP-9: fence-collision in raw dossier — semantically a corrupt/unsafe file.

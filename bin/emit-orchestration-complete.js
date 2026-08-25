@@ -79,6 +79,12 @@ setImmediate(() => {
       event_type:       'orchestration_complete',
       version:          1,
       orchestration_id: orchId,
+      // W9 (v2.3.33): schema requires `status`. This hook is a backstop
+      // emitter with no visibility into partial/failure outcomes (it only
+      // knows a SubagentStop fired after the orchestration finished) — mirror
+      // the documented default for the primary emitter (`ox state complete`
+      // defaults --status to "success" when the flag is absent).
+      status:           'success',
       completed_at:     new Date().toISOString(),
       schema_version:   1,
     }, { cwd });

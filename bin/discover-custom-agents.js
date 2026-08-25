@@ -91,7 +91,7 @@ function loadCustomAgentsConfig(cwd) {
  */
 function safeEmit(payload, cwd) {
   try {
-    writeEvent(payload, { cwd, skipValidation: true });
+    writeEvent(payload, { cwd });
   } catch (_) { /* fail-open */ }
 }
 

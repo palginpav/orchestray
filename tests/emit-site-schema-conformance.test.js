@@ -44,10 +44,22 @@ const { sweep } = require('../bin/_tools/audit-emit-schema-conformance.js');
 
 const repoRoot = path.join(__dirname, '..');
 
-// Measured at v2.3.33 W7/W8, after the parser nesting fix. Lower is better.
-// Raising this number means accepting a new statically-opaque emit site —
-// do that only with a reason, and say what it is here.
-const UNANALYSABLE_CEILING = 84;
+// Ratchet. Lower is better; this number must never rise without a stated reason.
+//   84 -> 43 at v2.3.33 W9 (multi-hop const tracing, spread-of-literal merging)
+//   43 -> 39 at v2.3.33 W9 (removed skipValidation from discover-custom-agents.js;
+//                           its 3 schemas were stale and are now aligned to reality)
+//
+// The 39 residual sites, by construct:
+//   13  payload is neither a literal nor traceable to one within its scope
+//   13  the event type itself is computed, so no single schema applies
+//   11  a top-level spread may supply the fields that look missing
+//    2  writeAuditEvent factory shape, assembled at runtime by extraFieldsPicker
+//
+// None of these is a known defect — each is a construct static analysis cannot
+// resolve without executing the code. They remain holes in this gate, so the
+// number is worth driving down further; it is not worth rewriting correct
+// emitters purely to satisfy the analyser.
+const UNANALYSABLE_CEILING = 39;
 
 describe('emit-site schema conformance (W7, v2.3.33)', () => {
   const result = sweep({ cwd: repoRoot });

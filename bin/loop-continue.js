@@ -327,20 +327,34 @@ function run(payload, cwd) {
     ? undefined
     : (state.loop_kind === 'verify_fix' ? 'verify_fix' : 'orch');
 
+  // W9 (v2.3.33): loop_id, threaded through from the state file the skill
+  // writes at loop start (see skills/orchestray:loop/SKILL.md). `null` for
+  // any loop started before this field existed — the schema requires the
+  // KEY be present, not that its value be non-null (same convention as
+  // orchestration_id elsewhere in this file).
+  const loopId = state.loop_id || null;
+  // W9: schema's canonical field name is `completion_reason`; `reason` is
+  // kept alongside it for back-compat with any existing consumer reading
+  // the pre-rename name.
+  const MAX_OUTPUT_EXCERPT = 500;
+  const lastOutputExcerpt = (agentOutput || '').slice(0, MAX_OUTPUT_EXCERPT);
+
   // 1. Completion promise met?
   if (outputContainsPromise(agentOutput, completionPromise)) {
     clearLoopState(cwd);
     clearRespawnSentinel(cwd);
     const _ev1 = {
-      type:             'loop_completed',
-      version:          1,
-      schema_version:   1,
-      orchestration_id: state.orchestration_id || null,
-      reason:           'promise_met',
-      iter_count:       iterCount,
-      cost_so_far_usd:  newCostSoFar,
-      agent:            state.agent || 'developer',
-      max_iterations:   maxIterations,
+      type:              'loop_completed',
+      version:           1,
+      schema_version:    1,
+      orchestration_id:  state.orchestration_id || null,
+      loop_id:           loopId,
+      reason:            'promise_met',
+      completion_reason: 'promise_met',
+      iter_count:        iterCount,
+      cost_so_far_usd:   newCostSoFar,
+      agent:             state.agent || 'developer',
+      max_iterations:    maxIterations,
     };
     if (loopKind !== undefined) _ev1.loop_kind = loopKind;
     emitEvent(_ev1, cwd);
@@ -353,15 +367,17 @@ function run(payload, cwd) {
     clearLoopState(cwd);
     clearRespawnSentinel(cwd);
     const _ev2 = {
-      type:             'loop_completed',
-      version:          1,
-      schema_version:   1,
-      orchestration_id: state.orchestration_id || null,
-      reason:           'max_iterations',
-      iter_count:       iterCount + 1,
-      cost_so_far_usd:  newCostSoFar,
-      agent:            state.agent || 'developer',
-      max_iterations:   maxIterations,
+      type:              'loop_completed',
+      version:           1,
+      schema_version:    1,
+      orchestration_id:  state.orchestration_id || null,
+      loop_id:           loopId,
+      reason:            'max_iterations',
+      completion_reason: 'max_iterations',
+      iter_count:        iterCount + 1,
+      cost_so_far_usd:   newCostSoFar,
+      agent:             state.agent || 'developer',
+      max_iterations:    maxIterations,
     };
     if (loopKind !== undefined) _ev2.loop_kind = loopKind;
     emitEvent(_ev2, cwd);
@@ -374,15 +390,17 @@ function run(payload, cwd) {
     clearLoopState(cwd);
     clearRespawnSentinel(cwd);
     const _ev3 = {
-      type:             'loop_completed',
-      version:          1,
-      schema_version:   1,
-      orchestration_id: state.orchestration_id || null,
-      reason:           'cost_cap',
-      iter_count:       iterCount + 1,
-      cost_so_far_usd:  newCostSoFar,
-      agent:            state.agent || 'developer',
-      max_iterations:   maxIterations,
+      type:              'loop_completed',
+      version:           1,
+      schema_version:    1,
+      orchestration_id:  state.orchestration_id || null,
+      loop_id:           loopId,
+      reason:            'cost_cap',
+      completion_reason: 'cost_cap',
+      iter_count:        iterCount + 1,
+      cost_so_far_usd:   newCostSoFar,
+      agent:             state.agent || 'developer',
+      max_iterations:    maxIterations,
     };
     if (loopKind !== undefined) _ev3.loop_kind = loopKind;
     emitEvent(_ev3, cwd);
@@ -401,15 +419,17 @@ function run(payload, cwd) {
   writeRespawnSentinel(cwd, newState);
 
   emitEvent({
-    type:             'loop_iteration',
-    version:          1,
-    schema_version:   1,
-    orchestration_id: state.orchestration_id || null,
-    iter_count:       newIterCount,
-    cost_so_far_usd:  newCostSoFar,
-    agent:            state.agent || 'developer',
-    max_iterations:   maxIterations,
-    completion_promise: completionPromise,
+    type:                'loop_iteration',
+    version:             1,
+    schema_version:      1,
+    orchestration_id:    state.orchestration_id || null,
+    loop_id:             loopId,
+    iter_count:          newIterCount,
+    cost_so_far_usd:     newCostSoFar,
+    agent:               state.agent || 'developer',
+    max_iterations:      maxIterations,
+    completion_promise:  completionPromise,
+    last_output_excerpt: lastOutputExcerpt,
   }, cwd);
 
   // Block the agent Stop so the PM can re-spawn.

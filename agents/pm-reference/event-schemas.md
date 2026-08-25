@@ -9526,7 +9526,7 @@ Captured-at version: v2.2.12.
   "version": 1,
   "timestamp": "ISO 8601",
   "orchestration_id": "orch-xxx",
-  "task": "Brief task description passed to ox state start",
+  "task": "optional — brief task description passed to ox state start, or null when omitted",
   "started_at": "ISO 8601",
   "schema_version": 1
 }
@@ -13036,23 +13036,30 @@ when at least one valid custom agent definition was found in `~/.claude/orchestr
   "version": 1,
   "schema_version": 1,
   "timestamp": "2026-05-01T00:00:00.000Z",
-  "source": "discover-custom-agents",
-  "count": 2,
+  "level": "info | warn",
+  "orchestration_id": "none",
+  "source_dir": "<the custom-agents directory scanned>",
+  "discovered_count": 2,
+  "skipped_count": 0,
   "names": ["my-agent", "another-agent"],
-  "shadowed_count": 1,
-  "shadowed_names": ["my-agent-arena-v0"],
-  "symlinks_created": 2,
-  "symlinks_kept": 0,
-  "symlinks_retargeted": 0,
-  "symlinks_copied": 0,
-  "symlinks_skipped": 0,
-  "symlinks_swept": 1,
-  "symlinks_errors": 0
+  "shadowed_count": "optional — number of v0 arena stubs hidden by a versioned sibling",
+  "shadowed_names": "optional — string array of the hidden v0 stub names",
+  "symlinks_created": "optional — treat absence as zero",
+  "symlinks_kept": "optional — treat absence as zero",
+  "symlinks_retargeted": "optional — treat absence as zero",
+  "symlinks_copied": "optional — treat absence as zero",
+  "symlinks_skipped": "optional — treat absence as zero",
+  "symlinks_swept": "optional — treat absence as zero",
+  "symlinks_errors": "optional — treat absence as zero"
 }
 ```
 
 Field notes:
-- `count`: number of valid custom agent definitions found.
+- `discovered_count`: number of valid custom agent definitions found.
+- `skipped_count`: number of definitions rejected during the scan.
+- `level`: `"info"`, or `"warn"` when anything was skipped.
+- `source_dir`: the directory scanned. (Named `source` until v2.3.33 — the field was
+  documented but never emitted under that name.)
 - `names`: array of agent name strings (filename stems, without `.md` extension).
 - `shadowed_count` (optional): number of v0 arena stub files hidden from the spawn registry because a versioned sibling (`<slug>-arena-v<N>.md`) exists.
 - `shadowed_names` (optional): string array of the hidden v0 stub name strings.
@@ -13063,8 +13070,12 @@ Field notes:
 - `symlinks_skipped` (optional): number of agent files skipped during symlink sync (e.g. collision with a canonical agent name).
 - `symlinks_swept` (optional): number of stale symlinks removed from `~/.claude/agents/` (pointing to files that no longer exist).
 - `symlinks_errors` (optional): number of symlink operations that failed; individual errors are logged to stderr.
-- All symlink fields are emitted via `safeEmit(skipValidation:true)` and are optional — consumers should treat absence as zero.
-- Only emitted when `count > 0`. When the directory is absent or empty, no event is emitted.
+- Symlink fields are optional — consumers should treat absence as zero.
+- Emitted on every scan, **including when `discovered_count` is 0** (the empty/absent
+  directory path still emits, so the symlink sweep is recorded). The prior claim that
+  it only fires above zero was false.
+- v2.3.33 W9: this emitter no longer passes `skipValidation` — the payload is checked
+  against this schema at runtime like every other event.
 - Kill switch: `ORCHESTRAY_DISABLE_CUSTOM_AGENTS=1` — discovery is skipped entirely.
 
 ### `custom_agents_skipped`
@@ -13078,13 +13089,20 @@ switch (`ORCHESTRAY_DISABLE_CUSTOM_AGENTS=1` or `custom_agents.enabled: false` i
   "version": 1,
   "schema_version": 1,
   "timestamp": "2026-05-01T00:00:00.000Z",
-  "source": "discover-custom-agents",
-  "reason": "env_kill_switch"
+  "level": "warn",
+  "orchestration_id": "none",
+  "filename": "<definition file that was skipped>",
+  "name_field": "<name declared inside the file, or null>",
+  "reason": "env_kill_switch",
+  "detail": "<human-readable detail; currently mirrors reason>"
 }
 ```
 
 Field notes:
-- `reason`: one of `"env_kill_switch"` (env var set) or `"config_disabled"` (config flag false).
+- `reason`: the rejection cause — the kill-switch values `"env_kill_switch"` /
+  `"config_disabled"`, or a per-file validation failure reason.
+- `filename` / `name_field`: identify which definition was skipped. `name_field` is
+  `null` when the file declares no name.
 - Analytics consumers can use this to detect sessions where custom agents are intentionally off.
 
 ### `custom_agents_collision`
@@ -13098,15 +13116,23 @@ canonical agent name. The custom definition is rejected; the canonical agent is 
   "version": 1,
   "schema_version": 1,
   "timestamp": "2026-05-01T00:00:00.000Z",
-  "source": "discover-custom-agents",
-  "name": "developer",
-  "path": "/home/user/.claude/orchestray/custom-agents/developer.md"
+  "level": "error",
+  "orchestration_id": "none",
+  "filename": "developer.md",
+  "name_field": "developer",
+  "normalized_name": "developer",
+  "collides_with": "developer",
+  "collision_class": "canonical_agent | shipped_specialist"
 }
 ```
 
 Field notes:
-- `name`: the agent name that collided with a canonical role.
-- `path`: the full path to the rejected custom definition file.
+- `name_field`: the name declared in the rejected definition.
+- `normalized_name`: NFKD-lowercased ASCII form used for the comparison.
+- `collides_with`: the existing name it clashed with.
+- `collision_class`: whether the clash was with a canonical agent or a shipped specialist.
+- `filename`: the rejected definition file. (Was documented as `name`/`path` until
+  v2.3.33; neither was ever emitted.)
 - The collision warning is also emitted to stderr so the user sees it at session start.
 - Hard rule: custom agents may never shadow canonical agent roles.
 
