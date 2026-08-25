@@ -1296,9 +1296,16 @@ function writeEventWithAliases(eventPayload, opts) {
 
   const result = writeEvent(eventPayload, opts);
 
-  // Only emit aliases when the original event was written (not surrogated/dropped).
-  if (result && (result.reason === 'ok' || result.reason === 'unknown_type_emitted' ||
-      result.reason === 'circuit_broken_bypass')) {
+  // Only emit aliases when the original event was actually appended to
+  // events.jsonl. D6 (v2.3.18 W1b) made `written: true` the invariant for
+  // every non-io_error path — including 'shape_violation_emitted', where the
+  // original payload is still appended alongside an advisory row. Gating on
+  // a hand-maintained list of reason strings (v2.3.33 W3 fix: was
+  // 'ok'/'unknown_type_emitted'/'circuit_broken_bypass' only) silently
+  // dropped the alias pair whenever a caller's payload triggered a shape
+  // violation, even though the original event was written and the aliasing
+  // contract promises the pair fires whenever the original does.
+  if (result && result.written === true) {
     const cwd = resolveSafeCwd(opts.cwd);
     const eventsPath = resolveEventsPath(cwd, opts.eventsPath);
     // Pass the raw payload — _emitRenameCycleAliases reads .type from it.

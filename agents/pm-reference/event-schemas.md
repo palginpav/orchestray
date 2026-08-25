@@ -909,10 +909,10 @@ Field notes:
 
 ### `task_completed` event
 
-Emitted by Agent Teams `TaskCompleted` hook (`bin/audit-team-event.js completed`,
-when re-wired). Pairs with `task_created` and is consumed by
-`bin/audit-on-orch-complete.js` (counts `w_items_completed`) and validated
-by `bin/_lib/event-quarantine.js` (required-field shape check).
+Emitted by the `TaskCompleted` hook wrapper (`bin/validate-task-completion.js`,
+the "standard team-mode TaskCompleted audit row"). Pairs with `task_created`
+and is consumed by `bin/audit-on-orch-complete.js` (counts `w_items_completed`)
+and validated by `bin/_lib/event-quarantine.js` (required-field shape check).
 
 Schema version: 1
 
@@ -924,18 +924,27 @@ Schema version: 1
   "orchestration_id": "orch-xxx",
   "task_id": "task-xxx",
   "outcome": "success|failure|cancelled",
-  "duration_ms": 12345
+  "duration_ms": "optional — the TaskCompleted hook payload carries no timing data"
 }
 ```
 
 Required fields: `orchestration_id` (string), `timestamp` (ISO 8601),
-`task_id` (string), `outcome` (enum), `duration_ms` (integer).
+`task_id` (string), `outcome` (enum). `duration_ms` (integer) is optional.
 
 Declared in v2.2.14 G-06 follow-up to satisfy live consumers
-(`audit-on-orch-complete.js:405`, `event-quarantine.js:74`). The
-`TaskCompleted` hook wrapper currently emits `task_created` only;
-emitter wiring for the completed branch lands separately when the
-hook is reactivated.
+(`audit-on-orch-complete.js:405`, `event-quarantine.js:74`).
+
+v2.3.33 W3 correction: this row only ever fires after every T15 gate above it
+has already passed (a rejection `exit(2)`s earlier and emits
+`task_validation_failed` instead), so the emitter always writes
+`outcome: "success"` — that value was previously omitted entirely, which
+tripped a schema shape violation on every emission (invisible until schema
+validation started running outside the Orchestray repo, v2.3.33 W1).
+`duration_ms` was declared required for a hypothetical `bin/audit-team-event.js`
+completion emitter that was never wired up; the hook that actually emits this
+event (`validate-task-completion.js`) receives no timing information in its
+input and has no other source for it, so the field is downgraded to optional
+rather than fabricated.
 
 ---
 
@@ -1897,7 +1906,7 @@ should ignore it. New fields will only be added as optional.
 
 ---
 
-## Kill Switch Deactivated Event
+### `kill_switch_deactivated` event
 
 IMPLEMENTED (as of 2.0.13, task 2013-W7). Emitted by `bin/emit-kill-switch-event.js`
 (called from the `skills/orchestray:config` skill write path) immediately after a

@@ -1693,6 +1693,12 @@ function main() {
         mode: 'teams',
         orchestration_id: resolveOrchestrationId(cwd),
         task_id: event.task_id || null,
+        // This row only fires once every T15 gate above has already passed
+        // (a rejection exits(2) before reaching this line, emitting
+        // task_validation_failed instead) — so 'success' is always the real
+        // outcome here, not a placeholder. See event-schemas.md task_completed
+        // required fields (schema fix, v2.3.33 W3).
+        outcome: 'success',
         task_subject: event.task_subject || null,
         task_description: event.task_description || null,
         teammate_name: event.teammate_name || null,
