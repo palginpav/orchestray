@@ -60,9 +60,7 @@ test('Event8-self-probe: emitTokenwrightSelfProbe produces correct event shape',
 
   const lines = fs.readFileSync(eventsPath, 'utf8').split('\n').filter(l => l.trim());
   const events = lines.map(l => { try { return JSON.parse(l); } catch (_e) { return null; } }).filter(Boolean);
-  const probeEvents = events.filter(e =>
-    e.type === 'tokenwright_self_probe' || e.event_type === 'tokenwright_self_probe'
-  );
+  const probeEvents = events.filter(e => e.type === 'tokenwright_self_probe');
 
   assert.ok(probeEvents.length >= 1, 'must emit at least one tokenwright_self_probe event');
   const e = probeEvents[0];
@@ -103,9 +101,7 @@ test('Event8-self-probe: hook_dedup_unclean produces result=fail', (t) => {
 
   const lines = fs.readFileSync(eventsPath, 'utf8').split('\n').filter(l => l.trim());
   const events = lines.map(l => { try { return JSON.parse(l); } catch (_e) { return null; } }).filter(Boolean);
-  const probeEvents = events.filter(e =>
-    e.type === 'tokenwright_self_probe' || e.event_type === 'tokenwright_self_probe'
-  );
+  const probeEvents = events.filter(e => e.type === 'tokenwright_self_probe');
 
   assert.ok(probeEvents.length >= 1, 'must emit probe event even on failure');
   const e = probeEvents[0];
@@ -146,7 +142,7 @@ test('Event8-self-probe: all required fields are present in probe payload', (t) 
 
   const lines = fs.readFileSync(eventsPath, 'utf8').split('\n').filter(l => l.trim());
   const events = lines.map(l => { try { return JSON.parse(l); } catch (_e) { return null; } }).filter(Boolean);
-  const e = events.find(ev => ev.type === 'tokenwright_self_probe' || ev.event_type === 'tokenwright_self_probe');
+  const e = events.find(ev => ev.type === 'tokenwright_self_probe');
 
   assert.ok(e, 'probe event must be written');
   const required = [

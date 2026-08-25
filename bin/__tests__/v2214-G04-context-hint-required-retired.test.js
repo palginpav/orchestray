@@ -174,13 +174,13 @@ describe('v2.2.14 G-04 — ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED fully 
     );
 
     const events  = readEvents(tmpRoot);
-    const computed = events.filter(e => e.event_type === 'context_size_hint_computed');
+    const computed = events.filter(e => e.type === 'context_size_hint_computed');
     assert.equal(
       computed.length,
       1,
       'context_size_hint_computed must emit — the retired var does not restore the old block',
     );
-    const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
+    const required = events.filter(e => e.type === 'context_size_hint_required_failed');
     assert.equal(required.length, 0, 'context_size_hint_required_failed must NOT emit — no block occurred');
   });
 

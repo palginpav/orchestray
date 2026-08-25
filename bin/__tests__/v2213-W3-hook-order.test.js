@@ -408,7 +408,7 @@ describe('v2.2.13 W3 — install hook-order reorder + SessionStart drift validat
     assert.strictEqual(r.status, 0, `validator must exit 0 even on drift, stderr: ${r.stderr}`);
 
     const events = readEvents(tmpDir);
-    const driftEvent = events.find(e => e.event_type === 'hook_chain_drift_detected');
+    const driftEvent = events.find(e => e.type === 'hook_chain_drift_detected');
     assert.ok(driftEvent, 'hook_chain_drift_detected must be emitted');
     assert.strictEqual(driftEvent.schema_version, 1, 'schema_version must be 1');
     assert.ok(
@@ -451,7 +451,7 @@ describe('v2.2.13 W3 — install hook-order reorder + SessionStart drift validat
     assert.strictEqual(r.status, 0, 'must exit 0 with kill switch');
     const events = readEvents(tmpDir);
     assert.ok(
-      !events.find(e => e.event_type === 'hook_chain_drift_detected'),
+      !events.find(e => e.type === 'hook_chain_drift_detected'),
       'hook_chain_drift_detected must NOT be emitted with kill switch'
     );
   });

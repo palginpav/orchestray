@@ -515,10 +515,13 @@ describe('cancel clean-abort sequence', () => {
     // Simulate cancel request.
     run(CANCEL_SCRIPT, [dir]);
 
-    // Simulate PM clean-abort: rename state/ to history/orch-*-cancelled/.
+    // Simulate PM clean-abort: rename state/ to history/<orch_id>-cancelled/.
+    // orchId already begins with "orch-" — do not prepend a second one
+    // (v2.3.33 W4: the previously-pinned doubled-prefix form was corrected
+    // across the writer, reader, and block message).
     const historyDir = path.join(dir, '.orchestray', 'history');
     fs.mkdirSync(historyDir, { recursive: true });
-    const cancelledDir = path.join(historyDir, 'orch-orch-w7-test-001-cancelled');
+    const cancelledDir = path.join(historyDir, 'orch-w7-test-001-cancelled');
     fs.renameSync(stateDir, cancelledDir);
 
     // Emit the state_cancel_aborted event to audit log.
@@ -526,7 +529,7 @@ describe('cancel clean-abort sequence', () => {
       timestamp: new Date().toISOString(),
       type: 'state_cancel_aborted',
       orchestration_id: 'orch-w7-test-001',
-      archived_to: '.orchestray/history/orch-orch-w7-test-001-cancelled',
+      archived_to: '.orchestray/history/orch-w7-test-001-cancelled',
       events_jsonl_preserved: true,
     }) + '\n');
 
@@ -545,6 +548,81 @@ describe('cancel clean-abort sequence', () => {
     assert.ok(abortEvt.archived_to.includes('cancelled'));
     assert.ok(!('ts' in abortEvt));
     assert.ok(!('event' in abortEvt));
+  });
+
+  // v2.3.33 W4: end-to-end assertion chain covering all three sites that
+  // must agree on the cancel-archive path — the block message
+  // (bin/check-pause-sentinel.js), the PM's manual `mv` (simulated here,
+  // since it's a Bash op no hook can execute), and the reader
+  // (checkStateCancelCompleteness in bin/_lib/pm-emit-state-watcher.js).
+  // Before v2.3.33 the three sites happened to agree on a doubled
+  // "orch-orch-<id>-cancelled" path that had never once been exercised
+  // end-to-end (no `*-cancelled` dir has ever existed on disk); this test
+  // is the one whose absence let that go unnoticed.
+  test('cancel end-to-end: message path === PM mv target === watcher discovery path', () => {
+    const { checkStateCancelCompleteness } = require(
+      path.join(REPO_ROOT, 'bin', '_lib', 'pm-emit-state-watcher')
+    );
+
+    const orchId = 'orch-e2e-w4-test-001';
+    const { dir, stateDir, cancelPath, eventsPath } = makeProject({
+      orchId,
+      config: { state_sentinel: { cancel_grace_seconds: 0 } },
+    });
+
+    // 1. Real cancel request via state-cancel.js.
+    run(CANCEL_SCRIPT, [dir]);
+    assert.ok(fs.existsSync(cancelPath), 'cancel sentinel created');
+    // Backdate requested_at past the (0s) grace window so the block fires.
+    const sentinel = JSON.parse(fs.readFileSync(cancelPath, 'utf8'));
+    sentinel.requested_at = new Date(Date.now() - 10000).toISOString();
+    fs.writeFileSync(cancelPath, JSON.stringify(sentinel));
+
+    // 2. Site 1 — the block message: parse the archive path it names.
+    const blocked = runSentinelCheck(dir);
+    assert.strictEqual(blocked.status, 2, 'spawn is blocked by the cancel sentinel');
+    const msgMatch = blocked.stderr.match(/archive state to (\S+) at the next boundary/);
+    assert.ok(msgMatch, 'block message names an archive path: ' + blocked.stderr);
+    const messagePath = msgMatch[1].replace(/\/$/, ''); // e.g. history/orch-e2e-w4-test-001-cancelled
+
+    // 3. Site 2 — the PM's clean-abort `mv` (simulated; it's a Bash op, not
+    // something a hook performs). Target the EXACT relative path the message
+    // named, rooted at .orchestray/ like the watcher expects.
+    const archivedRel = '.orchestray/' + messagePath;
+    const archivedDir = path.join(dir, archivedRel);
+    fs.mkdirSync(path.dirname(archivedDir), { recursive: true });
+    fs.renameSync(stateDir, archivedDir);
+    fs.appendFileSync(eventsPath, JSON.stringify({
+      timestamp: new Date().toISOString(),
+      type: 'state_cancel_aborted',
+      orchestration_id: orchId,
+      archived_to: archivedRel,
+      events_jsonl_preserved: true,
+      version: 1,
+    }) + '\n');
+
+    // 4. Site 3 — the reader: checkStateCancelCompleteness must find the
+    // SAME directory the message named and the mv actually created, and must
+    // treat the abort as already-emitted (no backstop fires — it's already
+    // in the audit log from step 3).
+    const before = readEvents(eventsPath).filter(e => e.type === 'state_cancel_aborted' && e.source === 'state_watcher_backstop');
+    checkStateCancelCompleteness(dir, orchId, null);
+    const after = readEvents(eventsPath).filter(e => e.type === 'state_cancel_aborted' && e.source === 'state_watcher_backstop');
+    assert.strictEqual(before.length, 0);
+    assert.strictEqual(after.length, 0, 'reader recognizes the archived dir the message named — no duplicate backstop emit');
+
+    // Positive control: without a prior audit row, the reader independently
+    // derives the SAME path and fires the backstop with a matching archived_to.
+    const orchId2 = 'orch-e2e-w4-test-002';
+    const { dir: dir2, stateDir: stateDir2 } = makeProject({ orchId: orchId2 });
+    const archivedDir2 = path.join(dir2, '.orchestray', 'history', orchId2 + '-cancelled');
+    fs.mkdirSync(path.dirname(archivedDir2), { recursive: true });
+    fs.renameSync(stateDir2, archivedDir2);
+    checkStateCancelCompleteness(dir2, orchId2, null);
+    const events2 = readEvents(path.join(dir2, '.orchestray', 'audit', 'events.jsonl'));
+    const backstop2 = events2.filter(e => e.type === 'state_cancel_aborted' && e.source === 'state_watcher_backstop');
+    assert.strictEqual(backstop2.length, 1, 'reader independently discovers the archive dir and backstops the missing event');
+    assert.strictEqual(backstop2[0].archived_to, '.orchestray/history/' + orchId2 + '-cancelled');
   });
 
 });

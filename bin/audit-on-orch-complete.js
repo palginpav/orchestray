@@ -129,7 +129,7 @@ function hasOrchComplete(eventsPath, orchId) {
       const evt = JSON.parse(line);
       if (
         evt &&
-        (evt.type === 'orchestration_complete' || evt.event_type === 'orchestration_complete') &&
+        evt.type === 'orchestration_complete' &&
         evt.orchestration_id === orchId
       ) {
         return true;
@@ -237,8 +237,7 @@ function findAppliedArchetypeId(eventsPath, orchId) {
       const evt = JSON.parse(line);
       if (
         evt &&
-        (evt.type === 'archetype_cache_advisory_served' ||
-          evt.event_type === 'archetype_cache_advisory_served') &&
+        evt.type === 'archetype_cache_advisory_served' &&
         evt.orchestration_id === orchId
       ) {
         // pm_decision "overridden" means the advisory was not applied.
@@ -370,7 +369,7 @@ function findOrchStartedAt(eventsPath, orchId) {
       const evt = JSON.parse(line);
       if (
         evt &&
-        (evt.type === 'orchestration_start' || evt.event_type === 'orchestration_start') &&
+        evt.type === 'orchestration_start' &&
         evt.orchestration_id === orchId
       ) {
         return evt.timestamp || evt.ts || null;

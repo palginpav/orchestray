@@ -67,8 +67,7 @@ describe('calibrate-role-budgets.js — fresh-project no-events branch', () => {
       const lines = fs.readFileSync(eventsPath, 'utf8').split('\n').filter(Boolean);
       const matches = lines
         .map(l => { try { return JSON.parse(l); } catch (_e) { return null; } })
-        .filter(ev => ev && (ev.type === 'calibrate_skipped_no_events'
-                          || ev.event_type === 'calibrate_skipped_no_events'));
+        .filter(ev => ev && ev.type === 'calibrate_skipped_no_events');
       assert.ok(matches.length >= 1,
         'must emit at least one calibrate_skipped_no_events event; got: ' + JSON.stringify(lines));
       assert.equal(matches[0].mode, 'if_stale',

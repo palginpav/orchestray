@@ -147,7 +147,7 @@ test('case 1 — first spawn emits orchestration_start and creates sentinel', ()
 
     const events = readEvents(tmp);
     const startEvents = events.filter(e =>
-      (e.event_type === 'orchestration_start' || e.type === 'orchestration_start') &&
+      e.type === 'orchestration_start' &&
       e.orchestration_id === orchId,
     );
     assert.equal(startEvents.length, 1, 'should emit exactly one orchestration_start');
@@ -176,7 +176,7 @@ test('case 2 — second spawn catches EEXIST and does not emit duplicate', () =>
 
     const events = readEvents(tmp);
     const startEvents = events.filter(e =>
-      (e.event_type === 'orchestration_start' || e.type === 'orchestration_start') &&
+      e.type === 'orchestration_start' &&
       e.orchestration_id === orchId,
     );
     assert.equal(startEvents.length, 0, 'second spawn must not emit orchestration_start');
@@ -231,7 +231,7 @@ test('case 3 — parallel race: two concurrent spawns emit exactly one orchestra
 
     const events = readEvents(tmp);
     const startEvents = events.filter(e =>
-      (e.event_type === 'orchestration_start' || e.type === 'orchestration_start') &&
+      e.type === 'orchestration_start' &&
       e.orchestration_id === orchId,
     );
     assert.equal(startEvents.length, 1,
@@ -255,7 +255,7 @@ test('case 4 — first SubagentStop emits orchestration_complete and creates sen
 
     const events = readEvents(tmp);
     const completeEvents = events.filter(e =>
-      (e.event_type === 'orchestration_complete' || e.type === 'orchestration_complete') &&
+      e.type === 'orchestration_complete' &&
       e.orchestration_id === orchId,
     );
     assert.equal(completeEvents.length, 1, 'should emit exactly one orchestration_complete');
@@ -276,10 +276,12 @@ test('case 5 — secondary gate: existing orchestration_complete row prevents du
   const orchId = 'orch-w4-c5';
   const tmp = makeTmpProject(orchId);
   try {
-    // Pre-write an orchestration_complete row (simulating ox.js:329).
+    // Pre-write an orchestration_complete row (simulating ox.js:329, which
+    // writes `type` — writeEvent/withAutofill then mirrors it to
+    // `event_type` too; both fields are set on a real row).
     const eventsPath = path.join(tmp, '.orchestray', 'audit', 'events.jsonl');
     fs.writeFileSync(eventsPath,
-      JSON.stringify({ event_type: 'orchestration_complete', orchestration_id: orchId, version: 1 }) + '\n',
+      JSON.stringify({ type: 'orchestration_complete', orchestration_id: orchId, version: 1 }) + '\n',
       'utf8',
     );
 
@@ -289,7 +291,7 @@ test('case 5 — secondary gate: existing orchestration_complete row prevents du
     // Should still be exactly one row (the pre-written one, no new emit).
     const events = readEvents(tmp);
     const completeEvents = events.filter(e =>
-      (e.event_type === 'orchestration_complete' || e.type === 'orchestration_complete') &&
+      e.type === 'orchestration_complete' &&
       e.orchestration_id === orchId,
     );
     assert.equal(completeEvents.length, 1, 'should still have exactly one orchestration_complete (no duplicate)');
@@ -316,7 +318,7 @@ test('case 6 — second SubagentStop catches EEXIST and exits 0 silently', () =>
 
     const afterFirst = readEvents(tmp);
     const afterFirstCount = afterFirst.filter(e =>
-      (e.event_type === 'orchestration_complete' || e.type === 'orchestration_complete') &&
+      e.type === 'orchestration_complete' &&
       e.orchestration_id === orchId,
     ).length;
     assert.equal(afterFirstCount, 1, 'first stop should emit one row');
@@ -327,7 +329,7 @@ test('case 6 — second SubagentStop catches EEXIST and exits 0 silently', () =>
 
     const afterSecond = readEvents(tmp);
     const afterSecondCount = afterSecond.filter(e =>
-      (e.event_type === 'orchestration_complete' || e.type === 'orchestration_complete') &&
+      e.type === 'orchestration_complete' &&
       e.orchestration_id === orchId,
     ).length;
     assert.equal(afterSecondCount, 1, 'second stop must not emit a duplicate row');
@@ -354,7 +356,7 @@ test('case 7 — ORCHESTRAY_ORCH_LIFECYCLE_EMIT_DISABLED=1 suppresses both start
 
     const eventsAfterSpawn = readEvents(tmp);
     const startRows = eventsAfterSpawn.filter(e =>
-      (e.event_type === 'orchestration_start' || e.type === 'orchestration_start') &&
+      e.type === 'orchestration_start' &&
       e.orchestration_id === orchId,
     );
     assert.equal(startRows.length, 0, 'kill switch: orchestration_start must not be emitted');
@@ -369,7 +371,7 @@ test('case 7 — ORCHESTRAY_ORCH_LIFECYCLE_EMIT_DISABLED=1 suppresses both start
 
     const eventsAfterStop = readEvents(tmp);
     const completeRows = eventsAfterStop.filter(e =>
-      (e.event_type === 'orchestration_complete' || e.type === 'orchestration_complete') &&
+      e.type === 'orchestration_complete' &&
       e.orchestration_id === orchId,
     );
     assert.equal(completeRows.length, 0, 'kill switch: orchestration_complete must not be emitted');

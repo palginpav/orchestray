@@ -430,7 +430,9 @@ function hasAgentCallAfter(events, isoTs) {
   const sinceMs = tsMs(isoTs);
   if (sinceMs == null) return false;
   return events.some(e => {
-    if (!e || (e.type !== 'agent_start' && e.event_type !== 'agent_start')) return false;
+    // `type` is the row's own identity; `event_type` on an advisory row merely
+    // references another event — must not be used to identify this row.
+    if (!e || e.type !== 'agent_start') return false;
     if (e.agent_type !== HOUSEKEEPER_AGENT && e.agent_role !== HOUSEKEEPER_AGENT) return false;
     const t = tsMs(e.timestamp || e.ts);
     return t != null && t >= sinceMs;

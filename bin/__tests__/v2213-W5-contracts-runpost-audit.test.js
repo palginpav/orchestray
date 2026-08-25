@@ -179,10 +179,26 @@ describe('W5 — post-phase no_task_yaml branch', () => {
   test('Test 1: no task YAML → emits contracts_runpost_silent_skip with reason=no_task_yaml', () => {
     const tmp = makeTmpProject({ orchestrationId: 'orch-w5-t1' });
     // Note: no task YAML written — resolveTaskFilePath returns null
+
+    // Proof this test identifies events by `type`, not `event_type`: seed an
+    // advisory row that merely *references* contracts_runpost_silent_skip
+    // (as schema_shape_violation does for a shape-violating type) before the
+    // hook runs. Pre-fix (`e.event_type === ...`) this advisory row would be
+    // double-counted alongside the real event.
+    fs.appendFileSync(
+      path.join(tmp, '.orchestray', 'audit', 'events.jsonl'),
+      JSON.stringify({
+        version: 1, type: 'schema_shape_violation',
+        event_type: 'contracts_runpost_silent_skip', validation_errors: [], rate_limited: false,
+      }) + '\n',
+      'utf8',
+    );
+
     try {
       const { events } = runPostHook(tmp, 'W-missing-task');
-      const skipEvents = events.filter(e => e.event_type === 'contracts_runpost_silent_skip');
+      const skipEvents = events.filter(e => e.type === 'contracts_runpost_silent_skip');
       assert.ok(skipEvents.length >= 1, 'contracts_runpost_silent_skip must emit when no task YAML');
+      assert.equal(skipEvents.length, 1, 'exactly 1 contracts_runpost_silent_skip event (advisory row referencing it must not be counted)');
       assert.equal(skipEvents[0].reason, 'no_task_yaml', 'reason must be no_task_yaml');
       assert.equal(skipEvents[0].schema_version, 1, 'schema_version must be 1');
       assert.ok(typeof skipEvents[0].orchestration_id === 'string', 'orchestration_id must be present');
@@ -223,7 +239,7 @@ describe('W5 — post-phase no_task_id branch (final-review F-02)', () => {
       const events = readEvents(tmp);
       // F-18: no_task_id path is silent — no event emitted.
       const skipEvents = events.filter(e =>
-        e.event_type === 'contracts_runpost_silent_skip' && e.reason === 'no_task_id'
+        e.type === 'contracts_runpost_silent_skip' && e.reason === 'no_task_id'
       );
       assert.equal(skipEvents.length, 0, 'F-18: no contracts_runpost_silent_skip emitted for no_task_id path');
     } finally {
@@ -251,7 +267,7 @@ describe('W5 — post-phase no_task_id branch (final-review F-02)', () => {
       assert.ok(res.status === 0 || res.status === null);
       const events = readEvents(tmp);
       const skipEvents = events.filter(e =>
-        e.event_type === 'contracts_runpost_silent_skip' && e.reason === 'no_task_id'
+        e.type === 'contracts_runpost_silent_skip' && e.reason === 'no_task_id'
       );
       assert.equal(skipEvents.length, 0, 'kill switch must suppress no_task_id emit');
     } finally {
@@ -276,7 +292,7 @@ describe('W5 — post-phase task_yaml_read_error branch (unit)', () => {
       const { emitSkipped } = require(HOOK);
       emitSkipped(tmp, 'W-task-yaml-error', 'orch-w5-t2', 'task_yaml_read_error', 'post');
       const events = readEvents(tmp);
-      const skipEvents = events.filter(e => e.event_type === 'contracts_runpost_silent_skip');
+      const skipEvents = events.filter(e => e.type === 'contracts_runpost_silent_skip');
       assert.ok(skipEvents.length >= 1, 'contracts_runpost_silent_skip must emit for task_yaml_read_error');
       assert.equal(skipEvents[0].reason, 'task_yaml_read_error');
       assert.equal(skipEvents[0].schema_version, 1);
@@ -298,7 +314,7 @@ describe('W5 — post-phase no_contracts_block branch', () => {
     });
     try {
       const { events } = runPostHook(tmp, 'W-no-contracts');
-      const skipEvents = events.filter(e => e.event_type === 'contracts_runpost_silent_skip');
+      const skipEvents = events.filter(e => e.type === 'contracts_runpost_silent_skip');
       assert.ok(skipEvents.length >= 1, 'contracts_runpost_silent_skip must emit when no contracts block');
       assert.equal(skipEvents[0].reason, 'no_contracts_block');
       assert.equal(skipEvents[0].schema_version, 1);
@@ -325,7 +341,7 @@ describe('W5 — kill-switch suppresses contracts_runpost_silent_skip', () => {
       const { events } = runPostHook(tmp, 'W-no-contracts', {
         ORCHESTRAY_CONTRACTS_RUNPOST_AUDIT_DISABLED: '1',
       });
-      const skipEvents = events.filter(e => e.event_type === 'contracts_runpost_silent_skip');
+      const skipEvents = events.filter(e => e.type === 'contracts_runpost_silent_skip');
       assert.equal(skipEvents.length, 0, 'kill-switch must prevent contracts_runpost_silent_skip emit');
       // contract_check_skipped should still fire (kill-switch only suppresses the new audit emit)
       const checkSkipped = events.filter(e => e.type === 'contract_check_skipped');
@@ -348,7 +364,7 @@ describe('W5 — pre-phase does not emit contracts_runpost_silent_skip', () => {
     });
     try {
       const { events } = runPreHook(tmp, 'W-no-contracts');
-      const skipEvents = events.filter(e => e.event_type === 'contracts_runpost_silent_skip');
+      const skipEvents = events.filter(e => e.type === 'contracts_runpost_silent_skip');
       assert.equal(skipEvents.length, 0,
         'contracts_runpost_silent_skip must NOT emit on pre-phase (only on post-phase)');
       // contract_check_skipped should still fire on pre-phase
@@ -372,7 +388,7 @@ describe('W5 — post-phase real contracts check does not emit contracts_runpost
     });
     try {
       const { events } = runPostHook(tmp, 'W-has-contracts');
-      const skipEvents = events.filter(e => e.event_type === 'contracts_runpost_silent_skip');
+      const skipEvents = events.filter(e => e.type === 'contracts_runpost_silent_skip');
       assert.equal(skipEvents.length, 0,
         'contracts_runpost_silent_skip must NOT emit when runChecks actually runs');
       // contract_check should emit (post-phase ran real checks)

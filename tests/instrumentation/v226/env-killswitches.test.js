@@ -182,7 +182,7 @@ test('Env-killswitch: ORCHESTRAY_DISABLE_SKIP_EVENT=1 suppresses compression_ski
       if (!fs.existsSync(p)) return [];
       return fs.readFileSync(p, 'utf8').split('\n').filter(l => l.trim())
         .map(l => { try { return JSON.parse(l); } catch (_e) { return null; } })
-        .filter(e => e && (e.type === 'compression_skipped' || e.event_type === 'compression_skipped'));
+        .filter(e => e && e.type === 'compression_skipped');
     } catch (_e) { return []; }
   }
 

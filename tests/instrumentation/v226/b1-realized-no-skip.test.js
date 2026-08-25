@@ -99,8 +99,8 @@ test('B1-no-skip: zero tokens emits realized_savings(realized_status=unknown) AN
   writeEvent(unknownPayload, { cwd: tmpDir, eventsPath });
 
   const events = readEvents(eventsPath);
-  const realized = events.filter(e => e.type === 'tokenwright_realized_savings' || e.event_type === 'tokenwright_realized_savings');
-  const unknown  = events.filter(e => e.type === 'tokenwright_realized_unknown' || e.event_type === 'tokenwright_realized_unknown');
+  const realized = events.filter(e => e.type === 'tokenwright_realized_savings');
+  const unknown  = events.filter(e => e.type === 'tokenwright_realized_unknown');
 
   assert.ok(realized.length >= 1, 'must emit at least one tokenwright_realized_savings');
   assert.ok(unknown.length >= 1,  'must emit at least one tokenwright_realized_unknown');
@@ -147,8 +147,8 @@ test('B1-no-skip: positive tokens emits realized_savings with realized_status=me
   writeEvent(realizedPayload, { cwd: tmpDir, eventsPath });
 
   const events = readEvents(eventsPath);
-  const realized = events.filter(e => e.type === 'tokenwright_realized_savings' || e.event_type === 'tokenwright_realized_savings');
-  const unknown  = events.filter(e => e.type === 'tokenwright_realized_unknown'  || e.event_type === 'tokenwright_realized_unknown');
+  const realized = events.filter(e => e.type === 'tokenwright_realized_savings');
+  const unknown  = events.filter(e => e.type === 'tokenwright_realized_unknown');
 
   assert.ok(realized.length >= 1, 'must emit tokenwright_realized_savings');
   assert.equal(unknown.length, 0, 'must NOT emit tokenwright_realized_unknown when tokens > 0');

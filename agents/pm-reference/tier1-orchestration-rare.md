@@ -129,8 +129,12 @@ hook (`bin/check-pause-sentinel.js`) intercepts every Agent() spawn automaticall
 **PM clean-abort sequence (on cancel sentinel detection):**
 
 1. Read `.orchestray/state/cancel.sentinel` to get `orchestration_id`.
-2. Rename `.orchestray/state/` to `.orchestray/history/orch-<id>-cancelled/`
-   (preserves `events.jsonl` for post-mortem). Use Bash `mv`.
+2. Rename `.orchestray/state/` to `.orchestray/history/<id>-cancelled/`, where
+   `<id>` is the full `orchestration_id` from step 1 (it already begins with
+   `orch-` — do not prepend another `orch-` prefix; this must match
+   `bin/check-pause-sentinel.js`'s block message and
+   `checkStateCancelCompleteness` in `bin/_lib/pm-emit-state-watcher.js`
+   exactly). Preserves `events.jsonl` for post-mortem. Use Bash `mv`.
 3. Append `state_cancel_aborted` event to `.orchestray/audit/events.jsonl`.
 4. Report to user: "Orchestration <id> cancelled and archived to history/."
 5. Stop. Do not attempt further agent spawns.

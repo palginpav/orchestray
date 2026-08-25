@@ -63,7 +63,7 @@
  * v2.3.21 item 1 adds `state_cancel_aborted` (tier1-orchestration-rare.md
  *   §"Cancel" step 3, `ox events append` prose, confirmed 0 emits ever).
  *   Same non-Edit/Write shape as v2.3.20 item 2: the real state change is a
- *   Bash `mv .orchestray/state/ .orchestray/history/orch-<id>-cancelled/`,
+ *   Bash `mv .orchestray/state/ .orchestray/history/<orch_id>-cancelled/`,
  *   not a file this hook observes. `checkStateCancelCompleteness` (below)
  *   uses the SAME orch-close-check shape: the archived directory existing
  *   on disk is ground truth that the abort sequence ran (nothing else ever
@@ -1368,16 +1368,34 @@ function checkOversizedInputCompleteness(cwd, orchId, readLines) {
  * Orch-close completeness check for the cancel-abort sequence
  * (tier1-orchestration-rare.md §"Cancel" step 3 — `state_cancel_aborted`,
  * confirmed 0 emits ever). Like `checkOversizedInputCompleteness`, the real
- * state change (`mv .orchestray/state/ .orchestray/history/orch-<id>-cancelled/`)
+ * state change (`mv .orchestray/state/ .orchestray/history/<orch_id>-cancelled/`)
  * is a Bash op, not an Edit/Write this hook can observe — so this fires
  * from the same orch-close fan-out instead.
  *
- * Ground truth: the archived directory `.orchestray/history/orch-<orchId>-
+ * Ground truth: the archived directory `.orchestray/history/<orchId>-
  * cancelled/` existing on disk IS the abort having happened — nothing but
  * the PM's manual `mv` ever creates it (bin/state-cancel.js only writes the
  * sentinel; bin/check-pause-sentinel.js only blocks the next spawn). Per
  * event-schemas.md, the event is written to the LIVE audit log, not
  * archived into the cancelled dir — so "already emitted" is checked there.
+ *
+ * v2.3.33 W4: the path was previously `orch-<orchId>-cancelled` (doubled
+ * prefix — orchId itself already starts with 'orch-') and was deliberately
+ * "pinned" in v2.3.20 (commit a2ad3ec) on the theory that writer/reader
+ * agreement made it safe to leave alone. That reasoning didn't check the
+ * doubled form against the rest of the codebase's history-dir convention:
+ * `bin/archive-orch-events.js` writes real, actively-used per-orchestration
+ * archives at `.orchestray/history/<orch_id>/` (single prefix — orchId as
+ * given, no extra 'orch-'), and `bin/ox.js`'s state-snapshot archiving uses
+ * the same single-prefix `history/${orchId}/...` shape. `bin/state-gc.js`
+ * also treats `history/orch-*` (i.e. dirs starting with the orchId itself)
+ * as the canonical shape, with status suffixes like `-abandoned` appended
+ * directly to the id — the same pattern `-cancelled` now follows. No
+ * `*-cancelled` directory has ever existed on disk (grep of `.orchestray/
+ * history/` across dev machines), so this is the first time the path is
+ * actually exercised end-to-end; the single-prefix form is corrected here
+ * to match every other archive path in the codebase before any real user
+ * data is ever written under the doubled form.
  *
  * `events_jsonl_preserved` (E1 fix): derived from `fs.existsSync(livePath)`
  * — the LIVE audit log at EVENTS_REL, not a file inside `archivedDir`. The
@@ -1401,11 +1419,15 @@ function checkStateCancelCompleteness(cwd, orchId, readLines) {
   if (process.env.ORCHESTRAY_CANCEL_ABORT_WATCHER_DISABLED === '1') return;
   if (!orchId) return;
 
-  // Doubled "orch-orch-..." prefix is intentional and load-bearing, not a bug:
-  // orchId already starts with "orch-" (bin/ox.js), and the PM's clean-abort
-  // prose (tier1-orchestration-rare.md step 2) literally substitutes the full
-  // orchId into this template — writer and reader agree. Do not "correct" it.
-  const archivedToRel = '.orchestray/history/orch-' + orchId + '-cancelled';
+  // Single "orch-<rest>-cancelled" form — orchId already starts with "orch-"
+  // (bin/ox.js enforces this), so do not prepend a second "orch-". Matches
+  // the real, actively-exercised history-dir convention (bin/archive-orch-
+  // events.js: `.orchestray/history/<orch_id>/`; bin/ox.js state-snapshot
+  // archiving: same shape). See the doc comment above for why the v2.3.20
+  // "pinned" doubled-prefix form was wrong. This is the writer AND reader
+  // convention as of v2.3.33 W4 — bin/check-pause-sentinel.js's block
+  // message and tier1-orchestration-rare.md step 2 must match this exactly.
+  const archivedToRel = '.orchestray/history/' + orchId + '-cancelled';
   const archivedDir   = path.join(cwd, archivedToRel);
   if (!fs.existsSync(archivedDir)) return; // never cancelled — nothing to reconstruct
 

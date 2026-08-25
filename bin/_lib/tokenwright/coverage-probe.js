@@ -122,12 +122,14 @@ function runCoverageProbe({ orchestrationId, eventsPath, scanBytes }) {
 
     // Build indexed maps for correlation
     // agent_start events: keyed by spawn_key (or agent_type + index as fallback)
-    const agentStarts        = events.filter(e => e.type === 'agent_start' || e.event_type === 'agent_start');
-    const compressionEvents  = events.filter(e => e.type === 'prompt_compression' || e.event_type === 'prompt_compression');
-    const realizedEvents     = events.filter(e => e.type === 'tokenwright_realized_savings' || e.event_type === 'tokenwright_realized_savings');
+    // `type` is a row's own identity; `event_type` on an advisory row is a
+    // reference to a DIFFERENT event and must not be used to identify a row here.
+    const agentStarts        = events.filter(e => e.type === 'agent_start');
+    const compressionEvents  = events.filter(e => e.type === 'prompt_compression');
+    const realizedEvents     = events.filter(e => e.type === 'tokenwright_realized_savings');
     const realizedUnknown    = realizedEvents.filter(e => e.realized_status === 'unknown');
     const realizedMeasured   = realizedEvents.filter(e => e.realized_status !== 'unknown');
-    const skippedEvents      = events.filter(e => e.type === 'compression_skipped' || e.event_type === 'compression_skipped');
+    const skippedEvents      = events.filter(e => e.type === 'compression_skipped');
 
     const agentStartsTotal       = agentStarts.length;
     const promptCompressionEmits = compressionEvents.length;

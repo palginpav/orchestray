@@ -260,7 +260,7 @@ describe('v2.2.14 G-03 — calibrate-role-budgets canonicalised in hooks/hooks.j
 
     // No hook_chain_drift_detected events emitted.
     const events = readEvents(tmpDir);
-    const driftEvents = events.filter(e => e.event_type === 'hook_chain_drift_detected');
+    const driftEvents = events.filter(e => e.type === 'hook_chain_drift_detected');
     assert.strictEqual(
       driftEvents.length,
       0,

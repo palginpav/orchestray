@@ -90,6 +90,16 @@ test('Event3-drift: emitTokenwrightEstimationDrift emits correct payload shape',
 
   const { writeEvent } = require('../../../bin/_lib/audit-event-writer');
 
+  // Proof this test identifies events by `type`, not `event_type`: seed an
+  // advisory row that merely *references* tokenwright_estimation_drift (as
+  // schema_shape_violation does for a shape-violating type) before the real
+  // event is written. Pre-fix (`e.event_type === ...`) this advisory row
+  // would be double-counted alongside the real event.
+  fs.writeFileSync(eventsPath, JSON.stringify({
+    version: 1, type: 'schema_shape_violation',
+    event_type: 'tokenwright_estimation_drift', validation_errors: [], rate_limited: false,
+  }) + '\n', 'utf8');
+
   const payload = {
     type:                       'tokenwright_estimation_drift',
     event_type:                 'tokenwright_estimation_drift',
@@ -107,11 +117,10 @@ test('Event3-drift: emitTokenwrightEstimationDrift emits correct payload shape',
 
   const lines = fs.readFileSync(eventsPath, 'utf8').split('\n').filter(l => l.trim());
   const events = lines.map(l => { try { return JSON.parse(l); } catch (_e) { return null; } }).filter(Boolean);
-  const driftEvents = events.filter(e =>
-    e.type === 'tokenwright_estimation_drift' || e.event_type === 'tokenwright_estimation_drift'
-  );
+  const driftEvents = events.filter(e => e.type === 'tokenwright_estimation_drift');
 
   assert.ok(driftEvents.length >= 1, 'must emit at least one drift event');
+  assert.equal(driftEvents.length, 1, 'exactly 1 drift event (advisory row referencing it must not be counted)');
   const e = driftEvents[0];
   assert.equal(e.direction, 'underestimate');
   assert.equal(e.drift_budget_pct, 15);

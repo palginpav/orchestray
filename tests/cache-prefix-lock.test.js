@@ -124,7 +124,7 @@ function readDriftEvents(tmpDir) {
       .split('\n')
       .filter(l => l.trim())
       .map(l => JSON.parse(l))
-      .filter(e => e.event_type === 'prefix_drift');
+      .filter(e => e.type === 'prefix_drift');
   } catch (_) {
     return [];
   }

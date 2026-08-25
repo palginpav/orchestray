@@ -13,8 +13,10 @@
  *
  * The clean-abort sequence fires at the PM's next group-boundary Agent() spawn:
  * the PreToolUse:Agent hook (`bin/check-pause-sentinel.js`) detects the sentinel,
- * blocks the spawn (exit 1), and the PM then moves `.orchestray/state/` to
- * `.orchestray/history/orch-*-cancelled/` and emits `state_cancel_aborted`.
+ * blocks the spawn (exit 2), and the PM then moves `.orchestray/state/` to
+ * `.orchestray/history/<orchestration_id>-cancelled/` (orchestration_id already
+ * begins with 'orch-' — do not prepend a second 'orch-') and emits
+ * `state_cancel_aborted`.
  *
  * `--force`: bypasses idempotency check and overwrites any existing sentinel.
  *

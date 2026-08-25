@@ -107,15 +107,15 @@ describe('v2.2.13 W1 — inline context_size_hint parser in preflight-spawn-budg
     assert.equal(r.status, 0, 'exits 0 for valid native hint; stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
-    const inline = events.filter(e => e.event_type === 'context_size_hint_parsed_inline');
+    const inline = events.filter(e => e.type === 'context_size_hint_parsed_inline');
     assert.equal(inline.length, 1, 'exactly 1 context_size_hint_parsed_inline event');
     assert.equal(inline[0].source, 'tool_input_native', 'source must be tool_input_native');
     assert.equal(inline[0].subagent_type, 'developer', 'subagent_type must be set');
     assert.equal(inline[0].schema_version, 1, 'schema_version must be 1');
 
     // No block events
-    const missing  = events.filter(e => e.event_type === 'context_size_hint_missing');
-    const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
+    const missing  = events.filter(e => e.type === 'context_size_hint_missing');
+    const required = events.filter(e => e.type === 'context_size_hint_required_failed');
     assert.equal(missing.length,  0, 'no context_size_hint_missing event expected');
     assert.equal(required.length, 0, 'no context_size_hint_required_failed event expected');
   });
@@ -131,14 +131,14 @@ describe('v2.2.13 W1 — inline context_size_hint parser in preflight-spawn-budg
     assert.equal(r.status, 0, 'exits 0 when hint is found in prompt; stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
-    const inline = events.filter(e => e.event_type === 'context_size_hint_parsed_inline');
+    const inline = events.filter(e => e.type === 'context_size_hint_parsed_inline');
     assert.equal(inline.length, 1, 'exactly 1 context_size_hint_parsed_inline event');
     assert.equal(inline[0].source, 'prompt_body', 'source must be prompt_body');
     assert.equal(inline[0].schema_version, 1, 'schema_version must be 1');
 
     // No block events
-    const missing  = events.filter(e => e.event_type === 'context_size_hint_missing');
-    const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
+    const missing  = events.filter(e => e.type === 'context_size_hint_missing');
+    const required = events.filter(e => e.type === 'context_size_hint_required_failed');
     assert.equal(missing.length,  0, 'no context_size_hint_missing event expected');
     assert.equal(required.length, 0, 'no context_size_hint_required_failed event expected');
   });
@@ -159,14 +159,14 @@ describe('v2.2.13 W1 — inline context_size_hint parser in preflight-spawn-budg
     assert.equal(r.status, 0, 'exits 0 — computed fallback, not blocked; stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
-    const inline = events.filter(e => e.event_type === 'context_size_hint_parsed_inline');
+    const inline = events.filter(e => e.type === 'context_size_hint_parsed_inline');
     assert.equal(inline.length, 1, 'exactly 1 context_size_hint_parsed_inline event');
     assert.equal(inline[0].source, 'absent', 'source must be absent');
 
-    const computed = events.filter(e => e.event_type === 'context_size_hint_computed');
+    const computed = events.filter(e => e.type === 'context_size_hint_computed');
     assert.equal(computed.length, 1, 'exactly 1 context_size_hint_computed event');
 
-    const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
+    const required = events.filter(e => e.type === 'context_size_hint_required_failed');
     assert.equal(required.length, 0, 'no block event — the prompt was readable');
   });
 
@@ -187,20 +187,20 @@ describe('v2.2.13 W1 — inline context_size_hint parser in preflight-spawn-budg
 
     const events = readEvents(tmpRoot);
     // inline parse event still fires (source=absent because no hint in prompt)
-    const inline = events.filter(e => e.event_type === 'context_size_hint_parsed_inline');
+    const inline = events.filter(e => e.type === 'context_size_hint_parsed_inline');
     assert.equal(inline.length, 1, 'context_size_hint_parsed_inline still emits');
     assert.equal(inline[0].source, 'absent', 'source=absent (no hint anywhere)');
 
     // computed-fallback fires; no block — the retired var is not consulted by
     // either the old block path or the new compute-fallback path.
-    const computed = events.filter(e => e.event_type === 'context_size_hint_computed');
+    const computed = events.filter(e => e.type === 'context_size_hint_computed');
     assert.equal(computed.length, 1, 'context_size_hint_computed must emit (var is no-op either way)');
 
-    const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
+    const required = events.filter(e => e.type === 'context_size_hint_required_failed');
     assert.equal(required.length, 0, 'no block event — retired var does not restore blocking');
 
     // deprecated_kill_switch_detected must NOT emit — detection code removed
-    const deprecated = events.filter(e => e.event_type === 'deprecated_kill_switch_detected');
+    const deprecated = events.filter(e => e.type === 'deprecated_kill_switch_detected');
     assert.equal(deprecated.length, 0, 'deprecated_kill_switch_detected must not emit (function removed in G-04)');
   });
 
@@ -221,14 +221,14 @@ describe('v2.2.13 W1 — inline context_size_hint parser in preflight-spawn-budg
     assert.equal(r.status, 0, 'exits 0 — computed fallback when inline parse is disabled; stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
-    const inline = events.filter(e => e.event_type === 'context_size_hint_parsed_inline');
+    const inline = events.filter(e => e.type === 'context_size_hint_parsed_inline');
     assert.equal(inline.length, 1, 'context_size_hint_parsed_inline still emits');
     assert.equal(inline[0].source, 'absent', 'source=absent (parser disabled; hint in prompt ignored)');
 
-    const computed = events.filter(e => e.event_type === 'context_size_hint_computed');
+    const computed = events.filter(e => e.type === 'context_size_hint_computed');
     assert.equal(computed.length, 1, 'computed fallback fires when inline parse disabled');
 
-    const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
+    const required = events.filter(e => e.type === 'context_size_hint_required_failed');
     assert.equal(required.length, 0, 'no block — the prompt was readable');
   });
 

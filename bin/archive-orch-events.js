@@ -210,7 +210,9 @@ function filterEventsByOrchId(eventsPath, orchId) {
     if (parsed && parsed.orchestration_id === orchId) {
       out.push(line);
       count += 1;
-      if (parsed.type === 'orchestration_complete' || parsed.event_type === 'orchestration_complete') {
+      // `type` is the row's own identity; `event_type` on an advisory row is a
+      // reference to a DIFFERENT event, not this row's identity — must not match on it.
+      if (parsed.type === 'orchestration_complete') {
         sawComplete = true;
       }
     }

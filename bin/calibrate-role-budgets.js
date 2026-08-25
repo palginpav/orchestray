@@ -245,7 +245,9 @@ function main() {
 
     // Only look at budget_warn for now (v2.1.15 emits these on over-budget spawns).
     // In v2.1.16, also include context_telemetry events with pre_spawn_payload_tokens.
-    if (ev.event_type !== 'budget_warn') continue;
+    // `type` is the row's own identity; an advisory row (e.g. audit_event_autofilled)
+    // that merely *references* budget_warn via `event_type` must not count as a sample.
+    if (ev.type !== 'budget_warn') continue;
 
     // Window filter
     if (ev.timestamp) {

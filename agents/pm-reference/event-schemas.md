@@ -2059,7 +2059,8 @@ successfully created.
 ### `state_cancel_aborted`
 
 Emitted by the PM after executing the clean-abort sequence: renaming the state dir to
-`.orchestray/history/orch-<id>-cancelled/`. Written to `.orchestray/audit/events.jsonl`
+`.orchestray/history/<id>-cancelled/` (`<id>` is the full `orchestration_id`, which
+already begins with `orch-`). Written to `.orchestray/audit/events.jsonl`
 (the audit log, which is NOT inside the renamed state dir).
 
 ```json
@@ -2067,7 +2068,7 @@ Emitted by the PM after executing the clean-abort sequence: renaming the state d
   "timestamp": "<ISO 8601 UTC>",
   "type": "state_cancel_aborted",
   "orchestration_id": "<orch id from cancel sentinel>",
-  "archived_to": ".orchestray/history/orch-<id>-cancelled",
+  "archived_to": ".orchestray/history/<id>-cancelled",
   "events_jsonl_preserved": true
 }
 ```

@@ -209,7 +209,12 @@ function main() {
       process.stderr.write(
         'cancelled: ' + orchId + '\n' +
         '[orchestray] Cancel sentinel present — further Agent() spawns are blocked.\n' +
-        'The PM will archive state to history/orch-' + orchId + '-cancelled/ at the next boundary.\n' +
+        // orchId already begins with 'orch-' (bin/ox.js enforces this) — do not
+        // prepend a second 'orch-' here. This path must match the reader in
+        // bin/_lib/pm-emit-state-watcher.js (checkStateCancelCompleteness) and
+        // the real history dir convention used by bin/archive-orch-events.js
+        // (`history/<orch_id>/`), not a doubled prefix. See v2.3.33 W4.
+        'The PM will archive state to history/' + orchId + '-cancelled/ at the next boundary.\n' +
         'To clear without archiving (not recommended): delete .orchestray/state/cancel.sentinel\n'
       );
       process.exit(2);

@@ -115,13 +115,27 @@ describe('v2.2.10 B4 — context_size_hint_missing warn-event', () => {
     assert.equal(r.status, 0, 'hook exits 0; stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
-    const missing = events.filter(e => e.event_type === 'context_size_hint_missing');
+    const missing = events.filter(e => e.type === 'context_size_hint_missing');
     assert.equal(missing.length, 0, 'no context_size_hint_missing events should be emitted');
   });
 
   // ── Test 2: missing context_size_hint → warn + required_failed, exit 2 ─
   // Updated v2.2.11 (W2-8): fail-closed promotion — exit is now 2 (block).
   test('spawn input without context_size_hint → context_size_hint_missing + context_size_hint_required_failed, exit 2', () => {
+    // Proof this test identifies events by `type`, not `event_type`: seed an
+    // advisory row that merely *references* context_size_hint_missing (as
+    // schema_shape_violation does for a shape-violating type) before the hook
+    // runs. Pre-fix (`e.event_type === ...`) this advisory row would be
+    // double-counted alongside the real event, inflating the count to 2.
+    fs.appendFileSync(
+      eventsPath(tmpRoot),
+      JSON.stringify({
+        version: 1, type: 'schema_shape_violation',
+        event_type: 'context_size_hint_missing', validation_errors: [], rate_limited: false,
+      }) + '\n',
+      'utf8',
+    );
+
     const r = runHookSync(tmpRoot, {
       subagent_type: 'developer',
       task_id: 'W2',
@@ -130,8 +144,8 @@ describe('v2.2.10 B4 — context_size_hint_missing warn-event', () => {
     assert.equal(r.status, 2, 'hook exits 2 (hard-block); stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
-    const missing = events.filter(e => e.event_type === 'context_size_hint_missing');
-    assert.equal(missing.length, 1, 'exactly 1 context_size_hint_missing event');
+    const missing = events.filter(e => e.type === 'context_size_hint_missing');
+    assert.equal(missing.length, 1, 'exactly 1 context_size_hint_missing event (advisory row referencing it must not be counted)');
     assert.equal(missing[0].subagent_type, 'developer', 'subagent_type must be set');
     assert.equal(missing[0].task_id, 'W2', 'task_id must be propagated');
     assert.equal(missing[0].version, 1, 'version must be 1');
@@ -148,7 +162,7 @@ describe('v2.2.10 B4 — context_size_hint_missing warn-event', () => {
     assert.equal(r.status, 2, 'hook exits 2 (hard-block); stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
-    const missing = events.filter(e => e.event_type === 'context_size_hint_missing');
+    const missing = events.filter(e => e.type === 'context_size_hint_missing');
     assert.equal(missing.length, 1, 'exactly 1 context_size_hint_missing event for all-zero hint');
     assert.equal(missing[0].subagent_type, 'reviewer', 'subagent_type matches');
   });
@@ -163,7 +177,7 @@ describe('v2.2.10 B4 — context_size_hint_missing warn-event', () => {
     assert.equal(r.status, 0, 'hook exits 0; stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
-    const missing = events.filter(e => e.event_type === 'context_size_hint_missing');
+    const missing = events.filter(e => e.type === 'context_size_hint_missing');
     assert.equal(missing.length, 0, 'kill switch must suppress all context_size_hint_missing events');
   });
 

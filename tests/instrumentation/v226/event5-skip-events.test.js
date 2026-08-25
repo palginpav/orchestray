@@ -72,9 +72,7 @@ for (const { reason, skipPath } of SKIP_REASONS) {
     }, { cwd: tmpDir, eventsPath });
 
     const events = readEvents(eventsPath);
-    const skipEvents = events.filter(e =>
-      e.type === 'compression_skipped' || e.event_type === 'compression_skipped'
-    );
+    const skipEvents = events.filter(e => e.type === 'compression_skipped');
 
     assert.ok(skipEvents.length >= 1, `must emit compression_skipped for reason=${reason}`);
     const e = skipEvents[0];

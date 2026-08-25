@@ -122,8 +122,8 @@ describe('v2.2.11 W2-8 / v2.3.18 W3 Q1 — context_size_hint compute-and-warn (n
     assert.equal(r.status, 0, 'hook exits 0 for valid hint; stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
-    const missing  = events.filter(e => e.event_type === 'context_size_hint_missing');
-    const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
+    const missing  = events.filter(e => e.type === 'context_size_hint_missing');
+    const required = events.filter(e => e.type === 'context_size_hint_required_failed');
     assert.equal(missing.length,  0, 'no context_size_hint_missing events expected');
     assert.equal(required.length, 0, 'no context_size_hint_required_failed events expected');
   });
@@ -139,9 +139,9 @@ describe('v2.2.11 W2-8 / v2.3.18 W3 Q1 — context_size_hint compute-and-warn (n
     assert.equal(r.status, 0, 'hook exits 0 (computed fallback, not blocked); stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
-    const missing  = events.filter(e => e.event_type === 'context_size_hint_missing');
-    const computed = events.filter(e => e.event_type === 'context_size_hint_computed');
-    const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
+    const missing  = events.filter(e => e.type === 'context_size_hint_missing');
+    const computed = events.filter(e => e.type === 'context_size_hint_computed');
+    const required = events.filter(e => e.type === 'context_size_hint_required_failed');
     assert.equal(missing.length,  0, 'no context_size_hint_missing on the successful-compute path (W5)');
     assert.equal(computed.length, 1, 'exactly 1 context_size_hint_computed event');
     assert.equal(required.length, 0, 'no context_size_hint_required_failed event — spawn was not blocked');
@@ -159,8 +159,8 @@ describe('v2.2.11 W2-8 / v2.3.18 W3 Q1 — context_size_hint compute-and-warn (n
     assert.equal(r.status, 0, 'hook exits 0 (computed fallback, not blocked); stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
-    const missing  = events.filter(e => e.event_type === 'context_size_hint_missing');
-    const computed = events.filter(e => e.event_type === 'context_size_hint_computed');
+    const missing  = events.filter(e => e.type === 'context_size_hint_missing');
+    const computed = events.filter(e => e.type === 'context_size_hint_computed');
     assert.equal(missing.length,  0, 'no context_size_hint_missing on the successful-compute path (W5)');
     assert.equal(computed.length, 1, 'exactly 1 context_size_hint_computed event');
     assert.equal(computed[0].subagent_type, 'architect');
@@ -176,8 +176,8 @@ describe('v2.2.11 W2-8 / v2.3.18 W3 Q1 — context_size_hint compute-and-warn (n
     assert.equal(r.status, 2, 'hook exits 2 — nothing to compute from; stderr=' + r.stderr);
 
     const events = readEvents(tmpRoot);
-    const missing  = events.filter(e => e.event_type === 'context_size_hint_missing');
-    const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
+    const missing  = events.filter(e => e.type === 'context_size_hint_missing');
+    const required = events.filter(e => e.type === 'context_size_hint_required_failed');
     assert.equal(missing.length,  1, 'context_size_hint_missing still emits (telemetry trail)');
     assert.equal(required.length, 1, 'context_size_hint_required_failed emits — genuine block');
     assert.equal(required[0].reason, 'prompt_unreadable');
@@ -193,7 +193,7 @@ describe('v2.2.11 W2-8 / v2.3.18 W3 Q1 — context_size_hint compute-and-warn (n
     assert.equal(r.status, 2, 'compute-fallback kill switch restores strict blocking; stderr=' + r.stderr);
 
     const events   = readEvents(tmpRoot);
-    const required = events.filter(e => e.event_type === 'context_size_hint_required_failed');
+    const required = events.filter(e => e.type === 'context_size_hint_required_failed');
     assert.equal(required.length, 1, 'exactly 1 context_size_hint_required_failed event');
     assert.equal(required[0].reason, 'compute_fallback_disabled');
     assert.equal(required[0].version, 1, 'version field must be 1');
@@ -210,7 +210,7 @@ describe('v2.2.11 W2-8 / v2.3.18 W3 Q1 — context_size_hint compute-and-warn (n
     assert.equal(r.status, 0, 'hook exits 0; stderr=' + r.stderr);
 
     const events   = readEvents(tmpRoot);
-    const computed = events.filter(e => e.event_type === 'context_size_hint_computed');
+    const computed = events.filter(e => e.type === 'context_size_hint_computed');
     assert.equal(computed.length, 1, 'exactly 1 context_size_hint_computed event');
     assert.equal(computed[0].subagent_type, 'architect', 'subagent_type must match the spawn payload');
   });

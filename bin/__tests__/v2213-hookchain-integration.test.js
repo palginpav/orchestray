@@ -289,7 +289,7 @@ describe('v2.2.13 W2 — PreToolUse:Agent hook-chain integration', () => {
       runChain([PREFLIGHT], payload);
 
       const events = readEvents(tmpDir);
-      const inlineEvents = events.filter(e => e.event_type === 'context_size_hint_parsed_inline');
+      const inlineEvents = events.filter(e => e.type === 'context_size_hint_parsed_inline');
 
       assert.equal(inlineEvents.length >= 1, true,
         'at least 1 context_size_hint_parsed_inline event expected; got: ' + JSON.stringify(events.map(e => e.event_type)));

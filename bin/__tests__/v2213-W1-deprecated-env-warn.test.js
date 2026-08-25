@@ -116,7 +116,7 @@ describe('v2.2.14 G-04 — deprecated env-var fully retired in boot-validate-con
     runBoot(tmpRoot, { ORCHESTRAY_CONTEXT_SIZE_HINT_REQUIRED_DISABLED: '1' });
 
     const events = readEvents(tmpRoot);
-    const deprecated = events.filter(e => e.event_type === 'deprecated_kill_switch_detected');
+    const deprecated = events.filter(e => e.type === 'deprecated_kill_switch_detected');
     assert.equal(deprecated.length, 0, 'no deprecated_kill_switch_detected event — function removed in G-04');
   });
 

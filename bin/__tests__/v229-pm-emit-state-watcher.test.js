@@ -687,7 +687,7 @@ describe('v2.3.21 item 1 — state_cancel_aborted backstop', () => {
     // row, writes orchestration_roi_missing to the LIVE audit log first — so by
     // the time checkStateCancelCompleteness runs, the live log genuinely exists.
     const dir = makeRepo();
-    const archivedDir = path.join(dir, '.orchestray', 'history', 'orch-' + ORCH_ID + '-cancelled');
+    const archivedDir = path.join(dir, '.orchestray', 'history', ORCH_ID + '-cancelled');
     fs.mkdirSync(archivedDir, { recursive: true });
 
     const r = runCoverage(dir);
@@ -697,7 +697,7 @@ describe('v2.3.21 item 1 — state_cancel_aborted backstop', () => {
     const backstop = events.filter(e => e.type === 'state_cancel_aborted' && e.source === 'state_watcher_backstop');
     assert.equal(backstop.length, 1, 'archived-dir ground truth without a matching audit row must fire exactly one backstop');
     assert.equal(backstop[0].orchestration_id, ORCH_ID);
-    assert.equal(backstop[0].archived_to, '.orchestray/history/orch-' + ORCH_ID + '-cancelled');
+    assert.equal(backstop[0].archived_to, '.orchestray/history/' + ORCH_ID + '-cancelled');
     // E1 regression: events_jsonl_preserved must derive from the LIVE audit log
     // (which genuinely exists here — checkOrchRoiPresence just wrote to it), not
     // from archivedDir/events.jsonl (which no code path ever creates — that check
@@ -709,34 +709,37 @@ describe('v2.3.21 item 1 — state_cancel_aborted backstop', () => {
     assert.equal(backstop[0].version, 1, 'state_cancel_aborted must carry version:1 like every sibling emit');
   });
 
-  test('defect 2 pin: archived_to keeps the doubled orch- prefix — collapsing it on either side would break discovery', () => {
-    // orchId already starts with "orch-" per bin/ox.js, and the PM's own
-    // clean-abort prose (tier1-orchestration-rare.md step 2) literally
-    // substitutes the full orchId into ".orchestray/history/orch-<id>-cancelled/",
-    // so both the writer (PM's manual mv) and the reader (this check) agree on
-    // the doubled "orch-orch-..." form. This is NOT a bug — do not "fix" it.
+  test('v2.3.33 W4: archived_to uses the single orch- prefix — the doubled form from v2.3.20 is no longer recognized', () => {
+    // Corrected convention: orchId already starts with "orch-" per bin/ox.js,
+    // so the archive dir is `<orch_id>-cancelled` (single prefix), matching
+    // the real, actively-used history-dir shape in bin/archive-orch-events.js
+    // (`.orchestray/history/<orch_id>/`) and bin/ox.js's state-snapshot
+    // archiving. The v2.3.20 "pinned" doubled-prefix form (`orch-<orch_id>-
+    // cancelled`) was never exercised by any real cancellation on disk and
+    // is now corrected across the writer (this check), the PM's clean-abort
+    // prose (tier1-orchestration-rare.md step 2), and the block message in
+    // bin/check-pause-sentinel.js.
     const dir = makeRepo();
-    const doubledDir = path.join(dir, '.orchestray', 'history', 'orch-' + ORCH_ID + '-cancelled');
-    fs.mkdirSync(doubledDir, { recursive: true });
+    const singlePrefixDir = path.join(dir, '.orchestray', 'history', ORCH_ID + '-cancelled');
+    fs.mkdirSync(singlePrefixDir, { recursive: true });
 
     const r = runCoverage(dir);
     assert.equal(r.status, 0);
     const events   = readEvents(dir);
     const backstop = events.filter(e => e.type === 'state_cancel_aborted' && e.source === 'state_watcher_backstop');
-    assert.equal(backstop.length, 1, 'the real (doubled-prefix) archive dir must be discovered');
-    assert.equal(backstop[0].archived_to, '.orchestray/history/orch-' + ORCH_ID + '-cancelled');
+    assert.equal(backstop.length, 1, 'the single-prefix archive dir must be discovered');
+    assert.equal(backstop[0].archived_to, '.orchestray/history/' + ORCH_ID + '-cancelled');
 
-    // Negative control: a "corrected" single-prefix dir (what a well-meaning
-    // fix might rename it to) is a DIFFERENT path the check does not look for.
-    // Demonstrates that collapsing the prefix on one side silently breaks
-    // discovery rather than "fixing" anything.
+    // Negative control: the old doubled-prefix dir is a DIFFERENT path and
+    // must NOT be recognized any more — proves the correction actually took
+    // effect on the reader, not just in a comment.
     const dir2 = makeRepo();
-    const singlePrefixDir = path.join(dir2, '.orchestray', 'history', ORCH_ID + '-cancelled');
-    fs.mkdirSync(singlePrefixDir, { recursive: true });
+    const doubledDir = path.join(dir2, '.orchestray', 'history', 'orch-' + ORCH_ID + '-cancelled');
+    fs.mkdirSync(doubledDir, { recursive: true });
     const r2 = runCoverage(dir2);
     assert.equal(r2.status, 0);
     const backstop2 = readEvents(dir2).filter(e => e.type === 'state_cancel_aborted');
-    assert.equal(backstop2.length, 0, 'single-prefix dir is invisible to the check — proves the doubling is load-bearing');
+    assert.equal(backstop2.length, 0, 'doubled-prefix dir is invisible to the corrected check');
   });
 
   test('E1 regression: live audit log absent at check time → events_jsonl_preserved is honestly false, not hardcoded', () => {
@@ -744,7 +747,7 @@ describe('v2.3.21 item 1 — state_cancel_aborted backstop', () => {
     // checkStateCancelCompleteness — isolates the field's derivation from
     // fs.existsSync(livePath) rather than any other fan-out step's side effect.
     const dir = makeRepo();
-    const archivedDir = path.join(dir, '.orchestray', 'history', 'orch-' + ORCH_ID + '-cancelled');
+    const archivedDir = path.join(dir, '.orchestray', 'history', ORCH_ID + '-cancelled');
     fs.mkdirSync(archivedDir, { recursive: true });
 
     const r = runCoverage(dir, { ORCHESTRAY_ROI_WATCHED_DISABLED: '1' });
@@ -758,13 +761,13 @@ describe('v2.3.21 item 1 — state_cancel_aborted backstop', () => {
 
   test('archived cancelled dir exists AND PM already emitted state_cancel_aborted → no backstop', () => {
     const dir = makeRepo();
-    const archivedDir = path.join(dir, '.orchestray', 'history', 'orch-' + ORCH_ID + '-cancelled');
+    const archivedDir = path.join(dir, '.orchestray', 'history', ORCH_ID + '-cancelled');
     fs.mkdirSync(archivedDir, { recursive: true });
 
     appendEvent(dir, {
       version: 1, type: 'state_cancel_aborted', timestamp: new Date().toISOString(),
       orchestration_id: ORCH_ID,
-      archived_to: '.orchestray/history/orch-' + ORCH_ID + '-cancelled',
+      archived_to: '.orchestray/history/' + ORCH_ID + '-cancelled',
       events_jsonl_preserved: true,
     });
 
@@ -793,7 +796,7 @@ describe('v2.3.21 item 1 — state_cancel_aborted backstop', () => {
 
   test('kill switch (ORCHESTRAY_CANCEL_ABORT_WATCHER_DISABLED) silences the backstop', () => {
     const dir = makeRepo();
-    const archivedDir = path.join(dir, '.orchestray', 'history', 'orch-' + ORCH_ID + '-cancelled');
+    const archivedDir = path.join(dir, '.orchestray', 'history', ORCH_ID + '-cancelled');
     fs.mkdirSync(archivedDir, { recursive: true });
 
     const r = runCoverage(dir, { ORCHESTRAY_CANCEL_ABORT_WATCHER_DISABLED: '1' });
@@ -809,7 +812,7 @@ describe('v2.3.21 item 1 — state_cancel_aborted backstop', () => {
     // each run independently re-derives "is state_cancel_aborted present yet?" from
     // disk, so a transient writeEvent failure on one run is retried on the next.
     const dir = makeRepo();
-    const archivedDir = path.join(dir, '.orchestray', 'history', 'orch-' + ORCH_ID + '-cancelled');
+    const archivedDir = path.join(dir, '.orchestray', 'history', ORCH_ID + '-cancelled');
     fs.mkdirSync(archivedDir, { recursive: true });
 
     assert.equal(runCoverage(dir).status, 0);

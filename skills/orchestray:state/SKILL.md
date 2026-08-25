@@ -78,7 +78,8 @@ The clean-abort sequence:
    sentinel hook (`bin/check-pause-sentinel.js`), which exits 1 after the grace window.
 2. The PM detects the block and reads the cancel sentinel.
 3. The PM moves `.orchestray/state/` to
-   `.orchestray/history/orch-<id>-cancelled/` (preserving `events.jsonl`).
+   `.orchestray/history/<orchestration_id>-cancelled/` (preserving `events.jsonl`;
+   `orchestration_id` already begins with `orch-` — no second `orch-` prefix).
 4. The PM emits `state_cancel_aborted` and reports cancellation to the user.
 
 Invoke via Bash:

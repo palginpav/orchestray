@@ -243,4 +243,30 @@ describe('v2.2.9 F2 — archive-orch-events.js', () => {
     // No matches → no archive dir created at all.
     assert.ok(!fs.existsSync(archiveDir), 'no matches must not create archive dir');
   });
+
+  // v2.3.33 W2 — identity (`type`) vs reference (`event_type`) regression.
+  // An advisory row (audit_event_autofilled) *about* orchestration_complete
+  // carries `event_type: 'orchestration_complete'` but its own `type` is
+  // 'audit_event_autofilled'. It must never be mistaken for the real
+  // completion row, or the archive would be wrongly frozen with `.archived`.
+  test('advisory row referencing orchestration_complete via event_type must not trigger .archived marker', () => {
+    const dir = makeRepo();
+    writeCurrentMarker(dir, ORCH_ID);
+    const lines = [
+      JSON.stringify({ type: 'orchestration_start', version: 1, timestamp: '2026-04-28T00:00:00.000Z', orchestration_id: ORCH_ID }),
+      // Advisory row: its OWN identity is audit_event_autofilled; event_type
+      // is only a reference to the type it is commenting on.
+      JSON.stringify({
+        type: 'audit_event_autofilled', version: 1, timestamp: '2026-04-28T00:00:01.000Z',
+        orchestration_id: ORCH_ID, event_type: 'orchestration_complete', fields_autofilled: ['status'], sample_count: 1,
+      }),
+    ];
+    fs.writeFileSync(path.join(dir, '.orchestray', 'audit', 'events.jsonl'), lines.join('\n') + '\n');
+
+    const r = runScript(dir);
+    assert.equal(r.status, 0, `script exit=${r.status} stderr=${r.stderr}`);
+
+    const markerPath = path.join(dir, '.orchestray', 'history', ORCH_ID, '.archived');
+    assert.ok(!fs.existsSync(markerPath), 'advisory reference to orchestration_complete must NOT freeze the archive');
+  });
 });
