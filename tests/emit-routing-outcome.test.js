@@ -437,8 +437,15 @@ describe('concurrent append', () => {
       assert.equal(exitCodes[i], 0, `child ${i} must exit 0`);
     }
 
-    // Every write must have landed — no lost updates from the atomic append
-    const events = readEvents(auditDir);
+    // Every write must have landed — no lost updates from the atomic append.
+    // v2.3.33 W1: filter to routing_outcome rows — schema validation now
+    // actually runs for this tmpDir (falls back to the code-relative
+    // schema), so an autofill telemetry row (`audit_event_autofilled`) can
+    // legitimately land alongside the N routing_outcome writes once the
+    // sampling window rolls over. That row is additive observability, not a
+    // lost/duplicated write — the invariant under test.
+    const allEvents = readEvents(auditDir);
+    const events = allEvents.filter(e => e.type === 'routing_outcome');
     assert.equal(events.length, N, `Expected exactly ${N} appended events from ${N} concurrent writers`);
 
     // Every line must parse — no interleaved/corrupted frames

@@ -593,12 +593,22 @@ describe('quarantineEvent — W2-05 deep object secret detection', () => {
 describe('_emitQuarantineSkipped — W2-09 event_type_dropped sanitization', () => {
   const { _emitQuarantineSkipped } = require('../event-quarantine.js');
 
+  // v2.3.33 W1: find the auto_extract_quarantine_skipped row explicitly
+  // rather than blindly reading the last line. This emit site's payload is
+  // missing the schema's required `count` field (a pre-existing gap, out
+  // of scope for this fix — see v2.3.33 W1 report), so validation now
+  // genuinely running for this tmpDir appends schema_shape_violation /
+  // schema_shadow_validation_block advisory rows after the real event.
+  function readQuarantineSkippedEvent(auditFile) {
+    const lines = fs.readFileSync(auditFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    return lines.find((e) => e.type === 'auto_extract_quarantine_skipped');
+  }
+
   test('event_type_dropped truncated to 64 chars when over 64', () => {
     const longType = 'x'.repeat(100);
     _emitQuarantineSkipped('orch-test-123', longType, 'unknown_event_type', tmpDir);
     const auditFile = path.join(tmpDir, '.orchestray', 'audit', 'events.jsonl');
-    const raw = fs.readFileSync(auditFile, 'utf8').trim();
-    const ev = JSON.parse(raw.split('\n').pop());
+    const ev = readQuarantineSkippedEvent(auditFile);
     assert.equal(ev.event_type_dropped.length, 64, 'must be truncated to exactly 64 chars');
   });
 
@@ -606,8 +616,7 @@ describe('_emitQuarantineSkipped — W2-09 event_type_dropped sanitization', () 
     const nonAsciiType = 'evil\xFF\xFE\x00type';
     _emitQuarantineSkipped('orch-test-123', nonAsciiType, 'unknown_event_type', tmpDir);
     const auditFile = path.join(tmpDir, '.orchestray', 'audit', 'events.jsonl');
-    const raw = fs.readFileSync(auditFile, 'utf8').trim();
-    const ev = JSON.parse(raw.split('\n').pop());
+    const ev = readQuarantineSkippedEvent(auditFile);
     assert.ok(!ev.event_type_dropped.includes('\xFF'), 'non-ASCII must be replaced');
     assert.ok(!ev.event_type_dropped.includes('\x00'), 'null bytes must be replaced');
     assert.ok(ev.event_type_dropped.includes('?'), 'replacement char must be ?');
@@ -616,8 +625,7 @@ describe('_emitQuarantineSkipped — W2-09 event_type_dropped sanitization', () 
   test('non-string event_type emitted as unknown', () => {
     _emitQuarantineSkipped('orch-test-123', 42, 'unknown_event_type', tmpDir);
     const auditFile = path.join(tmpDir, '.orchestray', 'audit', 'events.jsonl');
-    const raw = fs.readFileSync(auditFile, 'utf8').trim();
-    const ev = JSON.parse(raw.split('\n').pop());
+    const ev = readQuarantineSkippedEvent(auditFile);
     assert.equal(ev.event_type_dropped, 'unknown');
   });
 });

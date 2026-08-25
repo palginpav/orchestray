@@ -93,8 +93,17 @@ function _eventsToMap(events) {
  *
  * The `cwd` parameter is retained for API compatibility with existing callers.
  * When the canonical SCHEMA_PATH in the parser matches the requested path,
- * parseEventSchemasFromFile() is used (mtime-aware). For non-canonical paths
- * (e.g. test stubs in tmpDirs), we fall back to a direct file read.
+ * parseEventSchemasFromFile() is used directly (mtime-aware).
+ *
+ * For non-canonical paths (any cwd other than the running code's own repo —
+ * e.g. a project that has installed Orchestray, or a test stub in a tmpDir),
+ * project-local wins: we try `<cwd>/agents/pm-reference/event-schemas.md`
+ * first. Only when that file is missing/unreadable/empty do we fall back to
+ * the schema shipped alongside the running code (SCHEMA_PATH, via the
+ * mtime-aware parser cache) — this is what makes validation actually run
+ * outside the Orchestray source repo (v2.3.32 fixed SCHEMA_PATH resolution;
+ * this fallback closes the gap it didn't: SCHEMA_PATH vs requestedPath never
+ * matching for a foreign cwd).
  *
  * @param {string} cwd - Project root.
  * @returns {Map<string, { required: string[], version: number }>|null}
@@ -115,12 +124,21 @@ function getSchemas(cwd) {
     }
   }
 
-  // Non-canonical path (test stubs) — read directly, no mtime tracking.
+  // Non-canonical path — project-local schema wins if present and non-empty.
   try {
     const content = fs.readFileSync(requestedPath, 'utf8');
     const parsed  = parseSchemas(content);
-    if (!parsed || parsed.size === 0) return null;
-    return parsed;
+    if (parsed && parsed.size > 0) return parsed;
+  } catch (_e) {
+    // Fall through — no project-local schema (or it's unreadable/empty).
+  }
+
+  // Fall back to the schema shipped alongside the running code.
+  try {
+    const events = parseEventSchemasFromFile();
+    const map    = _eventsToMap(events);
+    if (!map || map.size === 0) return null;
+    return map;
   } catch (_e) {
     return null;
   }

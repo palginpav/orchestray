@@ -278,13 +278,25 @@ describe('ox events append', () => {
         ? fs.readFileSync(eventsPath, 'utf8').trim().split('\n').filter(Boolean).length
         : 0;
 
+      // v2.3.33 W1: count only the rows this call itself intended to append
+      // (matched by type), not raw line growth. `routing_outcome` /
+      // `agent_start` hand-appended with no --extra are missing schema-
+      // required fields the CLI does not default-fill (see
+      // EVENT_APPEND_DEFAULTS above); the gateway's advisory contract
+      // (agents/pm-reference/event-schemas.md, D6 v2.3.18 W1b) legitimately
+      // appends a `schema_shape_violation` + `schema_shadow_validation_block`
+      // row alongside the original event in that case — additive
+      // observability, not a torn/duplicated atomic write, which is the
+      // actual invariant this test guards.
       runOx(['events', 'append', '--event-type=routing_outcome'], cwd);
       const after1 = fs.readFileSync(eventsPath, 'utf8').trim().split('\n').filter(Boolean);
-      assert.equal(after1.length, baselineLines + 1, 'first append must add exactly 1 line');
+      const routingOutcomeCount1 = after1.filter((l) => JSON.parse(l).type === 'routing_outcome').length;
+      assert.equal(routingOutcomeCount1, 1, 'first append must add exactly 1 routing_outcome line');
 
       runOx(['events', 'append', '--event-type=agent_start'], cwd);
       const after2 = fs.readFileSync(eventsPath, 'utf8').trim().split('\n').filter(Boolean);
-      assert.equal(after2.length, baselineLines + 2, 'second append must add exactly 1 more line');
+      const agentStartCount2 = after2.filter((l) => JSON.parse(l).type === 'agent_start').length;
+      assert.equal(agentStartCount2, 1, 'second append must add exactly 1 more agent_start line');
 
       // Verify each line is valid JSON.
       for (const line of after2) {

@@ -67,7 +67,7 @@ describe('audit-event-writer smoke test', () => {
       const jsonl = path.join(auditDir, 'events.jsonl');
       assert.ok(fs.existsSync(jsonl), 'events.jsonl should exist');
 
-      const lines = fs.readFileSync(jsonl, 'utf8').split('\n').filter(l => l && !l.includes('"audit_event_autofilled"')); /* v2.2.15: filter P1-13 */
+      const lines = fs.readFileSync(jsonl, 'utf8').split('\n').filter(l => l && !l.includes('"audit_event_autofilled"') && !l.includes('"schema_unknown_type_warn"')); /* v2.2.15: filter P1-13; v2.3.33 W1: filter schema_unknown_type_warn — validation now actually runs for this tmpDir (falls back to code-relative schema), so unregistered test event types get an advisory row */
       assert.equal(lines.length, 1, 'exactly one line should be appended (excluding P1-13 autofill telemetry)');
 
       const event = JSON.parse(lines[0]);
@@ -104,7 +104,7 @@ describe('audit-event-writer smoke test', () => {
       assert.equal(result.status, 0);
 
       const lines = fs.readFileSync(path.join(auditDir, 'events.jsonl'), 'utf8')
-        .split('\n').filter(l => l && !l.includes('"audit_event_autofilled"')); /* v2.2.15: filter P1-13 */
+        .split('\n').filter(l => l && !l.includes('"audit_event_autofilled"') && !l.includes('"schema_unknown_type_warn"')); /* v2.2.15: filter P1-13; v2.3.33 W1: filter schema_unknown_type_warn — validation now actually runs for this tmpDir (falls back to code-relative schema), so unregistered test event types get an advisory row */
       assert.equal(lines.length, 1);
       const event = JSON.parse(lines[0]);
       assert.equal(event.type, 'no_mode_event');
@@ -129,7 +129,7 @@ describe('audit-event-writer smoke test', () => {
       assert.equal(status, 0);
 
       const lines = fs.readFileSync(path.join(auditDir, 'events.jsonl'), 'utf8')
-        .split('\n').filter(l => l && !l.includes('"audit_event_autofilled"')); /* v2.2.15: filter P1-13 */
+        .split('\n').filter(l => l && !l.includes('"audit_event_autofilled"') && !l.includes('"schema_unknown_type_warn"')); /* v2.2.15: filter P1-13; v2.3.33 W1: filter schema_unknown_type_warn — validation now actually runs for this tmpDir (falls back to code-relative schema), so unregistered test event types get an advisory row */
       const event = JSON.parse(lines[0]);
       assert.equal(event.orchestration_id, 'orch-smoke-123');
     } finally {

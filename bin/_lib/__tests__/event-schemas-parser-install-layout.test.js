@@ -186,11 +186,19 @@ describe('event-schemas-parser — installed-layout resolution (W5, v2.3.32)', (
     }
   });
 
-  test('neither layout present -> schema-emit-validator.getSchemas() returns null, never throws, hook stays fail-open', () => {
-    // Exercise the real caller-side fail-open path (not the low-level parser
-    // throw in the previous test) using the validator's non-canonical-path
-    // branch, which is what installed hooks actually go through when the
-    // schema file cannot be found anywhere.
+  // v2.3.33 W1 — this test's title and assertions previously encoded the very
+  // defect W1 fixes: a foreign cwd with no project-local schema used to
+  // return null (validation silently no-oped everywhere outside the source
+  // repo) because getSchemas() never fell back to the schema shipped
+  // alongside the running code (SCHEMA_PATH). W1 adds that fallback, so a
+  // foreign cwd with no LOCAL schema now still resolves — via SCHEMA_PATH —
+  // as long as the running code's own schema file exists somewhere (it does
+  // here: this test requires the real, unmodified validator/parser, whose
+  // SCHEMA_PATH points at this repo's real agents/pm-reference/event-schemas.md).
+  // Renamed and rewritten to assert the new, intended behaviour; the "truly
+  // nothing reachable anywhere" case is covered separately in
+  // tests/schema-emit-validator-foreign-cwd.test.js Test 3 (fs mocked out).
+  test('no project-local schema, but code-relative schema exists -> schema-emit-validator.getSchemas() falls back and validates, never throws', () => {
     const validator = require('../schema-emit-validator');
     const tmpDir = makeTmpDir(); // no agents/pm-reference/event-schemas.md written at all
     try {
@@ -201,14 +209,24 @@ describe('event-schemas-parser — installed-layout resolution (W5, v2.3.32)', (
       } catch (_e) {
         threw = true;
       }
-      assert.strictEqual(threw, false, 'getSchemas() must never throw when the schema file is missing');
-      assert.strictEqual(schemas, null, 'getSchemas() must return null (fail-open) when no schema file exists');
-
-      const result = validator.validateEvent(tmpDir, { type: 'anything_at_all', version: 1 });
-      assert.strictEqual(result.valid, true, 'validateEvent() must fail OPEN (valid:true) when schema is unreadable');
+      assert.strictEqual(threw, false, 'getSchemas() must never throw');
       assert.ok(
-        Array.isArray(result.warnings) && result.warnings.length > 0,
-        'validateEvent() should surface an unreadable-schema warning for callers to log/journal, but never block'
+        schemas !== null && schemas.size > 0,
+        'getSchemas() must fall back to the code-relative schema (SCHEMA_PATH) and return a non-empty map — ' +
+        'this is the v2.3.33 W1 fix: validation must actually run outside the source repo'
+      );
+
+      // A known event type from the real schema, missing a required field,
+      // must now be flagged invalid (validation is genuinely running).
+      const result = validator.validateEvent(tmpDir, { type: 'anything_at_all', version: 1 });
+      assert.strictEqual(
+        result.valid,
+        false,
+        'validateEvent() must actually validate against the fallback schema now that one is reachable'
+      );
+      assert.ok(
+        Array.isArray(result.errors) && result.errors.length > 0,
+        'validateEvent() should report an "unknown event type" error for a type not in the real schema'
       );
     } finally {
       cleanupDir(tmpDir);
