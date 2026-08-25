@@ -337,7 +337,7 @@ than scanning `events.jsonl` directly for `routing_outcome`.
 
 ---
 
-## Confidence Signal Event
+### `confidence_signal` event
 
 Appended during Section 4.Z (Confidence Signal Reading) after reading an agent's
 confidence file. Also appended during Section 14.Z (Inter-Group Confidence Check)
@@ -416,7 +416,7 @@ and save events.
 
 ---
 
-## Section 20: Specialist Saved Event
+### `specialist_saved` event
 
 Appended when a dynamic agent is saved as a persistent specialist:
 
@@ -432,7 +432,7 @@ Appended when a dynamic agent is saved as a persistent specialist:
 
 ---
 
-## Section 20: Specialist Promoted Event
+### `specialist_promoted` event
 
 Appended when a specialist is promoted to permanent availability:
 
@@ -449,7 +449,7 @@ Appended when a specialist is promoted to permanent availability:
 
 ---
 
-## Section 21: Specialist Reused Event
+### `specialist_reused` event
 
 Appended when a specialist from the registry is reused for a subtask:
 
@@ -517,7 +517,7 @@ one-line stderr warning: `"pattern skip enrichment: <X>% forgotten over last <N>
 
 ---
 
-## Pattern Pruned Event
+### `pattern_pruned` event
 
 Appended when low-value patterns are removed during pruning (step 7 of the learn skill):
 
@@ -537,7 +537,7 @@ Appended when low-value patterns are removed during pruning (step 7 of the learn
 
 ---
 
-## Contract Check Event
+### `contract_check` event
 
 Appended when pre-condition or post-condition contracts are validated (Section 4.X in
 pm.md and Section 14.X in phase-execute.md):
@@ -572,7 +572,7 @@ Field notes:
 
 ---
 
-## Section 39: Consequence Forecast Event
+### `consequence_forecast` event
 
 Appended during Section 15 step 7.6 (post-execution consequence validation):
 
@@ -653,7 +653,7 @@ Field notes:
 
 ---
 
-## Introspection Trace Event
+### `introspection_trace` event
 
 Appended during Section 4.Y (Reasoning Trace Distillation) after each non-Haiku agent
 completes and the Haiku distiller extracts a reasoning trace:
@@ -686,7 +686,7 @@ Field notes:
 
 ---
 
-## Disagreement Surfaced Event
+### `disagreement_surfaced` event
 
 Appended during Section 18.D (Disagreement Detection) when a reviewer warning is
 classified as a design trade-off and surfaced to the user:
@@ -1368,7 +1368,7 @@ unknown types per R-EVENT-NAMING.
 
 ---
 
-## Invariant Extracted Event
+### `invariant_extracted` event
 
 Appended during Section 4 result processing when an architect agent completes and
 `enable_drift_sentinel` is true. Records each invariant extracted from the architect's
@@ -1399,7 +1399,7 @@ Field notes:
 
 ---
 
-## Drift Check Event
+### `drift_check` event
 
 Appended during Section 15 step 7.6 (post-execution drift validation) when
 `enable_drift_sentinel` is true.
@@ -1437,7 +1437,7 @@ Field notes:
 
 ---
 
-## Visual Review Event
+### `visual_review` event
 
 Appended during Section 4.V (Visual Review Integration) after screenshot discovery
 completes and the reviewer delegation is prepared:
@@ -1471,7 +1471,7 @@ Field notes:
 
 ---
 
-## Thread Created Event
+### `thread_created` event
 
 Appended during Section 40a (post-orchestration thread creation):
 
@@ -1490,7 +1490,7 @@ Appended during Section 40a (post-orchestration thread creation):
 
 ---
 
-## Thread Matched Event
+### `thread_matched` event
 
 Appended during Section 40b (pre-decomposition thread scanning):
 
@@ -1508,7 +1508,7 @@ Appended during Section 40b (pre-decomposition thread scanning):
 
 ---
 
-## Thread Updated Event
+### `thread_updated` event
 
 Appended during Section 40c (thread update when a new orchestration matches an existing thread):
 
@@ -1535,7 +1535,7 @@ Field notes:
 
 ---
 
-## Persona Generated Event
+### `persona_generated` event
 
 Appended during Section 42b (persona synthesis):
 
@@ -1560,7 +1560,7 @@ Field notes:
 
 ---
 
-## Persona Injected Event
+### `persona_injected` event
 
 Appended during Section 42c (persona injection into delegation prompt):
 
@@ -1586,7 +1586,7 @@ Field notes:
 
 ---
 
-## Probe Created Event
+### `probe_created` event
 
 Appended during Section 41a (post-orchestration probe creation):
 
@@ -1616,7 +1616,7 @@ Field notes:
 
 ---
 
-## Probe Validated Event
+### `probe_validated` event
 
 Appended during Section 41b (lazy probe validation at session start):
 
@@ -1663,7 +1663,7 @@ Field notes:
 
 ---
 
-## Replay Analysis Event
+### `replay_analysis` event
 
 Appended during Section 43c (replay pattern writing):
 
@@ -1802,7 +1802,7 @@ type should ignore it. New fields will only be added as optional.
 
 ---
 
-## Pattern Record Skipped Event
+### `pattern_record_skipped` event
 
 Appended at pre-compaction (PreCompact hook) as an advisory data-quality signal when
 `pattern_find` returned results during an orchestration but `pattern_record_application`
@@ -1942,7 +1942,7 @@ should ignore it. New fields will only be added as optional.
 
 ---
 
-## Anti-Pattern Advisory Shown Event
+### `anti_pattern_advisory_shown` event
 
 IMPLEMENTED (as of v2.0.18, W12 LL3). Emitted by `bin/gate-agent-spawn.js` (PreToolUse
 hook) when the anti-pattern advisory gate fires an advisory injection into a spawned
@@ -2410,7 +2410,7 @@ Field notes:
 
 ---
 
-## Section 43: Dynamic Agent Cleanup Event
+### `dynamic_agent_cleanup` event
 
 Emitted by the PM in Section 17 step 7 (Dynamic Agent Lifecycle) after the dynamic
 agent's definition file (`agents/{name}.md`) is deleted. Paired with the
@@ -4615,7 +4615,7 @@ neither canonical nor legacy is a drift candidate.
 
 ## v2.1.13 additions
 
-### project_intent_fallback_no_agent
+### `project_intent_fallback_no_agent` event
 
 Emitted when the PM dispatches to the `project-intent` agent at Step 2.7a but
 the agent is unavailable (agent file missing from the session's registry,
@@ -13874,7 +13874,7 @@ Field notes:
   mtime vs this stamp** — NOT `orchestration_id`, which kb entries do not carry and which
   direct-spawn work does not have.
 
-### `auto_extract_kb_fallback_staged` / `auto_extract_kb_fallback_skipped` events
+### `auto_extract_kb_fallback_staged` event
 
 Emitted by `bin/post-orchestration-extract.js` when the automatic path falls back to kb
 because no `current-orchestration.json` exists. Deliberately distinct event types so a
@@ -13892,20 +13892,34 @@ kb-sourced auto-stage can never be mistaken for the history-sourced `auto_extrac
 }
 ```
 
+### `auto_extract_kb_fallback_skipped` event
+
+Emitted by `bin/post-orchestration-extract.js` alongside `auto_extract_kb_fallback_staged`
+above (same fallback path) when the candidate is skipped rather than staged. Four distinct
+`reason` values exist (`no_category_match`, `category_restricted_to_auto`,
+`validator_rejected`, `slug_collision`) and each carries a different subset of the
+optional fields below — `category`/`kb_source_path`/`slug`/`detail` are correlated with
+`reason`, never all present at once (v2.3.33 W5 — corrected from a schema that had
+declared all four as universally required, which does not match any real emit site).
+
 ```json
 {
   "timestamp": "<ISO 8601 UTC>",
   "type": "auto_extract_kb_fallback_skipped",
   "schema_version": 1,
-  "reason": "category_restricted_to_auto",
-  "kb_source_path": "decisions/<file>.md",
-  "category": "anti-pattern"
+  "reason": "no_category_match | category_restricted_to_auto | validator_rejected | slug_collision",
+  "kb_source_path": "optional — present for no_category_match, category_restricted_to_auto, validator_rejected; absent for slug_collision",
+  "category": "optional — present only for reason=category_restricted_to_auto",
+  "detail": "optional — present only for reason=validator_rejected (comma-joined validator error fields)",
+  "slug": "optional — present only for reason=slug_collision"
 }
 ```
 
 Field notes:
-- `reason`: `no_category_match` (heuristics matched nothing) or
-  `category_restricted_to_auto` (the category is human-gated).
+- `reason=no_category_match`: heuristics matched nothing. Fields: `kb_source_path`.
+- `reason=category_restricted_to_auto`: the category is human-gated. Fields: `kb_source_path`, `category`.
+- `reason=validator_rejected`: `validateProposal` rejected the built proposal. Fields: `kb_source_path`, `detail`.
+- `reason=slug_collision`: a proposal file with that name already exists (proposed or active). Fields: `slug` only — no `kb_source_path`.
 - The automatic path stages **only** `specialization`. `anti-pattern` and
   `user-correction` remain human-gated via the manual CLI — a hook silently staging an
   anti-pattern would violate the existing authorization invariant.

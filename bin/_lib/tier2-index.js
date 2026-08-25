@@ -54,7 +54,7 @@ const SCHEMA_REL_PATH = path.join(
 // (14 including the updated loop_completed), pushing the sidecar from 95 KB to
 // ~101 KB. The 128 KB ceiling gives headroom for the remaining v2.2.11 waves
 // (W2-W4 add further event types). The sidecar is JIT-loaded, not PM-injected.
-const MAX_INDEX_BYTES = 196608; // 192 KB soft ceiling (v2.3.29: bumped from 176 KB after the agent-termination + worktree-staleness event types pushed the sidecar past 180 KB; prior bump v2.3.18 W5b 160→176 KB).
+const MAX_INDEX_BYTES = 229376; // 224 KB soft ceiling (v2.3.33 W5: bumped from 192 KB after 25 event types that were previously mis-headed as H2/malformed and invisible to the parser were fixed and correctly registered, pushing the sidecar to ~198 KB; prior bump v2.3.29 176→192 KB).
 
 // W7 fix-pass L-001 (security): pre-stat ceiling for the source markdown.
 // 25× the current 226 KB source — generous headroom for legitimate growth,
