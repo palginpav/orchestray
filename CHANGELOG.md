@@ -3,6 +3,19 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.34] - 2026-08-25
+
+**A Claude Code update began checking what Orchestray's hooks print, and surfaced an error on nearly every file read, in every project. The hooks had been printing malformed output all along — it was simply never checked. Fixing it uncovered a second, quieter fault: the largest thing Orchestray sends Claude Code was being cut off partway through.**
+
+### Fixed
+
+- **The repeated "hook output looks like a JSON object but is not valid JSON" error is gone.** Six hooks were printing their reply twice in a row. Each reply was well-formed on its own, but two of them back to back is not — and Claude Code recently started rejecting that. It was never blocking, only noisy, but it appeared on virtually every file read. Note the error text suggests building the reply with a proper encoder; that was a false lead here, since each reply already was. The fault was printing it twice.
+- **The context Orchestray hands to Claude Code at the start of a turn is no longer cut short.** It is around 300 KB, and it was being sent in a way that discarded everything past the first 64 KB — roughly four fifths of it — because the process closed before the send finished. It completed correctly when written to a file, which is why it looked healthy every time anyone checked it by hand. This was not the reported problem; it was found while fixing it.
+
+### Added
+
+- **A check that runs every hook and rejects any that prints more than one reply.** It found two of the six on its own after the first four were fixed, and it catches the "cut short" fault as well. Verified by deliberately reintroducing both faults and confirming it complains.
+
 ## [2.3.33] - 2026-08-25
 
 **Orchestray records an internal event log and checks each entry against a declared shape. That checking has never actually run on your machine — only inside Orchestray's own source repository. Turning it on revealed that a quarter of the declared shapes were invisible to it, several no longer matched what the code sends, and a counting bug meant notes *about* an event were being tallied as extra occurrences of it.**

@@ -59,7 +59,6 @@ function handle(event) {
   try {
     // Kill switch: env var
     if (process.env.ORCHESTRAY_DISABLE_DEMAND_GATE === '1') {
-      process.stdout.write(CONTINUE_RESPONSE);
       return;
     }
 
@@ -79,7 +78,6 @@ function handle(event) {
       typeof config.feature_demand_gate === 'object' &&
       config.feature_demand_gate.enabled === false
     ) {
-      process.stdout.write(CONTINUE_RESPONSE);
       return;
     }
 
@@ -96,7 +94,6 @@ function handle(event) {
     const eligibleSlugs = Object.keys(report).filter(slug => report[slug].quarantine_eligible);
 
     if (eligibleSlugs.length === 0) {
-      process.stdout.write(CONTINUE_RESPONSE);
       return;
     }
 
@@ -150,6 +147,11 @@ function handle(event) {
   } catch (_e) {
     // Fail-open: any unexpected error
   } finally {
+    // SOLE writer of the hook response. `return` inside the try above still
+    // runs this block, so an early return that also wrote here emitted the
+    // payload twice — `{"continue":true}{"continue":true}`, which looks like
+    // JSON but is two concatenated objects. Claude Code rejects that shape.
+    // Do not add a write to any early return in this function.
     process.stdout.write(CONTINUE_RESPONSE);
   }
 }

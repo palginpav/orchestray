@@ -111,12 +111,10 @@ function handle(event) {
   try {
     // Kill-switch: skip emission when metrics are disabled.
     if (process.env.ORCHESTRAY_METRICS_DISABLED === '1') {
-      process.stdout.write(CONTINUE_RESPONSE);
       return;
     }
     // Kill-switch: tier2 telemetry specifically disabled (v2.1.14 R-TGATE).
     if (process.env.ORCHESTRAY_DISABLE_TIER2_TELEMETRY === '1') {
-      process.stdout.write(CONTINUE_RESPONSE);
       return;
     }
 
@@ -136,7 +134,6 @@ function handle(event) {
         typeof parsed.telemetry.tier2_tracking === 'object' &&
         parsed.telemetry.tier2_tracking.enabled === false
       ) {
-        process.stdout.write(CONTINUE_RESPONSE);
         return;
       }
     } catch (_configErr) {
@@ -148,7 +145,6 @@ function handle(event) {
 
     // Only act when the Read target is a tier-2 pm-reference file.
     if (!isTier2File(filePath)) {
-      process.stdout.write(CONTINUE_RESPONSE);
       return;
     }
 
@@ -267,6 +263,12 @@ function handle(event) {
   } catch (_e) {
     // Fail-open: any unexpected error — exit 0 with no stderr spam.
   } finally {
+    // SOLE writer of the hook response. `return` inside the try above still runs
+    // this block, so any early-return path that ALSO wrote here emitted the
+    // payload twice — producing `{"continue":true}{"continue":true}`, which
+    // looks like JSON but is two concatenated objects. Claude Code began
+    // rejecting that shape, surfacing it as a PostToolUse hook error on every
+    // Read. Do not add a write to any early return in this function.
     process.stdout.write(CONTINUE_RESPONSE);
   }
 }

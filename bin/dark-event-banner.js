@@ -309,7 +309,6 @@ function handle(event) {
     try { sweepAuditBackups(cwd); } catch (_e) { /* fail-open */ }
 
     if (process.env.ORCHESTRAY_DARK_EVENT_BANNER_DISABLED === '1') {
-      process.stdout.write(CONTINUE_RESPONSE);
       return;
     }
 
@@ -319,7 +318,6 @@ function handle(event) {
     const recent     = computeRecentDiagnostics(cwd, nowMs);
     const banner = formatBanner(result, misshapen, recent);
     if (!banner) {
-      process.stdout.write(CONTINUE_RESPONSE);
       return;
     }
 
@@ -331,7 +329,6 @@ function handle(event) {
     const lockPath = path.join(os.tmpdir(), `orchestray-dark-event-banner-${sessionId}.lock`);
 
     if (fs.existsSync(lockPath)) {
-      process.stdout.write(CONTINUE_RESPONSE);
       return;
     }
 
@@ -345,6 +342,11 @@ function handle(event) {
   } catch (_e) {
     // Fail-open
   } finally {
+    // SOLE writer of the hook response. `return` inside the try above still
+    // runs this block, so an early return that also wrote here emitted the
+    // payload twice — `{"continue":true}{"continue":true}`, which looks like
+    // JSON but is two concatenated objects. Claude Code rejects that shape.
+    // Do not add a write to any early return in this function.
     process.stdout.write(CONTINUE_RESPONSE);
   }
 }

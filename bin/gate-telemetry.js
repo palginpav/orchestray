@@ -170,12 +170,10 @@ function handle(event) {
   try {
     // Kill-switch: skip emission when metrics are disabled.
     if (process.env.ORCHESTRAY_METRICS_DISABLED === '1') {
-      process.stdout.write(CONTINUE_RESPONSE);
       return;
     }
     // Kill-switch: tier2 telemetry specifically disabled.
     if (process.env.ORCHESTRAY_DISABLE_TIER2_TELEMETRY === '1') {
-      process.stdout.write(CONTINUE_RESPONSE);
       return;
     }
 
@@ -200,7 +198,6 @@ function handle(event) {
       typeof config.telemetry.tier2_tracking === 'object' &&
       config.telemetry.tier2_tracking.enabled === false
     ) {
-      process.stdout.write(CONTINUE_RESPONSE);
       return;
     }
 
@@ -346,6 +343,11 @@ function handle(event) {
   } catch (_e) {
     // Fail-open: any unexpected error — exit 0 with no stderr spam.
   } finally {
+    // SOLE writer of the hook response. `return` inside the try above still
+    // runs this block, so an early return that also wrote here emitted the
+    // payload twice — `{"continue":true}{"continue":true}`, which looks like
+    // JSON but is two concatenated objects. Claude Code rejects that shape.
+    // Do not add a write to any early return in this function.
     process.stdout.write(CONTINUE_RESPONSE);
   }
 }

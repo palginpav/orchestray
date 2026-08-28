@@ -1174,8 +1174,13 @@ function handle(event) {
       },
     });
 
-    process.stdout.write(output + '\n');
-    process.exit(0);
+    // Flush-safe exit. `process.exit()` discards anything still buffered, and
+    // stdout to a PIPE (how hooks are invoked) is asynchronous — writing ~300 KB
+    // and exiting immediately truncated this payload at 65536 bytes, exactly one
+    // pipe buffer. Redirected to a file it completed, which is why it read as
+    // healthy in manual checks. Exit only once the write has drained.
+    process.stdout.write(output + '\n', () => process.exit(0));
+    return;
 
   } catch (_e) {
     // Fail-open
