@@ -42,13 +42,24 @@ const ROLE_WRITE_ALLOWLISTS = {
   documenter: [
     // v2.3.12 W14 (M2): narrowed from the over-broad '*.md' + '**/*.md' (which
     // matched agents/pm.md and CLAUDE.md — the enforcement substrate). Doc writes
-    // now scope to docs/**, the root README/CHANGELOG, and the KB artifacts dir
-    // (legit findings output, same as reviewer/debugger). The RESTRICTED_WRITE_DENYLIST
-    // below is the hard backstop for the substrate paths.
+    // scope to docs/**, the root README/CHANGELOG, and the KB artifacts dir
+    // (legit findings output, same as reviewer/debugger). RESTRICTED_WRITE_DENYLIST
+    // still blocks `agents/*.md` and CLAUDE.md for this role.
     'docs/**',
     'README*',
     'CHANGELOG*',
     '.orchestray/kb/artifacts/**.md',
+    // WIP (2026-09-02): documenter could not reach agents/pm-reference/**, which is
+    // where 48 of this repo's 49 reference documents live — `docs/` holds exactly one
+    // file. A v2.3.35 doc sweep stalled on exactly this and had to be finished by the
+    // PM. Added for PARITY, not as a new grant: developer, architect, refactorer and
+    // inventor are absent from RESTRICTED_ROLES entirely, so gate-role-write-paths
+    // already lets them write these files unchecked. The documenter was the only role
+    // scoped to documentation and the only one that could not edit it.
+    //
+    // Top-level `agents/*.md` (the agent prompts) remain denied for this role via
+    // RESTRICTED_WRITE_DENYLIST — that boundary is unchanged and still enforced.
+    'agents/pm-reference/**.md',
   ],
   'release-manager': [
     'CHANGELOG.md',
