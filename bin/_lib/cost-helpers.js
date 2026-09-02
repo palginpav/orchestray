@@ -103,16 +103,18 @@ function loadReservationTTLMs(cwd) {
 // ---------------------------------------------------------------------------
 
 /**
- * Opus 4.7-and-later tokenizer multiplier (also applies to Fable 5 and Opus 5).
+ * Opus 4.7-and-later tokenizer multiplier (also applies to Fable 5, Fable 5.1, and Opus 5).
  *
  * Opus 4.7 introduced a new tokenizer (carried over unchanged by Opus 4.8,
- * Opus 5, and Fable 5) that consumes ~35% more tokens than Opus 4.6 for the same
- * text. Per-token pricing is unchanged for each model, but effective cost is ~35%
- * higher for the same prompt vs. the Opus 4.6 baseline.
+ * Opus 5, Fable 5, and Fable 5.1) that consumes ~35% more tokens than Opus 4.6 for
+ * the same text. Per-token pricing is unchanged for each model, but effective cost
+ * is ~35% higher for the same prompt vs. the Opus 4.6 baseline.
  *
  * Source: platform-oracle Opus 4.7 research — see
  *   .orchestray/kb/artifacts/v218-claude-design-research.md §"Risks and Gotchas" item 5.
  *   Fable 5 confirmation: .orchestray/kb/facts/2026-06-fable-5-rollout.md §5.
+ *   Fable 5.1 confirmation (same tokenizer, no new coefficient):
+ *   .orchestray/kb/facts/2026-08-fable-5-1-rollout.md §4.
  */
 const OPUS_47_TOKENIZER_MULTIPLIER = 1.35;
 
@@ -143,7 +145,14 @@ const SONNET_5_TOKENIZER_MULTIPLIER = 1.30;
  */
 function getPricing(modelId) {
   const m = (modelId || '').toLowerCase();
-  // Fable 5 uses the Opus 4.7-era tokenizer — apply the same 1.35× multiplier.
+  // Fable 5 and Fable 5.1 both use the Opus 4.7-era tokenizer — apply the same
+  // 1.35× multiplier. This is deliberate, not an accident of the `includes('fable')`
+  // prefix match: Fable 5.1's own whats-new page states, verbatim, "Tokenizer: the
+  // same as Claude Fable 5 (introduced with Claude Opus 4.7)." — i.e. Fable 5.1 does
+  // NOT introduce a new tokenizer generation, unlike Opus 4.7 and Sonnet 5, which
+  // each did at their own point release. No new multiplier constant is needed.
+  // Source: https://platform.claude.com/docs/en/models/fable-5-1/whats-new-fable-5-1
+  // (see .orchestray/kb/facts/2026-08-fable-5-1-rollout.md §4).
   if (m.includes('fable')) {
     const base = BUILTIN_PRICING_TABLE.fable;
     return {

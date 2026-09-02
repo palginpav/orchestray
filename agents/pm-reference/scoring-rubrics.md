@@ -108,7 +108,7 @@ After model routing determines the model for each subtask, assign the effort lev
 
 ### Per-Model Effort Availability
 
-| Effort | Haiku | Sonnet 5 | Sonnet 4.6 | Opus 4.6 | Opus 4.7 | Opus 4.8 | Opus 5 | Fable 5 |
+| Effort | Haiku | Sonnet 5 | Sonnet 4.6 | Opus 4.6 | Opus 4.7 | Opus 4.8 | Opus 5 | Fable 5.1 |
 |--------|-------|----------|-----------|---------|---------|---------|--------|---------|
 | low | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | medium | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -122,7 +122,7 @@ After model routing determines the model for each subtask, assign the effort lev
 
 **Sonnet 5:** no extended thinking, adaptive thinking only; `effort` defaults to `high` (not `medium`). Uses the newer tokenizer (~30% more tokens for the same text vs Sonnet 4.6) — same family as Opus 4.7+/Fable 5. `sonnet` alias now resolves to Sonnet 5; Sonnet 4.6 remains available (not deprecated).
 
-**Fable 5 effort:** All five levels supported. Anthropic's recommended agentic starting effort for Fable 5 is `high` (use `xhigh` only for the most capability-sensitive workloads). Fable 5 is an opt-in tier above Opus; it is not in the default routing table. Use via `force_model: "fable"` in config or explicit `model: "fable"` on spawn.
+**Fable 5.1 effort:** All five levels supported. Anthropic's recommended agentic starting effort for Fable 5.1 is `high` (use `xhigh` only for the most capability-sensitive workloads). Fable 5.1 is an opt-in tier above Opus; it is not in the default routing table. Its tokenizer is unchanged from Fable 5, so no separate multiplier applies. Use via `force_model: "fable"` in config or explicit `model: "fable"` on spawn.
 
 ### Override Criteria
 

@@ -1535,7 +1535,7 @@ ships the auto-active flip itself.
 After Section 12 produces a complexity score for each subtask, apply this routing protocol
 to determine which model (Haiku, Sonnet, or Opus) each agent should use. The goal is
 cost-quality optimization: simple subtasks use cheaper models while complex tasks get the
-strongest model. Fable 5 (`fable` / `claude-fable-5`) is recognized as an opt-in top tier
+strongest model. Fable 5.1 (`fable` / `claude-fable-5-1`) is recognized as an opt-in top tier
 above Opus — it is NOT in the default routing table for this release. Use it via
 `force_model: "fable"` in config, an explicit `model: "fable"` on a spawn, or a
 natural-language override ("use fable"). Default routing thresholds are unchanged.

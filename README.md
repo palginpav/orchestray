@@ -280,7 +280,7 @@ Run `/orchestray:config` to view all settings, or browse the full grouped refere
 
 Kill switches: `oversized_input.enabled: false` in `.orchestray/config.json`, or env `ORCHESTRAY_DISABLE_OVERSIZED_INPUT=1`.
 
-**Model tiers** (cost per million tokens, input / output): Haiku $1 / $5 · Sonnet $3 / $15 · Opus $5 / $25 · Fable $10 / $50. The `sonnet` alias now resolves to Sonnet 5 (1M-token context; Sonnet 4.6 remains available). The `opus` alias now resolves to Opus 5 (1M-token context, current flagship, same $5 / $25 price as before; Opus 4.8 is legacy but remains available) on Claude Code v2.1.219+ — pin `claude-opus-5` to be immune to the version/provider gate. Fable 5 (`alias: fable`) is an opt-in top tier above Opus — use `force_model: "fable"` in config or pass `model: "fable"` on individual agent spawns. Default routing uses Haiku through Opus; Fable must be explicitly requested.
+**Model tiers** (cost per million tokens, input / output): Haiku $1 / $5 · Sonnet $3 / $15 · Opus $5 / $25 · Fable $10 / $50. The `sonnet` alias now resolves to Sonnet 5 (1M-token context; Sonnet 4.6 remains available). The `opus` alias now resolves to Opus 5 (1M-token context, current flagship, same $5 / $25 price as before; Opus 4.8 is legacy but remains available) on Claude Code v2.1.219+ — pin `claude-opus-5` to be immune to the version/provider gate. Fable 5.1 (`alias: fable`) is an opt-in top tier above Opus, succeeding Fable 5 (same $10 / $50 price; Fable 5 remains available, legacy) — use `force_model: "fable"` in config or pass `model: "fable"` on individual agent spawns. Default routing uses Haiku through Opus; Fable must be explicitly requested.
 
 ## Kill switches
 

@@ -9,6 +9,7 @@
 
 const MODELS = {
   'claude-fable-5':    { short: 'fab-5',   display: 'Fable 5',    window_default: 1000000 },
+  'claude-fable-5-1':  { short: 'fab-5-1', display: 'Fable 5.1',  window_default: 1000000 },
   // Opus 5: 1M is the native/only context size (no separate window_1m variant), so the
   // `claude-opus-5[1m]` alias resolves to the same 1M via window_default — same shape as Fable 5 / Sonnet 5.
   'claude-opus-5':     { short: 'opu-5',   display: 'Opus 5',     window_default: 1000000 },
