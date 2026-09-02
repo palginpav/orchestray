@@ -3,6 +3,25 @@
 All notable changes to Orchestray will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.3.35] - 2026-09-02
+
+**Orchestray now knows about Claude Fable 5.1. It turned out to already half-know about it: the cost of using it was calculated correctly, while its capacity was assumed to be a fifth of what it really is. A new check makes that combination impossible to repeat with the next model.**
+
+### Added
+
+- **Support for Claude Fable 5.1**, the successor to Fable 5. Same price, same capacity, same reasoning-effort settings. Fable 5 remains available.
+- **A check that a newly-added model cannot be half-added.** Fable 5.1 was already being priced correctly by an accident of name-matching, while the part of Orchestray that knows how much a model can hold had never heard of it — so its capacity silently defaulted to a fifth of the real figure. Anything that reasons about how much work fits in one go was wrong for it. The new check refuses to pass if any model can be priced but not sized, and was verified against a made-up future model it had never seen.
+
+### Fixed
+
+- **Fable 5.1's capacity is now correct** — one million tokens, not the two hundred thousand it was falling back to.
+
+### Notes
+
+- **The reasoning about cost is unchanged, deliberately.** Two recent model updates changed how text is counted into tokens, which raises real cost at an unchanged headline price. Fable 5.1 does not — Anthropic states its counting is identical to Fable 5 — so nothing about cost estimation was altered. This is recorded explicitly so that nobody "corrects" it later.
+- **Reading from cache is four times cheaper on Fable 5.1**, but Orchestray does not account for cached reads at all, so no estimate it produces changes. Mentioned so the saving is not mistaken for something Orchestray reports.
+- **Asking for `fable` continues to mean "whatever your Claude Code resolves it to"**, which on current versions is 5.1. Orchestray deliberately does not override that, exactly as it does not override the `opus` alias. Name the full model if you need the same answer everywhere.
+
 ## [2.3.34] - 2026-08-25
 
 **A Claude Code update began checking what Orchestray's hooks print, and surfaced an error on nearly every file read, in every project. The hooks had been printing malformed output all along — it was simply never checked. Fixing it uncovered a second, quieter fault: the largest thing Orchestray sends Claude Code was being cut off partway through.**
